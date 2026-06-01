@@ -1,0 +1,12 @@
+Tranche B-6 quad C-42 SHIPPABLE-NOW -- deterministic MCP fuzz corpus directory.
+
+The 200+ JSON tuples (tool * FSM state * 5 arg shapes) populated by the
+corpus generator land here as `tuple_*.json` files. Corpus generator +
+proc-macro `#[authz(states="...", actors="...")]` declarative attribute
+are DEFERRED to C-42b (first proc-macro crate in workspace adds friction
+without changing the threat model). The runtime guard at
+`crates/plugins/src/authz/compose.rs::compose_with_tool_gate` closes the
+SHIPPED-WIRED gap per MASTER-INDEX line 194 in this tranche.
+
+Directory path constant: `crate::ssb::MCP_FUZZ_CORPUS_DIR`
+("`.elai_cc/data/mcp_fuzz_corpus`").

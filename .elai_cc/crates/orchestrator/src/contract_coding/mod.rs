@@ -48,11 +48,15 @@
 pub mod discriminator;
 pub mod emitter;
 pub mod mutation;
+pub mod retry_emit;
 pub mod scaffolder;
 pub mod spec;
 
 pub use discriminator::{audit_against_contract, AuditResult, ContractViolation, ViolationKind};
 pub use emitter::{emit_contract_test, EmitError};
 pub use mutation::ContractMutation;
+pub use retry_emit::{
+    c50_emit_gate_truthy, emit_retry_abandoned, emit_retry_attempted, emit_retry_resolved,
+};
 pub use scaffolder::{scaffold_contract_test_from_signature, ScaffolderError};
 pub use spec::{StateConstraint, StructuralContract, TypeSignature};

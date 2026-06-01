@@ -103,6 +103,9 @@ fn contract_novelty_classified_payload_round_trip() {
         dkg_match_count: 0,
         near_duplicate_threshold: 0.12,
         ts_ms: 1_700_000_000_000,
+        // FINAL TRANCHE B4 / D-15: additive optional field; None exercises
+        // the backward-compat default-deserialize path.
+        candidate_status: None,
     };
     let wrapped = SsbPayload::NoveltyClassified(payload.clone());
 

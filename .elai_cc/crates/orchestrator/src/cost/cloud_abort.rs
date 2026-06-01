@@ -31,7 +31,7 @@
 //!   carrying user_session_id + override_amount + confirmation_string
 //!   (audit-trail composition with E-38 EU AI Act liveness gate).
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use super::CostRoleBucket;
 
@@ -79,7 +79,7 @@ pub enum AbortDecision {
 /// Per-role caps. Missing entries fall through to the task-level cap.
 #[derive(Debug, Clone, Default)]
 pub struct PerRoleCapsConfig {
-    pub caps_usd_cents: HashMap<CostRoleBucket, u64>,
+    pub caps_usd_cents: FxHashMap<CostRoleBucket, u64>,
 }
 
 impl PerRoleCapsConfig {
@@ -90,7 +90,7 @@ impl PerRoleCapsConfig {
     /// doc_parser 0.5/6 -- summing to the task cap.
     #[must_use]
     pub fn default_proposal(task_cap_cents: u64) -> Self {
-        let mut caps_usd_cents = HashMap::new();
+        let mut caps_usd_cents = FxHashMap::default();
         let unit = task_cap_cents / 6;
         caps_usd_cents.insert(CostRoleBucket::Executor, unit);
         caps_usd_cents.insert(CostRoleBucket::Auditor, unit.saturating_mul(2));
@@ -125,7 +125,7 @@ impl Default for LayeredCapsConfig {
 pub struct AbortCtx {
     pub task_spend_usd_cents: u64,
     pub max_spend_per_task_cents: u64,
-    pub task_spend_by_role: HashMap<CostRoleBucket, u64>,
+    pub task_spend_by_role: FxHashMap<CostRoleBucket, u64>,
     pub active_role: Option<CostRoleBucket>,
     pub day_spend_usd_cents: u64,
     pub per_role_caps: PerRoleCapsConfig,
@@ -195,7 +195,7 @@ mod tests {
         AbortCtx {
             task_spend_usd_cents: 0,
             max_spend_per_task_cents: 1_000,
-            task_spend_by_role: HashMap::new(),
+            task_spend_by_role: FxHashMap::default(),
             active_role: None,
             day_spend_usd_cents: 0,
             per_role_caps: PerRoleCapsConfig::default(),
@@ -262,7 +262,7 @@ mod tests {
         let mut c = baseline_ctx();
         c.max_spend_per_task_cents = 10_000;
         c.active_role = Some(CostRoleBucket::Executor);
-        let mut by_role = HashMap::new();
+        let mut by_role = FxHashMap::default();
         by_role.insert(CostRoleBucket::Executor, 1_500);
         c.task_spend_by_role = by_role;
         let mut caps = PerRoleCapsConfig::default();

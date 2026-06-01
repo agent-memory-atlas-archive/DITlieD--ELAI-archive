@@ -1,4 +1,4 @@
-//! C-47: Per-tool LRU registry + dependency-inversion SSB emitter trait.
+﻿//! C-47: Per-tool LRU registry + dependency-inversion SSB emitter trait.
 //!
 //! [`ToolCalibrationRegistry`] owns one [`lru::LruCache`] per tool, keyed
 //! by `call_shape_hash`, capped at [`CASE_BASE_LRU_CAP`]. The LRU
@@ -20,23 +20,34 @@
 //! dep. We deliberately do NOT use `std::sync::Mutex` per CLAUDE.md
 //! anti-stale-training rule.
 
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use lru::LruCache;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
 use super::case_base::{AggregatedCase, ResponseKind};
 use super::hinter::generate_hint;
+use super::persist::CasePersistStore;
 
 /// Per-tool LRU capacity. Each tool gets its own [`LruCache`] of
 /// `(call_shape_hash, AggregatedCase)`. Once 100 distinct shapes have
 /// been observed for one tool, the next insertion evicts the
 /// least-recently-touched entry.
 pub const CASE_BASE_LRU_CAP: usize = 100;
+
+/// C-47b -- env var name. When set to one of `"1"` / `"true"` / `"yes"` /
+/// `"on"` AND the registry has a persist store installed, [`Self::record_call`]
+/// persists each case to sqlite BEFORE admitting it to the LRU
+/// (fail-closed: persist error skips the admit per
+/// `workflow/reasoning/D-trancheD-decisions.md` D3). The env-gate keeps
+/// the durability invariant opt-in so the production wire-dark posture
+/// is preserved.
+pub const ELAI_C47B_CASE_BASE_PERSIST_ENABLE_ENV: &str =
+    "ELAI_C47B_CASE_BASE_PERSIST_ENABLE";
 
 /// SSB action-type sentinel strings emitted by the registry. The
 /// orchestrator-side adapter maps these to the matching `SsbPayload`
@@ -49,9 +60,9 @@ pub mod emit_kinds {
         "tool_calibration_drift_detected";
 }
 
-/// Errors surfaced by the registry. Currently a single empty enum
-/// (the in-memory LRU has no fallible operation) — kept around to
-/// fence the contract against future persistent-store add-ons.
+/// Errors surfaced by the registry. The in-memory LRU has no fallible
+/// operation; the persistence-store add-on (C-47b) surfaces sqlite +
+/// serde errors via the `Persist` variant.
 #[derive(Debug, Error)]
 pub enum ToolCalibrationError {
     /// Construction-time invariant violation (capacity must be > 0).
@@ -60,6 +71,14 @@ pub enum ToolCalibrationError {
     /// when they pass dynamic config values.
     #[error("ToolCalibrationRegistry capacity must be > 0")]
     ZeroCapacity,
+
+    /// C-47b: persistence-layer error (sqlite open / migrate / prepare /
+    /// step, serde encode / decode). Wrapped as String to keep the
+    /// plugins crate free of a direct rusqlite type in the public API
+    /// (the inner module exposes it; the public error is the stringified
+    /// form so contract-test fixtures stay stable).
+    #[error("tool_calibration persist error: {0}")]
+    Persist(String),
 }
 
 /// Per-tool status snapshot used by the dashboard's
@@ -83,11 +102,19 @@ pub struct ToolCalibrationStatus {
 /// `tokio::sync::Mutex` so two different tools never contend on the
 /// same lock.
 pub struct ToolCalibrationRegistry {
-    tools: Mutex<HashMap<String, Arc<Mutex<LruCache<u64, AggregatedCase>>>>>,
+    tools: Mutex<FxHashMap<String, Arc<Mutex<LruCache<u64, AggregatedCase>>>>>,
     /// Optional kill-switch — operators can disable hint generation
     /// at runtime without recompiling. Wire-dark default per
     /// CLAUDE.md "operators MUST gate at the emit point" stub_ban.
     hint_suppression: bool,
+    /// C-47b -- optional persist store for the cold tier. `None` keeps
+    /// the registry in-memory-only (existing behaviour). When `Some(_)`
+    /// AND `ELAI_C47B_CASE_BASE_PERSIST_ENABLE` is truthy at
+    /// `record_call` time, observations are persisted BEFORE the LRU
+    /// admit (fail-closed per D3). When `None`, every persist branch
+    /// short-circuits and the registry behaves exactly as the in-memory
+    /// surface.
+    persist: Option<Arc<CasePersistStore>>,
 }
 
 impl ToolCalibrationRegistry {
@@ -96,8 +123,9 @@ impl ToolCalibrationRegistry {
     /// override.
     pub fn new() -> Self {
         Self {
-            tools: Mutex::new(HashMap::new()),
+            tools: Mutex::new(FxHashMap::default()),
             hint_suppression: false,
+            persist: None,
         }
     }
 
@@ -109,16 +137,44 @@ impl ToolCalibrationRegistry {
         self
     }
 
+    /// C-47b builder: install the cold-tier persist store. When set
+    /// AND the env-gate [`ELAI_C47B_CASE_BASE_PERSIST_ENABLE_ENV`] is
+    /// truthy at `record_call` time, observations persist BEFORE the
+    /// LRU admit (fail-closed per D3 — persist error skips the
+    /// admit). When `None`, the registry stays in-memory only.
+    pub fn with_persist(mut self, store: Arc<CasePersistStore>) -> Self {
+        self.persist = Some(store);
+        self
+    }
+
     /// Accessor used by the dashboard panel to render the
     /// `hint_suppression` flag honestly.
     pub fn hint_suppression(&self) -> bool {
         self.hint_suppression
     }
 
+    /// C-47b accessor: returns true when a persist store has been
+    /// installed AND the env-gate is truthy at the moment of the
+    /// query. Both conditions must hold for `record_call` to attempt a
+    /// durable write. Cheap (one env-var read); safe to call in tests.
+    pub fn persist_enabled(&self) -> bool {
+        self.persist.is_some() && persist_env_truthy()
+    }
+
     /// Record one observation. Returns `Ok(())` on success; the inner
     /// `LruCache::put` is infallible. Called by the bridge AFTER the
     /// tool returns (audit-trail invariant per WIRING_CONTRACT
     /// stub_ban).
+    ///
+    /// C-47b: when [`Self::persist_enabled`] returns true, the case is
+    /// persisted to the cold tier BEFORE being admitted to the LRU
+    /// (fail-closed per D3). If persist fails, the LRU admit is
+    /// SKIPPED — the in-memory view stays consistent with the durable
+    /// store. Returns `Ok(())` on either success path (admit-into-LRU
+    /// or skip-on-persist-error); the caller can inspect
+    /// [`Self::persist_enabled`] + the registry's
+    /// [`super::registry::ToolCalibrationError`] log to detect the
+    /// fail-closed branch.
     pub async fn record_call(
         &self,
         tool_name: &str,
@@ -141,11 +197,78 @@ impl ToolCalibrationRegistry {
                 c
             }
         };
+        // C-47b: persist-FIRST / lru-put-SECOND per D3 fail-closed
+        // ordering. Only when both the store is installed AND the
+        // env-gate is truthy. Persist error => skip the put (LRU stays
+        // consistent with the durable store).
+        if let Some(store) = &self.persist {
+            if persist_env_truthy() {
+                if let Err(e) = store.persist_case(&case, ts_ms).await {
+                    tracing::warn!(
+                        tool = %tool_name,
+                        call_shape_hash = call_shape_hash,
+                        error = %e,
+                        "C-47b: persist_case failed; skipping LRU admit (fail-closed per D3)"
+                    );
+                    return;
+                }
+            }
+        }
         // Re-insert so `case` becomes the most-recently-used entry; the
         // LRU's `put` evicts the least-recently-used when at capacity,
         // which is deterministic per the `lru` crate's documented
         // semantics.
         guard.put(call_shape_hash, case);
+    }
+
+    /// C-47b -- bootstrap-time rehydrate: pull the most-recently-touched
+    /// cases (up to [`CASE_BASE_LRU_CAP`] per tool) out of the persist
+    /// store and re-insert them into the per-tool LRU in DESC order so
+    /// the youngest sits at the LRU head (matches D5 access-order
+    /// invariant). Returns the count of rehydrated cases.
+    ///
+    /// `tool_names` -- explicit list of tools to rehydrate. Pass the
+    /// result of [`CasePersistStore::tool_names_from_disk`] when no
+    /// caller-provided list exists. No-op when no persist store is
+    /// installed.
+    pub async fn rehydrate_from_persist(
+        &self,
+        tool_names: &[&str],
+    ) -> Result<usize, ToolCalibrationError> {
+        let Some(store) = &self.persist else {
+            return Ok(0);
+        };
+        let mut total: usize = 0;
+        for &name in tool_names {
+            let cases = store.load_all_for_tool(name, CASE_BASE_LRU_CAP).await?;
+            // load_all_for_tool returns DESC by updated_at_ms; iterate
+            // in REVERSE so the OLDEST is put first and the YOUNGEST
+            // ends up at the LRU head (most-recently-used position).
+            let lru = self.get_or_create_tool(name).await;
+            let mut guard = lru.lock().await;
+            for case in cases.into_iter().rev() {
+                let shape = case.call_shape_hash;
+                guard.put(shape, case);
+                total = total.saturating_add(1);
+            }
+        }
+        Ok(total)
+    }
+
+    /// C-47b convenience: enumerate tool names from the persist store and
+    /// rehydrate all of them. Equivalent to calling
+    /// `CasePersistStore::tool_names_from_disk` + `rehydrate_from_persist`.
+    /// Returns `Ok(0)` when no persist store is installed. Use this at
+    /// bootstrap when the caller has no a-priori tool list.
+    pub async fn rehydrate_all_from_persist(
+        &self,
+    ) -> Result<usize, ToolCalibrationError> {
+        let Some(store) = &self.persist else {
+            return Ok(0);
+        };
+        let names = store.tool_names_from_disk().await?;
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.rehydrate_from_persist(&name_refs).await
     }
 
     /// Consult the case base for a prospective call. Returns
@@ -276,6 +399,25 @@ impl Default for ToolCalibrationRegistry {
     }
 }
 
+/// C-47b -- predicate for the `ELAI_C47B_CASE_BASE_PERSIST_ENABLE`
+/// env-var. Truthy iff the value is one of `"1"` / `"true"` / `"yes"`
+/// / `"on"` (case-insensitive). Mirrors the orchestrator-side
+/// `env_gate_truthy` helper; kept crate-local so the plugins crate has
+/// no orchestrator dep on the hot path. Cheap (one `std::env::var`
+/// per `record_call`).
+fn persist_env_truthy() -> bool {
+    match std::env::var(ELAI_C47B_CASE_BASE_PERSIST_ENABLE_ENV) {
+        Ok(v) => {
+            let trimmed = v.trim();
+            trimmed.eq_ignore_ascii_case("1")
+                || trimmed.eq_ignore_ascii_case("true")
+                || trimmed.eq_ignore_ascii_case("yes")
+                || trimmed.eq_ignore_ascii_case("on")
+        }
+        Err(_) => false,
+    }
+}
+
 /// SSB emitter trait — orchestrator-side adapter implements this.
 /// Plugins-side trait avoids the circular `plugins -> orchestrator`
 /// dep. Mirrors `crate::mcp::ToolGateSsbEmitter` exactly.
@@ -313,6 +455,46 @@ pub trait CaseBaseSsbEmitter: Send + Sync {
         total_calls: u32,
         ts_ms: i64,
     ) -> Result<(), String>;
+
+    /// Tranche B-6 quad C-47 -- emit a `tool_calibration_event` row with
+    /// [`ToolCalibrationEventKind::CaseAdded`]. Fires when [`CaseBase`]
+    /// admits a fresh `(tool, call_shape)` pair. Default impl is a no-op
+    /// so legacy emitters compile without touching the trait surface
+    /// (one-release-window migration window).
+    fn emit_case_added(
+        &self,
+        _tool_name: &str,
+        _call_shape_hash: u64,
+        _ts_ms: i64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Tranche B-6 quad C-47 -- emit a `tool_calibration_event` row with
+    /// [`ToolCalibrationEventKind::CaseSelected`]. Fires when [`CaseBase`]
+    /// returns a stored case in service of a calibration decision.
+    /// Default impl is a no-op (see [`emit_case_added`]).
+    fn emit_case_selected(
+        &self,
+        _tool_name: &str,
+        _call_shape_hash: u64,
+        _ts_ms: i64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Tranche B-6 quad C-47 -- emit a `tool_calibration_event` row with
+    /// [`ToolCalibrationEventKind::CalibrationApplied`]. Fires when a
+    /// calibration outcome was applied to a downstream tool dispatch.
+    /// Default impl is a no-op (see [`emit_case_added`]).
+    fn emit_calibration_applied(
+        &self,
+        _tool_name: &str,
+        _call_shape_hash: u64,
+        _ts_ms: i64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// No-op emitter used when no orchestrator-side SSB writer is wired

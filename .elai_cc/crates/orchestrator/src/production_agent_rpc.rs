@@ -27,12 +27,14 @@ use elai_core::tool_dispatcher::{
 };
 use elai_ipc_types::{
     EntryPointsRequest, ExportGraphMermaidRequest, IndexArtifactsRequest, ListArtifactsRequest,
-    RemoveArtifactsRequest, SearchArtifactsRequest, SymbolContextRequest, SymbolFlowRequest,
+    RemoveArtifactsRequest, SearchArtifactsRequest, SymbolContextRequest,
+    SymbolDataflowImpactRequest, SymbolDslQueryRequest, SymbolFlowRequest,
     SymbolImpactRequest, SymbolListRequest, TOOL_CLASSIFY, TOOL_COMPILE_CHECK,
     TOOL_DKG_CALLERS, TOOL_DKG_DATA_FLOW, TOOL_DKG_DEPENDENTS, TOOL_DKG_SUBGRAPH, TOOL_EDIT,
     TOOL_ENTRY_POINTS, TOOL_EXPORT_GRAPH_MERMAID, TOOL_FILE_READ, TOOL_GIT_BRANCH,
     TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_INDEX_ARTIFACTS, TOOL_LIST_ARTIFACTS,
-    TOOL_REMOVE_ARTIFACTS, TOOL_SEARCH_ARTIFACTS, TOOL_SYMBOL_CONTEXT, TOOL_SYMBOL_FLOW,
+    TOOL_REMOVE_ARTIFACTS, TOOL_SEARCH_ARTIFACTS, TOOL_SYMBOL_CONTEXT,
+    TOOL_SYMBOL_DATAFLOW_IMPACT, TOOL_SYMBOL_DSL_QUERY, TOOL_SYMBOL_FLOW,
     TOOL_SYMBOL_IMPACT, TOOL_SYMBOL_LIST, TOOL_VALIDATE,
 };
 use elai_knowledge::artifacts::{
@@ -143,6 +145,19 @@ pub struct ProductionAgentRpcServer {
     /// measurement, artifact indexing `now_secs`). Defaults to `OsClock`;
     /// callers can override via `with_clock()` for deterministic tests.
     clock: Arc<dyn ClockProvider>,
+    /// E-40 / s-22600 Tranche B ITEM B.4 — optional SymbolGraph adapter
+    /// used by the `TOOL_SYMBOL_DSL_QUERY` + `TOOL_SYMBOL_DATAFLOW_IMPACT`
+    /// dispatcher arms. When `None`, both arms continue to return typed
+    /// empty responses (preserves the pre-B.4 wire shape for harness /
+    /// test paths that do not wire a real cache). When `Some`, the arms
+    /// dispatch the DSL / impact query through the adapter and return
+    /// real results, while ALSO emitting the existing `emit_symbol_query`
+    /// row (additive observability) plus a new `SymbolGraphEvent` row
+    /// (SymbolDslExecuted / DataflowImpactComputed) for the dashboard.
+    /// Set via `with_symbol_graph_adapter` at CLI startup
+    /// (`live_cli::build_local_knowledge_stack`).
+    symbol_graph_adapter:
+        Option<Arc<dyn elai_knowledge::symbol_graph_adapter::SymbolGraphAdapter>>,
 }
 
 impl ProductionAgentRpcServer {
@@ -163,6 +178,7 @@ impl ProductionAgentRpcServer {
             system_prompt: None,
             pending_tool_args: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             clock: Arc::new(OsClock),
+            symbol_graph_adapter: None,
         }
     }
 
@@ -201,6 +217,22 @@ impl ProductionAgentRpcServer {
         vm: Arc<dyn elai_knowledge::vector::VectorModule + Send + Sync>,
     ) -> Self {
         self.artifact_vm = Some(vm);
+        self
+    }
+
+    /// E-40 / s-22600 Tranche B ITEM B.4 — builder-style setter for the
+    /// SymbolGraph adapter used by the `TOOL_SYMBOL_DSL_QUERY` +
+    /// `TOOL_SYMBOL_DATAFLOW_IMPACT` dispatcher arms. When not set, both
+    /// arms return typed empty responses (pre-B.4 behaviour preserved).
+    /// CLI startup chains this on the
+    /// `ProductionAgentRpcServer::with_*` builder to plumb a real
+    /// `SymbolGraphCacheAdapter` (orchestrator/src/symbol_graph/mod.rs).
+    #[must_use]
+    pub fn with_symbol_graph_adapter(
+        mut self,
+        adapter: Arc<dyn elai_knowledge::symbol_graph_adapter::SymbolGraphAdapter>,
+    ) -> Self {
+        self.symbol_graph_adapter = Some(adapter);
         self
     }
 
@@ -649,12 +681,84 @@ impl ProductionAgentRpcServer {
             }),
             cache_control: None,
         };
+        // E-40 Tranche B-2: SymbolGraph DSL + dataflow tools. Distinct
+        // from the B-29 symbol_* family above (those query the
+        // SQLite-rooted cache; these query the orchestrator-rooted
+        // JSON cache via the new SymbolGraphAdapter). Mirrors the
+        // TOOL_SYMBOL_IMPACT input-schema shape (project_root + bounded
+        // depth) plus a `dsl` / `symbol` field per tool.
+        let symbol_dsl_query = ToolDefinition {
+            name: TOOL_SYMBOL_DSL_QUERY.to_string(),
+            description: Some(
+                "Execute a Datalog-style DSL query (DEF/USE/IMPL/CALL \
+                 selectors with lang/file/depth filters) over the \
+                 orchestrator-rooted JSON symbol graph. Returns matching \
+                 symbols plus any dataflow side-context edges, bounded by \
+                 `depth_cap` (default 2)."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root."
+                    },
+                    "dsl": {
+                        "type": "string",
+                        "description": "DSL query string (e.g. DEF(foo) | lang(rust))."
+                    },
+                    "depth_cap": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5,
+                        "description": "Dataflow side-context hop cap (default 2)."
+                    }
+                },
+                "required": ["project_root", "dsl", "depth_cap"]
+            }),
+            cache_control: None,
+        };
+        let symbol_dataflow_impact = ToolDefinition {
+            name: TOOL_SYMBOL_DATAFLOW_IMPACT.to_string(),
+            description: Some(
+                "Compute the dataflow / reverse-call impact radius of a \
+                 symbol via BFS over the JSON symbol graph's reverse-call \
+                 index, bounded by `depth_cap` (default 2). Returns the set \
+                 of transitively-impacted symbol names plus the actual \
+                 depth reached and edge count."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root."
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "Symbol name to start the reverse traversal at."
+                    },
+                    "depth_cap": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5,
+                        "description": "BFS depth cap (default 2)."
+                    }
+                },
+                "required": ["project_root", "symbol", "depth_cap"]
+            }),
+            cache_control: None,
+        };
         vec![
             edit, file_read, validate, compile_check, classify, git_commit,
             // C-24: B-29 Phase 5 symbol-graph tools, now agent-visible.
             symbol_impact, symbol_flow, symbol_context, symbol_list,
             // C-30: dependency-knowledge-graph query tools, now agent-visible.
             dkg_callers, dkg_dependents, dkg_data_flow, dkg_subgraph,
+            // E-40 Tranche B-2: SymbolGraph DSL + dataflow tools.
+            symbol_dsl_query, symbol_dataflow_impact,
         ]
     }
 
@@ -835,6 +939,7 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                 self.ssb.as_ref(),
                 self.artifact_vm.as_ref().map(Arc::as_ref),
                 &self.clock,
+                self.symbol_graph_adapter.as_ref(),
             )
             .await
             {
@@ -953,6 +1058,23 @@ fn convert_json_input_to_postcard(tool_id: &str, input: Value) -> Result<Vec<u8>
                 format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
             })
         }
+        // E-40 Tranche B-2: SymbolGraph DSL + dataflow tools.
+        TOOL_SYMBOL_DSL_QUERY => {
+            let req: SymbolDslQueryRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_SYMBOL_DATAFLOW_IMPACT => {
+            let req: SymbolDataflowImpactRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
         unknown => Err(format!(
             "convert_json_input_to_postcard: no mapping for tool_id '{unknown}'"
         )),
@@ -1045,6 +1167,9 @@ pub(crate) async fn translate_tool_request(
     ssb: Option<&Arc<crate::ssb::Ssb>>,
     artifact_vm: Option<&(dyn elai_knowledge::vector::VectorModule + Send + Sync)>,
     clock: &Arc<dyn ClockProvider>,
+    symbol_graph_adapter: Option<
+        &Arc<dyn elai_knowledge::symbol_graph_adapter::SymbolGraphAdapter>,
+    >,
 ) -> Result<Vec<u8>, String> {
     match tool_id {
         TOOL_EDIT => {
@@ -1393,6 +1518,162 @@ pub(crate) async fn translate_tool_request(
             .await;
             serde_json::to_vec(&symbols)
                 .map_err(|e| format!("tool symbol_list: serialise error: {e}"))
+        }
+
+        // E-40 Tranche B-2 + s-22600 Tranche B ITEM B.4: SymbolGraph DSL +
+        // dataflow tools. When `symbol_graph_adapter` is Some (CLI startup
+        // wired a `SymbolGraphCacheAdapter`), dispatch the query through
+        // the adapter and return real results. When None, preserve the
+        // pre-B.4 empty-response behaviour so harness / test paths that
+        // do not wire a cache continue to see a consistent wire shape.
+        // Adapter errors (cache unavailable, DSL parse fail, etc) degrade
+        // to empty responses with `tracing::warn` -- the agent loop is
+        // best-effort over symbol graph tools.
+        TOOL_SYMBOL_DSL_QUERY => {
+            let wire: SymbolDslQueryRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool symbol_dsl_query: decode error: {e}"))?;
+            let t0 = clock.now();
+            let resp = match symbol_graph_adapter {
+                Some(adapter) => {
+                    let project_root = PathBuf::from(&wire.project_root);
+                    match adapter.dsl_query(&wire.dsl, &project_root, wire.depth_cap) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::warn!(
+                                tool = TOOL_SYMBOL_DSL_QUERY,
+                                error = %e,
+                                "symbol_dsl_query adapter error -- returning empty response"
+                            );
+                            elai_ipc_types::SymbolDslQueryResponse {
+                                matches: Vec::new(),
+                                dataflow_edges: Vec::new(),
+                                total_scanned: 0,
+                            }
+                        }
+                    }
+                }
+                None => elai_ipc_types::SymbolDslQueryResponse {
+                    matches: Vec::new(),
+                    dataflow_edges: Vec::new(),
+                    total_scanned: 0,
+                },
+            };
+            let latency_ms = clock.elapsed_since(t0).as_millis().try_into().unwrap_or(u32::MAX);
+            // PRESERVE the existing emit_symbol_query beacon (additive
+            // observability per s-22300 B-2 contract).
+            let result_count: u32 = resp.matches.len().try_into().unwrap_or(u32::MAX);
+            emit_symbol_query(
+                ssb,
+                TOOL_SYMBOL_DSL_QUERY,
+                wire.dsl.clone(),
+                wire.depth_cap as u32,
+                result_count,
+                latency_ms,
+            )
+            .await;
+            // s-22600 Tranche B ITEM B.4: also emit the SymbolGraphEvent
+            // row (Pattern-2 reuse, SymbolDslExecuted kind, SCHEMA 193).
+            // Best-effort: failure to write is logged + swallowed so the
+            // tool dispatch result is unaffected.
+            if let Some(writer) = ssb {
+                let ts_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
+                if let Err(e) = crate::symbol_graph::notify_symbol_graph_event(
+                    writer.as_ref(),
+                    "production_agent_rpc",
+                    0,
+                    crate::ssb::SymbolGraphEventKind::SymbolDslExecuted,
+                    None,
+                    serde_json::json!({
+                        "dsl": wire.dsl,
+                        "depth_cap": wire.depth_cap,
+                        "matches": resp.matches.len(),
+                        "edges": resp.dataflow_edges.len(),
+                    }),
+                    ts_ms,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        tool = TOOL_SYMBOL_DSL_QUERY,
+                        error = %e,
+                        "symbol_dsl_query: SymbolGraphEvent SSB write failed"
+                    );
+                }
+            }
+            serde_json::to_vec(&resp)
+                .map_err(|e| format!("tool symbol_dsl_query: serialise error: {e}"))
+        }
+
+        TOOL_SYMBOL_DATAFLOW_IMPACT => {
+            let wire: SymbolDataflowImpactRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool symbol_dataflow_impact: decode error: {e}"))?;
+            let t0 = clock.now();
+            let resp = match symbol_graph_adapter {
+                Some(adapter) => {
+                    let project_root = PathBuf::from(&wire.project_root);
+                    match adapter.dataflow_impact(&wire.symbol, &project_root, wire.depth_cap) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::warn!(
+                                tool = TOOL_SYMBOL_DATAFLOW_IMPACT,
+                                error = %e,
+                                "symbol_dataflow_impact adapter error -- returning empty response"
+                            );
+                            elai_ipc_types::SymbolDataflowImpactResponse {
+                                impacted_symbols: Vec::new(),
+                                depth_actual: 0,
+                                total_edges: 0,
+                            }
+                        }
+                    }
+                }
+                None => elai_ipc_types::SymbolDataflowImpactResponse {
+                    impacted_symbols: Vec::new(),
+                    depth_actual: 0,
+                    total_edges: 0,
+                },
+            };
+            let latency_ms = clock.elapsed_since(t0).as_millis().try_into().unwrap_or(u32::MAX);
+            let result_count: u32 = resp.impacted_symbols.len().try_into().unwrap_or(u32::MAX);
+            emit_symbol_query(
+                ssb,
+                TOOL_SYMBOL_DATAFLOW_IMPACT,
+                wire.symbol.clone(),
+                wire.depth_cap as u32,
+                result_count,
+                latency_ms,
+            )
+            .await;
+            // s-22600 Tranche B ITEM B.4: SymbolGraphEvent row,
+            // DataflowImpactComputed kind. Best-effort emit.
+            if let Some(writer) = ssb {
+                let ts_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
+                if let Err(e) = crate::symbol_graph::notify_symbol_graph_event(
+                    writer.as_ref(),
+                    "production_agent_rpc",
+                    0,
+                    crate::ssb::SymbolGraphEventKind::DataflowImpactComputed,
+                    None,
+                    serde_json::json!({
+                        "symbol": wire.symbol,
+                        "depth_cap": wire.depth_cap,
+                        "depth_actual": resp.depth_actual,
+                        "impacted_symbols": resp.impacted_symbols.len(),
+                        "total_edges": resp.total_edges,
+                    }),
+                    ts_ms,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        tool = TOOL_SYMBOL_DATAFLOW_IMPACT,
+                        error = %e,
+                        "symbol_dataflow_impact: SymbolGraphEvent SSB write failed"
+                    );
+                }
+            }
+            serde_json::to_vec(&resp)
+                .map_err(|e| format!("tool symbol_dataflow_impact: serialise error: {e}"))
         }
 
         TOOL_GIT_UNDO | TOOL_GIT_BRANCH => {
@@ -1907,6 +2188,6 @@ pub async fn translate_tool_request_for_test(
     artifact_vm: Option<&(dyn elai_knowledge::vector::VectorModule + Send + Sync)>,
     clock: &Arc<dyn ClockProvider>,
 ) -> Result<Vec<u8>, String> {
-    translate_tool_request(tool_id, arguments, dispatcher, ssb, artifact_vm, clock).await
+    translate_tool_request(tool_id, arguments, dispatcher, ssb, artifact_vm, clock, None).await
 }
 

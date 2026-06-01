@@ -25,7 +25,7 @@
 //! difficulty and remaining-budget as a P50+P95 band rather than a
 //! point.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 /// Difficulty score in `[0.0, 1.0]`. 0.0 = trivial, 1.0 = frontier-
 /// hard. Combined with `budget_remaining_usd` to pick a backend.
@@ -169,12 +169,12 @@ pub fn route_for_difficulty_and_budget(
 /// (every dispatch logs a [`crate::ssb::CostEventKind::CostRouterDecision`]
 /// row), not from any single classifier's precision.
 pub struct TaskDifficultyClassifier {
-    keyword_set: HashMap<&'static str, u8>,
+    keyword_set: FxHashMap<&'static str, u8>,
 }
 
 impl Default for TaskDifficultyClassifier {
     fn default() -> Self {
-        let mut keyword_set = HashMap::new();
+        let mut keyword_set = FxHashMap::default();
         for k in [
             "algorithm",
             "prove",
@@ -205,7 +205,7 @@ impl TaskDifficultyClassifier {
         if bytes.len() < 3 {
             return 0.0;
         }
-        let mut seen = HashMap::<(char, char, char), u32>::new();
+        let mut seen = FxHashMap::<(char, char, char), u32>::default();
         let mut total: u32 = 0;
         for w in bytes.windows(3) {
             total += 1;

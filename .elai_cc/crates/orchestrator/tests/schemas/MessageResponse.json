@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "OutputContentBlock": {
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "input": true,
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_use",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "signature": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "thinking": {
+              "default": "",
+              "type": "string"
+            },
+            "type": {
+              "const": "thinking",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "data": true,
+            "type": {
+              "const": "redacted_thinking",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "data"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Usage": {
+      "properties": {
+        "cache_creation_input_tokens": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cache_read_input_tokens": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input_tokens": {
+          "default": 0,
+          "description": "Anthropic streaming spec: only `message_start` carries `input_tokens`;\nthe per-chunk `message_delta` event omits it. Treat as optional with\n0 default so streaming responses deserialize cleanly. (B-15D PART-C smoke fix)",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "default": 0,
+          "description": "Same rationale: `message_start.usage.output_tokens` is 0 anyway, but\nsome Anthropic-compatible servers omit it entirely.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "content": {
+      "items": {
+        "$ref": "#/$defs/OutputContentBlock"
+      },
+      "type": "array"
+    },
+    "id": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "provider_name": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "request_id": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "role": {
+      "type": "string"
+    },
+    "stop_reason": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stop_sequence": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "type": {
+      "type": "string"
+    },
+    "usage": {
+      "$ref": "#/$defs/Usage"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "role",
+    "content",
+    "model",
+    "usage"
+  ],
+  "title": "MessageResponse",
+  "type": "object"
+}

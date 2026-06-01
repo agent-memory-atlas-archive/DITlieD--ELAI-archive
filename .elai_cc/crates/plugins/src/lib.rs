@@ -99,9 +99,9 @@ pub use mcp::lazy::{LazyCacheError, LazySchemaCache};
 #[cfg(feature = "mcp")]
 pub use tool_calibration::{
     classify_response, complexity_score, emit_kinds as tool_calibration_emit_kinds,
-    generate_hint, AggregatedCase, CaseBaseSsbEmitter, FailureProfile, NoopCaseBaseEmitter,
-    ResponseKind, ToolCalibrationRegistry, ToolCalibrationStatus, CASE_BASE_LRU_CAP,
-    HINT_ERROR_RATE_THRESHOLD, HINT_MIN_TOTAL_CALLS,
+    generate_hint, AggregatedCase, CaseBaseSsbEmitter, CasePersistStore, FailureProfile,
+    NoopCaseBaseEmitter, ResponseKind, ToolCalibrationRegistry, ToolCalibrationStatus,
+    CASE_BASE_LRU_CAP, HINT_ERROR_RATE_THRESHOLD, HINT_MIN_TOTAL_CALLS,
 };
 // E-30: MCP version-pin loader + enforcer (extends mcp_pins.toml).
 #[cfg(feature = "mcp")]

@@ -286,7 +286,17 @@ impl CloudModeRouter {
         mode: ExecMode,
         credentials: Option<CloudCredentials>,
     ) -> Result<RoutedProvider, CloudModeError> {
-        self.route_with_spend(mode, credentials, None)
+        let outcome = self.route_with_spend(mode, credentials, None);
+        // E-31 sub-phase 6A: emit RouteDecisionEvent via tracing log
+        // behind the wire-dark env gate. The actual Ssb::write_payload
+        // injection is deferred to sub-phase 6B alongside the dashboard
+        // RuntimePanel tile (matches the E-3 4A "tracing-log first,
+        // SSB writer in 4B" pattern). The RuntimeRoutingPolicy here is
+        // invoked with the default policy + a minimal RoutingContext so
+        // every CloudModeRouter::route call gets a paired audit row when
+        // the env gate is on.
+        emit_route_decision_log(mode, &outcome);
+        outcome
     }
 
     /// C-5: routing variant that ALSO enforces the daily / monthly
@@ -383,6 +393,89 @@ impl CloudModeRouter {
             profile: self.config.privacy_profile,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// E-31 sub-phase 6A — RouteDecisionEvent wire-dark emit helper.
+// ---------------------------------------------------------------------------
+
+/// E-31 sub-phase 6A: emit a `RouteDecisionEvent` tracing log line behind
+/// the `ELAI_ROUTE_DECISION_SSB_ENABLE` env gate. The actual
+/// `Ssb::write_payload` injection lives in sub-phase 6B (mirrors the
+/// E-3 4A "tracing log first, SSB writer in 4B" precedent at
+/// `ssb.rs:2580-2588`).
+///
+/// The policy invocation uses the default `RuntimeRoutingPolicy` and a
+/// minimal `RoutingContext` derived from the `ExecMode` + the route
+/// outcome. The decision is informational: this path does NOT change
+/// the returned `RoutedProvider`; it only labels the decision for the
+/// audit trail.
+///
+/// No I/O outside the gated tracing call; no Result propagation needed
+/// because tracing::info! is infallible.
+fn emit_route_decision_log(
+    mode: ExecMode,
+    outcome: &Result<RoutedProvider, CloudModeError>,
+) {
+    if !route_decision_ssb_enabled() {
+        return;
+    }
+    use elai_providers::runtime::{
+        RoutingChoice, RoutingContext, RoutingCriticality, RoutingDifficulty,
+        RuntimeRoutingPolicy,
+    };
+    // Best-effort context: mode -> difficulty mapping is intentionally
+    // conservative (Cloud-mode = Hard, Auto = Medium, Local = Easy). The
+    // policy + audit row are observational, not load-bearing.
+    let difficulty = match mode {
+        ExecMode::Cloud => RoutingDifficulty::Hard,
+        ExecMode::Auto => RoutingDifficulty::Medium,
+        ExecMode::Local => RoutingDifficulty::Easy,
+    };
+    // F13: replace prior hardcoded 0.0 with actual NVML-detected GiB. The
+    // helper falls back to 0.0 on missing/error (matches doctor.rs:290
+    // graceful-fall-through pattern). Field is observational today; becomes
+    // load-bearing once E-31 6B wires Ssb::write_payload.
+    let ctx = RoutingContext {
+        difficulty,
+        criticality: RoutingCriticality::Low,
+        vram_detected_gb: elai_providers::detect_vram_gb(),
+        prior_audit_failures: 0,
+        budget_remaining_usd: 25.0,
+        ops_override: None,
+    };
+    let policy = RuntimeRoutingPolicy::default();
+    let decision = policy.evaluate(&ctx);
+    let kind_label = match outcome {
+        Ok(RoutedProvider::Local) => "local_route_kept",
+        Ok(RoutedProvider::Cloud { .. }) => "cloud_route_chosen",
+        Err(_) => "local_route_kept",
+    };
+    let chosen_route = match outcome {
+        Ok(RoutedProvider::Local) => RoutingChoice::LocalSidecar.as_str(),
+        Ok(RoutedProvider::Cloud { .. }) => decision.choice.as_str(),
+        Err(_) => RoutingChoice::LocalSidecar.as_str(),
+    };
+    tracing::info!(
+        target: "elai_orchestrator::cloud_mode::route_decision",
+        kind = kind_label,
+        route = chosen_route,
+        reason = decision.reason.as_str(),
+        ts_ms = decision.ts_ms,
+        "RouteDecisionEvent (wire-dark; sub-phase 6B will inject Ssb::write_payload)"
+    );
+}
+
+/// Read the wire-dark env gate. Mirrors the helper pattern used by
+/// `elai_orchestrator::ssb::ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV`
+/// consumers.
+fn route_decision_ssb_enabled() -> bool {
+    matches!(
+        std::env::var(crate::ssb::ELAI_ROUTE_DECISION_SSB_ENABLE_ENV)
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
 }
 
 // ---------------------------------------------------------------------------

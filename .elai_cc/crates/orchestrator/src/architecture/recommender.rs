@@ -234,3 +234,235 @@ pub fn recommend_archetype(class: ProjectClass, brief: &str) -> ArchetypeRecomme
         prior_art_pointers,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tranche B-7 triple E-50 -- archetype-selected SSB emit surface.
+// ---------------------------------------------------------------------------
+
+/// Tranche B-7 triple (SCHEMA_VERSION 195) -- selection-source discriminator
+/// recorded on the [`crate::ssb::SaasArchPatternEventKind::SaasArchetypeSelected`]
+/// arm. Closed enum mirroring [`RecommendationConfidence`] plus the two
+/// out-of-recommender sources (user override + default fallback when no
+/// brief is available). Snake-case wire labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ArchetypeSelectionSource {
+    /// Selection came from the recommender at [`RecommendationConfidence::High`].
+    RecommenderHigh,
+    /// Selection came from the recommender at [`RecommendationConfidence::Medium`].
+    RecommenderMedium,
+    /// Selection came from the recommender at [`RecommendationConfidence::Low`].
+    RecommenderLow,
+    /// Operator override (e.g. CLI `--archetype` flag, settings panel
+    /// selection, idea-framer manual pick).
+    UserOverride,
+    /// No brief was available; the selection fell back to the default
+    /// per-class map.
+    Default,
+}
+
+impl ArchetypeSelectionSource {
+    /// Canonical snake_case wire label. SSB-payload-compatible.
+    #[must_use]
+    pub fn as_snake_case(self) -> &'static str {
+        match self {
+            Self::RecommenderHigh => "recommender_high",
+            Self::RecommenderMedium => "recommender_medium",
+            Self::RecommenderLow => "recommender_low",
+            Self::UserOverride => "user_override",
+            Self::Default => "default",
+        }
+    }
+
+    /// Inverse of [`Self::as_snake_case`]. Returns `None` on unknown
+    /// input so the SSB read path can fail closed.
+    #[must_use]
+    pub fn from_snake_case(s: &str) -> Option<Self> {
+        match s {
+            "recommender_high" => Some(Self::RecommenderHigh),
+            "recommender_medium" => Some(Self::RecommenderMedium),
+            "recommender_low" => Some(Self::RecommenderLow),
+            "user_override" => Some(Self::UserOverride),
+            "default" => Some(Self::Default),
+            _ => None,
+        }
+    }
+
+    /// Map a [`RecommendationConfidence`] to its matching
+    /// `recommender_*` source arm. Helper for the canonical
+    /// recommender-emit path.
+    #[must_use]
+    pub fn from_confidence(c: RecommendationConfidence) -> Self {
+        match c {
+            RecommendationConfidence::High => Self::RecommenderHigh,
+            RecommendationConfidence::Medium => Self::RecommenderMedium,
+            RecommendationConfidence::Low => Self::RecommenderLow,
+        }
+    }
+}
+
+/// Tranche B-7 triple (SCHEMA_VERSION 195) -- env-gate predicate for the
+/// E-50 archetype-selected emit surface. Default OFF. Wired through the
+/// canonical [`crate::ssb::env_gate_truthy`] helper.
+#[must_use]
+pub fn archetype_selected_emit_enabled() -> bool {
+    crate::ssb::env_gate_truthy(
+        crate::ssb::ELAI_E50_ARCHETYPE_SELECTED_EMIT_ENABLE_ENV,
+    )
+}
+
+/// Tranche B-7 triple (SCHEMA_VERSION 195) -- build the
+/// [`crate::ssb::SaasArchPatternEventPayload`] for the
+/// `SaasArchetypeSelected` arm. Pure function (no env-gate check, no IO)
+/// so callers compose with the canonical SSB emit pipeline (e.g.
+/// `crate::ssb::Ssb::write_payload`).
+///
+/// `confidence_bps` is the basis-points encoding of the recommender's
+/// confidence (0..=10_000). High=10_000, Medium=6_000, Low=2_500;
+/// `UserOverride` and `Default` carry the supplied operator scalar.
+///
+/// `selected_at_step` is the idea-framing step ordinal the selection was
+/// emitted at; callers that emit out-of-band may pass `0`.
+#[must_use]
+pub fn build_archetype_selected_payload(
+    rec: &ArchetypeRecommendation,
+    source: ArchetypeSelectionSource,
+    confidence_bps: u16,
+    selected_at_step: u32,
+    session_id: Option<String>,
+    brief_hash: u64,
+    ts_ms: i64,
+) -> crate::ssb::SaasArchPatternEventPayload {
+    crate::ssb::SaasArchPatternEventPayload {
+        kind: crate::ssb::SaasArchPatternEventKind::SaasArchetypeSelected,
+        session_id,
+        archetype: rec.primary.as_snake_case().to_owned(),
+        details_json: serde_json::json!({
+            "source": source.as_snake_case(),
+            "confidence_bps": confidence_bps,
+            "selected_at_step": selected_at_step,
+            "brief_hash": format!("0x{:016x}", brief_hash),
+            "caller_site": "recommend_archetype_with_emit"
+        }),
+        ts_ms,
+    }
+}
+
+/// Tranche B-7 triple (SCHEMA_VERSION 195) -- recommender + canonical
+/// confidence-to-bps mapping. Mirrors [`recommend_archetype`] but
+/// additionally returns the payload the caller can hand to the SSB
+/// writer when [`archetype_selected_emit_enabled`] is `true`.
+///
+/// The function does NOT itself touch the SSB -- composition with a
+/// concrete `Ssb` instance is the caller's responsibility (the
+/// orchestrator owns the writer, the architecture subtree stays
+/// SSB-agnostic to preserve the pure-fn surface).
+///
+/// Returns the recommendation AND an `Option<SaasArchPatternEventPayload>`
+/// (None when the env gate is off, Some otherwise). The Pattern-2
+/// envelope means the caller pays exactly one SSB row per selection.
+#[must_use]
+pub fn recommend_archetype_with_emit(
+    class: ProjectClass,
+    brief: &str,
+    session_id: Option<String>,
+    selected_at_step: u32,
+    ts_ms: i64,
+) -> (
+    ArchetypeRecommendation,
+    Option<crate::ssb::SaasArchPatternEventPayload>,
+) {
+    let rec = recommend_archetype(class, brief);
+    if !archetype_selected_emit_enabled() {
+        return (rec, None);
+    }
+    let source = ArchetypeSelectionSource::from_confidence(rec.confidence);
+    let confidence_bps: u16 = match rec.confidence {
+        RecommendationConfidence::High => 10_000,
+        RecommendationConfidence::Medium => 6_000,
+        RecommendationConfidence::Low => 2_500,
+    };
+    let brief_hash = crate::ssb::blake3_label_prefix(brief);
+    let payload = build_archetype_selected_payload(
+        &rec,
+        source,
+        confidence_bps,
+        selected_at_step,
+        session_id,
+        brief_hash,
+        ts_ms,
+    );
+    (rec, Some(payload))
+}
+
+#[cfg(test)]
+mod b7_archetype_selected_tests {
+    use super::*;
+
+    #[test]
+    fn source_round_trip_snake_case() {
+        for s in &[
+            ArchetypeSelectionSource::RecommenderHigh,
+            ArchetypeSelectionSource::RecommenderMedium,
+            ArchetypeSelectionSource::RecommenderLow,
+            ArchetypeSelectionSource::UserOverride,
+            ArchetypeSelectionSource::Default,
+        ] {
+            let label = s.as_snake_case();
+            let parsed = ArchetypeSelectionSource::from_snake_case(label)
+                .expect("round trip");
+            assert_eq!(parsed, *s);
+        }
+    }
+
+    #[test]
+    fn confidence_to_source_mapping_stable() {
+        assert_eq!(
+            ArchetypeSelectionSource::from_confidence(RecommendationConfidence::High),
+            ArchetypeSelectionSource::RecommenderHigh
+        );
+        assert_eq!(
+            ArchetypeSelectionSource::from_confidence(RecommendationConfidence::Medium),
+            ArchetypeSelectionSource::RecommenderMedium
+        );
+        assert_eq!(
+            ArchetypeSelectionSource::from_confidence(RecommendationConfidence::Low),
+            ArchetypeSelectionSource::RecommenderLow
+        );
+    }
+
+    #[test]
+    fn build_payload_shape_matches_details_contract() {
+        let rec = recommend_archetype(ProjectClass::SaaSDashboard, "auth + billing");
+        let payload = build_archetype_selected_payload(
+            &rec,
+            ArchetypeSelectionSource::RecommenderHigh,
+            10_000,
+            3,
+            Some("s-b7-test".to_owned()),
+            0xDEAD_BEEF_CAFE_BABE,
+            1_700_000_195_001,
+        );
+        assert_eq!(
+            payload.kind,
+            crate::ssb::SaasArchPatternEventKind::SaasArchetypeSelected
+        );
+        assert_eq!(payload.archetype, "saas_dashboard");
+        let details = &payload.details_json;
+        assert_eq!(details["source"], "recommender_high");
+        assert_eq!(details["confidence_bps"], 10_000);
+        assert_eq!(details["selected_at_step"], 3);
+    }
+
+    #[test]
+    fn recommend_with_emit_returns_none_when_gate_off() {
+        std::env::remove_var(crate::ssb::ELAI_E50_ARCHETYPE_SELECTED_EMIT_ENABLE_ENV);
+        let (_rec, payload) = recommend_archetype_with_emit(
+            ProjectClass::WebApp,
+            "auth dashboard",
+            None,
+            0,
+            1_700_000_195_002,
+        );
+        assert!(payload.is_none());
+    }
+}

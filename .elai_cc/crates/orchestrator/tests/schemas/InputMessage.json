@@ -1,0 +1,156 @@
+{
+  "$defs": {
+    "CacheControl": {
+      "description": "Anthropic-compatible cache_control marker for prompt-prefix caching.\n\nWire shape: {\"type\":\"ephemeral\"} (5-min TTL, the only currently-supported\nkind). Anthropic accepts at most 4 cache_control markers per request;\nB-27 cloud_mode applies them to the system prompt block and the last\nToolDefinition only (2 markers, well under the cap).",
+      "properties": {
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "InputContentBlock": {
+      "oneOf": [
+        {
+          "properties": {
+            "cache_control": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CacheControl"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cache_control": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CacheControl"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "input": true,
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_use",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/ToolResultContentBlock"
+              },
+              "type": "array"
+            },
+            "is_error": {
+              "type": "boolean"
+            },
+            "tool_use_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tool_use_id",
+            "content"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ToolResultContentBlock": {
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "json",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "content": {
+      "items": {
+        "$ref": "#/$defs/InputContentBlock"
+      },
+      "type": "array"
+    },
+    "role": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "role",
+    "content"
+  ],
+  "title": "InputMessage",
+  "type": "object"
+}

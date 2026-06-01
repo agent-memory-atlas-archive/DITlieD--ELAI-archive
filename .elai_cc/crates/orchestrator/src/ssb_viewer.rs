@@ -3786,6 +3786,45 @@ impl SsbViewer {
         Ok(out)
     }
 
+    /// B-4 / cross-check 2026-05-30: returns up to `limit` most-recent
+    /// [`crate::ssb::AgentLifecyclePayload`] rows (newest-first, seq DESC).
+    /// Reads the canonical `agent_lifecycle` SSB action_type written by the
+    /// BSP engine at spawn / ready / exit transitions (bsp/engine.rs:243,
+    /// 278, 344, 393, 563, 648, 681). Sibling of
+    /// [`Self::recent_agent_status_changes`] which reads the C-2 mirror
+    /// variant; this helper exposes the unfiltered lifecycle stream for
+    /// callers that need the full spawn/exit chain (e.g. supervision
+    /// timeline, crash forensics) rather than the latest-per-agent dedup.
+    /// Honors the plan B-4 producer-wiring name; the dashboard `get_agents`
+    /// command can compose either reader depending on whether dedup is
+    /// desired.
+    pub fn recent_agent_lifecycle_rows(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::ssb::AgentLifecyclePayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::AgentLifecycle.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::AgentLifecycle(p) = payload {
+                out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
     /// C-2: returns the latest [`crate::ssb::AgentStatusChangedPayload`] per
     /// `agent_id` in descending seq order. Used by the dashboard `get_agents`
     /// Tauri command to replace the hardcoded 8-role IDLE list. When the SSB
@@ -3898,6 +3937,20 @@ impl SsbViewer {
             }
         }
         Ok(None)
+    }
+
+    /// B-38 / cross-check 2026-05-30 alias: returns the latest
+    /// [`crate::ssb::AmbiguityStreakAdvancedPayload`] under the
+    /// fully-qualified `latest_ambiguity_streak_advanced` name to mirror the
+    /// `ambiguity_streak_advanced` SSB action_type label (and the sibling
+    /// `latest_ambiguity_scored` / `latest_ambiguity_floor_failed` pair).
+    /// Thin wrapper over [`Self::latest_ambiguity_streak`] — no extra
+    /// query cost. Added to close B-38 viewer-helper coverage gap noted in
+    /// workflow/sessions/s-night-2026-05-30/cross-check/B/B-13_b36_b37_b38.md.
+    pub fn latest_ambiguity_streak_advanced(
+        &self,
+    ) -> Result<Option<crate::ssb::AmbiguityStreakAdvancedPayload>, SsbViewerError> {
+        self.latest_ambiguity_streak()
     }
 
     /// Returns up to `limit` recent `dag_repair_round` rows in descending seq

@@ -3,7 +3,7 @@
 //! held-out/ layout.
 
 use chrono::{TimeZone, Utc};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use tempfile::tempdir;
 
 use elai_eval_corpus::ingest::{ingest_task, IngestConfig, IngestResult, NewTaskInput};
@@ -12,7 +12,7 @@ use elai_eval_corpus::task_schema::{ExecutableTest, Provenance, Task, TestKind};
 use elai_eval_corpus::TaskFamily;
 
 fn fixture(id: &str, body: &str) -> Task {
-    let mut cutoffs = HashMap::new();
+    let mut cutoffs = FxHashMap::default();
     cutoffs.insert("m".to_string(), "2024-10".to_string());
     Task {
         id: id.to_string(),

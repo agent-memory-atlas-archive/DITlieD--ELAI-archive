@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
+
 use crate::critic_stats::{paired_bootstrap_p, seed_from_run_id};
 use crate::ssb::{CriticDecisionEventPayload, CriticTilePhase, Ssb, SsbError, SsbPayload};
 
@@ -64,10 +66,7 @@ fn blake3_prefix_8(input: &[u8]) -> [u8; 8] {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

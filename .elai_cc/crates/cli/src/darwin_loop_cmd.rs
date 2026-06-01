@@ -20,12 +20,49 @@
 //! SuccessiveRejects log_bar + trap-pattern enumeration so the surface
 //! is observable in CI.
 
+#[cfg(feature = "darwinian-evolve")]
 use elai_orchestrator::darwinian_bai::{
     DiscountedArmPosterior, DiscountedTsConfig, SuccessiveRejects, DEFAULT_DISCOUNT_FACTOR,
 };
+#[cfg(feature = "darwinian-evolve")]
 use elai_orchestrator::trap_tasks::{TrapPattern, REQUIRED_TRAP_COUNT, TRAP_WEIGHT_MULTIPLIER};
 
+/// E-7 dispatch shim. Accepts the raw `gamma` String from args, parses it
+/// internally, and branches on the feature flag so `main.rs` is cfg-agnostic.
+///
+/// Feature-on  : parses gamma -> f64, calls [`run`].
+/// Feature-off : prints DISABLED message, returns Ok(()).
+pub(crate) fn dispatch(
+    generations: u32,
+    mutants: u32,
+    seed: u64,
+    traps: u32,
+    gamma: String,
+) -> anyhow::Result<()> {
+    #[cfg(feature = "darwinian-evolve")]
+    {
+        let gamma_f: f64 = if gamma.is_empty() {
+            DEFAULT_DISCOUNT_FACTOR
+        } else {
+            gamma
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid --gamma `{gamma}`: {e}"))?
+        };
+        return run(generations, mutants, seed, traps, gamma_f);
+    }
+    #[cfg(not(feature = "darwinian-evolve"))]
+    {
+        println!(
+            "darwin-loop DISABLED (rebuild with --features darwinian-evolve) \
+             requested generations={generations} mutants={mutants} seed={seed} \
+             traps={traps} gamma={gamma}"
+        );
+        Ok(())
+    }
+}
+
 /// CLI entry — sync, no tokio runtime needed (pure compute).
+#[cfg(feature = "darwinian-evolve")]
 pub(crate) fn run(
     generations: u32,
     mutants: u32,

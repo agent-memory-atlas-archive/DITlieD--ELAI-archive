@@ -23,6 +23,7 @@
 
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_plugins::{
     reliability_emit_kinds, ReliabilityGateSsbEmitter,
 };
@@ -89,11 +90,7 @@ fn hash_label(s: &str) -> u64 {
 /// pre-1970 branch we fall back to 0 rather than `.unwrap()` per
 /// CLAUDE.md anti-unwrap rule.
 fn now_ms_i64() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
-        Err(_) => 0,
-    }
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 impl ReliabilityGateSsbEmitter for OrchestratorReliabilitySsbEmitter {

@@ -1,4 +1,4 @@
-//! C-47: Case-based calibration dashboard surface (read-only).
+﻿//! C-47: Case-based calibration dashboard surface (read-only).
 //!
 //! cross-lang-pair: dashboard/tauri/api
 //!
@@ -73,13 +73,32 @@ pub struct ToolCalibrationRowDto {
 /// state.
 #[tauri::command]
 pub async fn tool_calibration_status(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<ToolCalibrationStatusDto>, String> {
-    // CALIBRATION-PENDING: the production wiring step lands an
-    // `Arc<ToolCalibrationRegistry>` into AppState. Until then we
-    // return an empty snapshot so the panel renders the empty
-    // state. Same pattern as `get_tool_gate_snapshot`'s
-    // TOOL-GATE-PENDING note.
+    // C-47b: when the calibration registry is wired (mcp feature + env gate),
+    // read live statuses from it. Falls back to empty Vec when the registry is
+    // absent (env gate off or feature compiled out) -- the Svelte panel renders
+    // the "Calibration registry unavailable" empty state in that case.
+    #[cfg(feature = "mcp")]
+    {
+        if let Some(reg) = state.calibration_registry.as_ref() {
+            let statuses = reg.statuses().await;
+            let mut rows: Vec<ToolCalibrationStatusDto> = statuses
+                .into_iter()
+                .map(|s| ToolCalibrationStatusDto {
+                    tool_name: s.tool_name,
+                    shape_count: s.shape_count,
+                    total_calls: s.total_calls,
+                    error_count: s.error_count,
+                    last_ts_ms: s.last_ts_ms,
+                })
+                .collect();
+            rows.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+            return Ok(rows);
+        }
+    }
+    #[cfg(not(feature = "mcp"))]
+    let _ = &state;
     Ok(Vec::new())
 }
 
@@ -140,7 +159,7 @@ pub async fn list_tool_calibration_rows(
 
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
+    SystemTime::now() // entropy-allow: observability ts-ms for SSB window cutoff
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)

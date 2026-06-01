@@ -616,6 +616,19 @@ pub trait RuntimeAdapter: Send + Sync {
         messages: Vec<Message>,
         config: CompletionConfig,
     ) -> RuntimeStream<'static>;
+
+    /// E-3 sub-phase 4B — pre-warm the backend so a subsequent
+    /// `complete`/`stream` call sees a captured CUDA graph + warm
+    /// connection pool. Default impl is a no-op so the 14+ existing
+    /// backends do not need to be touched; specialized implementations
+    /// live on `SidecarRuntime` (1-token CUDA-graph warmup per
+    /// arXiv:2604.06664 Foundry) and `AnthropicApiRuntime` (1-token
+    /// connection-pool warm). Returns `Ok(())` on success; never panics.
+    /// Per CLAUDE.md anti-stale rule: native async fn in trait, no
+    /// `async-trait` crate.
+    fn warm(&self) -> RuntimeFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// `RuntimeHealth` helper used by stubs.

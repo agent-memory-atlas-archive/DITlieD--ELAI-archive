@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use futures_util::stream::{self, BoxStream, StreamExt};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -224,6 +225,32 @@ impl RuntimeAdapter for AnthropicApiRuntime {
                 usage: (response.usage.input_tokens, response.usage.output_tokens),
                 model: response.model,
             })
+        })
+    }
+
+    fn warm(&self) -> RuntimeFuture<'_, ()> {
+        // E-3 sub-phase 4B — warm the Anthropic connection pool with a
+        // 1-token canary identical to health_check, but surfaced as an
+        // explicit warm() event so the orchestrator can distinguish
+        // pre-warm from health probes in telemetry. Cheapest possible
+        // round-trip: HEALTH_CANARY_MAX_TOKENS (=8 today) is already the
+        // smallest supported max_tokens that does not 400 on the API.
+        let client = Arc::clone(&self.client);
+        let request = self.canary_request();
+        Box::pin(async move {
+            let started = OsClock.instant_now();
+            client
+                .send_message(&request)
+                .await
+                .map_err(RuntimeAdapterError::Provider)?;
+            tracing::debug!(
+                target = "runtime_adapter_anthropic_api",
+                e3_runtime_handoff_event = "runtime_prewarm_complete",
+                backend = "anthropic_api",
+                duration_ms = started.elapsed().as_millis() as u64,
+                "anthropic_api warm() canary ok"
+            );
+            Ok(())
         })
     }
 

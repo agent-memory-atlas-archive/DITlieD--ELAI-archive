@@ -9,7 +9,8 @@
 //! RUNPOD-PENDING.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use elai_core::clock::{ClockProvider, OsClock};
 
 use crate::critic_stats::{paired_bootstrap_p, seed_from_run_id};
 use crate::iso_budget_harness::{self, IsoBudgetError, IsoBudgetReport};
@@ -98,7 +99,7 @@ fn blake3_prefix_8(input: &[u8]) -> [u8; 8] {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

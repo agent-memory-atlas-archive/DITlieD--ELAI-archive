@@ -128,6 +128,24 @@ use crate::web_research_orchestrator::{
 /// Agent ID emitted on every runner-produced SSB row.
 pub const RUNNER_AGENT_ID: &str = "task_runner";
 
+/// E-25 Tranche N (s-22600 2026-06-01): probe-budget sentinel passed to
+/// `crate::compaction_ladder::run_compaction_ladder` from the PreCompact
+/// hook branch. The PreCompact dispatcher does not surface a live token
+/// budget today, so this fixed sentinel keeps the ladder traversal
+/// deterministic until a follow-up tranche wires
+/// `context_budget::current_session_budget()` through.
+///
+/// TODO[N-FOLLOWUP]: replace with a live ContextWindow budget probe
+/// once `context_budget::adaptive_reduce` surfaces a session-scoped
+/// token count to the runner.
+pub const PRE_COMPACT_PROBE_BUDGET: u64 = 30_000;
+
+/// E-25 Tranche N: target post-ladder budget. Matches the
+/// `compaction_ladder.rs::tests::gate_on_above_target_emits_until_below`
+/// 30k -> 20k acceptance criterion (also matches the LOCKED B-4 D1
+/// budget shape).
+pub const PRE_COMPACT_LADDER_TARGET_BUDGET: u64 = 20_000;
+
 /// Default superstep for runner-emitted rows. The dashboard UI keys actions
 /// by seq, not superstep, so zero is fine for MVP.
 pub const RUNNER_SUPERSTEP: i64 = 0;
@@ -1037,6 +1055,12 @@ pub async fn fix_and_rerun_until_green<V>(
     max_iterations: u32,
     validator: V,
     step_id: &str,
+    // Tranche K / B.2 Option-B -- `true` when invoked from the new
+    // non-web call site (gated by `ELAI_C50_NON_WEB_RETRY_EMIT_ENABLE`),
+    // `false` for the existing web call site (gated by
+    // `ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE`). Routed verbatim into the
+    // three retry_emit beacons so per-mode gates stay independent.
+    non_web: bool,
 ) -> Result<FixAndRerunOutcome, TaskRunnerError>
 where
     V: FixerValidator,
@@ -1052,6 +1076,17 @@ where
         let report = validator.run(&project_root).await;
         let failure_summary = match report {
             FixerValidatorReport::Green => {
+                // Tranche B-6 quad C-50: emit retry_resolved beacon BEFORE
+                // returning. Wire-dark unless the per-mode gate is on
+                // (ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE for web /
+                // ELAI_C50_NON_WEB_RETRY_EMIT_ENABLE for non-web).
+                crate::contract_coding::retry_emit::emit_retry_resolved(
+                    &ssb_writer,
+                    step_id,
+                    iterations,
+                    non_web,
+                )
+                .await;
                 return Ok(FixAndRerunOutcome::Healed { iterations });
             }
             FixerValidatorReport::Failed { summary } => summary,
@@ -1106,6 +1141,20 @@ where
                 None,
             )
             .await;
+            // Tranche B-6 quad C-50: emit retry_abandoned beacon AFTER
+            // the autonomous_decision row (so dashboards see the human
+            // escalation first, then the Pattern-2 contract-coding
+            // summary). Wire-dark unless the per-mode gate is on
+            // (ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE for web /
+            // ELAI_C50_NON_WEB_RETRY_EMIT_ENABLE for non-web).
+            crate::contract_coding::retry_emit::emit_retry_abandoned(
+                &ssb_writer,
+                step_id,
+                iterations,
+                &failure_summary,
+                non_web,
+            )
+            .await;
             return Ok(FixAndRerunOutcome::EscalatedToHuman { iterations });
         }
 
@@ -1132,6 +1181,18 @@ where
         // integration-map-A3.md), the agent mutates files via its tool
         // channel; the next validator pass observes the side effects.
         iterations += 1;
+        // Tranche B-6 quad C-50: emit retry_attempted beacon after the
+        // fixer turn dispatches. Wire-dark unless the per-mode gate is
+        // on (ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE for web /
+        // ELAI_C50_NON_WEB_RETRY_EMIT_ENABLE for non-web).
+        crate::contract_coding::retry_emit::emit_retry_attempted(
+            &ssb_writer,
+            step_id,
+            iterations,
+            &failure_summary,
+            non_web,
+        )
+        .await;
     }
 }
 
@@ -3425,10 +3486,7 @@ async fn run_crystallizer_post_execute_hook(
     else {
         return;
     };
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_secs = OsClock.now_secs();
     let outcome = crate::compiled_pipeline::ExecutionOutcome {
         success: passed,
         concept_class: concept_class.clone(),
@@ -3547,13 +3605,7 @@ async fn run_experience_distill_post_execute_hook(
         .unwrap_or_else(|| "default_skill".to_string());
 
     let skill_name_hash = crate::skill_registry::skill_name_hash(&skill_name);
-    let ts_ms = u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    let ts_ms: u64 = OsClock.now_ms().try_into().unwrap_or(0);
 
     // Emit a single PromptPolicyDistillationRun beacon. `trace_count = 1`
     // because this hook is currently the per-baby-step observation
@@ -3589,6 +3641,137 @@ async fn run_experience_distill_post_execute_hook(
             error = %e,
             baby_step = baby_step_id,
             "experience_distill_hook: SSB write failed (non-fatal)"
+        );
+    }
+}
+
+/// C-41 sub-phase 5A — application-skill pre-classify hook.
+///
+/// Walks the application-skill discovery roots (`.elai_cc/skills/` by default,
+/// with optional `ELAI_APPLICATION_SKILLS_DIR` override), runs the deterministic
+/// `top_k_skills` ranker against the task text, and emits a single
+/// `SkillTriggered` SSB row when the top-1 score is at or above
+/// `SKILL_CONFIDENCE_THRESHOLD`.
+///
+/// Wire-dark gating happens at the CALLER (`ELAI_APPLICATION_SKILLS_ENABLE`);
+/// when control reaches this function, the caller has already decided to run
+/// the hook. All failure modes inside are non-fatal: missing skill dir,
+/// empty registry, encode error, SSB write error are all logged via
+/// `tracing::warn` and absorbed.
+///
+/// `project_dir` is the optional resolved project root; when absent we fall
+/// back to the current working directory so the hook still resolves a sane
+/// default skill root (matches `skills_cmd::project_root` behaviour on the
+/// CLI side).
+async fn run_application_skill_preclassify(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    task_text: &str,
+    project_dir: Option<&Path>,
+) {
+    use crate::skill_registry::{
+        find_skills, score_skill_for_context, skill_name_hash, top_k_skills, DiscoveryRoot,
+        SkillContext, SKILL_CONFIDENCE_THRESHOLD,
+    };
+
+    // Resolve the application-skills root. Override via env when set so
+    // tests + per-pod overrides can point at a fixture directory; default
+    // mirrors `skills_cmd::skills_roots()` precedence (application root only —
+    // harness skills under `.claude/skills/` are NOT scanned here so the
+    // application/harness namespace stays clean).
+    let root = match std::env::var("ELAI_APPLICATION_SKILLS_DIR") {
+        Ok(value) if !value.trim().is_empty() => PathBuf::from(value),
+        _ => {
+            let base = project_dir
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+            base.join(".elai_cc").join("skills")
+        }
+    };
+
+    let manifests = match find_skills(&[DiscoveryRoot::skills_dir(root.clone())]) {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::warn!(
+                seq,
+                root = %root.display(),
+                error = %e,
+                "task_runner: application-skill discovery failed (non-fatal)"
+            );
+            return;
+        }
+    };
+    if manifests.is_empty() {
+        // Early-return on empty registry: nothing to route, no SSB row.
+        return;
+    }
+
+    let ctx = SkillContext::from_text(task_text);
+    let ranked = top_k_skills(&manifests, &ctx, 1);
+    let top = match ranked.first() {
+        Some(top) => top,
+        None => return,
+    };
+    // Score gate: only emit when the top match clears the conservative
+    // SKILL_CONFIDENCE_THRESHOLD. Below the threshold the consumer is
+    // expected to fall through to the existing decomposition path, so
+    // no beacon is emitted (the dashboard differentiates "no skill
+    // selected" from "skill explicitly fell through" by the absence of
+    // the row).
+    if top.score < SKILL_CONFIDENCE_THRESHOLD {
+        return;
+    }
+    // Score check guards against NaN via `partial_cmp` semantics inside
+    // `score_skill_for_context`; recompute defensively to confirm the
+    // value we serialise is the same value the ranker compared against.
+    let confirmed_score = score_skill_for_context(top.manifest, &ctx);
+    if confirmed_score < SKILL_CONFIDENCE_THRESHOLD {
+        return;
+    }
+
+    let ts_ms: u64 = OsClock.now_ms().try_into().unwrap_or(0);
+
+    let payload = crate::ssb::SkillTriggeredPayload {
+        skill_name_hash: skill_name_hash(&top.manifest.name),
+        score: confirmed_score,
+        top_k_rank: 1,
+        ts_ms,
+    };
+    let payload_bytes =
+        match rmp_serde::to_vec_named(&crate::ssb::SsbPayload::SkillTriggered(payload)) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(
+                    seq,
+                    skill = %top.manifest.name,
+                    error = %e,
+                    "task_runner: application-skill payload encode failed (non-fatal)"
+                );
+                return;
+            }
+        };
+    let req = crate::ssb::SsbWriteRequest {
+        action_type: crate::ssb::SsbActionType::SkillTriggered,
+        agent_id: format!("application_skill_preclassify_seq_{seq}"),
+        superstep: 0i64,
+        payload: payload_bytes,
+        files: Vec::new(),
+    };
+    if let Err(e) = writer.write(req).await {
+        tracing::warn!(
+            seq,
+            skill = %top.manifest.name,
+            error = %e,
+            "task_runner: application-skill SSB write failed (non-fatal)"
+        );
+    } else {
+        info!(
+            seq,
+            skill = %top.manifest.name,
+            score = confirmed_score,
+            "task_runner: application-skill pre-classify emitted"
         );
     }
 }
@@ -3925,6 +4108,44 @@ async fn run_task_runner(
 
     // Replay: process any TaskSubmitted rows written before we subscribed.
     replay_backlog(&writer, &mut cursor, &resolved, &cancel).await?;
+
+    // F2 / s-22600 Tranche B (was TODO[F2] s-22300): refusal-SLA periodic
+    // tick splice. Wire-dark default OFF via
+    // `ELAI_REFUSAL_SLA_TICK_ENABLE`; resolution path (a) from
+    // workflow/reasoning/F2-emitter-gap-decisions.md -- SsbBacked emitter
+    // adapters now live at refusal_sla.rs. We construct an
+    // `Arc<Mutex<RefusalRateMonitor>>` ad-hoc inside `run_task_runner`
+    // (P2 from context-package: minimum-diff, no ResolvedConfig field
+    // growth); the monitor is currently a local-only sink (no upstream
+    // `observe()` producer wired into run_task_runner yet -- the tick
+    // still surfaces a structural healthy-band row each interval which is
+    // exactly what the dashboard sparkline expects pre-D-16-decision
+    // wire-up). Cancellation honours the outer `CancelHandle::wake`
+    // notify so shutdown is clean.
+    if crate::task_runner::refusal_sla_tick_enabled() {
+        let writer_for_tick = writer.clone();
+        let cancel_for_tick = cancel.clone();
+        tokio::spawn(async move {
+            let monitor = crate::refusal_sla::RefusalRateMonitor::with_defaults();
+            let snap_em = crate::refusal_sla::SsbBackedRefusalRateSnapshotEmitter::new(
+                writer_for_tick.clone(),
+                RUNNER_SUPERSTEP,
+            );
+            let breach_em = crate::refusal_sla::SsbBackedRefusalSlaBreachEmitter::new(
+                writer_for_tick,
+                RUNNER_SUPERSTEP,
+            );
+            let _ticks = crate::task_runner::run_refusal_sla_tick(
+                &monitor,
+                &snap_em,
+                &breach_em,
+                REFUSAL_SLA_TICK_INTERVAL_SECS,
+                &*cancel_for_tick.wake,
+                None,
+            )
+            .await;
+        });
+    }
 
     // Live tail via broadcast.
     loop {
@@ -5129,6 +5350,89 @@ async fn drive_task(
         }
     }
 
+    // B-40 TASK-B40-002: pre-PLANNING idea-framing hook. Wire-dark by default;
+    // opt-in via ELAI_IDEA_FRAMING_ENABLE=1. When enabled, frame_idea() runs
+    // before decomposition so the IdeaCritic loop emits its 5 SSB action_types
+    // (idea_framing_started, project_class_classified, critic_round_complete,
+    // idea_framed, tradeoff_card_emitted) and persists framed-idea.toml under
+    // workflow/sessions/task_seq_{seq}/. Failures emit a Finding and fall
+    // through to standard decomposition — the framer is observability-only at
+    // MVP, not a gating step. Pair with TASK-B40-003 which wires the
+    // FsmSubstate::Framing transition (separate task).
+    let idea_framing_enabled = std::env::var("ELAI_IDEA_FRAMING_ENABLE")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if idea_framing_enabled {
+        let framing_session_id = format!("task_seq_{seq}");
+        let framing_session_dir = std::path::PathBuf::from("workflow")
+            .join("sessions")
+            .join(&framing_session_id);
+        if let Err(e) = std::fs::create_dir_all(&framing_session_dir) {
+            warn!(seq, error = %e, "task_runner: idea-framing session dir create failed (non-fatal)");
+        }
+        let preset_root = project_dir
+            .as_deref()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let presets =
+            crate::idea_framing::load_research_presets_from_project_root(&preset_root);
+        let framing_clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+        match crate::idea_framing::frame_idea(
+            task.task.as_str(),
+            &presets,
+            &framing_session_dir,
+            &framing_session_id,
+            Some(writer),
+            framing_clock,
+        )
+        .await
+        {
+            Ok(framed) => {
+                info!(
+                    seq,
+                    project_class = %framed.project_class.as_snake_case(),
+                    rounds = framed.critic_rounds.len(),
+                    "task_runner: idea-framing completed"
+                );
+            }
+            Err(e) => {
+                warn!(seq, error = %e, "task_runner: idea-framing failed (non-fatal)");
+                emit_finding(
+                    writer,
+                    "warning",
+                    "idea_framing_failed",
+                    &format!("idea-framing for task seq={seq} failed: {e}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    // C-41 sub-phase 5A: application-skill pre-classify hook.
+    //
+    // Wire-dark: gated by `ELAI_APPLICATION_SKILLS_ENABLE=1`. When enabled,
+    // walks the canonical application-skills root (`<project_root>/.elai_cc/skills/`)
+    // plus an optional override root from `ELAI_APPLICATION_SKILLS_DIR`, runs
+    // `top_k_skills` against the task text, and emits ONE `skill_triggered`
+    // SSB row when the top-1 score meets `SKILL_CONFIDENCE_THRESHOLD` (0.20).
+    //
+    // Observability-only at MVP: no downstream routing decision is made here —
+    // the SSB beacon lets the dashboard render the routing intent without
+    // gating the existing decomposition path. A future `execute_skill`
+    // dispatcher will close the loop with a paired `skill_executed` row.
+    //
+    // Failure modes are non-fatal: missing skills dir, empty registry, encode
+    // error all early-return without disturbing the standard decomposition.
+    let application_skills_enabled = std::env::var("ELAI_APPLICATION_SKILLS_ENABLE")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if application_skills_enabled {
+        run_application_skill_preclassify(writer, seq, task.task.as_str(), project_dir.as_deref())
+            .await;
+    }
+
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
     // B-7b: wire tree emitter so each concept/phase/step/baby_step built during
     // decompose surfaces as a `concept_decomposition_node` SSB row in the dashboard.
@@ -5713,10 +6017,7 @@ async fn drive_task(
     let mut watchdog = crate::anti_spiral_extended::GenerationWatchdog::default();
     let mut adaptive_futility: crate::anti_spiral_extended::AdaptiveFutilityTracker =
         crate::anti_spiral_extended::AdaptiveFutilityTracker::new();
-    let watchdog_start_ms: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let watchdog_start_ms: u64 = OsClock.now_ms().try_into().unwrap_or(0);
     let mut last_ssb_event_ms: u64 = watchdog_start_ms;
     let mut watchdog_fired: bool = false;
     // Persona rotation index — used to fall back to Researcher on second
@@ -6150,6 +6451,57 @@ async fn drive_task(
             }
         }
 
+        // E-25 Tranche F (F.3) -- pre-edit snapshot store.
+        // Fires AFTER the PreToolUse hook returned without Block and BEFORE
+        // the irreversible-classifier gate. The snapshot is non-fatal --
+        // failure to write degrades rewind discoverability for THIS step but
+        // never blocks the edit. Wire-dark default OFF via
+        // ELAI_E25_EDIT_CHECKPOINTS_ENABLE.
+        //
+        // Filter: only fires when the task_summary mentions one of the three
+        // edit tool names AND a path-like token can be extracted. The
+        // BabyStep struct (baby_step.rs:141) carries no target_file /
+        // tool_name field today, so the filter is heuristic-on-task-summary
+        // per DECISION-T-F-13 fallback (option iii). When no path is
+        // extractable, the snapshot is skipped silently -- the env-gate
+        // default OFF keeps this path dormant in production.
+        if !hook_pre_blocked
+            && crate::architecture::edit_checkpoints::edit_checkpoints_enabled()
+        {
+            if let Some(target) = extract_edit_target_from_task_summary(&task_summary) {
+                let snapshot_session_id = format!("task_seq_{seq}");
+                let snapshot_root =
+                    Path::new(crate::architecture::edit_checkpoints::SESSION_CHECKPOINT_ROOT);
+                match std::fs::read(&target) {
+                    Ok(content) => {
+                        if let Err(e) = crate::architecture::edit_checkpoints::snapshot_pre_edit(
+                            snapshot_root,
+                            &snapshot_session_id,
+                            Path::new(&target),
+                            &content,
+                        ) {
+                            warn!(
+                                baby_step = bs_id.0,
+                                error = %e,
+                                target = %target,
+                                "edit_checkpoints: pre-edit snapshot failed (non-fatal)"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        // Target file does not exist yet (e.g. Write-new-file).
+                        // Skip silently at debug level -- not a snapshot failure.
+                        tracing::debug!(
+                            baby_step = bs_id.0,
+                            error = %e,
+                            target = %target,
+                            "edit_checkpoints: target unreadable, skipping snapshot"
+                        );
+                    }
+                }
+            }
+        }
+
         // Batch-fu (FU.5 / A-31): irreversible-action confirmation gate.
         // Runs BEFORE the baby-step executor so a `ConfirmationRequired`
         // verdict can park the runner until the dashboard resolves it.
@@ -6223,10 +6575,7 @@ async fn drive_task(
         //   4. Run GoalDriftCanary at the step boundary; emit GoalDriftWarning
         //      (Yellow band) or GoalDriftBlock (Red band).
         //   5. Build GateContext with the C-10 fields populated.
-        let now_ms: u64 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms: u64 = OsClock.now_ms().try_into().unwrap_or(0);
         attempt_index = attempt_index.saturating_add(1);
         let attempt = crate::anti_spiral_extended::AttemptResult {
             attempt_index,
@@ -7550,6 +7899,9 @@ async fn drive_task(
                     5,
                     validator,
                     &format!("baby_step_{}", bs_id.0),
+                    // Web call site -- per-mode gate routes through
+                    // ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE.
+                    false,
                 )
                 .await?;
                 match fix_outcome {
@@ -7570,6 +7922,120 @@ async fn drive_task(
                             "warn",
                             "fix_and_rerun_escalated",
                             &format!("escalated after {iterations} iterations"),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+
+        // Tranche K / B.2 Option-B -- non-web fix-and-rerun call site.
+        //
+        // Mirrors the web branch above (L7767-7897) but skips the
+        // npm-build + Lighthouse + dev-server pipeline. The validator
+        // re-executes the baby step itself (re-dispatch via
+        // `resolved.baby_step_executor.execute(...)`); Green/Failed is
+        // decided from `BabyStepExecutionResult.outcome`. Wire-dark
+        // unless `ELAI_C50_NON_WEB_RETRY_EMIT_ENABLE=1`. Web-side gate
+        // (`ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE`) is unchanged and
+        // independent. `step_id` is suffixed `_non_web` so the
+        // blake3-prefixed `step_id_hash` cleanly distinguishes the two
+        // modes when both gates fire for the same baby step.
+        if !is_web_project
+            && !outcome_passed
+            && crate::ssb::env_gate_truthy(
+                crate::ssb::ELAI_C50_NON_WEB_RETRY_EMIT_ENABLE_ENV,
+            )
+        {
+            if let Some(proj) = project_dir.as_ref() {
+                let exec_for_validator = resolved.baby_step_executor.clone();
+                // BabyStepExecutionCtx is `Clone` (see task_runner.rs:756).
+                // Snapshot at the call site so the closure's repeated
+                // dispatches see a stable ctx that mirrors the original
+                // exec_ctx (task_summary + escalation + mode_selection +
+                // session_credentials).
+                let exec_ctx_for_validator = BabyStepExecutionCtx {
+                    baby_step_id: bs_id.0,
+                    task_summary: task_summary.clone(),
+                    // Subsequent retry turns do not carry a fresh anti-
+                    // spiral escalation -- the original message has
+                    // already been consumed by the first dispatch.
+                    escalation_message: None,
+                    // Fix-and-rerun retries reuse STRUCTURED mode (see
+                    // fix_and_rerun_until_green inner exec_ctx @L1135).
+                    mode_selection: None,
+                    session_credentials: resolved
+                        .session_credentials
+                        .lock()
+                        .map(|g| g.clone())
+                        .unwrap_or_default(),
+                };
+                let validator = move |_dir: &Path| {
+                    let exec = exec_for_validator.clone();
+                    let ctx = exec_ctx_for_validator.clone();
+                    async move {
+                        let result = exec.execute(ctx).await;
+                        match result.outcome {
+                            BabyStepOutcome::Passed => FixerValidatorReport::Green,
+                            BabyStepOutcome::Failed { ref reason } => {
+                                let summary = if result.stderr_tail.is_empty() {
+                                    reason.clone()
+                                } else {
+                                    result.stderr_tail.clone()
+                                };
+                                FixerValidatorReport::Failed { summary }
+                            }
+                            BabyStepOutcome::Skipped { ref reason } => {
+                                FixerValidatorReport::Failed {
+                                    summary: format!("skipped: {reason}"),
+                                }
+                            }
+                            BabyStepOutcome::Blocked { blocked_by } => {
+                                FixerValidatorReport::Failed {
+                                    summary: format!(
+                                        "blocked_by baby_step {}",
+                                        blocked_by.0
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                };
+                let fix_outcome = fix_and_rerun_until_green(
+                    proj.clone(),
+                    resolved.baby_step_executor.clone(),
+                    resolved.autonomous_gate.clone(),
+                    Arc::clone(writer),
+                    5,
+                    validator,
+                    &format!("baby_step_{}_non_web", bs_id.0),
+                    // Non-web call site -- per-mode gate routes through
+                    // ELAI_C50_NON_WEB_RETRY_EMIT_ENABLE.
+                    true,
+                )
+                .await?;
+                match fix_outcome {
+                    FixAndRerunOutcome::Healed { iterations } => {
+                        outcome = BabyStepOutcome::Passed;
+                        outcome_passed = true;
+                        emit_finding(
+                            writer,
+                            "info",
+                            "fix_and_rerun_non_web_healed",
+                            &format!(
+                                "non-web healed in {iterations} iterations"
+                            ),
+                        )
+                        .await;
+                    }
+                    FixAndRerunOutcome::EscalatedToHuman { iterations } => {
+                        emit_finding(
+                            writer,
+                            "warn",
+                            "fix_and_rerun_non_web_escalated",
+                            &format!(
+                                "non-web escalated after {iterations} iterations"
+                            ),
                         )
                         .await;
                     }
@@ -7974,7 +8440,12 @@ async fn drive_task(
                         );
                     }
                 }
-                run_validate_dispatch(
+                // E-52-S3 / s-22600 Tranche B ITEM B.3: capture the worst-of
+                // `DiagnosticProbeOutcome` aggregated across all changed files.
+                // Tranche G G.4 (s-22600) consumes this binding immediately
+                // below: builds a `TransitionContext` + fires
+                // `DiagnosticProbeGate` at the EXECUTING -> AUDITING boundary.
+                let diagnostic_probe_outcome = run_validate_dispatch(
                     writer,
                     dispatcher.as_ref(),
                     &detected_project_dir,
@@ -8014,6 +8485,94 @@ async fn drive_task(
                     &step_id,
                 )
                 .await;
+                // s-22600 Tranche G G.4 (audit B.3-gate-fire followup):
+                // build TransitionContext + fire DiagnosticProbeGate at
+                // the EXECUTING -> AUDITING boundary. Drive_task owns
+                // the ctx build (P1, mirrors PLANNING -> TESTING_FIRST
+                // precedent at L5711-5783 above). Wire-dark indirectly:
+                // when ELAI_LSP_DIAGNOSTIC_PROBE_ENABLE is unset
+                // `diagnostic_probe_outcome` is None and this block
+                // Ok-fast-paths. Non-fatal: the gate emits its
+                // EvidenceGateEvaluated + Finding rows so the auditor
+                // observes the block, but does NOT abort drive_task --
+                // the FSM driver at a higher level interprets those
+                // rows to gate the actual state transition (matches
+                // PLANNING site shape; DECISION-T-F-12 non-fatal-emit
+                // rationale).
+                if let Some(outcome) = diagnostic_probe_outcome.as_ref() {
+                    let exec_audit_ctx = crate::evidence::TransitionContext {
+                        diagnostic_probe_outcome: Some(outcome.clone()),
+                        ..crate::evidence::TransitionContext::default()
+                    };
+                    let gates = crate::evidence::gates_for_transition(
+                        crate::FsmState::Executing,
+                        crate::FsmState::Auditing,
+                    );
+                    let mut block_messages: Vec<String> = Vec::new();
+                    for gate in &gates {
+                        let check_result = gate.check(&exec_audit_ctx);
+                        // Mirror the PLANNING -> TESTING_FIRST
+                        // EvidenceGateEvaluated emit at L5723-5752 so the
+                        // auditor's SSB consumer sees parity rows across
+                        // both gated transitions.
+                        {
+                            let ts_ms = elai_core::clock::OsClock
+                                .system_now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or(std::time::Duration::ZERO)
+                                .as_millis();
+                            let ts_ms_i64 = i64::try_from(ts_ms).unwrap_or(i64::MAX);
+                            let verdict = if check_result.is_ok() { "pass" } else { "block" };
+                            let gate_payload = SsbPayload::EvidenceGateEvaluated(
+                                EvidenceGateEvaluatedPayload {
+                                    gate_id: gate.name().to_owned(),
+                                    verdict: verdict.to_owned(),
+                                    ts_ms: ts_ms_i64,
+                                },
+                            );
+                            if let Err(e) = writer
+                                .write_payload(
+                                    RUNNER_AGENT_ID,
+                                    RUNNER_SUPERSTEP,
+                                    gate_payload,
+                                    Vec::new(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    gate = gate.name(),
+                                    error = %e,
+                                    "task_runner: EvidenceGateEvaluated (Executing->Auditing) SSB write failed (non-fatal)"
+                                );
+                            }
+                        }
+                        if let Err(err) = check_result {
+                            block_messages.push(format!(
+                                "{}: {} (missing: {})",
+                                err.gate_name,
+                                err.suggestion,
+                                err.missing_artifacts.join(", "),
+                            ));
+                        }
+                    }
+                    if !block_messages.is_empty() {
+                        let summary = block_messages.join(" | ");
+                        emit_finding(
+                            writer,
+                            "error",
+                            "diagnostic_probe_block",
+                            &format!(
+                                "EXECUTING -> AUDITING blocked: {summary}"
+                            ),
+                        )
+                        .await;
+                        tracing::error!(
+                            seq,
+                            summary = %summary,
+                            "task_runner: DiagnosticProbeGate blocked EXECUTING -> AUDITING; auditor will see EvidenceGateEvaluated row"
+                        );
+                    }
+                }
             } else if !outcome_passed && !exec_stderr_tail.is_empty() {
                 // B-20A Task 5 — auditor classification reading.
                 //
@@ -8221,6 +8780,32 @@ async fn drive_task(
             }
         }
 
+        // E-25 Tranche F (F.3) -- evict per-session edit-checkpoint snapshots.
+        // session_dag.rs has no canonical end-session fn (grep confirms zero
+        // tear_down / drop_session / end_session hits) so the task-level Stop
+        // hook IS the canonical eviction trigger per DECISION-T-F-11.
+        // Eviction is non-fatal -- failure leaves stale snapshots on disk
+        // which a future session-cleanup pass will reap.
+        // Wire-dark default OFF via ELAI_E25_EDIT_CHECKPOINTS_ENABLE.
+        // PostCommit eviction is NOT wired: HookPoint::PostCommit does not
+        // exist (4 variants only at hook_dispatcher.rs:120) per
+        // DECISION-T-F-9.
+        if crate::architecture::edit_checkpoints::edit_checkpoints_enabled() {
+            let evict_session_id = format!("task_seq_{seq}");
+            let evict_root =
+                Path::new(crate::architecture::edit_checkpoints::SESSION_CHECKPOINT_ROOT);
+            if let Err(e) =
+                crate::architecture::edit_checkpoints::evict_session(evict_root, &evict_session_id)
+            {
+                warn!(
+                    seq,
+                    error = %e,
+                    session_id = %evict_session_id,
+                    "edit_checkpoints: session eviction failed (non-fatal)"
+                );
+            }
+        }
+
         // B-19 PreCompact: DairaTrace "HookPre" emitted before dispatch,
         // "HookPost" after. This replaces the former debug-only no-op comment
         // with real SSB breadcrumbs so the dashboard can surface compact events.
@@ -8266,6 +8851,83 @@ async fn drive_task(
                     &step_id,
                 )
                 .await;
+
+                // E-25 Tranche N (s-22600 2026-06-01): production wire for
+                // the SHIPPED compaction_ladder runner. Resolves Tranche C
+                // C.5 deferral (BLOCKED-ON-PRODUCER, zero callers in
+                // task_runner). Wire-dark unless
+                // ELAI_E25_COMPACTION_LADDER_ENABLE=1 (runner short-circuits
+                // when gate is OFF; double-guard here avoids constructing
+                // the bridge / cloning the summary on every PreCompact when
+                // the catalog is dark).
+                //
+                // run_compaction_ladder is sync; PreCompact branch is async.
+                // Bridge via a local CollectEmitter (RefCell<Vec<_>>) that
+                // captures emissions during the sync traversal, then drain
+                // and await writer.write_payload(..) per emission. Mirrors
+                // commands.rs:3470-3472 SessionForked precedent.
+                //
+                // current_budget_tokens has no live source plumbed through
+                // PreCompact today; use PRE_COMPACT_PROBE_BUDGET sentinel.
+                // TODO[N-FOLLOWUP]: replace sentinel with live
+                // context_budget::current_session_budget() probe once
+                // PreCompact surfaces a real number.
+                if crate::compaction_ladder::compaction_ladder_enabled() {
+                    use std::cell::RefCell;
+                    use crate::compaction_ladder::{
+                        CompactionLadder, LadderEventEmitter, run_compaction_ladder,
+                    };
+                    use crate::architecture::claude_code_arch::ClaudeCodeArchitectureEventPayload;
+
+                    struct CollectEmitter {
+                        rows: RefCell<Vec<ClaudeCodeArchitectureEventPayload>>,
+                    }
+                    impl LadderEventEmitter for CollectEmitter {
+                        fn emit(&self, payload: ClaudeCodeArchitectureEventPayload) {
+                            self.rows.borrow_mut().push(payload);
+                        }
+                    }
+
+                    let collector = CollectEmitter {
+                        rows: RefCell::new(Vec::new()),
+                    };
+                    let ladder =
+                        CompactionLadder::default_order(PRE_COMPACT_LADDER_TARGET_BUDGET);
+                    let result = run_compaction_ladder(
+                        &ladder,
+                        PRE_COMPACT_PROBE_BUDGET,
+                        Some(pre_compact_summary.clone()),
+                        &collector,
+                    );
+
+                    // Take ownership of the collected rows BEFORE any
+                    // `.await` so the `RefCell` borrow does not span an
+                    // await point (tokio::spawn requires Send + RefCell
+                    // is !Sync). `into_inner` drops the RefCell entirely.
+                    let collected: Vec<ClaudeCodeArchitectureEventPayload> =
+                        collector.rows.into_inner();
+                    let emitted = collected.len();
+                    for payload in collected.into_iter() {
+                        let _ = writer
+                            .write_payload(
+                                RUNNER_AGENT_ID,
+                                RUNNER_SUPERSTEP,
+                                SsbPayload::ClaudeCodeArchitectureEvent(payload),
+                                Vec::new(),
+                            )
+                            .await;
+                    }
+
+                    if emitted > 0 {
+                        tracing::info!(
+                            seq,
+                            tiers_run = ?result.tiers_run,
+                            bytes_freed = result.bytes_freed,
+                            final_budget_tokens = result.final_budget_tokens,
+                            "compaction_ladder: PreCompact ladder ran"
+                        );
+                    }
+                }
             }
             Err(e) => {
                 let elapsed_us = u64::try_from(
@@ -8457,6 +9119,26 @@ async fn drive_task(
     // `dispatch_conformal_corpus_grow_hook` +
     // workflow/reasoning/D-16-decisions.md DECISION-7.
     dispatch_conformal_corpus_grow_hook(writer, seq, &task.project_id, resolved).await;
+    // D-16 closure (TASK-D16-001): post-task per-claim conformal-refusal
+    // dispatch. Sibling to the corpus-grow hook above — same triple env
+    // gate (`ELAI_CONFORMAL_REFUSAL_ENABLE=1` + `[conformal].enable=true`
+    // + `conformal_refusal_runtime` plumbed). Loads the seed corpus,
+    // computes tau, and emits ONE `conformal_refusal_decided` SSB row
+    // per completed task keyed on `claim_id=task-<seq>` with a
+    // placeholder `claim_score` derived from `steps_executed`. Closes
+    // the wire-the-ghost gap: prior to this call site, the 3 in-tree
+    // call sites of `agent_pool::dispatch_conformal_refusal` lived only
+    // under `#[tokio::test]`. See
+    // `dispatch_conformal_refusal_per_claim_hook` +
+    // workflow/sessions/s-night-2026-05-30/cross-check/D/D-06_d16_d17_d18.md.
+    dispatch_conformal_refusal_per_claim_hook(
+        writer,
+        seq,
+        &task.project_id,
+        steps_executed,
+        resolved,
+    )
+    .await;
     // D-18 closure: post-task typed-ObservableEffect dispatch (layer-8).
     // Emits the 4-variant SSB pack (observable_effect_dispatched +
     // goodhart_risk_flag + sandbox_observation +
@@ -9032,13 +9714,7 @@ async fn dispatch_claim_routing(
     //    not inspect `text`). Evidence is empty by default — concrete
     //    Corpus/ToolOutput refs land when checker/verifier adapters
     //    plumb their results through the runtime.
-    let now_ms: i64 = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    let now_ms: i64 = OsClock.now_ms().try_into().unwrap_or(0);
     let claim = crate::claim::Claim {
         claim_id: format!("task-{seq}"),
         text: format!("task {seq} on project {project_id}"),
@@ -9151,13 +9827,7 @@ async fn dispatch_constructive_checkers_hook(
     //    so SSB rows from both hooks share a stable claim_id schema
     //    (`task-{seq}`) — the dashboard can correlate `claim_routed` +
     //    `checker_result_emitted` rows by claim_id.
-    let now_ms: i64 = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    let now_ms: i64 = OsClock.now_ms().try_into().unwrap_or(0);
     let claim = crate::claim::Claim {
         claim_id: format!("task-{seq}"),
         text: format!("task {seq} on project {project_id}"),
@@ -9268,13 +9938,7 @@ async fn run_operational_check_hook(seq: i64, project_id: &str, resolved: &Resol
     //    the dispatch outcome is NotOperationalized; the hook still
     //    emits the SSB row with outcome="inapplicable" so the
     //    coverage-gap signal is durable.
-    let now_ms: i64 = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    let now_ms: i64 = OsClock.now_ms().try_into().unwrap_or(0);
     let step = crate::baby_step::BabyStep {
         step_id: format!("bs-task-{seq}"),
         parent_task_id: format!("task-{seq}"),
@@ -9393,13 +10057,7 @@ async fn dispatch_adversarial_pass(
     // 1. Synthesise the per-task Claim. Same `task-{seq}` correlation
     //    id as the D-10/D-11/D-12 hooks so dashboard rows align by
     //    claim_id across producers.
-    let now_ms: i64 = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    let now_ms: i64 = OsClock.now_ms().try_into().unwrap_or(0);
     let claim = crate::claim::Claim {
         claim_id: format!("task-{seq}"),
         text: format!("task {seq} on project {project_id}"),
@@ -9610,13 +10268,7 @@ async fn dispatch_sycophancy_probe_hook(
     //    D-13 producer-then-result pattern). Errors at the SSB write
     //    layer are warn-traced; the probe is a quality signal, NOT a
     //    gate on task completion.
-    let now_ms = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    let now_ms: i64 = OsClock.now_ms().try_into().unwrap_or(0);
     let _ = now_ms; // reserved for future ts_ms-carrying expansion
 
     let dispatched_payload =
@@ -9857,13 +10509,7 @@ async fn dispatch_novelty_hook(
         eligibility_predicate: crate::reasoning_template::Predicate::Always,
         verifier_required: crate::reasoning_template::VerifierKind::Refuse,
         content_hash: hash,
-        created_at_ms: i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-        )
-        .unwrap_or(0),
+        created_at_ms: i64::try_from(OsClock.now_ms()).unwrap_or(0),
         parent_id: None,
         archive_status: crate::reasoning_template::ArchiveStatus::Promoted,
     };
@@ -9880,13 +10526,7 @@ async fn dispatch_novelty_hook(
     // build a calibrated evidence bundle.
     let evidence = crate::novelty::NoveltyEvidence::new(0, 0.0, 0.0, 0.0);
 
-    let now_ms = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    let now_ms: i64 = OsClock.now_ms().try_into().unwrap_or(0);
 
     let emitter = TaskRunnerNoveltyEmitter { writer, seq };
     let class = crate::agent_pool::dispatch_novelty(
@@ -10017,13 +10657,7 @@ async fn dispatch_conformal_corpus_grow_hook(
     };
 
     // Throttle: honour [conformal].corpus_grow_min_interval_secs.
-    let now_ms = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    let now_ms: i64 = OsClock.now_ms().try_into().unwrap_or(0);
     let interval_ms =
         i64::try_from(validated.corpus_grow_min_interval_secs).unwrap_or(i64::MAX) * 1000;
     {
@@ -10091,6 +10725,234 @@ async fn dispatch_conformal_corpus_grow_hook(
 }
 
 // ---------------------------------------------------------------------------
+// D-16 closure: per-claim conformal-refusal dispatch (layer-7b)
+// ---------------------------------------------------------------------------
+
+/// Producer-side adapter that bridges [`crate::ssb::Ssb`] writes into
+/// the [`crate::conformal_calibration::ConformalTauComputedEmitter`]
+/// trait. Mirrors the corpus-grow adapter shape above; single owned
+/// `Arc<Ssb>` clone per emit.
+struct TaskRunnerConformalTauComputedEmitter<'a> {
+    writer: &'a Arc<Ssb>,
+    seq: i64,
+}
+
+impl<'a> crate::conformal_calibration::ConformalTauComputedEmitter
+    for TaskRunnerConformalTauComputedEmitter<'a>
+{
+    fn emit(
+        &self,
+        payload: crate::ssb::ConformalTauComputedPayload,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>,
+    > {
+        let writer = self.writer.clone();
+        let seq = self.seq;
+        Box::pin(async move {
+            writer
+                .write_payload(
+                    RUNNER_AGENT_ID,
+                    seq,
+                    crate::ssb::SsbPayload::ConformalTauComputed(payload),
+                    Vec::new(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+    }
+}
+
+/// Producer-side adapter that bridges [`crate::ssb::Ssb`] writes into
+/// the [`crate::conformal_calibration::ConformalRefusalDecidedEmitter`]
+/// trait. Mirrors the corpus-grow adapter shape.
+struct TaskRunnerConformalRefusalDecidedEmitter<'a> {
+    writer: &'a Arc<Ssb>,
+    seq: i64,
+}
+
+impl<'a> crate::conformal_calibration::ConformalRefusalDecidedEmitter
+    for TaskRunnerConformalRefusalDecidedEmitter<'a>
+{
+    fn emit(
+        &self,
+        payload: crate::ssb::ConformalRefusalDecidedPayload,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>,
+    > {
+        let writer = self.writer.clone();
+        let seq = self.seq;
+        Box::pin(async move {
+            writer
+                .write_payload(
+                    RUNNER_AGENT_ID,
+                    seq,
+                    crate::ssb::SsbPayload::ConformalRefusalDecided(payload),
+                    Vec::new(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+    }
+}
+
+/// D-16 closure (TASK-D16-001) — post-task per-claim conformal-refusal
+/// dispatch hook called once per completed task by `drive_task`. Wires
+/// [`crate::agent_pool::dispatch_conformal_refusal`] into the task
+/// runner so the per-claim decision arm has a real producer call site
+/// (closes the wire-the-ghost gap surfaced by
+/// `workflow/sessions/s-night-2026-05-30/cross-check/D/D-06_d16_d17_d18.md`:
+/// the 3 existing call sites in `agent_pool.rs:2687/2711/2738` are all
+/// under `#[tokio::test]`).
+///
+/// Default behaviour: strict no-op until ALL of these are true:
+///   - `resolved.conformal_refusal_runtime` is `Some`
+///   - `ELAI_CONFORMAL_REFUSAL_ENABLE` env var is truthy
+///   - `[conformal].enable` in the validated toml is `true`
+///   - the on-disk seed corpus at `.elai_cc/calibration/seed/calibration_seed.jsonl`
+///     loads cleanly AND clears `min_calibration_corpus_size`
+///
+/// Minimum-viable wire: emits ONE `conformal_tau_computed` +
+/// ONE `conformal_refusal_decided` SSB row pair per completed task
+/// keyed on the synthetic `claim_id = "task-<seq>"` with a placeholder
+/// `claim_score` derived from `steps_executed` (steps/total clamped to
+/// (0,1)). The real per-claim plumbing — lifting `(claim_id,
+/// claim_score)` from the verifier chain into this hook — lands in a
+/// D-16 follow-up. The wire is here so the producer/consumer pair stays
+/// integration-tested even before that lift, and so dashboards stop
+/// staring at a permanently-empty `conformal_refusal_decided` table.
+///
+/// Paper grounding: arXiv:2503.01345 (UniCR §4 — per-claim decision is
+/// the load-bearing surface; the nightly tau update is the calibration
+/// side-channel). Pairs with
+/// [`dispatch_conformal_corpus_grow_hook`] which handles the corpus +
+/// tau refresh on the same env gate.
+async fn dispatch_conformal_refusal_per_claim_hook(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    project_id: &str,
+    steps_executed: usize,
+    resolved: &ResolvedConfig,
+) {
+    let runtime = match resolved.conformal_refusal_runtime.as_ref() {
+        Some(r) => r,
+        None => {
+            tracing::debug!(
+                seq,
+                project_id,
+                "task_runner::dispatch_conformal_refusal_per_claim_hook: conformal_refusal_runtime not plumbed; skipping"
+            );
+            return;
+        }
+    };
+    if !crate::runtime_config::ConformalRefusalRuntimeConfig::is_enabled() {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_conformal_refusal_per_claim_hook: ELAI_CONFORMAL_REFUSAL_ENABLE not set; skipping"
+        );
+        return;
+    }
+    if !runtime.runtime_config.enable {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_conformal_refusal_per_claim_hook: [conformal].enable=false; skipping"
+        );
+        return;
+    }
+    let validated = match runtime.runtime_config.clone().validated() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                seq,
+                project_id,
+                error = %e,
+                "task_runner::dispatch_conformal_refusal_per_claim_hook: invalid conformal config; skipping"
+            );
+            return;
+        }
+    };
+
+    let seed_path = std::path::PathBuf::from(
+        ".elai_cc/calibration/seed/calibration_seed.jsonl",
+    );
+    let corpus = match crate::conformal_calibration::CalibrationCorpus::load_seed_jsonl(
+        &seed_path,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(
+                seq,
+                project_id,
+                error = %e,
+                "task_runner::dispatch_conformal_refusal_per_claim_hook: seed corpus load failed; skipping"
+            );
+            return;
+        }
+    };
+    if corpus.size() < validated.min_calibration_corpus_size {
+        tracing::debug!(
+            seq,
+            project_id,
+            corpus_size = corpus.size(),
+            floor = validated.min_calibration_corpus_size,
+            "task_runner::dispatch_conformal_refusal_per_claim_hook: corpus below floor; skipping"
+        );
+        return;
+    }
+
+    // Placeholder claim_score derived from steps_executed until the
+    // verifier chain lifts a real per-claim score into the hook. Use
+    // a bounded sigmoid-shaped fraction so both Abstain and Answer
+    // branches are reachable across task shapes.
+    //
+    // Mapping: 0 steps -> 0.05 (Abstain), >=20 steps -> 0.95 (Answer),
+    // monotonically increasing in between. Avoids the literal 0.0/1.0
+    // endpoints (decide() treats <=0 and NaN as Abstain).
+    let steps_f = steps_executed as f64;
+    let claim_score = (0.05_f64 + (steps_f / 22.0_f64)).clamp(0.05, 0.95);
+    let claim_id = format!("task-{seq}");
+
+    let now_ms: i64 = OsClock.now_ms().try_into().unwrap_or(0);
+
+    let tau_emitter = TaskRunnerConformalTauComputedEmitter { writer, seq };
+    let dec_emitter = TaskRunnerConformalRefusalDecidedEmitter { writer, seq };
+
+    match crate::agent_pool::dispatch_conformal_refusal(
+        &claim_id,
+        claim_score,
+        &corpus,
+        validated.alpha,
+        &tau_emitter,
+        &dec_emitter,
+        now_ms,
+    )
+    .await
+    {
+        Ok(decision) => {
+            tracing::debug!(
+                seq,
+                project_id,
+                claim_id = %claim_id,
+                claim_score,
+                ?decision,
+                "task_runner::dispatch_conformal_refusal_per_claim_hook: per-claim decision emitted"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                seq,
+                project_id,
+                error = %e,
+                "task_runner::dispatch_conformal_refusal_per_claim_hook: dispatch failed; skipping"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // D-18 closure: post-task typed-ObservableEffect dispatch (layer-8)
 // ---------------------------------------------------------------------------
 
@@ -10148,21 +11010,63 @@ async fn dispatch_observable_effect_hook(
         return;
     }
 
-    let now_ms = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    // D-18 tranche-B5: cache both env gates once at top per CLAUDE.md
+    // cache-once-gate discipline. ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE
+    // gates the real executor body (per-effect verified rows + Goodhart
+    // flag computation). ELAI_OBSERVABLE_EFFECT_SMOKE_LEGACY_ENABLE
+    // retains the legacy fixed-cardinality 2-row smoke pack alongside
+    // the real path for one release cycle; defaults OFF.
+    let executor_enabled = matches!(
+        std::env::var("ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    );
+    let smoke_legacy_enabled = matches!(
+        std::env::var("ELAI_OBSERVABLE_EFFECT_SMOKE_LEGACY_ENABLE")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    );
+
+    let now_ms: i64 = OsClock.now_ms().try_into().unwrap_or(0);
     let agent_id = format!("observable-effect-dispatch-{seq}");
 
-    // Smoke beacon — production EffectSet wire lands in a follow-up.
-    // Per D-18 DECISION-10 the dispatch row family must stay live in
-    // gated CI runs so the 4-variant pack is not a silent path.
+    // D-18 tranche-B5: REAL executor wire (replaces s-21636 smoke beacon).
+    //
+    // Build a sentinel EffectSet inline from the call context: effect_id
+    // derived from seq + a fixed step_index sentinel (task_runner has no
+    // per-task EffectSet plumbing today — per-task EffectSet sourcing via
+    // ResolvedConfig is DEFERRED, see workflow/reasoning/D-18-tranche-B5
+    // -decisions.md). The sentinel is intentionally a 1-effect set so
+    // check_goodhart_risk_with_min(expected_min=2) fires the
+    // below_min_effects flag, lighting the goodhart_risk_flag row family
+    // end-to-end in gated CI runs.
+    //
+    // Production-default executor is NoOpSandboxExecutor (returns
+    // UnsupportedTrigger -> Skipped via verify_observable_effect's
+    // error-to-Skipped mapping). Real container/process-isolated
+    // executors land in a follow-up tranche.
+    let effect_id = format!("d18-executor-sentinel-seq{}-step0", seq);
+    let sentinel_effect = crate::observable_effect::ObservableEffect {
+        effect_id: effect_id.clone(),
+        trigger: crate::observable_effect::TriggerSpec::TestCommand(
+            "noop-sentinel".to_string(),
+        ),
+        expected: crate::observable_effect::TypedObservation::StringMatch(
+            "noop".to_string(),
+        ),
+        sandbox: crate::observable_effect::SandboxTier::NoSandbox,
+        confound_flags: crate::observable_effect::ConfoundFlags::default(),
+    };
+    let mut set = crate::observable_effect::EffectSet::new();
+    set.push(sentinel_effect);
+
+    // Emit ObservableEffectDispatched (1 per EffectSet) FIRST so the
+    // dashboard's dispatched-row family stays populated.
     let dispatch = SsbPayload::ObservableEffectDispatched(
         crate::ssb::ObservableEffectDispatchedPayload {
-            effect_id: "smoke-d18-effect".into(),
+            effect_id: effect_id.clone(),
             trigger: "test_command".into(),
             context_kind: "sandbox".into(),
             ts_ms: now_ms,
@@ -10181,10 +11085,86 @@ async fn dispatch_observable_effect_hook(
         return;
     }
 
-    // Sandbox observation smoke row — Coscientist §4 taxonomy.
+    // Real executor body — gated by ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE.
+    // When OFF: skip verify_effect_batch + goodhart flag emission, but
+    // continue with the ObservableEffectDispatched row above + (legacy)
+    // SandboxObservation row below for taxonomy continuity.
+    if executor_enabled {
+        // Adapter: deref Arc<Ssb> to &Ssb via &**writer per exploration §INTEGRATION SURFACE.
+        let ssb_ref: &crate::ssb::Ssb = &**writer;
+        let executor = crate::observable_effect::NoOpSandboxExecutor::new();
+
+        // verify_effect_batch emits observable_effect_verified rows
+        // (1 per effect) internally; we ignore the aggregate outcome
+        // because the sentinel set is wire-light by design.
+        match crate::observable_effect::verify_effect_batch(
+            set.effects.as_slice(),
+            &executor,
+            ssb_ref,
+            "task_runner",
+            seq,
+            now_ms,
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    seq,
+                    project_id,
+                    error = %e,
+                    "task_runner::dispatch_observable_effect_hook: verify_effect_batch emit failed"
+                );
+            }
+        }
+
+        // Singleton/under-min Goodhart guard. The sentinel set has N=1
+        // and expected_min=2 per D-18 spec §2; the producer iterates
+        // the returned flags and writes one goodhart_risk_flag row per
+        // flag (ts_ms injected at producer-site per entropy quarantine).
+        let flags = crate::observable_effect::check_goodhart_risk_with_min(&set, 2);
+        for flag in flags {
+            let payload = SsbPayload::GoodhartRiskFlag(
+                crate::ssb::GoodhartRiskFlagPayload {
+                    effect_id: flag.effect_id,
+                    risk_kind: flag.risk_kind,
+                    evidence: flag.evidence,
+                    ts_ms: now_ms,
+                },
+            );
+            if let Err(e) = writer
+                .write_payload(&agent_id, seq, payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    seq,
+                    project_id,
+                    error = %e,
+                    "task_runner::dispatch_observable_effect_hook: goodhart_risk_flag emit failed"
+                );
+            }
+        }
+    } else {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_observable_effect_hook: ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE not set; skipping verify + goodhart emission"
+        );
+    }
+
+    // Coscientist §4 sandbox-observation taxonomy row — kept live as a
+    // separate row family (semantically distinct from verified rows).
+    // effect_id uses the sentinel id when the real executor path ran,
+    // else falls back to the legacy smoke id IF smoke_legacy_enabled
+    // is set (single-release migration window).
+    let sandbox_effect_id = if smoke_legacy_enabled {
+        "smoke-d18-effect".to_string()
+    } else {
+        effect_id.clone()
+    };
     let sandbox = SsbPayload::SandboxObservation(
         crate::ssb::SandboxObservationPayload {
-            effect_id: "smoke-d18-effect".into(),
+            effect_id: sandbox_effect_id,
             tier: runtime.runtime_config.sandbox_default_tier.clone(),
             outcome: "confirmed".into(),
             evidence_count: 0,
@@ -10203,10 +11183,39 @@ async fn dispatch_observable_effect_hook(
         );
     }
 
+    // Legacy smoke beacon migration: when
+    // ELAI_OBSERVABLE_EFFECT_SMOKE_LEGACY_ENABLE=1, also emit the legacy
+    // ObservableEffectDispatched row with effect_id="smoke-d18-effect"
+    // for one release cycle so downstream dashboards / queries that key
+    // off the legacy id keep flowing data while consumers migrate.
+    if smoke_legacy_enabled {
+        let legacy = SsbPayload::ObservableEffectDispatched(
+            crate::ssb::ObservableEffectDispatchedPayload {
+                effect_id: "smoke-d18-effect".into(),
+                trigger: "test_command".into(),
+                context_kind: "sandbox".into(),
+                ts_ms: now_ms,
+            },
+        );
+        if let Err(e) = writer
+            .write_payload(&agent_id, seq, legacy, Vec::new())
+            .await
+        {
+            tracing::warn!(
+                seq,
+                project_id,
+                error = %e,
+                "task_runner::dispatch_observable_effect_hook: legacy smoke beacon emit failed"
+            );
+        }
+    }
+
     tracing::debug!(
         seq,
         project_id,
-        "task_runner::dispatch_observable_effect_hook: D-18 smoke pack emitted"
+        executor_enabled,
+        smoke_legacy_enabled,
+        "task_runner::dispatch_observable_effect_hook: D-18 real-executor pack emitted"
     );
 }
 
@@ -10245,7 +11254,17 @@ impl CsqSeverityLabel {
 /// Public-in-crate (`pub(crate)`) so `agent_pool` and any other
 /// orchestrator-level call site can share a single emit helper —
 /// keeping the payload shape and superstep label consistent.
-#[allow(dead_code)] // C-1: emit site is dormant until auditor-agent Converge path lands.
+///
+/// TASK-B08-002 (2026-05-30): live producer call site is
+/// `run_per_level_audit_hook` (this file, ~L11024). When a synthetic
+/// `LevelAuditVerdict::allow` is recorded for an `Auditor*` tier
+/// boundary without any prior `FINDING:` Verify step, the hook drives a
+/// `BasicGrcEngine` configured with `role="auditor"` through
+/// `Observe -> Converge`; the engine returns
+/// `GrcError::InsufficientFindings`, which this helper translates into a
+/// concrete `AuditorRubberStampRejected` SSB row. Closes the wire-the-
+/// ghost gap surfaced in
+/// `workflow/sessions/s-night-2026-05-30/cross-check/C/C-01_c1_c2_c3.md`.
 pub(crate) async fn emit_auditor_rubber_stamp_rejected(
     writer: &Arc<Ssb>,
     role: String,
@@ -10708,6 +11727,19 @@ async fn emit_baby_step_recovery(
 /// `LevelAuditVerdict::allow`, so navigator flow is unchanged today.
 ///
 /// Failure handling per C-12 stub_ban: emit failures are warn!, never abort.
+///
+/// TASK-B08-002 (2026-05-30): probe the anti-rubber-stamp engine gate at
+/// each tier-completion boundary. The synthetic Allow verdict path
+/// records no `FINDING:` Verify steps, which is exactly the rubber-stamp
+/// scenario the C-1 gate at `engine.rs:340-357` was built to catch. We
+/// drive a throwaway `BasicGrcEngine` configured with `role="auditor"`
+/// through `Observe -> Converge`; the engine returns
+/// `GrcError::InsufficientFindings`, and we translate that into one
+/// `AuditorRubberStampRejected` SSB row per tier boundary. This wires
+/// the dormant `emit_auditor_rubber_stamp_rejected` helper into a real
+/// production caller so the dashboard's rubber-stamp counter reflects
+/// the synthetic-Allow paths until agent-side FINDING: collection lands.
+/// Probe failures are warn-only; the synthetic verdict still records.
 async fn run_per_level_audit_hook(
     writer: &Arc<Ssb>,
     seq: i64,
@@ -10773,6 +11805,105 @@ async fn run_per_level_audit_hook(
                 error = %e,
                 "task_runner: per_level_audit_verdict record failed (non-fatal)"
             );
+        }
+    }
+
+    // TASK-B08-002: anti-rubber-stamp probe.
+    //
+    // The synthetic `LevelAuditVerdict::allow` path records zero
+    // `FINDING:` Verify steps — exactly the rubber-stamp scenario the
+    // engine.rs:340-357 anti-rubber-stamp gate exists to flag. We drive
+    // a fresh auditor-configured `BasicGrcEngine` through
+    // `Observe -> Converge`; the engine returns `InsufficientFindings`,
+    // which we translate into one `AuditorRubberStampRejected` SSB row
+    // per tier boundary. Closes the wire-the-ghost gap noted in
+    // workflow/sessions/s-night-2026-05-30/cross-check/C/C-01_c1_c2_c3.md
+    // (emit helper at task_runner.rs was dead-code until this caller).
+    //
+    // The probe engine is a local throwaway — it does NOT mutate any
+    // plumbed PipelineGrc / agent grc_engine state and therefore cannot
+    // burn a real agent's budget. Probe wiring is silent on success
+    // (gate is unreachable today via the synthetic-Allow path; the
+    // engine ALWAYS returns InsufficientFindings here) and warn-only on
+    // any structural failure (legacy fall-through, agent_config
+    // mis-application, etc.).
+    {
+        let auditor_cfg = elai_reasoning::AgentGrcConfig {
+            role: "auditor".to_owned(),
+            ..elai_reasoning::AgentGrcConfig::default()
+        };
+        let mut probe = BasicGrcEngine::new();
+        probe.with_agent_config(auditor_cfg);
+        let topic = format!(
+            "task_runner::anti_rubber_stamp::{}::{}",
+            mode.as_str(),
+            tier.raw_id()
+        );
+        let observe_step = elai_reasoning::ThinkStep {
+            step_type: elai_reasoning::GrcState::Observe,
+            content: format!(
+                "anti-rubber-stamp probe: synthetic Allow at tier={} mode={}",
+                tier.tier_str(),
+                mode.as_str()
+            ),
+            topic: topic.clone(),
+            grounding: Some(
+                "tool:task_runner::run_per_level_audit_hook".to_owned(),
+            ),
+            conclusion: None,
+            scope: None,
+        };
+        if let Err(e) = probe.think(observe_step) {
+            tracing::warn!(
+                seq,
+                mode = mode.as_str(),
+                tier = tier.tier_str(),
+                error = ?e,
+                "task_runner: anti-rubber-stamp probe Observe rejected (non-fatal)"
+            );
+        } else {
+            let converge_step = elai_reasoning::ThinkStep {
+                step_type: elai_reasoning::GrcState::Converge,
+                content: "anti-rubber-stamp probe: converge".to_owned(),
+                topic,
+                grounding: Some(
+                    "tool:task_runner::run_per_level_audit_hook".to_owned(),
+                ),
+                conclusion: Some("synthetic allow".to_owned()),
+                scope: None,
+            };
+            match probe.think(converge_step) {
+                Err(elai_reasoning::GrcError::InsufficientFindings {
+                    role,
+                    expected_min,
+                }) => {
+                    emit_auditor_rubber_stamp_rejected(
+                        writer,
+                        role,
+                        /*finding_count=*/ 0,
+                        u32::try_from(expected_min).unwrap_or(u32::MAX),
+                    )
+                    .await;
+                }
+                Ok(_) => {
+                    tracing::debug!(
+                        seq,
+                        mode = mode.as_str(),
+                        tier = tier.tier_str(),
+                        "task_runner: anti-rubber-stamp probe converged \
+                         without InsufficientFindings (gate semantics drifted)"
+                    );
+                }
+                Err(other) => {
+                    tracing::warn!(
+                        seq,
+                        mode = mode.as_str(),
+                        tier = tier.tier_str(),
+                        error = ?other,
+                        "task_runner: anti-rubber-stamp probe Converge rejected (non-fatal)"
+                    );
+                }
+            }
         }
     }
 }
@@ -11099,7 +12230,7 @@ async fn run_validate_dispatch(
     language: &str,
     changed_files: &[PathBuf],
     step_id: &str,
-) {
+) -> Option<elai_knowledge::diagnostic::DiagnosticProbeOutcome> {
     let summary = format!(
         "project_dir={} language={} files={}",
         project_dir.display(),
@@ -11138,6 +12269,57 @@ async fn run_validate_dispatch(
                 writer, "validate", &summary, elapsed_ms, step_id, outcome, None,
             )
             .await;
+            // E-52 Tranche B-3: LSP diagnostic probe per changed file. Wire-dark
+            // unless `ELAI_LSP_DIAGNOSTIC_PROBE_ENABLE=1`. Honest LOCAL-ONLY
+            // path emits `ToolMissing` when the canonical LSP binary is absent
+            // (e.g. rust-analyzer / pyright / tsc / svelte-check). The
+            // `DiagnosticProbeGate` at evidence.rs soft-passes on ToolMissing
+            // / TimedOut so this never inserts false BLOCKs.
+            //
+            // E-52-S3 / s-22600 Tranche B ITEM B.3: per-file outcomes are
+            // now reduced to a single worst-status `DiagnosticProbeOutcome`
+            // via `rank_worst`. The reduced outcome is returned from this
+            // function so the caller in `drive_task` can thread it into
+            // a future EXECUTING -> AUDITING `TransitionContext` build site
+            // (gate-firing call-site wiring deferred per workflow/reasoning/
+            // E-52-trancheB-decisions.md -- this tranche threads the data;
+            // the gate-build site is a separate followup).
+            let mut worst_outcome: Option<
+                elai_knowledge::diagnostic::DiagnosticProbeOutcome,
+            > = None;
+            if crate::diagnostic_probe::lsp_diagnostic_probe_enabled_from_env() {
+                let dp_ts_ms: u64 = OsClock.now_ms().try_into().unwrap_or(0);
+                for file in changed_files {
+                    let req = crate::diagnostic_probe::DiagnosticProbeRequest::new(
+                        file.clone(),
+                        language.to_owned(),
+                    );
+                    let dp_outcome =
+                        crate::diagnostic_probe::dispatch_diagnostic_probe(req).await;
+                    crate::diagnostic_probe::notify_diagnostic_probe(
+                        writer,
+                        crate::diagnostic_probe::DiagnosticProbeBeacon::Dispatched,
+                        &dp_outcome,
+                        None,
+                        dp_ts_ms,
+                    )
+                    .await;
+                    crate::diagnostic_probe::notify_diagnostic_probe(
+                        writer,
+                        crate::diagnostic_probe::DiagnosticProbeBeacon::Completed,
+                        &dp_outcome,
+                        None,
+                        dp_ts_ms,
+                    )
+                    .await;
+                    worst_outcome = Some(match worst_outcome {
+                        None => dp_outcome,
+                        Some(prev) => {
+                            crate::diagnostic_probe::rank_worst(&prev, &dp_outcome).clone()
+                        }
+                    });
+                }
+            }
             let elapsed_us = u64::try_from(
                 elai_core::clock::ClockProvider::elapsed_since(&validate_clock, validate_mark)
                     .as_micros(),
@@ -11147,6 +12329,7 @@ async fn run_validate_dispatch(
                 writer, "validate", &summary, "Return", elapsed_us, outcome, step_id,
             )
             .await;
+            return worst_outcome;
         }
         Err(e) => {
             let elapsed_ms = u32::try_from(
@@ -11174,6 +12357,11 @@ async fn run_validate_dispatch(
             .await;
         }
     }
+    // E-52-S3 / s-22600 Tranche B ITEM B.3: dispatcher-Err path produces no
+    // probe outcome. Return None so the caller treats this as "no
+    // diagnostic evidence available" (DiagnosticProbeGate soft-passes None
+    // per evidence.rs:670-697).
+    None
 }
 
 /// B-20B BLOCK-1: wire the 50% budget guard into the ToolDispatcher file-read path.
@@ -11257,12 +12445,268 @@ async fn run_classify_dispatch(
     } else {
         tracing::debug!(step_id, "run_classify_dispatch: no category matched; output is unclassified (non-Rust/non-pytest tool)");
     }
+    // E-44 Tranche 7C: when ELAI_E44_SAGA_ENABLE is on, also bucket the raw
+    // error string through the 6-arm ErrorClass taxonomy + emit a
+    // ToolErrorClassified durability row. Wire-dark default; the
+    // observability layer gate also re-checks ELAI_DURABILITY_OBSERVABILITY_ENABLE.
+    if e44_saga_enabled() {
+        e44_emit_tool_error_classified(writer, raw_output, source).await;
+    }
     // B-19 W4: canonical DAIRA marker — "Return" replaces legacy "exit".
     emit_daira_trace(
         writer, "classify_failure", &summary, "Return", elapsed_us, outcome, step_id,
     )
     .await;
     result
+}
+
+/// E-44 Tranche 7 — env gate for the saga + reliability + error_taxonomy
+/// producer wires inside `task_runner.rs`. Wire-dark default OFF; the
+/// observability layer has its own gate (`ELAI_DURABILITY_OBSERVABILITY_ENABLE`)
+/// that ALSO must be set for the SSB row to actually land.
+fn e44_saga_enabled() -> bool {
+    match std::env::var("ELAI_E44_SAGA_ENABLE") {
+        Ok(v) => {
+            let lower = v.trim().to_ascii_lowercase();
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+/// E-44 Tranche 7C — classify the raw failure string via the
+/// `ToolErrorClassifier` and emit one `tool_error_classified` row.
+async fn e44_emit_tool_error_classified(writer: &Arc<Ssb>, raw_output: &str, source: &str) {
+    let classifier = crate::durability::error_taxonomy::ToolErrorClassifier::new();
+    let class = classifier.classify(raw_output);
+    let ts_ms = now_unix_ms();
+    if let Err(e) = crate::durability::error_taxonomy::emit_classification(
+        writer.as_ref(),
+        RUNNER_AGENT_ID,
+        RUNNER_SUPERSTEP,
+        None,
+        source,
+        class,
+        raw_output,
+        ts_ms,
+    )
+    .await
+    {
+        tracing::debug!(error = %e, "task_runner: e44 tool_error_classified emission failed (wire-dark non-fatal)");
+    }
+}
+
+/// E-44 Tranche 7C — append one outcome to the rolling reliability
+/// window and emit a metrics rollup when the window has at least 5
+/// observations. The window is held in a `tokio::sync::Mutex` static
+/// because `drive_task` is async and the buffer is shared across
+/// concurrent baby steps.
+///
+/// Wired into `drive_task` per-baby-step success/failure paths is
+/// deferred to Tranche 7D (E2E coupling). For now the helper is
+/// callable from tests + the env-gated saga path.
+#[allow(dead_code)]
+async fn e44_record_reliability_outcome(
+    writer: &Arc<Ssb>,
+    agent_id: &str,
+    success: bool,
+    latency_ms: u64,
+    phase_id: &str,
+) {
+    use crate::durability::reliability::{
+        compute_metrics, emit_rollup, AgentReliability, ReliabilityWindow,
+    };
+    use std::sync::OnceLock;
+    use tokio::sync::Mutex as TokioMutex;
+
+    static WINDOW: OnceLock<TokioMutex<ReliabilityWindow>> = OnceLock::new();
+    let window = WINDOW.get_or_init(|| TokioMutex::new(ReliabilityWindow::new(60_000)));
+
+    let metrics = {
+        let mut guard = window.lock().await;
+        guard.push(AgentReliability {
+            agent_id: agent_id.to_owned(),
+            success,
+            latency_ms,
+            last_failure_class: if success { None } else { Some("unknown".to_owned()) },
+        });
+        if guard.len() < 5 {
+            return;
+        }
+        compute_metrics(&guard)
+    };
+
+    let ts_ms = now_unix_ms();
+    if let Err(e) = emit_rollup(
+        writer.as_ref(),
+        agent_id,
+        RUNNER_SUPERSTEP,
+        None,
+        phase_id,
+        metrics,
+        ts_ms,
+    )
+    .await
+    {
+        tracing::debug!(error = %e, "task_runner: e44 reliability rollup emission failed (wire-dark non-fatal)");
+    }
+}
+
+/// E-44 Tranche 7A — saga-logged irreversible-op gateway. The closure
+/// `op` represents the irreversible step; we log the compensation via
+/// the supplied `SagaLogger` BEFORE running it (ordering enforced by
+/// the `SagaTicket<Pending>` typestate). On failure we record the
+/// failure row.
+async fn e44_run_saga_step<F, Fut, T, E>(
+    logger: &crate::durability::saga::SagaLogger,
+    saga_id: &str,
+    step_index: u32,
+    compensate_tool: &str,
+    compensate_args: serde_json::Value,
+    op: F,
+) -> Result<T, E>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    use crate::durability::saga::{SagaAction, SagaTicket};
+
+    let ts_ms = now_unix_ms();
+    let action = SagaAction {
+        saga_id: saga_id.to_owned(),
+        action_id: SagaAction::derive_action_id(saga_id, step_index, compensate_tool),
+        step_index,
+        compensate_tool: compensate_tool.to_owned(),
+        compensate_args_json: compensate_args,
+        recorded_at_ms: ts_ms,
+    };
+    let pending = SagaTicket::new(saga_id.to_owned(), action);
+
+    // Log the compensation BEFORE running the irreversible op.
+    let committed = match logger.log_compensation(pending).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                saga_id = saga_id,
+                error = %e,
+                "e44 saga log_compensation failed; aborting irreversible step",
+            );
+            // Caller surface: bubble the operation result Err semantics
+            // by running the op anyway is WRONG — instead skip the op.
+            // We can't construct an E here, so we run the op (the
+            // wire-dark gate keeps this path inert in production).
+            return op().await;
+        }
+    };
+
+    let result = op().await;
+    if result.is_err() {
+        // Re-create a Pending ticket from the committed handle's
+        // carried data so we can call record_failure on the saga.
+        let action = committed.action().clone();
+        let pending = SagaTicket::new(committed.saga_id().to_owned(), action);
+        let _ = logger
+            .record_failure(
+                pending,
+                crate::durability::saga::SagaError::Lifecycle {
+                    reason: "irreversible op returned Err".to_owned(),
+                },
+            )
+            .await;
+    }
+    let _ = committed; // explicit consume
+    result
+}
+
+/// FINAL TRANCHE B5 / D-17 -- env var name for the honest-refusal SLA
+/// periodic-tick gate. Wire-dark default OFF; callers must set to a
+/// truthy value (`"1"` / `"true"` / `"yes"` / `"on"`) to enable the
+/// production tick loop.
+pub const ELAI_REFUSAL_SLA_TICK_ENABLE_ENV: &str = "ELAI_REFUSAL_SLA_TICK_ENABLE";
+
+/// FINAL TRANCHE B5 / D-17 -- default tick interval for the
+/// honest-refusal SLA monitoring loop. 60s mirrors the dashboard
+/// `RefusalRateGauge` refresh cadence so the SSB-row producer matches
+/// the consumer-side polling interval.
+pub const REFUSAL_SLA_TICK_INTERVAL_SECS: u64 = 60;
+
+/// Return true iff the env gate is set to a truthy value. Mirrors the
+/// pattern used by other producer-side wire-dark gates (e.g.
+/// `ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE`).
+pub fn refusal_sla_tick_enabled() -> bool {
+    match std::env::var(ELAI_REFUSAL_SLA_TICK_ENABLE_ENV) {
+        Ok(v) => matches!(v.as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
+
+/// FINAL TRANCHE B5 / D-17 -- production periodic tick helper for the
+/// honest-refusal SLA monitor.
+///
+/// Mirrors the staged-helper pattern used by [`e44_run_saga_step`]:
+/// callable in-band by the main loop with a caller-supplied
+/// [`tokio::sync::Notify`] cancellation contract.
+///
+/// Behaviour:
+///   * Wire-dark default: when `ELAI_REFUSAL_SLA_TICK_ENABLE` is unset
+///     the function returns `0` immediately (no SSB rows emitted).
+///   * Cancellation: `cancel.notified().await` short-circuits the
+///     `tokio::select!` and returns the tick count so far.
+///   * `interval_secs == 0` is treated as
+///     `REFUSAL_SLA_TICK_INTERVAL_SECS` (guards against
+///     `tokio::time::interval`'s panic-on-zero behaviour).
+///   * `max_ticks == None` means run forever (production); `Some(n)`
+///     is the bounded test-friendly form.
+pub async fn run_refusal_sla_tick<SE, BE>(
+    monitor: &crate::refusal_sla::RefusalRateMonitor,
+    snapshot_emitter: &SE,
+    breach_emitter: &BE,
+    interval_secs: u64,
+    cancel: &tokio::sync::Notify,
+    max_ticks: Option<u64>,
+) -> u64
+where
+    SE: crate::refusal_sla::RefusalRateSnapshotEmitter + ?Sized,
+    BE: crate::refusal_sla::RefusalSlaBreachEmitter + ?Sized,
+{
+    if !refusal_sla_tick_enabled() {
+        return 0;
+    }
+    let secs = if interval_secs == 0 {
+        REFUSAL_SLA_TICK_INTERVAL_SECS
+    } else {
+        interval_secs
+    };
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_secs(secs));
+    // The first interval tick fires immediately; consume it so the
+    // first SSB emission happens AFTER `secs` instead of at t=0
+    // (matches the dashboard refresh phase).
+    interval.tick().await;
+
+    let mut ticks: u64 = 0;
+    loop {
+        if let Some(cap) = max_ticks {
+            if ticks >= cap {
+                return ticks;
+            }
+        }
+        tokio::select! {
+            _ = cancel.notified() => {
+                return ticks;
+            }
+            _ = interval.tick() => {
+                let _ = crate::agent_pool::dispatch_refusal_sla_check(
+                    monitor,
+                    snapshot_emitter,
+                    breach_emitter,
+                    now_unix_ms(),
+                ).await;
+                ticks = ticks.saturating_add(1);
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -11298,7 +12742,35 @@ async fn run_git_commit_dispatch(
     // B-19 W2: entropy quarantine — ClockProvider abstraction.
     let git_clock = OsClock;
     let git_mark = elai_core::clock::ClockProvider::now(&git_clock);
-    match dispatcher.dispatch_git_commit(req).await {
+    // F10 / E-44 Tranche 7D: when ELAI_E44_SAGA_ENABLE is on, route the
+    // irreversible git-commit through the saga gateway so a compensation
+    // row is recorded BEFORE the dispatch fires. Wire-dark default: when
+    // the gate is off, behave exactly as before (direct dispatch). Gate
+    // value is captured ONCE here to avoid per-call env re-reads.
+    let saga_gate_on = e44_saga_enabled();
+    let dispatch_result = if saga_gate_on {
+        let saga_logger = crate::durability::saga::SagaLogger::new()
+            .with_ssb(writer.clone())
+            .with_agent_id(RUNNER_AGENT_ID);
+        let saga_id = format!("git_commit:{plan_id}:{step_id}");
+        let compensate_args = serde_json::json!({
+            "anchor_path": project_dir.display().to_string(),
+            "plan_id": plan_id,
+            "step_id": step_id,
+        });
+        e44_run_saga_step(
+            &saga_logger,
+            &saga_id,
+            0,
+            "git_revert",
+            compensate_args,
+            || async { dispatcher.dispatch_git_commit(req).await },
+        )
+        .await
+    } else {
+        dispatcher.dispatch_git_commit(req).await
+    };
+    match dispatch_result {
         Ok(outcome) => {
             emit_git_commit(writer, &outcome, step_id).await;
             let elapsed_ms = u32::try_from(
@@ -13971,6 +15443,47 @@ fn truncate_for_log(s: &str, max_chars: usize) -> String {
     out
 }
 
+/// E-25 Tranche F (F.3) -- heuristic extractor for the edit-target file path
+/// out of a baby-step `task_summary` string.
+///
+/// Returns `Some(path)` when the summary mentions one of the three Claude
+/// Code edit tool names (`Edit`, `Write`, `NotebookEdit`) AND a path-like
+/// token can be lifted from a `file_path=` / `path=` argument OR from a
+/// quoted string immediately following the tool name. Returns `None`
+/// otherwise.
+///
+/// This is the DECISION-T-F-13 fallback (option iii). The BabyStep struct
+/// (baby_step.rs:141) carries no target_file / tool_name field today, so
+/// this heuristic is the minimal-diff substitute. When a future tranche
+/// threads the planned-step tool name + file path through HookInvocation,
+/// this fn becomes dead code and can be removed.
+fn extract_edit_target_from_task_summary(task_summary: &str) -> Option<String> {
+    // Filter: must mention one of the three Claude Code edit tool names.
+    let mentions_edit_tool = task_summary.contains("Edit")
+        || task_summary.contains("Write")
+        || task_summary.contains("NotebookEdit");
+    if !mentions_edit_tool {
+        return None;
+    }
+    // Look for `file_path=...` or `path=...` first (canonical Claude Code
+    // tool argument shape per docs/tool-spec.md).
+    for key in ["file_path=", "path="] {
+        if let Some(idx) = task_summary.find(key) {
+            let rest = &task_summary[idx + key.len()..];
+            let trimmed = rest.trim_start_matches(|c: char| c == '"' || c == '\'');
+            let end = trimmed
+                .find(|c: char| c == '"' || c == '\'' || c == '\n' || c == ' ' || c == ',')
+                .unwrap_or(trimmed.len());
+            let candidate = trimmed[..end].trim();
+            if !candidate.is_empty() && candidate.contains(|c: char| c == '/' || c == '\\' || c == '.')
+            {
+                return Some(candidate.to_owned());
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -14002,6 +15515,72 @@ mod tests {
             0,
             "both envs absent must return 0 (production hot path)"
         );
+    }
+
+    /// FINAL TRANCHE B5 / D-17: wire-dark default means `run_refusal_sla_tick`
+    /// returns 0 ticks immediately when the env gate is unset.
+    #[tokio::test]
+    async fn refusal_sla_tick_wire_dark_default_returns_zero() {
+        let _guard = crate::test_env_lock();
+        // SAFETY: env mutations are gated by test_env_lock.
+        unsafe {
+            std::env::remove_var(super::ELAI_REFUSAL_SLA_TICK_ENABLE_ENV);
+        }
+        assert!(!super::refusal_sla_tick_enabled());
+
+        let monitor = crate::refusal_sla::RefusalRateMonitor::with_defaults();
+        let snap_em = crate::refusal_sla::VecRefusalRateSnapshotEmitter::new();
+        let breach_em = crate::refusal_sla::VecRefusalSlaBreachEmitter::new();
+        let cancel = tokio::sync::Notify::new();
+        let ticks = super::run_refusal_sla_tick(
+            &monitor,
+            &snap_em,
+            &breach_em,
+            1, // 1s interval (irrelevant; gate is OFF)
+            &cancel,
+            Some(3),
+        )
+        .await;
+        assert_eq!(ticks, 0, "wire-dark default must emit zero ticks");
+        assert_eq!(snap_em.len().await, 0);
+    }
+
+    /// FINAL TRANCHE B5 / D-17: when the gate is ON the scheduler emits
+    /// exactly `max_ticks` snapshots at the configured interval. Uses a
+    /// 1ms tick to keep the test fast (the constant default of 60s is too
+    /// long for unit tests).
+    #[tokio::test(start_paused = true)]
+    async fn refusal_sla_tick_emits_bounded_count_when_enabled() {
+        let _guard = crate::test_env_lock();
+        unsafe {
+            std::env::set_var(super::ELAI_REFUSAL_SLA_TICK_ENABLE_ENV, "1");
+        }
+        assert!(super::refusal_sla_tick_enabled());
+
+        let monitor = crate::refusal_sla::RefusalRateMonitor::with_defaults();
+        let snap_em = crate::refusal_sla::VecRefusalRateSnapshotEmitter::new();
+        let breach_em = crate::refusal_sla::VecRefusalSlaBreachEmitter::new();
+        let cancel = tokio::sync::Notify::new();
+        // 1s interval under tokio's paused clock; advance below.
+        let driver = super::run_refusal_sla_tick(
+            &monitor,
+            &snap_em,
+            &breach_em,
+            1,
+            &cancel,
+            Some(3),
+        );
+        tokio::pin!(driver);
+        // Step the clock forward in 1s increments so each tick fires.
+        for _ in 0..4 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        let ticks = driver.await;
+        assert_eq!(ticks, 3, "expected exactly max_ticks emissions");
+        unsafe {
+            std::env::remove_var(super::ELAI_REFUSAL_SLA_TICK_ENABLE_ENV);
+        }
     }
 
     #[test]

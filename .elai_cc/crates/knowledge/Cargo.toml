@@ -52,6 +52,7 @@ rustc-hash.workspace = true
 tracing.workspace = true
 tantivy = "0.26"
 elai-core = { path = "../core" }
+elai-ipc-types = { path = "../ipc-types" }
 elai-rules = { path = "../rules" }
 # phase-3L: PI Tier hooks reuse HookVerdict from the plugins hook family
 # (per workflow/papers/tiered_analysis-interface.md "Re-use HookVerdict +

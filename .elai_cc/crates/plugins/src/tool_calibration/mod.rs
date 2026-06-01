@@ -40,13 +40,19 @@ pub mod case_base;
 pub mod complexity;
 pub mod failure_profile;
 pub mod hinter;
+pub mod persist;
 pub mod registry;
 
-pub use case_base::{call_shape_hash, classify_response, AggregatedCase, ResponseKind};
+pub use case_base::{
+    add_case, apply_calibration, call_shape_hash, classify_response, select_case,
+    AggregatedCase, CalibrationOutcome, ResponseKind,
+};
 pub use complexity::{complexity_score, COMPLEXITY_FLOOR, COMPLEXITY_CEIL};
 pub use failure_profile::FailureProfile;
 pub use hinter::{generate_hint, HINT_ERROR_RATE_THRESHOLD, HINT_MIN_TOTAL_CALLS};
+pub use persist::CasePersistStore;
 pub use registry::{
     CASE_BASE_LRU_CAP, CaseBaseSsbEmitter, NoopCaseBaseEmitter, ToolCalibrationRegistry,
-    ToolCalibrationStatus, emit_kinds,
+    ToolCalibrationStatus, ToolCalibrationError, emit_kinds,
+    ELAI_C47B_CASE_BASE_PERSIST_ENABLE_ENV,
 };

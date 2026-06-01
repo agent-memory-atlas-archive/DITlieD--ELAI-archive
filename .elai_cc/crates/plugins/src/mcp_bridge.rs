@@ -23,6 +23,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
+use elai_core::clock::OsClock;
 use elai_core::ClockProvider as _;
 
 // C-35: dynamic tool gating + lazy schema cache. ToolGate + LazySchemaCache
@@ -37,7 +38,19 @@ use crate::mcp::{
 // C-42 (session 2): role-based authz policy that runs BEFORE the C-35
 // ToolGate inside `dispatch_tool_call_with_gate`. See plugins/src/authz/
 // for the full module + arXiv:2604.25555 paper grounding.
-use crate::authz::{compose_with_tool_gate, AuthzPolicy, ComposedVerdict, DocContext};
+//
+// C-42b (Tranche D, s-22600): migrated `dispatch_tool_call_with_authz`
+// from the legacy 6-arg `compose_with_tool_gate` to the 7-arg
+// `compose_with_tool_gate_emit` so the composed verdict can also fire
+// an `McpAuthzEvent` SSB row via the new
+// `OrchestratorMcpAuthzSsbEmitter` adapter. Dual-emit per D7 in
+// workflow/reasoning/D-trancheD-decisions.md -- BOTH the gateway_*
+// rows @gateway_emit_kinds AND the composed mcp_authz_event row fire
+// per dispatch. The two rows carry semantically distinct signals
+// (per-layer attribution vs final composed verdict).
+use crate::authz::{
+    compose_with_tool_gate_emit, AuthzPolicy, ComposedVerdict, DocContext, McpAuthzSsbEmitter,
+};
 // C-47: case-based calibration of tool-use telemetry. Paper-grounded
 // against arXiv:2605.15041 (CAST). The registry is consulted BEFORE the
 // gate-allowed dispatch in both `dispatch_tool_call_with_gate` and
@@ -410,6 +423,26 @@ pub struct DefaultMcpBridge {
     /// one savings row per call. Default false so existing tests
     /// keep their expected SSB row counts.
     lazy_schema_enabled_by_env: bool,
+    /// E-25 Tranche F (F.2 / E-24 Task 5): optional LLM-guard config for
+    /// the pre-MCP-call decision hook. When `Some(_)`,
+    /// `dispatch_tool_call_with_authz` runs `pre_mcp_call_decision`
+    /// FIRST (outermost) in the dispatch chain before AuthzPolicy + the
+    /// C-35 ToolGate per DECISION-T-F-7. When `None`, the bridge skips
+    /// the guard entirely (back-compat with installs that have not
+    /// opted in). The Ask verdict is treated as Deny (fail-closed)
+    /// until dashboard intervention plumbing lands per DECISION-T-F-8.
+    llm_guard_config: Option<crate::llm_guard::LlmGuardConfig>,
+    /// C-42b (Tranche D, s-22600): optional emitter for the composed
+    /// `McpAuthzEvent` SSB row fired by `compose_with_tool_gate_emit`.
+    /// DISTINCT from `authz_ssb_emitter` above which wires the 4-arg
+    /// `GatewayAuthzSsbEmitter` (per-layer attribution). When `Some(_)`,
+    /// `dispatch_tool_call_with_authz` passes this through to
+    /// `compose_with_tool_gate_emit` so the composed-verdict row fires
+    /// IN ADDITION TO the existing gateway_* rows (D7-DUAL-EMIT). When
+    /// `None`, the composed-emit branch is byte-identical to the legacy
+    /// `compose_with_tool_gate` path. See
+    /// workflow/reasoning/D-trancheD-decisions.md D7.
+    mcp_authz_ssb_emitter: Option<Arc<dyn McpAuthzSsbEmitter>>,
 }
 
 impl Default for DefaultMcpBridge {
@@ -436,6 +469,8 @@ impl Default for DefaultMcpBridge {
             reliability_ssb_emitter: Arc::new(NoopReliabilityEmitter),
             lazy_schema_savings_emitter: Arc::new(NoopLazySchemaSavingsEmitter),
             lazy_schema_enabled_by_env: lazy_mcp_schema_enabled(),
+            llm_guard_config: None,
+            mcp_authz_ssb_emitter: None,
         }
     }
 }
@@ -476,7 +511,22 @@ impl DefaultMcpBridge {
             reliability_ssb_emitter: Arc::new(NoopReliabilityEmitter),
             lazy_schema_savings_emitter: Arc::new(NoopLazySchemaSavingsEmitter),
             lazy_schema_enabled_by_env: lazy_mcp_schema_enabled(),
+            llm_guard_config: None,
+            mcp_authz_ssb_emitter: None,
         }
+    }
+
+    /// E-25 Tranche F (F.2 / E-24 Task 5): install an LLM-guard config so
+    /// `dispatch_tool_call_with_authz` runs `pre_mcp_call_decision` FIRST
+    /// (outermost) in the dispatch chain per DECISION-T-F-7. Default is
+    /// None (skip the guard entirely). Returns `self` for builder
+    /// chaining (mirrors `with_authz_policy`).
+    pub fn with_llm_guard_config(
+        mut self,
+        config: crate::llm_guard::LlmGuardConfig,
+    ) -> Self {
+        self.llm_guard_config = Some(config);
+        self
     }
 
     /// E-22 (SCHEMA_VERSION 170): install the SSB emitter for the
@@ -517,6 +567,29 @@ impl DefaultMcpBridge {
         emitter: Arc<dyn GatewayAuthzSsbEmitter>,
     ) -> Self {
         self.authz_ssb_emitter = emitter;
+        self
+    }
+
+    /// C-42b (Tranche D, s-22600): install the SSB emitter for the
+    /// composed `McpAuthzEvent` row fired by
+    /// `compose_with_tool_gate_emit`. Distinct from
+    /// [`Self::with_authz_ssb_emitter`] above which wires the 4-arg
+    /// `GatewayAuthzSsbEmitter` (per-layer attribution rows). Default
+    /// is `None` (the composed-emit branch is byte-identical to the
+    /// legacy non-emit path until a real emitter is installed).
+    ///
+    /// DUAL-EMIT (D7): when BOTH this method AND
+    /// [`Self::with_authz_ssb_emitter`] are wired,
+    /// `dispatch_tool_call_with_authz` fires TWO SSB rows per call --
+    /// `gateway_policy_{allowed,denied}` AND `mcp_authz_event`. The two
+    /// rows carry semantically distinct signals (per-layer attribution
+    /// vs final composed verdict). Do not "dedup" them; the contract
+    /// test pins the count at 2.
+    pub fn with_mcp_authz_ssb_emitter(
+        mut self,
+        emitter: Arc<dyn McpAuthzSsbEmitter>,
+    ) -> Self {
+        self.mcp_authz_ssb_emitter = Some(emitter);
         self
     }
 
@@ -876,19 +949,89 @@ impl DefaultMcpBridge {
         doc_context: Option<&DocContext>,
         args: Value,
     ) -> Result<McpCallResult, McpError> {
+        // E-25 Tranche F (F.2) / E-24 Task 5 -- LLM-as-decision pre-MCP-call
+        // guard. Runs FIRST (outermost) in the dispatch chain so a Deny
+        // saves all downstream work (authz / tool gate / calibration /
+        // reliability) per DECISION-T-F-7. Wire-dark: only fires when an
+        // LlmGuardConfig was installed via `with_llm_guard_config` -- the
+        // default-None path is back-compat with installs that have not
+        // opted in. The Ask verdict is treated as Deny (fail-closed) per
+        // DECISION-T-F-8 until dashboard intervention plumbing lands.
+        #[cfg(feature = "mcp")]
+        if let Some(guard_cfg) = self.llm_guard_config.as_ref() {
+            match crate::llm_guard::pre_mcp_call_decision(guard_cfg, tool_name, &args).await {
+                Ok(crate::llm_guard::GuardDecision::Allow) => {
+                    // proceed
+                }
+                Ok(crate::llm_guard::GuardDecision::Deny { reason }) => {
+                    let _ = self.authz_ssb_emitter.emit(
+                        gateway_emit_kinds::GATEWAY_POLICY_DENIED,
+                        role,
+                        tool_name,
+                        "llm_guard",
+                    );
+                    return Err(McpError::ProtocolError(format!(
+                        "llm_guard deny: {reason}"
+                    )));
+                }
+                Ok(crate::llm_guard::GuardDecision::Ask { reason }) => {
+                    // DECISION-T-F-8: Ask -> Deny (fail-closed) until
+                    // dashboard intervention plumbing lands. Emit on the
+                    // GATEWAY_HITL_PENDING surface so the dashboard can
+                    // distinguish from hard-deny.
+                    let _ = self.authz_ssb_emitter.emit(
+                        gateway_emit_kinds::GATEWAY_HITL_PENDING,
+                        role,
+                        tool_name,
+                        "llm_guard",
+                    );
+                    return Err(McpError::ProtocolError(format!(
+                        "llm_guard ask: {reason}"
+                    )));
+                }
+                Err(e) => {
+                    // Sidecar unavailable. LlmGuardConfig.fail_closed is
+                    // honored INSIDE pre_mcp_call_decision -- the Err
+                    // variant here means fail_closed=true was set and the
+                    // sidecar was unreachable. Treat as Deny so the
+                    // dispatch refuses rather than falls through.
+                    let _ = self.authz_ssb_emitter.emit(
+                        gateway_emit_kinds::GATEWAY_POLICY_DENIED,
+                        role,
+                        tool_name,
+                        "llm_guard",
+                    );
+                    return Err(McpError::ProtocolError(format!(
+                        "llm_guard fail-closed: {e}"
+                    )));
+                }
+            }
+        }
+
         let Some(policy) = self.authz_policy.as_ref() else {
             // No policy installed; preserve C-35 behaviour exactly.
             return self
                 .dispatch_tool_call_with_gate(url, tool_name, fsm_state, args)
                 .await;
         };
-        let verdict = compose_with_tool_gate(
+        // C-42b (Tranche D, s-22600): migrated from the legacy
+        // `compose_with_tool_gate` (6-arg, no emitter) to
+        // `compose_with_tool_gate_emit` (7-arg, threads an optional
+        // McpAuthzSsbEmitter). When `with_mcp_authz_ssb_emitter` was
+        // called at bridge construction, the composed verdict fires an
+        // additional `McpAuthzEvent` SSB row IN ADDITION TO the
+        // existing gateway_* rows below. D7-DUAL-EMIT per
+        // workflow/reasoning/D-trancheD-decisions.md.
+        let verdict = compose_with_tool_gate_emit(
             role,
             tool_name,
             doc_context,
             fsm_state,
             policy.as_ref(),
             self.tool_gate.as_deref(),
+            self.mcp_authz_ssb_emitter
+                .as_deref()
+                .map(|a| a as &dyn McpAuthzSsbEmitter),
         );
         match verdict {
             ComposedVerdict::Allow => {
@@ -1119,17 +1262,13 @@ impl DefaultMcpBridge {
     }
 }
 
-/// C-47: best-effort wall-clock millis. Uses `SystemTime::now()` rather
-/// than the orchestrator's `ClockProvider` because the plugins crate
-/// must stay independent of orchestrator types. Saturates to 0 on
-/// pre-1970 clocks (no panic).
+/// C-47: best-effort wall-clock millis. Routes through the canonical
+/// `elai_core::clock::OsClock` (B-15 Tranche H DH7 migration; the prior
+/// C-47 rationale for staying off the abstraction was based on confusion
+/// with the orchestrator crate -- elai_core lives in the core crate and
+/// is already a plugins dep). Saturates to i64::MAX on pre-1970 clocks.
 fn now_ms_for_calibration() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .unwrap_or(0)
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 /// C-47: extract a snake-case error-hint substring from the tool

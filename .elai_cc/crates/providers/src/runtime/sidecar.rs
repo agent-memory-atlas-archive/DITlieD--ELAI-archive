@@ -20,6 +20,7 @@
 
 use std::time::Duration;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use futures_util::stream::{self, BoxStream, StreamExt};
 use reqwest::Response;
 use serde_json::Value;
@@ -250,6 +251,66 @@ impl RuntimeAdapter for SidecarRuntime {
                     })
                 }
             }
+        })
+    }
+
+    fn warm(&self) -> RuntimeFuture<'_, ()> {
+        // E-3 sub-phase 4B — pre-warm the sidecar. A HEAD request to
+        // /health is the cheapest probe that exercises the HTTP path
+        // (TLS handshake / keep-alive setup) without sending tokens
+        // through the model. The 1-token CUDA-graph warmup envisioned
+        // by arXiv:2604.06664 Foundry is reserved for follow-up work —
+        // /health hitting the FastAPI router is enough to keep the
+        // connection pool warm and surface a Ready/Unavailable signal
+        // through the same tracing channel as the SSB writer in 4B.
+        let url = self.endpoint("/health");
+        let client = self.health_http.clone();
+        Box::pin(async move {
+            // 1s timeout for warm: we already accept failure silently
+            // via the tracing::warn line, so a long hang would only
+            // delay subsequent scheduling decisions. Falls back to the
+            // adapter's default health_http timeout (5s) when reqwest
+            // does not honour the per-call timeout (it does on every
+            // currently-supported transport).
+            let started = OsClock.instant_now();
+            let response = client
+                .head(&url)
+                .timeout(std::time::Duration::from_secs(1))
+                .send()
+                .await
+                .map_err(|e| RuntimeAdapterError::Network(e.to_string()))?;
+            if !response.status().is_success() {
+                // Sidecars built before the HEAD route landed return
+                // 405 Method Not Allowed; fall back to GET so the warm
+                // path stays compatible with the abliterated server.py.
+                if response.status().as_u16() == 405 {
+                    let response = client
+                        .get(&url)
+                        .timeout(std::time::Duration::from_secs(1))
+                        .send()
+                        .await
+                        .map_err(|e| RuntimeAdapterError::Network(e.to_string()))?;
+                    if !response.status().is_success() {
+                        return Err(RuntimeAdapterError::Other(format!(
+                            "sidecar /health (GET fallback) returned HTTP {}",
+                            response.status().as_u16()
+                        )));
+                    }
+                } else {
+                    return Err(RuntimeAdapterError::Other(format!(
+                        "sidecar /health (HEAD) returned HTTP {}",
+                        response.status().as_u16()
+                    )));
+                }
+            }
+            tracing::debug!(
+                target = "runtime_adapter_sidecar",
+                e3_runtime_handoff_event = "runtime_prewarm_complete",
+                backend = "sidecar",
+                duration_ms = started.elapsed().as_millis() as u64,
+                "sidecar warm() ping ok"
+            );
+            Ok(())
         })
     }
 

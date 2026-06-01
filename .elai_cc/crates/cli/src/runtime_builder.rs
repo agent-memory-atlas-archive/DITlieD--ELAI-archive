@@ -337,6 +337,22 @@ pub(crate) fn build_runtime_with_plugin_state(
     if emit_output {
         runtime = runtime.with_hook_progress_reporter(Box::new(CliHookProgressReporter));
     }
+    // E-25 Tranche L (F.1.c): install ApprovalFatigueGuard substrate.
+    // Field-Some is opt-in here; the guard only fires when the env gate
+    // `ELAI_E25_APPROVAL_FATIGUE_GUARD_ENABLE` is also truthy. Default
+    // OFF (env-gate dormant), so this builder call is wire-dark.
+    runtime = runtime.with_approval_fatigue(
+        elai_orchestrator::architecture::approval_fatigue_guard::ApprovalFatigueGuard::with_defaults(),
+    );
+    // E-25 stubs F1c / F1a: wire SSB writer so guard emits land in the
+    // same DB the dashboard reads. Gated on ssb being Some -- when SSB
+    // init failed the emitter is simply absent (existing behavior for
+    // telemetry-disabled paths). Both guard env-gates (APPROVAL_FATIGUE
+    // and BASH_COMPLEXITY) are checked at the emit site in run_turn;
+    // no additional gate here.
+    if let Some(ssb_arc) = ssb.as_ref() {
+        runtime = runtime.with_ssb_writer(Arc::clone(ssb_arc));
+    }
     // Wire SessionTracer with file-based telemetry sink (interim; full SSB sink in later step).
     if let Some(persist_path) = runtime.session().persistence_path() {
         let telemetry_path = persist_path
@@ -525,3 +541,207 @@ pub(crate) enum BudgetPolicy {
 pub(crate) use elai_orchestrator::{
     apply_task_runner_wiring, build_task_runner_wiring, RuntimeWiring,
 };
+
+// ---------------------------------------------------------------------------
+// patch-1.14 — shared production agent pool installer.
+//
+// extracted from `run_subcommand.rs` so both `elai run` and `elai task` can
+// install the same AgentPoolBabyStepExecutor wiring without copy-paste drift.
+// without this helper the `elai task` subcommand fell through to
+// SyntheticBabyStepExecutor for any non-baby-step orchestrator dispatch and
+// the v5 swe-bench-pro driver could not exercise the real agent loop.
+//
+// the helper mutates `wiring.baby_step_executor` in place. on any soft
+// failure (ipc dir create fails, agent binary missing, cloud creds absent in
+// the cloud arm) it logs a tracing::warn! and returns Ok(()) so the caller
+// keeps running with the synthetic fallback exactly as it did before. only
+// hard failures (anyhow ? propagation) abort the wiring step.
+// ---------------------------------------------------------------------------
+
+/// install the production AgentPoolBabyStepExecutor into `wiring`. soft-fails
+/// to synthetic when the agent binary or ipc dir is unavailable; returns Err
+/// only on unexpected wiring failures the caller cannot recover from.
+pub(crate) async fn install_production_agent_pool(
+    wiring: &mut RuntimeWiring,
+    project_root: &Path,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    let ipc_dir = project_root
+        .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+        .join("sessions")
+        .join(session_id)
+        .join("ipc");
+    if let Err(e) = std::fs::create_dir_all(&ipc_dir) {
+        tracing::warn!(
+            path = %ipc_dir.display(),
+            error = %e,
+            "agent pool: failed to create IPC socket dir; executor will fall back to synthetic"
+        );
+        return Ok(());
+    }
+    let agent_bin = match elai_orchestrator::locate_default_agent_binary() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "agent pool: agent binary not found; using synthetic fallback executor"
+            );
+            return Ok(());
+        }
+    };
+    let gateway = Arc::new(tokio::sync::Mutex::new(
+        elai_orchestrator::ipc_gateway::IpcGateway::with_os_clock(
+            ipc_dir.clone(),
+            elai_orchestrator::sandbox::SelfModificationLocks::new(),
+        ),
+    ));
+    let rpc_server: Arc<dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static> =
+        if std::env::var("ELAI_GROUNDING_BACKEND").as_deref() == Ok("cloud") {
+            match elai_providers::AnthropicClient::from_env() {
+                Ok(client) => build_agent_pool_rpc_server(client, wiring.ssb.clone()),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "agent pool: cloud credentials unavailable; using NoOpAgentRpcServer"
+                    );
+                    Arc::new(elai_orchestrator::NoOpAgentRpcServer)
+                }
+            }
+        } else {
+            let base_url = std::env::var("ANTHROPIC_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:8100".to_string());
+            let client =
+                elai_providers::AnthropicClient::new("local-dummy").with_base_url(base_url);
+            build_agent_pool_rpc_server(client, wiring.ssb.clone())
+        };
+    let executor = elai_orchestrator::build_default_baby_step_executor(
+        OsEntropy,
+        agent_bin.clone(),
+        ipc_dir.clone(),
+        gateway,
+        rpc_server,
+    );
+    wiring.baby_step_executor = Some(executor);
+    tracing::info!(
+        agent_bin = %agent_bin.display(),
+        "agent pool: production AgentPoolBabyStepExecutor installed"
+    );
+    Ok(())
+}
+
+/// build the ProductionAgentRpcServer + InProcessToolDispatcher chain shared
+/// by the cloud and sidecar arms of `install_production_agent_pool`. mirrors
+/// the original inline block from run_subcommand.rs byte-for-byte (wraps
+/// InProcessToolDispatcher in IpcToolDispatcherAdapter per C-13 D1 Option B,
+/// installs the canonical DEFAULT_BABY_STEP_SYSTEM_PROMPT per patch-R5).
+fn build_agent_pool_rpc_server(
+    client: elai_providers::AnthropicClient,
+    ssb: Arc<elai_orchestrator::Ssb>,
+) -> Arc<dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static> {
+    let model =
+        std::env::var("ELAI_MODEL").unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
+    let max_tokens = std::env::var("ELAI_MAX_TOKENS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(4096);
+    let dispatcher: Arc<dyn elai_core::tool_dispatcher::ToolDispatcher> = {
+        struct NoOpIntegrationRunner;
+        impl elai_tools::tiered_validation::IntegrationCommandRunner for NoOpIntegrationRunner {
+            fn run_integration<'a>(
+                &'a self,
+                _level: &'a str,
+                _dir: &'a Path,
+            ) -> Pin<
+                Box<
+                    dyn Future<
+                            Output = elai_tools::tiered_validation::IntegrationRunOutcome,
+                        > + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async {
+                    elai_tools::tiered_validation::IntegrationRunOutcome {
+                        passed: false,
+                        rules_fired: 0,
+                        stderr_snippet: Some(
+                            "integration tier not wired (NoOpIntegrationRunner)".to_string(),
+                        ),
+                    }
+                })
+            }
+        }
+        let validator = elai_tools::dispatcher::default_validator(
+            Arc::new(NoOpIntegrationRunner),
+            "rust",
+        );
+        let inner: Arc<dyn elai_core::tool_dispatcher::ToolDispatcher> = Arc::new(
+            elai_tools::dispatcher::InProcessToolDispatcher::new(Arc::new(validator)),
+        );
+        Arc::new(elai_tools::adaptive_tool::IpcToolDispatcherAdapter::new(
+            inner, ssb,
+        ))
+    };
+    // s-22600 Tranche G G.3 (audit B.4-CLI followup): wire
+    // `SymbolGraphCacheAdapter` at CLI startup so the
+    // TOOL_SYMBOL_DSL_QUERY + TOOL_SYMBOL_DATAFLOW_IMPACT dispatcher
+    // arms hit real cache data instead of returning typed empty
+    // responses (pre-B.4 behaviour).
+    //
+    // Cache choice: the orchestrator's adapter wraps the JSON-rooted
+    // `elai_orchestrator::symbol_graph::SymbolGraphCache` (E-40),
+    // distinct from the SQLite-rooted
+    // `elai_knowledge::symbol_graph::cache::SymbolGraphCache` (B-29).
+    // The JSON view is built by `.claude/tools/codebase_mapper.py`
+    // (per CLAUDE.md "Codebase map" pointer); when the file is absent
+    // (fresh checkout / never regenerated) we skip the adapter wire and
+    // pre-B.4 behaviour (typed-empty responses) is preserved. No new
+    // env gate -- the on-disk JSON file is the gate.
+    let symbol_graph_adapter: Option<
+        std::sync::Arc<dyn elai_knowledge::symbol_graph_adapter::SymbolGraphAdapter>,
+    > = {
+        // Mirror `scip_cmd.rs` DEFAULT_GRAPH_PATH so the CLI wire and
+        // the `elai scip *` subcommands point at the same file.
+        let graph_path = std::path::PathBuf::from(".claude/tools/elai_graph.json");
+        if !graph_path.exists() {
+            tracing::debug!(
+                graph = %graph_path.display(),
+                "G.3 elai_graph.json absent; symbol-graph tool arms degrade to empty"
+            );
+            None
+        } else {
+            match elai_orchestrator::symbol_graph::SymbolGraphCache::load(&graph_path) {
+                Ok(cache) => {
+                    let cache_arc =
+                        std::sync::Arc::new(std::sync::Mutex::new(cache));
+                    // B-29.5 soft p99 latency budget per the
+                    // `SymbolGraphCacheAdapter::new` docstring.
+                    let max_query_ms: u64 = 500;
+                    Some(std::sync::Arc::new(
+                        elai_orchestrator::symbol_graph::SymbolGraphCacheAdapter::new(
+                            cache_arc,
+                            max_query_ms,
+                        ),
+                    ))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        graph = %graph_path.display(),
+                        "G.3 SymbolGraphCache::load failed; symbol-graph tool arms degrade to empty"
+                    );
+                    None
+                }
+            }
+        }
+    };
+    let mut server = elai_orchestrator::ProductionAgentRpcServer::new(
+        client, dispatcher, model, max_tokens,
+    )
+    .with_system_prompt(
+        elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
+    );
+    if let Some(adapter) = symbol_graph_adapter {
+        server = server.with_symbol_graph_adapter(adapter);
+    }
+    Arc::new(server)
+}

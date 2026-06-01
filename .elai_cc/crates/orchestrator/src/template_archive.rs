@@ -23,8 +23,7 @@
 //! No `.unwrap()`/`.expect()` in non-test code. Determinism: the archive
 //! is a pure data structure; no I/O, no clock, no thread_rng().
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 /// Latency band a candidate falls into at evaluation time. Snake-case
@@ -148,7 +147,7 @@ pub enum AdmitResult {
 /// determinism here).
 #[derive(Debug, Default)]
 pub struct MapElitesArchive {
-    cells: HashMap<BehaviourDescriptor, ArchiveEntry>,
+    cells: FxHashMap<BehaviourDescriptor, ArchiveEntry>,
 }
 
 impl MapElitesArchive {
@@ -156,7 +155,7 @@ impl MapElitesArchive {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            cells: HashMap::new(),
+            cells: FxHashMap::default(),
         }
     }
 

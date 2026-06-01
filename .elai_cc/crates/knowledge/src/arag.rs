@@ -534,3 +534,50 @@ fn format_snippet(parts: &[String]) -> String {
     }
     format!("... {} ...", parts.join(" ... "))
 }
+
+// ---------------------------------------------------------------------------
+// Corpus population from DKG
+// ---------------------------------------------------------------------------
+
+/// Populate the A-RAG in-memory corpus from a `DkgEngine` so the
+/// `keyword_search` / `semantic_search` / `query_pipeline` methods return
+/// non-empty results.
+///
+/// Wires the previously-zero `add_chunk` call surface: each DKG node becomes
+/// one [`AragChunk`] with `chunk_id = node_<id>`, a `content` field composed
+/// of the symbol kind + name + signature (enough for keyword scoring), and
+/// an empty `embedding` vector.
+///
+/// Embeddings are intentionally left empty: producing real per-chunk
+/// embeddings requires the dual-vector ONNX models which are not staged on
+/// every host. The semantic_search path filters out empty-embedding chunks
+/// (see [`AragOrchestrator::semantic_search`] / [`norm_proxy_scores`]) so the
+/// pipeline still degrades gracefully when no embedder is installed. A
+/// future pass MAY extend this helper to thread a `&OrtSession` through and
+/// populate embeddings at ingest time.
+///
+/// Returns the number of chunks added.
+pub fn populate_corpus_from_dkg(
+    dkg: &crate::DkgEngine,
+    arag: &mut AragOrchestrator,
+) -> Result<usize, KnowledgeError> {
+    let nodes = dkg.nodes()?;
+    let mut added: usize = 0;
+    for node in nodes {
+        // Compose human-readable content for keyword scoring. Format mirrors
+        // the snippet shape consumed by `extract_keyword_snippet`.
+        let kind_str = format!("{:?}", node.kind);
+        let content = if node.signature.trim().is_empty() {
+            format!("{} {}", kind_str, node.symbol_name)
+        } else {
+            format!("{} {} {}", kind_str, node.symbol_name, node.signature)
+        };
+        arag.add_chunk(AragChunk {
+            chunk_id: format!("node_{}", node.node_id),
+            content,
+            embedding: Vec::new(),
+        });
+        added = added.saturating_add(1);
+    }
+    Ok(added)
+}

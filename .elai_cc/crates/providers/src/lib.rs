@@ -69,7 +69,7 @@ pub use pricing::{
     estimate_cost_usd, estimate_cost_usd_with_pricing, format_usd, pricing_for_model,
     summary_lines, summary_lines_for_model, ModelPricing, UsageCostEstimate,
 };
-pub use vram_tier::{detect_vram_tier, VramDetectionError};
+pub use vram_tier::{detect_vram_gb, detect_vram_tier, VramDetectionError};
 pub use types::{
     CacheControl, ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent,
     ContentBlockStopEvent, InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent,

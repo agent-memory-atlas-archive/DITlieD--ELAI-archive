@@ -21,6 +21,15 @@
   import ClaimConfidenceChip from '$lib/components/ClaimConfidenceChip.svelte';
   import HonestCorrectionBlock from '$lib/components/HonestCorrectionBlock.svelte';
   import SycophancyGuardBadge from '$lib/components/SycophancyGuardBadge.svelte';
+  // FINAL TRANCHE B2 / E-2 -- FramePacer is imported here so the symbol
+  // is visible to the response-card render scope; the actual instance
+  // lives in commands.svelte.ts (_runStreamingPath) where the per-stream
+  // chunk callback is wired. Re-importing keeps tree-shaking honest and
+  // surfaces the dependency at the window scope. Wire-dark behind
+  // VITE_ELAI_FRAME_PACER_ENABLE=1 per frame_pacer.ts:17.
+  import { FramePacer as _FramePacer } from '$lib/streaming/frame_pacer';
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _framePacerSymbolUsed = _FramePacer;
 
   // Live recent-tasks list (was a mock import). Polled every 10s.
   let recentTasks = $state<RecentTask[]>([]);
@@ -36,7 +45,17 @@
     last_precompact_thresholds: [],
     prompt_injection_check_status: 'not_run',
     runtime_choice_badge: '',
+    // E-3 sub-phase 4B — role + backend split surface. role drives the
+    // user-visible badge; backend stays hidden until the drawer opens.
+    current_role: null,
+    current_runtime: null,
   });
+  // E-3 sub-phase 4B — drawer toggle for the role badge. Default off
+  // keeps MODEL hidden until the developer clicks to expand (the
+  // expose-via-drawer pattern from the Cursor/Aider line in the
+  // improvement-sweep report — developer audience but the surface
+  // stays uncluttered by default).
+  let showRoleDrawer = $state<boolean>(false);
   onMount(() => {
     let alive = true;
     async function refresh() {
@@ -78,6 +97,21 @@
     // C-42 ships, the backend command will downgrade "passed" to a yellow
     // advisory after 24h. Today the row reads "not_run" by default.
     return contextSnapshot.prompt_injection_check_status;
+  });
+  // E-3 sub-phase 4B — role badge label. Voice-section identity
+  // (planner / coder / critic / default) so the badge reads as the
+  // ROLE not the underlying MODEL. Empty when the orchestrator has
+  // not yet emitted a wrapped dispatch.
+  const roleBadgeLabel = $derived.by(() => {
+    const role = contextSnapshot.current_role;
+    if (!role) return '';
+    switch (role) {
+      case 'coder': return 'executor running';
+      case 'critic': return 'auditor reviewing';
+      case 'planner': return 'planner thinking';
+      case 'default': return 'agent ready';
+      default: return `role: ${role}`;
+    }
   });
 
   // ----------------------------------------------------------------
@@ -893,6 +927,30 @@
       {#if runtimeBadgeLabel}
         <span class="status-badge status-badge--runtime status-badge--{contextSnapshot.runtime_choice_badge}">
           runtime: {runtimeBadgeLabel}
+        </span>
+      {/if}
+      <!-- E-3 sub-phase 4B — ROLE badge. Surfaces voice-section role
+           (planner / coder / critic) instead of the underlying model
+           name. Click to expand a drawer that shows the backend
+           identity (sidecar / anthropic_api / etc.). Per E-3 report
+           "expose-via-drawer not primary surface" pattern. -->
+      {#if roleBadgeLabel}
+        <button
+          type="button"
+          class="status-badge status-badge--role"
+          data-testid="role-badge"
+          aria-expanded={showRoleDrawer}
+          aria-label={showRoleDrawer
+            ? `Hide backend detail (currently ${contextSnapshot.current_runtime ?? 'unknown'})`
+            : 'Show backend detail'}
+          onclick={() => { showRoleDrawer = !showRoleDrawer; }}
+        >
+          {roleBadgeLabel}
+        </button>
+      {/if}
+      {#if showRoleDrawer && contextSnapshot.current_runtime}
+        <span class="status-badge status-badge--backend" data-testid="role-badge-drawer">
+          backend: {contextSnapshot.current_runtime}
         </span>
       {/if}
       <span class="status-badge status-badge--injection status-badge--injection-{injectionStatusLabel}">

@@ -70,6 +70,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -725,11 +726,7 @@ fn aggregate_provenance(rows: &[AdvRmCorpusEntry]) -> Vec<(String, u32)> {
 /// deterministic timestamps via the seed dataset, NOT via this
 /// function (mirrors the sycophancy_runner pattern).
 fn wall_clock_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,37 @@ use super::policy::AuthzPolicy;
 use super::types::{AuthzVerdict, DocContext};
 use crate::mcp::gate::ToolGate;
 
+/// Tranche B-6 quad C-42 SHIPPABLE-NOW -- per-call SSB emit hook.
+///
+/// The caller-side runtime guard. Implementations route to
+/// `crates/orchestrator/src/authz_ssb_adapter.rs` (or equivalent) which
+/// translates the tuple into an [`McpAuthzEvent`] SSB row gated by
+/// `ELAI_C42_MCP_AUTHZ_EMIT_ENABLE`. `None` is the default (plugins-only
+/// builds, tests, the offline fuzz harness).
+///
+/// Defense-in-depth boundary: this trait keeps the SSB-emit responsibility
+/// on the CALLER side of [`check_authz`], preserving the documented purity
+/// of the checker function (see `checker.rs:1-9`). Same pattern as the
+/// existing `CaseBaseSsbEmitter` (C-47) and `ToolGateSsbEmitter` (C-35).
+///
+/// Proc-macro attribute `#[authz(states="...", actors="...")]` declarative
+/// surface is DEFERRED to C-42b -- the runtime guard achieves the same
+/// outcome without the first-proc-macro friction.
+pub trait McpAuthzSsbEmitter: Send + Sync {
+    /// Emit one [`McpAuthzEvent`] SSB row for the just-decided composed
+    /// verdict. `layer` is one of `"allow"` / `"authz"` / `"tool_gate"`
+    /// (mirrors [`ComposedVerdict::rejecting_layer_label`]).
+    /// `deny_reason` is `None` on allow rows.
+    fn emit_authz_decision(
+        &self,
+        tool: &str,
+        fsm_state: &str,
+        actor: &str,
+        layer: &str,
+        deny_reason: Option<&str>,
+    );
+}
+
 /// Three-state composed verdict carrying the rejecting layer when denied.
 /// The string variants are stable wire labels suitable for SSB row
 /// attribution (`gateway_policy_denied.deny_reason_hash` source).
@@ -81,23 +112,55 @@ pub fn compose_with_tool_gate(
     policy: &AuthzPolicy,
     gate: Option<&ToolGate>,
 ) -> ComposedVerdict {
+    compose_with_tool_gate_emit(role, tool, doc_context, fsm_state, policy, gate, None)
+}
+
+/// Tranche B-6 quad C-42 SHIPPABLE-NOW -- composed gate with optional
+/// per-call SSB emit.
+///
+/// Identical decision logic to [`compose_with_tool_gate`] but threads an
+/// optional [`McpAuthzSsbEmitter`] through. When `Some(emitter)`, the
+/// composed verdict is mirrored into an [`McpAuthzEvent`] SSB row
+/// (Kind::AuthzCheckPassed on Allow, Kind::AuthzCheckFailed on either
+/// deny). When `None`, behaviour is byte-identical to the legacy
+/// [`compose_with_tool_gate`] surface -- preserves zero-overhead for
+/// plugins-only builds and the offline fuzz harness.
+///
+/// Wire-dark unless the orchestrator-side adapter is configured with
+/// `ELAI_C42_MCP_AUTHZ_EMIT_ENABLE=1`; the emitter itself is the env-gate
+/// site (this function is purely a router).
+pub fn compose_with_tool_gate_emit(
+    role: &str,
+    tool: &str,
+    doc_context: Option<&DocContext>,
+    fsm_state: &str,
+    policy: &AuthzPolicy,
+    gate: Option<&ToolGate>,
+    emitter: Option<&dyn McpAuthzSsbEmitter>,
+) -> ComposedVerdict {
     let authz = check_authz(role, tool, doc_context, policy);
-    match authz {
-        AuthzVerdict::Deny { reason } => {
-            return ComposedVerdict::DeniedByAuthz { reason };
-        }
-        AuthzVerdict::Allow => {}
-    }
-    let Some(gate) = gate else {
-        // No gate wired — authz alone decided. Allow.
-        return ComposedVerdict::Allow;
+    let verdict = match authz {
+        AuthzVerdict::Deny { reason } => ComposedVerdict::DeniedByAuthz { reason },
+        AuthzVerdict::Allow => match gate {
+            None => ComposedVerdict::Allow,
+            Some(gate) => match gate.check_tool_allowed(fsm_state, tool) {
+                Ok(()) => ComposedVerdict::Allow,
+                Err(e) => ComposedVerdict::DeniedByToolGate {
+                    reason: e.to_string(),
+                },
+            },
+        },
     };
-    if let Err(e) = gate.check_tool_allowed(fsm_state, tool) {
-        return ComposedVerdict::DeniedByToolGate {
-            reason: e.to_string(),
-        };
+    if let Some(em) = emitter {
+        em.emit_authz_decision(
+            tool,
+            fsm_state,
+            role,
+            verdict.rejecting_layer_label(),
+            verdict.deny_reason(),
+        );
     }
-    ComposedVerdict::Allow
+    verdict
 }
 
 #[cfg(test)]
@@ -150,4 +213,91 @@ doc_owners = []
     // Gate-aware composition is exercised in the contract test
     // (crates/contracts/tests/c42_semantic_gateway_contract.rs) which has
     // the production ToolGate fixture available.
+
+    // === Tranche B-6 quad C-42 SHIPPABLE-NOW: emitter-hook coverage ===
+
+    use std::sync::Mutex;
+
+    struct CapturingEmitter {
+        rows: Mutex<Vec<(String, String, String, String, Option<String>)>>,
+    }
+
+    impl CapturingEmitter {
+        fn new() -> Self {
+            Self { rows: Mutex::new(Vec::new()) }
+        }
+    }
+
+    impl McpAuthzSsbEmitter for CapturingEmitter {
+        fn emit_authz_decision(
+            &self,
+            tool: &str,
+            fsm_state: &str,
+            actor: &str,
+            layer: &str,
+            deny_reason: Option<&str>,
+        ) {
+            let mut g = self.rows.lock().expect("lock");
+            g.push((
+                tool.to_string(),
+                fsm_state.to_string(),
+                actor.to_string(),
+                layer.to_string(),
+                deny_reason.map(|s| s.to_string()),
+            ));
+        }
+    }
+
+    #[test]
+    fn emit_hook_fires_once_on_allow() {
+        let em = CapturingEmitter::new();
+        let v = compose_with_tool_gate_emit(
+            "planner",
+            "knowledge.search",
+            None,
+            "planning",
+            &policy(),
+            None,
+            Some(&em),
+        );
+        assert!(v.is_allow());
+        let rows = em.rows.lock().expect("lock");
+        assert_eq!(rows.len(), 1, "exactly one emit per composed decision");
+        assert_eq!(rows[0].3, "allow");
+        assert!(rows[0].4.is_none(), "allow rows carry no deny_reason");
+    }
+
+    #[test]
+    fn emit_hook_fires_once_on_authz_deny() {
+        let em = CapturingEmitter::new();
+        let v = compose_with_tool_gate_emit(
+            "ghost",
+            "fs.read",
+            None,
+            "executing",
+            &policy(),
+            None,
+            Some(&em),
+        );
+        assert!(!v.is_allow());
+        let rows = em.rows.lock().expect("lock");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].3, "authz");
+        assert!(rows[0].4.as_deref().unwrap_or("").contains("role-not-declared"));
+    }
+
+    #[test]
+    fn legacy_wrapper_is_emit_free() {
+        // The original `compose_with_tool_gate` surface stays byte-identical
+        // for callers that don't opt into the SSB emit hook.
+        let v = compose_with_tool_gate(
+            "planner",
+            "knowledge.search",
+            None,
+            "planning",
+            &policy(),
+            None,
+        );
+        assert!(v.is_allow());
+    }
 }

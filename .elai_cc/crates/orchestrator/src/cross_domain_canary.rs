@@ -15,8 +15,7 @@
 //! is set. Live family selection RUNPOD-PENDING (requires per-family
 //! score history from the orchestrator).
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 /// Default relative-delta threshold (-20% per E-7 plan task 7).
@@ -61,7 +60,7 @@ pub enum TransferDecision {
 /// Block.
 #[must_use]
 pub fn check(
-    family_score_delta: &HashMap<FamilyLabel, f64>,
+    family_score_delta: &FxHashMap<FamilyLabel, f64>,
     threshold: &TransferThreshold,
 ) -> TransferDecision {
     for (_family, delta) in family_score_delta {
@@ -83,7 +82,7 @@ mod tests {
 
     #[test]
     fn no_regression_allows() {
-        let mut deltas = HashMap::new();
+        let mut deltas = FxHashMap::default();
         deltas.insert("python".to_string(), 0.05);
         deltas.insert("rust".to_string(), 0.10);
         assert_eq!(check(&deltas, &threshold()), TransferDecision::Allow);
@@ -91,7 +90,7 @@ mod tests {
 
     #[test]
     fn small_regression_within_threshold_allows() {
-        let mut deltas = HashMap::new();
+        let mut deltas = FxHashMap::default();
         // -2% is above both thresholds (-20% rel / -5% abs).
         deltas.insert("python".to_string(), -0.02);
         deltas.insert("rust".to_string(), 0.10);
@@ -100,7 +99,7 @@ mod tests {
 
     #[test]
     fn large_regression_blocks() {
-        let mut deltas = HashMap::new();
+        let mut deltas = FxHashMap::default();
         // -25% is below the -20% relative threshold.
         deltas.insert("python".to_string(), -0.25);
         assert_eq!(
@@ -111,7 +110,7 @@ mod tests {
 
     #[test]
     fn any_family_regression_blocks() {
-        let mut deltas = HashMap::new();
+        let mut deltas = FxHashMap::default();
         deltas.insert("python".to_string(), 0.05);
         // -10% trips -5% absolute.
         deltas.insert("rust".to_string(), -0.10);

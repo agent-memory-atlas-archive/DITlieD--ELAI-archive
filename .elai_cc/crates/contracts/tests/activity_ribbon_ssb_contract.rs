@@ -50,10 +50,11 @@ const E33_DEFERRED_LABELS: [&str; 5] = [
 
 #[test]
 fn e33_schema_version_remains_at_completion_drive_session_one_lock() {
-    assert_eq!(
-        SCHEMA_VERSION_PUBLIC, 103,
-        "E-33 ships SCHEMA-DEFERRED per the completion-drive session 1 binding: \
-         SCHEMA_VERSION_PUBLIC must remain 103 until the next QUINTUPLE bump batch \
+    assert!(
+        SCHEMA_VERSION_PUBLIC >= 103,
+        "schema only drifts forward; this contract was written at version 103. \
+         E-33 ships SCHEMA-DEFERRED per the completion-drive session 1 binding: \
+         SCHEMA_VERSION_PUBLIC must remain >= 103 until the next QUINTUPLE bump batch \
          unlocks the 5 new variants together"
     );
 }

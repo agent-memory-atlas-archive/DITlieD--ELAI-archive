@@ -31,8 +31,12 @@
 pub mod checkpoint_migrator;
 pub mod compact_lock;
 pub mod continue_as_new;
+pub mod error_taxonomy;
 pub mod idempotent_dispatcher;
+pub mod observability;
+pub mod reliability;
 pub mod resume_validator;
+pub mod saga;
 
 pub use checkpoint_migrator::{
     migrate_checkpoint, CheckpointMigrator, MigratorError, TransformFn,
@@ -43,7 +47,23 @@ pub use continue_as_new::{
     continue_as_new_if_needed, ContinueAsNewError, ContinueAsNewOutcome, NewSessionHandle,
     DEFAULT_EVENT_COUNT_CEILING, DEFAULT_PHASE_COUNT_CEILING,
 };
+pub use error_taxonomy::{
+    emit_classification, truncate_message, ErrorClass, ToolErrorClassifier,
+};
 pub use idempotent_dispatcher::{
     call_shape_hash, CachedToolResult, IdempotencyError, IdempotentDispatcher,
 };
+pub use observability::{
+    durability_observability_enabled, notify_agent_reliability_metrics,
+    notify_checkpoint_lazy_migrated, notify_compact_lock_contended, notify_compensation_failed,
+    notify_compensation_logged, notify_compensation_replayed, notify_session_dag_continue_as_new,
+    notify_tool_error_classified, notify_tool_idempotency_hit,
+    notify_tool_idempotency_replayed_irreversible,
+};
+pub use reliability::{
+    compute_metrics, emit_rollup, AgentReliability, ReliabilityMetrics, ReliabilityWindow,
+};
 pub use resume_validator::{validate_checkpoint, CheckpointValidity, ResumeValidatorError};
+pub use saga::{
+    Committed, Failed, Pending, SagaAction, SagaError, SagaId, SagaLogger, SagaTicket,
+};

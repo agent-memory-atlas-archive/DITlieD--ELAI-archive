@@ -335,16 +335,21 @@ pub async fn ssb_backfill_signals(
 }
 
 /// Default locked-keys registry path (matches `commands_d9`
-/// convention). Walks ancestors of cwd for `scripts/locked_keys_registry.toml`.
+/// convention). Walks ancestors of the binary location for
+/// `scripts/locked_keys_registry.toml`. Binary-relative (not cwd-relative)
+/// so the lookup still works when elai.bat reset cwd to %USERPROFILE%.
 fn default_registry_path() -> PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    for ancestor in cwd.ancestors() {
+    let start = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    for ancestor in start.ancestors() {
         let candidate = ancestor.join("scripts").join("locked_keys_registry.toml");
         if candidate.exists() {
             return candidate;
         }
     }
-    cwd.join("scripts").join("locked_keys_registry.toml")
+    start.join("scripts").join("locked_keys_registry.toml")
 }
 
 #[cfg(test)]

@@ -29,6 +29,27 @@ mod auth;
 mod c17_lifecycle;
 mod help;
 mod live_cli;
+// T12a: SSB adapter structs (SsbRerankerNotifier / NoopRerankerNotifier /
+// SsbDegradationNotifier) extracted from live_cli.rs. Re-exported via
+// `pub(crate) use crate::live_cli::*;` below through live_cli.rs glob.
+pub(crate) mod ssb_notifiers;
+// T12a: HookAbortMonitor + clock_to_epoch_ms extracted from live_cli.rs.
+// Re-exported via `pub(crate) use crate::live_cli::*;` below through
+// live_cli.rs glob.
+pub(crate) mod hook_abort;
+// T12b: MCP glue layer (RuntimeMcpState + request structs + tool-definition
+// builders + permission-mode helpers) extracted from live_cli.rs. Re-exported
+// via `pub(crate) use crate::live_cli::*;` below through live_cli.rs glob, so
+// `crate::live_cli::RuntimeMcpState` resolves for runtime_builder.rs and
+// cli_consts.rs.
+pub(crate) mod mcp_glue;
+// T12c: free-standing report/format/utility functions extracted from live_cli.rs.
+// Re-exported via `pub(crate) use crate::live_cli::*;` below through live_cli.rs glob.
+pub(crate) mod report_fns;
+// T12d: `LiveCli::build_local_knowledge_stack` extracted from live_cli.rs as a
+// separate `impl LiveCli` block. No re-export needed — the associated fn stays
+// on `LiveCli`, so the `Self::`/`LiveCli::` call paths resolve via the type.
+pub(crate) mod knowledge_stack;
 mod measure;
 mod pipeline_subcommand;
 mod symbol_graph;
@@ -36,6 +57,10 @@ mod progress;
 mod resume;
 mod run_subcommand;
 mod runtime_builder;
+// E-49 SWE-Bench Pro v5 driver — non-interactive task submission with
+// FSM + per-role runtime overrides. Subprocess-wrap surface for the
+// Python v5 driver. Composes on `start_task_runner` + B-37 toml-edit.
+mod task_cmd;
 mod wip_squash_subcommand;
 // C-27: T(-1)+T-0 wiring contract audit dispatcher.
 mod wiring_audit;
@@ -206,8 +231,23 @@ mod farm_adv_rm;
 mod bench_ablation_cmd;
 mod tier_eval_cmd;
 mod critic_report;
+// B-15 tranche J (orchestrate s-22600): per-arm wrapper layer that funnels
+// the eleven bench / eval / critic CliAction dispatch arms through one
+// module. main.rs `fn run` calls bench_cmd::run_<x>(...); the underlying
+// bench_*.rs / tier_eval_cmd / critic_report `run` fns are left untouched
+// so smoke tests (tests/bench_prmbench_smoke.rs etc) still compile.
+mod bench_cmd;
+// E-47: LoRA ship-gate dispatcher. Reads [finetune.lora] from
+// elai_cc.toml + evaluates triple-AND gate + emits SSB row when
+// ELAI_LORA_SHIP_GATE_ENABLE=1.
+mod lora_gate_check_cmd;
+// E-25 Tranche C (C.4): edit_checkpoints CLI surface. `elai
+// checkpoint <list|rewind>`. Wire-dark default OFF for SSB emit;
+// inspection paths work regardless of the gate.
+mod checkpoint_cmd;
 // E-7: darwinian-evolve substrate exerciser. See E-7-decisions.md DECISION-13.
-#[cfg(feature = "darwinian-evolve")]
+// mod is always compiled; the dispatch fn uses #[cfg] arms internally so
+// feature-off builds never pull in elai_orchestrator::darwinian_bai.
 mod darwin_loop_cmd;
 // E-9: external agent-eval benchmark suite (11 suites; SWE-Bench Pro
 // primary; RUNPOD-PENDING live runs). See workflow/reasoning/E-9-decisions.md.
@@ -236,18 +276,35 @@ mod tool_formatting;
 // helper that emits paired SSB beacons (DkgRebuildStarted /
 // DkgRebuildComplete) around the rebuild path.
 mod dkg_lifecycle;
+// B-15 Tranche O.1 (orchestrate s-22600): five top-level helpers
+// (shortcoder_compress_text, cmd_incident_record, build_pr_review_action,
+// check_anthropic_gateway, CharEstimatorProvider) carved out of main.rs
+// to bound main.rs growth. `pub(crate) use crate::cli_helpers::*;` below
+// preserves runtime_client.rs:72 `use crate::*;` glob resolution for
+// shortcoder_compress_text (L348+L352 call sites).
+pub(crate) mod cli_helpers;
+// B-15 Tranche O / T11 COHORT 3: constants + type-alias block extracted from
+// main.rs. Consumers via `use crate::*;` continue to resolve through the
+// glob re-export alongside cli_helpers below.
+pub(crate) mod cli_consts;
+// B-15 Tranche O.2 (orchestrate s-22600): bench parser block (8 parsers +
+// validate_bool_arg helper, 722 LOC) carved out of args.rs L3358-L4081.
+// CliAction enum UNCHANGED; only parser fns relocate. args.rs L2018 calls
+// `args_bench::parse_bench_subcommand_args(...)` directly.
+pub(crate) mod args_bench;
+// Tranche O.3 (T10): five additional parser-family modules carved out of args.rs.
+pub(crate) mod args_symbol;
+pub(crate) mod args_pr;
+pub(crate) mod args_memory;
+pub(crate) mod args_critic;
+pub(crate) mod args_skills;
 
 #[cfg(test)]
 mod cli_tests;
 #[cfg(test)]
 mod sandbox_report_tests;
 
-use std::collections::BTreeSet;
 use std::env;
-use std::pin::Pin;
-use std::future::Future;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 pub(crate) use crate::args::*;
 pub(crate) use crate::auth::*;
@@ -260,154 +317,35 @@ pub(crate) use crate::tool_executor::*;
 pub(crate) use crate::tool_formatting::*;
 pub(crate) use crate::help::*;
 pub(crate) use crate::commands::{SlashCommand, resume_supported_slash_commands};
+// B-15 Tranche O.1: load-bearing re-export. runtime_client.rs:72 does
+// `use crate::*;` and calls shortcoder_compress_text at L348+L352; the
+// glob re-export below keeps that call site working byte-for-byte after
+// the helper moved into crate::cli_helpers. Removing this line breaks
+// runtime_client.rs compile (loud failure, not silent).
+pub(crate) use crate::cli_helpers::*;
+// T11 COHORT 3: re-export all constants + type aliases so every consumer
+// that reaches them via `use crate::*;` (args.rs, live_cli.rs, repl.rs, etc.)
+// continues to resolve without any import-site changes.
+pub(crate) use crate::cli_consts::*;
 
-pub(crate) const DEFAULT_MODEL: &str = "claude-opus-4-6";
-pub(crate) fn max_tokens_for_model(model: &str) -> u32 {
-    if model.contains("opus") {
-        32_000
-    } else {
-        64_000
-    }
-}
-pub(crate) const TOKEN_CHARS_PER_TOKEN: usize = 4;
-pub(crate) const BUDGET_OUTPUT_RESERVE: usize = 4096;
+// shortcoder_compress_text moved to crate::cli_helpers (Tranche O.1).
+// Available here via `pub(crate) use crate::cli_helpers::*;` above,
+// which also surfaces it through `use crate::*;` to runtime_client.rs.
 
-pub(crate) const FENCE_LANG_MAP: &[(&str, &str)] = &[
-    ("rust", "rust"), ("rs", "rust"),
-    ("python", "python"), ("py", "python"),
-    ("typescript", "typescript"), ("ts", "typescript"),
-    ("go", "go"), ("golang", "go"),
-    ("java", "java"),
-    ("csharp", "c_sharp"), ("cs", "c_sharp"), ("c#", "c_sharp"),
-    ("ruby", "ruby"), ("rb", "ruby"),
-];
+// CharEstimatorProvider struct + LlmProvider impl moved to
+// crate::cli_helpers (Tranche O.1). Re-exported via the glob above.
 
-pub(crate) fn shortcoder_compress_text(text: &str, sc: &elai_knowledge::ShortCoder, saved: &mut usize) -> usize {
-    if !text.contains("```") {
-        return text.len();
-    }
-    let mut effective_chars = 0usize;
-    let mut pos = 0;
-    while pos < text.len() {
-        if let Some(fence_start) = text[pos..].find("```") {
-            let abs_fence_start = pos + fence_start;
-            effective_chars += fence_start;
-            let after_ticks = abs_fence_start + 3;
-            let line_end = text[after_ticks..].find('\n')
-                .map(|i| after_ticks + i)
-                .unwrap_or(text.len());
-            let lang_tag = text[after_ticks..line_end].trim().to_lowercase();
-            let code_start = if line_end < text.len() { line_end + 1 } else { line_end };
-            let closing = text[code_start..].find("\n```").map(|i| code_start + i);
-            if let Some(close_pos) = closing {
-                let code_content = &text[code_start..close_pos];
-                let fence_end = close_pos + 4;
-                let after_close = text[fence_end..].find('\n')
-                    .map(|i| fence_end + i + 1)
-                    .unwrap_or(text.len());
-                let ts_lang = FENCE_LANG_MAP.iter()
-                    .find(|(tag, _)| *tag == lang_tag)
-                    .map(|(_, lang)| *lang);
-                if let Some(lang) = ts_lang {
-                    match sc.simplify(code_content, lang) {
-                        Ok(result) if result.was_simplified() => {
-                            let original_block_len = after_close - abs_fence_start;
-                            let simplified_block_len = 3 + lang_tag.len() + 1
-                                + result.simplified.len() + 1 + 3;
-                            if simplified_block_len < original_block_len {
-                                *saved += original_block_len - simplified_block_len;
-                            }
-                            effective_chars += simplified_block_len;
-                        }
-                        _ => {
-                            effective_chars += after_close - abs_fence_start;
-                        }
-                    }
-                } else {
-                    effective_chars += after_close - abs_fence_start;
-                }
-                pos = after_close;
-            } else {
-                effective_chars += text.len() - abs_fence_start;
-                pos = text.len();
-            }
-        } else {
-            effective_chars += text.len() - pos;
-            pos = text.len();
-        }
-    }
-    effective_chars
-}
-
-pub(crate) const DEFAULT_DATE: &str = "2026-03-31";
-pub(crate) const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
-pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub(crate) const BUILD_TARGET: Option<&str> = option_env!("TARGET");
-pub(crate) const GIT_SHA: Option<&str> = option_env!("GIT_SHA");
-pub(crate) const INTERNAL_PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
-pub(crate) const SESSION_HANDOFF_THRESHOLD: f64 = 0.85;
-pub(crate) const PLANS_DIR: &str = "plans";
-pub(crate) const PRIMARY_SESSION_EXTENSION: &str = "jsonl";
-pub(crate) const OLLAMA_DEFAULT_URL: &str = "http://localhost:11434";
-pub(crate) const DEGRADED_PROMPT_PREFIX: &str = "[degraded] using ollama fallback";
-pub(crate) const OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-pub(crate) const KNOWLEDGE_TOP_K: usize = 5;
-pub(crate) const EMPTY_TIER_TOML: &str = "\
-[tier1]\ndomains = []\npatterns = []\n\
-[tier2]\ndomains = []\nmin_so_score = 5\n\
-[tier4_blocklist]\ndomains = []\npatterns = []\n";
-
-pub(crate) struct CharEstimatorProvider;
-
-impl elai_providers::LlmProvider for CharEstimatorProvider {
-    fn complete<'a>(
-        &'a self,
-        _prompt: &'a str,
-        _config: &'a elai_providers::OllamaConfig,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, elai_providers::ApiError>> + Send + 'a>> {
-        Box::pin(async { Err(elai_providers::ApiError::Auth("CharEstimatorProvider does not support completion".into())) })
-    }
-
-    fn embed<'a>(
-        &'a self,
-        _text: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, elai_providers::ApiError>> + Send + 'a>> {
-        Box::pin(async { Err(elai_providers::ApiError::Auth("CharEstimatorProvider does not support embedding".into())) })
-    }
-
-    fn token_count(&self, text: &str) -> Result<usize, elai_providers::ApiError> {
-        Ok(text.len() / TOKEN_CHARS_PER_TOKEN)
-    }
-
-    fn token_count_estimate(&self, text: &str) -> usize {
-        text.len() / TOKEN_CHARS_PER_TOKEN
-    }
-}
-
-pub(crate) const LEGACY_SESSION_EXTENSION: &str = "json";
-pub(crate) const LATEST_SESSION_REFERENCE: &str = "latest";
-pub(crate) const SESSION_REFERENCE_ALIASES: &[&str] = &[LATEST_SESSION_REFERENCE, "last", "recent"];
-pub(crate) const CLI_OPTION_SUGGESTIONS: &[&str] = &[
-    "--help",
-    "-h",
-    "--version",
-    "-V",
-    "--model",
-    "--output-format",
-    "--permission-mode",
-    "--dangerously-skip-permissions",
-    "--allowedTools",
-    "--allowed-tools",
-    "--resume",
-    "--print",
-    "-p",
-];
-
-pub(crate) type AllowedToolSet = BTreeSet<String>;
-pub(crate) type RuntimePluginStateBuildOutput = (
-    Option<Arc<Mutex<live_cli::RuntimeMcpState>>>,
-    Vec<elai_tools::RuntimeToolDefinition>,
-);
+// All constants (DEFAULT_MODEL, max_tokens_for_model, TOKEN_CHARS_PER_TOKEN,
+// BUDGET_OUTPUT_RESERVE, FENCE_LANG_MAP, DEFAULT_DATE,
+// DEFAULT_OAUTH_CALLBACK_PORT, VERSION, BUILD_TARGET, GIT_SHA,
+// INTERNAL_PROGRESS_HEARTBEAT_INTERVAL, SESSION_HANDOFF_THRESHOLD, PLANS_DIR,
+// PRIMARY_SESSION_EXTENSION, OLLAMA_DEFAULT_URL, DEGRADED_PROMPT_PREFIX,
+// OLLAMA_PROBE_TIMEOUT, KNOWLEDGE_TOP_K, EMPTY_TIER_TOML,
+// LEGACY_SESSION_EXTENSION, LATEST_SESSION_REFERENCE,
+// SESSION_REFERENCE_ALIASES, CLI_OPTION_SUGGESTIONS) and type aliases
+// (AllowedToolSet, RuntimePluginStateBuildOutput) moved to
+// crate::cli_consts (T11 COHORT 3). Re-exported via
+// `pub(crate) use crate::cli_consts::*;` above.
 
 fn main() {
     if let Err(error) = run() {
@@ -423,36 +361,8 @@ fn main() {
     }
 }
 
-/// Gateway-rejection guard per E-24 Task 6.
-/// Warns if ANTHROPIC_BASE_URL is set to a known LLM gateway URL.
-/// Returns the gateway name if detected, None for safe or unknown URLs.
-/// Hard-block requires --strict-no-gateway flag (not yet wired; warn only for now).
-pub(crate) fn check_anthropic_gateway(base_url: &str) -> Option<String> {
-    let known_gateways = [
-        ("openrouter.ai", "openrouter"),
-        ("litellm", "litellm"),
-        ("portkey.ai", "portkey"),
-        ("openai.azure.com", "azure-openai"),
-    ];
-
-    let url_lower = base_url.to_lowercase();
-    for (pattern, name) in &known_gateways {
-        if url_lower.contains(pattern) {
-            return Some((*name).to_string());
-        }
-    }
-
-    // Known-safe URLs: localhost, loopback, or official Anthropic API.
-    if url_lower.starts_with("http://localhost:")
-        || url_lower.starts_with("http://127.0.0.1:")
-        || url_lower.starts_with("https://api.anthropic.com")
-    {
-        return None;
-    }
-
-    // Unknown URL -- warn but do not block (no --strict-no-gateway in args yet).
-    None
-}
+// check_anthropic_gateway moved to crate::cli_helpers (Tranche O.1).
+// Re-exported via the glob above; used at the run() entrypoint below.
 
 fn run() -> Result<(), anyhow::Error> {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -732,6 +642,29 @@ fn run() -> Result<(), anyhow::Error> {
                 export_ssb,
             })?
         }
+        // E-49 SWE-Bench Pro v5 driver — non-interactive task surface.
+        // Subprocess-wrap: composes B-37 per-role overrides + the
+        // production task_runner inline (no daemon), emits JSONL summary.
+        CliAction::Task {
+            problem_statement,
+            repo_root,
+            mode,
+            output_format,
+            max_wall_seconds,
+            executor_runtime,
+            auditor_runtime,
+        } => {
+            c17_lifecycle::install_lifecycle(&repo_root);
+            task_cmd::run_task_subcommand(task_cmd::TaskArgs {
+                problem_statement,
+                repo_root,
+                mode,
+                output_format,
+                max_wall_seconds,
+                executor_runtime,
+                auditor_runtime,
+            })?
+        }
         CliAction::RemoteSidecar => remote_sidecar::run_remote_sidecar()?,
         CliAction::HelpTopic(topic) => live_cli::print_help_topic(topic),
         CliAction::Help { output_format } => help::print_help(output_format)?,
@@ -746,6 +679,20 @@ fn run() -> Result<(), anyhow::Error> {
         // symbols from the existing dkg_nodes_pagerank table (C-3 ship).
         CliAction::SymbolGraphRank { project_root, top } => {
             symbol_graph::run_symbol_graph_rank(project_root, top)?
+        }
+        // B-29 Phase 5b: fork-exec shell wrappers around
+        // SymbolGraphCache + B-34 entry-point detection. Lets external
+        // scripts (Python eval, agents) call compute_impact_radius /
+        // compute_symbol_context / detect_entry_points with JSON output
+        // without going through the MCP/IPC bridge.
+        CliAction::SymbolImpact { project_root, target, depth, output_format } => {
+            symbol_graph::run_symbol_impact(project_root, target, depth, output_format)?
+        }
+        CliAction::SymbolContext { project_root, name, file, output_format } => {
+            symbol_graph::run_symbol_context(project_root, name, file, output_format)?
+        }
+        CliAction::EntryPoints { project_root, limit, output_format } => {
+            symbol_graph::run_entry_points(project_root, limit, output_format)?
         }
         // C-13: `elai wip-squash [--project-root <path>]` — squashes leading
         // WIP commits when count > 5. Invoked by the Python FSM hook chain
@@ -801,90 +748,34 @@ fn run() -> Result<(), anyhow::Error> {
         } => {
             audit_locked_keys::run(registry_path, files, use_staged, json, fail_fast)?;
         }
-        // D-19: `elai bench prmbench [--dataset PATH] [--hook mock] ...`
-        // PRMBench adversarial-gaming benchmark runner. Exits 0 on Pass,
-        // 1 on Fail; emits one SsbActionType::PrmBenchRunCompleted row.
-        CliAction::BenchPrmbench {
-            dataset,
-            hook,
-            output,
-            gating_threshold,
-            category,
-        } => {
-            bench_prmbench::run(dataset, hook, output, gating_threshold, category)?;
+        // B-15 tranche J (orchestrate s-22600): the eleven bench / eval /
+        // critic dispatch arms (BenchPrmbench D-19, BenchModeRouting D-21,
+        // BenchConformal D-22, BenchArc D-20, BenchRag E-17 SP6,
+        // BenchSycophancy D-23, BenchCanary D-24, BenchTamper D-25,
+        // BenchAblation + TierEval + CriticReport E-10 trio) funnel
+        // through `bench_cmd::run_*` wrappers. Doc-comments + dispatcher
+        // contracts live in bench_cmd.rs alongside each wrapper.
+        // EXCLUDED from this funnel: FarmAdvRm (D-28 sibling boundary)
+        // and DarwinLoop (#[cfg(feature = "darwinian-evolve")] both arms);
+        // both stay inline below.
+        CliAction::BenchPrmbench { dataset, hook, output, gating_threshold, category } => {
+            bench_cmd::run_bench_prmbench(dataset, hook, output, gating_threshold, category)?;
         }
-        // D-21: `elai bench mode-routing [--dataset PATH] [--output PATH]
-        // [--macro-floor 0.85] [--per-mode-floor 0.70]`. Replays the
-        // hand-labeled fixture through D-10's mode-routing predicate.
-        // Exits 0 on Pass, 1 on Fail; emits one
-        // SsbActionType::ModeRoutingBenchRunCompleted row.
-        CliAction::BenchModeRouting {
-            dataset,
-            output,
-            macro_floor,
-            per_mode_floor,
-        } => {
-            bench_mode_routing::run(dataset, output, macro_floor, per_mode_floor)?;
+        CliAction::BenchModeRouting { dataset, output, macro_floor, per_mode_floor } => {
+            bench_cmd::run_bench_mode_routing(dataset, output, macro_floor, per_mode_floor)?;
         }
-        // D-22: `elai bench conformal [--dataset PATH] [--corpus PATH]
-        // [--output PATH] [--epsilon 0.1]`. Replays the validation
-        // fixture through D-16's `decide` predicate per distribution
-        // bucket. Exits 0 on Pass, 1 on Fail; emits one
-        // SsbActionType::ConformalValidationCompleted row.
-        CliAction::BenchConformal {
-            dataset,
-            corpus,
-            output,
-            epsilon,
-        } => {
-            bench_conformal::run(dataset, corpus, output, epsilon)?;
+        CliAction::BenchConformal { dataset, corpus, output, epsilon } => {
+            bench_cmd::run_bench_conformal(dataset, corpus, output, epsilon)?;
         }
-        // D-20: `elai bench arc [--dataset PATH] [--output PATH]
-        // [--novelty-config PATH]`. Replays an ARC-AGI-2 fixture through
-        // D-10's `select_grounding_mode` predicate and D-15's
-        // `classify`. Exits 0 iff verdict is HonestlyEvaluated; emits
-        // one SsbActionType::ArcBenchmarkCompleted row.
-        CliAction::BenchArc {
-            dataset,
-            output,
-            novelty_config,
-        } => {
-            bench_arc::run(dataset, output, novelty_config)?;
+        CliAction::BenchArc { dataset, output, novelty_config } => {
+            bench_cmd::run_bench_arc(dataset, output, novelty_config)?;
         }
-        // E-17 SP6: `elai bench rag --tier ... --top-k ... [--json] -- <Q>`.
-        // Builds the local knowledge pipeline via LiveCli::build_local_knowledge_stack
-        // (same constructor production uses), runs query_with_tier at the
-        // explicit tier, prints final-stage results. Exits 0 on success.
-        CliAction::BenchRag {
-            tier,
-            top_k,
-            query,
-            json,
-            project_root,
-        } => {
-            bench_rag::run(tier, top_k, query, json, project_root)?;
+        CliAction::BenchRag { tier, top_k, query, json, project_root } => {
+            bench_cmd::run_bench_rag(tier, top_k, query, json, project_root)?;
         }
-        // D-23: `elai bench sycophancy [--fixtures PATH] [--output PATH]
-        // [--detection-floor 0.70] [--fp-ceiling 0.15]`. Quantifies D-14
-        // SycophancyProbe detection_rate + fp_rate against the labelled
-        // fixture corpus. Exits 0 on Pass, 1 on Fail; the in-process
-        // orchestrator producer emits one
-        // SsbActionType::SycophancyBenchRunCompleted row when invoked
-        // from a task_runner (the CLI does not persist SSB rows directly).
-        CliAction::BenchSycophancy {
-            fixtures,
-            output,
-            detection_floor,
-            fp_ceiling,
-        } => {
-            bench_sycophancy::run(fixtures, output, detection_floor, fp_ceiling)?;
+        CliAction::BenchSycophancy { fixtures, output, detection_floor, fp_ceiling } => {
+            bench_cmd::run_bench_sycophancy(fixtures, output, detection_floor, fp_ceiling)?;
         }
-        // D-24: `elai bench canary-regression ...` — cross-domain canary
-        // regression benchmark. Replays a labelled fixture corpus
-        // through D-7 run_canary in-memory; emits exactly one
-        // SsbActionType::CanaryBenchRunCompleted row when invoked from
-        // a task_runner (the CLI does not persist SSB rows directly).
-        // Exits 0 on Pass, 1 on Fail.
         CliAction::BenchCanary {
             fixtures,
             output,
@@ -892,7 +783,7 @@ fn run() -> Result<(), anyhow::Error> {
             helpful_block_ceiling,
             neutral_block_ceiling,
         } => {
-            bench_canary::run(
+            bench_cmd::run_bench_canary(
                 fixtures,
                 output,
                 harmful_block_floor,
@@ -900,19 +791,8 @@ fn run() -> Result<(), anyhow::Error> {
                 neutral_block_ceiling,
             )?;
         }
-        // D-25: `elai bench tamper` — determinism + archive tamper-suite
-        // benchmark driver. Drives D-8 verify_archive IN-PROCESS across
-        // the 10-scenario matrix; emits one
-        // SsbActionType::DeterminismTamperSuiteCompleted row when
-        // invoked from a task_runner (CLI does not persist SSB rows
-        // directly). Exits 0 on Pass, 1 on Fail.
-        CliAction::BenchTamper {
-            scenarios,
-            output,
-            fail_fast,
-            max_wall_ms_per_scenario,
-        } => {
-            bench_tamper::run(scenarios, output, fail_fast, max_wall_ms_per_scenario)?;
+        CliAction::BenchTamper { scenarios, output, fail_fast, max_wall_ms_per_scenario } => {
+            bench_cmd::run_bench_tamper(scenarios, output, fail_fast, max_wall_ms_per_scenario)?;
         }
         // D-28: `elai farm-adv-rm <run|verdict>` — adversarial example
         // farming runner. Drives AdvRmFarmer (orchestrator-side) and
@@ -920,37 +800,39 @@ fn run() -> Result<(), anyhow::Error> {
         // SsbActionType::AdversarialFarmRunCompleted SSB row at end-of-
         // run when invoked from a task_runner; CLI does not persist SSB
         // rows directly (mirrors D-19/D-23/D-24/D-25 bench dispatcher
-        // precedent). Exits 0 on Pass, 1 on Fail.
+        // precedent). Exits 0 on Pass, 1 on Fail. EXCLUDED from
+        // bench_cmd (Tranche J) per ctx package decision-5: D-28 owns
+        // its own sibling boundary + inline FarmAdvRmArgs construction.
         CliAction::FarmAdvRm { sub } => {
-            farm_adv_rm::run(crate::args::FarmAdvRmArgs { sub })?;
+            farm_adv_rm::dispatch(sub)?;
         }
-        // E-10: hostile-critic structural simplifications dispatch.
         CliAction::BenchAblation { tile, fixtures, budget } => {
-            bench_ablation_cmd::run(tile, fixtures, budget)?;
+            bench_cmd::run_bench_ablation(tile, fixtures, budget)?;
         }
-        // E-7: darwinian-evolve substrate exerciser. Feature-gated;
-        // when the feature is off the verb returns "DISABLED" so the
-        // surface is documented but never compiles the gated module.
-        #[cfg(feature = "darwinian-evolve")]
+        // E-7: darwinian-evolve substrate exerciser. Both cfg arms now live
+        // inside darwin_loop_cmd::dispatch; main.rs is cfg-agnostic.
         CliAction::DarwinLoop { generations, mutants, seed, traps, gamma } => {
-            let gamma_f: f64 = if gamma.is_empty() {
-                elai_orchestrator::darwinian_bai::DEFAULT_DISCOUNT_FACTOR
-            } else {
-                gamma.parse().map_err(|e| anyhow::anyhow!("invalid --gamma `{gamma}`: {e}"))?
-            };
-            darwin_loop_cmd::run(generations, mutants, seed, traps, gamma_f)?;
-        }
-        #[cfg(not(feature = "darwinian-evolve"))]
-        CliAction::DarwinLoop { generations, mutants, seed, traps, gamma } => {
-            println!(
-                "darwin-loop DISABLED (rebuild with --features darwinian-evolve) requested generations={generations} mutants={mutants} seed={seed} traps={traps} gamma={gamma}"
-            );
+            darwin_loop_cmd::dispatch(generations, mutants, seed, traps, gamma)?;
         }
         CliAction::TierEval { suites, budget } => {
-            tier_eval_cmd::run(suites, budget)?;
+            bench_cmd::run_tier_eval(suites, budget)?;
         }
         CliAction::CriticReport { output } => {
-            critic_report::run(output)?;
+            bench_cmd::run_critic_report(output)?;
+        }
+        // E-47: `elai lora-gate-check [--config PATH] [--json]` -- ship-gate
+        // dispatcher for the LoRA fine-tuning subsystem. Wire-dark unless
+        // ELAI_LORA_SHIP_GATE_ENABLE=1. Producer-side training stack is
+        // RUNPOD-PENDING; gate ships locally per E-47 default-deferred
+        // posture. See workflow/reasoning/E-47-decisions.md.
+        CliAction::LoraGateCheck { config, json } => {
+            lora_gate_check_cmd::run(config, json)?;
+        }
+        // E-25 Tranche C (C.4): `elai checkpoint <list|rewind>` --
+        // edit_checkpoints CLI surface. Wire-dark default OFF for SSB
+        // emit; inspection paths work regardless.
+        CliAction::CheckpointSub { sub } => {
+            checkpoint_cmd::run(sub)?;
         }
         // E-9: `elai eval <run|list> --benchmark=<NAME> [--harness-vary]
         // [--p-target=0.05] [--list] [--json]`. External agent-eval benchmark
@@ -1086,131 +968,6 @@ fn run() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// E-41: assemble a `PrReviewAction` from the args layer's flat shape.
-/// Returns the structured action OR an actionable error when a required
-/// flag is missing for the given subverb. Validation lives here (not in
-/// the args parser) so the args layer stays free of orchestrator types.
-#[allow(clippy::too_many_arguments)]
-fn build_pr_review_action(
-    sub: &str,
-    pr: Option<u32>,
-    body: Option<String>,
-    file: Option<String>,
-    line: Option<u32>,
-    template: Option<String>,
-    kv_pairs: Vec<(String, String)>,
-    since: Option<i64>,
-    ruleset: Option<String>,
-    loc_added: Option<u32>,
-    loc_removed: Option<u32>,
-    files_changed: Option<u32>,
-    touches_owned: bool,
-    repo: Option<String>,
-    branch: Option<String>,
-    touched_files: Vec<String>,
-    default_owner: Option<String>,
-    title: Option<String>,
-) -> anyhow::Result<pr_review_cmd::PrReviewAction> {
-    use pr_review_cmd::PrReviewAction;
-    let require_pr = |hint: &str| -> anyhow::Result<u32> {
-        pr.ok_or_else(|| anyhow::anyhow!("pr-review {hint}: PR number positional required"))
-    };
-    match sub {
-        "compose-body" => Ok(PrReviewAction::ComposeBody {
-            pr: require_pr("compose-body")?,
-            template: template
-                .ok_or_else(|| anyhow::anyhow!("--template is required for compose-body"))?,
-            kv_pairs,
-        }),
-        "comment" => Ok(PrReviewAction::Comment {
-            pr: require_pr("comment")?,
-            body: body.ok_or_else(|| anyhow::anyhow!("--body is required for comment"))?,
-            file,
-            line,
-        }),
-        "watch" => Ok(PrReviewAction::Watch {
-            pr: require_pr("watch")?,
-            since,
-        }),
-        "verify-deps" => Ok(PrReviewAction::VerifyDeps {
-            pr: require_pr("verify-deps")?,
-        }),
-        "semgrep-gate" => Ok(PrReviewAction::SemgrepGate {
-            pr: require_pr("semgrep-gate")?,
-            ruleset: ruleset.unwrap_or_else(|| "auto".to_string()),
-        }),
-        "auto-merge-assess" => Ok(PrReviewAction::AutoMergeAssess {
-            pr: require_pr("auto-merge-assess")?,
-            loc_added: loc_added.unwrap_or(0),
-            loc_removed: loc_removed.unwrap_or(0),
-            files_changed: files_changed.unwrap_or(1),
-            touches_owned,
-        }),
-        "apply-branch-protection" => Ok(PrReviewAction::ApplyBranchProtection {
-            repo: repo.ok_or_else(|| {
-                anyhow::anyhow!("--repo is required for apply-branch-protection")
-            })?,
-            branch: branch.unwrap_or_else(|| "main".to_string()),
-        }),
-        "gen-codeowners" => Ok(PrReviewAction::GenCodeowners {
-            touched: touched_files
-                .into_iter()
-                .map(std::path::PathBuf::from)
-                .collect(),
-            default_owner: default_owner
-                .ok_or_else(|| anyhow::anyhow!("--default-owner is required for gen-codeowners"))?,
-        }),
-        "suggest-squash" => Ok(PrReviewAction::SuggestSquash {
-            title: title
-                .ok_or_else(|| anyhow::anyhow!("--title is required for suggest-squash"))?,
-            body_hint: body.unwrap_or_default(),
-        }),
-        "detect-force-push" => Ok(PrReviewAction::DetectForcePush {
-            pr: require_pr("detect-force-push")?,
-            repo,
-        }),
-        other => Err(anyhow::anyhow!(
-            "unknown pr-review sub-action '{other}' (compose-body | comment | watch | verify-deps | \
-             semgrep-gate | auto-merge-assess | apply-branch-protection | gen-codeowners | \
-             suggest-squash | detect-force-push)"
-        )),
-    }
-}
-
-/// E-30: Store an incident postmortem entry in the SSB.
-///
-/// Emits `SsbActionType::IncidentRecordCreated` so the dashboard can surface
-/// the entry in its activity feed. The incident_id defaults to a slug derived
-/// from the title if not provided.
-fn cmd_incident_record(
-    title: String,
-    incident_date: String,
-    source_url: String,
-    incident_id: Option<String>,
-) -> anyhow::Result<()> {
-    // Derive an ID from the title if none was provided.
-    let id = incident_id.unwrap_or_else(|| {
-        let slug: String = title
-            .chars()
-            .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
-            .collect::<String>()
-            .split('-')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("-");
-        format!("inc-{slug}")
-    });
-    // Print the record to stdout in a machine-readable format.
-    // The SSB write path requires a running runtime; for now we emit a
-    // JSON record to stdout so CI scripts can ingest it. The full SSB
-    // write path is wired in the run_subcommand integration layer (E-30 Task 9).
-    let record = serde_json::json!({
-        "action_type": "incident_record_created",
-        "incident_id": id,
-        "title": title,
-        "incident_date": incident_date,
-        "source_url": source_url,
-    });
-    println!("{}", serde_json::to_string_pretty(&record)?);
-    Ok(())
-}
+// build_pr_review_action + cmd_incident_record moved to crate::cli_helpers
+// (Tranche O.1). Re-exported via the glob above; called by run() above
+// at the CliAction::PrReview and CliAction::IncidentRecord match arms.

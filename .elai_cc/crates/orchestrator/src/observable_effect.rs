@@ -51,8 +51,7 @@
 // test scaffold that's intentionally reproducible.
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::Instant;
-
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
@@ -359,6 +358,50 @@ impl SandboxExecutor for MockSandboxExecutor {
     }
 }
 
+/// Production-side executor that returns
+/// [`SandboxExecutorError::UnsupportedTrigger`] for EVERY trigger kind.
+/// `verify_observable_effect` maps that error to
+/// [`VerificationOutcome::Skipped`] so the observable_effect_verified row
+/// fires with `outcome=skipped` instead of actually running shell-out /
+/// HTTP / file-system side-effects.
+///
+/// Wire-default for production: the
+/// [`crate::task_runner::dispatch_observable_effect_hook`] producer
+/// instantiates this when
+/// `ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE` is OFF (or unset). Real
+/// container/process-isolated executors land in a follow-up tranche; until
+/// then this no-op keeps the wire end-to-end without any production-side
+/// side effects.
+///
+/// See workflow/reasoning/D-18-tranche-B5-decisions.md.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoOpSandboxExecutor;
+
+impl NoOpSandboxExecutor {
+    /// Construct a fresh no-op executor.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl SandboxExecutor for NoOpSandboxExecutor {
+    fn run<'a>(
+        &'a self,
+        trigger: &'a TriggerSpec,
+        _tier: SandboxTier,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<CapturedObservation, SandboxExecutorError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        let kind = trigger.kind_str();
+        Box::pin(async move { Err(SandboxExecutorError::UnsupportedTrigger(kind)) })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Verifier
 // ---------------------------------------------------------------------------
@@ -409,7 +452,7 @@ pub async fn verify_observable_effect(
     superstep: i64,
     now_ms: i64,
 ) -> Result<VerificationOutcome, SsbError> {
-    let started = Instant::now();
+    let started = OsClock.instant_now();
     let outcome = run_and_compare(effect, executor).await;
     let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
 
@@ -497,6 +540,82 @@ pub async fn verify_effect_batch(
         VerificationOutcome::Skipped
     };
     Ok((aggregated, outcomes))
+}
+
+/// FINAL TRANCHE B6 / D-18 -- env var name for the EffectSet executor
+/// wire-dark gate. Wire-dark default OFF; callers must set to a truthy
+/// value (`"1"` / `"true"` / `"yes"` / `"on"`) to enable the executor's
+/// per-effect row emission + Goodhart-flag computation.
+pub const ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE_ENV: &str =
+    "ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE";
+
+/// Outcome bundle returned by [`execute_effect_set_with_goodhart_check`].
+///
+/// `aggregated` is the cross-effect aggregate per the
+/// [`verify_effect_batch`] semantics (Fail short-circuits; otherwise
+/// Pass dominates Skipped). `per_effect` is the in-order per-effect
+/// outcome list. `goodhart_flags` carries the result of
+/// [`check_goodhart_risk`] against the EffectSet (one flag per offending
+/// effect; empty when the set is orthogonal).
+#[derive(Debug, Clone)]
+pub struct EffectSetExecOutcome {
+    pub aggregated: VerificationOutcome,
+    pub per_effect: Vec<VerificationOutcome>,
+    pub goodhart_flags: Vec<GoodhartFlag>,
+}
+
+/// Return true iff the executor env gate is set to a truthy value.
+fn effect_set_executor_enabled() -> bool {
+    match std::env::var(ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE_ENV) {
+        Ok(v) => matches!(v.as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
+
+/// FINAL TRANCHE B6 / D-18 -- minimal EffectSet executor.
+///
+/// Wraps [`verify_effect_batch`] (per-effect SSB row emission with the
+/// short-circuit-on-Fail aggregate semantics) and [`check_goodhart_risk`]
+/// (Eureka §3.3 component-variation invariant) into a single executor
+/// step. The plan called for this wrapper as the "real executor" surface
+/// the post-EXECUTING handoff invokes; the smoke beacon at
+/// [`verify_observable_effect`] stays unchanged.
+///
+/// Behaviour:
+///   * Wire-dark default: when `ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE`
+///     is unset the function delegates straight to
+///     [`verify_effect_batch`] (per-effect rows emitted; Goodhart flags
+///     NOT computed; returned `Vec` is empty). This keeps existing
+///     callers' wire shape stable.
+///   * When enabled the function additionally calls
+///     [`check_goodhart_risk`] against the EffectSet snapshot and
+///     returns the flags. The flags are NOT emitted as SSB rows in this
+///     scope (no new `SsbActionType` per FINAL TRANCHE constraints);
+///     downstream consumers receive them via the return value.
+///
+/// `agent_id` / `superstep` / `now_ms` follow the same caller-injected
+/// shape as [`verify_observable_effect`] (entropy quarantine rule).
+pub async fn execute_effect_set_with_goodhart_check(
+    set: &EffectSet,
+    executor: &dyn SandboxExecutor,
+    ssb: &Ssb,
+    agent_id: &str,
+    superstep: i64,
+    now_ms: i64,
+) -> Result<EffectSetExecOutcome, SsbError> {
+    let (aggregated, per_effect) =
+        verify_effect_batch(&set.effects, executor, ssb, agent_id, superstep, now_ms)
+            .await?;
+    let goodhart_flags = if effect_set_executor_enabled() {
+        check_goodhart_risk(set)
+    } else {
+        Vec::new()
+    };
+    Ok(EffectSetExecOutcome {
+        aggregated,
+        per_effect,
+        goodhart_flags,
+    })
 }
 
 async fn run_and_compare(
@@ -1005,6 +1124,50 @@ pub fn check_goodhart_risk(set: &EffectSet) -> Vec<GoodhartFlag> {
                 ),
             ));
         }
+    }
+    flags
+}
+
+/// D-18 spec-compliance overload — extends [`check_goodhart_risk`] with a
+/// minimum-effect-count gate. Per D-18 spec §2 "single-effect probe
+/// vulnerable to Goodhart" + spec acceptance test "probe with 1 effect
+/// -> GoodhartRiskFlag SSB row" the duplicate-pair detector alone is
+/// insufficient: singleton and empty sets pass [`EffectSet::is_orthogonal`]
+/// vacuously yet violate the spec's >=2-effects-per-claim invariant.
+///
+/// Behaviour:
+///   1. Runs the duplicate-pair detector via [`check_goodhart_risk`].
+///   2. If `set.effects.len() < expected_min`, pushes ONE additional flag
+///      (`risk_kind="below_min_effects"`) carrying a synthetic effect_id
+///      = first effect's id if present, else `"<empty_effect_set>"`. The
+///      synthetic effect_id keeps the dashboard's per-effect join stable
+///      while making the under-min condition unambiguous.
+///
+/// The original [`check_goodhart_risk`] fn stays unchanged for
+/// back-compat with `observable_effect_integration.rs:70+` test
+/// assertions; new producers that want spec-compliance call this one.
+#[must_use]
+pub fn check_goodhart_risk_with_min(
+    set: &EffectSet,
+    expected_min: u32,
+) -> Vec<GoodhartFlag> {
+    let mut flags = check_goodhart_risk(set);
+    let len = set.effects.len();
+    if len < expected_min as usize {
+        let effect_id_for_flag = set
+            .effects
+            .first()
+            .map(|e| e.effect_id.clone())
+            .unwrap_or_else(|| "<empty_effect_set>".to_string());
+        flags.push(GoodhartFlag::new(
+            effect_id_for_flag,
+            "below_min_effects",
+            format!(
+                "EffectSet has N={} effect(s), expected_min={} (D-18 spec §2 \
+                 single-effect probe vulnerable to Goodhart)",
+                len, expected_min
+            ),
+        ));
     }
     flags
 }

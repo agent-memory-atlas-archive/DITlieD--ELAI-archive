@@ -9,8 +9,9 @@
 //! `EmpireBridgeError::NotConnected` so callers degrade gracefully.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 
 use super::bridge::EmpireBridgeError;
@@ -272,8 +273,7 @@ impl FactoryLineClient {
 }
 
 fn now_unix_secs() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
+    match OsClock.system_now().duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_secs_f64(),
         Err(_) => 0.0,
     }

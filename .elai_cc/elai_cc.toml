@@ -1708,3 +1708,37 @@ challenge_text_locked = true
 # (paper does not specify a numeric default; near-zero so any
 # non-empty delta qualifies). Range strictly positive.
 # voyager_state_delta_threshold = 0.000000001
+
+# ============================================================================
+# E-47 -- LoRA fine-tuning ship-gate.
+# Source: docs/thefinalglance/E-plan/E-47_lora_finetuning.md +
+#   workflow/improvement-sweep-2026-05-19/reports/47-lora-finetuning.md.
+#
+# Triple-AND ship-gate semantic. The boot-path adapter-load step
+# refuses to load any LoRA adapter UNLESS all three of the following
+# hold simultaneously:
+#   1. `enabled = true`                            (master switch; default false)
+#   2. `confirm_user_understanding = true`         (operator acknowledged 5-19pp
+#                                                   forgetting risk per
+#                                                   arXiv:2405.09673 Biderman)
+#   3. `ship_gate` set to a value OTHER than       (deferral token forces
+#      "DEFERRED_PER_E47_REPORT"                    intentional flip; renaming
+#                                                   token blocked by CI lint
+#                                                   .elai_cc/scripts/check_lora_ship_gate_token.sh)
+# AND a `LoraCalibrationReport` must be present + pass the
+# no-regression -2.0pp floor on both MMLU and HumanEval deltas.
+#
+# Default-deferred posture: as shipped, this block resolves to
+# "REFUSED" because the deferral token is present + confirmation is
+# true (the operator confirms by editing the toml). To flip the gate
+# the operator must follow workflow/decisions/E-47-flip-runbook.md
+# and provide a calibration baseline.
+#
+# Wire-dark when `enabled = false`. Toml block is intentionally
+# uncommented so the deferral token is grep-able by the CI lint.
+[finetune.lora]
+ship_gate = "DEFERRED_PER_E47_REPORT"
+confirm_user_understanding = true
+calibration_baseline_mmlu = 0.0
+calibration_baseline_humaneval = 0.0
+# enabled = false  # master switch; default false until E-47.1 producer ships

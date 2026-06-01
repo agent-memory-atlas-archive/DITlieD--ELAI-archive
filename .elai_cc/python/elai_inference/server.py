@@ -1185,6 +1185,82 @@ def refuse_yarn_at_boot(model_name: str) -> None:
     )
 
 
+def assert_head_dim_invariant(
+    model: object,
+    expected_dim: int = 128,
+    model_id: str | None = None,
+) -> tuple[int, int]:
+    """Raise SidecarBootError if the loaded model's head_dim != expected_dim.
+
+    Mirrors the head_dim_invariant_contract.rs test that locks the Qwen2.5-Coder
+    family at head_dim=128: SDPA / FA2 / xformers attention paths assume 128 and
+    silently degrade (or hit untested fallback kernels) on any other value. Loud
+    refusal at boot is preferable to silent attention-quality regression.
+
+    Qwen2 config.json does NOT carry a `head_dim` field directly — it is computed
+    as `hidden_size / num_attention_heads` per HF transformers Qwen2Attention.
+    Some configs (e.g. multimodal models with a text_config sub-block) expose
+    head_dim explicitly; both shapes are handled.
+
+    Args:
+        model: A loaded transformers PreTrainedModel (must expose `.config`).
+        expected_dim: Expected head_dim. Default 128 (Qwen2.5-Coder 3B / 7B).
+        model_id: Optional model name for the error message + SSB row.
+
+    Returns:
+        (head_dim_observed, head_dim_expected) on success.
+
+    Raises:
+        SidecarBootError: when observed head_dim != expected_dim.
+
+    References:
+        crates/contracts/tests/head_dim_invariant_contract.rs (config-layer lock)
+        huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct config.json
+    """
+    cfg = getattr(model, "config", None)
+    if cfg is None:
+        raise SidecarBootError(
+            f"head_dim_invariant check failed: model has no .config attribute "
+            f"(model_id={model_id})"
+        )
+
+    # Multimodal models expose .text_config; prefer it when present.
+    target_cfg = getattr(cfg, "text_config", cfg)
+
+    explicit = getattr(target_cfg, "head_dim", None)
+    if isinstance(explicit, int) and explicit > 0:
+        observed = explicit
+    else:
+        hidden = getattr(target_cfg, "hidden_size", None)
+        heads = getattr(target_cfg, "num_attention_heads", None)
+        if not isinstance(hidden, int) or not isinstance(heads, int) or heads <= 0:
+            raise SidecarBootError(
+                f"head_dim_invariant check failed: cannot compute head_dim "
+                f"(hidden_size={hidden!r}, num_attention_heads={heads!r}, "
+                f"model_id={model_id})"
+            )
+        observed = hidden // heads
+
+    if observed != expected_dim:
+        raise SidecarBootError(
+            f"head_dim invariant violated: model_id={model_id!r} has "
+            f"head_dim={observed} (expected {expected_dim}). SDPA / FA2 / "
+            f"xformers attention paths assume head_dim=128 (Qwen2.5-Coder "
+            f"family); other values silently degrade or hit untested fallback "
+            f"kernels. Refusing to boot. Reference: "
+            f"crates/contracts/tests/head_dim_invariant_contract.rs."
+        )
+
+    logger.info(
+        "head_dim_invariant_verified",
+        model_id=model_id,
+        head_dim_observed=observed,
+        head_dim_expected=expected_dim,
+        ok=True,
+    )
+    return observed, expected_dim
+
+
 def activate_deep_mode(default_model: str) -> tuple[str, int]:
     """Check ELAI_DEEP_MODE and VRAM, return (resolved_model_id, ctx_cap).
 
@@ -1996,6 +2072,16 @@ class InferenceEngine:
             self.hidden_dim = self.model.config.hidden_size
             self.head_dim = getattr(self.model.config, "head_dim", 256)
 
+        # E-31: head_dim invariant check. Refuse-to-boot on mismatch for the
+        # Qwen2.5-Coder family (head_dim=128). Scoped to "qwen" model_ids so
+        # non-Qwen models (deep-mode 1M variant, future families) are not
+        # forced into the 128 lock until measured. Mirrors the FA3-on-Ampere
+        # refusal pattern: loud refusal > silent degradation.
+        if "qwen" in self.model_name.lower():
+            assert_head_dim_invariant(
+                self.model, expected_dim=128, model_id=self.model_name,
+            )
+
         self.candidate_layers = get_candidate_layers(self.n_layers)
         self.dola_enabled = dola_enabled
         self.dola_alpha = dola_alpha
@@ -2464,15 +2550,12 @@ class InferenceEngine:
         if past_kv is not None:
             generation_kwargs["past_key_values"] = past_kv
             if prefix_cache_hit:
-                # HF_36151_WORKAROUND: HF generation auto-infers cache_position
-                # from past_kv length on iteration 1+, but after our crop it
-                # produces an empty tensor and crashes on cache_position[-1]
-                # (transformers/generation/utils.py:476). Pass explicit
-                # cache_position covering the new tokens we're feeding:
-                # arange(_prefix_len - 1, _total_len) on the input device.
-                generation_kwargs["cache_position"] = torch.arange(
-                    _prefix_len - 1, _total_len, device=gen_input_ids.device
-                )
+                # transformers 4.57+ auto-infers cache_position from past_kv
+                # length; passing it explicitly is now rejected by
+                # _validate_model_kwargs. HF #36151 (the original bug this
+                # workaround addressed) was fixed upstream by the time
+                # cache_position became a strict kwarg.
+                pass
         if temperature > 0:
             generation_kwargs["temperature"] = temperature
 

@@ -31,8 +31,9 @@ compile_error!(
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -157,12 +158,15 @@ fn path_hash(item: &str) -> u64 {
 
 /// Current wall-clock time as ms since UNIX_EPOCH.
 fn current_unix_ms() -> Result<u64, FreezeError> {
-    let dur = SystemTime::now()
+    let dur = OsClock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| FreezeError::ClockSkew {
             detail: e.to_string(),
         })?;
-    Ok(dur.as_millis() as u64)
+    u64::try_from(dur.as_millis()).map_err(|e| FreezeError::ClockSkew {
+        detail: e.to_string(),
+    })
 }
 
 /// File mtime (ms since UNIX_EPOCH). Returns

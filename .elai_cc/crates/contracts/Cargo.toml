@@ -21,6 +21,13 @@ elai-orchestrator = { path = "../orchestrator", features = ["sidecar", "test-sup
 # defaults-off + generator-rotation distribution + CorpusEventPhase
 # 14-arm discriminator + SCHEMA_VERSION_PUBLIC == 167.
 elai-eval-corpus = { path = "../eval-corpus" }
+# Tranche M (s-22600) C-42b -- macro consumer for m_authz_macro_contract.rs.
+# Decorates a sample fn with `#[authz(gate="...", tool_kind="...")]` so the
+# compile of the contract test itself exercises the proc-macro expansion path.
+# Zero workspace-lock churn (plugins_macros' four direct deps -- syn 2 /
+# quote 1 / proc-macro2 1 / darling 0.20 -- are all pre-resolved in
+# Cargo.lock today). Dev-dep only; no production wire-in.
+elai_plugins_macros = { path = "../plugins_macros" }
 # E-54: chrono needed by the e54 contract test fixture (Task.created_at).
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 # Tier 2 Track B: dashboard contract test imports `elai_dashboard_lib::commands::*`

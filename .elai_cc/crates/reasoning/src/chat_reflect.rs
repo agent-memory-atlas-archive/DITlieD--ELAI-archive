@@ -47,6 +47,16 @@ pub const N_CANDIDATES: u32 = 4;
 /// rationale (RefineBench guided-mode data).
 pub const REFINE_CAP: u32 = 3;
 
+/// Tranche B-6 quad B-39 -- 85% soft-warn threshold. Fires when the
+/// reflect pipeline's running token total reaches this percentage of
+/// `ChatReflectConfig.budget_cap_tokens` AND is still strictly below the
+/// hard cap. Named constant per CLAUDE.md "no magic numbers" rule;
+/// 85% chosen so operators see a runway-warning with ~3K tokens of
+/// headroom under the 20K production budget cited in
+/// `project_qwen3b_baseline.md`. The soft-warn never throttles or fails
+/// the pipeline -- it is an observability beacon only.
+pub const REFLECT_BUDGET_SOFT_WARN_PCT: u8 = 85;
+
 /// Per-stage token caps. Sum (with N_CANDIDATES reasoner calls) stays under
 /// the 20K production budget cited in `project_qwen3b_baseline.md`.
 const MAX_TRIAGE_TOKENS: u32 = 256;
@@ -184,6 +194,12 @@ pub struct ChatReflectConfig {
     pub n_candidates: u32,
     pub budget_cap_tokens: u32,
     pub max_refine_iterations: u32,
+    /// Tranche B-6 quad B-39 -- 85% soft-warn threshold percentage. Range
+    /// `[0, 100]`; values outside the range collapse to
+    /// [`REFLECT_BUDGET_SOFT_WARN_PCT`] at use-time via `min(100)`. Set
+    /// to `0` to disable the soft-warn (it never fires when
+    /// `soft_cap = 0`).
+    pub budget_soft_warn_pct: u8,
 }
 
 impl Default for ChatReflectConfig {
@@ -195,6 +211,8 @@ impl Default for ChatReflectConfig {
             // measured in `project_qwen3b_baseline.md`.
             budget_cap_tokens: 20_000,
             max_refine_iterations: REFINE_CAP,
+            // Tranche B-6 quad B-39: 85% (`REFLECT_BUDGET_SOFT_WARN_PCT`).
+            budget_soft_warn_pct: REFLECT_BUDGET_SOFT_WARN_PCT,
         }
     }
 }
@@ -253,6 +271,18 @@ pub enum ReflectEvent {
         turn_id: String,
         total_tokens_used: u32,
         synthesis: String,
+    },
+    /// Tranche B-6 quad B-39 -- 85% soft-warn beacon. Fires once per turn
+    /// when `used >= soft_cap && used < hard_cap`. The pipeline returns
+    /// the best available reply regardless (the soft-warn is purely
+    /// observability). Mirrored into an SSB row via
+    /// [`crate::ssb::SsbActionType::ReflectBudgetSoftWarn`].
+    BudgetSoftWarn {
+        turn_id: String,
+        used: u32,
+        soft_cap: u32,
+        hard_cap: u32,
+        pct: u8,
     },
 }
 
@@ -377,12 +407,24 @@ impl ChatReflectPipeline {
         }
 
         // ---- Stage 3: AUDITOR (refinement loop ≤ REFINE_CAP) -----------------
-        let auditor_prompt = build_auditor_prompt(user_input, class, &candidates);
+        // FINAL TRANCHE B1: bounded refinement loop. The first auditor call
+        // always runs. When `max_refine_iterations > 1` we re-run the auditor
+        // with the previous verdict appended to the prompt and break on
+        // convergence (two consecutive iterations agreeing on `best_index`).
+        // When `max_refine_iterations == 0` we error per the dead-branch
+        // semantic the original code carried; when `<= 1` the loop body is
+        // skipped and behaviour is identical to the pre-B1 single-pass code.
+        if self.config.max_refine_iterations == 0 {
+            return Err(ReflectError::RefineCapExceeded);
+        }
+
+        let initial_prompt = build_auditor_prompt(user_input, class, &candidates);
         let auditor_raw = client
-            .complete(&auditor_prompt, MAX_AUDITOR_TOKENS)
+            .complete(&initial_prompt, MAX_AUDITOR_TOKENS)
             .await?;
-        let auditor_tokens = approx_tokens(&auditor_raw);
-        let (best_index, rationale) = parse_auditor_verdict(&auditor_raw, candidates.len() as u32);
+        let mut auditor_tokens = approx_tokens(&auditor_raw);
+        let (mut best_index, mut rationale) =
+            parse_auditor_verdict(&auditor_raw, candidates.len() as u32);
 
         self.emit(ReflectEvent::AuditVerdict {
             turn_id: turn_id.to_string(),
@@ -390,11 +432,39 @@ impl ChatReflectPipeline {
             rationale: rationale.clone(),
         });
 
-        // Refinement-loop guard: REFINE_CAP bounds how many times we'd retry
-        // the auditor with re-grounded input. We currently do a single pass
-        // (cap=3 means "we COULD do up to 3"); when retries are added (future
-        // work tied to RefineBench guided-mode), this guard prevents runaway.
-        if self.config.max_refine_iterations == 0 {
+        // Cap at `max_refine_iterations - 1` extra passes (the first call
+        // above counts as iteration 1). `saturating_sub` is the canonical
+        // u32-bounded operator per CLAUDE.md (no .unwrap, no underflow).
+        let extra_passes: u32 = self.config.max_refine_iterations.saturating_sub(1);
+        let mut converged = extra_passes == 0; // single-pass = trivially converged
+        let mut iter: u32 = 0;
+        while iter < extra_passes {
+            let prev_best = best_index;
+            let refine_prompt =
+                build_refine_prompt(user_input, class, &candidates, prev_best, &rationale);
+            let raw = client
+                .complete(&refine_prompt, MAX_AUDITOR_TOKENS)
+                .await?;
+            auditor_tokens = auditor_tokens.saturating_add(approx_tokens(&raw));
+            let (next_best, next_rationale) =
+                parse_auditor_verdict(&raw, candidates.len() as u32);
+
+            self.emit(ReflectEvent::AuditVerdict {
+                turn_id: turn_id.to_string(),
+                best_index: next_best,
+                rationale: next_rationale.clone(),
+            });
+
+            best_index = next_best;
+            rationale = next_rationale;
+            iter = iter.saturating_add(1);
+            if next_best == prev_best {
+                converged = true;
+                break;
+            }
+        }
+
+        if !converged {
             return Err(ReflectError::RefineCapExceeded);
         }
 
@@ -410,6 +480,45 @@ impl ChatReflectPipeline {
 
         let token_summary =
             ReflectTokenSummary::from_stages(triage_tokens, reasoner_tokens, auditor_tokens, 0);
+
+        // Tranche B-6 quad B-39 -- 85% soft-warn gate (BEFORE the hard-cap
+        // check). Fires when `used >= soft_cap && used < hard_cap`; the
+        // pipeline returns the best available reply regardless. Pure
+        // observability beacon; no throttling, no skip.
+        //
+        // Wire-dark unless ELAI_B39_SOFTWARN_ENABLE=1 on the
+        // orchestrator-side SSB sink (the sink itself is the env-gate
+        // site; here we just emit and the sink decides whether to
+        // persist).
+        let pct = self.config.budget_soft_warn_pct.min(100);
+        let hard_cap = self.config.budget_cap_tokens;
+        // u64 arithmetic to avoid u32 overflow when hard_cap is near the
+        // ceiling (~4.29e9 tokens * 100 would overflow u32; u32 * 100 fits
+        // in u64 always).
+        let soft_cap = ((u64::from(hard_cap) * u64::from(pct)) / 100)
+            .try_into()
+            .unwrap_or(u32::MAX);
+        if soft_cap > 0
+            && token_summary.total >= soft_cap
+            && token_summary.total < hard_cap
+        {
+            tracing::warn!(
+                target: "reasoning::chat_reflect",
+                used = token_summary.total,
+                soft_cap,
+                hard_cap,
+                pct,
+                turn_id = %turn_id,
+                "REFLECT entered budget soft-warn zone (continuing)"
+            );
+            self.emit(ReflectEvent::BudgetSoftWarn {
+                turn_id: turn_id.to_string(),
+                used: token_summary.total,
+                soft_cap,
+                hard_cap,
+                pct,
+            });
+        }
 
         // Budget gate (defensive — log and continue; we still return the best
         // available reply rather than skipping a successful pipeline).
@@ -493,6 +602,36 @@ fn build_auditor_prompt(user_input: &str, class: TurnClass, candidates: &[String
     )
 }
 
+/// Build the prompt for an auditor refinement pass. Mirrors
+/// [`build_auditor_prompt`] but appends the previous verdict + rationale so
+/// the auditor can re-evaluate with the prior pass as grounded context (per
+/// RefineBench arXiv:2511.22173 guided-mode protocol).
+fn build_refine_prompt(
+    user_input: &str,
+    class: TurnClass,
+    candidates: &[String],
+    prev_best: u32,
+    prev_rationale: &str,
+) -> String {
+    let mut joined = String::new();
+    for (i, c) in candidates.iter().enumerate() {
+        joined.push_str(&format!("[{i}]\n{c}\n\n"));
+    }
+    format!(
+        "You re-evaluate {n} candidate answers to a {class_str} message after a \
+         prior audit pass picked candidate {prev_best}.\n\
+         Either confirm the prior pick or pick a different candidate.\n\
+         Output strictly: <index>|<one-sentence rationale>\n\
+         Example: 2|Prior pick missed the requested side-effect.\n\n\
+         User message: {user_input}\n\n\
+         Previous verdict: index={prev_best}; rationale={prev_rationale}\n\n\
+         Candidates:\n{joined}\
+         Verdict:",
+        n = candidates.len(),
+        class_str = class.as_wire_str(),
+    )
+}
+
 /// Lenient parse of the auditor's `<index>|<rationale>` line. Accepts decimal
 /// indices, ignores extra whitespace, falls back to index 0 with the raw
 /// response as rationale on any malformed output.
@@ -567,6 +706,8 @@ mod tests {
         candidate: AtomicU32,
         verdict: AtomicU32,
         refined: AtomicU32,
+        // Tranche B-6 quad B-39: 85% soft-warn beacon counter.
+        soft_warn: AtomicU32,
     }
 
     impl ReflectEventSink for CountingSink {
@@ -583,6 +724,9 @@ mod tests {
                 }
                 ReflectEvent::Refined { .. } => {
                     self.refined.fetch_add(1, Ordering::SeqCst);
+                }
+                ReflectEvent::BudgetSoftWarn { .. } => {
+                    self.soft_warn.fetch_add(1, Ordering::SeqCst);
                 }
             }
         }
@@ -686,5 +830,67 @@ mod tests {
         // on a single-instance GPU-bound sidecar. /reason wide (future work)
         // bumps to 16.
         assert_eq!(N_CANDIDATES, 4);
+    }
+
+    /// FINAL TRANCHE B1: with max_refine_iterations > 1 and a verdict that
+    /// keeps flipping, the loop must trip RefineCapExceeded and collapse
+    /// into the public `skipped=true` passthrough shape.
+    #[tokio::test]
+    async fn refine_loop_cap_exceeded_collapses_to_skipped() {
+        // 1 triage + N reasoner + (cap = REFINE_CAP) auditor passes that
+        // never converge (alternating best_index). Sequence: triage="problem",
+        // then N candidates, then auditor sequence "0|a", "1|b", "0|c"
+        // which alternates and never converges across REFINE_CAP iterations.
+        let mut canned = vec!["problem".to_string()];
+        for i in 0..N_CANDIDATES {
+            canned.push(format!("answer-{i}"));
+        }
+        // Auditor + (REFINE_CAP - 1) re-passes; alternate indices so
+        // convergence never fires.
+        for i in 0..REFINE_CAP {
+            let idx = i % 2;
+            canned.push(format!("{idx}|pass-{i}"));
+        }
+        let responses: Vec<Result<String, ReflectError>> =
+            canned.into_iter().map(Ok).collect();
+        let client = MockClient {
+            responses,
+            cursor: AtomicU32::new(0),
+        };
+        let pipeline = ChatReflectPipeline::new(ChatReflectConfig::default(), None);
+        let out = pipeline
+            .run("t1".to_string(), "diverge me", &client)
+            .await;
+        // Cap exceeded -> internal error -> public passthrough.
+        assert!(out.skipped, "expected skipped=true on RefineCapExceeded");
+        assert_eq!(out.final_reply, "diverge me");
+    }
+
+    /// FINAL TRANCHE B1: when max_refine_iterations <= 1 the loop body is
+    /// skipped and behaviour is identical to the pre-B1 single-pass code
+    /// (backward-compat invariant).
+    #[tokio::test]
+    async fn refine_loop_single_pass_matches_legacy() {
+        let mut canned = vec!["problem".to_string()];
+        for i in 0..N_CANDIDATES {
+            canned.push(format!("answer-{i}"));
+        }
+        canned.push("0|chosen".to_string());
+        let responses: Vec<Result<String, ReflectError>> =
+            canned.into_iter().map(Ok).collect();
+        let client = MockClient {
+            responses,
+            cursor: AtomicU32::new(0),
+        };
+        let cfg = ChatReflectConfig {
+            max_refine_iterations: 1,
+            ..ChatReflectConfig::default()
+        };
+        let pipeline = ChatReflectPipeline::new(cfg, None);
+        let out = pipeline.run("t1".to_string(), "what's 2+2?", &client).await;
+        assert!(!out.skipped);
+        assert_eq!(out.final_reply, "answer-0");
+        // Legacy single-pass = 1 triage + N reasoner + 1 auditor.
+        assert_eq!(client.calls(), 2 + N_CANDIDATES);
     }
 }

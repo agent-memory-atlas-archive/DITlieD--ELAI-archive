@@ -171,6 +171,126 @@ pub fn classify_response(is_error: bool, error_hint: Option<&str>) -> ResponseKi
     }
 }
 
+// === Tranche B-6 quad C-47 -- CaseBase emit helpers ===========================
+//
+// Three new entry-points that wrap [`AggregatedCase`] mutations with a
+// matching [`CaseBaseSsbEmitter`] notification: `add_case`, `select_case`,
+// `apply_calibration`. The emitter trait carries default no-op impls for
+// these three methods (see `registry.rs::CaseBaseSsbEmitter`), so legacy
+// emitters keep compiling during the one-release-window migration.
+//
+// These helpers DO NOT change the existing 3 emit_call_logged / emit_hint /
+// emit_drift surfaces. Their callers gradually migrate to the new Pattern-2
+// [`crate::ssb::ToolCalibrationEvent`] variant in C-47b.
+
+use super::registry::CaseBaseSsbEmitter;
+
+/// Outcome returned by [`apply_calibration`]. Stable wire labels for the
+/// `details_json.outcome` field on the matching SSB row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationOutcome {
+    /// Calibration applied successfully (hint adoption / sampling
+    /// adjustment / etc).
+    Applied,
+    /// Calibration skipped because no matching case was found.
+    NoCase,
+    /// Calibration deliberately suppressed (hinter suppression flag,
+    /// env-gate off, etc).
+    Suppressed,
+}
+
+impl CalibrationOutcome {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::NoCase => "no_case",
+            Self::Suppressed => "suppressed",
+        }
+    }
+}
+
+/// Tranche B-6 quad C-47 -- admit a fresh case + notify the emitter.
+///
+/// `case` is moved into the caller's case-base storage by `store_fn`; on
+/// successful store the [`CaseBaseSsbEmitter::emit_case_added`] hook fires
+/// with the canonical (tool_name, call_shape_hash, ts_ms) tuple. Wire-dark
+/// unless `ELAI_C47_CASE_BASE_ENABLE=1` is set on the orchestrator-side
+/// adapter.
+///
+/// `store_fn` returns `true` when the case was admitted (e.g. LRU still
+/// had room) and `false` when it was rejected (e.g. duplicate). Emit only
+/// fires on `true` so SSB rows track ACTUAL case-base growth.
+pub fn add_case<F>(
+    case: AggregatedCase,
+    emitter: &dyn CaseBaseSsbEmitter,
+    ts_ms: i64,
+    store_fn: F,
+) -> bool
+where
+    F: FnOnce(AggregatedCase) -> bool,
+{
+    let tool_name = case.tool_name.clone();
+    let call_shape_hash = case.call_shape_hash;
+    let admitted = store_fn(case);
+    if admitted {
+        // Drop emit errors silently: SSB writes are best-effort per the
+        // existing `dispatch_payload` semantics in
+        // tool_calibration_ssb_adapter.rs.
+        let _ = emitter.emit_case_added(&tool_name, call_shape_hash, ts_ms);
+    }
+    admitted
+}
+
+/// Tranche B-6 quad C-47 -- look up a case in the base + notify the emitter.
+///
+/// `lookup_fn` returns the matched case (cloned out of LRU storage) when
+/// the query hits, `None` otherwise. Emit fires only on a hit (the
+/// dashboard tracks selection rate, not query rate).
+pub fn select_case<F>(
+    tool_name: &str,
+    call_shape_hash: u64,
+    emitter: &dyn CaseBaseSsbEmitter,
+    ts_ms: i64,
+    lookup_fn: F,
+) -> Option<AggregatedCase>
+where
+    F: FnOnce(&str, u64) -> Option<AggregatedCase>,
+{
+    let hit = lookup_fn(tool_name, call_shape_hash);
+    if hit.is_some() {
+        let _ = emitter.emit_case_selected(tool_name, call_shape_hash, ts_ms);
+    }
+    hit
+}
+
+/// Tranche B-6 quad C-47 -- apply a calibration decision + notify the
+/// emitter.
+///
+/// `apply_fn` performs the side-effecting calibration step (e.g. adjust
+/// downstream sampling rate, inject a hint). The returned
+/// [`CalibrationOutcome`] is mirrored into the SSB row via the
+/// `emit_calibration_applied` hook ONLY on
+/// [`CalibrationOutcome::Applied`]; `NoCase` / `Suppressed` paths skip
+/// emission to avoid noise.
+pub fn apply_calibration<F>(
+    tool_name: &str,
+    call_shape_hash: u64,
+    emitter: &dyn CaseBaseSsbEmitter,
+    ts_ms: i64,
+    apply_fn: F,
+) -> CalibrationOutcome
+where
+    F: FnOnce() -> CalibrationOutcome,
+{
+    let outcome = apply_fn();
+    if matches!(outcome, CalibrationOutcome::Applied) {
+        let _ = emitter.emit_calibration_applied(tool_name, call_shape_hash, ts_ms);
+    }
+    outcome
+}
+
 /// Compute the canonical `call_shape_hash` for an arguments JSON
 /// [`serde_json::Value`]. blake3-derived `u64` over the
 /// alphabetically-sorted key list (top-level keys only — values are
@@ -238,6 +358,103 @@ mod tests {
             classify_response(false, Some("doesnt_matter")),
             ResponseKind::Ok
         );
+    }
+
+    // === Tranche B-6 quad C-47: add_case / select_case / apply_calibration ===
+
+    use std::sync::Mutex;
+
+    struct CapturingEmitter {
+        adds: Mutex<Vec<(String, u64)>>,
+        selects: Mutex<Vec<(String, u64)>>,
+        applies: Mutex<Vec<(String, u64)>>,
+    }
+
+    impl CapturingEmitter {
+        fn new() -> Self {
+            Self {
+                adds: Mutex::new(Vec::new()),
+                selects: Mutex::new(Vec::new()),
+                applies: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl crate::tool_calibration::registry::CaseBaseSsbEmitter for CapturingEmitter {
+        fn emit_call_logged(
+            &self,
+            _t: &str,
+            _s: u64,
+            _k: &str,
+            _ok: bool,
+            _ts: i64,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn emit_hint(&self, _t: &str, _s: u64, _h: &str, _ts: i64) -> Result<(), String> {
+            Ok(())
+        }
+        fn emit_drift(&self, _t: &str, _r: f32, _n: u32, _ts: i64) -> Result<(), String> {
+            Ok(())
+        }
+        fn emit_case_added(&self, t: &str, s: u64, _ts: i64) -> Result<(), String> {
+            self.adds.lock().expect("lock").push((t.to_string(), s));
+            Ok(())
+        }
+        fn emit_case_selected(&self, t: &str, s: u64, _ts: i64) -> Result<(), String> {
+            self.selects.lock().expect("lock").push((t.to_string(), s));
+            Ok(())
+        }
+        fn emit_calibration_applied(&self, t: &str, s: u64, _ts: i64) -> Result<(), String> {
+            self.applies.lock().expect("lock").push((t.to_string(), s));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn add_case_emits_on_admitted_only() {
+        let em = CapturingEmitter::new();
+        let c1 = AggregatedCase::new("fs.read".into(), 42);
+        let admitted = add_case(c1, &em, 1_000, |_| true);
+        assert!(admitted);
+        assert_eq!(em.adds.lock().expect("lock").len(), 1);
+
+        let c2 = AggregatedCase::new("fs.read".into(), 43);
+        let rejected = add_case(c2, &em, 2_000, |_| false);
+        assert!(!rejected);
+        // Only 1 emit total -- rejected case did NOT fire.
+        assert_eq!(em.adds.lock().expect("lock").len(), 1);
+    }
+
+    #[test]
+    fn select_case_emits_on_hit_only() {
+        let em = CapturingEmitter::new();
+        let hit = select_case("fs.read", 42, &em, 1_000, |_, _| {
+            Some(AggregatedCase::new("fs.read".into(), 42))
+        });
+        assert!(hit.is_some());
+        assert_eq!(em.selects.lock().expect("lock").len(), 1);
+
+        let miss = select_case("fs.read", 99, &em, 2_000, |_, _| None);
+        assert!(miss.is_none());
+        assert_eq!(em.selects.lock().expect("lock").len(), 1);
+    }
+
+    #[test]
+    fn apply_calibration_emits_on_applied_only() {
+        let em = CapturingEmitter::new();
+        let o = apply_calibration("fs.read", 42, &em, 1_000, || CalibrationOutcome::Applied);
+        assert_eq!(o, CalibrationOutcome::Applied);
+        assert_eq!(em.applies.lock().expect("lock").len(), 1);
+
+        let o2 = apply_calibration("fs.read", 42, &em, 2_000, || CalibrationOutcome::NoCase);
+        assert_eq!(o2, CalibrationOutcome::NoCase);
+        let o3 = apply_calibration("fs.read", 42, &em, 3_000, || {
+            CalibrationOutcome::Suppressed
+        });
+        assert_eq!(o3, CalibrationOutcome::Suppressed);
+        // NoCase + Suppressed both skip emit.
+        assert_eq!(em.applies.lock().expect("lock").len(), 1);
     }
 
     #[test]

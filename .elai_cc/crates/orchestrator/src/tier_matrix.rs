@@ -15,6 +15,8 @@
 
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
+
 use crate::ssb::{CriticDecisionEventPayload, CriticTilePhase, Ssb, SsbError, SsbPayload};
 
 /// Per-tier snapshot of cost-normalized eval pass rate. The orchestrator
@@ -93,10 +95,7 @@ fn blake3_prefix_8(input: &[u8]) -> [u8; 8] {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

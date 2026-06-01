@@ -44,6 +44,8 @@
     last_precompact_thresholds: [],
     prompt_injection_check_status: 'not_run',
     runtime_choice_badge: '',
+    current_role: null,
+    current_runtime: null,
   });
   let loadError = $state<string | null>(null);
   let pollHandle: ReturnType<typeof setInterval> | null = null;

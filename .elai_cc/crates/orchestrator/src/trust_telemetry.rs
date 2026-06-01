@@ -29,8 +29,7 @@
 //! the rejection of a counter-measurement claim to METR (paired-task data
 //! is missing; this is a BASELINE artifact, not a "speedup proven" claim).
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::anti_spiral_extended::StagnationPattern;
@@ -76,7 +75,7 @@ pub struct TrustReport {
     pub ungrounded_count: u64,
     /// Per-pattern stagnation distribution. Keys are the snake_case
     /// labels emitted by [`StagnationPattern::as_str`].
-    pub stagnation_dist: HashMap<String, u64>,
+    pub stagnation_dist: FxHashMap<String, u64>,
 }
 
 impl TrustReport {
@@ -89,7 +88,7 @@ impl TrustReport {
             findings_per_task: 0.0,
             revert_rate: 0.0,
             ungrounded_count: 0,
-            stagnation_dist: HashMap::new(),
+            stagnation_dist: FxHashMap::default(),
         }
     }
 }
@@ -134,7 +133,7 @@ pub fn aggregate_session(rows: &[TrustRowInput], elapsed_hours: f64) -> TrustRep
     let mut file_writes: u64 = 0;
     let mut reverts: u64 = 0;
     let mut ungrounded: u64 = 0;
-    let mut stagnation_dist: HashMap<String, u64> = HashMap::new();
+    let mut stagnation_dist: FxHashMap<String, u64> = FxHashMap::default();
 
     // Seed the four canonical stagnation labels so the dashboard
     // renders a stable grid even when no stagnation events landed yet.
@@ -446,7 +445,7 @@ mod tests {
             revert_rate: 0.1,
             ungrounded_count: 3,
             stagnation_dist: {
-                let mut m = HashMap::new();
+                let mut m = FxHashMap::default();
                 m.insert("spinning".into(), 2);
                 m
             },

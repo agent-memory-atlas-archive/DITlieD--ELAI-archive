@@ -26,6 +26,7 @@
 
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -224,10 +225,7 @@ async fn emit_process_reward_for_verdict(
         verdict.tier_node_id.tier_str(),
         verdict.tier_node_id.raw_id()
     );
-    let ts_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0);
+    let ts_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
     if let Err(e) = emit_process_reward_score_emitted(
         writer.as_ref(),
         agent_id,

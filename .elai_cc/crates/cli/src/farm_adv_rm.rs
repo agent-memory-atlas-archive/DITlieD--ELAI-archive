@@ -88,6 +88,12 @@ pub enum FarmAdvRmError {
 // Sync CLI entry — owns its own tokio runtime.
 // ---------------------------------------------------------------------------
 
+/// D-28 dispatch shim: constructs `FarmAdvRmArgs` inline and delegates to
+/// [`run`]. Reduces the `main.rs` match arm to a single call.
+pub(crate) fn dispatch(sub: FarmAdvRmSub) -> anyhow::Result<()> {
+    run(FarmAdvRmArgs { sub })
+}
+
 /// Top-level CLI entrypoint. Owns the tokio runtime + dispatches to the
 /// sub-verb handler. Mirrors `bench_prmbench::run` sync pattern.
 pub(crate) fn run(args: FarmAdvRmArgs) -> anyhow::Result<()> {

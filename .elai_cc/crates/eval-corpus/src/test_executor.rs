@@ -106,10 +106,10 @@ mod tests {
     use crate::TaskFamily as TF;
     use crate::task_schema::{ExecutableTest, Provenance, TestKind};
     use chrono::{TimeZone, Utc};
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
     fn fixture(id: &str, n_tests: usize) -> Task {
-        let mut cutoffs = HashMap::new();
+        let mut cutoffs = FxHashMap::default();
         cutoffs.insert("m".to_string(), "2024-10".to_string());
         Task {
             id: id.to_string(),

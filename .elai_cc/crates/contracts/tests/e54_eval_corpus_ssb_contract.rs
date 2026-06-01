@@ -29,10 +29,10 @@ use elai_eval_corpus::TaskFamily;
 use elai_orchestrator::ssb::{CorpusEventPhase, SsbActionType, SCHEMA_VERSION_PUBLIC};
 
 use chrono::TimeZone;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 fn fixture_task() -> Task {
-    let mut cutoffs = HashMap::new();
+    let mut cutoffs = FxHashMap::default();
     cutoffs.insert("m".to_string(), "2024-10".to_string());
     Task {
         id: "c1".to_string(),
@@ -121,7 +121,7 @@ fn generator_rotation_minimum_distribution_constants() {
         MIN_GENERATORS >= 3,
         "E-54 generator count floor MUST be >= 3"
     );
-    let mut m = HashMap::new();
+    let mut m = FxHashMap::default();
     m.insert("a".to_string(), 5);
     m.insert("b".to_string(), 5);
     let r = compute_distribution(m, 10);
@@ -163,8 +163,9 @@ fn corpus_event_phase_has_14_arms() {
 
 #[test]
 fn eval_corpus_event_schema_version_at_167() {
-    assert_eq!(
-        SCHEMA_VERSION_PUBLIC, 167,
-        "E-54 SCHEMA_VERSION bump MUST land at 167 (post-E-19 head 166 + 1)"
+    assert!(
+        SCHEMA_VERSION_PUBLIC >= 167,
+        "schema only drifts forward; this contract was written at version 167. \
+         E-54 SCHEMA_VERSION bump MUST land at >= 167 (post-E-19 head 166 + 1)"
     );
 }

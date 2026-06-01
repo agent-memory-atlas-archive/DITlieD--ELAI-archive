@@ -163,6 +163,13 @@ pub struct TransitionContext {
     /// `IntentConfig::default()` (3). Used by `IntentPairsGate::check`.
     /// `0` disables the gate (consistent with `IntentConfig` semantics).
     pub min_intent_pairs: usize,
+
+    // E-52 Tranche B-3: LSP diagnostic probe outcome (EXECUTING -> AUDITING).
+    // Optional + default-degrade so existing transition sites that don't yet
+    // run the producer keep transitioning. `DiagnosticProbeGate` returns
+    // `Ok(())` on `None`. See workflow/reasoning/E-52-tranche-B3-decisions.md.
+    pub diagnostic_probe_outcome:
+        Option<elai_knowledge::diagnostic::DiagnosticProbeOutcome>,
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +640,65 @@ impl EvidenceGate for IntentPairsGate {
 }
 
 // ---------------------------------------------------------------------------
+// E-52 Tranche B-3: DiagnosticProbeGate (EXECUTING -> AUDITING).
+// Co-fires with TestFlippedGate. Soft-passes on TimedOut / ToolMissing per
+// E-52-decisions.md (c)/(d) and the LOCAL-ONLY honesty rule from
+// E-52-tranche-B3-decisions.md. Default-degrades on `None` outcome so
+// callers that have not yet wired `diagnostic_probe::dispatch_diagnostic_probe`
+// keep transitioning. See workflow/reasoning/E-52-tranche-B3-decisions.md.
+// ---------------------------------------------------------------------------
+
+/// EXECUTING -> AUDITING: when a `DiagnosticProbeOutcome` is present AND
+/// `run_status.is_authoritative()` AND `!outcome.is_clean()`, block the
+/// transition with the failing diagnostics' file paths. All other shapes
+/// (None / TimedOut / ToolMissing / clean Completed) pass.
+pub struct DiagnosticProbeGate;
+
+impl EvidenceGate for DiagnosticProbeGate {
+    fn name(&self) -> &'static str {
+        "diagnostic_probe"
+    }
+
+    fn transition(&self) -> (FsmState, FsmState) {
+        (FsmState::Executing, FsmState::Auditing)
+    }
+
+    fn check(&self, ctx: &TransitionContext) -> Result<(), EvidenceError> {
+        let Some(outcome) = ctx.diagnostic_probe_outcome.as_ref() else {
+            return Ok(());
+        };
+        if !outcome.run_status.is_authoritative() {
+            // TimedOut / ToolMissing: soft-pass with the auditor responsible
+            // for honest reporting downstream.
+            return Ok(());
+        }
+        if outcome.is_clean() {
+            return Ok(());
+        }
+        let paths: Vec<String> = outcome
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == elai_knowledge::diagnostic::DiagnosticSeverity::Error
+            })
+            .map(|d| d.path.clone())
+            .collect();
+        Err(EvidenceError {
+            gate_name: "diagnostic_probe",
+            missing_artifacts: if paths.is_empty() {
+                vec!["diagnostic_probe_errors".into()]
+            } else {
+                paths
+            },
+            suggestion: format!(
+                "Fix {} error-severity diagnostic(s) before AUDITING.",
+                outcome.error_count
+            ),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Gate registry: maps transitions to their required gates
 // ---------------------------------------------------------------------------
 
@@ -651,6 +717,9 @@ pub fn all_gates() -> Vec<Box<dyn EvidenceGate>> {
         // C-29: T-2 IntentPair gate. Order-stable append so existing
         // gate-evaluation tests that index into `all_gates()` keep working.
         Box::new(IntentPairsGate),
+        // E-52 Tranche B-3: diagnostic probe gate (EXECUTING -> AUDITING).
+        // Co-fires with TestFlippedGate. Slot 9 — order-stable append.
+        Box::new(DiagnosticProbeGate),
     ]
 }
 
@@ -1125,6 +1194,12 @@ mod tests {
             if gate.name() == "intent_pairs" {
                 continue;
             }
+            // E-52 Tranche B-3: DiagnosticProbeGate also has documented
+            // pass-through semantics on empty context (None outcome -> Ok)
+            // per workflow/reasoning/E-52-tranche-B3-decisions.md.
+            if gate.name() == "diagnostic_probe" {
+                continue;
+            }
             let result = gate.check(&empty);
             assert!(
                 result.is_err(),
@@ -1215,7 +1290,8 @@ mod tests {
         // C-29: PLANNING -> TESTING_FIRST has 2 gates (GroundingSweep + IntentPairs).
         assert_eq!(gates_for_transition(FsmState::Planning, FsmState::TestingFirst).len(), 2);
         assert_eq!(gates_for_transition(FsmState::TestingFirst, FsmState::Executing).len(), 1);
-        assert_eq!(gates_for_transition(FsmState::Executing, FsmState::Auditing).len(), 1);
+        // E-52 Tranche B-3: EXECUTING -> AUDITING has 2 gates (TestFlipped + DiagnosticProbe).
+        assert_eq!(gates_for_transition(FsmState::Executing, FsmState::Auditing).len(), 2);
         assert_eq!(gates_for_transition(FsmState::Executing, FsmState::Planning).len(), 1);
         assert_eq!(gates_for_transition(FsmState::Auditing, FsmState::Memorizing).len(), 1);
     }
@@ -1274,11 +1350,12 @@ mod tests {
         let mut names: Vec<&str> = gates.iter().map(|g| g.name()).collect();
         names.sort();
         names.dedup();
-        // C-29 appended IntentPairsGate (8th gate). Assertion follows
-        // the live registry length so future appends do not silently
-        // regress the uniqueness contract.
+        // C-29 appended IntentPairsGate (8th gate). E-52 Tranche B-3
+        // appended DiagnosticProbeGate (9th). Assertion follows the live
+        // registry length so future appends do not silently regress the
+        // uniqueness contract.
         assert_eq!(names.len(), total);
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 9);
     }
 
     // -----------------------------------------------------------------------

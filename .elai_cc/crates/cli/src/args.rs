@@ -248,6 +248,60 @@ pub(crate) enum CliAction {
         project_root: PathBuf,
         top: u32,
     },
+    /// B-29 Phase 5b: `elai symbol_impact --target <symbol-or-file>
+    /// [--depth <u32>] [--project-root <path>] [--output-format text|json]`
+    /// Thin shell wrapper around
+    /// `knowledge::symbol_graph::traversal::compute_impact_radius`. Exposes
+    /// the B-29 SymbolGraphCache to fork-exec callers (Python eval, agents)
+    /// without going through the MCP/IPC bridge.
+    SymbolImpact {
+        project_root: PathBuf,
+        target: String,
+        depth: u32,
+        output_format: CliOutputFormat,
+    },
+    /// B-29 Phase 5b: `elai symbol_context --name <symbol-name>
+    /// [--file <path>] [--project-root <path>] [--output-format text|json]`
+    /// Thin shell wrapper around
+    /// `knowledge::symbol_graph::traversal::compute_symbol_context`.
+    SymbolContext {
+        project_root: PathBuf,
+        name: String,
+        file: Option<String>,
+        output_format: CliOutputFormat,
+    },
+    /// B-34 Phase 5b: `elai entry_points [--project-root <path>]
+    /// [--output-format text|json] [--limit <usize>]`
+    /// Thin shell wrapper around
+    /// `knowledge::symbol_graph::entry_points::detect_entry_points`.
+    /// Mirrors the TOOL_ENTRY_POINTS dispatcher in production_agent_rpc.rs
+    /// (single-process, no MCP bridge).
+    EntryPoints {
+        project_root: PathBuf,
+        limit: usize,
+        output_format: CliOutputFormat,
+    },
+    /// E-49 SWE-Bench Pro v5 driver surface — `elai task <problem>
+    /// --repo-root PATH --mode local|hybrid|cloud --output-format json|text
+    /// --max-wall-seconds N [--executor-runtime <backend>]
+    /// [--auditor-runtime <backend>]`.
+    /// Non-interactive one-shot task submission: applies per-role runtime
+    /// overrides (B-37 toml-edit), boots the FSM-aware task_runner inline,
+    /// writes a `TaskSubmitted` SSB row matching the dashboard's
+    /// `submit_task` Tauri command, tails the broadcast until terminal
+    /// signal (`PhaseComplete` or runner-exit) or wall-budget elapses, and
+    /// emits one JSONL summary line on stdout. Driven by the v5 SWE-Bench
+    /// Pro Python driver via subprocess-wrap. Handler:
+    /// `crate::task_cmd::run_task_subcommand`.
+    Task {
+        problem_statement: String,
+        repo_root: PathBuf,
+        mode: crate::task_cmd::TaskMode,
+        output_format: crate::task_cmd::TaskOutputFormat,
+        max_wall_seconds: u64,
+        executor_runtime: Option<String>,
+        auditor_runtime: Option<String>,
+    },
     /// C-13: `elai wip-squash [--project-root <path>]` — invoked by the
     /// Python FSM hook chain at AUDITING -> MEMORIZING transitions when
     /// the Rust task_runner is not in scope (the hook layer fires the
@@ -866,6 +920,14 @@ pub(crate) enum CliAction {
     },
     TierEval { suites: Vec<String>, budget: u32 },
     CriticReport { output: Option<String> },
+    /// E-47: `elai lora-gate-check [--config PATH] [--json]` -- ship-gate
+    /// dispatcher for the LoRA fine-tuning subsystem. Reads the
+    /// `[finetune.lora]` block from `.elai_cc/elai_cc.toml`, evaluates
+    /// the triple-AND gate, prints the outcome, and emits a
+    /// `lora_ship_gate_event` SSB row when
+    /// `ELAI_LORA_SHIP_GATE_ENABLE=1`. Producer-side LoRA training stack
+    /// (Unsloth + QLoRA-NF4 + PiSSA + DoRA) is RUNPOD-PENDING.
+    LoraGateCheck { config: Option<String>, json: bool },
     /// E-9: `elai eval run --benchmark=<NAME> [--harness-vary] [--p-target=0.05]
     /// [--list] [--json]` — external agent-eval benchmark dispatcher.
     /// Drives the host-side scaffolding for 11 external benchmark suites
@@ -894,6 +956,37 @@ pub(crate) enum CliAction {
         recipe: Option<String>,
         list: bool,
         json: bool,
+    },
+    /// E-25 Tranche C (C.4): `elai checkpoint <list|rewind>` -- edit
+    /// snapshot store CLI surface. Lists existing per-session
+    /// snapshots OR rewinds the last N edits in the current session
+    /// from the on-disk content-addressed store at
+    /// `.elai_cc/.session-checkpoints/`. Wire-dark default OFF;
+    /// gated by `ELAI_E25_EDIT_CHECKPOINTS_ENABLE=1` for SSB emit.
+    /// The CLI surface itself works regardless of the gate so the
+    /// operator can inspect existing snapshots without enabling the
+    /// emit cadence. See workflow/reasoning/E-25-trancheC-decisions.md.
+    CheckpointSub {
+        sub: CheckpointSub,
+    },
+}
+
+/// E-25 Tranche C (C.4) -- `elai checkpoint <sub>` sub-verbs. Mirrors
+/// the FarmAdvRmSub closed-sub-verb pattern.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CheckpointSub {
+    /// `elai checkpoint list [--session-id ID] [--json]` -- enumerate
+    /// existing per-session snapshots.
+    List {
+        session_id: Option<String>,
+        json: bool,
+    },
+    /// `elai checkpoint rewind --steps N [--session-id ID] [--dry-run]`
+    /// -- rewind the last N snapshots in the current session.
+    Rewind {
+        steps: u32,
+        session_id: Option<String>,
+        dry_run: bool,
     },
 }
 
@@ -960,6 +1053,11 @@ pub(crate) enum SymbolGraphAction {
     /// probe; `--mode full_handshake` runs the LSP base-protocol v3.17
     /// initialize/initialized/shutdown/exit dance.
     LspProbe { symbol: String, language: String, mode: String },
+    /// `elai scip refresh [--scip-dir <path>] [--project-root <path>]` —
+    /// regenerates SCIP indices by invoking `codebase_mapper.py` and
+    /// emits a `ScipRefreshCompleted` SSB row (gated on
+    /// `ELAI_SCIP_REFRESH_EMIT_ENABLE`, default-OFF).
+    Refresh { scip_dir: String, project_root: String },
 }
 
 /// E-37 — `elai safety <sub>` sub-verb. Prompt-injection defense
@@ -1774,7 +1872,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // E-22 SKILL.md export shim. Paper-grounded against
         // agentskills.io/specification. Renamed from `skills` to
         // avoid clash with the existing slash-command `Skills` variant.
-        "skills-mgmt" => parse_skills_subcommand_args(&rest[1..], output_format),
+        "skills-mgmt" => crate::args_skills::parse_skills_subcommand_args(&rest[1..], output_format),
         // E-39 -- `elai cloud <override-cap|status>`. Layered-cap
         // manual-override CLI surface. Handler: crate::cloud_cmd.
         "cloud" => parse_cloud_subcommand_args(&rest[1..], output_format),
@@ -1901,30 +1999,58 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "logout" => Ok(CliAction::Logout { output_format }),
         "init" => Ok(CliAction::Init { output_format }),
         "run" => parse_run_subcommand_args(&rest[1..]),
-        "symbol_graph" | "symbol-graph" => parse_symbol_graph_args(&rest[1..]),
+        "symbol_graph" | "symbol-graph" => crate::args_symbol::parse_symbol_graph_args(&rest[1..]),
+        // B-29 Phase 5b: thin shell wrappers around the SymbolGraphCache
+        // traversal API so external scripts (Python eval, agents) can call
+        // compute_impact_radius / compute_symbol_context / detect_entry_points
+        // by fork-exec with --output-format=json. No IPC bridge, no daemon.
+        // Handlers at crates/cli/src/symbol_graph.rs.
+        "symbol_impact" | "symbol-impact" => {
+            crate::args_symbol::parse_symbol_impact_args(&rest[1..], output_format)
+        }
+        "symbol_context" | "symbol-context" => {
+            crate::args_symbol::parse_symbol_context_args(&rest[1..], output_format)
+        }
+        "entry_points" | "entry-points" => {
+            crate::args_symbol::parse_entry_points_args(&rest[1..], output_format)
+        }
+        // E-49 SWE-Bench Pro v5 driver surface — non-interactive task
+        // submission with FSM + per-role runtime overrides. Handler at
+        // crates/cli/src/task_cmd.rs.
+        "task" => parse_task_subcommand_args(&rest[1..]),
         "wip-squash" | "wip_squash" => parse_wip_squash_args(&rest[1..]),
         // D-19: `elai bench prmbench ...` — PRMBench adversarial-gaming benchmark.
-        "bench" => parse_bench_subcommand_args(&rest[1..]),
+        // B-15 Tranche O.2 (orchestrate s-22600): parser block moved to
+        // crate::args_bench. CliAction variants unchanged.
+        "bench" => crate::args_bench::parse_bench_subcommand_args(&rest[1..]),
         // D-28: `elai farm-adv-rm <run|verdict> ...` — adversarial example
         // farming runner. Drives the AdvRmFarmer (orchestrator-side) and
         // writes corpus.jsonl with `gold_verdict: "pending"`. Single
         // SsbActionType::AdversarialFarmRunCompleted row at end-of-run.
         "farm-adv-rm" | "farm_adv_rm" => parse_farm_adv_rm_args(&rest[1..]),
         // E-10: hostile-critic structural simplifications.
-        "bench-ablation" | "bench_ablation" => parse_bench_ablation_args(&rest[1..]),
+        "bench-ablation" | "bench_ablation" => crate::args_critic::parse_bench_ablation_args(&rest[1..]),
         // E-7: darwinian-evolve substrate exerciser. See darwin_loop_cmd.rs.
-        "darwin-loop" | "darwin_loop" => parse_darwin_loop_args(&rest[1..]),
-        "tier-eval" | "tier_eval" => parse_tier_eval_args(&rest[1..]),
-        "critic-report" | "critic_report" => parse_critic_report_args(&rest[1..]),
+        "darwin-loop" | "darwin_loop" => crate::args_critic::parse_darwin_loop_args(&rest[1..]),
+        "tier-eval" | "tier_eval" => crate::args_critic::parse_tier_eval_args(&rest[1..]),
+        "critic-report" | "critic_report" => crate::args_critic::parse_critic_report_args(&rest[1..]),
+        // E-47: LoRA ship-gate dispatcher. Reads [finetune.lora] from
+        // elai_cc.toml + evaluates triple-AND gate + prints outcome +
+        // emits SSB row when ELAI_LORA_SHIP_GATE_ENABLE=1.
+        "lora-gate-check" | "lora_gate_check" => crate::args_critic::parse_lora_gate_check_args(&rest[1..]),
         // E-9: external agent-eval benchmark suite dispatcher. Top-level
         // `elai eval run --benchmark=<NAME> ...` per
         // workflow/reasoning/E-9-decisions.md DECISION-8 (kept separate
         // from the existing `bench *` D-19..D-25 surfaces).
-        "eval" => parse_eval_subcommand_args(&rest[1..]),
+        "eval" => crate::args_skills::parse_eval_subcommand_args(&rest[1..]),
         // E-55: `elai rl train --recipe=<name>` — agentic RL recipe
         // runner. Substrate ships fully; cloud Sonnet rollouts + LoRA
         // training RUNPOD-PENDING.
-        "rl" => parse_rl_subcommand_args(&rest[1..]),
+        "rl" => crate::args_skills::parse_rl_subcommand_args(&rest[1..]),
+        // E-25 Tranche C (C.4): `elai checkpoint <list|rewind>` --
+        // edit snapshot store CLI surface. Wire-dark default OFF for
+        // SSB emit; CLI inspection always works.
+        "checkpoint" => crate::args_skills::parse_checkpoint_subcommand_args(&rest[1..]),
         // C-20: route `elai measure …` through the slash-command parser so
         // the grammar is a single source of truth (mirrors the `runtime`
         // routing immediately above).
@@ -1995,12 +2121,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // C-40: `elai pr <open|list|status|close> [args...]` — GitHub PR
         // adapter CLI surface. Sub-action validation lives in the
         // handler (mirrors `Mcp` / `Runtime` string-typed pattern).
-        "pr" => parse_pr_subcommand_args(&rest[1..]),
+        "pr" => crate::args_pr::parse_pr_subcommand_args(&rest[1..]),
         // E-41: `elai pr-review <sub> [args...]` — PR review surface.
         // Distinct top-level subcommand so the args layer can stay
         // minimal; `pr` continues to dispatch the C-40 open/list/status/
         // close surface untouched.
-        "pr-review" => parse_pr_review_subcommand_args(&rest[1..]),
+        "pr-review" => crate::args_pr::parse_pr_review_subcommand_args(&rest[1..]),
         // D-9 — `elai audit-locked-keys` is a top-level subcommand, not a
         // slash command (CI + pre-commit hook want a simple argv shape).
         "audit-locked-keys" => parse_audit_locked_keys_args(&rest[1..]),
@@ -2025,10 +2151,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         }
         // E-30: `elai incident record --title <TITLE> --date <DATE> --url <URL>
         // [--id <ID>]` — store an incident postmortem entry in the SSB.
-        "incident" => parse_incident_subcommand_args(&rest[1..]),
+        "incident" => crate::args_memory::parse_incident_subcommand_args(&rest[1..]),
         // E-5 session-2: `elai memory <sub>` — heuristic-only inspection
         // surface over the per-project memory_facts store.
-        "memory" => parse_memory_subcommand_args(&rest[1..]),
+        "memory" => crate::args_memory::parse_memory_subcommand_args(&rest[1..]),
         other if other.starts_with('/') => parse_direct_slash_cli_action(&rest, output_format),
         _other => Ok(CliAction::Prompt {
             prompt: rest.join(" "),
@@ -2156,69 +2282,143 @@ pub fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
     Ok(CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb })
 }
 
-/// B-29 Phase 4 — parse `symbol_graph` / `symbol-graph` subcommand args.
+/// E-49 SWE-Bench Pro v5 driver — parse `elai task <problem_statement>
+/// --repo-root PATH --mode local|hybrid|cloud --output-format json|text
+/// --max-wall-seconds N [--executor-runtime BACKEND]
+/// [--auditor-runtime BACKEND]`.
 ///
-/// Usage:
-///   elai symbol_graph build [--project-root <path>]
-///   elai symbol_graph stats [--project-root <path>]
-pub(crate) fn parse_symbol_graph_args(rest: &[String]) -> Result<CliAction, String> {
-    let sub = rest.first().map(String::as_str).unwrap_or("");
-    let flag_rest = if rest.is_empty() { &rest[..] } else { &rest[1..] };
-
-    let mut project_root: Option<PathBuf> = None;
-    // E-21 Tier-A: `rank --top N` accepts an additional --top flag (default 20).
-    let mut top: u32 = 0;
+/// The first positional argument is the problem statement; all subsequent
+/// `--flag value` pairs configure the run. Mirrors the symbol_impact
+/// flag-parsing style (no `clap` dep) and validates values at parse time
+/// so the dispatch arm sees a clean struct.
+pub(crate) fn parse_task_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    if rest.is_empty() {
+        return Err(
+            "usage: elai task <problem_statement> --repo-root PATH \
+             --mode local|hybrid|cloud --output-format json|text \
+             --max-wall-seconds N [--executor-runtime BACKEND] \
+             [--auditor-runtime BACKEND]"
+                .to_string(),
+        );
+    }
+    // Collect positional fragments + flagged args. We accept the
+    // problem-statement as either a single quoted positional OR multiple
+    // bare words before the first --flag (so `elai task fix the bug
+    // --repo-root ...` works as a convenience form).
+    let mut positional: Vec<String> = Vec::new();
+    let mut repo_root: Option<PathBuf> = None;
+    let mut mode: Option<crate::task_cmd::TaskMode> = None;
+    let mut output_format: Option<crate::task_cmd::TaskOutputFormat> = None;
+    let mut max_wall_seconds: Option<u64> = None;
+    let mut executor_runtime: Option<String> = None;
+    let mut auditor_runtime: Option<String> = None;
     let mut i = 0;
-    while i < flag_rest.len() {
-        match flag_rest[i].as_str() {
-            "--project-root" => {
-                let value = flag_rest
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--repo-root" => {
+                let value = rest
                     .get(i + 1)
-                    .ok_or_else(|| "missing value for --project-root".to_string())?;
-                project_root = Some(PathBuf::from(value));
+                    .ok_or_else(|| "missing value for --repo-root".to_string())?;
+                repo_root = Some(PathBuf::from(value));
                 i += 2;
             }
-            flag if flag.starts_with("--project-root=") => {
-                project_root = Some(PathBuf::from(&flag[15..]));
+            flag if flag.starts_with("--repo-root=") => {
+                repo_root = Some(PathBuf::from(&flag[12..]));
                 i += 1;
             }
-            "--top" => {
-                let value = flag_rest
+            "--mode" => {
+                let value = rest
                     .get(i + 1)
-                    .ok_or_else(|| "missing value for --top".to_string())?;
-                top = value
-                    .parse::<u32>()
-                    .map_err(|e| format!("--top must be a non-negative integer: {e}"))?;
+                    .ok_or_else(|| "missing value for --mode".to_string())?;
+                mode = Some(crate::task_cmd::TaskMode::parse(value)?);
                 i += 2;
             }
-            flag if flag.starts_with("--top=") => {
-                top = flag[6..]
-                    .parse::<u32>()
-                    .map_err(|e| format!("--top must be a non-negative integer: {e}"))?;
+            flag if flag.starts_with("--mode=") => {
+                mode = Some(crate::task_cmd::TaskMode::parse(&flag[7..])?);
                 i += 1;
+            }
+            "--output-format" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output-format".to_string())?;
+                output_format = Some(crate::task_cmd::TaskOutputFormat::parse(value)?);
+                i += 2;
+            }
+            flag if flag.starts_with("--output-format=") => {
+                output_format =
+                    Some(crate::task_cmd::TaskOutputFormat::parse(&flag[16..])?);
+                i += 1;
+            }
+            "--max-wall-seconds" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --max-wall-seconds".to_string())?;
+                max_wall_seconds = Some(value.parse::<u64>().map_err(|e| {
+                    format!("--max-wall-seconds must be a positive integer: {e}")
+                })?);
+                i += 2;
+            }
+            flag if flag.starts_with("--max-wall-seconds=") => {
+                max_wall_seconds = Some(flag[19..].parse::<u64>().map_err(|e| {
+                    format!("--max-wall-seconds must be a positive integer: {e}")
+                })?);
+                i += 1;
+            }
+            "--executor-runtime" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --executor-runtime".to_string())?;
+                executor_runtime = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--executor-runtime=") => {
+                executor_runtime = Some(flag[19..].to_string());
+                i += 1;
+            }
+            "--auditor-runtime" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --auditor-runtime".to_string())?;
+                auditor_runtime = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--auditor-runtime=") => {
+                auditor_runtime = Some(flag[18..].to_string());
+                i += 1;
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("unknown `task` argument: {other}"));
             }
             other => {
-                return Err(format!("unknown `symbol_graph` argument: {other}"));
+                positional.push(other.to_string());
+                i += 1;
             }
         }
     }
-
-    let project_root = match project_root {
-        Some(p) => p,
-        None => std::env::current_dir().map_err(|e| {
-            format!("`symbol_graph` cannot determine cwd for --project-root default: {e}")
-        })?,
+    let problem_statement = if positional.is_empty() {
+        return Err("`task` requires a problem-statement positional argument".to_string());
+    } else {
+        positional.join(" ")
     };
-
-    match sub {
-        "build" => Ok(CliAction::SymbolGraphBuild { project_root }),
-        "stats" => Ok(CliAction::SymbolGraphStats { project_root }),
-        "rank" => Ok(CliAction::SymbolGraphRank { project_root, top }),
-        other => Err(format!(
-            "unknown `symbol_graph` sub-command: '{other}' (expected 'build', 'stats', or 'rank')"
-        )),
+    let repo_root = repo_root.ok_or_else(|| "missing required --repo-root".to_string())?;
+    let mode = mode.ok_or_else(|| "missing required --mode".to_string())?;
+    let output_format =
+        output_format.unwrap_or(crate::task_cmd::TaskOutputFormat::Json);
+    let max_wall_seconds = max_wall_seconds.unwrap_or(600);
+    if max_wall_seconds == 0 {
+        return Err("--max-wall-seconds must be > 0".to_string());
     }
+    Ok(CliAction::Task {
+        problem_statement,
+        repo_root,
+        mode,
+        output_format,
+        max_wall_seconds,
+        executor_runtime,
+        auditor_runtime,
+    })
 }
+
 
 /// E-17 SP1 task 1 — parse `elai doctor [knowledge-models ...]`.
 ///
@@ -2365,7 +2565,7 @@ pub(crate) fn parse_install_subcommand(
     })
 }
 
-fn parse_output_format_value(value: &str) -> Result<CliOutputFormat, String> {
+pub(crate) fn parse_output_format_value(value: &str) -> Result<CliOutputFormat, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "text" => Ok(CliOutputFormat::Text),
         "json" => Ok(CliOutputFormat::Json),
@@ -2424,305 +2624,6 @@ pub(crate) fn parse_archive_subcommand_args(rest: &[String]) -> Result<CliAction
         json,
         fail_fast,
     })
-}
-
-/// C-40 — parse `elai pr <open|list|status|close> [args...]`.
-///
-/// Each subverb maps to one [`crate::github_pr_cmd`] handler entry.
-/// Argument validation is intentionally permissive at parse time — the
-/// handler boundary re-validates (mirrors `Mcp` / `Runtime` string-
-/// typed pattern). Returns [`CliAction::Pr`] with the parsed shape.
-pub(crate) fn parse_pr_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
-    let sub = rest
-        .first()
-        .map(String::as_str)
-        .ok_or_else(|| {
-            "missing `pr` sub-command (expected one of: open, list, status, close)".to_string()
-        })?
-        .to_ascii_lowercase();
-    if !matches!(sub.as_str(), "open" | "list" | "status" | "close") {
-        return Err(format!(
-            "unknown `pr` sub-command: '{sub}' (expected one of: open, list, status, close)"
-        ));
-    }
-
-    let mut repo: Option<String> = None;
-    let mut title: Option<String> = None;
-    let mut body: Option<String> = None;
-    let mut head: Option<String> = None;
-    let mut base: Option<String> = None;
-    let mut draft = false;
-    let mut pr_number: Option<u32> = None;
-    let mut state_filter: Option<String> = None;
-    let mut limit: u32 = 0;
-    let mut json = false;
-
-    let mut i = 1;
-    while i < rest.len() {
-        let arg = rest[i].as_str();
-        match arg {
-            "--repo" => {
-                repo = Some(
-                    rest.get(i + 1)
-                        .ok_or_else(|| "missing value for --repo".to_string())?
-                        .clone(),
-                );
-                i += 2;
-            }
-            "--title" => {
-                title = Some(
-                    rest.get(i + 1)
-                        .ok_or_else(|| "missing value for --title".to_string())?
-                        .clone(),
-                );
-                i += 2;
-            }
-            "--body" => {
-                body = Some(
-                    rest.get(i + 1)
-                        .ok_or_else(|| "missing value for --body".to_string())?
-                        .clone(),
-                );
-                i += 2;
-            }
-            "--head" => {
-                head = Some(
-                    rest.get(i + 1)
-                        .ok_or_else(|| "missing value for --head".to_string())?
-                        .clone(),
-                );
-                i += 2;
-            }
-            "--base" => {
-                base = Some(
-                    rest.get(i + 1)
-                        .ok_or_else(|| "missing value for --base".to_string())?
-                        .clone(),
-                );
-                i += 2;
-            }
-            "--draft" => {
-                draft = true;
-                i += 1;
-            }
-            "--state" => {
-                state_filter = Some(
-                    rest.get(i + 1)
-                        .ok_or_else(|| "missing value for --state".to_string())?
-                        .clone(),
-                );
-                i += 2;
-            }
-            "--limit" => {
-                let v = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --limit".to_string())?;
-                limit = v
-                    .parse::<u32>()
-                    .map_err(|e| format!("invalid --limit value '{v}': {e}"))?;
-                i += 2;
-            }
-            "--json" => {
-                json = true;
-                i += 1;
-            }
-            other if !other.starts_with("--") && pr_number.is_none() => {
-                // Positional PR number for status / close.
-                pr_number = Some(
-                    other
-                        .parse::<u32>()
-                        .map_err(|e| format!("invalid PR number '{other}': {e}"))?,
-                );
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `pr {sub}` argument: {other}"));
-            }
-        }
-    }
-
-    Ok(CliAction::Pr {
-        sub,
-        repo,
-        title,
-        body,
-        head,
-        base,
-        draft,
-        pr_number,
-        state_filter,
-        limit,
-        json,
-    })
-}
-
-/// E-41 — parse `elai pr-review <sub> [args]`.
-///
-/// Sub-action is validated downstream in `pr_review_cmd::run_pr_review_subcommand`.
-/// Flag parsing is permissive: per-subverb required flags are checked by
-/// the handler so the args layer stays free of orchestrator types.
-pub(crate) fn parse_pr_review_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
-    let sub = rest
-        .first()
-        .map(String::as_str)
-        .ok_or_else(|| "pr-review requires a sub-command".to_string())?
-        .to_ascii_lowercase();
-    let mut pr: Option<u32> = None;
-    let mut body: Option<String> = None;
-    let mut file: Option<String> = None;
-    let mut line: Option<u32> = None;
-    let mut template: Option<String> = None;
-    let mut kv_pairs: Vec<(String, String)> = Vec::new();
-    let mut since: Option<i64> = None;
-    let mut ruleset: Option<String> = None;
-    let mut loc_added: Option<u32> = None;
-    let mut loc_removed: Option<u32> = None;
-    let mut files_changed: Option<u32> = None;
-    let mut touches_owned = false;
-    let mut repo: Option<String> = None;
-    let mut branch: Option<String> = None;
-    let mut touched_files: Vec<String> = Vec::new();
-    let mut default_owner: Option<String> = None;
-    let mut title: Option<String> = None;
-    let mut json = false;
-
-    let mut i = 1;
-    while i < rest.len() {
-        let arg = rest[i].as_str();
-        match arg {
-            "--json" => {
-                json = true;
-                i += 1;
-            }
-            "--touches-owned" => {
-                touches_owned = true;
-                i += 1;
-            }
-            "--body" => {
-                body = Some(require_value(rest, i, "--body")?);
-                i += 2;
-            }
-            "--file" => {
-                file = Some(require_value(rest, i, "--file")?);
-                i += 2;
-            }
-            "--line" => {
-                let v = require_value(rest, i, "--line")?;
-                line = Some(
-                    v.parse::<u32>()
-                        .map_err(|e| format!("invalid --line '{v}': {e}"))?,
-                );
-                i += 2;
-            }
-            "--template" => {
-                template = Some(require_value(rest, i, "--template")?);
-                i += 2;
-            }
-            "--kv" => {
-                let v = require_value(rest, i, "--kv")?;
-                let (k, val) = v
-                    .split_once('=')
-                    .ok_or_else(|| format!("--kv expects key=value, got '{v}'"))?;
-                kv_pairs.push((k.to_string(), val.to_string()));
-                i += 2;
-            }
-            "--since" => {
-                let v = require_value(rest, i, "--since")?;
-                since = Some(
-                    v.parse::<i64>()
-                        .map_err(|e| format!("invalid --since '{v}': {e}"))?,
-                );
-                i += 2;
-            }
-            "--ruleset" => {
-                ruleset = Some(require_value(rest, i, "--ruleset")?);
-                i += 2;
-            }
-            "--loc-added" => {
-                let v = require_value(rest, i, "--loc-added")?;
-                loc_added = Some(
-                    v.parse::<u32>()
-                        .map_err(|e| format!("invalid --loc-added '{v}': {e}"))?,
-                );
-                i += 2;
-            }
-            "--loc-removed" => {
-                let v = require_value(rest, i, "--loc-removed")?;
-                loc_removed = Some(
-                    v.parse::<u32>()
-                        .map_err(|e| format!("invalid --loc-removed '{v}': {e}"))?,
-                );
-                i += 2;
-            }
-            "--files-changed" => {
-                let v = require_value(rest, i, "--files-changed")?;
-                files_changed = Some(
-                    v.parse::<u32>()
-                        .map_err(|e| format!("invalid --files-changed '{v}': {e}"))?,
-                );
-                i += 2;
-            }
-            "--repo" => {
-                repo = Some(require_value(rest, i, "--repo")?);
-                i += 2;
-            }
-            "--branch" => {
-                branch = Some(require_value(rest, i, "--branch")?);
-                i += 2;
-            }
-            "--touched" => {
-                touched_files.push(require_value(rest, i, "--touched")?);
-                i += 2;
-            }
-            "--default-owner" => {
-                default_owner = Some(require_value(rest, i, "--default-owner")?);
-                i += 2;
-            }
-            "--title" => {
-                title = Some(require_value(rest, i, "--title")?);
-                i += 2;
-            }
-            other if !other.starts_with("--") && pr.is_none() => {
-                pr = Some(
-                    other
-                        .parse::<u32>()
-                        .map_err(|e| format!("invalid PR number '{other}': {e}"))?,
-                );
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `pr-review {sub}` argument: {other}"));
-            }
-        }
-    }
-
-    Ok(CliAction::PrReview {
-        sub,
-        pr,
-        body,
-        file,
-        line,
-        template,
-        kv_pairs,
-        since,
-        ruleset,
-        loc_added,
-        loc_removed,
-        files_changed,
-        touches_owned,
-        repo,
-        branch,
-        touched_files,
-        default_owner,
-        title,
-        json,
-    })
-}
-
-fn require_value(args: &[String], index: usize, flag: &str) -> Result<String, String> {
-    args.get(index + 1)
-        .cloned()
-        .ok_or_else(|| format!("{flag} requires a value"))
 }
 
 /// D-2 — parse `elai ppm <sub> [args]`.
@@ -2857,729 +2758,12 @@ pub(crate) fn parse_audit_locked_keys_args(rest: &[String]) -> Result<CliAction,
     })
 }
 
-/// D-19 — parse `elai bench prmbench [--dataset PATH] [--hook mock|http://host:port]
-/// [--output PATH] [--gating-threshold 0.30] [--category NAME]`.
-///
-/// Only one sub-verb is supported (`prmbench`). The flag grammar mirrors
-/// `archive verify`: long-form `--flag VALUE` and `--flag=VALUE` both
-/// accepted. Validation of the values (URL parsing for `--hook`, range
-/// check on `--gating-threshold`) lives in the bench_prmbench handler
-/// boundary so this parser stays free of orchestrator type deps.
-pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
-    let sub = rest.first().map(String::as_str).unwrap_or("");
-    if sub == "mode-routing" {
-        return parse_bench_mode_routing_args(&rest[1..]);
-    }
-    if sub == "conformal" {
-        return parse_bench_conformal_args(&rest[1..]);
-    }
-    if sub == "arc" {
-        return parse_bench_arc_args(&rest[1..]);
-    }
-    if sub == "rag" {
-        return parse_bench_rag_args(&rest[1..]);
-    }
-    if sub == "sycophancy" {
-        return parse_bench_sycophancy_args(&rest[1..]);
-    }
-    if sub == "canary-regression" {
-        return parse_bench_canary_args(&rest[1..]);
-    }
-    if sub == "tamper" {
-        return parse_bench_tamper_args(&rest[1..]);
-    }
-    if sub != "prmbench" {
-        return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper')"
-        ));
-    }
-    let mut dataset: Option<String> = None;
-    let mut hook: String = "mock".to_string();
-    let mut output: Option<String> = None;
-    let mut gating_threshold: Option<String> = None;
-    let mut category: Option<String> = None;
-    let mut i = 1;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--dataset" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --dataset".to_string())?;
-                dataset = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--dataset=") => {
-                dataset = Some(flag["--dataset=".len()..].to_string());
-                i += 1;
-            }
-            "--hook" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --hook".to_string())?;
-                hook = value.clone();
-                i += 2;
-            }
-            flag if flag.starts_with("--hook=") => {
-                hook = flag["--hook=".len()..].to_string();
-                i += 1;
-            }
-            "--output" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --output".to_string())?;
-                output = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--output=") => {
-                output = Some(flag["--output=".len()..].to_string());
-                i += 1;
-            }
-            "--gating-threshold" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --gating-threshold".to_string())?;
-                // Validate parseability up front so a malformed flag fails
-                // at the parser boundary instead of mid-run.
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --gating-threshold {value:?}: {e}"))?;
-                gating_threshold = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--gating-threshold=") => {
-                let value = &flag["--gating-threshold=".len()..];
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --gating-threshold {value:?}: {e}"))?;
-                gating_threshold = Some(value.to_string());
-                i += 1;
-            }
-            "--category" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --category".to_string())?;
-                category = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--category=") => {
-                category = Some(flag["--category=".len()..].to_string());
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `bench prmbench` argument: {other}"));
-            }
-        }
-    }
-    Ok(CliAction::BenchPrmbench {
-        dataset,
-        hook,
-        output,
-        gating_threshold,
-        category,
-    })
-}
+// B-15 Tranche O.2 (orchestrate s-22600): the eight `parse_bench_*_args`
+// functions + `validate_bool_arg` helper that previously lived here have
+// moved to crate::args_bench. CliAction enum is unchanged; the call site
+// at L2018 dispatches directly to `crate::args_bench::parse_bench_subcommand_args`.
+// Removed ~722 LOC; see workflow/reasoning/O-trancheO-decisions.md.
 
-/// D-21 — parse `elai bench mode-routing [--dataset PATH] [--output PATH]
-/// [--macro-floor 0.85] [--per-mode-floor 0.70]`. Mirrors the prmbench
-/// parser; hand-rolled per the CLAUDE.md "no new clap dep" rule.
-/// Validation of the floor values lives at the handler boundary.
-pub(crate) fn parse_bench_mode_routing_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut dataset: Option<String> = None;
-    let mut output: Option<String> = None;
-    let mut macro_floor: Option<String> = None;
-    let mut per_mode_floor: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--dataset" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --dataset".to_string())?;
-                dataset = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--dataset=") => {
-                dataset = Some(flag["--dataset=".len()..].to_string());
-                i += 1;
-            }
-            "--output" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --output".to_string())?;
-                output = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--output=") => {
-                output = Some(flag["--output=".len()..].to_string());
-                i += 1;
-            }
-            "--macro-floor" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --macro-floor".to_string())?;
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --macro-floor {value:?}: {e}"))?;
-                macro_floor = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--macro-floor=") => {
-                let value = &flag["--macro-floor=".len()..];
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --macro-floor {value:?}: {e}"))?;
-                macro_floor = Some(value.to_string());
-                i += 1;
-            }
-            "--per-mode-floor" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --per-mode-floor".to_string())?;
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --per-mode-floor {value:?}: {e}"))?;
-                per_mode_floor = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--per-mode-floor=") => {
-                let value = &flag["--per-mode-floor=".len()..];
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --per-mode-floor {value:?}: {e}"))?;
-                per_mode_floor = Some(value.to_string());
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `bench mode-routing` argument: {other}"));
-            }
-        }
-    }
-    Ok(CliAction::BenchModeRouting {
-        dataset,
-        output,
-        macro_floor,
-        per_mode_floor,
-    })
-}
-
-/// D-22 — parse `elai bench conformal [--dataset PATH] [--corpus PATH]
-/// [--output PATH] [--epsilon 0.1]`. Mirrors the mode-routing parser;
-/// hand-rolled per the CLAUDE.md "no new clap dep" rule. Validation of
-/// the epsilon value lives at the handler boundary.
-pub(crate) fn parse_bench_conformal_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut dataset: Option<String> = None;
-    let mut corpus: Option<String> = None;
-    let mut output: Option<String> = None;
-    let mut epsilon: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--dataset" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --dataset".to_string())?;
-                dataset = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--dataset=") => {
-                dataset = Some(flag["--dataset=".len()..].to_string());
-                i += 1;
-            }
-            "--corpus" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --corpus".to_string())?;
-                corpus = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--corpus=") => {
-                corpus = Some(flag["--corpus=".len()..].to_string());
-                i += 1;
-            }
-            "--output" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --output".to_string())?;
-                output = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--output=") => {
-                output = Some(flag["--output=".len()..].to_string());
-                i += 1;
-            }
-            "--epsilon" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --epsilon".to_string())?;
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --epsilon {value:?}: {e}"))?;
-                epsilon = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--epsilon=") => {
-                let value = &flag["--epsilon=".len()..];
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --epsilon {value:?}: {e}"))?;
-                epsilon = Some(value.to_string());
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `bench conformal` argument: {other}"));
-            }
-        }
-    }
-    Ok(CliAction::BenchConformal {
-        dataset,
-        corpus,
-        output,
-        epsilon,
-    })
-}
-
-/// D-20 — parse `elai bench arc [--dataset PATH] [--output PATH]
-/// [--novelty-config PATH]`. Hand-rolled per the CLAUDE.md "no new clap
-/// dep" rule.
-pub(crate) fn parse_bench_arc_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut dataset: Option<String> = None;
-    let mut output: Option<String> = None;
-    let mut novelty_config: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--dataset" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --dataset".to_string())?;
-                dataset = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--dataset=") => {
-                dataset = Some(flag["--dataset=".len()..].to_string());
-                i += 1;
-            }
-            "--output" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --output".to_string())?;
-                output = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--output=") => {
-                output = Some(flag["--output=".len()..].to_string());
-                i += 1;
-            }
-            "--novelty-config" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --novelty-config".to_string())?;
-                novelty_config = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--novelty-config=") => {
-                novelty_config = Some(flag["--novelty-config=".len()..].to_string());
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `bench arc` argument: {other}"));
-            }
-        }
-    }
-    Ok(CliAction::BenchArc {
-        dataset,
-        output,
-        novelty_config,
-    })
-}
-
-/// E-17 SP6 — parse `elai bench rag --tier <STANDARD|DEEP> --top-k <N>
-/// [--project-root PATH] [--json] -- <QUERY...>`. Hand-rolled per the
-/// CLAUDE.md "no new clap dep" rule. The query is taken from positional
-/// arguments after the `--` sentinel (joined with spaces); flags before
-/// `--` are parsed as named options. `--tier` is required; everything
-/// else has a default (top-k=10, json=false, project-root=cwd).
-pub(crate) fn parse_bench_rag_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut tier: Option<String> = None;
-    let mut top_k: u32 = 10;
-    let mut project_root: Option<PathBuf> = None;
-    let mut json: bool = false;
-    let mut query_parts: Vec<String> = Vec::new();
-    let mut i = 0;
-    let mut saw_sentinel = false;
-    while i < rest.len() {
-        let arg = rest[i].as_str();
-        if saw_sentinel {
-            query_parts.push(rest[i].clone());
-            i += 1;
-            continue;
-        }
-        match arg {
-            "--" => {
-                saw_sentinel = true;
-                i += 1;
-            }
-            "--tier" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --tier".to_string())?;
-                tier = Some(value.to_uppercase());
-                i += 2;
-            }
-            flag if flag.starts_with("--tier=") => {
-                tier = Some(flag["--tier=".len()..].to_uppercase());
-                i += 1;
-            }
-            "--top-k" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --top-k".to_string())?;
-                top_k = value
-                    .parse()
-                    .map_err(|e| format!("invalid --top-k {value:?}: {e}"))?;
-                i += 2;
-            }
-            flag if flag.starts_with("--top-k=") => {
-                let value = &flag["--top-k=".len()..];
-                top_k = value
-                    .parse()
-                    .map_err(|e| format!("invalid --top-k {value:?}: {e}"))?;
-                i += 1;
-            }
-            "--project-root" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --project-root".to_string())?;
-                project_root = Some(PathBuf::from(value));
-                i += 2;
-            }
-            flag if flag.starts_with("--project-root=") => {
-                project_root = Some(PathBuf::from(&flag["--project-root=".len()..]));
-                i += 1;
-            }
-            "--json" => {
-                json = true;
-                i += 1;
-            }
-            other => {
-                // Pre-sentinel positional: treat as the start of an
-                // unsentineled query. Permissive grammar: `elai bench rag
-                // --tier STANDARD --top-k 5 my query here` is equivalent
-                // to `... -- my query here` once we hit a non-flag arg.
-                if other.starts_with("--") {
-                    return Err(format!("unknown `bench rag` argument: {other}"));
-                }
-                saw_sentinel = true;
-                query_parts.push(rest[i].clone());
-                i += 1;
-            }
-        }
-    }
-    let tier_value = tier
-        .ok_or_else(|| "missing required --tier (STANDARD or DEEP)".to_string())?;
-    if tier_value != "STANDARD" && tier_value != "DEEP" && tier_value != "FAST" {
-        return Err(format!(
-            "invalid --tier {tier_value:?} (expected STANDARD | DEEP | FAST)"
-        ));
-    }
-    let query = query_parts.join(" ").trim().to_string();
-    if query.is_empty() {
-        return Err("missing query (pass after `--` or as trailing positional args)".to_string());
-    }
-    if top_k == 0 {
-        return Err("--top-k must be >= 1".to_string());
-    }
-    let resolved_project_root = match project_root {
-        Some(p) => p,
-        None => std::env::current_dir()
-            .map_err(|e| format!("cannot determine cwd for --project-root: {e}"))?,
-    };
-    Ok(CliAction::BenchRag {
-        tier: tier_value,
-        top_k,
-        query,
-        json,
-        project_root: resolved_project_root,
-    })
-}
-
-/// D-23 — parse `elai bench sycophancy [--fixtures PATH] [--output PATH]
-/// [--detection-floor 0.70] [--fp-ceiling 0.15]`. Mirrors the prmbench
-/// parser; hand-rolled per the CLAUDE.md "no new clap dep" rule.
-/// Validation of the floor / ceiling values lives at the handler boundary.
-pub(crate) fn parse_bench_sycophancy_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut fixtures: Option<String> = None;
-    let mut output: Option<String> = None;
-    let mut detection_floor: Option<String> = None;
-    let mut fp_ceiling: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--fixtures" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --fixtures".to_string())?;
-                fixtures = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--fixtures=") => {
-                fixtures = Some(flag["--fixtures=".len()..].to_string());
-                i += 1;
-            }
-            "--output" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --output".to_string())?;
-                output = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--output=") => {
-                output = Some(flag["--output=".len()..].to_string());
-                i += 1;
-            }
-            "--detection-floor" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --detection-floor".to_string())?;
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --detection-floor {value:?}: {e}"))?;
-                detection_floor = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--detection-floor=") => {
-                let value = &flag["--detection-floor=".len()..];
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --detection-floor {value:?}: {e}"))?;
-                detection_floor = Some(value.to_string());
-                i += 1;
-            }
-            "--fp-ceiling" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --fp-ceiling".to_string())?;
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --fp-ceiling {value:?}: {e}"))?;
-                fp_ceiling = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--fp-ceiling=") => {
-                let value = &flag["--fp-ceiling=".len()..];
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --fp-ceiling {value:?}: {e}"))?;
-                fp_ceiling = Some(value.to_string());
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `bench sycophancy` argument: {other}"));
-            }
-        }
-    }
-    Ok(CliAction::BenchSycophancy {
-        fixtures,
-        output,
-        detection_floor,
-        fp_ceiling,
-    })
-}
-
-/// D-24 — parse `elai bench canary-regression [--fixtures PATH] [--output
-/// PATH] [--harmful-block-floor N] [--helpful-block-ceiling N]
-/// [--neutral-block-ceiling N]`. Mirrors the sycophancy parser; hand-
-/// rolled per the CLAUDE.md "no new clap dep" rule. Threshold values
-/// are validated as u32 here so a stray `-1` or `foo` is caught at
-/// parse time rather than during the runner's gate evaluation.
-pub(crate) fn parse_bench_canary_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut fixtures: Option<String> = None;
-    let mut output: Option<String> = None;
-    let mut harmful_block_floor: Option<String> = None;
-    let mut helpful_block_ceiling: Option<String> = None;
-    let mut neutral_block_ceiling: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--fixtures" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --fixtures".to_string())?;
-                fixtures = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--fixtures=") => {
-                fixtures = Some(flag["--fixtures=".len()..].to_string());
-                i += 1;
-            }
-            "--output" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --output".to_string())?;
-                output = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--output=") => {
-                output = Some(flag["--output=".len()..].to_string());
-                i += 1;
-            }
-            "--harmful-block-floor" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --harmful-block-floor".to_string())?;
-                let _: u32 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --harmful-block-floor {value:?}: {e}"))?;
-                harmful_block_floor = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--harmful-block-floor=") => {
-                let value = &flag["--harmful-block-floor=".len()..];
-                let _: u32 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --harmful-block-floor {value:?}: {e}"))?;
-                harmful_block_floor = Some(value.to_string());
-                i += 1;
-            }
-            "--helpful-block-ceiling" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --helpful-block-ceiling".to_string())?;
-                let _: u32 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --helpful-block-ceiling {value:?}: {e}"))?;
-                helpful_block_ceiling = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--helpful-block-ceiling=") => {
-                let value = &flag["--helpful-block-ceiling=".len()..];
-                let _: u32 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --helpful-block-ceiling {value:?}: {e}"))?;
-                helpful_block_ceiling = Some(value.to_string());
-                i += 1;
-            }
-            "--neutral-block-ceiling" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --neutral-block-ceiling".to_string())?;
-                let _: u32 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --neutral-block-ceiling {value:?}: {e}"))?;
-                neutral_block_ceiling = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--neutral-block-ceiling=") => {
-                let value = &flag["--neutral-block-ceiling=".len()..];
-                let _: u32 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --neutral-block-ceiling {value:?}: {e}"))?;
-                neutral_block_ceiling = Some(value.to_string());
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `bench canary-regression` argument: {other}"));
-            }
-        }
-    }
-    Ok(CliAction::BenchCanary {
-        fixtures,
-        output,
-        harmful_block_floor,
-        helpful_block_ceiling,
-        neutral_block_ceiling,
-    })
-}
-
-/// D-25 — parse `elai bench tamper [--scenarios PATH] [--output PATH]
-/// [--fail-fast=<true|false>] [--max-wall-ms-per-scenario N]`. Mirrors
-/// the canary parser; hand-rolled per the CLAUDE.md "no new clap dep"
-/// rule. Threshold values are validated as u64 here so a stray `-1` or
-/// `foo` is caught at parse time rather than during the runner's gate
-/// evaluation.
-pub(crate) fn parse_bench_tamper_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut scenarios: Option<String> = None;
-    let mut output: Option<String> = None;
-    let mut fail_fast: Option<String> = None;
-    let mut max_wall_ms_per_scenario: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--scenarios" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --scenarios".to_string())?;
-                scenarios = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--scenarios=") => {
-                scenarios = Some(flag["--scenarios=".len()..].to_string());
-                i += 1;
-            }
-            "--output" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --output".to_string())?;
-                output = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--output=") => {
-                output = Some(flag["--output=".len()..].to_string());
-                i += 1;
-            }
-            "--fail-fast" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --fail-fast".to_string())?;
-                validate_bool_arg("--fail-fast", value)?;
-                fail_fast = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--fail-fast=") => {
-                let value = &flag["--fail-fast=".len()..];
-                validate_bool_arg("--fail-fast", value)?;
-                fail_fast = Some(value.to_string());
-                i += 1;
-            }
-            "--max-wall-ms-per-scenario" => {
-                let value = rest.get(i + 1).ok_or_else(|| {
-                    "missing value for --max-wall-ms-per-scenario".to_string()
-                })?;
-                let _: u64 = value.parse().map_err(|e| {
-                    format!("invalid --max-wall-ms-per-scenario {value:?}: {e}")
-                })?;
-                max_wall_ms_per_scenario = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--max-wall-ms-per-scenario=") => {
-                let value = &flag["--max-wall-ms-per-scenario=".len()..];
-                let _: u64 = value.parse().map_err(|e| {
-                    format!("invalid --max-wall-ms-per-scenario {value:?}: {e}")
-                })?;
-                max_wall_ms_per_scenario = Some(value.to_string());
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `bench tamper` argument: {other}"));
-            }
-        }
-    }
-    Ok(CliAction::BenchTamper {
-        scenarios,
-        output,
-        fail_fast,
-        max_wall_ms_per_scenario,
-    })
-}
-
-fn validate_bool_arg(name: &str, value: &str) -> Result<(), String> {
-    match value {
-        "true" | "false" | "1" | "0" | "TRUE" | "FALSE" | "True" | "False" => Ok(()),
-        other => Err(format!(
-            "invalid {name} {other:?}: expected 'true'|'false'|'1'|'0'"
-        )),
-    }
-}
 
 /// D-28 — parse `elai farm-adv-rm <run|verdict> [...]`. Mirrors the
 /// `parse_bench_subcommand_args` sub-verb dispatch pattern. Numerical
@@ -4541,7 +3725,7 @@ pub(crate) fn parse_safety_subcommand_args(
     }
 }
 
-/// E-40 — `elai scip <query|defs|refs|callers|callees|pagerank|status|import>`
+/// E-40 — `elai scip <query|defs|refs|callers|callees|pagerank|status|import|lsp-probe|refresh>`
 /// argument parser. Mirrors the safety_cmd flag-walking pattern. Paper
 /// grounding deferred per workflow/sessions/s-25120/mistakes.md cluster
 /// #6 (Stack Graphs / GraphCoder / CodexGraph / RANGER / Glean Angle).
@@ -4552,7 +3736,7 @@ pub(crate) fn parse_scip_subcommand_args(
     let sub = rest
         .first()
         .ok_or_else(|| {
-            "missing `scip` sub-action; expected one of: query, defs, refs, callers, callees, pagerank, status, import"
+            "missing `scip` sub-action; expected one of: query, defs, refs, callers, callees, pagerank, status, import, lsp-probe, refresh"
                 .to_string()
         })?
         .as_str();
@@ -4802,9 +3986,47 @@ pub(crate) fn parse_scip_subcommand_args(
                 output_format,
             })
         }
+        "refresh" => {
+            // `elai scip refresh [--scip-dir <path>] [--project-root <path>]`
+            // Mirrors the `import` flag-walking pattern for consistency.
+            let mut scip_dir: String = String::new();
+            let mut project_root: String = String::new();
+            let mut i = 0;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--scip-dir" => {
+                        scip_dir = args
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--scip-dir`".to_string())?
+                            .clone();
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--scip-dir=") => {
+                        scip_dir = flag["--scip-dir=".len()..].to_string();
+                        i += 1;
+                    }
+                    "--project-root" => {
+                        project_root = args
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--project-root`".to_string())?
+                            .clone();
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--project-root=") => {
+                        project_root = flag["--project-root=".len()..].to_string();
+                        i += 1;
+                    }
+                    other => return Err(format!("unknown `scip refresh` argument: {other}")),
+                }
+            }
+            Ok(CliAction::SymbolGraph {
+                action: SymbolGraphAction::Refresh { scip_dir, project_root },
+                output_format,
+            })
+        }
         other => Err(format!(
             "unknown `scip` sub-action `{other}`; \
-             expected one of: query, defs, refs, callers, callees, pagerank, status, import, lsp-probe"
+             expected one of: query, defs, refs, callers, callees, pagerank, status, import, lsp-probe, refresh"
         )),
     }
 }
@@ -6121,249 +5343,6 @@ pub(crate) fn looks_like_slash_command_token(token: &str) -> bool {
         .any(|spec| spec.name == name || spec.aliases.contains(&name))
 }
 
-/// E-5 session-2 — parse `elai memory <sub> [...flags]`.
-///
-/// Subcommands: `list`, `inspect`, `insert`, `delete`. Adjudication +
-/// promotion + Stage-2 classifier are DEFERRED per
-/// workflow/reasoning/E-5-decisions.md.
-///
-/// All flags are optional at parse time; per-subcommand required-flag
-/// validation runs in the handler so the error message can name the
-/// subcommand (e.g. `"inspect requires --fact-id"`).
-pub(crate) fn parse_memory_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
-    let Some(sub_raw) = rest.first().map(String::as_str) else {
-        return Err(
-            "memory: expected sub-command (list | inspect | insert | delete)".to_string(),
-        );
-    };
-    let sub = match sub_raw {
-        "list" => MemorySubcommandKind::List,
-        "inspect" | "show" => MemorySubcommandKind::Inspect,
-        "insert" | "add" => MemorySubcommandKind::Insert,
-        "delete" | "forget" => MemorySubcommandKind::Delete,
-        other => {
-            return Err(format!(
-                "unknown `memory` sub-command: '{other}' (expected list | inspect | insert | delete)"
-            ));
-        }
-    };
-    let rest = &rest[1..];
-    let mut project_root: Option<PathBuf> = None;
-    let mut user_id: Option<String> = None;
-    let mut scope: Option<String> = None;
-    let mut fact_type: Option<String> = None;
-    let mut fact_id: Option<String> = None;
-    let mut key: Option<String> = None;
-    let mut value_json: Option<String> = None;
-    let mut limit: Option<usize> = None;
-    let mut json = false;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--project-root" => {
-                let v = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --project-root".to_string())?;
-                project_root = Some(PathBuf::from(v));
-                i += 2;
-            }
-            flag if flag.starts_with("--project-root=") => {
-                project_root = Some(PathBuf::from(&flag["--project-root=".len()..]));
-                i += 1;
-            }
-            "--user-id" => {
-                let v = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --user-id".to_string())?;
-                user_id = Some(v.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--user-id=") => {
-                user_id = Some(flag["--user-id=".len()..].to_string());
-                i += 1;
-            }
-            "--scope" => {
-                let v = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --scope".to_string())?;
-                scope = Some(v.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--scope=") => {
-                scope = Some(flag["--scope=".len()..].to_string());
-                i += 1;
-            }
-            "--fact-type" => {
-                let v = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --fact-type".to_string())?;
-                fact_type = Some(v.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--fact-type=") => {
-                fact_type = Some(flag["--fact-type=".len()..].to_string());
-                i += 1;
-            }
-            "--fact-id" => {
-                let v = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --fact-id".to_string())?;
-                fact_id = Some(v.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--fact-id=") => {
-                fact_id = Some(flag["--fact-id=".len()..].to_string());
-                i += 1;
-            }
-            "--key" => {
-                let v = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --key".to_string())?;
-                key = Some(v.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--key=") => {
-                key = Some(flag["--key=".len()..].to_string());
-                i += 1;
-            }
-            "--value-json" => {
-                let v = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --value-json".to_string())?;
-                value_json = Some(v.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--value-json=") => {
-                value_json = Some(flag["--value-json=".len()..].to_string());
-                i += 1;
-            }
-            "--limit" => {
-                let v = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --limit".to_string())?;
-                limit = Some(
-                    v.parse::<usize>()
-                        .map_err(|e| format!("--limit must be a non-negative integer: {e}"))?,
-                );
-                i += 2;
-            }
-            flag if flag.starts_with("--limit=") => {
-                limit = Some(
-                    flag["--limit=".len()..]
-                        .parse::<usize>()
-                        .map_err(|e| format!("--limit must be a non-negative integer: {e}"))?,
-                );
-                i += 1;
-            }
-            "--json" => {
-                json = true;
-                i += 1;
-            }
-            other => return Err(format!("unknown `memory {sub_raw}` argument: {other}")),
-        }
-    }
-    let project_root = match project_root {
-        Some(p) => p,
-        None => std::env::current_dir().map_err(|e| format!("cannot determine cwd: {e}"))?,
-    };
-    let user_id = user_id.unwrap_or_else(|| "default".to_string());
-    let limit = limit.unwrap_or(50).max(1).min(500);
-    Ok(CliAction::Memory {
-        sub,
-        project_root,
-        user_id,
-        scope,
-        fact_type,
-        fact_id,
-        key,
-        value_json,
-        limit,
-        json,
-    })
-}
-
-/// E-30 — parse `elai incident record [--title T] [--date D] [--url U] [--id I]`.
-///
-/// Stores an incident postmortem entry in the SSB and emits
-/// SsbActionType::IncidentRecordCreated. The `record` sub-verb is mandatory
-/// (leaves room for `list` / `search` in future E-plan phases).
-pub(crate) fn parse_incident_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
-    let Some(sub) = rest.first().map(String::as_str) else {
-        return Err("incident: expected sub-command 'record'".to_string());
-    };
-    if sub != "record" {
-        return Err(format!(
-            "unknown `incident` sub-command: '{sub}' (expected 'record')"
-        ));
-    }
-    let rest = &rest[1..];
-    let mut title: Option<String> = None;
-    let mut incident_date: Option<String> = None;
-    let mut source_url: Option<String> = None;
-    let mut incident_id: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--title" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --title".to_string())?;
-                title = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--title=") => {
-                title = Some(flag["--title=".len()..].to_string());
-                i += 1;
-            }
-            "--date" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --date".to_string())?;
-                incident_date = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--date=") => {
-                incident_date = Some(flag["--date=".len()..].to_string());
-                i += 1;
-            }
-            "--url" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --url".to_string())?;
-                source_url = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--url=") => {
-                source_url = Some(flag["--url=".len()..].to_string());
-                i += 1;
-            }
-            "--id" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --id".to_string())?;
-                incident_id = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--id=") => {
-                incident_id = Some(flag["--id=".len()..].to_string());
-                i += 1;
-            }
-            other => return Err(format!("unknown `incident record` argument: {other}")),
-        }
-    }
-    let title = title.ok_or_else(|| "`incident record` requires --title".to_string())?;
-    let incident_date =
-        incident_date.ok_or_else(|| "`incident record` requires --date".to_string())?;
-    let source_url =
-        source_url.ok_or_else(|| "`incident record` requires --url".to_string())?;
-    Ok(CliAction::IncidentRecord {
-        title,
-        incident_date,
-        source_url,
-        incident_id,
-    })
-}
-
 // ---------------------------------------------------------------------------
 // E-44 — `elai durability <sub>` argument surface.
 // ---------------------------------------------------------------------------
@@ -7167,356 +6146,3 @@ pub(crate) fn parse_durability_subcommand_args(
     }
 }
 
-// ---------------------------------------------------------------------------
-// E-10 -- hostile-critic structural simplifications CLI parsers.
-// ---------------------------------------------------------------------------
-
-pub(crate) fn parse_bench_ablation_args(rest: &[String]) -> Result<CliAction, String> {
-    let tile = rest.first().cloned().unwrap_or_else(|| "fsm".to_string());
-    let mut fixtures: String = "fixtures/critic_30.toml".to_string();
-    let mut budget: u32 = 5000;
-    let mut i = 1;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--fixtures" => {
-                fixtures = rest.get(i + 1).ok_or_else(|| "missing value for --fixtures".to_string())?.clone();
-                i += 2;
-            }
-            "--budget" => {
-                let v = rest.get(i + 1).ok_or_else(|| "missing value for --budget".to_string())?;
-                budget = v.parse().map_err(|e| format!("invalid --budget: {e}"))?;
-                i += 2;
-            }
-            other => return Err(format!("unknown flag for `bench-ablation`: {other}")),
-        }
-    }
-    Ok(CliAction::BenchAblation { tile, fixtures, budget })
-}
-
-/// E-7 — `elai darwin-loop` argument parser. All flags optional with
-/// defaults matching `darwinian_bai::DEFAULT_DISCOUNT_FACTOR` and the
-/// plan task 8 trap_tasks fixture count guidance.
-pub(crate) fn parse_darwin_loop_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut generations: u32 = 1;
-    let mut mutants: u32 = 3;
-    let mut seed: u64 = 42;
-    let mut traps: u32 = 3;
-    let mut gamma: String = String::new();
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--generations" => {
-                let v = rest.get(i + 1).ok_or_else(|| "missing value for --generations".to_string())?;
-                generations = v.parse().map_err(|e| format!("invalid --generations: {e}"))?;
-                i += 2;
-            }
-            "--mutants" => {
-                let v = rest.get(i + 1).ok_or_else(|| "missing value for --mutants".to_string())?;
-                mutants = v.parse().map_err(|e| format!("invalid --mutants: {e}"))?;
-                i += 2;
-            }
-            "--seed" => {
-                let v = rest.get(i + 1).ok_or_else(|| "missing value for --seed".to_string())?;
-                seed = v.parse().map_err(|e| format!("invalid --seed: {e}"))?;
-                i += 2;
-            }
-            "--traps" => {
-                let v = rest.get(i + 1).ok_or_else(|| "missing value for --traps".to_string())?;
-                traps = v.parse().map_err(|e| format!("invalid --traps: {e}"))?;
-                i += 2;
-            }
-            "--gamma" => {
-                gamma = rest.get(i + 1).ok_or_else(|| "missing value for --gamma".to_string())?.clone();
-                i += 2;
-            }
-            other => return Err(format!("unknown flag for `darwin-loop`: {other}")),
-        }
-    }
-    Ok(CliAction::DarwinLoop { generations, mutants, seed, traps, gamma })
-}
-
-pub(crate) fn parse_tier_eval_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut suites: Vec<String> = Vec::new();
-    let mut budget: u32 = 100_000;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--suites" => {
-                let v = rest.get(i + 1).ok_or_else(|| "missing value for --suites".to_string())?;
-                suites = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                i += 2;
-            }
-            "--budget" => {
-                let v = rest.get(i + 1).ok_or_else(|| "missing value for --budget".to_string())?;
-                budget = v.parse().map_err(|e| format!("invalid --budget: {e}"))?;
-                i += 2;
-            }
-            other => return Err(format!("unknown flag for `tier-eval`: {other}")),
-        }
-    }
-    Ok(CliAction::TierEval { suites, budget })
-}
-
-pub(crate) fn parse_critic_report_args(rest: &[String]) -> Result<CliAction, String> {
-    let mut output: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--output" => {
-                output = Some(rest.get(i + 1).ok_or_else(|| "missing value for --output".to_string())?.clone());
-                i += 2;
-            }
-            other => return Err(format!("unknown flag for `critic-report`: {other}")),
-        }
-    }
-    Ok(CliAction::CriticReport { output })
-}
-
-/// E-9 — parse `elai eval <run|list> [--benchmark=NAME] [--harness-vary]
-/// [--p-target=0.05] [--list] [--json]`. The sub-verb is `run` (single
-/// suite) or `list` (enumerate registry). `--list` flag on `run` also
-/// enumerates without dispatching live. Numerical knobs carried as String
-/// because CliAction derives Eq; f64 does not.
-pub(crate) fn parse_eval_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
-    let sub = rest.first().map(String::as_str).unwrap_or("");
-    if sub != "run" && sub != "list" {
-        return Err(format!(
-            "unknown `eval` sub-command: '{sub}' (expected 'run' or 'list')"
-        ));
-    }
-    let flag_start = if sub.is_empty() { 0 } else { 1 };
-    let mut benchmark: Option<String> = None;
-    let mut harness_vary: bool = false;
-    let mut p_target: Option<String> = None;
-    let mut list: bool = sub == "list";
-    let mut json: bool = false;
-    let mut i = flag_start;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--benchmark" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --benchmark".to_string())?;
-                benchmark = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--benchmark=") => {
-                benchmark = Some(flag["--benchmark=".len()..].to_string());
-                i += 1;
-            }
-            "--harness-vary" => {
-                harness_vary = true;
-                i += 1;
-            }
-            "--p-target" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --p-target".to_string())?;
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --p-target {value:?}: {e}"))?;
-                p_target = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--p-target=") => {
-                let value = &flag["--p-target=".len()..];
-                let _: f64 = value
-                    .parse()
-                    .map_err(|e| format!("invalid --p-target {value:?}: {e}"))?;
-                p_target = Some(value.to_string());
-                i += 1;
-            }
-            "--list" => {
-                list = true;
-                i += 1;
-            }
-            "--json" => {
-                json = true;
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `eval` argument: {other}"));
-            }
-        }
-    }
-    Ok(CliAction::EvalRun {
-        benchmark,
-        harness_vary,
-        p_target,
-        list,
-        json,
-    })
-}
-
-/// E-55 -- parse `elai rl <train|list> [--recipe=<name>] [--list] [--json]`.
-/// Recipe runner for the agentic RL substrate. Substrate ships fully;
-/// cloud Sonnet rollouts + LoRA training are RUNPOD-PENDING and gated by
-/// `ELAI_AGENTIC_RL_ENABLE=1`. Valid recipes are listed in
-/// `crates/cli/src/rl_train_cmd.rs::KNOWN_RECIPES`.
-pub(crate) fn parse_rl_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
-    let sub = rest.first().map(String::as_str).unwrap_or("");
-    if sub != "train" && sub != "list" {
-        return Err(format!(
-            "unknown `rl` sub-command: '{sub}' (expected 'train' or 'list')"
-        ));
-    }
-    let flag_start = if sub.is_empty() { 0 } else { 1 };
-    let mut recipe: Option<String> = None;
-    let mut list: bool = sub == "list";
-    let mut json: bool = false;
-    let mut i = flag_start;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--recipe" => {
-                let value = rest
-                    .get(i + 1)
-                    .ok_or_else(|| "missing value for --recipe".to_string())?;
-                recipe = Some(value.clone());
-                i += 2;
-            }
-            flag if flag.starts_with("--recipe=") => {
-                recipe = Some(flag["--recipe=".len()..].to_string());
-                i += 1;
-            }
-            "--list" => {
-                list = true;
-                i += 1;
-            }
-            "--json" => {
-                json = true;
-                i += 1;
-            }
-            other => {
-                return Err(format!("unknown `rl` argument: {other}"));
-            }
-        }
-    }
-    Ok(CliAction::RlTrain { recipe, list, json })
-}
-
-
-/// E-43 -- parse `elai skills <sub>` arguments. Three sub-actions:
-///   `elai skills list`
-///   `elai skills eval [--skill <name>] [--dry-run]`
-///   `elai skills publish --target <claude|codex|gemini> [--dry-run]`
-pub(crate) fn parse_skills_subcommand_args(
-    rest: &[String],
-    output_format: CliOutputFormat,
-) -> Result<CliAction, String> {
-    let sub = rest
-        .first()
-        .ok_or_else(|| "missing `skills` sub-action; expected: list, eval, publish".to_string())?
-        .as_str();
-    match sub {
-        "list" => Ok(CliAction::SkillsManagement {
-            action: SkillsAction::List,
-            output_format,
-        }),
-        "eval" => {
-            let mut skill: Option<String> = None;
-            let mut dry_run = false;
-            let mut i = 1;
-            while i < rest.len() {
-                match rest[i].as_str() {
-                    "--skill" => {
-                        let v = rest
-                            .get(i + 1)
-                            .ok_or_else(|| "missing value for `--skill`".to_string())?;
-                        skill = Some(v.clone());
-                        i += 2;
-                    }
-                    flag if flag.starts_with("--skill=") => {
-                        skill = Some(flag[8..].to_string());
-                        i += 1;
-                    }
-                    "--dry-run" => {
-                        dry_run = true;
-                        i += 1;
-                    }
-                    other => {
-                        return Err(format!("unknown `skills eval` argument: {other}"));
-                    }
-                }
-            }
-            Ok(CliAction::SkillsManagement {
-                action: SkillsAction::Eval { skill, dry_run },
-                output_format,
-            })
-        }
-        "publish" => {
-            let mut target: Option<String> = None;
-            let mut dry_run = false;
-            let mut i = 1;
-            while i < rest.len() {
-                match rest[i].as_str() {
-                    "--target" => {
-                        let v = rest
-                            .get(i + 1)
-                            .ok_or_else(|| "missing value for `--target`".to_string())?;
-                        target = Some(v.clone());
-                        i += 2;
-                    }
-                    flag if flag.starts_with("--target=") => {
-                        target = Some(flag[9..].to_string());
-                        i += 1;
-                    }
-                    "--dry-run" => {
-                        dry_run = true;
-                        i += 1;
-                    }
-                    other => {
-                        return Err(format!("unknown `skills publish` argument: {other}"));
-                    }
-                }
-            }
-            let target = target.ok_or_else(|| {
-                "`skills publish` requires --target <claude|codex|gemini>".to_string()
-            })?;
-            Ok(CliAction::SkillsManagement {
-                action: SkillsAction::Publish { target, dry_run },
-                output_format,
-            })
-        }
-        // E-22 (SCHEMA_VERSION 170): export action -- writes a normalised
-        // SKILL.md to dist/<target>/skills/<name>/SKILL.md and detects
-        // drift via blake3.
-        "export" => {
-            let mut target: Option<String> = None;
-            let mut dry_run = false;
-            let mut i = 1;
-            while i < rest.len() {
-                match rest[i].as_str() {
-                    "--target" => {
-                        let v = rest
-                            .get(i + 1)
-                            .ok_or_else(|| "missing value for `--target`".to_string())?;
-                        target = Some(v.clone());
-                        i += 2;
-                    }
-                    flag if flag.starts_with("--target=") => {
-                        target = Some(flag[9..].to_string());
-                        i += 1;
-                    }
-                    "--dry-run" => {
-                        dry_run = true;
-                        i += 1;
-                    }
-                    other => {
-                        return Err(format!("unknown `skills export` argument: {other}"));
-                    }
-                }
-            }
-            // Default target=claude per Anthropic identity-mapping (the
-            // SKILL.md spec is identity for Claude; non-Claude targets
-            // need explicit --target to flag the format choice).
-            let target = target.unwrap_or_else(|| "claude".to_string());
-            Ok(CliAction::SkillsManagement {
-                action: SkillsAction::Export { target, dry_run },
-                output_format,
-            })
-        }
-        other => Err(format!(
-            "unknown `skills` sub-action `{other}`; expected one of: list, eval, publish, export"
-        )),
-    }
-}

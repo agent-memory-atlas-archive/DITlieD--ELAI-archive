@@ -37,6 +37,19 @@
   // + sanitize_result + llm_guard surface and the E-30 destructive_verb_
   // allowlist surface. See workflow/reasoning/E-37-decisions.md.
   import PromptArmorPanel from '$lib/components/PromptArmorPanel.svelte';
+  // C-41: Application Skills System panel. Sub-phase 5B inspector card.
+  // Polls list_application_skills + recent_skill_routing_events
+  // (commands_c41.rs) every 5s. Surfaces the 9 canonical application
+  // skills under .elai_cc/skills/ + a fall-through routing timeline.
+  // Wire-dark unless ELAI_APPLICATION_SKILLS_ENABLE=1 on the
+  // orchestrator side. See workflow/reasoning/C-41-decisions.md.
+  import SkillsPanel from '$lib/components/SkillsPanel.svelte';
+  // E-25 Tranche N: Compaction-Ladder inspector card. Pairs with the
+  // task_runner PreCompact producer wire + commands_e25.rs Tauri reader.
+  // Polls get_compaction_ladder_state + recent_compaction_events every
+  // 5s. Renders the wire-dark banner when ELAI_E25_COMPACTION_LADDER_ENABLE
+  // is unset on the orchestrator side. Resolves Tranche C C.5 deferral.
+  import CompactionLadderPanel from '$lib/components/CompactionLadderPanel.svelte';
   // C-43: Phase 4H scope-freeze status badge. Minimal widget — reads
   // scope_freeze_status (commands_c43.rs) every 15s and renders a
   // green/red badge plus last-ratified timestamp. ELAI design
@@ -160,6 +173,15 @@
     'media-validator': 'Qwen2.5-Coder-7B-Instruct-abliterated',
   };
   let modelRouting = $state<Record<AgentRole, string>>({ ...initialRouting });
+
+  // E-3 (SCHEMA_VERSION 188) MVP slice (TASK-E03-001): ROLE-shown /
+  // MODEL-hidden by default. The user toggles "show model details" to
+  // reveal the model dropdown per role. The toggle change emits one
+  // SSB row via stub.record_model_visibility (wire-dark unless
+  // ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1 on the backend). Reverses
+  // the cross-check finding "SettingsWindow explicitly exposes MODEL
+  // names per role" by making the MODEL hidden the default.
+  let showModelDetails = $state<boolean>(false);
 
   // Local mirrors
   let executionMode = $state(session.mode);
@@ -847,14 +869,51 @@
         </div>
       {/if}
 
+      <!-- E-3 (SCHEMA_VERSION 188) MVP slice (TASK-E03-001): show-model-
+           details toggle. Default OFF -> ROLE visible, MODEL hidden;
+           toggle ON reveals the model dropdown for each role. Each flip
+           emits one role_shown_model_hidden SSB row (wire-dark unless
+           ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1). Reverses the cross-
+           check finding "SettingsWindow explicitly exposes MODEL names
+           per role". -->
+      <div class="s-row">
+        <span class="s-label">Model details</span>
+        <div class="s-control">
+          <label class="mono" style="cursor: pointer; user-select: none;">
+            <input
+              type="checkbox"
+              bind:checked={showModelDetails}
+              onchange={() => {
+                // Emit one SSB row per role reflecting the new visibility.
+                // model_hidden = !showModelDetails (toggle ON => model shown
+                // => model_hidden=false). session_id is null here; the
+                // backend resolves it from AppState if available.
+                for (const role of ROLES) {
+                  stub
+                    .record_model_visibility(role, !showModelDetails, null)
+                    .catch(() => {});
+                }
+              }}
+            />
+            {showModelDetails ? 'shown' : 'hidden (default)'}
+          </label>
+        </div>
+      </div>
+
       {#each ROLES as role}
         <div class="s-row">
           <span class="s-label">{role}</span>
           <div class="s-control s-control--wide">
-            <Select
-              options={MODEL_OPTIONS}
-              bind:value={modelRouting[role]}
-            />
+            {#if showModelDetails}
+              <Select
+                options={MODEL_OPTIONS}
+                bind:value={modelRouting[role]}
+              />
+            {:else}
+              <span class="mono" style="opacity: 0.55; font-size: 0.85em;">
+                model hidden (toggle "show model details" to reveal)
+              </span>
+            {/if}
           </div>
         </div>
       {/each}
@@ -998,6 +1057,37 @@
     <section class="s-section">
       <div class="s-header">prompt-injection defense (E-37)</div>
       <PromptArmorPanel />
+    </section>
+
+    <!-- Section: APPLICATION SKILLS (C-41, sub-phase 5B)
+         6th inspector card. Polls list_application_skills +
+         recent_skill_routing_events (commands_c41.rs) every 5s.
+         Surfaces 9 SKILL.md scaffolds under .elai_cc/skills/ +
+         pre-classify routing telemetry (skill_triggered /
+         skill_executed SSB rows). Wire-dark by default — the
+         pre-classify hook is gated by ELAI_APPLICATION_SKILLS_ENABLE
+         (DECISION-4 in C-41-decisions.md). Paper grounding:
+         44% -> 83.3% full-match intent accuracy (Section 5.1 Table 2,
+         workflow/papers/scientific-workflow-interface.md). -->
+    <section class="s-section">
+      <div class="s-header">application skills (C-41)</div>
+      <SkillsPanel />
+    </section>
+
+    <!-- Section: COMPACTION LADDER (E-25, Tranche N producer wire)
+         7th inspector card. Polls get_compaction_ladder_state +
+         recent_compaction_events (commands_e25.rs) every 5s. Producer
+         is the orchestrator's task_runner PreCompact branch, gated by
+         ELAI_E25_COMPACTION_LADDER_ENABLE (DECISION D-N1.a in
+         workflow/sessions/s-22600/context-package-trancheN.md).
+         Resolves Tranche C C.5 deferral (BLOCKED-ON-PRODUCER). The
+         compaction_ladder runner is SHIPPED at
+         crates/orchestrator/src/compaction_ladder.rs; this panel is
+         the dashboard surface for the 6-tier traversal +
+         CompactionLadderTierApplied SSB rows. -->
+    <section class="s-section">
+      <div class="s-header">compaction ladder (E-25)</div>
+      <CompactionLadderPanel />
     </section>
 
     <!-- Section: FREEZE STATUS (C-43, Phase 4H scope-freeze)

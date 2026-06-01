@@ -31,6 +31,8 @@ pub use chat_reflect::{
     ChatFuture, ChatInferenceClient, ChatReflectConfig, ChatReflectPipeline, ReflectError,
     ReflectEvent, ReflectEventSink, ReflectOutput, ReflectTokenSummary, TurnClass, N_CANDIDATES,
     REFINE_CAP,
+    // Tranche B-6 quad B-39: 85% soft-warn threshold constant.
+    REFLECT_BUDGET_SOFT_WARN_PCT,
 };
 pub use config::{agent_grc_config_for_role, AgentGrcConfigLoader, TomlConfigLoader};
 pub use engine::{

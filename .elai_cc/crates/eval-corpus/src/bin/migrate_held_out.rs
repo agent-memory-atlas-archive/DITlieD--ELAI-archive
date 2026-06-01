@@ -12,13 +12,14 @@
 
 use std::path::PathBuf;
 
+use anyhow::Result;
 use chrono::{TimeZone, Utc};
 use elai_eval_corpus::ingest::{ingest_task, IngestConfig, NewTaskInput, IngestResult};
 use elai_eval_corpus::storage::{quarantine_raw, StorageError};
 use elai_eval_corpus::task_schema::{Task, TaskSchemaError};
 use elai_eval_corpus::TaskFamily;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     // Resolve the root: defaults to `.elai_cc/` under the current working
     // directory; override via the first CLI arg.
     let mut args = std::env::args().skip(1);

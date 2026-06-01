@@ -352,11 +352,11 @@ mod tests {
     use crate::TaskFamily;
     use crate::task_schema::{ExecutableTest, Provenance, TestKind};
     use chrono::TimeZone;
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
     use tempfile::tempdir;
 
     fn fixture_task(id: &str, body: &str) -> Task {
-        let mut cutoffs = HashMap::new();
+        let mut cutoffs = FxHashMap::default();
         cutoffs.insert("qwen2.5-coder-3b".to_string(), "2024-10".to_string());
         Task {
             id: id.to_string(),

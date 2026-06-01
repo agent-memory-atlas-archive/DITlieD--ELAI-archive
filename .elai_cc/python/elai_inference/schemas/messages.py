@@ -26,7 +26,76 @@ from pydantic import BaseModel, ConfigDict, Field
 # `cross_lang_drift::DriftDetector` reads this integer and compares
 # against the Rust-side constant; a divergence emits
 # `SsbActionType::SchemaVersionMismatch`.
-SCHEMA_VERSION: int = 138
+#
+# Tranche 8B (2026-05-31): 138 -> 191 to match
+# `SCHEMA_VERSION_PUBLIC` re-exported from ssb.rs after the cumulative
+# Tranche 6 (E-31) + earlier bumps. Exploration tranche8-E45-wiring.md
+# flagged the 53-version drift as MEDIUM severity; the drift was real
+# (Pydantic side had not been touched since E-45 land at 138). The
+# bump is purely a constant update: no schema-shape changes on either
+# side here -- the schemars derives (Tranche 8A) cover that surface
+# separately via the JSON Schema snapshot fixtures.
+#
+# E-47 (2026-05-31): 191 -> 192 in lockstep with the
+# LoraShipGateEvent SINGLE-VARIANT Pattern-2 (44th application) bump
+# at ssb.rs:SCHEMA_VERSION. 3-arm LoraShipGateEventPhase discriminator
+# (refused / calibration_missing / calibration_passed). Wire-dark
+# unless ELAI_LORA_SHIP_GATE_ENABLE=1. Producer:
+# crates/orchestrator/src/lora_ship_gate.rs::notify_lora_ship_gate +
+# `elai lora-gate-check` CLI subcommand. The Pydantic side does not
+# carry the typed envelope (no Anthropic-protocol surface area), so
+# this lockstep bump is purely a constant update to keep the
+# DriftDetector quiet.
+#
+# E-40 Tranche B-2 (2026-05-31): 192 -> 193 in lockstep with the
+# SymbolGraphEvent SINGLE-VARIANT Pattern-2 (45th application) bump
+# at ssb.rs:SCHEMA_VERSION. 4-arm SymbolGraphEventKind discriminator
+# (symbol_dsl_executed / dataflow_impact_computed /
+# agent_impact_claim_refuted / scope_graph_resolved). Wire-dark
+# unless ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE=1 (or other per-event
+# gates upstream). Producer:
+# crates/orchestrator/src/symbol_graph/mod.rs::notify_symbol_graph_event +
+# the new symbol_dsl_query / symbol_dataflow_impact ToolDefinitions.
+# Pydantic side does not carry the typed envelope (no Anthropic-protocol
+# surface area), so this lockstep bump is purely a constant update.
+#
+# Tranche B-6 quad (2026-05-31): 193 -> 194 in lockstep with four new
+# SSB substrates landing in one coordinated orchestrate run:
+#   * C-42 McpAuthzEvent (3-arm Kind authz_check_passed /
+#     authz_check_failed / corpus_replayed). Wire-dark unless
+#     ELAI_C42_MCP_AUTHZ_EMIT_ENABLE=1. Producer:
+#     crates/plugins/src/authz/compose.rs::compose_with_tool_gate.
+#   * C-47 ToolCalibrationEvent (6-arm Kind hint_emitted /
+#     drift_detected / call_logged / case_added / case_selected /
+#     calibration_applied). Wire-dark unless
+#     ELAI_C47_CASE_BASE_ENABLE=1.
+#   * B-39 ReflectBudgetSoftWarn (single-add). Wire-dark unless
+#     ELAI_B39_SOFTWARN_ENABLE=1. Producer:
+#     crates/reasoning/src/chat_reflect.rs ~L454.
+#   * C-50 ContractCodingEvent (3-arm Kind retry_attempted /
+#     retry_resolved / retry_abandoned). Wire-dark unless
+#     ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE=1. Producer:
+#     crates/orchestrator/src/task_runner.rs::fix_and_rerun_until_green.
+# Pydantic side does not carry the typed envelope; constant-only bump.
+# See workflow/reasoning/B6-quad-tranche-decisions.md.
+#
+# Tranche B-7 triple (2026-05-31): 194 -> 195 in lockstep with three
+# coordinated SSB extensions landing in one orchestrate run:
+#   * E-13 SHIPPABLE-NOW: NEW TddVerificationEvent (4-arm Kind
+#     property_gate_pass / mutation_gate_survivor_block /
+#     anti_mock_block / assertion_only_diff_block). Pattern-2 (46th
+#     application). Wire-dark unless
+#     ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE=1.
+#   * E-12 carry: AssertionOnlyDiffBlock collapses into arm #4 of
+#     TddVerificationEventKind (NO new top-level variant; producer
+#     wiring DEFERRED -- substrate-only this tranche).
+#   * E-50 extension: SaasArchPatternEventKind gains 12th arm
+#     saas_archetype_selected. NO additional SCHEMA bump (within-variant
+#     arm extension). Wire-dark unless
+#     ELAI_E50_ARCHETYPE_SELECTED_EMIT_ENABLE=1.
+# Pydantic side does not carry the typed envelope; constant-only bump.
+# See workflow/reasoning/B7-triple-tranche-decisions.md.
+SCHEMA_VERSION: int = 195
 
 
 class MessageContentBlock(BaseModel):

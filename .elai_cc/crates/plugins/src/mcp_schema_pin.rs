@@ -11,6 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -137,10 +138,7 @@ pub fn pin_or_verify(
 ) -> Result<PinStatus, SchemaPinError> {
     let path = pin_path(workspace_root, server_url)?;
     let observed = hash_tool_list(tools);
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let now_ms: i64 = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
 
     if path.exists() {
         let contents = fs::read_to_string(&path)?;
@@ -183,10 +181,7 @@ pub fn update_pin(
 ) -> Result<String, SchemaPinError> {
     let path = pin_path(workspace_root, server_url)?;
     let hash = hash_tool_list(tools);
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let now_ms: i64 = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
     let record = PinRecord {
         pinned_hash: hash.clone(),
         pinned_at_ms: now_ms,

@@ -17,7 +17,7 @@
 //!
 //! See workflow/reasoning/D-7-decisions.md.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -52,7 +52,9 @@ pub struct CanaryFamilyRow {
 /// Aggregate per-family rows grouped under their parent run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CanaryBreakdown {
-    pub by_report: HashMap<String, Vec<CanaryFamilyRow>>,
+    // B-15 Tranche E E.3 / DE7: BTreeMap for serialization-observed
+    // iteration determinism (per gotchas.md B15_DETERMINISM_MAP_TYPES).
+    pub by_report: BTreeMap<String, Vec<CanaryFamilyRow>>,
 }
 
 /// Return the last `limit` `canary_run_completed` SSB rows, sorted by
@@ -107,12 +109,12 @@ pub async fn get_canary_per_family_breakdown(
         Some(v) => v.clone(),
         None => {
             return Ok(CanaryBreakdown {
-                by_report: HashMap::new(),
+                by_report: BTreeMap::new(),
             });
         }
     };
 
-    let mut by_report: HashMap<String, Vec<CanaryFamilyRow>> = HashMap::new();
+    let mut by_report: BTreeMap<String, Vec<CanaryFamilyRow>> = BTreeMap::new();
     match viewer.recent_rows_of_type("canary_family_evaluated", fetch) {
         Ok(details) => {
             for detail in details {

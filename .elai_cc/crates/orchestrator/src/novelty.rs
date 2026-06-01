@@ -413,12 +413,24 @@ pub async fn emit_novelty_classified<E: NoveltyClassifiedEmitter + ?Sized>(
     now_ms: i64,
 ) -> NoveltyClass {
     let class = classify(template, archive, evidence, config);
+    // FINAL TRANCHE B4 / D-15 -- DiscoveryCandidate classifications enter
+    // the lifecycle in `Queued` state; the D-13 falsifiability follow-up
+    // emits a sibling row tagged with the same template_id and either
+    // `Ratified` or `Rejected`. Non-DiscoveryCandidate classes carry
+    // `None` (lifecycle does not apply to Search / DistantSearch).
+    let candidate_status = match class {
+        NoveltyClass::DiscoveryCandidate => {
+            Some(crate::ssb::DiscoveryCandidateStatus::Queued)
+        }
+        NoveltyClass::Search | NoveltyClass::DistantSearch => None,
+    };
     let payload = NoveltyClassifiedPayload {
         template_id: template.id.as_hex(),
         class: class.as_str().to_string(),
         dkg_match_count: evidence.dkg_match_count,
         near_duplicate_threshold: evidence.near_duplicate_threshold,
         ts_ms: now_ms,
+        candidate_status,
     };
     if let Err(e) = emitter.emit(payload).await {
         warn!(
@@ -436,6 +448,11 @@ pub async fn emit_novelty_classified<E: NoveltyClassifiedEmitter + ?Sized>(
 // ---------------------------------------------------------------------------
 
 /// Typed projection of a single `novelty_classified` SSB row.
+///
+/// FINAL TRANCHE B4 / D-15 -- `candidate_status` is the optional lifecycle
+/// stage of a discovery candidate; carries snake-case wire labels
+/// (`"queued" | "ratified" | "rejected"`). `None` for legacy rows
+/// pre-dating the lifecycle field + for non-DiscoveryCandidate classes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoveltyClassifiedRow {
     pub template_id: String,
@@ -443,6 +460,8 @@ pub struct NoveltyClassifiedRow {
     pub dkg_match_count: u32,
     pub near_duplicate_threshold: f64,
     pub ts_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_status: Option<String>,
 }
 
 /// D-15 read surface — the most recent N `novelty_classified` SSB rows
@@ -542,6 +561,10 @@ fn detail_to_row(d: crate::ssb_viewer::SsbActionDetail) -> Option<NoveltyClassif
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0),
         ts_ms: obj.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0),
+        candidate_status: obj
+            .get("candidate_status")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
     })
 }
 

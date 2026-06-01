@@ -18,8 +18,9 @@
 //!
 //! See docs/thefinalglance/E-plan/E-46_planning_decomposition.md.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -79,7 +80,9 @@ pub struct GoalDriftRow {
 pub struct GoalDriftStatusDto {
     pub firings: Vec<GoalDriftRow>,
     /// Number of firings grouped by canary id (initial_goal_blake3).
-    pub firings_by_canary: HashMap<String, u32>,
+    // B-15 Tranche E E.3 / DE7: BTreeMap for serialization-observed
+    // iteration determinism (per gotchas.md B15_DETERMINISM_MAP_TYPES).
+    pub firings_by_canary: BTreeMap<String, u32>,
     /// Drift of the most recent firing (NaN replaced with 0.0).
     pub latest_drift: f64,
     /// Threshold of the most recent firing.
@@ -108,7 +111,7 @@ pub async fn get_dual_ledger_state(
         }
     };
 
-    let mut latest: HashMap<String, DualLedgerTaskDto> = HashMap::new();
+    let mut latest: FxHashMap<String, DualLedgerTaskDto> = FxHashMap::default();
     match viewer.recent_rows_of_type("task_advanced", MAX_LIMIT) {
         Ok(details) => {
             for d in details {
@@ -202,7 +205,7 @@ pub async fn get_goal_drift_status(
         None => {
             return Ok(GoalDriftStatusDto {
                 firings: Vec::new(),
-                firings_by_canary: HashMap::new(),
+                firings_by_canary: BTreeMap::new(),
                 latest_drift: 0.0,
                 latest_threshold: 0.0,
             });
@@ -228,7 +231,7 @@ pub async fn get_goal_drift_status(
     }
     firings.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
 
-    let mut by_canary: HashMap<String, u32> = HashMap::new();
+    let mut by_canary: BTreeMap<String, u32> = BTreeMap::new();
     for f in &firings {
         *by_canary.entry(f.initial_goal_blake3.clone()).or_insert(0) += 1;
     }

@@ -16,6 +16,14 @@ lru.workspace = true
 rustc-hash.workspace = true
 thiserror = "2.0"
 blake3.workspace = true
+# C-47b (Tranche D, s-22600): rusqlite-backed persistence layer for the
+# C-47 case base lives under tool_calibration/persist.rs. Workspace pin
+# (0.39, bundled+array+hooks) is in F:\.ELAI_workflow\.elai_cc\Cargo.toml:50;
+# 7 other crates already consume it (contracts, cli, memory, rules,
+# dashboard-v2/src-tauri, knowledge, orchestrator). No new external dep is
+# pulled into the build graph -- declaring it here only adds plugins to
+# the consumer list. Anti-slopsquatting verified via existing workspace pin.
+rusqlite = { workspace = true }
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"

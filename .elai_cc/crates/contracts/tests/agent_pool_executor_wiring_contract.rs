@@ -238,6 +238,10 @@ fn build_minimal_wiring(root: &std::path::Path) -> RuntimeWiring {
         // C-9: AutonomousGate is opt-in via the gate_mode field. The
         // contract here predates C-9 and tests the pre-gate wiring path.
         gate_mode: None,
+        // B-6 #2: CliInteractiveGate is opt-in via the interactive_gate
+        // field. The contract here predates B-6 and tests the headless
+        // wiring path (no human-prompter installed).
+        interactive_gate: None,
         // C-5: CloudModeRouter is opt-in via cloud_config. The contract
         // predates C-5 and tests the pre-cloud-mode wiring path.
         cloud_config: None,
@@ -253,5 +257,7 @@ fn build_minimal_wiring(root: &std::path::Path) -> RuntimeWiring {
         via_mcp: false,
         // C-39: legacy contract fixture -- no Dispatch wired.
         mcp_dispatch: None,
+        // B-08: legacy contract fixture -- pipeline_grc opt-in elsewhere.
+        pipeline_grc: None,
     }
 }

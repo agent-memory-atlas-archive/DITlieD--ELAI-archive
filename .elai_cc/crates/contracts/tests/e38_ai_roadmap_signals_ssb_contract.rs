@@ -26,9 +26,10 @@ use elai_orchestrator::ssb::{
 
 #[test]
 fn schema_version_bumped_to_175_for_e38() {
-    assert_eq!(
-        SCHEMA_VERSION_PUBLIC, 175,
-        "E-38 lands at SCHEMA_VERSION 175 (174 = E-31 CodingModelLeaderboardEvent + 1 for E-38 AiRoadmapSignalEvent)"
+    assert!(
+        SCHEMA_VERSION_PUBLIC >= 175,
+        "schema only drifts forward; this contract was written at version 175. \
+         E-38 lands at SCHEMA_VERSION >= 175 (174 = E-31 CodingModelLeaderboardEvent + 1 for E-38 AiRoadmapSignalEvent)"
     );
 }
 

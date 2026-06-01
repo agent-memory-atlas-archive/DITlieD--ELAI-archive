@@ -149,7 +149,10 @@ fn run_codeact(
     }
     let runtime = Runtime::new().map_err(|e| format!("tokio runtime init: {e}"))?;
     let line_count = python.lines().count() as u32;
-    let ssb = build_ssb_writer()?;
+    let ssb = {
+        let _guard = runtime.enter();
+        build_ssb_writer()?
+    };
     let action_hash = {
         let mut hasher = blake3::Hasher::new();
         hasher.update(python.as_bytes());
@@ -214,7 +217,11 @@ fn run_strict_mode(
     // the ssb_writer; we never actually call send_message here (this is
     // a smoke / SSB-emission probe, NOT a real HTTP send).
     let runtime = Runtime::new().map_err(|e| format!("tokio runtime init: {e}"))?;
-    let ssb = build_ssb_writer()?;
+    // Ssb::new calls tokio::spawn; must run inside the runtime context.
+    let ssb = {
+        let _guard = runtime.enter();
+        build_ssb_writer()?
+    };
     let now = now_ms();
     // Build a minimal CloudGroundingClient stub: we cannot construct one
     // without Anthropic auth, so we emit the SSB rows directly here for
@@ -288,7 +295,11 @@ struct GrammarRow {
 
 fn run_grammar_emit_test(output_format: CliOutputFormat) -> Result<(), String> {
     let runtime = Runtime::new().map_err(|e| format!("tokio runtime init: {e}"))?;
-    let ssb = build_ssb_writer()?;
+    // Ssb::new calls tokio::spawn; must run inside the runtime context.
+    let ssb = {
+        let _guard = runtime.enter();
+        build_ssb_writer()?
+    };
     let now = now_ms();
     let payload = SsbPayload::GrammarCacheLoaded(GrammarCacheLoadedPayload {
         compiled_count: 64,
@@ -327,7 +338,11 @@ fn run_search_replace_check(
     output_format: CliOutputFormat,
 ) -> Result<(), String> {
     let runtime = Runtime::new().map_err(|e| format!("tokio runtime init: {e}"))?;
-    let ssb = build_ssb_writer()?;
+    // Ssb::new calls tokio::spawn; must run inside the runtime context.
+    let ssb = {
+        let _guard = runtime.enter();
+        build_ssb_writer()?
+    };
     let now = now_ms();
     let guard = DelimiterCollisionGuard::new();
     let (verdict, detail) = if let Some(token) = guard.first_collision(&buffer_text) {
@@ -393,7 +408,11 @@ fn run_reject_engine(
     output_format: CliOutputFormat,
 ) -> Result<(), String> {
     let runtime = Runtime::new().map_err(|e| format!("tokio runtime init: {e}"))?;
-    let ssb = build_ssb_writer()?;
+    // Ssb::new calls tokio::spawn; must run inside the runtime context.
+    let ssb = {
+        let _guard = runtime.enter();
+        build_ssb_writer()?
+    };
     let now = now_ms();
     let engine_hash = e35_blake3_u64_prefix(b"e35.engine.", &engine);
     let reason_hash = e35_blake3_u64_prefix(b"e35.reason.", &reason);
@@ -445,6 +464,13 @@ fn build_ssb_writer() -> Result<Arc<Ssb>, String> {
     Ok(Arc::new(ssb))
 }
 
+// entropy-allow: cli-smoke-observability-ts-ms-only
+//
+// B-15 Tranche E E.1 / DE2: exempt marker preserved over migration.
+// Matches the live_cli.rs:274 `entropy-allow: cascade-ssb-emit-free-fn-
+// boundary` precedent (C-15-decisions DECISION-CASCADE-TS). The SSB
+// writer's injected OsClock is the canonical timestamp; this `now_ms` is
+// operator-observability only.
 fn now_ms() -> u64 {
     // CLI smoke path: SystemTime is acceptable here (this is not a
     // determinism-quarantined producer; the SSB writer's clock provider
@@ -452,7 +478,7 @@ fn now_ms() -> u64 {
     // schema marker emit through ssb.rs which uses the injected
     // OsClock; this `now_ms` is only used as the `ts_ms` field on the
     // payload struct (operator observability).
-    SystemTime::now()
+    SystemTime::now() // entropy-allow: cli-smoke-observability-ts-ms-only
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)

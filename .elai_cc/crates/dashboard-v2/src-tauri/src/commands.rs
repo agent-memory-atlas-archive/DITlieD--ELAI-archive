@@ -44,6 +44,12 @@ use elai_core::{OsClock as DagOsClock, OsEntropy, paths::sessions_dir_path};
 // (early-term + micro-step counts are folded inline here so we don't drag
 // the streaming/pre-assembly/dep aggregators back in).
 use elai_orchestrator::focus_tunnel::{mode_distribution_for_payloads, GenerationMode};
+// E-25 Tranche B-4 (D4): SessionForked SSB emit at the dashboard fork
+// command. Wire-dark unless ELAI_E25_SESSION_FORK_EMIT_ENABLE=1.
+use elai_orchestrator::architecture::claude_code_arch::{
+    ClaudeCodeArchPrimitive, ClaudeCodeArchitectureEventKind,
+    ClaudeCodeArchitectureEventPayload,
+};
 use elai_orchestrator::ssb_viewer::SelfModMsiSnapshotRow;
 // B-3 #28: SelfModProposalRow only consumed by the
 // #[cfg(feature="self-modification")] branches of get_pending_proposals /
@@ -1031,6 +1037,56 @@ pub fn set_model_routing(
         *g = routing.clone();
     }
     Ok(routing)
+}
+
+// ---------------------------------------------------------------------------
+// E-3 (SCHEMA_VERSION 188) -- role-shown / model-hidden default telemetry.
+// Scope-lean MVP slice of TASK-E03-001: emit one SSB row each time the
+// SettingsWindow "show model details" toggle changes. Reverses the
+// cross-check finding "SettingsWindow explicitly exposes MODEL names per
+// role" by making MODEL hidden the default. Wire-dark unless
+// ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn record_model_visibility(
+    state: State<'_, AppState>,
+    role: String,
+    model_hidden: bool,
+    session_id: Option<String>,
+) -> CmdResult<Value> {
+    // Wire-dark gate: silently skip emission when the env var is unset.
+    // The UI toggle itself is always reactive; this is observation-only.
+    let enabled = std::env::var(
+        elai_orchestrator::ssb::ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE_ENV,
+    )
+    .ok()
+    .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+    .unwrap_or(false);
+
+    if !enabled {
+        return Ok(json!({ "ok": true, "emitted": false }));
+    }
+
+    let Some(writer) = state.writer.as_ref() else {
+        // No SSB writer available (no session DB open). UI toggle still
+        // succeeds; we just cant emit telemetry.
+        return Ok(json!({ "ok": true, "emitted": false }));
+    };
+
+    let payload = SsbPayload::RoleShownModelHidden(
+        elai_orchestrator::ssb::RoleShownModelHiddenPayload {
+            role,
+            model_hidden,
+            session_id,
+            ts_ms: now_ms(&state),
+        },
+    );
+    writer
+        .write_payload("dashboard-v2", 0, payload, vec![])
+        .await
+        .map_err(map_err)?;
+    Ok(json!({ "ok": true, "emitted": true }))
 }
 
 // ---------------------------------------------------------------------------
@@ -3328,7 +3384,7 @@ pub async fn fork_session_branch(
     state: State<'_, AppState>,
     name: String,
 ) -> CmdResult<Value> {
-    let (_session_id, mut dag) = open_active_dag(&state).map_err(map_dag_err)?;
+    let (session_id, mut dag) = open_active_dag(&state).map_err(map_dag_err)?;
     // Snap to fork from: prefer the current branch tip if one exists,
     // otherwise the latest snapshot via latest_snapshot(None). If neither
     // is present, surface a typed error rather than silently creating a
@@ -3357,12 +3413,63 @@ pub async fn fork_session_branch(
         )
         .await
         .map_err(|e| map_dag_err(DagBranchError::Dag(e)))?;
+    // E-25 D4: SessionForked emit. Wire-dark unless
+    // ELAI_E25_SESSION_FORK_EMIT_ENABLE=1. Best-effort, swallows errors.
+    emit_session_forked_dashboard(
+        ssb_ref,
+        "session_forked_branch",
+        &session_id,
+        &branch.name,
+        Some(&from_snap_id),
+    )
+    .await;
     Ok(json!({
         "branch_name": branch.name,
         "tip_snap_id": branch.tip_snap_id,
         "parent_snap_id": from_snap_id,
         "created_at": branch.created_at,
     }))
+}
+
+/// E-25 Tranche B-4 (D4): emit one `ClaudeCodeArchitectureEvent`
+/// (kind = `SessionForked`) from the dashboard fork command. Wire-dark
+/// unless `ELAI_E25_SESSION_FORK_EMIT_ENABLE=1`.
+async fn emit_session_forked_dashboard(
+    ssb: Option<&elai_orchestrator::Ssb>,
+    fork_event: &'static str,
+    parent_session_id: &str,
+    child_session_id: &str,
+    branch_point: Option<&str>,
+) {
+    if std::env::var("ELAI_E25_SESSION_FORK_EMIT_ENABLE")
+        .map(|v| v != "1")
+        .unwrap_or(true)
+    {
+        return;
+    }
+    let Some(ssb_ref) = ssb else { return; };
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    let details = json!({
+        "fork_event": fork_event,
+        "parent_session": parent_session_id,
+        "child_session": child_session_id,
+        "branch_point": branch_point,
+    });
+    let payload = SsbPayload::ClaudeCodeArchitectureEvent(
+        ClaudeCodeArchitectureEventPayload {
+            kind: ClaudeCodeArchitectureEventKind::SessionForked,
+            primitive: ClaudeCodeArchPrimitive::SessionFork,
+            session_id: Some(parent_session_id.to_owned()),
+            details_json: details,
+            ts_ms,
+        },
+    );
+    let _ = ssb_ref
+        .write_payload("dashboard:fork_session_branch", 0, payload, Vec::new())
+        .await;
 }
 
 #[tauri::command]
@@ -5561,6 +5668,10 @@ pub async fn start_chat_stream(
             n_candidates,
             budget_cap_tokens: 20_000,
             max_refine_iterations: elai_reasoning::REFINE_CAP,
+            // Tranche B-6 quad B-39: 85% soft-warn threshold; default is
+            // `REFLECT_BUDGET_SOFT_WARN_PCT` (85). Wire-dark unless
+            // ELAI_B39_SOFTWARN_ENABLE=1 on the SSB sink.
+            budget_soft_warn_pct: elai_reasoning::REFLECT_BUDGET_SOFT_WARN_PCT,
         };
         let pipeline = elai_reasoning::ChatReflectPipeline::new(config, Some(sink));
 
@@ -8102,6 +8213,15 @@ pub struct ContextStateDto {
     /// "local" | "cloud_billed" | "" -- derived from B-37 runtime_fallback
     /// rows. Empty when no runtime has been selected yet this session.
     pub runtime_choice_badge: String,
+    /// E-3 sub-phase 4B -- current agent role (planner / coder / critic
+    /// shape; see `agent_role_to_voice_section`). Sourced from the most
+    /// recent `e3_runtime_handoff_event::unified_preamble_applied` row;
+    /// None until the orchestrator emits its first wrapped dispatch.
+    pub current_role: Option<String>,
+    /// E-3 sub-phase 4B -- underlying runtime backend name (sidecar /
+    /// anthropic_api / etc.) for the role badge drawer. Hidden by
+    /// default in the chat UI; revealed on drawer expansion.
+    pub current_runtime: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -8146,6 +8266,8 @@ pub async fn get_context_state(state: State<'_, AppState>) -> CmdResult<ContextS
         last_precompact_thresholds: Vec::new(),
         prompt_injection_check_status: "not_run".to_owned(),
         runtime_choice_badge: String::new(),
+        current_role: None,
+        current_runtime: None,
     };
 
     let Some(viewer) = state.viewer.as_ref() else {
@@ -8207,7 +8329,106 @@ pub async fn get_context_state(state: State<'_, AppState>) -> CmdResult<ContextS
         }
     }
 
+    // E-3 sub-phase 4B -- current_role + current_runtime from the most
+    // recent e3_runtime_handoff_event row. Both fields stay None until
+    // the orchestrator emits its first wrapped dispatch.
+    if let Ok(rows) = viewer.recent_rows_of_type("e3_runtime_handoff_event", 1) {
+        if let Some(row) = rows.first() {
+            if let Some(role) = row.payload_json.get("role").and_then(|v| v.as_str()) {
+                if !role.is_empty() {
+                    dto.current_role = Some(role.to_owned());
+                }
+            }
+            if let Some(backend) = row.payload_json.get("backend").and_then(|v| v.as_str()) {
+                if !backend.is_empty() {
+                    dto.current_runtime = Some(backend.to_owned());
+                }
+            }
+        }
+    }
+
     Ok(dto)
+}
+
+// ---------------------------------------------------------------------------
+// E-3 sub-phase 4B (SCHEMA_VERSION 190) -- runtime-handoff event recorder.
+//
+// Single Tauri command that fans the 6 RuntimeHandoffEventKind arms into
+// SSB rows. Mirrors the record_model_visibility shape (one wire-dark
+// emission per UI-triggered or sidecar-triggered handoff). The
+// orchestrator's runtime_orchestrator.rs emits the
+// UnifiedPreambleApplied + RuntimePrewarm{Started,Complete} arms in
+// process via the Arc<Ssb> handle; this command is the dashboard's
+// own hook for surface emissions (StyleNormalizerApplied today; the
+// other arms are reserved for the sidecar-side wiring per CLAUDE.md
+// sidecar HARDWARE-HEAVY rule).
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn record_runtime_handoff_event(
+    state: State<'_, AppState>,
+    kind: String,
+    role: Option<String>,
+    backend: Option<String>,
+    latency_ms: Option<u32>,
+    details: Option<Value>,
+) -> CmdResult<Value> {
+    use elai_orchestrator::ssb::{
+        RuntimeHandoffEventKind, RuntimeHandoffEventPayload, ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV,
+    };
+
+    // Wire-dark gate: silently skip emission when the env var is unset.
+    let enabled = std::env::var(ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV)
+        .ok()
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+
+    if !enabled {
+        return Ok(json!({ "ok": true, "emitted": false }));
+    }
+
+    let Some(writer) = state.writer.as_ref() else {
+        return Ok(json!({ "ok": true, "emitted": false }));
+    };
+
+    // Map the snake-case kind string to the canonical enum. Unknown
+    // values surface as a CmdResult error so the frontend gets a
+    // typed failure rather than a silent no-op.
+    let kind_enum = match kind.as_str() {
+        "unified_preamble_applied" => RuntimeHandoffEventKind::UnifiedPreambleApplied,
+        "runtime_prewarm_started" => RuntimeHandoffEventKind::RuntimePrewarmStarted,
+        "runtime_prewarm_complete" => RuntimeHandoffEventKind::RuntimePrewarmComplete,
+        "handoff_payload_compressed" => RuntimeHandoffEventKind::HandoffPayloadCompressed,
+        "persona_vector_applied" => RuntimeHandoffEventKind::PersonaVectorApplied,
+        "style_normalizer_applied" => RuntimeHandoffEventKind::StyleNormalizerApplied,
+        other => {
+            return Err(format!(
+                "unknown e3_runtime_handoff_event kind: {other}"
+            ))
+        }
+    };
+
+    // Stitch latency_ms (UI-friendly param) into details_json if
+    // provided. Keeps the wire shape consistent with the orchestrator-
+    // side emission so dashboards can render a uniform timeline.
+    let mut details_json = details.unwrap_or_else(|| json!({}));
+    if let (Some(ms), Some(obj)) = (latency_ms, details_json.as_object_mut()) {
+        obj.insert("duration_ms".to_owned(), json!(ms));
+    }
+
+    let payload = SsbPayload::E3RuntimeHandoffEvent(RuntimeHandoffEventPayload {
+        kind: kind_enum,
+        role,
+        backend,
+        session_id: Some(writer.session_id().to_owned()),
+        details_json,
+        ts_ms: now_ms(&state),
+    });
+    writer
+        .write_payload("dashboard-v2", 0, payload, vec![])
+        .await
+        .map_err(map_err)?;
+    Ok(json!({ "ok": true, "emitted": true }))
 }
 
 #[tauri::command]
@@ -8272,7 +8493,7 @@ pub async fn get_trust_telemetry(state: State<'_, AppState>) -> CmdResult<TrustR
         findings_per_task: report.findings_per_task,
         revert_rate: report.revert_rate,
         ungrounded_count: report.ungrounded_count,
-        stagnation_dist: report.stagnation_dist,
+        stagnation_dist: report.stagnation_dist.into_iter().collect(),
     })
 }
 

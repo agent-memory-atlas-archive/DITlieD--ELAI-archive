@@ -15,9 +15,8 @@
 //! f32>` of per-role credits plus a producer-side timestamp for SSB
 //! ordering.
 
-use std::collections::HashMap;
-
 use elai_ipc_types::AgentRole;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 /// Harness-side policy gating one `AgentRole` out of the production
@@ -110,7 +109,7 @@ impl Default for CreditScore {
 pub struct CreditReport {
     /// Per-role credit map keyed by the canonical `AgentRole` enum
     /// (not a string), so consumers cannot smuggle a misspelled role.
-    pub per_role: HashMap<AgentRole, f32>,
+    pub per_role: FxHashMap<AgentRole, f32>,
     /// Producer-side wall-clock timestamp in milliseconds since UNIX
     /// epoch.
     pub ts_ms: u64,
@@ -121,7 +120,7 @@ impl CreditReport {
     #[must_use]
     pub fn new(ts_ms: u64) -> Self {
         Self {
-            per_role: HashMap::new(),
+            per_role: FxHashMap::default(),
             ts_ms,
         }
     }

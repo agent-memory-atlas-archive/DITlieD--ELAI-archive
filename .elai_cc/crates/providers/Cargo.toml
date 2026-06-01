@@ -17,6 +17,12 @@ rustc-hash.workspace = true
 tracing = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+# E-45 Tranche 8A: JsonSchema derive on the 5 sidecar-boundary structs in
+# src/types.rs (MessageRequest / MessageResponse / InputMessage /
+# SystemBlock / ToolDefinition). The derive is additive — existing serde
+# tags + skip_serializing_if rules are unchanged. Snapshot test lives in
+# elai-orchestrator dev-deps so this crate stays runtime-clean.
+schemars = { workspace = true }
 getrandom = "0.3"
 sha2 = "0.10"
 thiserror.workspace = true

@@ -9,8 +9,10 @@
 // AgentRole both derive Ord, so SnapshotKey can derive Ord without surgery.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+
+use elai_core::clock::{ClockProvider, OsClock};
 
 use crate::agent_pool::AgentRole;
 use uuid::Uuid;
@@ -45,6 +47,10 @@ pub struct FirecrackerHotPool {
     max_snapshots: usize,
     max_age: Duration,
     uniqueness_mitigation: bool,
+    // B-15 Tranche H: entropy quarantine. Injected clock so snapshot
+    // create + restore + eviction timestamps share one source (SeededClock
+    // in tests gives deterministic ordering; OsClock in prod).
+    clock: Arc<dyn ClockProvider>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -78,7 +84,11 @@ pub struct SnapshotSpawnResult {
 
 impl FirecrackerHotPool {
     pub fn new(snapshot_dir: PathBuf, restore_budget_ms: u64, max_snapshots: usize, max_age_secs: u64, uniqueness_mitigation: bool) -> Self {
-        Self { snapshots: Mutex::new(BTreeMap::new()), snapshot_dir, restore_budget_ms, max_snapshots, max_age: Duration::from_secs(max_age_secs), uniqueness_mitigation }
+        Self::new_with_clock(snapshot_dir, restore_budget_ms, max_snapshots, max_age_secs, uniqueness_mitigation, Arc::new(OsClock))
+    }
+
+    pub fn new_with_clock(snapshot_dir: PathBuf, restore_budget_ms: u64, max_snapshots: usize, max_age_secs: u64, uniqueness_mitigation: bool, clock: Arc<dyn ClockProvider>) -> Self {
+        Self { snapshots: Mutex::new(BTreeMap::new()), snapshot_dir, restore_budget_ms, max_snapshots, max_age: Duration::from_secs(max_age_secs), uniqueness_mitigation, clock }
     }
 
     pub fn with_defaults(snapshot_dir: PathBuf) -> Self {
@@ -92,12 +102,12 @@ impl FirecrackerHotPool {
         let snapshot_path = self.snapshot_path_for(key);
         let has_snapshot = pool.contains_key(key) && snapshot_path.exists();
         if has_snapshot {
-            let t0 = std::time::Instant::now();
+            let t0 = self.clock.instant_now();
             let result = self.restore_from_snapshot(&snapshot_path, command, args, key);
-            let elapsed_ms = t0.elapsed().as_millis() as u64;
+            let elapsed_ms = u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
             match result {
                 Ok(()) if elapsed_ms <= self.restore_budget_ms => {
-                    if let Some(handle) = pool.get_mut(key) { handle.last_restored_at = SystemTime::now(); handle.restore_count += 1; }
+                    if let Some(handle) = pool.get_mut(key) { handle.last_restored_at = self.clock.system_now(); handle.restore_count += 1; }
                     self.evict_if_needed(&mut pool)?;
                     Ok(SnapshotSpawnResult { snapshot_path, uniqueness_regenerated: self.uniqueness_mitigation, was_cold_boot: false, restore_ms: elapsed_ms, budget_exceeded: false })
                 }
@@ -128,7 +138,7 @@ impl FirecrackerHotPool {
             std::fs::write(&snapshot_path, b"cold-boot-marker")?;
         }
         if self.uniqueness_mitigation { self.regenerate_uniqueness_seeds()?; }
-        let now = SystemTime::now();
+        let now = self.clock.system_now();
         let handle = SnapshotHandle { key: key.clone(), path: snapshot_path.clone(), created_at: now, last_restored_at: now, restore_count: 0 };
         pool.insert(key.clone(), handle);
         self.evict_if_needed(pool)?;
@@ -177,7 +187,7 @@ impl FirecrackerHotPool {
     fn firecracker_binary_available(&self) -> bool { which_firecracker().is_some() }
 
     fn evict_if_needed(&self, pool: &mut BTreeMap<SnapshotKey, SnapshotHandle>) -> Result<(), FirecrackerError> {
-        let now = SystemTime::now();
+        let now = self.clock.system_now();
         let expired_keys: Vec<SnapshotKey> = pool.iter().filter(|(_, h)| now.duration_since(h.last_restored_at).map(|d| d > self.max_age).unwrap_or(false)).map(|(k, _)| k.clone()).collect();
         for key in &expired_keys {
             if let Some(handle) = pool.remove(key) {

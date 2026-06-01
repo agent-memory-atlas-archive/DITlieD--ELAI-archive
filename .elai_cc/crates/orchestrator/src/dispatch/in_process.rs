@@ -111,11 +111,11 @@ impl Dispatch for InProcessDispatch {
                 req.tool_name
             ));
         };
-        // entropy-allow: dispatch latency measurement is benchmark-intrinsic;
-        // injecting a ClockProvider would defeat the purpose (we are
-        // measuring the runner closure's wall-clock time so the dashboard
-        // surfaces real elapsed_ms in the McpToolCalled SSB row).
-        let start = std::time::Instant::now();
+        // dispatch latency measurement is benchmark-intrinsic; injecting a
+        // ClockProvider would defeat the purpose (we are measuring the
+        // runner closure's wall-clock time so the dashboard surfaces real
+        // elapsed_ms in the McpToolCalled SSB row).
+        let start = std::time::Instant::now(); // entropy-allow: benchmark-intrinsic-dispatch-latency-measurement
         let result = runner(&req.tool_name, req.args.clone());
         let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
         // Emit one McpToolCalled row per call regardless of success/error.

@@ -156,6 +156,20 @@ impl ReflectEventSink for TauriEventSink {
                 "total_tokens_used": total_tokens_used,
                 "synthesis_preview": synthesis.chars().take(160).collect::<String>(),
             }),
+            ReflectEvent::BudgetSoftWarn {
+                turn_id,
+                used,
+                soft_cap,
+                hard_cap,
+                pct,
+            } => json!({
+                "stage": "budget_soft_warn",
+                "turn_id": turn_id,
+                "used": used,
+                "soft_cap": soft_cap,
+                "hard_cap": hard_cap,
+                "pct": pct,
+            }),
         };
         // Tag the stream_id on the payload so the singleton-channel
         // ReasoningDrawer can filter / clear on turn boundaries.

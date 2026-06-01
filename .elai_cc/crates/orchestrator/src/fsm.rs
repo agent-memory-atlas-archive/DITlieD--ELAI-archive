@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::UNIX_EPOCH;
 use tokio::sync::Mutex;
@@ -567,6 +568,16 @@ pub struct Fsm {
     /// pre-gate is disabled (legacy callers + tests that don't ship a
     /// PlanContext yet).
     compliance_provider: Option<Arc<dyn ComplianceProvider>>,
+    /// E-25 Tranche B-4 (D3): opusplan FsmState overlay marker. Wire-dark
+    /// metadata flag that signals an active "opus-plan" tier engagement
+    /// (planner-tier vs executor-tier runtime routing). Stored at Fsm level
+    /// (NOT FsmInner) so the setter/getter stay sync; the FsmInner Mutex is
+    /// tokio::sync (async-only). Process-local, not persisted to disk --
+    /// restarts default OFF. Pattern-2 reuse: emission goes through
+    /// `ClaudeCodeArchitectureEventKind::OpusplanOverlayActivated` via
+    /// details_json; NO new FsmSubstate variant minted (E-25 exploration
+    /// GAP-4 + decisions D4 -- key overlay on FsmState, not FsmSubstate).
+    opus_plan_active: AtomicBool,
 }
 
 /// E-38 -- pluggable producer of [`crate::compliance::ComplianceVerdict`]
@@ -604,6 +615,24 @@ struct FsmInner {
     /// gate evaluation. Consumed by the AUDITING -> MEMORIZING transition
     /// guard. Cleared when AUDITING is re-entered (a new run overwrites).
     last_audit_result: Option<crate::deterministic_auditor::DeterministicAuditResult>,
+    /// B-40 (TASK-B40-003): active per-state agent substate. Orthogonal to
+    /// the top-level FsmState transition matrix. Set by [`Fsm::enter_framing`]
+    /// when the Idea-Framer pre-PLANNING pass starts; cleared by
+    /// [`Fsm::exit_framing_to_planning`] when the critic loop converges and
+    /// the tradeoff card is emitted. Persisted via [`PersistedFsmState::substate`].
+    substate: Option<FsmSubstate>,
+}
+
+/// E-25 D3: env-gate name controlling whether
+/// `OpusplanOverlayActivated` SSB rows are emitted. Default OFF.
+pub const ELAI_E25_OPUSPLAN_OVERLAY_ENABLE_VAR: &str = "ELAI_E25_OPUSPLAN_OVERLAY_ENABLE";
+
+/// E-25 D3: returns true iff the opusplan overlay emit path is wire-enabled.
+#[must_use]
+pub fn opus_plan_overlay_enabled() -> bool {
+    std::env::var(ELAI_E25_OPUSPLAN_OVERLAY_ENABLE_VAR)
+        .map(|v| v == "1")
+        .unwrap_or(false)
 }
 
 fn now_ms() -> u64 {
@@ -627,12 +656,14 @@ impl Fsm {
                 persist_path,
                 preload_manager: crate::preload::PreloadManager::new(),
                 last_audit_result: None,
+                substate: None,
             }),
             workload_emitter: None,
             model_pool: None,
             deterministic_audit_gate: None,
             ssb_writer: OnceLock::new(),
             compliance_provider: None,
+            opus_plan_active: AtomicBool::new(false),
         }
     }
 
@@ -695,6 +726,24 @@ impl Fsm {
         self.workload_emitter = Some(emitter);
     }
 
+    /// E-25 D3: flip the opusplan overlay marker. Pattern-2 reuse -- when
+    /// `ELAI_E25_OPUSPLAN_OVERLAY_ENABLE` is `1` and the flag transitions
+    /// (off->on / on->off) the caller is expected to emit a
+    /// `ClaudeCodeArchitectureEvent` (`OpusplanOverlayActivated`) row whose
+    /// `details_json` carries `fsm_overlay_event` =
+    /// `opus_plan_started` | `opus_plan_ended`. Emission is the caller's
+    /// responsibility because the Ssb writer is async and this setter is
+    /// sync; the helper [`opus_plan_overlay_enabled`] surfaces the env-gate
+    /// state for the caller to consult.
+    pub fn set_opus_plan_active(&self, on: bool) {
+        self.opus_plan_active.store(on, Ordering::Release);
+    }
+
+    /// E-25 D3: read the current opus_plan overlay flag.
+    pub fn opus_plan_active(&self) -> bool {
+        self.opus_plan_active.load(Ordering::Acquire)
+    }
+
     /// B-2: builder-style setter for the SSB writer.  Call before wrapping in Arc.
     pub fn with_ssb_writer(self, writer: Arc<crate::ssb::Ssb>) -> Self {
         // Ignore the result: OnceLock guarantees the first write wins.
@@ -741,12 +790,16 @@ impl Fsm {
                 persist_path: Some(path.to_path_buf()),
                 preload_manager: crate::preload::PreloadManager::new(),
                 last_audit_result: None,
+                // B-40 (TASK-B40-003): restore substate from persisted snapshot.
+                // Older v40-and-earlier snapshots default to None via #[serde(default)].
+                substate: persisted.substate,
             }),
             workload_emitter: None,
             model_pool: None,
             deterministic_audit_gate: None,
             ssb_writer: OnceLock::new(),
             compliance_provider: None,
+            opus_plan_active: AtomicBool::new(false),
         })
     }
 
@@ -1001,6 +1054,11 @@ impl Fsm {
             guard.replan_log.clear();
         }
 
+        // B-40 (TASK-B40-003): top-level transition implicitly exits any
+        // active substate. Clear in-memory before persisting so the on-disk
+        // snapshot reflects the current FsmInner.
+        guard.substate = None;
+
         // Persist to disk if path configured
         if let Some(ref path) = guard.persist_path {
             let persisted = PersistedFsmState {
@@ -1012,7 +1070,7 @@ impl Fsm {
                 // B-40: substate is tracked separately by the framing
                 // workflow; FSM transitions clear any prior substate
                 // implicitly (top-level transition = exit any substate).
-                substate: None,
+                substate: guard.substate,
             };
             persist_state(path, &persisted).await?;
         }
@@ -1086,7 +1144,7 @@ impl Fsm {
                 token_budget: guard.token_budget,
                 replan_log: guard.replan_log.clone(),
                 transition_history: guard.transition_history.clone(),
-                substate: None,
+                substate: guard.substate,
             };
             persist_state(path, &persisted).await?;
         }
@@ -1114,6 +1172,8 @@ impl Fsm {
         guard.state = FsmState::Idle;
         guard.phase_label.clear();
         guard.replan_log.clear();
+        // B-40 (TASK-B40-003): reset clears any active substate too.
+        guard.substate = None;
 
         if let Some(ref path) = guard.persist_path {
             let persisted = PersistedFsmState {
@@ -1127,6 +1187,129 @@ impl Fsm {
             persist_state(path, &persisted).await?;
         }
 
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // B-40 (TASK-B40-003): FsmSubstate::Framing transition helpers
+    // -----------------------------------------------------------------------
+
+    /// Inspect the current per-state substate. Returns `None` when no substate
+    /// is active. See [`FsmSubstate`] doc for the lifecycle.
+    pub async fn current_substate(&self) -> Option<FsmSubstate> {
+        self.inner.lock().await.substate
+    }
+
+    /// B-40 (TASK-B40-003) — enter the [`FsmSubstate::Framing`] substate.
+    ///
+    /// Entry is permitted from `FsmState::Idle` (pre-PLANNING idea-stage
+    /// discussion) or `FsmState::Planning` (mid-PLANNING revisit of the
+    /// framing pass). The top-level state is NOT mutated — substates are
+    /// orthogonal to the `FsmState` transition matrix per the comment on
+    /// [`FsmSubstate`].
+    ///
+    /// Errors:
+    ///   * [`FsmError::InvalidTransition`] when called from a state that
+    ///     does not permit Framing entry (anything outside Idle / Planning).
+    ///   * [`FsmError::TransitionConflict`] when another task is mid-transition.
+    pub async fn enter_framing(&self) -> Result<(), FsmError> {
+        let mut guard = self
+            .inner
+            .try_lock()
+            .map_err(|_| FsmError::TransitionConflict)?;
+        let source = guard.state;
+        if source != FsmState::Idle && source != FsmState::Planning {
+            return Err(FsmError::InvalidTransition {
+                source,
+                target: FsmState::Planning,
+            });
+        }
+        guard.substate = Some(FsmSubstate::Framing);
+
+        if let Some(ref path) = guard.persist_path {
+            let persisted = PersistedFsmState {
+                state: guard.state,
+                phase_label: guard.phase_label.clone(),
+                token_budget: guard.token_budget,
+                replan_log: guard.replan_log.clone(),
+                transition_history: guard.transition_history.clone(),
+                substate: guard.substate,
+            };
+            persist_state(path, &persisted).await?;
+        }
+        tracing::info!(
+            source = %source,
+            substate = %FsmSubstate::Framing,
+            "fsm: entered FRAMING substate (B-40 idea-framer pre-PLANNING pass)"
+        );
+        Ok(())
+    }
+
+    /// B-40 (TASK-B40-003) — exit [`FsmSubstate::Framing`] and advance the
+    /// top-level state to [`FsmState::Planning`].
+    ///
+    /// Called when the idea-framer critic loop converges and the
+    /// `tradeoff_card_emitted` SSB row has been written. Clears the substate
+    /// and, if the current top-level state is `FsmState::Idle`, transitions
+    /// to `FsmState::Planning`. If already in PLANNING, just clears the
+    /// substate (idempotent revisit from within PLANNING).
+    ///
+    /// Errors:
+    ///   * [`FsmError::InvalidTransition`] when the current substate is not
+    ///     `Some(FsmSubstate::Framing)` — calling this without enter_framing
+    ///     first is a contract violation.
+    ///   * Top-level transition errors propagate from
+    ///     [`Self::transition_with_metrics`] (only when source==Idle).
+    pub async fn exit_framing_to_planning(
+        &self,
+        phase_label: &str,
+    ) -> Result<(), FsmError> {
+        // Lock + verify substate is Framing.
+        {
+            let mut guard = self
+                .inner
+                .try_lock()
+                .map_err(|_| FsmError::TransitionConflict)?;
+            if guard.substate != Some(FsmSubstate::Framing) {
+                return Err(FsmError::InvalidTransition {
+                    source: guard.state,
+                    target: FsmState::Planning,
+                });
+            }
+            // Clear substate up-front so the top-level transition below
+            // does not redundantly re-clear it (the transition path already
+            // sets guard.substate = None unconditionally).
+            guard.substate = None;
+            if guard.state == FsmState::Planning {
+                // Already in PLANNING — persist the cleared substate and return.
+                if let Some(ref path) = guard.persist_path {
+                    let persisted = PersistedFsmState {
+                        state: guard.state,
+                        phase_label: guard.phase_label.clone(),
+                        token_budget: guard.token_budget,
+                        replan_log: guard.replan_log.clone(),
+                        transition_history: guard.transition_history.clone(),
+                        substate: None,
+                    };
+                    persist_state(path, &persisted).await?;
+                }
+                tracing::info!(
+                    "fsm: exited FRAMING substate (already in PLANNING; idempotent)"
+                );
+                return Ok(());
+            }
+            // Source is Idle (the only other entry-permitted state). Fall
+            // through to the standard transition path below to handle SSB
+            // emission + transition_history + workload_emitter.
+        }
+        // Standard Idle -> Planning transition with no metrics/evidence.
+        self
+            .transition_with_metrics(FsmState::Planning, phase_label, Vec::new(), None)
+            .await?;
+        tracing::info!(
+            substate = %FsmSubstate::Framing,
+            "fsm: exited FRAMING substate -> PLANNING (B-40 idea-framer convergence)"
+        );
         Ok(())
     }
 }

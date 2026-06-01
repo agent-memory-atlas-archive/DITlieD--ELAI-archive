@@ -1,0 +1,51 @@
+name: elai-lora-ship-gate
+
+# E-47: dedicated LoRA ship-gate workflow. Fires only when a PR
+# touches the ship-gate surface (elai_cc.toml, the lora_ship_gate
+# module, or the CI lint script). Enforces that the deferral token
+# `DEFERRED_PER_E47_REPORT` AND `confirm_user_understanding = true`
+# both remain present in elai_cc.toml so the default-deferred posture
+# survives drift. Permissive on PR -- prints findings without
+# blocking the merge while operators are flipping the gate per
+# workflow/decisions/E-47-flip-runbook.md.
+
+on:
+  pull_request:
+    paths:
+      - '.elai_cc/elai_cc.toml'
+      - '.elai_cc/crates/orchestrator/src/lora_ship_gate.rs'
+      - '.elai_cc/scripts/check_lora_ship_gate_token.sh'
+      - '.elai_cc/scripts/check_lora_ship_gate_token.bat'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lora-ship-gate-token-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run LoRA ship-gate token lint (sh)
+        run: |
+          chmod +x .elai_cc/scripts/check_lora_ship_gate_token.sh
+          .elai_cc/scripts/check_lora_ship_gate_token.sh
+
+  lora-ship-gate-token-check-windows:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run LoRA ship-gate token lint (bat)
+        shell: cmd
+        run: |
+          .elai_cc\scripts\check_lora_ship_gate_token.bat

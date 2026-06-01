@@ -38,6 +38,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
@@ -476,11 +477,7 @@ impl LockedKeysAuditor {
 }
 
 fn current_unix_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    u64::try_from(OsClock.now_ms()).unwrap_or(u64::MAX)
 }
 
 /// Read-only snapshot used by the Tauri `get_locked_keys_status`

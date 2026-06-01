@@ -43,7 +43,9 @@ pub mod policy;
 pub mod types;
 
 pub use checker::check_authz;
-pub use compose::{compose_with_tool_gate, ComposedVerdict};
+pub use compose::{
+    compose_with_tool_gate, compose_with_tool_gate_emit, ComposedVerdict, McpAuthzSsbEmitter,
+};
 pub use policy::{AuthzPolicy, AuthzPolicyConfig, RoleEntry};
 pub use types::{AuthzError, AuthzVerdict, DocContext, RoleClaim};
 

@@ -713,14 +713,14 @@ impl ObservableEffectRunner {
         effect: &ObservableEffect,
         bn_id: &str,
     ) -> Result<(), WiringContractError> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(effect.timeout_secs as u64);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(effect.timeout_secs as u64); // entropy-allow: tokio-mockable-time-required-for-tokio-time-sleep-pairing
 
         if let Some(action_type) = effect.expect_ssb.as_deref() {
             loop {
                 if Self::ssb_has_row(&self.ssb_db_path, action_type)? {
                     return Ok(());
                 }
-                if tokio::time::Instant::now() >= deadline {
+                if tokio::time::Instant::now() >= deadline { // entropy-allow: tokio-mockable-time-paired-with-deadline-above
                     self.emit_broken_observable(bn_id, effect.trigger.as_str());
                     return Err(WiringContractError::ParseError(format!(
                         "observable_effect timeout: expect_ssb={action_type:?} not seen within {}s",

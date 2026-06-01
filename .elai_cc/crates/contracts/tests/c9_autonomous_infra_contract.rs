@@ -433,6 +433,10 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         via_mcp: false,
         // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
+        // B-08: legacy contract path -- pipeline_grc opt-in elsewhere.
+        pipeline_grc: None,
+        // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
+        interactive_gate: None,
     };
     let cfg_none = apply_task_runner_wiring(root.join("cursor.json"), &wiring_none);
     assert!(
@@ -456,6 +460,10 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         via_mcp: false,
         // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
+        // B-08: legacy contract path -- pipeline_grc opt-in elsewhere.
+        pipeline_grc: None,
+        // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
+        interactive_gate: None,
     };
     let cfg_inter = apply_task_runner_wiring(root.join("cursor.json"), &wiring_inter);
     let gate = cfg_inter
@@ -480,6 +488,10 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         via_mcp: false,
         // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
+        // B-08: legacy contract path -- pipeline_grc opt-in elsewhere.
+        pipeline_grc: None,
+        // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
+        interactive_gate: None,
     };
     let cfg_auto = apply_task_runner_wiring(root.join("cursor.json"), &wiring_auto);
     let gate_auto = cfg_auto

@@ -556,6 +556,12 @@ pub enum IdeaFramingError {
 
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+
+    /// B-40 (TASK-B40-003): the [`crate::fsm::Fsm`] refused the
+    /// `enter_framing` or `exit_framing_to_planning` call. Wrapped as a
+    /// String so this module does not pull `FsmError` into its public API.
+    #[error("fsm transition rejected: {0}")]
+    FsmTransition(String),
 }
 
 // ===========================================================================
@@ -1199,6 +1205,85 @@ pub async fn frame_idea(
     }
 
     Ok(framed)
+}
+
+/// B-40 (TASK-B40-003) — production entrypoint that wraps [`frame_idea`] in
+/// FSM substate transitions so [`crate::fsm::FsmSubstate::Framing`] is set
+/// for the duration of the idea-framer pre-PLANNING pass.
+///
+/// Sequence:
+///   1. `fsm.enter_framing()` — marks the substate (entry-permitted from
+///      `Idle` or `Planning`).
+///   2. `frame_idea(...)` — runs the classifier + multi-root research +
+///      critic loop and emits the 5 SSB rows.
+///   3. On success: `fsm.exit_framing_to_planning(...)` — clears the
+///      substate and advances the top-level state to `Planning` (from
+///      `Idle`; idempotent if already `Planning`). On failure: clears the
+///      substate without changing top-level state, then propagates the
+///      original error so the dashboard's IdeaFramingWindow can surface
+///      the BLOCK to the user.
+///
+/// `phase_label` is used as the PLANNING phase label on the
+/// `Idle -> Planning` transition. Typical value: `"phase-idea-framed"` or
+/// the upstream task identifier (e.g. `"task-abc123"`).
+///
+/// `ssb` is required here (vs `frame_idea`'s `Option`) because production
+/// callers always emit the 5 SSB rows; tests still use bare `frame_idea`.
+#[allow(clippy::too_many_arguments)]
+pub async fn frame_idea_with_fsm(
+    fsm: &Arc<crate::fsm::Fsm>,
+    prompt: &str,
+    presets: &ResearchPresets,
+    session_dir: &std::path::Path,
+    session_id: &str,
+    ssb: &Arc<Ssb>,
+    clock: Arc<dyn ClockProvider>,
+    phase_label: &str,
+) -> Result<FramedIdea, IdeaFramingError> {
+    // 1. Enter Framing substate. Failure here means the orchestrator FSM is
+    //    not in a state that allows pre-PLANNING framing (e.g. mid-Executing);
+    //    surface as IdeaFramingError so the caller can decide whether to
+    //    retry or abort.
+    fsm.enter_framing().await.map_err(|e| {
+        warn!(error = %e, "frame_idea_with_fsm: enter_framing rejected");
+        IdeaFramingError::FsmTransition(e.to_string())
+    })?;
+
+    // 2. Run the framer body.
+    let result = frame_idea(prompt, presets, session_dir, session_id, Some(ssb), clock).await;
+
+    // 3. Exit the substate either way. On error we must still clear the
+    //    substate or future transitions will see a stale `Framing` marker.
+    match result {
+        Ok(framed) => {
+            fsm.exit_framing_to_planning(phase_label).await.map_err(|e| {
+                warn!(error = %e, "frame_idea_with_fsm: exit_framing_to_planning failed after convergence");
+                IdeaFramingError::FsmTransition(e.to_string())
+            })?;
+            info!(
+                session_id = session_id,
+                phase_label = phase_label,
+                "B-40 idea-framer converged; FSM advanced to PLANNING"
+            );
+            Ok(framed)
+        }
+        Err(e) => {
+            // Clear substate without advancing top-level state. The FSM
+            // exit_framing_to_planning helper always clears the substate;
+            // we accept the resulting Idle->Planning transition because
+            // the original failure already justified leaving the framer
+            // (the caller will decide whether to re-enter PLANNING with a
+            // refined prompt or abort the session).
+            if let Err(fsm_err) = fsm.exit_framing_to_planning(phase_label).await {
+                warn!(
+                    error = %fsm_err,
+                    original = %e,
+                    "frame_idea_with_fsm: exit_framing_to_planning failed after framer error; substate may be stale"
+                );
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Persist framed-idea.toml + critic-rounds/round-N.toml + an empty

@@ -22,7 +22,7 @@
 //! Cargo deps. blake3 is not needed here (no caching in C-29 — defer to
 //! T-5 EquivalentMutantCache pattern).
 
-use std::time::Instant;
+use elai_core::clock::{ClockProvider, OsClock};
 
 use serde::{Deserialize, Serialize};
 
@@ -265,10 +265,10 @@ impl MetamorphicTestRunner {
     where
         F: Fn(&[u8]) -> Vec<u8>,
     {
-        let start = Instant::now();
+        let start = OsClock.instant_now();
         let a = f(input);
         let b = f(input);
-        let elapsed = start.elapsed().as_millis() as u64;
+        let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         if a == b {
             MrResult::passed(MetamorphicRelation::Identity, 1, elapsed)
         } else {
@@ -295,7 +295,7 @@ impl MetamorphicTestRunner {
         E: Fn(&[u8]) -> Vec<u8>,
         D: Fn(&[u8]) -> Vec<u8>,
     {
-        let start = Instant::now();
+        let start = OsClock.instant_now();
         let sample_size = samples.len() as u32;
         for (i, sample) in samples.iter().enumerate() {
             let encoded = encode(sample);
@@ -334,7 +334,7 @@ impl MetamorphicTestRunner {
         if !self.library.contains(MetamorphicRelation::PermutationInvariance) {
             return MrResult::passed(MetamorphicRelation::PermutationInvariance, 0, 0);
         }
-        let start = Instant::now();
+        let start = OsClock.instant_now();
         let sample_size = inputs.len() as u32;
         for (i, (original, permuted)) in inputs.iter().enumerate() {
             let original_out = f(original);

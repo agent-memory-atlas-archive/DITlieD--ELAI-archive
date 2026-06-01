@@ -25,6 +25,12 @@ pub mod claude_code;
 /// the actual difficulty verdict.
 pub mod cloud_route_difficulty;
 pub mod codex_cli;
+/// E-31 — `RuntimeRoutingPolicy`: pre-route data + decision table.
+/// Distinct from the orchestrator's E-32 `escalation_policy` (SessionDag
+/// deep-mode handoff) and from C-9 `autonomous_gate::EscalationPolicy`
+/// (gate-mode). Named to disambiguate the 3-way collision. See
+/// `workflow/reasoning/E-31-decisions.md` DRIFT-2 reconcile.
+pub mod escalation_policy;
 /// C-44 — Cursor Composer 2 cloud-API adapter. Paid HTTP backend
 /// gated behind `[runtime.composer2].enabled = true` in elai_cc.toml.
 /// See workflow/papers/composer2-interface.md for the source-grounding
@@ -80,6 +86,10 @@ pub use cloud_route_difficulty::{
 pub use codex_cli::CodexCliRuntime;
 pub use composer2::{Composer2Error, Composer2RuntimeAdapter};
 pub use copilot_cli::CopilotCliRuntime;
+pub use escalation_policy::{
+    RoutingChoice, RoutingContext, RoutingCriticality, RoutingDecision, RoutingDifficulty,
+    RoutingReason, RuntimeRoutingPolicy, RuntimeRoutingPolicyError,
+};
 pub use cost::{
     backend_name_hash, cost_model_for, role_name_hash, BackendCostModel, COMPOSER2_COST,
 };

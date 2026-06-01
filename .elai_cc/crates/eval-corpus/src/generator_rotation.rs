@@ -10,8 +10,7 @@
 //! [`crate::task_schema::Provenance`] entries; this module aggregates the
 //! distribution and produces a verdict.
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::task_schema::Task;
@@ -26,7 +25,7 @@ pub const MIN_GENERATORS: usize = 3;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DistributionResult {
     /// Generator label -> count of tasks attributed to it.
-    pub per_generator: HashMap<String, usize>,
+    pub per_generator: FxHashMap<String, usize>,
     /// Smallest non-zero share in the corpus, in `[0.0, 1.0]`.
     pub min_share: f64,
     /// True when (i) `per_generator.len() < MIN_GENERATORS` OR
@@ -39,7 +38,7 @@ pub struct DistributionResult {
 /// Compute the distribution from a slice of tasks.
 #[must_use]
 pub fn verify_distribution(tasks: &[Task]) -> DistributionResult {
-    let mut per_generator: HashMap<String, usize> = HashMap::new();
+    let mut per_generator: FxHashMap<String, usize> = FxHashMap::default();
     for t in tasks {
         *per_generator.entry(t.provenance.generator.clone()).or_insert(0) += 1;
     }
@@ -50,7 +49,7 @@ pub fn verify_distribution(tasks: &[Task]) -> DistributionResult {
 /// constructor for tests + migrate paths that already have totals on hand.
 #[must_use]
 pub fn compute_distribution(
-    per_generator: HashMap<String, usize>,
+    per_generator: FxHashMap<String, usize>,
     total: usize,
 ) -> DistributionResult {
     if total == 0 {
@@ -87,7 +86,7 @@ mod tests {
     #[test]
     fn generator_rotation_minimum_distribution() {
         // 2 generators -> violated even at 50/50.
-        let mut m = HashMap::new();
+        let mut m = FxHashMap::default();
         m.insert("a".to_string(), 5);
         m.insert("b".to_string(), 5);
         let r = compute_distribution(m, 10);
@@ -96,7 +95,7 @@ mod tests {
 
     #[test]
     fn three_generators_with_one_at_20_pct_violated() {
-        let mut m = HashMap::new();
+        let mut m = FxHashMap::default();
         m.insert("a".to_string(), 4);
         m.insert("b".to_string(), 4);
         m.insert("c".to_string(), 2);
@@ -106,7 +105,7 @@ mod tests {
 
     #[test]
     fn three_generators_at_floor_pass() {
-        let mut m = HashMap::new();
+        let mut m = FxHashMap::default();
         m.insert("a".to_string(), 30);
         m.insert("b".to_string(), 35);
         m.insert("c".to_string(), 35);
@@ -116,7 +115,7 @@ mod tests {
 
     #[test]
     fn empty_corpus_violates() {
-        let r = compute_distribution(HashMap::new(), 0);
+        let r = compute_distribution(FxHashMap::default(), 0);
         assert!(r.violated);
     }
 }

@@ -84,6 +84,14 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt"
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
+# E-40 Tranche B-2: SymbolGraphDSL parser uses nom 7.x.
+# nom 7.1.3 is already resolved in Cargo.lock (transitive via
+# tantivy-query-grammar + spm_precompiled — see Cargo.lock L3794).
+# Declaring it as a direct dep here does NOT pull a new crate into the
+# build graph; per the Tranche B-2 prompt constraint "use nom which is
+# already in Cargo.lock". Anti-slopsquatting verified (the canonical
+# nom crate at crates.io/crates/nom, repo rust-bakery/nom).
+nom = "7"
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 walkdir = "2"
@@ -128,7 +136,25 @@ nix = { version = "0.31", features = ["fs", "mount", "sched", "signal"] }
 proptest = "1.11"
 proptest-state-machine = "0.8"
 tempfile = "3"
+# E-45 Tranche 8A: schemars for the boundary-types JSON Schema snapshot
+# test (tests/schemas_snapshot.rs). Workspace-pinned EXACT 1.2.1 — the
+# snapshot test asserts byte-equality against checked-in fixtures, so
+# the derive macro output MUST stay stable across rebuilds.
+schemars = { workspace = true }
 tokio = { version = "1", features = ["test-util"] }
+# E-44 Tranche 7B: Deterministic Simulation Testing (DST) harness for
+# supervision-tree restart-ceiling invariants. madsim 0.2.31 published
+# 2024-10-18 (verified crates.io 2026-05-31, not yanked, 161k+ downloads,
+# part of madsim-rs/madsim under Apache-2.0/MIT). madsim-tokio 0.2.30 is the
+# tokio-API shim used under `#[cfg(madsim)]`. Both are dev-only and the test
+# file head carries `#![cfg(madsim)]` so default `cargo test` skips the
+# harness entirely. Activate via:
+#   RUSTFLAGS="--cfg madsim" cargo test -p elai-orchestrator --test agent_pool_dst
+# Anti-slopsquatting verified: github.com/madsim-rs/madsim is the canonical
+# upstream (used by RisingWave in production). See
+# workflow/reasoning/E-44-madsim-decisions.md.
+madsim = "0.2.31"
+madsim-tokio = "0.2.30"
 # B-20A Task 7: file_outline_force_full integration test calls
 # `InProcessToolDispatcher::dispatch_file_read_with_force_full`. Cargo
 # allows dev-dep cycles (`elai-tools` depends on `elai-orchestrator`)
@@ -202,3 +228,10 @@ darwinian-evolve = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# E-44 Tranche 7B: register the `madsim` cfg name with rustc so the
+# `unexpected_cfgs` lint does not warn on the `#![cfg(madsim)]` gate in
+# tests/agent_pool_dst.rs. Activated only via RUSTFLAGS="--cfg madsim";
+# unset under default builds (the file is excluded as intended).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(madsim)'] }

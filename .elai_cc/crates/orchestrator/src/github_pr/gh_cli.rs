@@ -21,7 +21,6 @@
 //!   emission.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use tokio::process::Command;
@@ -80,18 +79,11 @@ impl GhCliAdapter {
         }
     }
 
-    /// Current wall-clock millis since UNIX epoch. Saturating
-    /// fall-back to 0 mirrors the saturation semantics documented at
-    /// `Ssb::now_ms_via_clock` (ssb.rs:7356) so a pre-1970 system clock
-    /// cannot panic the adapter.
+    /// Current wall-clock millis since UNIX epoch. Delegates to the
+    /// E-41 submodule clock abstraction (`super::clock::now_ms`) for
+    /// consistent saturating semantics across the github_pr family.
     fn now_ms() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| {
-                let ms = d.as_millis();
-                i64::try_from(ms).unwrap_or(i64::MAX)
-            })
-            .unwrap_or(0)
+        super::clock::now_ms()
     }
 
     /// Compute the 64-bit blake3 prefix used as the hashed identity in

@@ -25,8 +25,8 @@ use elai_plugins::CaseBaseSsbEmitter;
 use tracing::warn;
 
 use crate::ssb::{
-    Ssb, SsbPayload, ToolCalibrationDriftDetectedPayload, ToolCalibrationHintEmittedPayload,
-    ToolCallLoggedPayload,
+    Ssb, SsbPayload, ToolCalibrationDriftDetectedPayload, ToolCalibrationEventKind,
+    ToolCalibrationEventPayload, ToolCalibrationHintEmittedPayload, ToolCallLoggedPayload,
 };
 use crate::task_runner::{RUNNER_AGENT_ID, RUNNER_SUPERSTEP};
 
@@ -139,6 +139,79 @@ impl CaseBaseSsbEmitter for OrchestratorCaseBaseSsbEmitter {
                 ts_ms,
             },
         );
+        self.dispatch_payload(payload);
+        Ok(())
+    }
+
+    // === Tranche B-6 quad C-47 -- new Pattern-2 ToolCalibrationEvent ====
+    //
+    // Three new emit_* methods land here that route to the new Pattern-2
+    // [`SsbPayload::ToolCalibrationEvent`] variant. Wire-dark unless the
+    // operator sets ELAI_C47_CASE_BASE_ENABLE=1 -- the env-gate is read
+    // at orchestrator bootstrap time (the adapter itself is unconditional;
+    // gating happens at adapter construction in the CLI/dashboard wiring).
+    //
+    // The pre-existing emit_call_logged / emit_hint / emit_drift surfaces
+    // above stay alive for one release window so legacy callers keep
+    // landing rows under the old variants -- they'll migrate to the
+    // new Pattern-2 variant in C-47b.
+
+    fn emit_case_added(
+        &self,
+        tool_name: &str,
+        call_shape_hash: u64,
+        ts_ms: i64,
+    ) -> Result<(), String> {
+        let payload = SsbPayload::ToolCalibrationEvent(ToolCalibrationEventPayload {
+            kind: ToolCalibrationEventKind::CaseAdded,
+            tool_name_hash: hash_label(tool_name),
+            call_shape_hash,
+            response_kind_hash: None,
+            details_json: serde_json::json!({
+                "caller_site": "case_base::add_case",
+            }),
+            ts_ms,
+        });
+        self.dispatch_payload(payload);
+        Ok(())
+    }
+
+    fn emit_case_selected(
+        &self,
+        tool_name: &str,
+        call_shape_hash: u64,
+        ts_ms: i64,
+    ) -> Result<(), String> {
+        let payload = SsbPayload::ToolCalibrationEvent(ToolCalibrationEventPayload {
+            kind: ToolCalibrationEventKind::CaseSelected,
+            tool_name_hash: hash_label(tool_name),
+            call_shape_hash,
+            response_kind_hash: None,
+            details_json: serde_json::json!({
+                "caller_site": "case_base::select_case",
+            }),
+            ts_ms,
+        });
+        self.dispatch_payload(payload);
+        Ok(())
+    }
+
+    fn emit_calibration_applied(
+        &self,
+        tool_name: &str,
+        call_shape_hash: u64,
+        ts_ms: i64,
+    ) -> Result<(), String> {
+        let payload = SsbPayload::ToolCalibrationEvent(ToolCalibrationEventPayload {
+            kind: ToolCalibrationEventKind::CalibrationApplied,
+            tool_name_hash: hash_label(tool_name),
+            call_shape_hash,
+            response_kind_hash: None,
+            details_json: serde_json::json!({
+                "caller_site": "case_base::apply_calibration",
+            }),
+            ts_ms,
+        });
         self.dispatch_payload(payload);
         Ok(())
     }

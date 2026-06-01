@@ -55,8 +55,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
 
+use std::sync::Arc;
+
 use crate::conformal_calibration::RefusalDecision;
-use crate::ssb::{RefusalRateSnapshotPayload, RefusalSlaBreachPayload};
+use crate::ssb::{RefusalRateSnapshotPayload, RefusalSlaBreachPayload, Ssb, SsbPayload};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -514,6 +516,124 @@ impl RefusalSlaBreachEmitter for VecRefusalSlaBreachEmitter {
         Box::pin(async move {
             self.rows.lock().await.push(payload);
             Ok(())
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F2 / s-22600 Tranche B -- production SSB-backed emitter adapters
+//
+// Bridge the `RefusalRate{Snapshot|SlaBreach}Emitter` traits onto a shared
+// `Arc<Ssb>` writer so the `run_refusal_sla_tick` periodic loop can land
+// `refusal_rate_snapshot` + `refusal_sla_breach` rows on the canonical
+// substrate. Mirrors the shape of
+// `task_runner::TaskRunnerConformalTauComputedEmitter` but owns the
+// `Arc<Ssb>` (not a borrow) so the emitter can be moved into a
+// `tokio::spawn`ed task without lifetime drama.
+//
+// Naming: the F2 decision doc resolution path (a) names these
+// `SsbBackedRefusalRateSnapshotEmitter` / `SsbBackedRefusalSlaBreachEmitter`.
+// They live in `refusal_sla.rs` next to the trait + Vec test doubles so the
+// emitter family stays co-located.
+// ---------------------------------------------------------------------------
+
+/// `agent_id` string emitted on every SSB row produced by these adapters.
+/// Mirrors `task_runner::RUNNER_AGENT_ID = "task_runner"` (the canonical
+/// task-runner-originated row author) so the existing dashboard filters
+/// pick the rows up without extra plumbing.
+pub const REFUSAL_SLA_AGENT_ID: &str = "task_runner";
+
+/// Production SSB-backed `RefusalRateSnapshotEmitter`. Owns an
+/// `Arc<Ssb>` so the emitter is `'static` + `Send + Sync` and can be
+/// freely shared across the tokio task boundary in
+/// `run_refusal_sla_tick`.
+///
+/// Best-effort emit: `Ssb::write_payload` errors are surfaced via
+/// `tracing::warn` and returned as `Err(String)` so the upstream
+/// `RefusalRateMonitor::emit_snapshot` warn-and-continue contract stays
+/// intact (see refusal_sla.rs::emit_snapshot lines 353-361).
+pub struct SsbBackedRefusalRateSnapshotEmitter {
+    writer: Arc<Ssb>,
+    superstep: i64,
+}
+
+impl SsbBackedRefusalRateSnapshotEmitter {
+    #[must_use]
+    pub fn new(writer: Arc<Ssb>, superstep: i64) -> Self {
+        Self { writer, superstep }
+    }
+}
+
+impl RefusalRateSnapshotEmitter for SsbBackedRefusalRateSnapshotEmitter {
+    fn emit(
+        &self,
+        payload: RefusalRateSnapshotPayload,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        let writer = self.writer.clone();
+        let superstep = self.superstep;
+        Box::pin(async move {
+            writer
+                .write_payload(
+                    REFUSAL_SLA_AGENT_ID,
+                    superstep,
+                    SsbPayload::RefusalRateSnapshot(payload),
+                    Vec::new(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    let msg = e.to_string();
+                    warn!(
+                        error = %msg,
+                        "SsbBackedRefusalRateSnapshotEmitter: \
+                         Ssb::write_payload failed; row dropped"
+                    );
+                    msg
+                })
+        })
+    }
+}
+
+/// Production SSB-backed `RefusalSlaBreachEmitter`. Same shape as the
+/// snapshot emitter above; emits `SsbPayload::RefusalSlaBreach` instead.
+pub struct SsbBackedRefusalSlaBreachEmitter {
+    writer: Arc<Ssb>,
+    superstep: i64,
+}
+
+impl SsbBackedRefusalSlaBreachEmitter {
+    #[must_use]
+    pub fn new(writer: Arc<Ssb>, superstep: i64) -> Self {
+        Self { writer, superstep }
+    }
+}
+
+impl RefusalSlaBreachEmitter for SsbBackedRefusalSlaBreachEmitter {
+    fn emit(
+        &self,
+        payload: RefusalSlaBreachPayload,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        let writer = self.writer.clone();
+        let superstep = self.superstep;
+        Box::pin(async move {
+            writer
+                .write_payload(
+                    REFUSAL_SLA_AGENT_ID,
+                    superstep,
+                    SsbPayload::RefusalSlaBreach(payload),
+                    Vec::new(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    let msg = e.to_string();
+                    warn!(
+                        error = %msg,
+                        "SsbBackedRefusalSlaBreachEmitter: \
+                         Ssb::write_payload failed; row dropped"
+                    );
+                    msg
+                })
         })
     }
 }

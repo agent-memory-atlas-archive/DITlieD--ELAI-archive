@@ -10,7 +10,8 @@
 // atomically with prod).
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+
+use elai_core::clock::{ClockProvider, OsClock};
 use tokio::sync::Mutex as TokioMutex;
 use lru::LruCache;
 use rustc_hash::FxHashMap;
@@ -51,7 +52,7 @@ impl LazySchemaCache {
         tool_name: &str,
         registry: &FxHashMap<String, FullSchema>,
     ) -> Result<FullSchema, LazyCacheError> {
-        let start = Instant::now();
+        let start = OsClock.instant_now();
         {
             let mut cache = self.inner.lock().await;
             if let Some(schema) = cache.get(tool_name) {

@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use elai_core::clock::{ClockProvider, OsClock};
 
 use blake3;
 use elai_rules::predicate::{
@@ -496,10 +496,7 @@ fn symbol_matches(node_name: &str, target_symbol: &str) -> bool {
 /// Generate a stable task identifier of the shape
 /// `task_<unix_secs>_<blake3_hex_short>`.
 pub fn generate_task_id(target_symbol: &str) -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = OsClock.now_secs();
     let mut hasher = blake3::Hasher::new();
     hasher.update(target_symbol.as_bytes());
     hasher.update(&secs.to_le_bytes());

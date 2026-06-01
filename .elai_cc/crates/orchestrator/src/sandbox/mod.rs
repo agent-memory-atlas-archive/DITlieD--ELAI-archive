@@ -1243,7 +1243,7 @@ impl LinuxSandbox {
         )
         .map_err(|e| SandboxError::ConfigError(format!("seccomp filter creation failed: {e}")))?;
 
-        seccompiler::compile_from_seccomp_filter(filter)
+        <seccompiler::BpfProgram as TryFrom<seccompiler::SeccompFilter>>::try_from(filter)
             .map_err(|e| SandboxError::ConfigError(format!("seccomp BPF compilation failed: {e}")))
     }
 
@@ -1295,27 +1295,27 @@ impl LinuxSandbox {
         // SOCK_RAW(3) denied by omission: only SOCK_STREAM(1) + SOCK_DGRAM(2) allowed.
         let af_inet_stream_rule = SeccompRule::new(vec![
             SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::AF_INET as u64)
-                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}")))?, 
+                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}")))?,
             SeccompCondition::new(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::SOCK_STREAM as u64)
-                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}"))),
+                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}")))?,
         ]).map_err(|e| SandboxError::ConfigError(format!("seccomp rule failed: {e}")))?;
         let af_inet_dgram_rule = SeccompRule::new(vec![
             SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::AF_INET as u64)
-                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}"))),
+                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}")))?,
             SeccompCondition::new(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::SOCK_DGRAM as u64)
-                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}"))),
+                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}")))?,
         ]).map_err(|e| SandboxError::ConfigError(format!("seccomp rule failed: {e}")))?;
         let af_inet6_stream_rule = SeccompRule::new(vec![
             SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::AF_INET6 as u64)
-                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}"))),
+                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}")))?,
             SeccompCondition::new(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::SOCK_STREAM as u64)
-                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}"))),
+                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}")))?,
         ]).map_err(|e| SandboxError::ConfigError(format!("seccomp rule failed: {e}")))?;
         let af_inet6_dgram_rule = SeccompRule::new(vec![
             SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::AF_INET6 as u64)
-                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}"))),
+                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}")))?,
             SeccompCondition::new(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::SOCK_DGRAM as u64)
-                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}"))),
+                .map_err(|e| SandboxError::ConfigError(format!("seccomp condition failed: {e}")))?,
         ]).map_err(|e| SandboxError::ConfigError(format!("seccomp rule failed: {e}")))?;
         syscall_rules.insert(41, vec![af_inet_stream_rule, af_inet_dgram_rule, af_inet6_stream_rule, af_inet6_dgram_rule]);
 
@@ -1327,7 +1327,7 @@ impl LinuxSandbox {
         )
         .map_err(|e| SandboxError::ConfigError(format!("seccomp filter creation failed: {e}")))?;
 
-        seccompiler::compile_from_seccomp_filter(filter)
+        <seccompiler::BpfProgram as TryFrom<seccompiler::SeccompFilter>>::try_from(filter)
             .map_err(|e| SandboxError::ConfigError(format!("seccomp BPF compilation failed: {e}")))
     }
 

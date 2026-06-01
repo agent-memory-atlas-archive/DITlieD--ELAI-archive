@@ -348,7 +348,7 @@ mod tests {
             std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.ms.load(Ordering::SeqCst))
         }
         fn instant_now(&self) -> std::time::Instant {
-            std::time::Instant::now()
+            std::time::Instant::now() // TEST_KEEP: cfg(test) ClockProvider impl, fake-clock helper
         }
     }
 

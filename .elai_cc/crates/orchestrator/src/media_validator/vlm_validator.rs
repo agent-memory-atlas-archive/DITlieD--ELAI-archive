@@ -29,8 +29,7 @@
 //!   * tracing for structured logs.
 //!   * No `.unwrap()` / `.expect()` outside `#[cfg(test)]`.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -183,13 +182,7 @@ pub fn build_vlm_image_validation_payload(
     request_id: Option<String>,
     details_json: serde_json::Value,
 ) -> VlmImageValidationEventPayload {
-    let ts_ms = i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(i64::MAX);
+    let ts_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
 
     VlmImageValidationEventPayload {
         kind,

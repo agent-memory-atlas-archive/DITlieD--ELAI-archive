@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_ipc_types::AgentRole;
 use elai_providers::runtime::{
     create_runtime, runtime_event_sink, CompletionConfig, CompletionResponse, Message,
@@ -34,7 +35,15 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use crate::role_predict::{predict_next_role, tier_allows_prewarm, VramTier};
+use crate::role_prompt::{
+    build_role_prompt, default_voice_toml_path, load_voice_anchor_from_toml, VoiceAnchor,
+};
 use crate::runtime_config::RuntimeConfig;
+use crate::ssb::{
+    RuntimeHandoffEventKind, RuntimeHandoffEventPayload, Ssb, SsbPayload,
+    ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV,
+};
 
 /// Errors surfaced by the runtime orchestrator. CLI subprocess errors are
 /// flattened from `RuntimeAdapterError` so callers can program against a
@@ -117,6 +126,12 @@ pub struct RuntimeOrchestrator {
     /// Most recent observed health per backend; used to short-circuit
     /// chain walks and detect health transitions.
     health: RwLock<BTreeMap<RuntimeBackend, RuntimeHealth>>,
+    /// E-3 sub-phase 4B — optional SSB writer threaded by the wiring
+    /// layer (`AppState::writer` in the dashboard, `Ssb::new(...)`
+    /// followed by `with_ssb` in the CLI). When `None`, the role-prompt
+    /// wrap + pre-warm dispatch still fire but emission collapses to a
+    /// `tracing::info` line (matches sub-phase 4A behaviour).
+    ssb: Option<Arc<Ssb>>,
 }
 
 impl RuntimeOrchestrator {
@@ -128,7 +143,20 @@ impl RuntimeOrchestrator {
             config: RwLock::new(config),
             adapters: RwLock::new(BTreeMap::new()),
             health: RwLock::new(BTreeMap::new()),
+            ssb: None,
         }
+    }
+
+    /// E-3 sub-phase 4B — attach an SSB writer so `try_complete` can
+    /// emit `E3RuntimeHandoffEvent::UnifiedPreambleApplied` /
+    /// `RuntimePrewarm{Started,Complete}` rows. Builder-style to keep
+    /// the 6+ existing `RuntimeOrchestrator::new` call sites (CLI
+    /// `measure.rs`, `runtime_cmd.rs`, dashboard `AppState`, tests)
+    /// untouched.
+    #[must_use]
+    pub fn with_ssb(mut self, ssb: Arc<Ssb>) -> Self {
+        self.ssb = Some(ssb);
+        self
     }
 
     /// Replace the underlying config (used by `/runtime set` in B-37D).
@@ -212,6 +240,18 @@ impl RuntimeOrchestrator {
             .collect();
         drop(cfg);
 
+        // E-3 sub-phase 4B: wrap `config.system` with the unified
+        // role-prompt preamble BEFORE the fallback chain so every
+        // backend in the chain sees the same anchor + calibration +
+        // forbidden-opener block. Wire-dark unless
+        // ELAI_E3_RUNTIME_HANDOFF_ENABLE=1; on env-off the wrap returns
+        // the original system text unchanged (no behaviour change).
+        // On env-on we load `.elai_cc/config/voice.toml`, build the
+        // wrapped preamble, substitute config.system, and emit
+        // E3RuntimeHandoffEvent::UnifiedPreambleApplied through the
+        // optional Ssb handle attached via `with_ssb`.
+        let config = self.wrap_system_with_role_prompt(role, config).await;
+
         let mut events: Vec<RuntimeOrchestratorEvent> = Vec::new();
         let mut tried: Vec<RuntimeBackend> = Vec::new();
         let mut last_reason = String::new();
@@ -265,6 +305,13 @@ impl RuntimeOrchestrator {
                         primary = ?primary,
                         "complete succeeded"
                     );
+                    // E-3 sub-phase 4B: tier-gated pre-warm of the
+                    // predicted-next backend. Spawned on the current
+                    // tokio runtime so the response returns immediately;
+                    // pre-warm failures are logged but never surface to
+                    // the caller. Gated by ELAI_E3_RUNTIME_HANDOFF_ENABLE
+                    // + tier check inside `predict_and_warm_next_role`.
+                    self.predict_and_warm_next_role(role).await;
                     return Ok(CompleteOutcome {
                         response,
                         used_backend: backend,
@@ -436,6 +483,282 @@ impl RuntimeOrchestrator {
         let arc: Arc<dyn RuntimeAdapter> = Arc::from(adapter_box);
         write_guard.insert(backend, arc.clone());
         Ok(arc)
+    }
+}
+
+impl RuntimeOrchestrator {
+    /// E-3 sub-phase 4B: wrap `config.system` with the unified
+    /// role-prompt preamble loaded from `.elai_cc/config/voice.toml`,
+    /// emitting `E3RuntimeHandoffEvent::UnifiedPreambleApplied` through
+    /// the optional Ssb handle when present.
+    ///
+    /// Behaviour matrix:
+    ///   * `ELAI_E3_RUNTIME_HANDOFF_ENABLE` not set / falsy: returns
+    ///     `config` unchanged (wire-dark default; no behaviour change
+    ///     vs pre-E-3).
+    ///   * `ELAI_E3_RUNTIME_HANDOFF_ENABLE=1` and voice.toml load
+    ///     succeeds: replaces `config.system` with
+    ///     `build_role_prompt(role, base, anchor)`. When the
+    ///     orchestrator was constructed via `with_ssb` the wrap also
+    ///     emits a `E3RuntimeHandoffEvent::UnifiedPreambleApplied` row;
+    ///     otherwise it falls back to the 4A tracing-line surface.
+    ///   * `ELAI_E3_RUNTIME_HANDOFF_ENABLE=1` and voice.toml load
+    ///     fails: logs a `warn` and returns `config` unchanged
+    ///     (wire-dark fail-soft so a missing toml never blocks a
+    ///     dispatch).
+    ///
+    /// Idempotent at the per-call level: the wrap reads env / disk
+    /// once per `try_complete` invocation and applies the preamble to
+    /// whichever `config.system` was passed in.
+    async fn wrap_system_with_role_prompt(
+        &self,
+        role: AgentRole,
+        mut config: CompletionConfig,
+    ) -> CompletionConfig {
+        if !is_e3_runtime_handoff_enabled() {
+            return config;
+        }
+        let voice_role = agent_role_to_voice_section(role);
+        let anchor = match load_voice_anchor_for_role(&voice_role) {
+            Some(a) => a,
+            None => return config,
+        };
+        if anchor.is_empty() {
+            return config;
+        }
+        let base = config.system.clone().unwrap_or_default();
+        let wrapped = build_role_prompt(&voice_role, &base, &anchor);
+        let preamble_len = wrapped.len();
+        let base_prompt_len = base.len();
+        // Blake3 short hash of the wrapped preamble — stable across
+        // dispatches that share the same voice anchor + base prompt,
+        // so dashboards can render "single voice anchor blake3 across
+        // all 3 dispatches in this cycle" per the E-3 acceptance gate.
+        let preamble_blake3 = blake3::hash(wrapped.as_bytes()).to_hex().to_string();
+        let preamble_blake3 = preamble_blake3[..16].to_owned();
+
+        // Tracing log fires regardless of Ssb availability so log
+        // scrapers built against 4A keep working. Fields stay in lockstep
+        // with RuntimeHandoffEventPayload so the scraper can promote
+        // them to the SSB row shape transparently.
+        info!(
+            target = "runtime_orchestrator",
+            e3_runtime_handoff_event = "unified_preamble_applied",
+            ?role,
+            voice_section = %voice_role,
+            base_prompt_len,
+            preamble_len,
+            preamble_blake3 = %preamble_blake3,
+            "build_role_prompt wrapped system message with voice anchor"
+        );
+        // Emit the SSB row when we have an Ssb handle. Failures during
+        // emission collapse to a `warn` so a transient writer error
+        // never blocks the underlying dispatch.
+        if let Some(ssb) = self.ssb.as_ref() {
+            let payload = SsbPayload::E3RuntimeHandoffEvent(RuntimeHandoffEventPayload {
+                kind: RuntimeHandoffEventKind::UnifiedPreambleApplied,
+                role: Some(agent_role_to_snake(role)),
+                backend: None,
+                session_id: Some(ssb.session_id().to_owned()),
+                details_json: serde_json::json!({
+                    "voice_section": voice_role,
+                    "base_prompt_len": base_prompt_len,
+                    "preamble_len": preamble_len,
+                    "preamble_blake3": preamble_blake3,
+                }),
+                ts_ms: now_ms(),
+            });
+            if let Err(e) = ssb
+                .write_payload("runtime_orchestrator", 0, payload, Vec::new())
+                .await
+            {
+                warn!(
+                    target = "runtime_orchestrator",
+                    error = %e,
+                    "ssb write_payload failed for unified_preamble_applied"
+                );
+            }
+        }
+        config.system = Some(wrapped);
+        config
+    }
+
+    /// E-3 sub-phase 4B: tier-gated pre-warm of the predicted-next
+    /// backend. After a successful `try_complete` dispatch, look up
+    /// the next role likely to fire (per `role_predict::predict_next_role`),
+    /// resolve its primary backend through `for_role` (lazy cache
+    /// hit if already instantiated), and call `adapter.warm()`. On
+    /// 12GB / Low tier this is a no-op; on 24GB+ we issue a 1-token
+    /// CUDA-graph / connection-pool warm. Wire-dark unless
+    /// ELAI_E3_RUNTIME_HANDOFF_ENABLE=1.
+    async fn predict_and_warm_next_role(&self, current_role: AgentRole) {
+        if !is_e3_runtime_handoff_enabled() {
+            return;
+        }
+        let tier = VramTier::from_env();
+        if !tier_allows_prewarm(tier) {
+            debug!(
+                target = "runtime_orchestrator",
+                tier = ?tier,
+                "predict_and_warm_next_role: tier disallows pre-warm; skip"
+            );
+            return;
+        }
+        let next_role = match predict_next_role(current_role) {
+            Some(r) => r,
+            None => return,
+        };
+        // Resolve the predicted-next backend without consuming the
+        // orchestrator's fallback chain — pre-warm should fail soft.
+        let adapter = match self.for_role(next_role).await {
+            Ok(a) => a,
+            Err(e) => {
+                debug!(
+                    target = "runtime_orchestrator",
+                    ?next_role,
+                    error = %e,
+                    "predict_and_warm_next_role: for_role failed; skip"
+                );
+                return;
+            }
+        };
+        let backend = adapter.backend();
+        let backend_str = format!("{backend:?}").to_lowercase();
+
+        // Emit RuntimePrewarmStarted before the warm call so the
+        // dashboard can render the in-flight state. Same fail-soft
+        // pattern as the preamble emission above.
+        if let Some(ssb) = self.ssb.as_ref() {
+            let payload = SsbPayload::E3RuntimeHandoffEvent(RuntimeHandoffEventPayload {
+                kind: RuntimeHandoffEventKind::RuntimePrewarmStarted,
+                role: Some(agent_role_to_snake(next_role)),
+                backend: Some(backend_str.clone()),
+                session_id: Some(ssb.session_id().to_owned()),
+                details_json: serde_json::json!({
+                    "predicted_role": agent_role_to_snake(next_role),
+                    "backend": backend_str,
+                    "vram_tier": tier.as_str(),
+                }),
+                ts_ms: now_ms(),
+            });
+            if let Err(e) = ssb
+                .write_payload("runtime_orchestrator", 0, payload, Vec::new())
+                .await
+            {
+                warn!(
+                    target = "runtime_orchestrator",
+                    error = %e,
+                    "ssb write_payload failed for runtime_prewarm_started"
+                );
+            }
+        }
+
+        let started = OsClock.instant_now();
+        let warm_result = adapter.warm().await;
+        let duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        let ok = warm_result.is_ok();
+        if let Err(ref e) = warm_result {
+            debug!(
+                target = "runtime_orchestrator",
+                ?next_role,
+                ?backend,
+                duration_ms,
+                error = %e,
+                "predict_and_warm_next_role: warm() failed (non-blocking)"
+            );
+        }
+
+        if let Some(ssb) = self.ssb.as_ref() {
+            let payload = SsbPayload::E3RuntimeHandoffEvent(RuntimeHandoffEventPayload {
+                kind: RuntimeHandoffEventKind::RuntimePrewarmComplete,
+                role: Some(agent_role_to_snake(next_role)),
+                backend: Some(backend_str.clone()),
+                session_id: Some(ssb.session_id().to_owned()),
+                details_json: serde_json::json!({
+                    "backend": backend_str,
+                    "duration_ms": duration_ms,
+                    "ok": ok,
+                    "cuda_graph_captured": false,
+                }),
+                ts_ms: now_ms(),
+            });
+            if let Err(e) = ssb
+                .write_payload("runtime_orchestrator", 0, payload, Vec::new())
+                .await
+            {
+                warn!(
+                    target = "runtime_orchestrator",
+                    error = %e,
+                    "ssb write_payload failed for runtime_prewarm_complete"
+                );
+            }
+        }
+    }
+}
+
+/// Current wall-clock millis since UNIX_EPOCH. Used by the E-3 SSB
+/// payloads so the row's wall-clock timestamp matches the moment of
+/// emission rather than the SSB writer's commit time.
+fn now_ms() -> i64 {
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
+}
+
+/// Resolve the env-gate truthiness for E-3 runtime handoff. Accepts
+/// `"1"` / `"true"` / `"yes"` / `"on"` (case-insensitive). Mirrors
+/// the precedent set by other E-N wire-dark gates.
+fn is_e3_runtime_handoff_enabled() -> bool {
+    match std::env::var(ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Map an [`AgentRole`] to the voice.toml section key. The toml ships
+/// `default` / `planner` / `coder` / `critic` sections; auditor-shape
+/// roles route to `critic`, executor-shape roles route to `coder`,
+/// designer / prompt-engineer / planner-shape roles route to `planner`,
+/// everything else falls through to `default` and load_voice_anchor's
+/// own fallback chain picks it up.
+fn agent_role_to_voice_section(role: AgentRole) -> String {
+    match role {
+        AgentRole::Executor => "coder".to_owned(),
+        AgentRole::Auditor
+        | AgentRole::AuditorConcepts
+        | AgentRole::AuditorPhases
+        | AgentRole::AuditorSteps
+        | AgentRole::AuditorBabySteps
+        | AgentRole::AuditorBabyStepDetail
+        | AgentRole::AuditorProductionGrade
+        | AgentRole::IdeaCritic
+        | AgentRole::InjectionClassifier => "critic".to_owned(),
+        AgentRole::Designer
+        | AgentRole::PromptEngineer
+        | AgentRole::IdeaFramer => "planner".to_owned(),
+        _ => "default".to_owned(),
+    }
+}
+
+/// Load the voice anchor for `voice_section`. Returns `None` on any
+/// load error (with a `warn` log) so the orchestrator stays fail-soft;
+/// returning `Some(VoiceAnchor::empty())` is also safe and short-circuits
+/// the wrap.
+fn load_voice_anchor_for_role(voice_section: &str) -> Option<VoiceAnchor> {
+    let path = default_voice_toml_path();
+    match load_voice_anchor_from_toml(voice_section, &path) {
+        Ok(anchor) => Some(anchor),
+        Err(err) => {
+            warn!(
+                target = "runtime_orchestrator",
+                voice_section,
+                error = %err,
+                path = %path.display(),
+                "voice.toml load failed; falling back to unwrapped system prompt"
+            );
+            None
+        }
     }
 }
 

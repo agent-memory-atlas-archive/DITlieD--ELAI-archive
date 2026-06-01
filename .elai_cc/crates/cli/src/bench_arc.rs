@@ -38,6 +38,7 @@
 
 use std::path::PathBuf;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::benchmarks::arc_agi2_runner::{
     default_mini_fixture_path, ARCAGI2Runner, ARCReport, ARCRunnerError, VecARCSsbEmitter,
 };
@@ -106,11 +107,13 @@ pub(crate) fn run(
 /// UNIX ms — wraps `SystemTime::now` with a deterministic fallback so
 /// the runner stays callable in environments where the clock jumps
 /// pre-epoch (CI image clocks).
+///
+/// B-15 Tranche E E.1: migrated to ClockProvider via the zero-sized
+/// `OsClock` Copy impl. The trait's default `now_ms` absorbs the
+/// `.duration_since(UNIX_EPOCH).unwrap_or(0)` saturation
+/// (crates/core/src/clock.rs:59-64).
 fn now_ms_safe() -> i64 {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
-        Err(_) => 0,
-    }
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 fn parse_novelty_config(path: Option<&str>) -> Result<NoveltyConfig, BenchArcError> {

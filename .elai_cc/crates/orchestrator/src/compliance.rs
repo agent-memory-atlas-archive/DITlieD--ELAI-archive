@@ -146,7 +146,7 @@ impl ComplianceAssertion {
         match self {
             Self::ClockProviderIntact => {
                 "inject elai_core::clock::ClockProvider into PlanContext; \
-                 audit bare SystemTime::now / Instant::now in the planning crate"
+                 audit bare SystemTime::now / Instant::now in the planning crate" // entropy-allow: remediation-hint-string-not-a-call-site
             }
             Self::DeterministicSeed => {
                 "set ELAI_DETERMINISTIC_SEED or pass --seed to the CLI; \

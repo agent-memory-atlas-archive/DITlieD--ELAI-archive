@@ -127,6 +127,12 @@ import type {
   QueryTierStats,
   RuleTransitionRow,
   SessionHandoffEntry,
+  // C-41 — Application Skills System DTOs.
+  SkillManifest,
+  SkillRoutingEvent,
+  // E-25 Tranche N (s-22600 2026-06-01): Compaction-Ladder dashboard.
+  CompactionLadderStateDto,
+  CompactionEventDto,
 } from './types';
 
 import {
@@ -492,6 +498,52 @@ export async function set_model_routing(role: AgentRole, target: string): Promis
   await delay(80, 140);
   _modelRouting = _modelRouting.map((r) => (r.role === role ? { ...r, target } : r));
   return [..._modelRouting];
+}
+
+// E-3 (SCHEMA_VERSION 188) MVP: emit one SSB row when the SettingsWindow
+// "show model details" toggle changes. Wire-dark unless
+// ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1 on the backend; returns
+// {ok, emitted} in both cases. Closes the cross-check finding
+// "SettingsWindow explicitly exposes MODEL names per role".
+export async function record_model_visibility(
+  role: AgentRole,
+  modelHidden: boolean,
+  sessionId: string | null = null,
+): Promise<{ ok: boolean; emitted: boolean }> {
+  logStub('record_model_visibility', { role, modelHidden, sessionId });
+  const live = await tryInvoke<{ ok: boolean; emitted: boolean }>(
+    'record_model_visibility',
+    { role, modelHidden, sessionId },
+  );
+  if (live) return live;
+  return { ok: true, emitted: false };
+}
+
+// E-3 sub-phase 4B (SCHEMA_VERSION 190) — runtime-handoff event
+// recorder. Fans the 6 RuntimeHandoffEventKind arms into a single SSB
+// row per call. Wire-dark unless ELAI_E3_RUNTIME_HANDOFF_ENABLE=1.
+export type RuntimeHandoffEventKind =
+  | 'unified_preamble_applied'
+  | 'runtime_prewarm_started'
+  | 'runtime_prewarm_complete'
+  | 'handoff_payload_compressed'
+  | 'persona_vector_applied'
+  | 'style_normalizer_applied';
+
+export async function record_runtime_handoff_event(
+  kind: RuntimeHandoffEventKind,
+  role: string | null = null,
+  backend: string | null = null,
+  latencyMs: number | null = null,
+  details: Record<string, unknown> | null = null,
+): Promise<{ ok: boolean; emitted: boolean }> {
+  logStub('record_runtime_handoff_event', { kind, role, backend, latencyMs, details });
+  const live = await tryInvoke<{ ok: boolean; emitted: boolean }>(
+    'record_runtime_handoff_event',
+    { kind, role, backend, latencyMs, details },
+  );
+  if (live) return live;
+  return { ok: true, emitted: false };
 }
 
 // ------------------------------------------------------------------
@@ -3521,6 +3573,8 @@ export async function get_context_state(): Promise<import('./types').ContextStat
     last_precompact_thresholds: [],
     prompt_injection_check_status: 'not_run',
     runtime_choice_badge: '',
+    current_role: null,
+    current_runtime: null,
   };
 }
 
@@ -3536,4 +3590,171 @@ export async function get_trust_telemetry(): Promise<import('./types').TrustRepo
     ungrounded_count: 0,
     stagnation_dist: {},
   };
+}
+
+// ---------------------------------------------------------------------------
+// C-41 — Application Skills System (sub-phase 5B).
+//
+// Two wire-dark Tauri commands the SkillsPanel polls. When the Tauri
+// backend is unavailable (browser-only Vite dev), fall back to the 9
+// canonical manifests so the panel renders the static skill list. The
+// routing-event stub returns an empty array — fall-through visualization
+// only makes sense when a real producer is wired.
+// ---------------------------------------------------------------------------
+
+const C41_STUB_SKILLS: SkillManifest[] = [
+  {
+    name: 'simple_query',
+    description: 'Answer a short factual question with no planning, no decomposition, no audit cycle.',
+    type: 'application',
+    trigger_examples: ['what is', 'define', 'explain briefly', 'lookup'],
+    estimated_minutes: 1,
+    tags: ['simple', 'factual', 'no-plan', 'fast-path'],
+    version: '1.0.0',
+    scope: 'query',
+  },
+  {
+    name: 'focused_edit',
+    description: 'Targeted single-file edit with a scoped auditor run only.',
+    type: 'application',
+    trigger_examples: ['fix this', 'change this line', 'rename this', 'patch'],
+    estimated_minutes: 10,
+    tags: ['edit', 'single-file', 'scoped-audit'],
+    version: '1.0.0',
+    scope: 'edit',
+  },
+  {
+    name: 'heavy_plan',
+    description: 'Multi-week SaaS or app feature decomposition with the full FSM cycle.',
+    type: 'application',
+    trigger_examples: ['build a saas', 'implement a feature', 'design a system'],
+    estimated_minutes: 240,
+    tags: ['plan', 'multi-phase', 'full-fsm'],
+    version: '1.0.0',
+    scope: 'plan',
+  },
+  {
+    name: 'idea_intake',
+    description: 'Layer A intake protocol — frame a raw idea into a decomposition tree.',
+    type: 'application',
+    trigger_examples: ['the boss wants', 'we need', 'idea:', 'brief:'],
+    estimated_minutes: 20,
+    tags: ['intake', 'framing', 'decomposition'],
+    version: '1.0.0',
+    scope: 'planning',
+  },
+  {
+    name: 'oracle',
+    description: 'Web-grounded research with citations, read-only output.',
+    type: 'application',
+    trigger_examples: ['/oracle', '/ask', 'how does', 'compare'],
+    estimated_minutes: 5,
+    tags: ['research', 'web-grounded', 'read-only'],
+    version: '1.0.0',
+    scope: 'research',
+  },
+  {
+    name: 'planning_workflow',
+    description: 'Resume, continue, or execute an existing phased plan.',
+    type: 'application',
+    trigger_examples: ['continue phase', 'resume plan', 'run plan'],
+    estimated_minutes: 60,
+    tags: ['plan', 'resume', 'fsm'],
+    version: '1.0.0',
+    scope: 'planning',
+  },
+  {
+    name: 'paper_ingest',
+    description: 'arXiv or DOI paper ingested into RAG with an interface map.',
+    type: 'application',
+    trigger_examples: ['ingest paper', 'arxiv:', 'cite this paper'],
+    estimated_minutes: 15,
+    tags: ['rag', 'paper', 'ingest'],
+    version: '1.0.0',
+    scope: 'research',
+  },
+  {
+    name: 'source_ingest',
+    description: 'SDK or repository ingested with an interface map and reliability tag.',
+    type: 'application',
+    trigger_examples: ['ingest source', 'ingest sdk', 'map this repo'],
+    estimated_minutes: 30,
+    tags: ['rag', 'source', 'ingest'],
+    version: '1.0.0',
+    scope: 'research',
+  },
+  {
+    name: 'benchmark_run',
+    description: 'Run a benchmark suite (SWE-bench, polyglot, HumanEval, etc) batched.',
+    type: 'application',
+    trigger_examples: ['run swe-bench', 'run benchmark', 'eval suite'],
+    estimated_minutes: 120,
+    tags: ['benchmark', 'eval', 'batch'],
+    version: '1.0.0',
+    scope: 'evaluation',
+  },
+];
+
+export async function list_application_skills(): Promise<SkillManifest[]> {
+  logStub('list_application_skills');
+  const live = await tryInvoke<SkillManifest[]>('list_application_skills');
+  if (live) return live;
+  await delay(50, 120);
+  return [...C41_STUB_SKILLS];
+}
+
+export async function recent_skill_routing_events(
+  limit: number,
+): Promise<SkillRoutingEvent[]> {
+  logStub('recent_skill_routing_events', { limit });
+  const live = await tryInvoke<SkillRoutingEvent[]>('recent_skill_routing_events', {
+    limit,
+  });
+  if (live) return live;
+  await delay(50, 120);
+  return [];
+}
+
+// ============================================================
+// E-25 Tranche N — Compaction-Ladder dashboard.
+//
+// Pairs with crates/dashboard-v2/src-tauri/src/commands_e25.rs.
+// Producer is the orchestrator's task_runner PreCompact branch,
+// gated by ELAI_E25_COMPACTION_LADDER_ENABLE. The browser-only
+// fallback (no Tauri) returns a wire-dark default state + zero
+// events so the panel renders the "no events recorded yet" empty
+// state instead of throwing.
+// ============================================================
+
+const E25_STUB_TIERS: string[] = [
+  'budget_reduction',
+  'snip',
+  'microcompact',
+  'context_collapse',
+  'auto_compact',
+  'narrative_summary',
+];
+
+export async function get_compaction_ladder_state(): Promise<CompactionLadderStateDto> {
+  logStub('get_compaction_ladder_state');
+  const live = await tryInvoke<CompactionLadderStateDto>('get_compaction_ladder_state');
+  if (live) return live;
+  await delay(50, 120);
+  return {
+    enabled: false,
+    default_target_tokens: 20_000,
+    tiers: [...E25_STUB_TIERS],
+  };
+}
+
+export async function recent_compaction_events(
+  limit: number,
+): Promise<CompactionEventDto[]> {
+  logStub('recent_compaction_events', { limit });
+  const live = await tryInvoke<CompactionEventDto[]>('recent_compaction_events', {
+    limit,
+  });
+  if (live) return live;
+  await delay(50, 120);
+  return [];
 }

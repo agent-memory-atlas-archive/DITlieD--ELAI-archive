@@ -435,7 +435,17 @@ impl Bm25Index {
             return Ok(chunks);
         }
 
-        let mut chunks = Self::try_ast_chunk(path, content.as_bytes(), &lines);
+        // E-17 SP5: cAST chunker (arxiv:2506.15655) dispatch — opt-in via
+        // ELAI_CAST_CHUNKER_ENABLE. When enabled AND the file extension has
+        // a CastLanguage adapter (rs/py/ts/tsx/go) AND the chunker returns
+        // a non-empty result, we use cAST. Otherwise we fall through to the
+        // legacy try_ast_chunk path. Failure modes (parse error / None /
+        // empty chunks) all degrade silently to legacy — ACCEPTANCE keeps
+        // the legacy chunker as fallback per the plan.
+        let mut chunks = Self::try_cast_chunk(path, &content);
+        if chunks.is_empty() {
+            chunks = Self::try_ast_chunk(path, content.as_bytes(), &lines);
+        }
         // C-17 (DRIFT-G): when AST yields nothing and the file is prose-like,
         // try heading + paragraph splitters BEFORE the 50-line line_block
         // fallback. This closes the phase-3K PARTIAL gap for .md/.txt/.rst/
@@ -553,7 +563,12 @@ impl Bm25Index {
             return chunks;
         }
 
-        let mut chunks = Self::try_ast_chunk(path, full_content.as_bytes(), lines);
+        // E-17 SP5: cAST chunker dispatch (mirror of `chunk_file` path).
+        // See try_cast_chunk for env gate + fall-through semantics.
+        let mut chunks = Self::try_cast_chunk(path, full_content);
+        if chunks.is_empty() {
+            chunks = Self::try_ast_chunk(path, full_content.as_bytes(), lines);
+        }
         // C-17 (DRIFT-G): heading/paragraph splitter for prose files (mirror
         // of `chunk_file` path above).
         if chunks.is_empty() && is_prose_extension(path) {
@@ -716,6 +731,46 @@ impl Bm25Index {
         chunks
     }
 
+    /// E-17 SP5: cAST chunker entry-point (arxiv:2506.15655). Opt-in via
+    /// `ELAI_CAST_CHUNKER_ENABLE` truthy ("1" / "true" / "yes" / "on").
+    ///
+    /// Returns:
+    ///   - empty `Vec` when the env gate is OFF
+    ///   - empty `Vec` when no `CastLanguage` adapter matches the extension
+    ///   - empty `Vec` when tree-sitter parse fails (cast.rs returns `None`)
+    ///   - `Vec<BM25Chunk>` from the cAST recursive-split + sibling-merge
+    ///     when all three succeed
+    ///
+    /// Callers fall through to `try_ast_chunk` (legacy) on empty return so
+    /// the legacy path stays the safety net per the SP5 plan's
+    /// "if +2 not met, keep legacy chunker behind a flag" ACCEPTANCE clause.
+    fn try_cast_chunk(path: &Path, source: &str) -> Vec<BM25Chunk> {
+        if !is_cast_chunker_enabled() {
+            return Vec::new();
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let language = match chunking::cast::detect_cast_language(ext) {
+            Some(lang) => lang,
+            None => return Vec::new(),
+        };
+        let chunker = chunking::cast::CastChunker::default();
+        match chunker.chunk_source(language.as_ref(), path, source) {
+            Some(result) => {
+                tracing::debug!(
+                    target: "knowledge::chunking",
+                    path = %path.display(),
+                    chunk_count = result.chunks.len(),
+                    nodes_visited = result.nodes_visited,
+                    leaves_emitted = result.leaves_emitted,
+                    siblings_merged = result.siblings_merged,
+                    "cast chunked"
+                );
+                result.chunks
+            }
+            None => Vec::new(),
+        }
+    }
+
     /// Attempt AST-aware chunking. Returns empty Vec if the file has no
     /// supported grammar or if parsing fails (caller falls back to line blocks).
     fn try_ast_chunk(path: &Path, source: &[u8], lines: &[&str]) -> Vec<BM25Chunk> {
@@ -780,6 +835,27 @@ impl Bm25Index {
 // ---------------------------------------------------------------------------
 // AST chunking helpers (free functions, outside impl block)
 // ---------------------------------------------------------------------------
+
+/// E-17 SP5: env-gate name for the cAST chunker (arxiv:2506.15655).
+/// Mirrors the precedent set by `ELAI_TREE_SITTER_GRAMMARS_ENABLE` /
+/// `ELAI_DOCUMENT_VISION_RAG_ENABLE` per `workflow/reasoning/E-42-decisions.md`
+/// (Tier-B wire-dark dispatch).
+pub const ELAI_CAST_CHUNKER_ENABLE_ENV: &str = "ELAI_CAST_CHUNKER_ENABLE";
+
+/// Returns true when the cAST chunker dispatch gate is set to a truthy value
+/// (`"1"`, `"true"`, `"yes"`, `"on"`, case-insensitive). Anything else
+/// (including unset) returns false so the legacy `try_ast_chunk` path stays
+/// the production default until SP6 eval confirms +2 Recall@5 on ELAI's
+/// corpus.
+fn is_cast_chunker_enabled() -> bool {
+    match std::env::var(ELAI_CAST_CHUNKER_ENABLE_ENV) {
+        Ok(v) => {
+            let trimmed = v.trim().to_ascii_lowercase();
+            matches!(trimmed.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
 
 /// C-17: extensions that route through `heading_paragraph_chunks` when AST
 /// parsing returns nothing. Keeps the heading/paragraph mode focused on

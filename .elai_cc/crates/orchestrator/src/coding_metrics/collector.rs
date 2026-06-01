@@ -12,8 +12,9 @@
 //   * Errors propagate via thiserror.
 
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use thiserror::Error;
 
 use super::types::CodingMetric;
@@ -137,11 +138,11 @@ impl MetricsCollector {
 }
 
 fn current_ts_ms() -> Result<u64, MetricsCollectorError> {
-    let now = SystemTime::now();
+    let now = OsClock.system_now();
     let dur = now
         .duration_since(UNIX_EPOCH)
         .map_err(|e| MetricsCollectorError::ClockPreEpoch(e.to_string()))?;
-    Ok(dur.as_millis() as u64)
+    u64::try_from(dur.as_millis()).map_err(|e| MetricsCollectorError::ClockPreEpoch(e.to_string()))
 }
 
 #[cfg(test)]

@@ -222,6 +222,8 @@ async fn contract_fix_and_rerun_heals_broken_scaffold_within_cap() {
         5,
         validator,
         "a3-heal-step",
+        // Web-mode parity for the existing B-6 quad contract test.
+        false,
     )
     .await
     .expect("fix_and_rerun_until_green succeeded");
@@ -269,6 +271,8 @@ async fn contract_fix_and_rerun_escalates_after_cap() {
         5,
         validator,
         "a3-cap-step",
+        // Web-mode parity for the existing B-6 quad contract test.
+        false,
     )
     .await
     .expect("fix_and_rerun_until_green returned");

@@ -17,6 +17,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// `GhCliAdapter::now_ms`).
 #[must_use]
 pub fn now_ms() -> i64 {
+    // entropy-allow: e41-github-pr-submodule-clock-abstraction
+    // This module IS the per-submodule wall-clock helper; centralised here
+    // so the 7 sibling E-41 modules (review, comment_watcher, package_verify,
+    // semgrep_gate, auto_merge_guard, codeowners_gen, git_assist) share one
+    // SystemTime->i64 ms surface rather than each re-deriving the saturating
+    // semantics. Migrating this single call site to elai_core::OsClock would
+    // defeat the centralisation rationale documented at L1-11.
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| {

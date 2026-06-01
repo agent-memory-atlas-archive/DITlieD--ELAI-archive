@@ -19,7 +19,7 @@
 //! sole writer of `held_out_task_added` / `held_out_task_used` rows; this
 //! module only reads.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -45,7 +45,9 @@ pub struct HeldOutTaskRow {
 pub struct HeldOutStatsRow {
     pub total_added: u32,
     pub total_used: u32,
-    pub by_source: HashMap<String, u32>,
+    // B-15 Tranche E E.3 / DE7: BTreeMap for serialization-observed
+    // iteration determinism (per gotchas.md B15_DETERMINISM_MAP_TYPES).
+    pub by_source: BTreeMap<String, u32>,
     /// Used-count divided by added-count, capped at 1.0. Renders the
     /// utilization gauge in the panel.
     pub utilization_pct: f32,
@@ -102,7 +104,7 @@ pub async fn get_held_out_stats(
             return Ok(HeldOutStatsRow {
                 total_added: 0,
                 total_used: 0,
-                by_source: HashMap::new(),
+                by_source: BTreeMap::new(),
                 utilization_pct: 0.0,
             });
         }
@@ -121,7 +123,7 @@ pub async fn get_held_out_stats(
     let total_added = added.len() as u32;
     let total_used = used.len() as u32;
 
-    let mut by_source: HashMap<String, u32> = HashMap::new();
+    let mut by_source: BTreeMap<String, u32> = BTreeMap::new();
     for detail in &added {
         if let Some(obj) = detail.payload_json.as_object() {
             if let Some(src) = obj.get("source").and_then(|v| v.as_str()) {

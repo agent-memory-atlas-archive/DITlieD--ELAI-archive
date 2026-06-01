@@ -1,4 +1,4 @@
-//! E-40 — `elai scip <query|defs|refs|callers|callees|pagerank|status|import>`
+//! E-40 — `elai scip <query|defs|refs|callers|callees|pagerank|status|import|lsp-probe|refresh>`
 //! handler.
 //!
 //! Production caller for the orchestrator-rooted symbol-graph module
@@ -16,14 +16,29 @@
 //! Angle). See workflow/reasoning/E-40-decisions.md.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::symbol_graph::{
     self, oracle_lookup, oracle_lookup_with_mode, personalized_top_k, LspMode, OracleKind,
     SymbolGraphCache,
 };
+use elai_orchestrator::{default_ssb_path_for_base, Ssb, SsbConfig};
+use elai_orchestrator::ssb::{ScipRefreshCompletedPayload, SsbPayload};
 use serde::Serialize;
 
 use crate::args::{CliOutputFormat, SymbolGraphAction};
+
+/// Environment variable that gates SSB emission for `scip refresh`.
+/// Default-OFF (wire-dark): truthy check only (`"1"`, `"true"`, `"yes"`).
+const ELAI_SCIP_REFRESH_EMIT_ENABLE: &str = "ELAI_SCIP_REFRESH_EMIT_ENABLE";
+
+/// Python script name for SCIP regeneration relative to project root.
+const CODEBASE_MAPPER_PY: &str = ".claude/tools/codebase_mapper.py";
+/// Env var supplying the workflow root when project-root is not passed explicitly.
+const ELAI_WORKFLOW_ROOT: &str = "ELAI_WORKFLOW_ROOT";
+/// Default SCIP indices directory (relative to project root / cwd).
+const DEFAULT_SCIP_INDICES_DIR: &str = ".claude/tools/scip_indices";
 
 const DEFAULT_GRAPH_PATH: &str = ".claude/tools/elai_graph.json";
 const DEFAULT_SCIP_DIR: &str = ".claude/tools/scip_indices";
@@ -42,6 +57,9 @@ pub(crate) fn run(
         SymbolGraphAction::ImportScip { dir } => run_import(&dir, output_format),
         SymbolGraphAction::LspProbe { symbol, language, mode } => {
             run_lsp_probe(&symbol, &language, &mode, output_format)
+        }
+        SymbolGraphAction::Refresh { scip_dir, project_root } => {
+            run_refresh(&scip_dir, &project_root, output_format)
         }
     }
 }
@@ -235,6 +253,228 @@ fn run_lsp_probe(
         invoked: answer.invoked,
     };
     emit(&report, output_format)
+}
+
+/// `elai scip refresh` — invoke `codebase_mapper.py` to regenerate SCIP
+/// indices and emit one `ScipRefreshCompleted` SSB row.
+///
+/// `scip_dir`:       path to the SCIP indices directory (defaults to
+///                   `DEFAULT_SCIP_INDICES_DIR` relative to cwd).
+/// `project_root`:   project root passed as the first positional to
+///                   `codebase_mapper.py`. Resolved in order:
+///                     1. `--project-root` CLI flag (non-empty).
+///                     2. `ELAI_WORKFLOW_ROOT` env var.
+///                     3. Current working directory.
+///
+/// The mapper script is resolved as
+/// `<project_root>/<CODEBASE_MAPPER_PY>`. Returns a clear error when
+/// the script is absent so operators know to regenerate it.
+///
+/// The SSB row is emitted only when `ELAI_SCIP_REFRESH_EMIT_ENABLE` is
+/// truthy (`"1"`, `"true"`, `"yes"` — case-insensitive). SSB failure is
+/// best-effort: it is logged to stderr but does NOT change the exit code
+/// so that the mapper invocation result is the authoritative signal.
+#[derive(Debug, Clone, Serialize)]
+struct RefreshReport {
+    pub scip_dir: String,
+    pub project_root: String,
+    pub mapper_script: String,
+    pub shard_count: u32,
+    pub crate_count: u32,
+    pub duration_ms: u32,
+    pub ssb_emitted: bool,
+}
+
+fn run_refresh(
+    scip_dir: &str,
+    project_root_arg: &str,
+    output_format: CliOutputFormat,
+) -> Result<(), String> {
+    // Resolve project root: explicit arg > env var > cwd.
+    let project_root: PathBuf = if !project_root_arg.is_empty() {
+        PathBuf::from(project_root_arg)
+    } else if let Ok(env_root) = std::env::var(ELAI_WORKFLOW_ROOT) {
+        if !env_root.is_empty() {
+            PathBuf::from(env_root)
+        } else {
+            std::env::current_dir()
+                .map_err(|e| format!("scip refresh: cannot determine cwd: {e}"))?
+        }
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("scip refresh: cannot determine cwd: {e}"))?
+    };
+
+    // Resolve SCIP indices directory.
+    let resolved_scip_dir: PathBuf = if scip_dir.is_empty() {
+        project_root.join(DEFAULT_SCIP_INDICES_DIR)
+    } else {
+        PathBuf::from(scip_dir)
+    };
+
+    // Locate codebase_mapper.py.
+    let mapper_script = project_root.join(CODEBASE_MAPPER_PY);
+    if !mapper_script.exists() {
+        return Err(format!(
+            "scip refresh: codebase_mapper.py not found at {}; \
+             ensure the project root is correct or set ELAI_WORKFLOW_ROOT",
+            mapper_script.display()
+        ));
+    }
+
+    // Record start time for duration_ms.
+    let start = std::time::Instant::now(); // entropy-allow: observability duration_ms only — elapsed() never leaves fn as wall-clock ts
+
+    // Invoke: python <mapper> <project_root> elai_graph.json
+    //         --compact --map elai.map
+    //         --scip-dir <resolved_scip_dir>
+    let status = std::process::Command::new("python")
+        .arg(&mapper_script)
+        .arg(&project_root)
+        .arg("elai_graph.json")
+        .arg("--compact")
+        .arg("--map")
+        .arg("elai.map")
+        .arg("--scip-dir")
+        .arg(&resolved_scip_dir)
+        .status()
+        .map_err(|e| format!("scip refresh: failed to launch codebase_mapper.py: {e}"))?;
+
+    if !status.success() {
+        return Err(format!(
+            "scip refresh: codebase_mapper.py exited with status {}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+
+    let duration_ms = u32::try_from(start.elapsed().as_millis().min(u128::from(u32::MAX)))
+        .unwrap_or(u32::MAX);
+
+    // Count .scip files and distinct crate names from the SCIP directory.
+    // Deterministic: no mapper stdout parsing required.
+    let (shard_count, crate_count) =
+        count_scip_shards_and_crates(&resolved_scip_dir).unwrap_or((0, 0));
+
+    // SSB row — gated on ELAI_SCIP_REFRESH_EMIT_ENABLE (default-OFF).
+    let ssb_emitted = if is_env_truthy(ELAI_SCIP_REFRESH_EMIT_ENABLE) {
+        let ts_ms = u64::try_from(OsClock.now_ms().min(u128::from(u64::MAX)))
+        .unwrap_or(u64::MAX);
+        let payload = ScipRefreshCompletedPayload {
+            shard_count,
+            crate_count,
+            duration_ms,
+            ts_ms,
+        };
+        match emit_scip_refresh_ssb(&project_root, payload) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("warning: scip refresh: failed to emit ScipRefreshCompleted SSB row: {e}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    let report = RefreshReport {
+        scip_dir: resolved_scip_dir.to_string_lossy().into_owned(),
+        project_root: project_root.to_string_lossy().into_owned(),
+        mapper_script: mapper_script.to_string_lossy().into_owned(),
+        shard_count,
+        crate_count,
+        duration_ms,
+        ssb_emitted,
+    };
+    emit(&report, output_format)
+}
+
+/// Count `.scip` files and distinct crate names in `scip_dir`.
+///
+/// Crate name is derived from each shard's stem by stripping a trailing
+/// `-<hash>` suffix if present (e.g. `elai_core-a3f0b1c2.scip` ->
+/// `elai_core`). Files without a recognisable stem are counted but their
+/// "crate name" falls back to the full stem to avoid undercounting.
+fn count_scip_shards_and_crates(scip_dir: &PathBuf) -> Result<(u32, u32), String> {
+    let entries = std::fs::read_dir(scip_dir)
+        .map_err(|e| format!("count_scip_shards_and_crates: read_dir failed: {e}"))?;
+
+    let mut shard_count: u32 = 0;
+    let mut crate_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for entry in entries {
+        let entry = entry
+            .map_err(|e| format!("count_scip_shards_and_crates: dir entry error: {e}"))?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("scip") {
+            shard_count = shard_count.saturating_add(1);
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                // Strip trailing `-<8-hex-chars>` hash suffix if present.
+                let crate_name = if let Some(idx) = stem.rfind('-') {
+                    let suffix = &stem[idx + 1..];
+                    if suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_hexdigit()) {
+                        stem[..idx].to_string()
+                    } else {
+                        stem.to_string()
+                    }
+                } else {
+                    stem.to_string()
+                };
+                crate_names.insert(crate_name);
+            }
+        }
+    }
+
+    let crate_count = u32::try_from(crate_names.len()).unwrap_or(u32::MAX);
+    Ok((shard_count, crate_count))
+}
+
+/// Emit one `ScipRefreshCompleted` SSB row using the per-call `Ssb::new`
+/// pattern (matches `archive_verify.rs`). Uses a current-thread tokio
+/// runtime so the synchronous CLI caller does not need to manage async.
+fn emit_scip_refresh_ssb(
+    project_root: &PathBuf,
+    payload: ScipRefreshCompletedPayload,
+) -> Result<(), String> {
+    let db_path = default_ssb_path_for_base(project_root);
+    let parent = db_path.parent().ok_or_else(|| {
+        "scip refresh: ssb.db has no parent directory".to_string()
+    })?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("scip refresh: creating ssb sessions dir: {e}"))?;
+
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: "cli-scip-refresh".to_string(),
+    };
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("scip refresh: tokio runtime build failed: {e}"))?;
+    rt.block_on(async move {
+        let ssb = Ssb::new(cfg, clock)
+            .map_err(|e| format!("scip refresh: opening SSB writer: {e}"))?;
+        ssb.write_payload(
+            "cli:scip-refresh",
+            0,
+            SsbPayload::ScipRefreshCompleted(payload),
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| format!("scip refresh: writing ScipRefreshCompleted row: {e}"))?;
+        Ok(())
+    })
+}
+
+/// Returns `true` if `env_var` is set and its value is `"1"`, `"true"`,
+/// or `"yes"` (case-insensitive). Default-OFF for all unset/empty values.
+fn is_env_truthy(env_var: &str) -> bool {
+    match std::env::var(env_var) {
+        Ok(val) => matches!(val.to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+        Err(_) => false,
+    }
 }
 
 /// Use [`OracleKind::canonical_binary`] downstream so the dispatcher can

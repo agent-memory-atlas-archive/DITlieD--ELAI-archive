@@ -14,6 +14,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use elai_core::clock::{ClockProvider, OsClock};
+
 use super::{Dispatch, DispatchRequest, DispatchResult};
 use crate::roadmap_signals::roadmap_signals_enabled;
 use crate::ssb::{
@@ -103,10 +105,7 @@ impl McpClientDispatch {
         {
             return;
         }
-        let ts_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-            .unwrap_or(i64::MAX);
+        let ts_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
         let payload = SsbPayload::AiRoadmapSignalEvent(AiRoadmapSignalEventPayload {
             kind: RoadmapSignalKind::McpTransportVersionLogged,
             plan_session_id: String::new(),

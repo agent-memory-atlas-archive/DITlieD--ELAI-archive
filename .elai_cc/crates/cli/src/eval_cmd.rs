@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
-use elai_core::clock::OsClock;
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::external_benches::{
     get_suite, suite_metadata, BenchRegistryError, EXPECTED_SUITE_COUNT,
@@ -360,11 +360,11 @@ fn emit_bench_run(payload: BenchmarkRunObservedPayload) -> anyhow::Result<()> {
 }
 
 fn current_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
+    // B-15 Tranche E E.1: ClockProvider via zero-sized OsClock Copy impl.
+    // The trait's default `now_ms` absorbs the
+    // `.duration_since(UNIX_EPOCH).unwrap_or(0)` saturation
+    // (crates/core/src/clock.rs:59-64).
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

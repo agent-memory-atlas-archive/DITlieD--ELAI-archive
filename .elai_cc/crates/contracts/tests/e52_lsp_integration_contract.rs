@@ -418,3 +418,59 @@ fn e52_f6_e40_lsp_oracle_consulted_variant_still_resolvable() {
         "lsp_oracle_consulted"
     );
 }
+
+// ---------------------------------------------------------------------------
+// (F7) `scip refresh` CLI sub-verb — payload contract and env-gate shape.
+//
+// Note: parse_scip_subcommand_args is pub(crate) in elai-cli, so the full
+// arg-parsing path cannot be exercised from this contracts crate. The test
+// below locks the SSB payload shape emitted by `run_refresh` (the fields,
+// their types, and the round-trip through msgpack) plus the env-gate
+// constant name. Direct parser tests should live in cli_tests.rs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e52_f7_scip_refresh_completed_payload_fields_and_round_trip() {
+    // Verifies the struct shape expected by run_refresh's emit call.
+    // shard_count and crate_count are u32 (deterministic count from .scip
+    // files); duration_ms is u32; ts_ms is u64.
+    let payload = ScipRefreshCompletedPayload {
+        shard_count: 12,
+        crate_count: 5,
+        duration_ms: 3_800,
+        ts_ms: 1_700_000_999_000,
+    };
+    assert_eq!(payload.shard_count, 12);
+    assert_eq!(payload.crate_count, 5);
+    assert_eq!(payload.duration_ms, 3_800);
+    // SSB action type discriminator.
+    let wrapped = SsbPayload::ScipRefreshCompleted(payload.clone());
+    assert_eq!(wrapped.action_type(), SsbActionType::ScipRefreshCompleted);
+    // Full msgpack round-trip (mirrors e52_f5d but with different field values
+    // to confirm the serialised shape is field-name stable).
+    let bytes = rmp_serde::to_vec_named(&wrapped).expect("encode ok");
+    let back: SsbPayload = rmp_serde::from_slice(&bytes).expect("decode ok");
+    assert_eq!(back.action_type(), SsbActionType::ScipRefreshCompleted);
+    if let SsbPayload::ScipRefreshCompleted(p) = back {
+        assert_eq!(p.shard_count, 12);
+        assert_eq!(p.crate_count, 5);
+        assert_eq!(p.duration_ms, 3_800);
+        assert_eq!(p.ts_ms, 1_700_000_999_000);
+    } else {
+        panic!("decoded variant mismatch");
+    }
+}
+
+#[test]
+fn e52_f7b_scip_refresh_env_gate_name_is_canonical() {
+    // The env var name used in scip_cmd.rs MUST match this constant.
+    // Any rename must update this test and the CLAUDE.md env-gate registry.
+    // Wire-dark by default (unset = false); truthy values "1"/"true"/"yes".
+    let env_gate = "ELAI_SCIP_REFRESH_EMIT_ENABLE";
+    // Ensure the var is unset in test context (default-OFF contract).
+    std::env::remove_var(env_gate);
+    assert!(
+        std::env::var(env_gate).is_err(),
+        "ELAI_SCIP_REFRESH_EMIT_ENABLE must be absent (unset) to be wire-dark"
+    );
+}

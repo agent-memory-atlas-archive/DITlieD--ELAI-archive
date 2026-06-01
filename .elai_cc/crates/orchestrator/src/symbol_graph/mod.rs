@@ -35,13 +35,24 @@
 //! the documented RUNPOD-PENDING exception.
 
 pub mod cache;
+// E-40 Tranche B-2: DSL parser/executor (nom-based), dataflow analyzer
+// (BFS over reverse-call edges), and refine+filter stage that re-ranks
+// the union of initial + DSL results. Modules wire to the
+// `knowledge::symbol_graph_adapter::SymbolGraphAdapter` trait via the
+// blanket impl on `SymbolGraphCache` below.
+pub mod dataflow;
+pub mod dsl;
 pub mod legacy_b2;
 pub mod lsp_oracle;
 pub mod pagerank;
 pub mod query;
+pub mod refine_filter;
 pub mod scip_import;
 
 pub use cache::{SymbolGraphCache, SymbolGraphCacheError, SymbolNode};
+pub use dataflow::DataflowAnalyzer;
+pub use dsl::{exec_dsl, parse_dsl, DslAst, DslFilter, DslParseError, DslSelector};
+pub use refine_filter::{refine, RefineStage};
 // Phase B2 legacy surface — preserved here so existing
 // `use elai_orchestrator::{SymbolGraph, SymbolGraphError, SymbolRecord, SymbolTag}`
 // crate-root re-exports continue to compile. The B2 surface reads
@@ -57,3 +68,156 @@ pub use lsp_oracle::{
 pub use pagerank::{personalized_top_k, RankedSymbol};
 pub use query::{find_callees, find_callers, find_defs, find_refs, QueryError, SymbolMatch};
 pub use scip_import::{import_scip_indices, ScipImportError};
+
+// ---------------------------------------------------------------------------
+// E-40 Tranche B-2: `SymbolGraphAdapter` blanket impl + `notify_symbol_graph_event`.
+// ---------------------------------------------------------------------------
+
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use elai_ipc_types::{
+    DataflowEdge as IpcDataflowEdge, DataflowEdgeKind as IpcDataflowEdgeKind,
+    SymbolDataflowImpactResponse, SymbolDslQueryResponse, SymbolMatch as IpcSymbolMatch,
+};
+use elai_knowledge::symbol_graph_adapter::{
+    SymbolGraphAdapter, SymbolGraphAdapterError,
+};
+use serde_json::Value;
+
+use crate::ssb::{Ssb, SsbError, SsbPayload, SymbolGraphEventKind, SymbolGraphEventPayload};
+
+/// Concrete adapter wrapping a shared `SymbolGraphCache`.
+///
+/// The cache is held behind `Arc<Mutex<_>>` because the underlying
+/// `find_*` query helpers borrow `&mut SymbolGraphCache` (the LRU
+/// touch-order tracker is interior-mutable but expressed as `&mut`).
+/// `Mutex` keeps the implementation `Send + Sync` so it can sit behind
+/// `Arc<dyn SymbolGraphAdapter>` in the pipeline.
+pub struct SymbolGraphCacheAdapter {
+    /// Shared cache handle. Pipeline holds an
+    /// `Option<Arc<dyn SymbolGraphAdapter>>` so this Arc is hot-pluggable.
+    pub cache: Arc<Mutex<SymbolGraphCache>>,
+    /// Soft latency budget. Adapters that exceed it surface
+    /// `SymbolGraphAdapterError::Internal("budget exceeded")` so the
+    /// 5th-list RRF retriever can fall back to an empty list rather than
+    /// stall the pipeline. Default 500 ms per B-29.5 p99 budget.
+    pub max_query_ms: u64,
+}
+
+impl SymbolGraphCacheAdapter {
+    /// Construct a new adapter with the given cache + soft budget.
+    pub fn new(cache: Arc<Mutex<SymbolGraphCache>>, max_query_ms: u64) -> Self {
+        Self { cache, max_query_ms }
+    }
+}
+
+impl SymbolGraphAdapter for SymbolGraphCacheAdapter {
+    fn dsl_query(
+        &self,
+        dsl_text: &str,
+        _project_root: &Path,
+        depth_cap: u8,
+    ) -> Result<SymbolDslQueryResponse, SymbolGraphAdapterError> {
+        let ast = dsl::parse_dsl(dsl_text)
+            .map_err(|e| SymbolGraphAdapterError::DslParse(e.to_string()))?;
+        let mut guard = self
+            .cache
+            .lock()
+            .map_err(|_| SymbolGraphAdapterError::CacheUnavailable("cache mutex poisoned".into()))?;
+        let matches = dsl::exec_dsl(&ast, &mut guard);
+        let total_scanned: u32 = matches.len().try_into().unwrap_or(u32::MAX);
+        let ipc_matches: Vec<IpcSymbolMatch> = matches
+            .into_iter()
+            .map(|m| IpcSymbolMatch {
+                symbol: m.name,
+                file_path: m.file,
+                line: m.line,
+                kind: m.kind,
+            })
+            .collect();
+        // For DSL queries the dataflow side-context comes from the
+        // analyzer over the same cache. Bound the side context by the
+        // caller's depth_cap (default 2 enforced upstream).
+        let mut analyzer = dataflow::DataflowAnalyzer::new(&mut guard, depth_cap);
+        let mut edges: Vec<IpcDataflowEdge> = Vec::new();
+        for m in &ipc_matches {
+            for edge in analyzer.defuse_edges(&m.symbol) {
+                edges.push(IpcDataflowEdge {
+                    source: edge.source,
+                    target: edge.target,
+                    edge_kind: dataflow_edge_kind_to_ipc(edge.edge_kind),
+                });
+            }
+        }
+        Ok(SymbolDslQueryResponse {
+            matches: ipc_matches,
+            dataflow_edges: edges,
+            total_scanned,
+        })
+    }
+
+    fn dataflow_impact(
+        &self,
+        symbol: &str,
+        _project_root: &Path,
+        depth_cap: u8,
+    ) -> Result<SymbolDataflowImpactResponse, SymbolGraphAdapterError> {
+        if symbol.is_empty() {
+            return Err(SymbolGraphAdapterError::InvalidInput("empty symbol".into()));
+        }
+        let mut guard = self
+            .cache
+            .lock()
+            .map_err(|_| SymbolGraphAdapterError::CacheUnavailable("cache mutex poisoned".into()))?;
+        let mut analyzer = dataflow::DataflowAnalyzer::new(&mut guard, depth_cap);
+        let impacted = analyzer.impact_analysis(symbol);
+        let total_edges: u32 = analyzer.last_edge_count().try_into().unwrap_or(u32::MAX);
+        let depth_actual = analyzer.last_depth_reached();
+        Ok(SymbolDataflowImpactResponse {
+            impacted_symbols: impacted,
+            depth_actual,
+            total_edges,
+        })
+    }
+}
+
+fn dataflow_edge_kind_to_ipc(k: dataflow::DataflowEdgeKind) -> IpcDataflowEdgeKind {
+    match k {
+        dataflow::DataflowEdgeKind::DefUse => IpcDataflowEdgeKind::DefUse,
+        dataflow::DataflowEdgeKind::UseDef => IpcDataflowEdgeKind::UseDef,
+        dataflow::DataflowEdgeKind::AssignFlow => IpcDataflowEdgeKind::AssignFlow,
+        dataflow::DataflowEdgeKind::CallChain => IpcDataflowEdgeKind::CallChain,
+    }
+}
+
+/// Emit a `symbol_graph_event` SSB row.
+///
+/// Mirrors `crate::lora_ship_gate::notify_lora_ship_gate` shape. The
+/// caller owns the env-gate decision — this helper assumes the gate
+/// already passed (the producer-side site that decides to emit the
+/// event is the right place to consult
+/// `ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE` or other per-event gates).
+///
+/// Returns:
+///   * `Ok(Some(seq))` -- row written; `seq` is the SSB auto-increment
+///     sequence.
+///   * `Err(SsbError)` -- propagate the underlying write failure.
+pub async fn notify_symbol_graph_event(
+    ssb: &Ssb,
+    agent_id: &str,
+    superstep: i64,
+    kind: SymbolGraphEventKind,
+    session_id: Option<&str>,
+    details_json: Value,
+    ts_ms: i64,
+) -> Result<i64, SsbError> {
+    let payload = SsbPayload::SymbolGraphEvent(SymbolGraphEventPayload {
+        kind,
+        session_id: session_id.map(str::to_owned),
+        agent_id: Some(agent_id.to_owned()),
+        details_json,
+        ts_ms,
+    });
+    ssb.write_payload(agent_id, superstep, payload, Vec::new()).await
+}

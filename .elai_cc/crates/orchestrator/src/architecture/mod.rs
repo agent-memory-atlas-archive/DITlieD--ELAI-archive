@@ -31,6 +31,32 @@ pub mod prior_art;
 pub mod recommender;
 pub mod saas_archetype;
 pub mod saas_patterns;
+// E-25 Tranche C (C.1): anti-pattern guards (Bash complexity / approval
+// fatigue / sandbox template). Each guard reuses the SHIPPED Pattern-2
+// ClaudeCodeArchitectureEvent single-variant + an already-shipped Kind
+// arm; ZERO new SsbActionType and ZERO schema bump per session-4
+// DECISION-2 + DECISION-5 9-arm lock. See
+// workflow/reasoning/E-25-trancheC-decisions.md.
+pub mod bash_complexity_guard;
+pub mod approval_fatigue_guard;
+pub mod sandbox_template_guard;
+// E-25 Tranche C (C.2): LLM-decision hook handler. NEW PromptDecision
+// enum {Allow, Deny(reason), Ask(reason)} -- distinct from
+// HookVerdictKind {Allow, Warn, Block} and PermissionPromptDecision
+// {Allow, Deny}. Reuses the SHIPPED ClaudeCodeArchitectureEventKind::
+// PromptDecisionMade arm via Pattern-2 single-variant SSB cascade.
+// See workflow/reasoning/E-25-trancheC-decisions.md.
+pub mod hook_prompt;
+// E-25 Tranche C (C.4): edit_checkpoints (Primitive 6b). Pre-edit
+// blake3 snapshot store + rewind path. On-disk content-addressed
+// layout under .elai_cc/.session-checkpoints/{session_id}/{seq:06}/
+// {blake3_prefix:8}/{path}. Reuses the SHIPPED
+// ClaudeCodeArchitectureEventKind::EditCheckpointSnapshotted arm;
+// rewind events ride on the same arm via
+// details_json.rewind_event=true (9-arm Kind enum LOCKED per
+// session-4 DECISION-5). See workflow/reasoning/E-25-trancheC-
+// decisions.md.
+pub mod edit_checkpoints;
 
 pub use catalog::{
     ArchetypeCatalog, ArchetypeEntry, AuthScheme, MultiTenancyModel, ProductionChecklistSubset,

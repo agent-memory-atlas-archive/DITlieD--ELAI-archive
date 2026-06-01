@@ -4,6 +4,9 @@ use std::fmt::{Display, Formatter};
 use serde_json::{Map, Value};
 use crate::telemetry_types::SessionTracer;
 
+use crate::architecture::approval_fatigue_guard::{
+    approval_fatigue_guard_enabled, ApprovalFatigueGuard, ApprovalFatigueVerdict, ApprovalKind,
+};
 use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
@@ -165,6 +168,20 @@ pub struct ConversationRuntime<C, T> {
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
     output_config: OutputConfig,
+    /// E-25 Tranche L (F.1.c) -- per-session ApprovalFatigueGuard.
+    /// Double-gated: this field must be `Some(_)` AND
+    /// [`approval_fatigue_guard_enabled`] must read truthy from
+    /// `ELAI_E25_APPROVAL_FATIGUE_GUARD_ENABLE`. Default `None` keeps
+    /// the guard dormant across every existing constructor and test
+    /// fixture (Tranche F precedent: wire-dark, opt-in builder).
+    approval_fatigue: Option<ApprovalFatigueGuard>,
+    /// E-25 stubs F1c / F1a -- optional SSB writer for guard emits.
+    /// When `Some`, the `ApprovalFatigueDetected` and
+    /// `BashComplexityBlocked` SSB rows are emitted at the refusal sites
+    /// in [`Self::run_turn`]. When `None`, refusals still fire but no SSB
+    /// row is written (legacy / unit-test path). Wire-in via
+    /// [`Self::with_ssb_writer`]; default `None`.
+    ssb_writer: Option<std::sync::Arc<crate::ssb::Ssb>>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -223,6 +240,15 @@ where
             hook_progress_reporter: None,
             session_tracer: None,
             output_config: OutputConfig::default(),
+            // E-25 Tranche L (F.1.c): guard is opt-in via
+            // `with_approval_fatigue` AND env-gated by
+            // ELAI_E25_APPROVAL_FATIGUE_GUARD_ENABLE. Default None keeps
+            // the field dormant across every existing constructor.
+            approval_fatigue: None,
+            // E-25 stubs F1c / F1a: SSB writer is opt-in via
+            // `with_ssb_writer`. Default None keeps emission dormant
+            // across every existing constructor and test fixture.
+            ssb_writer: None,
         }
     }
 
@@ -263,6 +289,44 @@ where
     pub fn with_output_config(mut self, output_config: OutputConfig) -> Self {
         self.output_config = output_config;
         self
+    }
+
+    /// E-25 Tranche L (F.1.c) -- install a per-session
+    /// [`ApprovalFatigueGuard`]. The guard is double-gated:
+    ///   1. this builder must be called (field is `Some(_)`), AND
+    ///   2. [`approval_fatigue_guard_enabled`] must read truthy from
+    ///      the `ELAI_E25_APPROVAL_FATIGUE_GUARD_ENABLE` env var.
+    /// When both gates pass, the observation block at the
+    /// `authorize_with_context` site records each permission decision
+    /// into the guard's rolling window and overrides the outcome to
+    /// `Deny` on a `Refused` verdict (force reconfirmation).
+    #[must_use]
+    pub fn with_approval_fatigue(mut self, guard: ApprovalFatigueGuard) -> Self {
+        self.approval_fatigue = Some(guard);
+        self
+    }
+
+    /// E-25 stubs F1c / F1a -- install an SSB writer for guard emits.
+    /// When this builder is called and the guard env-gate is truthy, a
+    /// refusal by either the `ApprovalFatigueGuard` or the
+    /// `BashComplexityGuard` will emit a `ClaudeCodeArchitectureEvent`
+    /// SSB row via a fire-and-forget background thread (same pattern as
+    /// `crates/cli/src/live_cli.rs`). Default `None` keeps the field
+    /// dormant across every existing constructor and test fixture.
+    #[must_use]
+    pub fn with_ssb_writer(mut self, ssb: std::sync::Arc<crate::ssb::Ssb>) -> Self {
+        self.ssb_writer = Some(ssb);
+        self
+    }
+
+    /// E-25 Tranche L (F.1.c) -- test-only read accessor for the
+    /// `approval_fatigue` field. Used by contract tests to assert the
+    /// builder + default-None semantics. Gated under `test-support` so
+    /// the production surface stays minimal.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn approval_fatigue_is_installed(&self) -> bool {
+        self.approval_fatigue.is_some()
     }
 
     fn run_pre_tool_use_hook(&mut self, tool_name: &str, input: &str) -> HookRunResult {
@@ -425,7 +489,7 @@ where
                     pre_hook_result.permission_reason().map(ToOwned::to_owned),
                 );
 
-                let permission_outcome = if pre_hook_result.is_cancelled() {
+                let mut permission_outcome = if pre_hook_result.is_cancelled() {
                     PermissionOutcome::Deny {
                         reason: format_hook_message(
                             &pre_hook_result,
@@ -461,6 +525,118 @@ where
                         None,
                     )
                 };
+
+                // E-25 Tranche L (F.1.c) -- ApprovalFatigueGuard observation
+                // + verdict-override. Per-session rolling-window detector.
+                // Double-gated: field-Some AND env truthy. When tripped,
+                // override the outcome to Deny to force reconfirmation on
+                // the current prompt (matches substrate doc-comment L5-8).
+                // Stub F1c-approval-fatigue-emit: emit SSB row when ssb_writer
+                // is wired and the verdict is Refused. Fire-and-forget via
+                // background thread (run_turn is sync; see live_cli.rs pattern).
+                if let Some(guard) = self.approval_fatigue.as_mut() {
+                    if approval_fatigue_guard_enabled() {
+                        let kind = match &permission_outcome {
+                            PermissionOutcome::Allow => ApprovalKind::Allow,
+                            PermissionOutcome::Deny { .. } => ApprovalKind::Deny,
+                        };
+                        let verdict = guard.record_and_check(kind);
+                        if let ApprovalFatigueVerdict::Refused { reason, .. } = &verdict {
+                            permission_outcome = PermissionOutcome::Deny {
+                                reason: reason.clone(),
+                            };
+                            // F1c emit: build payload using guard state + verdict,
+                            // then fire-and-forget into the SSB writer.
+                            if let Some(ssb) = self.ssb_writer.clone() {
+                                let ts_ms = i64::try_from(
+                                    std::time::SystemTime::now() // entropy-allow: ssb-emit-observability-ts-ms
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis())
+                                        .unwrap_or(0),
+                                )
+                                .unwrap_or(i64::MAX);
+                                let session_id =
+                                    Some(self.session.session_id.clone());
+                                if let Some(payload) =
+                                    guard.build_payload(&verdict, session_id, ts_ms)
+                                {
+                                    let ssb_payload =
+                                        crate::ssb::SsbPayload::ClaudeCodeArchitectureEvent(
+                                            payload,
+                                        );
+                                    std::thread::spawn(move || {
+                                        if let Ok(rt) =
+                                            tokio::runtime::Builder::new_current_thread()
+                                                .enable_all()
+                                                .build()
+                                        {
+                                            let _ = rt.block_on(ssb.write_payload(
+                                                "conversation.approval_fatigue_guard",
+                                                0,
+                                                ssb_payload,
+                                                Vec::new(),
+                                            ));
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // E-25 stub F1a-bash-complexity-emit: emit BashComplexityBlocked SSB
+                // row when the permission outcome was a BashComplexityGuard refusal
+                // (reason starts with "bash_complexity:") and ssb_writer is wired.
+                // The guard already ran inside authorize_with_context (permissions.rs)
+                // and encoded the verdict in the Deny reason; we detect it here so
+                // the emitter shares the same ssb_writer already on this struct
+                // rather than pushing a handle into the permissions module.
+                // Gate: ELAI_E25_BASH_COMPLEXITY_GUARD_ENABLE is the same env gate
+                // the guard itself checked before producing the reason prefix, so
+                // no additional gate read is needed.
+                if let PermissionOutcome::Deny { reason } = &permission_outcome {
+                    if reason.starts_with("bash_complexity:")
+                        && tool_name == "Bash"
+                    {
+                        if let Some(ssb) = self.ssb_writer.clone() {
+                            let ts_ms = i64::try_from(
+                                std::time::SystemTime::now() // entropy-allow: ssb-emit-observability-ts-ms
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis())
+                                    .unwrap_or(0),
+                            )
+                            .unwrap_or(i64::MAX);
+                            let session_id =
+                                Some(self.session.session_id.clone());
+                            let guard =
+                                crate::architecture::bash_complexity_guard::BashComplexityGuard::new();
+                            let verdict =
+                                crate::architecture::bash_complexity_guard::BashComplexityVerdict::Refused {
+                                    reason: reason.clone(),
+                                };
+                            if let Some(payload) =
+                                guard.build_payload(&effective_input, &verdict, session_id, ts_ms)
+                            {
+                                let ssb_payload =
+                                    crate::ssb::SsbPayload::ClaudeCodeArchitectureEvent(payload);
+                                std::thread::spawn(move || {
+                                    if let Ok(rt) =
+                                        tokio::runtime::Builder::new_current_thread()
+                                            .enable_all()
+                                            .build()
+                                    {
+                                        let _ = rt.block_on(ssb.write_payload(
+                                            "conversation.bash_complexity_guard",
+                                            0,
+                                            ssb_payload,
+                                            Vec::new(),
+                                        ));
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
 
                 let result_message = match permission_outcome {
                     PermissionOutcome::Allow => {

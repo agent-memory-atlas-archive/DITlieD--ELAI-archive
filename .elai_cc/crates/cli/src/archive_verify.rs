@@ -36,7 +36,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use elai_core::clock::OsClock;
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::archive_chain::{
     verify_archive as verify_archive_canonical, ArchiveVerifyError, ArchiveVerifyReport,
@@ -205,10 +205,12 @@ fn current_ms() -> i64 {
     // Saturation semantics matching ssb.rs `Ssb::now_ms` — durations before
     // 1970-01-01 are clamped to 0 rather than panicking. UNIX epoch
     // failure is not an error we model in the report.
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
-        Err(_) => 0,
-    }
+    //
+    // B-15 Tranche E E.1: migrated to ClockProvider via the zero-sized
+    // `OsClock` Copy impl. The trait's default `now_ms` absorbs the
+    // `.duration_since(UNIX_EPOCH).unwrap_or(0)` saturation
+    // (crates/core/src/clock.rs:59-64).
+    i64::try_from(elai_core::clock::OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 fn render_report(json: bool, report: &ArchiveVerifyReport) -> anyhow::Result<()> {

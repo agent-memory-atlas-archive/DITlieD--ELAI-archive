@@ -440,7 +440,7 @@ async fn run_handshake(
         "method": "shutdown"
     });
     write_frame(&mut stdin, &shutdown).await?;
-    let shutdown_deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT;
+    let shutdown_deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT; // entropy-allow: tokio-mockable-time-required-by-timeout_at
     loop {
         let read_fut = read_frame(&mut stdout);
         let value = tokio::time::timeout_at(shutdown_deadline, read_fut)

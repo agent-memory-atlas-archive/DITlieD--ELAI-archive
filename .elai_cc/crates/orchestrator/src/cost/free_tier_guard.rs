@@ -21,11 +21,11 @@
 //! * DeepSeek does NOT have a daily-quota-style free tier; the guard
 //!   slot exists for future backends that ship with one.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use elai_core::clock::ClockProvider;
 use elai_providers::runtime::RuntimeBackend;
+use rustc_hash::FxHashMap;
 
 /// Per-backend daily quota. `usd_cap_cents` is `None` for the pure-
 /// req-count case (Groq); `req_cap` is `None` for the pure-token case
@@ -101,8 +101,8 @@ struct BackendCounters {
 /// dashboard's `get_free_tier_quotas` Tauri command reads this state
 /// out via snapshot.
 pub struct FreeTierGuard {
-    counters: HashMap<RuntimeBackend, BackendCounters>,
-    quotas: HashMap<RuntimeBackend, DailyQuota>,
+    counters: FxHashMap<RuntimeBackend, BackendCounters>,
+    quotas: FxHashMap<RuntimeBackend, DailyQuota>,
     clock: Arc<dyn ClockProvider>,
 }
 
@@ -110,14 +110,14 @@ impl FreeTierGuard {
     /// Construct with built-in defaults for Cerebras + Groq.
     #[must_use]
     pub fn with_defaults(clock: Arc<dyn ClockProvider>) -> Self {
-        let mut quotas = HashMap::new();
+        let mut quotas = FxHashMap::default();
         for backend in [RuntimeBackend::CerebrasFree, RuntimeBackend::GroqFree] {
             if let Some(q) = default_quota_for(backend) {
                 quotas.insert(backend, q);
             }
         }
         Self {
-            counters: HashMap::new(),
+            counters: FxHashMap::default(),
             quotas,
             clock,
         }
@@ -234,7 +234,7 @@ mod tests {
             std::time::UNIX_EPOCH + std::time::Duration::from_secs(self.0.load(Ordering::SeqCst))
         }
         fn instant_now(&self) -> std::time::Instant {
-            std::time::Instant::now()
+            std::time::Instant::now() // TEST_KEEP: cfg(test) ClockProvider impl, fake-clock helper
         }
     }
 

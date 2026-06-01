@@ -34,7 +34,9 @@
 //! See `workflow/reasoning/E-38-decisions.md`.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
+
+use elai_core::clock::{ClockProvider, OsClock};
 
 use crate::ssb::{
     AiRoadmapSignalEventPayload, ELAI_AI_ROADMAP_SIGNALS_ENABLE_ENV,
@@ -62,10 +64,7 @@ pub fn roadmap_signals_enabled() -> bool {
 /// emit the row anyway since downstream consumers tolerate clamped
 /// timestamps.
 fn now_ms_fallback() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(i64::MAX)
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 /// Build an [`AiRoadmapSignalEventPayload`] for the

@@ -33,6 +33,15 @@ members = [
     "crates/ssb-otel-export",
     # "crates/dashboard",  # disabled: directory missing (moved to crates/.bkp_old/dashboard); see workspace-manifest-fix in s-1430428
     "crates/dashboard-v2/src-tauri",
+    # C-42b (Tranche M, s-22600) -- FIRST proc-macro crate in the workspace.
+    # Ships the declarative `#[authz(gate=..., tool_kind=...)]` attribute over
+    # the McpAuthz dispatcher surface at crates/plugins/src/authz/compose.rs
+    # (`compose_with_tool_gate_emit`). Closes the D.2 Phase C deferral logged
+    # in workflow/reasoning/D2-phase-c-deferral.md. Marker-only expansion
+    # (no runtime behaviour change); future-lint anchor + dev-UX shorthand.
+    # All 4 direct deps (syn 2 / quote 1 / proc-macro2 1 / darling 0.20)
+    # already transitively resolved in Cargo.lock -- zero lock churn.
+    "crates/plugins_macros",
 ]
 
 [workspace.package]
@@ -60,6 +69,18 @@ rustc-hash = "2.1"
 elai-ipc-types = { path = "crates/ipc-types" }
 tracing-log = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# E-45 Tranche 8A: JSON Schema generation for the sidecar HTTP boundary
+# (providers::types::{MessageRequest, MessageResponse, InputMessage,
+# SystemBlock, ToolDefinition}). Derive is wire-invisible (only adds
+# a schema_for! generator method; serde wire output is unchanged).
+# The 5 generated schemas drive the Pydantic mirror regen via
+# datamodel-code-generator -- see .claude/tools/regen_sidecar_schemas.py
+# and python/elai_inference/schemas/_generated.py.
+# Anti-slopsquatting verified 2026-05-31 via crates.io API (latest stable
+# 1.2.1, MIT, GREsau/schemars). Pinned EXACT to keep the derive proc-macro
+# output byte-stable across rebuilds (snapshot tests in
+# crates/orchestrator/tests/schemas_snapshot.rs assume byte-equality).
+schemars = "=1.2.1"
 
 [profile.dev]
 debug = "line-tables-only"

@@ -40,6 +40,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use elai_core::clock::{ClockProvider, OsClock};
+
 use rustc_hash::FxHashMap;
 
 use thiserror::Error;
@@ -113,7 +115,7 @@ impl BackgroundTaskHandle {
     ) -> Self {
         Self {
             task_id,
-            spawned_at: Instant::now(),
+            spawned_at: OsClock.instant_now(),
             soft_timeout,
             hard_timeout,
             join_handle: Some(join_handle),

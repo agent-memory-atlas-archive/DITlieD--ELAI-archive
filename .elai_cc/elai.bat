@@ -9,6 +9,15 @@ REM   Requires OpenSSH in PATH and ~/.ssh/elai_remote for --remote.
 
 if not defined HOME set HOME=%USERPROFILE%
 
+REM Avoid auto-indexing ELAI's own binary tree. If the bat is invoked while
+REM cwd == the bat's own directory (typical double-click case from inside
+REM .elai_cc\), reset cwd to %USERPROFILE% so the dashboard's default
+REM project_root is a harmless small directory. The user picks the real
+REM project via the dashboard's project picker (open_project_from_folder).
+REM If the user ran `elai.bat` from inside a real project folder, %CD% will
+REM differ from %~dp0 and we leave cwd alone -- project_root = their folder.
+IF /I "%CD%\"=="%~dp0" cd /d "%USERPROFILE%"
+
 REM --- Explicit argument branches (skip picker) ---
 
 IF /I "%~1"=="--remote" (

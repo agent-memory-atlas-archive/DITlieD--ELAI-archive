@@ -1,4 +1,4 @@
-//! ELAI dashboard-v2 backend entry point. Constructs the Tauri builder,
+﻿//! ELAI dashboard-v2 backend entry point. Constructs the Tauri builder,
 //! attaches a single `AppState`, and registers every Tauri command consumed
 //! by the Svelte frontend.
 //!
@@ -77,6 +77,16 @@ mod commands_d9;
 // no paper grounding; see workflow/sessions/s-25120/mistakes.md for
 // the bad-cite analysis of arXiv:2604.21725.
 mod commands_c43;
+// C-41: Application Skills System read-only command surface (sub-phase 5B).
+// Two commands feed the SettingsWindow SkillsPanel:
+//   - list_application_skills (walks .elai_cc/skills/ via
+//     skill_registry::find_skills, returns 9 canonical manifests)
+//   - recent_skill_routing_events (reads skill_triggered + skill_executed
+//     SSB rows, flattens into a single timeline).
+// Producer side (task_runner pre-classify hook) is gated by
+// ELAI_APPLICATION_SKILLS_ENABLE per DECISION-4. Wire-dark by default.
+// See workflow/reasoning/C-41-decisions.md.
+mod commands_c41;
 // D-10: mode-routing predicate read-only command surface. Sibling of
 // commands_d9. The orchestrator producer (`agent_pool::route_claim`)
 // is the sole writer of `claim_routed` SSB rows; this module only reads.
@@ -159,6 +169,18 @@ mod commands_e29;
 // fsm_ablation / role_ablation / rag_challenger / cot_proof / cache_check /
 // grc_blockquote modules. See workflow/reasoning/E-10-decisions.md.
 mod commands_e10;
+// E-25 Tranche N (s-22600 2026-06-01): Compaction-Ladder dashboard
+// read surface. Pairs with the producer wire at
+// task_runner.rs::drive_task PreCompact branch + the SHIPPED
+// compaction_ladder::run_compaction_ladder runner. Two commands feed
+// CompactionLadderPanel.svelte:
+//   - get_compaction_ladder_state (env-gate + LOCKED 6-tier order +
+//     default target budget; no SSB read)
+//   - recent_compaction_events (filters claude_code_architecture_event
+//     SSB rows to kind = compaction_ladder_tier_applied)
+// Resolves Tranche C C.5 deferral (BLOCKED-ON-PRODUCER). Wire-dark
+// unless ELAI_E25_COMPACTION_LADDER_ENABLE=1 on the orchestrator side.
+mod commands_e25;
 // E-38: 2026 AI roadmap signals + EU AI Act compliance -- read-only
 // command surface for the RoadmapPanel. Producer side is the
 // orchestrator's compliance + roadmap_signals + dispatch::mcp modules.
@@ -332,7 +354,34 @@ pub fn run() {
         .enable_all()
         .build()
         .expect("failed to build tokio runtime for AppState::new() (write_loop spawn)");
-    let app_state = rt.block_on(async { AppState::new() });
+    let app_state = rt.block_on(async {
+        let state = AppState::new();
+        // C-47b: spawn a background rehydrate task on the leaked runtime so
+        // the cold-tier persist store is drained into the LRU before the first
+        // tool-calibration query lands. Fire-and-forget; errors are traced as
+        // warn and do not affect AppState initialisation. The task runs on the
+        // leaked multi-thread runtime (mem::forget below) so it survives past
+        // this block_on call.
+        #[cfg(feature = "mcp")]
+        if let Some(reg) = state.calibration_registry.as_ref().cloned() {
+            tokio::spawn(async move {
+                // tool_names_from_disk is unavailable without the persist store
+                // being set. rehydrate_from_persist returns Ok(0) immediately
+                // when no store is installed, so this is always safe to call.
+                match reg.rehydrate_all_from_persist().await {
+                    Ok(n) => tracing::info!(
+                        rehydrated = n,
+                        "C-47b: calibration rehydrate complete"
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "C-47b: calibration rehydrate failed (non-fatal)"
+                    ),
+                }
+            });
+        }
+        state
+    });
     // SAFETY: intentional process-lifetime leak — see comment above.
     std::mem::forget(rt);
 
@@ -368,6 +417,15 @@ pub fn run() {
             commands::get_feature_flags,
             // MODEL ROUTING
             commands::set_model_routing,
+            // E-3 (SCHEMA_VERSION 188) MVP: role-shown / model-hidden
+            // default telemetry. SettingsWindow toggle change emits one
+            // SSB row (wire-dark unless ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1).
+            commands::record_model_visibility,
+            // E-3 sub-phase 4B (SCHEMA_VERSION 190): runtime-handoff
+            // event recorder. Fans the 6 RuntimeHandoffEventKind arms
+            // into a single SSB row per call. Wire-dark unless
+            // ELAI_E3_RUNTIME_HANDOFF_ENABLE=1.
+            commands::record_runtime_handoff_event,
             // PROPOSALS / MSI / STEERING / MCP
             commands::get_active_optimizations,
             commands::get_pending_proposals,
@@ -763,6 +821,17 @@ pub fn run() {
             // FreezeStatusBar widget. ELAI design hypothesis (no paper
             // grounding; see workflow/sessions/s-25120/mistakes.md).
             commands_c43::scope_freeze_status,
+            // C-41 — Application Skills System read surface. Rows are
+            // written by the task_runner pre-classify hook (gated by
+            // ELAI_APPLICATION_SKILLS_ENABLE); this surface only reads.
+            commands_c41::list_application_skills,
+            commands_c41::recent_skill_routing_events,
+            // E-25 Tranche N — Compaction-Ladder dashboard read surface.
+            // Rows are written by the task_runner PreCompact branch
+            // (gated by ELAI_E25_COMPACTION_LADDER_ENABLE); this surface
+            // only reads. Resolves Tranche C C.5 deferral.
+            commands_e25::get_compaction_ladder_state,
+            commands_e25::recent_compaction_events,
             // D-10 — mode-routing predicate read surface. Rows are
             // written by the orchestrator producer
             // (`elai_orchestrator::route_claim`); this surface only reads.
@@ -816,6 +885,14 @@ pub fn run() {
             // `agent_pool::dispatch_novelty`); this surface only reads.
             commands_d15::get_novelty_recent,
             commands_d15::get_novelty_distribution,
+            // D-27 closure-pass (night 2026-05-30): per-class breakdown
+            // surface consumed by NoveltyBreakdown.svelte. Read-only —
+            // composes the same producer rows as get_novelty_distribution
+            // with computed percentages + dominant-class label so the
+            // panel renders without client-side division. See
+            // workflow/sessions/s-night-2026-05-30/impl-tasks/
+            // GAP-FIXES-2026-05-30.md.
+            commands_d15::get_novelty_breakdown,
             // D-18 — typed-ObservableEffect predicate read surface.
             // Rows are written by the orchestrator producer
             // (`elai_orchestrator::observable_effect::verify_observable_effect`);

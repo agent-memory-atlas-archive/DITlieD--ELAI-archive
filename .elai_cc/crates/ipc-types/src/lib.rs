@@ -532,6 +532,17 @@ pub const TOOL_SYMBOL_FLOW: &str = "symbol_flow";
 pub const TOOL_SYMBOL_CONTEXT: &str = "symbol_context";
 pub const TOOL_SYMBOL_LIST: &str = "symbol_list";
 
+// E-40 Tranche B-2 — SymbolGraphDSL + Dataflow tool IDs (orchestrator-rooted
+// JSON cache surface, distinct from B-29 SQLite-rooted tools above).
+// `symbol_dsl_query` runs a Datalog-style query over the JSON-rooted symbol
+// graph; `symbol_dataflow_impact` walks tree-sitter heuristic def/use edges
+// to compute hop-bounded impact for an agent's pre-edit claim. Wire-dark
+// 5th-list RRF integration in elai_knowledge::pipeline is gated by
+// `ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE`. See
+// `workflow/reasoning/E-40-tranche-B2-decisions.md`.
+pub const TOOL_SYMBOL_DSL_QUERY: &str = "symbol_dsl_query";
+pub const TOOL_SYMBOL_DATAFLOW_IMPACT: &str = "symbol_dataflow_impact";
+
 // C-24 (DRIFT-5) — Mermaid graph-export tool ID. Surfaces the same code
 // path the dashboard Tauri `export_graph_mermaid` command uses (and the
 // shared `export_graph_mermaid_impl` C-18 extracted) over the IPC wire
@@ -606,6 +617,85 @@ pub struct SymbolListRequest {
     pub file: Option<String>,
     pub query: Option<String>,
     pub limit: u32,
+}
+
+// ---------------------------------------------------------------------------
+// E-40 Tranche B-2 — SymbolGraphDSL + Dataflow typed request/response structs
+// (postcard-serialized in ToolRequest.arguments / ToolResult.payload).
+// Orchestrator-rooted JSON cache surface, see DECISION-1 in
+// workflow/reasoning/E-40-decisions.md. Field names mirror the JSON schema
+// declared in production_agent_rpc::build_tool_catalog so the agent's JSON
+// input round-trips through serde_json -> postcard -> serde_json without
+// renames.
+// ---------------------------------------------------------------------------
+
+/// Request for `symbol_dsl_query` tool — Datalog-style DSL over the
+/// orchestrator-rooted JSON symbol graph. Grammar:
+/// `query := <selector> ('|' <filter>)*`,
+/// `selector := DEF(<symbol>) | USE(<symbol>) | IMPL(<trait>) | CALL(<fn>)`,
+/// `filter := lang(<lang>) | file(<pattern>) | depth(<n>)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolDslQueryRequest {
+    pub project_root: String,
+    pub dsl: String,
+    pub depth_cap: u8,
+}
+
+/// Single match row returned by `symbol_dsl_query`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolMatch {
+    pub symbol: String,
+    pub file_path: String,
+    pub line: u32,
+    pub kind: String,
+}
+
+/// Dataflow edge kind discriminator. Mirrors the orchestrator-side
+/// `DataflowEdgeKind` enum (snake_case serde).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataflowEdgeKind {
+    DefUse,
+    UseDef,
+    AssignFlow,
+    CallChain,
+}
+
+/// Single dataflow edge returned by `symbol_dsl_query` (when the DSL
+/// selector implies dataflow inspection) or surfaced as side context by
+/// `symbol_dataflow_impact`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataflowEdge {
+    pub source: String,
+    pub target: String,
+    pub edge_kind: DataflowEdgeKind,
+}
+
+/// Response for `symbol_dsl_query` tool — DSL match results plus any
+/// dataflow side-context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolDslQueryResponse {
+    pub matches: Vec<SymbolMatch>,
+    pub dataflow_edges: Vec<DataflowEdge>,
+    pub total_scanned: u32,
+}
+
+/// Request for `symbol_dataflow_impact` tool — BFS impact analysis over the
+/// JSON symbol graph's reverse-call index, bounded by `depth_cap`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolDataflowImpactRequest {
+    pub project_root: String,
+    pub symbol: String,
+    pub depth_cap: u8,
+}
+
+/// Response for `symbol_dataflow_impact` tool — transitively-impacted
+/// symbol names plus the achieved depth + edge count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolDataflowImpactResponse {
+    pub impacted_symbols: Vec<String>,
+    pub depth_actual: u8,
+    pub total_edges: u32,
 }
 
 /// Request for the `export_graph_mermaid` tool — render the same

@@ -47,8 +47,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 
 use crate::claim::{Claim, ClaimType};
@@ -684,7 +685,7 @@ async fn run_shellout_check(
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
 
-    let start = Instant::now();
+    let start = OsClock.instant_now();
 
     let spawn_result = Command::new(bin)
         .arg(script)

@@ -373,7 +373,116 @@ use elai_orchestrator::ssb::SsbActionType;
 // 17 fire-points into 10 Kind arms by folding outcome discriminators
 // into details_json (per E-50 11-arm + E-4 13-arm precedent). See
 // workflow/reasoning/E-48-decisions.md.
-const TOTAL_VARIANTS: usize = 458;
+// E-44 (SCHEMA_VERSION 186): 458 -> 459 for DurabilityEvent
+// single-variant Pattern-2 (38th application). DurabilityEventKind
+// 10-arm discriminator covers tool_idempotency_hit /
+// tool_idempotency_replayed_irreversible / compensation_logged /
+// compensation_replayed / compensation_failed /
+// session_dag_continue_as_new / checkpoint_lazy_migrated /
+// compact_lock_contended / agent_reliability_metrics /
+// tool_error_classified. Wire-dark unless
+// ELAI_DURABILITY_OBSERVABILITY_ENABLE=1. Producers:
+// orchestrator/src/durability/{idempotent_dispatcher,continue_as_new,
+// checkpoint_migrator,compact_lock,resume_validator}.rs. Closes
+// TASK-E44-013 observability gap: 4 of 10 task primaries SHIPPED but
+// emitted ZERO audit rows before this bump. 5 of 10 Kinds reserve wire
+// tags for NOT-SHIPPED producers (saga compensation, reliability
+// metrics rollup, tool-error taxonomy). See
+// workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E44-013.md.
+// E-31 (SCHEMA_VERSION 187): 459 -> 460 for HeadDimInvariantVerified
+// single-variant Pattern-2 (39th application).
+// HeadDimInvariantVerifiedKind 2-arm discriminator covers
+// verified / refused. Wire-dark unless
+// ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE=1. Producer:
+// python/elai_inference/server.py::assert_head_dim_invariant. Closes
+// TASK-E31-001 (head_dim invariant + SSB row gap surfaced by the
+// s-night-2026-05-30 cross-check).
+// E-3 (SCHEMA_VERSION 188): 460 -> 461 for RoleShownModelHidden
+// single-variant Pattern-2 (40th application). No Kind discriminator
+// (scope-lean MVP slice). Wire-dark unless
+// ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1. Producer:
+// crates/dashboard-v2/src-tauri/src/commands.rs::record_model_visibility.
+// Closes the cross-check finding "SettingsWindow explicitly exposes
+// MODEL names per role" by reversing the default (ROLE shown, MODEL
+// hidden unless user toggles "show model details" ON). Full E-3 plan
+// (role_prompt.rs / voice.toml / RuntimeAdapter::warm / 5 sibling SSB
+// variants / persona-vector hook) DEFERRED to follow-on sessions. See
+// workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E03-001.md.
+// E-49 (SCHEMA_VERSION 189): 461 -> 462 for CodingMetricNamedToken
+// single-variant Pattern-2 (41st application).
+// CodingMetricNamedTokenKind 3-arm discriminator covers
+// stable_pass_at_1 / harness_attribution_tuple / stop_verified.
+// Wire-dark unless ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE=1. Closes
+// TASK-E49-005 / 006 / 007 SPEC-DRIFT against the 3 spec-named tokens
+// (zero hits before this bump per cross-check E-16_e47_e48_e49.md).
+// E-3 sub-phase 4A (SCHEMA_VERSION 190): 462 -> 463 for
+// E3RuntimeHandoffEvent single-variant Pattern-2 (42nd application).
+// RuntimeHandoffEventKind 6-arm discriminator covers
+// unified_preamble_applied / runtime_prewarm_started /
+// runtime_prewarm_complete / handoff_payload_compressed /
+// persona_vector_applied / style_normalizer_applied. Wire-dark unless
+// ELAI_E3_RUNTIME_HANDOFF_ENABLE=1. Sub-phase 4A wires only the
+// UnifiedPreambleApplied arm via the role-prompt wrap in
+// runtime_orchestrator.rs (tracing log; Ssb::write_payload injection
+// deferred to 4B). Pattern-2 collapse rationale: original E-3 plan
+// called out 6 sibling variants; collapsed per Pattern-2 precedent
+// saving 5 SCHEMA slots. See
+// workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E03-001.md +
+// docs/thefinalglance/E-plan/E-3_model_handoff_ux.md.
+// E-31 sub-phase 6A (SCHEMA_VERSION 191): 463 -> 464 for
+// RouteDecisionEvent single-variant Pattern-2 (43rd application).
+// RouteDecisionEventKind 3-arm discriminator covers cloud_route_chosen /
+// tier_model_swapped / local_route_kept. Wire-dark unless
+// ELAI_ROUTE_DECISION_SSB_ENABLE=1. Producer:
+// crates/orchestrator/src/cloud_mode.rs::CloudModeRouter::route via
+// providers::runtime::RuntimeRoutingPolicy::evaluate. Closes the E-31
+// plan's deferred CloudRouteDecision + TierModelSwap envelopes in a
+// SINGLE Pattern-2 variant. See
+// workflow/sessions/s-21636/exploration/tranche6-E31-wiring.md +
+// docs/strategy/E-31-tier-matrix.md.
+//
+// E-47 (SCHEMA_VERSION 192): bump 191 -> 192 for LoraShipGateEvent
+// SINGLE-VARIANT Pattern-2 (44th application). LoraShipGateEventPhase
+// 3-arm discriminator covers refused / calibration_missing /
+// calibration_passed. Wire-dark unless ELAI_LORA_SHIP_GATE_ENABLE=1.
+// Producer: crates/orchestrator/src/lora_ship_gate.rs +
+// `elai lora-gate-check` CLI subcommand. Ships the LoRA ship-gate
+// LOCALLY (default-deferred posture); producer-side LoRA training
+// stack (Unsloth + QLoRA-NF4 + PiSSA + DoRA on RTX 3090) is
+// RUNPOD-PENDING. See workflow/reasoning/E-47-decisions.md.
+//
+// Tranche B-6 quad (SCHEMA_VERSION 194): bump 466 -> 470 for four new
+// SSB substrates landing in one coordinated orchestrate run:
+//   * C-42 McpAuthzEvent (3-arm Kind authz_check_passed /
+//     authz_check_failed / corpus_replayed). Wire-dark unless
+//     ELAI_C42_MCP_AUTHZ_EMIT_ENABLE=1. Producer:
+//     crates/plugins/src/authz/compose.rs::compose_with_tool_gate.
+//   * C-47 ToolCalibrationEvent (6-arm Kind hint_emitted /
+//     drift_detected / call_logged / case_added / case_selected /
+//     calibration_applied). Wire-dark unless
+//     ELAI_C47_CASE_BASE_ENABLE=1. The 3 pre-existing
+//     tool_call_logged / tool_calibration_hint_emitted /
+//     tool_calibration_drift_detected variants stay alive for one
+//     release window as deprecation aliases.
+//   * B-39 ReflectBudgetSoftWarn (single-add, 5th reflect_* sibling).
+//     Wire-dark unless ELAI_B39_SOFTWARN_ENABLE=1. Producer:
+//     crates/reasoning/src/chat_reflect.rs ~L454.
+//   * C-50 ContractCodingEvent (3-arm Kind retry_attempted /
+//     retry_resolved / retry_abandoned). Wire-dark unless
+//     ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE=1. Producer:
+//     crates/orchestrator/src/task_runner.rs::fix_and_rerun_until_green.
+//     Pre-existing contract_violation_detected stays alive (NOT
+//     collapsed in this tranche).
+// See workflow/reasoning/B6-quad-tranche-decisions.md.
+//
+// Tranche B-7 triple (SCHEMA_VERSION 195, 2026-05-31): +1 new top-level
+// variant (TddVerificationEvent) lands as the 4-arm Pattern-2 envelope
+// covering E-13 PropertyGatePass / MutationGateSurvivorBlock /
+// AntiMockBlock + E-12 AssertionOnlyDiffBlock. The SaasArchPatternEventKind
+// arm extension (E-50 SaasArchetypeSelected, 12th arm) is variant-internal
+// and does NOT bump TOTAL_VARIANTS. See workflow/reasoning/
+// B7-triple-tranche-decisions.md.
+const TOTAL_VARIANTS: usize = 471;
 
 /// All SsbActionType variants in enum DECLARATION order. Append-only -- new
 /// variants go at the end of this array AND at the end of the enum AND get a
@@ -929,6 +1038,12 @@ const ALL_VARIANTS: [SsbActionType; TOTAL_VARIANTS] = [
     SsbActionType::TddCycleStarted,
     SsbActionType::TddTestFailed,
     SsbActionType::TddTestPassed,
+    // Tranche B-7 triple (SCHEMA_VERSION 195): TDD verification gate
+    // substrate. Pattern-2 (46th application). 4-arm Kind discriminator
+    // covers PropertyGatePass / MutationGateSurvivorBlock / AntiMockBlock
+    // / AssertionOnlyDiffBlock. See
+    // workflow/reasoning/B7-triple-tranche-decisions.md.
+    SsbActionType::TddVerificationEvent,
     // E-14 (SCHEMA_VERSION 131): browser-e2e agent beacon family.
     // 4 atomic variants — journey run entry + per-assertion + per-snapshot
     // rows. See workflow/reasoning/E-14-decisions.md.
@@ -1343,6 +1458,68 @@ const ALL_VARIANTS: [SsbActionType; TOTAL_VARIANTS] = [
     // citation_attribution_violation_blocked / recency_decay_applied.
     // Wire-dark unless ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE=1.
     SsbActionType::WebResearchEvent,
+    // E-44 (SCHEMA_VERSION 186): durability observability substrate.
+    // SINGLE-VARIANT Pattern-2 (38th application);
+    // DurabilityEventKind 10-arm discriminator covers
+    // tool_idempotency_hit / tool_idempotency_replayed_irreversible /
+    // compensation_logged / compensation_replayed /
+    // compensation_failed / session_dag_continue_as_new /
+    // checkpoint_lazy_migrated / compact_lock_contended /
+    // agent_reliability_metrics / tool_error_classified.
+    // Wire-dark unless ELAI_DURABILITY_OBSERVABILITY_ENABLE=1.
+    // TASK-E44-013 observability gap closure.
+    SsbActionType::DurabilityEvent,
+    // E-31 (SCHEMA_VERSION 187): head_dim invariant verification substrate.
+    // SINGLE-VARIANT Pattern-2 (39th application);
+    // HeadDimInvariantVerifiedKind 2-arm discriminator covers
+    // verified / refused. Wire-dark unless
+    // ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE=1. TASK-E31-001 closure.
+    SsbActionType::HeadDimInvariantVerified,
+    // E-3 (SCHEMA_VERSION 188): role-shown / model-hidden default
+    // telemetry substrate. SINGLE-VARIANT Pattern-2 (40th application);
+    // no Kind discriminator (scope-lean MVP). Wire-dark unless
+    // ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1. TASK-E03-001 MVP closure.
+    SsbActionType::RoleShownModelHidden,
+    // E-49 (SCHEMA_VERSION 189): coding-agent metrics named-token
+    // substrate. SINGLE-VARIANT Pattern-2 (41st application);
+    // CodingMetricNamedTokenKind 3-arm discriminator covers
+    // stable_pass_at_1 / harness_attribution_tuple / stop_verified.
+    // Wire-dark unless ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE=1.
+    // Closes TASK-E49-005 / 006 / 007 SPEC-DRIFT.
+    SsbActionType::CodingMetricNamedToken,
+    // E-3 sub-phase 4A (SCHEMA_VERSION 190): runtime handoff event
+    // substrate. SINGLE-VARIANT Pattern-2 (42nd application);
+    // RuntimeHandoffEventKind 6-arm discriminator covers
+    // unified_preamble_applied / runtime_prewarm_started /
+    // runtime_prewarm_complete / handoff_payload_compressed /
+    // persona_vector_applied / style_normalizer_applied. Wire-dark
+    // unless ELAI_E3_RUNTIME_HANDOFF_ENABLE=1. TASK-E03-001 4A.
+    SsbActionType::E3RuntimeHandoffEvent,
+    // E-31 sub-phase 6A (SCHEMA_VERSION 191): cloud-route decision
+    // event substrate. SINGLE-VARIANT Pattern-2 (43rd application);
+    // RouteDecisionEventKind 3-arm discriminator covers
+    // cloud_route_chosen / tier_model_swapped / local_route_kept.
+    // Wire-dark unless ELAI_ROUTE_DECISION_SSB_ENABLE=1.
+    SsbActionType::RouteDecisionEvent,
+    // E-47 (SCHEMA_VERSION 192): LoRA fine-tuning ship-gate substrate.
+    // SINGLE-VARIANT Pattern-2 (44th application);
+    // LoraShipGateEventPhase 3-arm discriminator covers
+    // refused / calibration_missing / calibration_passed. Wire-dark
+    // unless ELAI_LORA_SHIP_GATE_ENABLE=1.
+    SsbActionType::LoraShipGateEvent,
+    // E-40 Tranche B-2 (SCHEMA_VERSION 193): SymbolGraph augmentation
+    // substrate. SINGLE-VARIANT Pattern-2 (45th application);
+    // SymbolGraphEventKind 4-arm discriminator covers
+    // symbol_dsl_executed / dataflow_impact_computed /
+    // agent_impact_claim_refuted / scope_graph_resolved. Wire-dark
+    // unless ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE=1.
+    SsbActionType::SymbolGraphEvent,
+    // Tranche B-6 quad (SCHEMA_VERSION 194): four new SSB substrates.
+    // See header SCHEMA_VERSION block for full tranche docs.
+    SsbActionType::McpAuthzEvent,
+    SsbActionType::ToolCalibrationEvent,
+    SsbActionType::ReflectBudgetSoftWarn,
+    SsbActionType::ContractCodingEvent,
 ];
 
 /// Compile-time exhaustiveness check: if a new variant lands in ssb.rs without
@@ -1764,6 +1941,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::TddCycleStarted => (),
         SsbActionType::TddTestFailed => (),
         SsbActionType::TddTestPassed => (),
+        // Tranche B-7 triple (SCHEMA_VERSION 195): TDD verification gate.
+        SsbActionType::TddVerificationEvent => (),
         // E-14 (SCHEMA_VERSION 131): browser-e2e agent beacons.
         SsbActionType::BrowserE2eRunStarted => (),
         SsbActionType::BrowserE2eAssertionFailed => (),
@@ -1899,6 +2078,28 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // E-48 (SCHEMA_VERSION 185): web-research orchestrator hardening
         // substrate.
         SsbActionType::WebResearchEvent => (),
+        // E-44 (SCHEMA_VERSION 186): durability observability substrate.
+        SsbActionType::DurabilityEvent => (),
+        // E-31 (SCHEMA_VERSION 187): head_dim invariant verification substrate.
+        SsbActionType::HeadDimInvariantVerified => (),
+        // E-3 (SCHEMA_VERSION 188): role-shown / model-hidden default
+        // telemetry substrate.
+        SsbActionType::RoleShownModelHidden => (),
+        // E-49 (SCHEMA_VERSION 189): coding-agent metrics named-token substrate.
+        SsbActionType::CodingMetricNamedToken => (),
+        // E-3 sub-phase 4A (SCHEMA_VERSION 190): runtime handoff event substrate.
+        SsbActionType::E3RuntimeHandoffEvent => (),
+        // E-31 sub-phase 6A (SCHEMA_VERSION 191): cloud-route decision event substrate.
+        SsbActionType::RouteDecisionEvent => (),
+        // E-47 (SCHEMA_VERSION 192): LoRA fine-tuning ship-gate substrate.
+        SsbActionType::LoraShipGateEvent => (),
+        // E-40 Tranche B-2 (SCHEMA_VERSION 193): SymbolGraph augmentation substrate.
+        SsbActionType::SymbolGraphEvent => (),
+        // Tranche B-6 quad (SCHEMA_VERSION 194): four new SSB substrates.
+        SsbActionType::McpAuthzEvent => (),
+        SsbActionType::ToolCalibrationEvent => (),
+        SsbActionType::ReflectBudgetSoftWarn => (),
+        SsbActionType::ContractCodingEvent => (),
     }
 }
 

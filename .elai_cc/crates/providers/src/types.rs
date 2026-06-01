@@ -3,10 +3,11 @@ use elai_core::TokenUsage;
 use crate::pricing::{
     estimate_cost_usd, estimate_cost_usd_with_pricing, pricing_for_model, UsageCostEstimate,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MessageRequest {
     pub model: String,
     pub max_tokens: u32,
@@ -60,7 +61,7 @@ impl MessageRequest {
 /// kind). Anthropic accepts at most 4 cache_control markers per request;
 /// B-27 cloud_mode applies them to the system prompt block and the last
 /// ToolDefinition only (2 markers, well under the cap).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub kind: String,
@@ -80,7 +81,7 @@ impl CacheControl {
 /// One block in the Anthropic system prompt array. The wire array form
 /// (replacing the legacy `system: "..."` string) is required to attach
 /// cache_control markers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SystemBlock {
     #[serde(rename = "type")]
     pub kind: String,
@@ -111,7 +112,7 @@ impl SystemBlock {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct InputMessage {
     pub role: String,
     pub content: Vec<InputContentBlock>,
@@ -148,7 +149,7 @@ impl InputMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputContentBlock {
     Text {
@@ -171,14 +172,14 @@ pub enum InputContentBlock {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolResultContentBlock {
     Text { text: String },
     Json { value: Value },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolDefinition {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -194,7 +195,7 @@ pub struct ToolDefinition {
     pub cache_control: Option<CacheControl>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolChoice {
     Auto,
@@ -202,7 +203,7 @@ pub enum ToolChoice {
     Tool { name: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MessageResponse {
     pub id: String,
     #[serde(rename = "type")]
@@ -228,7 +229,7 @@ impl MessageResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutputContentBlock {
     Text {
@@ -250,7 +251,7 @@ pub enum OutputContentBlock {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Usage {
     /// Anthropic streaming spec: only `message_start` carries `input_tokens`;
     /// the per-chunk `message_delta` event omits it. Treat as optional with

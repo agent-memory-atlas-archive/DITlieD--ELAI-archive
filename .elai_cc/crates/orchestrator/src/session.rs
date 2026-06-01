@@ -74,6 +74,13 @@ pub struct SessionCompaction {
 pub struct SessionFork {
     pub parent_session_id: String,
     pub branch_name: Option<String>,
+    /// E-25 Tranche B-4 (D5): canonical lineage marker for handoff metadata.
+    /// Mirrors `parent_session_id` for the immediate-fork case but is reserved
+    /// to record the ROOT session id when chain-forking is added in a
+    /// follow-up (e.g. session A -> B -> C will carry forked_from = A on C).
+    /// `None` for direct forks (back-compat: deserialized handoffs default
+    /// to `None` per `from_json` below).
+    pub forked_from: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +242,9 @@ impl Session {
             fork: Some(SessionFork {
                 parent_session_id: self.session_id.clone(),
                 branch_name: normalize_optional_string(branch_name),
+                // E-25 D5: direct fork -- forked_from left None; reserved for
+                // chain-fork lineage (root session id) in a future follow-up.
+                forked_from: None,
             }),
             persistence: None,
         }
@@ -737,6 +747,12 @@ impl SessionFork {
                 JsonValue::String(branch_name.clone()),
             );
         }
+        if let Some(forked_from) = &self.forked_from {
+            object.insert(
+                "forked_from".to_string(),
+                JsonValue::String(forked_from.clone()),
+            );
+        }
         JsonValue::Object(object)
     }
 
@@ -748,6 +764,12 @@ impl SessionFork {
             parent_session_id: required_string(object, "parent_session_id")?,
             branch_name: object
                 .get("branch_name")
+                .and_then(JsonValue::as_str)
+                .map(ToOwned::to_owned),
+            // E-25 D5: backward-compat -- older JSON handoffs without
+            // `forked_from` deserialize to None.
+            forked_from: object
+                .get("forked_from")
                 .and_then(JsonValue::as_str)
                 .map(ToOwned::to_owned),
         })
@@ -1101,6 +1123,7 @@ mod tests {
             Some(SessionFork {
                 parent_session_id: session.session_id,
                 branch_name: Some("investigation".to_string()),
+                forked_from: None,
             })
         );
         assert_eq!(restored.messages, forked.messages);

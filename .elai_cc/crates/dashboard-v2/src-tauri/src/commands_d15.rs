@@ -30,6 +30,12 @@ const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 500;
 
 /// Typed mirror of [`elai_orchestrator::novelty::NoveltyClassifiedRow`].
+///
+/// FINAL TRANCHE B4 / D-15 -- `candidate_status` carries the optional
+/// lifecycle stage ("queued" / "ratified" / "rejected") for discovery
+/// candidates; absent for legacy rows + non-DiscoveryCandidate classes.
+/// Serialized via `#[serde(default, skip_serializing_if = "Option::is_none")]`
+/// so the dashboard front-end sees the field only when set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoveltyClassifiedRowDto {
     pub template_id: String,
@@ -37,6 +43,8 @@ pub struct NoveltyClassifiedRowDto {
     pub dkg_match_count: u32,
     pub near_duplicate_threshold: f64,
     pub ts_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_status: Option<String>,
 }
 
 /// Typed mirror of [`elai_orchestrator::novelty::NoveltyDistribution`].
@@ -90,6 +98,10 @@ pub async fn get_novelty_recent(
                 dkg_match_count: r.dkg_match_count,
                 near_duplicate_threshold: r.near_duplicate_threshold,
                 ts_ms: r.ts_ms,
+                // FINAL TRANCHE B4 / D-15: forward the optional lifecycle
+                // stage to the front-end so NoveltyPanel can render
+                // Queued / Ratified / Rejected badges per row.
+                candidate_status: r.candidate_status,
             })
             .collect();
 
@@ -135,6 +147,115 @@ pub async fn get_novelty_distribution(
     })
 }
 
+/// D-27 gap closure: per-class breakdown view consumed by the
+/// `NoveltyBreakdown.svelte` inline widget. Extends
+/// [`NoveltyDistributionDto`] with per-class percentages and a dominant-
+/// class label so the panel can render bars + a tinted header without
+/// running division client-side. Read-only — composes the same producer
+/// rows as [`get_novelty_distribution`].
+///
+/// Percentages are clamped to the inclusive `[0.0, 100.0]` range and
+/// computed against the same `total` count returned by the orchestrator
+/// distribution helper. `dominant_class` is the snake_case class label
+/// with the highest count (ties broken by the canonical class order
+/// search > distant_search > discovery_candidate so the choice is
+/// deterministic). `None` when `total == 0`.
+///
+/// Added per workflow/sessions/s-night-2026-05-30/cross-check/D/
+/// D-09_d26_d27_d28.md TASK-D27-003 / TASK-D27-005 — the D-27 plan
+/// names `get_novelty_breakdown` as a literal deliverable but only the
+/// composite `get_mode_routing_refusal_combined` + the D-15 distribution
+/// surface existed. This command closes the literal-name gap and feeds
+/// the matching `NoveltyBreakdown.svelte` panel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NoveltyBreakdownDto {
+    pub total: u32,
+    pub search: u32,
+    pub distant_search: u32,
+    pub discovery_candidate: u32,
+    /// `search` count as a percentage of `total`, clamped to `[0.0, 100.0]`.
+    pub search_pct: f64,
+    /// `distant_search` count as a percentage of `total`, clamped to `[0.0, 100.0]`.
+    pub distant_search_pct: f64,
+    /// `discovery_candidate` count as a percentage of `total`, clamped to `[0.0, 100.0]`.
+    pub discovery_candidate_pct: f64,
+    /// Highest-count class (snake_case) or `None` when `total == 0`.
+    pub dominant_class: Option<String>,
+    /// Cap applied to the underlying distribution query — echoed back so
+    /// the frontend can render a "last N classifications" footer matching
+    /// the panel contract used elsewhere.
+    pub limit_applied: u32,
+}
+
+/// Pure helper: compute the canonical breakdown from a raw distribution.
+/// Pulled out so the unit test can exercise it without spinning up an
+/// `AppState` / SSB viewer pair.
+fn breakdown_from_distribution(
+    total: u32,
+    search: u32,
+    distant_search: u32,
+    discovery_candidate: u32,
+    limit_applied: u32,
+) -> NoveltyBreakdownDto {
+    let pct = |n: u32| -> f64 {
+        if total == 0 {
+            return 0.0;
+        }
+        let raw = (f64::from(n) * 100.0) / f64::from(total);
+        raw.clamp(0.0, 100.0)
+    };
+    let dominant_class = if total == 0 {
+        None
+    } else {
+        // Canonical class order for tie-break: search > distant_search >
+        // discovery_candidate. Mirrors arXiv:2406.05761 three-bucket
+        // taxonomy column order used in D-15 producer.
+        let mut best: (&str, u32) = ("search", search);
+        if distant_search > best.1 {
+            best = ("distant_search", distant_search);
+        }
+        if discovery_candidate > best.1 {
+            best = ("discovery_candidate", discovery_candidate);
+        }
+        Some(best.0.to_string())
+    };
+    NoveltyBreakdownDto {
+        total,
+        search,
+        distant_search,
+        discovery_candidate,
+        search_pct: pct(search),
+        distant_search_pct: pct(distant_search),
+        discovery_candidate_pct: pct(discovery_candidate),
+        dominant_class,
+        limit_applied,
+    }
+}
+
+#[tauri::command]
+pub async fn get_novelty_breakdown(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<NoveltyBreakdownDto, String> {
+    let cap = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+    let limit_applied = u32::try_from(cap).unwrap_or(u32::MAX);
+    let viewer = match &state.viewer {
+        Some(v) => v.clone(),
+        None => {
+            return Ok(breakdown_from_distribution(0, 0, 0, 0, limit_applied));
+        }
+    };
+
+    let d = elai_orchestrator::novelty::novelty_distribution(&viewer, cap);
+    Ok(breakdown_from_distribution(
+        d.total,
+        d.search,
+        d.distant_search,
+        d.discovery_candidate,
+        limit_applied,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +268,9 @@ mod tests {
             dkg_match_count: 7,
             near_duplicate_threshold: 0.9,
             ts_ms: 1_700_000_000_000,
+            // FINAL TRANCHE B4 / D-15: None preserves the legacy wire
+            // shape for Search-class rows (no lifecycle).
+            candidate_status: None,
         };
         let s = serde_json::to_string(&dto).expect("serialize");
         for key in [
@@ -192,6 +316,62 @@ mod tests {
         };
         let s = serde_json::to_string(&r).expect("serialize");
         for key in ["\"rows\"", "\"distribution\""] {
+            assert!(s.contains(key), "missing key {key} in {s}");
+        }
+    }
+
+    #[test]
+    fn breakdown_zero_total_returns_zero_pct_and_none_dominant() {
+        let b = breakdown_from_distribution(0, 0, 0, 0, 50);
+        assert_eq!(b.total, 0);
+        assert_eq!(b.search_pct, 0.0);
+        assert_eq!(b.distant_search_pct, 0.0);
+        assert_eq!(b.discovery_candidate_pct, 0.0);
+        assert!(b.dominant_class.is_none());
+        assert_eq!(b.limit_applied, 50);
+    }
+
+    #[test]
+    fn breakdown_percentages_sum_within_rounding_when_classes_split() {
+        let b = breakdown_from_distribution(10, 5, 3, 2, 50);
+        assert_eq!(b.total, 10);
+        assert!((b.search_pct - 50.0).abs() < 1e-9);
+        assert!((b.distant_search_pct - 30.0).abs() < 1e-9);
+        assert!((b.discovery_candidate_pct - 20.0).abs() < 1e-9);
+        assert_eq!(b.dominant_class.as_deref(), Some("search"));
+    }
+
+    #[test]
+    fn breakdown_dominant_class_tie_break_prefers_search() {
+        // Tie between search and distant_search: canonical order picks
+        // search first per arXiv:2406.05761 column-order convention.
+        let b = breakdown_from_distribution(4, 2, 2, 0, 50);
+        assert_eq!(b.dominant_class.as_deref(), Some("search"));
+
+        // Distant_search strictly larger -> wins.
+        let b = breakdown_from_distribution(5, 1, 3, 1, 50);
+        assert_eq!(b.dominant_class.as_deref(), Some("distant_search"));
+
+        // Discovery_candidate strictly larger -> wins.
+        let b = breakdown_from_distribution(7, 1, 1, 5, 50);
+        assert_eq!(b.dominant_class.as_deref(), Some("discovery_candidate"));
+    }
+
+    #[test]
+    fn breakdown_dto_serializes_with_expected_field_names() {
+        let b = breakdown_from_distribution(4, 2, 1, 1, 50);
+        let s = serde_json::to_string(&b).expect("serialize");
+        for key in [
+            "\"total\"",
+            "\"search\"",
+            "\"distant_search\"",
+            "\"discovery_candidate\"",
+            "\"search_pct\"",
+            "\"distant_search_pct\"",
+            "\"discovery_candidate_pct\"",
+            "\"dominant_class\"",
+            "\"limit_applied\"",
+        ] {
             assert!(s.contains(key), "missing key {key} in {s}");
         }
     }

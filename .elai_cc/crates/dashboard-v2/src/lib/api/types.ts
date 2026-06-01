@@ -257,7 +257,65 @@ export type DrawerKey =
   // E-29 — Failure modes drawer (agentic observability: tool-bypass,
   // multi-step reasoning failures, attribution-loss, sycophantic-confirm,
   // OTel span breakages emitted via AgenticObservabilityEvent SSB rows).
-  | 'failure-modes';
+  | 'failure-modes'
+  // C-41 — Application Skills System (9 skills under .elai_cc/skills/,
+  // pre-classify routing telemetry via skill_triggered + skill_executed
+  // SSB rows). Wire-dark unless ELAI_APPLICATION_SKILLS_ENABLE=1.
+  | 'skills';
+
+// ------------------------------------------------------------------
+// C-41 — Application Skills System DTOs.
+// Mirror the Tauri command surface in commands_c41.rs (camelCase on
+// the wire). The dashboard does NOT mint skills; it only inspects
+// the 9 canonical scaffolds under .elai_cc/skills/.
+// ------------------------------------------------------------------
+
+export interface SkillManifest {
+  name: string;
+  description: string;
+  type: string;
+  trigger_examples: string[];
+  estimated_minutes: number;
+  tags: string[];
+  version: string;
+  scope: string;
+}
+
+export interface SkillRoutingEvent {
+  timestamp_ms: number;
+  action_type: string;
+  skill_name_hash: number;
+  score: number;
+  top_k_rank: number;
+  fell_through: boolean;
+}
+
+// ------------------------------------------------------------------
+// E-25 Tranche N — Compaction-Ladder dashboard surface.
+//
+// Mirrors the two read-only Tauri commands in
+// crates/dashboard-v2/src-tauri/src/commands_e25.rs. The producer is
+// the orchestrator's task_runner PreCompact branch, gated by
+// ELAI_E25_COMPACTION_LADDER_ENABLE. Wire-dark by default.
+// ------------------------------------------------------------------
+
+export interface CompactionLadderStateDto {
+  enabled: boolean;
+  default_target_tokens: number;
+  tiers: string[];
+}
+
+export interface CompactionEventDto {
+  timestamp_ms: number;
+  session_id: string | null;
+  tier: string;
+  tier_ordinal: number;
+  bytes_freed: number;
+  budget_before: number;
+  budget_after: number;
+  target_budget: number;
+  wall_ms: number;
+}
 
 // ------------------------------------------------------------------
 // Agent roles
@@ -2694,12 +2752,19 @@ export type NoveltyClass = 'search' | 'distant_search' | 'discovery_candidate';
 // Shape of one `novelty_classified` SSB row as returned by the Tauri
 // `get_novelty_recent` command (mirror of Rust
 // `crate::novelty::NoveltyClassifiedRow`).
+//
+// FINAL TRANCHE B4 / D-15 -- `candidate_status` carries the optional
+// lifecycle stage ("queued" / "ratified" / "rejected") for discovery
+// candidates; absent for legacy rows + non-DiscoveryCandidate classes.
+// The dashboard NoveltyPanel renders a small badge per row when set.
+export type DiscoveryCandidateStatus = 'queued' | 'ratified' | 'rejected';
 export interface NoveltyClassifiedRow {
   template_id: string;
   class: string;
   dkg_match_count: number;
   near_duplicate_threshold: number;
   ts_ms: number;
+  candidate_status?: DiscoveryCandidateStatus | null;
 }
 
 // Per-class count snapshot for the dashboard distribution chart
@@ -2709,6 +2774,16 @@ export interface NoveltyDistribution {
   search: number;
   distant_search: number;
   discovery_candidate: number;
+}
+
+// Aggregated `get_novelty_recent` response (mirror of Rust
+// `commands_d15::RecentNovelty`). The Tauri command joins the most-recent
+// rows with a per-class distribution snapshot computed over the same
+// window so the consumer can render histograms + per-row badges without
+// re-walking JS.
+export interface RecentNovelty {
+  rows: NoveltyClassifiedRow[];
+  distribution: NoveltyDistribution;
 }
 
 // ------------------------------------------------------------------
@@ -2922,6 +2997,10 @@ export interface ContextState {
   prompt_injection_check_status: string;
   /** "local" | "cloud_billed" | "" — derived from B-37 runtime_fallback. */
   runtime_choice_badge: string;
+  /** E-3 4B — voice-section role (planner / coder / critic / default). */
+  current_role: string | null;
+  /** E-3 4B — underlying backend name; hidden by default in the chat UI. */
+  current_runtime: string | null;
 }
 
 export interface TrustReport {

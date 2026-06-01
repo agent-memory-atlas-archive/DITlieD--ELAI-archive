@@ -20,8 +20,7 @@
 //! Both shapes are needed; mirror the C-1 GroundingSweepResult /
 //! GroundingSweepEvidence pair pattern. See context-package-C29 DRIFT-C29-8.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 
 use crate::research_tree::BabyStepId;
@@ -175,10 +174,7 @@ pub struct IntentPairSet {
 /// UNIX_EPOCH, falling back to `0` if the system clock is before the
 /// epoch (clock skew). Pure helper — no panic.
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 impl IntentPairSet {

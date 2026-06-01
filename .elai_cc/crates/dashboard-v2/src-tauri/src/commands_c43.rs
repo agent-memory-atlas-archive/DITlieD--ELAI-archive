@@ -65,14 +65,15 @@ impl From<FreezeViolation> for FreezeViolationDto {
     }
 }
 
-/// Resolve the workspace root. Falls back to CWD when the
-/// caller-provided override is None.
-fn resolve_workspace_root(override_root: Option<String>) -> Result<PathBuf, String> {
+/// Resolve the workspace root. Falls back to the dashboard's active
+/// project_root (set by `open_project_from_folder`) when the
+/// caller-provided override is None. Never falls back to CWD: that
+/// returned ELAI's own binary tree when the bat was double-clicked.
+fn resolve_workspace_root(state: &AppState, override_root: Option<String>) -> Result<PathBuf, String> {
     if let Some(path) = override_root {
         return Ok(PathBuf::from(path));
     }
-    std::env::current_dir()
-        .map_err(|e| format!("cannot determine workspace root from cwd: {e}"))
+    Ok(state.project_root_snapshot())
 }
 
 /// Read the current scope-freeze manifest from disk + verify every
@@ -81,10 +82,10 @@ fn resolve_workspace_root(override_root: Option<String>) -> Result<PathBuf, Stri
 /// rather than crashing the panel.
 #[tauri::command]
 pub async fn scope_freeze_status(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     workspace_root: Option<String>,
 ) -> Result<FreezeStatusDto, String> {
-    let root = match resolve_workspace_root(workspace_root) {
+    let root = match resolve_workspace_root(&state, workspace_root) {
         Ok(r) => r,
         Err(e) => {
             return Ok(FreezeStatusDto {

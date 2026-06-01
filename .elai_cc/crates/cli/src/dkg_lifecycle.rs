@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{anyhow, Result};
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::dkg_db_path as core_dkg_db_path;
 use elai_knowledge::dkg::DkgEngine;
 use elai_knowledge::knowledge_ssb_sink::{
@@ -127,10 +128,12 @@ pub fn ensure_dkg_or_rebuild(
     workspace_root: &Path,
     sink: Arc<dyn KnowledgeSsbSink>,
 ) -> Result<DkgEngine> {
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // B-15 Tranche E E.1: ClockProvider via zero-sized OsClock Copy impl.
+    // The trait's default `now_secs` absorbs the
+    // `.duration_since(UNIX_EPOCH).unwrap_or(0)` saturation
+    // (crates/core/src/clock.rs:67-72). _with_clock variant below remains
+    // the test-friendly entry point.
+    let now_secs = OsClock.now_secs();
     ensure_dkg_or_rebuild_with_clock(
         workspace_root,
         sink,
@@ -184,12 +187,14 @@ pub fn ensure_dkg_or_rebuild_with_clock(
         trigger_reason: trigger.as_snake().to_owned(),
     });
 
-    let started_at = SystemTime::now();
+    // B-15 Tranche E E.1: ClockProvider via zero-sized OsClock Copy impl.
+    // Switched from SystemTime::now()+elapsed() (which can fault on clock
+    // jumps) to the trait's monotonic `instant_now()`
+    // (crates/core/src/clock.rs:54). Duration measurement is identical
+    // shape, but jump-safe.
+    let started_at = OsClock.instant_now();
     let rebuild_result = run_rebuild(&db_path, workspace_root);
-    let duration_ms = started_at
-        .elapsed()
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let duration_ms = started_at.elapsed().as_millis() as u64;
 
     match rebuild_result {
         Ok((engine, node_count)) => {

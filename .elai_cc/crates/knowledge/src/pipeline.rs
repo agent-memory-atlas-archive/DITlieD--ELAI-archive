@@ -21,8 +21,9 @@ use crate::QueryTier;
 
 use crate::arag::{AragOrchestrator, RetrievalResult};
 use crate::artifacts::ArtifactStage;
-use crate::bm25::Bm25Index;
+use crate::bm25::{BM25Chunk, Bm25Index};
 use crate::catrag::CatRag;
+use crate::contextual_retrieval::{self, ContextualisedChunk};
 use crate::cosmos_stage::CosmosStage;
 use crate::degradation::SearchMode;
 use crate::dkg::DkgEngine;
@@ -63,6 +64,54 @@ fn blake3_prefix_u64(bytes: &[u8]) -> u64 {
 const RRF_BM25_WEIGHT: f64 = 1.0;
 const RRF_CODE_VEC_WEIGHT: f64 = 1.0;
 const RRF_TEXT_VEC_WEIGHT: f64 = 0.8;
+/// E-40 Tranche B-2 task 7: 5th-list (symbol_graph_vec) weight.
+/// Plan-mandated 0.9 fixed weight per Task 7 spec. Wire-dark unless
+/// `ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE` is set — see
+/// [`symbol_graph_5th_rrf_enabled_from_env`].
+const RRF_SYMBOL_GRAPH_VEC_WEIGHT: f64 = 0.9;
+
+/// E-40 Tranche B-2 task 7: env-gate for the 5th-list symbol_graph_vec
+/// RRF input. Default-OFF so the production pipeline continues to
+/// produce the existing 4-list RRF until the operator opts in.
+pub const ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV: &str = "ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE";
+
+/// Read [`ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV`] and return `true` when
+/// the gate is on. Default (unset / invalid) = `false`.
+pub fn symbol_graph_5th_rrf_enabled_from_env() -> bool {
+    match std::env::var(ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV) {
+        Ok(v) => {
+            let t = v.trim();
+            t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("on")
+        }
+        Err(_) => false,
+    }
+}
+
+/// E-17 SP4 wire: env gate for Anthropic Contextual Retrieval at ingest.
+///
+/// When set to a truthy value (`1`/`true`/`on`, case-insensitive), the
+/// pipeline routes `BM25Chunk` lists through
+/// [`contextual_retrieval::contextualize_chunk`] before they reach the
+/// BM25 writer (and therefore before vector embedding picks the same
+/// text up). Default-OFF: the chunk-text change invalidates embedding
+/// caches, so reindex must be opt-in until SP6 ships the measured
+/// recall@5 delta that justifies a default flip.
+///
+/// Reference: anthropic.com/news/contextual-retrieval (Sep 2024).
+pub const ELAI_CONTEXTUAL_RETRIEVAL_ENABLE_ENV: &str = "ELAI_CONTEXTUAL_RETRIEVAL_ENABLE";
+
+/// Read [`ELAI_CONTEXTUAL_RETRIEVAL_ENABLE_ENV`] and return `true` when
+/// the gate is on. Default (unset / invalid) = `false` — see the const
+/// docs for the embedding-cache rationale.
+fn contextual_retrieval_enabled() -> bool {
+    match std::env::var(ELAI_CONTEXTUAL_RETRIEVAL_ENABLE_ENV) {
+        Ok(v) => {
+            let t = v.trim();
+            t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("on")
+        }
+        Err(_) => false,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PipelineStage
@@ -138,6 +187,16 @@ pub struct QueryPipeline {
     /// [`QueryPipeline::with_clock`]. The entropy quarantine is preserved
     /// — no `std::time::Instant` reads occur in this module.
     clock: Arc<dyn ClockProvider>,
+    /// E-40 Tranche B-2: optional orchestrator-rooted symbol-graph
+    /// adapter for the 5th-list (`symbol_graph_vec`) RRF input. When
+    /// `Some` and the [`ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV`] env gate
+    /// is on, the pipeline calls `dataflow_impact` for any symbol-like
+    /// query and merges the impacted-symbol set as a 5th RRF list.
+    /// None by default — the existing 4-list RRF (bm25 / vector /
+    /// code_vector / splade) is preserved when the gate is off or no
+    /// adapter is installed. See
+    /// `workflow/reasoning/E-40-tranche-B2-decisions.md`.
+    symbol_graph_adapter: Option<Arc<dyn crate::symbol_graph_adapter::SymbolGraphAdapter>>,
 }
 
 impl QueryPipeline {
@@ -163,7 +222,23 @@ impl QueryPipeline {
             vector_cache: None,
             session_id: DEFAULT_SESSION_ID.to_owned(),
             clock: Arc::new(OsClock),
+            symbol_graph_adapter: None,
         }
+    }
+
+    /// E-40 Tranche B-2: builder-style installer for the optional
+    /// orchestrator-rooted `SymbolGraphAdapter`. Production wiring at
+    /// `cli::live_cli::build_local_knowledge_stack` calls this with an
+    /// `Arc::new(SymbolGraphCacheAdapter::new(...))` so the pipeline
+    /// can run the 5th-list `symbol_graph_vec` RRF input. The 5th list
+    /// is still gated by [`ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV`] —
+    /// installing the adapter does not flip the behaviour on by itself.
+    pub fn with_symbol_graph_adapter(
+        mut self,
+        adapter: Arc<dyn crate::symbol_graph_adapter::SymbolGraphAdapter>,
+    ) -> Self {
+        self.symbol_graph_adapter = Some(adapter);
+        self
     }
 
     /// C-1: builder-style installer for the knowledge SSB sink. Production
@@ -258,6 +333,85 @@ impl QueryPipeline {
     pub fn with_splade(mut self, expander: SpladeExpander) -> Self {
         self.splade = Some(expander);
         self
+    }
+
+    /// E-17 SP4 wire: contextualise a chunk list in-place before BM25
+    /// ingest + vector embedding. No-op (returns input unchanged) when
+    /// the env gate [`ELAI_CONTEXTUAL_RETRIEVAL_ENABLE_ENV`] is unset
+    /// or false.
+    ///
+    /// `source` is the raw file text that produced `chunks`. The
+    /// heuristic prefix scans up to [`contextual_retrieval::CONTEXT_WINDOW_LINES`]
+    /// lines above each chunk's `line_start` for a nearby heading or
+    /// signature, so passing the full file (not a single chunk's slice)
+    /// is required for the anchor scan to find anything useful.
+    ///
+    /// Idempotent: chunks whose body already starts with the contextual
+    /// header (re-ingest scenario) are skipped via
+    /// [`contextual_retrieval::is_contextualised`] so a second pass over
+    /// the same chunk list does not stack prefixes.
+    ///
+    /// Returns the (possibly rewritten) chunk vector plus a count of how
+    /// many entries were contextualised this call. Callers can surface
+    /// the count via tracing / SSB.
+    pub fn contextualise_chunks_if_enabled(
+        chunks: Vec<BM25Chunk>,
+        source: &str,
+    ) -> (Vec<BM25Chunk>, usize) {
+        if !contextual_retrieval_enabled() {
+            return (chunks, 0);
+        }
+        let mut out: Vec<BM25Chunk> = Vec::with_capacity(chunks.len());
+        let mut contextualised_count: usize = 0;
+        for chunk in chunks.into_iter() {
+            if contextual_retrieval::is_contextualised(&chunk) {
+                out.push(chunk);
+                continue;
+            }
+            let ContextualisedChunk {
+                chunk: rewritten,
+                fresh_prefix,
+                ..
+            } = contextual_retrieval::contextualize_chunk(chunk, source, None);
+            if fresh_prefix {
+                contextualised_count += 1;
+            }
+            out.push(rewritten);
+        }
+        (out, contextualised_count)
+    }
+
+    /// E-17 SP4 wire: convenience entry that mirrors
+    /// [`Bm25Index::index_file`] but routes the chunk list through
+    /// [`Self::contextualise_chunks_if_enabled`] first when the env
+    /// gate is on. `chunks` is required (callers that want auto-chunking
+    /// should keep using `bm25.index_file(path, None)` and accept that
+    /// the contextual-retrieval wire is a no-op in that path until a
+    /// follow-up makes `Bm25Index::chunk_file` public or adds an
+    /// internal hook).
+    ///
+    /// Emits a `tracing::info!` beacon with target
+    /// `knowledge::contextual_retrieval` carrying the path + count when
+    /// any chunk was rewritten — observable on the dashboard without a
+    /// SCHEMA bump (the typed SSB row is SCHEMA-DEFERRED per
+    /// workflow/reasoning/E-17-decisions.md).
+    pub fn index_file_contextualised(
+        &mut self,
+        path: &std::path::Path,
+        source: &str,
+        chunks: Vec<BM25Chunk>,
+    ) -> Result<usize, KnowledgeError> {
+        let (rewritten, contextualised_count) =
+            Self::contextualise_chunks_if_enabled(chunks, source);
+        if contextualised_count > 0 {
+            tracing::info!(
+                target: "knowledge::contextual_retrieval",
+                path = %path.display(),
+                contextualised_count = contextualised_count,
+                "contextual_retrieval_activated"
+            );
+        }
+        self.bm25.index_file(path, Some(rewritten))
     }
 
     /// Execute the retrieval pipeline for a query with AUTO tier (backwards compatible).
@@ -768,6 +922,55 @@ impl QueryPipeline {
             error: None,
         });
 
+        // E-40 Tranche B-2: 5th-list `symbol_graph_vec` RRF input.
+        // Wire-dark until `ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE=1` AND a
+        // `SymbolGraphAdapter` has been installed via
+        // `with_symbol_graph_adapter(...)`. Best-effort: any adapter
+        // error degrades to an empty stage (the RRF accumulator
+        // iterates all stages uniformly, so an empty list is a no-op).
+        // Joins the pool alongside bm25 / vector / code_vector / splade
+        // as the 5th input list. Plan-mandated weight = 0.9 (named
+        // const RRF_SYMBOL_GRAPH_VEC_WEIGHT). See
+        // `workflow/reasoning/E-40-tranche-B2-decisions.md`.
+        if symbol_graph_5th_rrf_enabled_from_env() {
+            if let Some(ref adapter) = self.symbol_graph_adapter {
+                let sg_start = self.clock.now();
+                let project_root = std::path::Path::new(".");
+                // BFS impact analysis over the raw query string; if
+                // the query isn't a symbol id the adapter returns an
+                // empty list (best-effort). Depth fixed at 2 to stay
+                // within B-29.5 p99 ≤ 500ms budget.
+                let (sg_results, sg_error) =
+                    match adapter.dataflow_impact(query, project_root, 2) {
+                        Ok(resp) => {
+                            let results: Vec<RetrievalResult> = resp
+                                .impacted_symbols
+                                .iter()
+                                .enumerate()
+                                .map(|(i, sym)| RetrievalResult {
+                                    chunk_id: format!("symbol_graph_vec:{sym}"),
+                                    snippet: sym.clone(),
+                                    score: 1.0 / (1.0 + i as f64),
+                                    tool_used: "symbol_graph_vec".to_string(),
+                                })
+                                .collect();
+                            (results, None)
+                        }
+                        Err(e) => {
+                            tracing::debug!("symbol_graph_vec adapter error: {e}");
+                            (Vec::new(), Some(e.to_string()))
+                        }
+                    };
+                stages.push(PipelineStage {
+                    stage: "symbol_graph_vec".to_string(),
+                    results: sg_results,
+                    latency_ms: self.clock.elapsed_since(sg_start).as_millis() as u64,
+                    circuit_breaker_state: None,
+                    error: sg_error,
+                });
+            }
+        }
+
         // Stage 5: rerank (RRF fusion — all tiers, but FAST has only BM25 input).
         //
         // E-17 SP2 task 4: on DEEP tier, cap each stage's pool to
@@ -828,13 +1031,28 @@ impl QueryPipeline {
         let mut bm25_weight: Option<f64> = None;
         let mut code_vec_weight: Option<f64> = None;
         let mut text_vec_weight: Option<f64> = None;
+        // E-40 Tranche B-2: 5th-list symbol_graph_vec weight. Only
+        // surfaced when the stage actually fired (gate + adapter both
+        // present). Tracked locally for the tracing log below; the
+        // beacon struct stays at 3 fields so the existing
+        // `RrfComponentWeightsEvent` JSON shape does not drift.
+        let mut symbol_graph_vec_weight: Option<f64> = None;
         for stage in &stages {
             match stage.stage.as_str() {
                 "bm25" => bm25_weight = Some(RRF_BM25_WEIGHT),
                 "code_vector" => code_vec_weight = Some(RRF_CODE_VEC_WEIGHT),
                 "vector" => text_vec_weight = Some(RRF_TEXT_VEC_WEIGHT),
+                "symbol_graph_vec" => {
+                    symbol_graph_vec_weight = Some(RRF_SYMBOL_GRAPH_VEC_WEIGHT);
+                }
                 _ => {}
             }
+        }
+        if let Some(w) = symbol_graph_vec_weight {
+            tracing::debug!(
+                weight = w,
+                "E-40 Tranche B-2: symbol_graph_vec 5th-list RRF weight"
+            );
         }
         self.ssb_sink.emit_rrf_component_weights(RrfComponentWeightsEvent {
             bm25_weight,

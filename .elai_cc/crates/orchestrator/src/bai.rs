@@ -35,6 +35,7 @@
 
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::{EntropySource, SeededRng};
 
 use crate::archive_chain::{ArchiveChain, StagedEvalResult};
@@ -600,11 +601,7 @@ fn mutate_status_to_promoted(
 /// orchestrator-shared [`elai_core::ClockProvider`]; this fallback exists so
 /// the algorithm core has no clock dependency in unit tests.
 fn now_unix_millis() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_millis() as i64,
-        Err(_) => 0,
-    }
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 // ---------------------------------------------------------------------------

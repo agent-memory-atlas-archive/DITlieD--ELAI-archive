@@ -68,6 +68,12 @@ pub mod shortcoder;
 pub mod splade;
 pub mod startup;
 pub mod symbol_graph;
+// E-40 Tranche B-2: thin adapter trait the pipeline uses to call the
+// orchestrator-rooted JSON symbol-graph cache for the 5th-list RRF
+// integration. Concrete impl lives in
+// `crates/orchestrator/src/symbol_graph/mod.rs`. See
+// `workflow/reasoning/E-40-tranche-B2-decisions.md` GAPS-RESOLVED-2.
+pub mod symbol_graph_adapter;
 // B-33 — visualization module (VizData + Mermaid generator).
 // Pure std + serde + crate-local types; no new Cargo deps (knowledge/Cargo.toml
 // is owned by s-22200). Do NOT re-export from this module's contents at the

@@ -16,7 +16,7 @@
 //!
 //! See docs/thefinalglance/D-plan/D-9_l3_frozen_surfaces.md.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,9 @@ pub struct LockedKeysViolationDto {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LockedKeysRecentAudits {
     pub runs: Vec<LockedKeysAuditRunDto>,
-    pub violations_by_audit: HashMap<String, Vec<LockedKeysViolationDto>>,
+    // B-15 Tranche E E.3 / DE7: BTreeMap for serialization-observed
+    // iteration determinism (per gotchas.md B15_DETERMINISM_MAP_TYPES).
+    pub violations_by_audit: BTreeMap<String, Vec<LockedKeysViolationDto>>,
 }
 
 /// Read the current registry from disk and return a typed snapshot.
@@ -130,7 +132,7 @@ pub async fn get_locked_keys_recent_audits(
         None => {
             return Ok(LockedKeysRecentAudits {
                 runs: Vec::new(),
-                violations_by_audit: HashMap::new(),
+                violations_by_audit: BTreeMap::new(),
             });
         }
     };
@@ -155,7 +157,7 @@ pub async fn get_locked_keys_recent_audits(
     runs.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
     runs.truncate(cap);
 
-    let mut violations_by_audit: HashMap<String, Vec<LockedKeysViolationDto>> = HashMap::new();
+    let mut violations_by_audit: BTreeMap<String, Vec<LockedKeysViolationDto>> = BTreeMap::new();
     // Over-fetch by 4x — most runs emit 0 violations; this keeps the
     // grouped view consistent with the run cap.
     let fetch = cap.saturating_mul(4).min(MAX_LIMIT * 4);
@@ -186,16 +188,24 @@ pub async fn get_locked_keys_recent_audits(
 }
 
 fn default_registry_path() -> PathBuf {
-    // The Tauri app's cwd is `.elai_cc/crates/dashboard-v2/src-tauri`
-    // during `tauri:dev`, so walk up to `.elai_cc/` to find scripts/.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    for ancestor in cwd.ancestors() {
+    // The locked-keys registry is an ELAI-internal config that ships at
+    // `.elai_cc/scripts/locked_keys_registry.toml`. Walk ancestors of the
+    // binary's location (not cwd, which is now %USERPROFILE% in normal
+    // double-click launches per elai.bat) so we find it regardless of how
+    // the dashboard was invoked. tauri:dev still works: current_exe lives
+    // at `.elai_cc/target/debug/elai-dashboard-v2.exe`, ancestors include
+    // `.elai_cc/`.
+    let start = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    for ancestor in start.ancestors() {
         let candidate = ancestor.join("scripts").join("locked_keys_registry.toml");
         if candidate.exists() {
             return candidate;
         }
     }
-    cwd.join("scripts").join("locked_keys_registry.toml")
+    start.join("scripts").join("locked_keys_registry.toml")
 }
 
 fn unwrap_variant<'a>(

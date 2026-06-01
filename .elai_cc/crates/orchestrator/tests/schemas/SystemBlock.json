@@ -1,0 +1,42 @@
+{
+  "$defs": {
+    "CacheControl": {
+      "description": "Anthropic-compatible cache_control marker for prompt-prefix caching.\n\nWire shape: {\"type\":\"ephemeral\"} (5-min TTL, the only currently-supported\nkind). Anthropic accepts at most 4 cache_control markers per request;\nB-27 cloud_mode applies them to the system prompt block and the last\nToolDefinition only (2 markers, well under the cap).",
+      "properties": {
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One block in the Anthropic system prompt array. The wire array form\n(replacing the legacy `system: \"...\"` string) is required to attach\ncache_control markers.",
+  "properties": {
+    "cache_control": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CacheControl"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "text": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "text"
+  ],
+  "title": "SystemBlock",
+  "type": "object"
+}

@@ -13,10 +13,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use elai_core::OsEntropy;
 use elai_orchestrator::start_task_runner;
 
-use crate::runtime_builder::{apply_task_runner_wiring, build_task_runner_wiring};
+use crate::runtime_builder::{
+    apply_task_runner_wiring, build_task_runner_wiring, install_production_agent_pool,
+    CliInteractiveGate,
+};
 
 /// Parsed `elai run` arguments.
 #[derive(Debug, Clone)]
@@ -93,6 +95,28 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
         gate_mode = ?wiring.gate_mode,
         "elai run: autonomous-gate mode resolved"
     );
+
+    // B-6 #2: install CliInteractiveGate in production when the resolved
+    // gate_mode is Interactive. This is the SINGLE production constructor
+    // call for the struct defined at cli/src/runtime_builder.rs:393 + impl
+    // elai_orchestrator::InteractiveGate. apply_task_runner_wiring passes
+    // this handle as the second argument to AutonomousGate::new so the
+    // MODIFY / REDIRECT mixed-mode fallback path can reach the live CLI
+    // prompter without rebuilding the gate. Closes the cross-check finding
+    // "CliInteractiveGate defined but NEVER instantiated in production"
+    // (workflow/sessions/s-night-2026-05-30/cross-check/B/B-02_b4_b5_b6.md
+    // B-6 row "InteractiveGate actually instantiated UNMET"). Autonomous
+    // mode skips the construction because the gate is reserved for the
+    // human-prompt path -- AutonomousGate makes its own decisions.
+    if matches!(wiring.gate_mode, Some(elai_orchestrator::GateMode::Interactive)) {
+        let cli_gate: Arc<dyn elai_orchestrator::InteractiveGate> =
+            Arc::new(CliInteractiveGate);
+        wiring.interactive_gate = Some(cli_gate);
+        tracing::info!(
+            "elai run: CliInteractiveGate installed on RuntimeWiring \
+             (gate_mode=Interactive); B-6 #2 wiring closed"
+        );
+    }
 
     // C-5 — load `[cloud]` from `elai_cc.toml` and stash on the wiring so
     // `apply_task_runner_wiring` can construct the CloudModeRouter +
@@ -241,228 +265,11 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
         .join(&session_id)
         .join("cursor.json");
 
-    // Attempt to install the production agent-pool executor. The IPC socket
-    // directory lives alongside the cursor so all runner artefacts are
-    // co-located under the session subtree.
-    let ipc_dir = project_root
-        .join(elai_core::paths::ELAI_DATA_DIR_NAME)
-        .join("sessions")
-        .join(&session_id)
-        .join("ipc");
-    if let Err(e) = std::fs::create_dir_all(&ipc_dir) {
-        tracing::warn!(
-            path = %ipc_dir.display(),
-            error = %e,
-            "elai run: failed to create IPC socket dir; executor will fall back to synthetic"
-        );
-    } else {
-        match elai_orchestrator::locate_default_agent_binary() {
-            Ok(agent_bin) => {
-                let gateway = std::sync::Arc::new(tokio::sync::Mutex::new(
-                    elai_orchestrator::ipc_gateway::IpcGateway::with_os_clock(
-                        ipc_dir.clone(),
-                        elai_orchestrator::sandbox::SelfModificationLocks::new(),
-                    ),
-                ));
-                let rpc_server: std::sync::Arc<
-                    dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static,
-                > = if std::env::var("ELAI_GROUNDING_BACKEND").as_deref()
-                    == Ok("cloud")
-                {
-                    // Cloud path: AnthropicClient reads ANTHROPIC_BASE_URL +
-                    // auth from env. If credentials are absent, fall back to
-                    // NoOp so the executor still starts (inference will fail
-                    // gracefully per InferOutcome::Failed).
-                    match elai_providers::AnthropicClient::from_env() {
-                        Ok(client) => {
-                            let model = std::env::var("ELAI_MODEL")
-                                .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
-                            let max_tokens = std::env::var("ELAI_MAX_TOKENS")
-                                .ok()
-                                .and_then(|v| v.parse::<u32>().ok())
-                                .unwrap_or(4096);
-                            // Build a real InProcessToolDispatcher via elai-tools.
-                            // NoOpIntegrationCommandRunner returns honest "not wired" failures
-                            // for the integration tier; the 4 other dispatch methods are real.
-                            let dispatcher: std::sync::Arc<
-                                dyn elai_core::tool_dispatcher::ToolDispatcher,
-                            > = {
-                                struct NoOpIntegrationRunner;
-                                impl elai_tools::tiered_validation::IntegrationCommandRunner
-                                    for NoOpIntegrationRunner
-                                {
-                                    fn run_integration<'a>(
-                                        &'a self,
-                                        _level: &'a str,
-                                        _dir: &'a std::path::Path,
-                                    ) -> std::pin::Pin<
-                                        Box<
-                                            dyn std::future::Future<
-                                                    Output = elai_tools::tiered_validation::IntegrationRunOutcome,
-                                                > + Send
-                                                + 'a,
-                                        >,
-                                    > {
-                                        Box::pin(async {
-                                            elai_tools::tiered_validation::IntegrationRunOutcome {
-                                                passed: false,
-                                                rules_fired: 0,
-                                                stderr_snippet: Some(
-                                                    "integration tier not wired \
-                                                     (NoOpIntegrationRunner in CLI)"
-                                                        .to_string(),
-                                                ),
-                                            }
-                                        })
-                                    }
-                                }
-                                let validator = elai_tools::dispatcher::default_validator(
-                                    std::sync::Arc::new(NoOpIntegrationRunner),
-                                    "rust",
-                                );
-                                // C-13 — wrap the real InProcessToolDispatcher in the
-                                // IpcToolDispatcherAdapter shim so every production
-                                // tool call (a) passes the IpcToolRegistry FSM gate
-                                // and (b) emits the 10 missing DAIRA markers via
-                                // AdaptiveTool. See workflow/reasoning/C-13-decisions.md
-                                // (D1 Option B).
-                                let inner: std::sync::Arc<
-                                    dyn elai_core::tool_dispatcher::ToolDispatcher,
-                                > = std::sync::Arc::new(
-                                    elai_tools::dispatcher::InProcessToolDispatcher::new(
-                                        std::sync::Arc::new(validator),
-                                    ),
-                                );
-                                std::sync::Arc::new(
-                                    elai_tools::adaptive_tool::IpcToolDispatcherAdapter::new(
-                                        inner,
-                                        wiring.ssb.clone(),
-                                    ),
-                                )
-                            };
-                            // patch-R5 — wire the canonical baby-step system
-                            // prompt so Sonnet emits ToolUse blocks instead of
-                            // text-only replies (otherwise the agent's
-                            // run_react_turn parses zero TOOL_USE markers,
-                            // exits, and writes no files).
-                            std::sync::Arc::new(
-                                elai_orchestrator::ProductionAgentRpcServer::new(
-                                    client, dispatcher, model, max_tokens,
-                                )
-                                .with_system_prompt(
-                                    elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
-                                ),
-                            )
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "elai run: cloud credentials unavailable; \
-                                 using NoOpAgentRpcServer"
-                            );
-                            std::sync::Arc::new(elai_orchestrator::NoOpAgentRpcServer)
-                        }
-                    }
-                } else {
-                    // Sidecar path (default).
-                    let base_url = std::env::var("ANTHROPIC_BASE_URL")
-                        .unwrap_or_else(|_| "http://localhost:8100".to_string());
-                    let client = elai_providers::AnthropicClient::new("local-dummy")
-                        .with_base_url(base_url);
-                    let model = std::env::var("ELAI_MODEL")
-                        .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
-                    let max_tokens = std::env::var("ELAI_MAX_TOKENS")
-                        .ok()
-                        .and_then(|v| v.parse::<u32>().ok())
-                        .unwrap_or(4096);
-                    // Build a real InProcessToolDispatcher via elai-tools.
-                    // NoOpIntegrationCommandRunner returns honest "not wired" failures
-                    // for the integration tier; the 4 other dispatch methods are real.
-                    let dispatcher: std::sync::Arc<
-                        dyn elai_core::tool_dispatcher::ToolDispatcher,
-                    > = {
-                        struct NoOpIntegrationRunner;
-                        impl elai_tools::tiered_validation::IntegrationCommandRunner
-                            for NoOpIntegrationRunner
-                        {
-                            fn run_integration<'a>(
-                                &'a self,
-                                _level: &'a str,
-                                _dir: &'a std::path::Path,
-                            ) -> std::pin::Pin<
-                                Box<
-                                    dyn std::future::Future<
-                                            Output = elai_tools::tiered_validation::IntegrationRunOutcome,
-                                        > + Send
-                                        + 'a,
-                                >,
-                            > {
-                                Box::pin(async {
-                                    elai_tools::tiered_validation::IntegrationRunOutcome {
-                                        passed: false,
-                                        rules_fired: 0,
-                                        stderr_snippet: Some(
-                                            "integration tier not wired \
-                                             (NoOpIntegrationRunner in CLI sidecar path)"
-                                                .to_string(),
-                                        ),
-                                    }
-                                })
-                            }
-                        }
-                        let validator = elai_tools::dispatcher::default_validator(
-                            std::sync::Arc::new(NoOpIntegrationRunner),
-                            "rust",
-                        );
-                        // C-13 — wrap the real InProcessToolDispatcher in the
-                        // IpcToolDispatcherAdapter shim (sidecar arm). See
-                        // workflow/reasoning/C-13-decisions.md (D1 Option B).
-                        let inner: std::sync::Arc<
-                            dyn elai_core::tool_dispatcher::ToolDispatcher,
-                        > = std::sync::Arc::new(
-                            elai_tools::dispatcher::InProcessToolDispatcher::new(
-                                std::sync::Arc::new(validator),
-                            ),
-                        );
-                        std::sync::Arc::new(
-                            elai_tools::adaptive_tool::IpcToolDispatcherAdapter::new(
-                                inner,
-                                wiring.ssb.clone(),
-                            ),
-                        )
-                    };
-                    // patch-R5 — same canonical baby-step system prompt as
-                    // the cloud-credentials arm above (see L154 comment).
-                    std::sync::Arc::new(
-                        elai_orchestrator::ProductionAgentRpcServer::new(
-                            client, dispatcher, model, max_tokens,
-                        )
-                        .with_system_prompt(
-                            elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
-                        ),
-                    )
-                };
-                let executor = elai_orchestrator::build_default_baby_step_executor(
-                    OsEntropy,
-                    agent_bin.clone(),
-                    ipc_dir.clone(),
-                    gateway,
-                    rpc_server,
-                );
-                wiring.baby_step_executor = Some(executor);
-                tracing::info!(
-                    agent_bin = %agent_bin.display(),
-                    "elai run: production AgentPoolBabyStepExecutor installed"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "elai run: agent binary not found; using synthetic fallback executor"
-                );
-            }
-        }
-    }
+    // patch-1.14 — install the production agent pool via the shared helper
+    // in runtime_builder. mirrors the prior inline block byte-for-byte; the
+    // helper logs the same warn messages on soft failures (ipc dir create,
+    // agent binary lookup) so the synthetic fallback semantics are preserved.
+    install_production_agent_pool(&mut wiring, &project_root, &session_id).await?;
 
     // C-13 — install the production hook dispatcher BEFORE wiring is
     // applied so apply_task_runner_wiring threads it onto

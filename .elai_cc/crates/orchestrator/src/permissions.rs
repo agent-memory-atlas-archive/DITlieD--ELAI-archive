@@ -179,6 +179,50 @@ impl PermissionPolicy {
         context: &PermissionContext,
         prompter: Option<&mut dyn PermissionPrompter>,
     ) -> PermissionOutcome {
+        // E-25 Tranche F (F.1.a) -- BashComplexityGuard.
+        // Pre-tool-dispatch refusal for Bash invocations whose body exceeds
+        // token / pipe / metachar thresholds (see bash_complexity_guard.rs).
+        // Wire-dark default OFF via ELAI_E25_BASH_COMPLEXITY_GUARD_ENABLE.
+        // SSB emission lives at the caller per DECISION-T-F-4 (Permissions
+        // holds no SsbEmitter handle; the Deny.reason carries the verdict
+        // surface for caller-side emit).
+        if tool_name == "Bash"
+            && crate::architecture::bash_complexity_guard::bash_complexity_guard_enabled()
+        {
+            let guard = crate::architecture::bash_complexity_guard::BashComplexityGuard::new();
+            if let crate::architecture::bash_complexity_guard::BashComplexityVerdict::Refused {
+                reason,
+            } = guard.check(input)
+            {
+                return PermissionOutcome::Deny { reason };
+            }
+        }
+
+        // E-25 Tranche F (F.1.b) -- SandboxTemplateGuard.
+        // Pre-sandbox-launch warn-and-fallback when microsandbox is
+        // unavailable (E-22 Task 2 dep). The guard's check() always
+        // returns Refused today (microsandbox_available() == false); the
+        // policy site here converts that into a Deny so the launch is
+        // blocked rather than silently running outside any sandbox.
+        // Wire-dark default OFF via ELAI_E25_SANDBOX_TEMPLATE_GUARD_ENABLE.
+        // Filter: only fires on the canonical sandbox-launch tool names.
+        // None of these are wired today; the guard stays dormant in
+        // production while the env-gate honours the task-prompt's
+        // "before sandbox launch" insertion contract. SSB emission lives
+        // at the caller per DECISION-T-F-4.
+        if matches!(tool_name, "microsandbox" | "MicrosandboxLaunch" | "Sandbox")
+            && crate::architecture::sandbox_template_guard::sandbox_template_guard_enabled()
+        {
+            let guard = crate::architecture::sandbox_template_guard::SandboxTemplateGuard::new();
+            if let crate::architecture::sandbox_template_guard::SandboxTemplateVerdict::Refused {
+                reason,
+                ..
+            } = guard.check()
+            {
+                return PermissionOutcome::Deny { reason };
+            }
+        }
+
         if let Some(rule) = Self::find_matching_rule(&self.deny_rules, tool_name, input) {
             return PermissionOutcome::Deny {
                 reason: format!(

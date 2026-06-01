@@ -34,6 +34,12 @@
   // for per-window mounts that remain deferred).
   import SycophancyFlagStrip from '../components/SycophancyFlagStrip.svelte';
   import CheckerStatusPanel from '../components/CheckerStatusPanel.svelte';
+  // D-27 closure (night 2026-05-30): per-class novelty breakdown widget.
+  // Closes the cross-check gap noted in workflow/sessions/
+  // s-night-2026-05-30/cross-check/D/D-09_d26_d27_d28.md TASK-D27-003.
+  // Inline sibling of SycophancyFlagStrip + CheckerStatusPanel; backs the
+  // ModeRoutingDashboardView upper widget row.
+  import NoveltyBreakdown from '../components/NoveltyBreakdown.svelte';
 
   type DiscoveryQueueRow = {
     template_id: string;
@@ -180,15 +186,19 @@
     <p class="mrd-loading">loading composite…</p>
   {/if}
 
-  <!-- D-27 GAP-1 + GAP-2 closure-pass inline widgets. SycophancyFlagStrip
-       (D-14 substrate) and CheckerStatusPanel (D-11 substrate) round
-       out the Wave-2 surface alongside the 2x2 panel grid below. -->
+  <!-- D-27 GAP-1 + GAP-2 + night-2026-05-30 closure-pass inline widgets.
+       SycophancyFlagStrip (D-14 substrate), CheckerStatusPanel (D-11
+       substrate), and NoveltyBreakdown (D-15 substrate, night closure)
+       round out the Wave-2 surface alongside the 2x2 panel grid below. -->
   <div class="mrd-inline-row">
     <div class="mrd-inline-cell">
       <SycophancyFlagStrip />
     </div>
     <div class="mrd-inline-cell">
       <CheckerStatusPanel />
+    </div>
+    <div class="mrd-inline-cell">
+      <NoveltyBreakdown />
     </div>
   </div>
 
@@ -276,16 +286,21 @@
     color: var(--text-muted, #888);
     margin: 0;
   }
-  /* D-27 GAP-6 — inline widgets row (SycophancyFlagStrip +
-     CheckerStatusPanel). Two columns on wide screens, stacks to one
-     column when the dashboard narrows. */
+  /* D-27 GAP-6 + night-2026-05-30 — inline widgets row
+     (SycophancyFlagStrip + CheckerStatusPanel + NoveltyBreakdown).
+     Three columns on wide screens, two on mid, one on narrow. */
   .mrd-inline-row {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
   }
   .mrd-inline-cell {
     min-width: 0;
+  }
+  @media (max-width: 1100px) {
+    .mrd-inline-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
   }
   @media (max-width: 800px) {
     .mrd-inline-row {

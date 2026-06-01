@@ -1,4 +1,4 @@
-//! Dashboard-v2 backend state. Slim, read-mostly. Owns the SsbViewer (read-only
+﻿//! Dashboard-v2 backend state. Slim, read-mostly. Owns the SsbViewer (read-only
 //! SSB access), an optional SSB writer for user-driven mutations
 //! (submit_task / intervention / chat / mode change / etc.), a ProjectsStore,
 //! and a few mutable settings (gate mode, model routing, execution mode,
@@ -220,6 +220,8 @@ pub enum ReviewDecision {
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
+#[cfg(feature = "mcp")]
+use elai_plugins::{CasePersistStore, ToolCalibrationRegistry};
 use elai_orchestrator::{
     CancelHandle, DefaultFeasibilityProber, FeasibilityProber, Layer1aProcessor,
     // B-37D Phase 4M (Wave-2A): the multi-runtime backend abstraction. Lives
@@ -429,6 +431,16 @@ pub struct AppState {
     /// active session (the per-call resolver will then refuse the
     /// command with a typed `DagBranchError::NoActiveSession`).
     pub dag_db_path: Arc<Mutex<Option<PathBuf>>>,
+    /// C-47b: optional calibration registry with the cold-tier persist store
+    /// installed. None when ELAI_C47B_CASE_BASE_PERSIST_ENABLE is unset at
+    /// startup OR when CasePersistStore::open fails (fail-open per D3).
+    /// Populated synchronously in AppState::new(); rehydrated from disk in a
+    /// background task spawned by lib.rs immediately after construction.
+    /// tool_calibration_status reads live data from this registry.
+    /// Arc without outer Mutex: ToolCalibrationRegistry is internally
+    /// lock-guarded per-tool; the field is written once at construction.
+    #[cfg(feature = "mcp")]
+    pub calibration_registry: Option<Arc<ToolCalibrationRegistry>>,
 }
 
 impl AppState {
@@ -563,6 +575,64 @@ impl AppState {
         }
         let feasibility_prober: Arc<dyn FeasibilityProber> = Arc::new(prober);
 
+        // E-3 sub-phase 4B: build the runtime orchestrator with the Ssb
+        // handle attached (when reachable) before `writer` moves into
+        // Self below. The orchestrator stays cheap to construct (no
+        // adapter instantiation) so doing this here adds zero startup
+        // cost.
+        let runtime_orch_with_ssb = {
+            let base = RuntimeOrchestrator::new(RuntimeBackendConfig::default());
+            match writer.as_ref() {
+                Some(w) => base.with_ssb(Arc::clone(w)),
+                None => base,
+            }
+        };
+
+        // C-47b: build the ToolCalibrationRegistry with the cold-tier persist
+        // store when ELAI_C47B_CASE_BASE_PERSIST_ENABLE is truthy. Fail-open:
+        // if CasePersistStore::open errors (disk permission, path missing,
+        // sqlite locked) we log warn and fall back to in-memory-only. No panic.
+        // The env gate is checked once here and once per record_call inside the
+        // registry (canonical D3 fail-closed behaviour preserved).
+        #[cfg(feature = "mcp")]
+        let calibration_registry: Option<Arc<ToolCalibrationRegistry>> = {
+            let gate = std::env::var("ELAI_C47B_CASE_BASE_PERSIST_ENABLE")
+                .map(|v| {
+                    let t = v.trim().to_ascii_lowercase();
+                    t == "1" || t == "true" || t == "yes" || t == "on"
+                })
+                .unwrap_or(false);
+            if gate {
+                let persist_path = project_root
+                    .join(".elai_cc")
+                    .join("data")
+                    .join("case_base")
+                    .join("case_base.sqlite3");
+                match CasePersistStore::open(&persist_path) {
+                    Ok(store) => {
+                        tracing::info!(
+                            path = %persist_path.display(),
+                            "C-47b: CasePersistStore opened; calibration registry wired with persist"
+                        );
+                        Some(Arc::new(
+                            ToolCalibrationRegistry::new()
+                                .with_persist(Arc::new(store)),
+                        ))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %persist_path.display(),
+                            error = %e,
+                            "C-47b: CasePersistStore::open failed; calibration registry in-memory-only (fail-open)"
+                        );
+                        Some(Arc::new(ToolCalibrationRegistry::new()))
+                    }
+                }
+            } else {
+                None
+            }
+        };
+
         Self {
             viewer,
             writer,
@@ -608,9 +678,12 @@ impl AppState {
             // `set_role_runtime` work immediately on a fresh install.
             // The orchestrator does not instantiate adapters until first
             // use (lazy cache), so this constructor remains cheap.
-            runtime_orchestrator: Arc::new(RuntimeOrchestrator::new(
-                RuntimeBackendConfig::default(),
-            )),
+            //
+            // E-3 sub-phase 4B: when an Ssb writer is reachable (session
+            // DB resolved at startup), attach it via `with_ssb` so the
+            // orchestrator can emit unified_preamble_applied +
+            // runtime_prewarm_{started,complete} rows in-process.
+            runtime_orchestrator: Arc::new(runtime_orch_with_ssb),
             // C-23: dag_db_path is populated lazily by the per-call
             // resolver in commands.rs (`resolve_active_dag_path`). Left
             // None at startup so a fresh install with no sessions does
@@ -625,6 +698,10 @@ impl AppState {
             // takes ownership of AppState.
             #[cfg(feature = "empire")]
             empire_bridge: None,
+            // C-47b: calibration_registry constructed above; None when
+            // the env gate is off or the feature is absent.
+            #[cfg(feature = "mcp")]
+            calibration_registry,
         }
     }
 

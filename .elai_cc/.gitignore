@@ -65,3 +65,23 @@ models/
 # OS
 Thumbs.db
 .DS_Store
+# ELAI local artifacts
+.elai/settings.local.json
+
+# Generated knowledge-graph indexes (regenerable, large, churn -- must not track)
+indexes/dkg.db
+indexes/projects/
+indexes/watch.lock
+# C-47b runtime case-base persistence (generated at runtime)
+data/case_base/
+# Local disabled backup from the 2026-05-29 D-drive migration (never commit)
+.elai_cc.disabled-2026-05-29/
+# Runtime session store + telemetry (generated each run)
+/sessions/
+# cargo-mutants output (generated)
+/mutants.out/
+/mutants.out.old/
+# SQLite write-ahead sidecars + pid/lock files (transient)
+*.db-shm
+*.db-wal
+*.pid

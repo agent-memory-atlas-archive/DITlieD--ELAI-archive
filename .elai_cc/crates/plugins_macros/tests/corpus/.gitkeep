@@ -1,0 +1,7 @@
+C-42b (Tranche M, s-22600) -- corpus output dir for the plugins_macros
+deterministic fuzz harness. Populated by
+`cargo run --example corpusgen -p elai_plugins_macros`; the generator
+writes `mcp_authz_200_tuples.txt` here (line-delimited
+`tool_name|authz_decision|expected_emit_count` triples). Consumed by
+`crates/contracts/tests/m_authz_corpus_loop_contract.rs`, which is
+SKIP-WHEN-EMPTY so CI passes without a prereq generator step.

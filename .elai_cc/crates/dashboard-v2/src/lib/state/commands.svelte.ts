@@ -21,6 +21,23 @@ import { parseSlashCommand, KNOWN_SLASH_COMMANDS } from '../utils/slash-parse';
 import { workspace } from './workspace.svelte';
 import { mediaValidation } from './media_validation.svelte';
 import { session } from './session.svelte';
+// FINAL TRANCHE B2 / E-2 -- RAF-buffered token drain. Wire-dark behind
+// VITE_ELAI_FRAME_PACER_ENABLE per frame_pacer.ts:17 design (single
+// subscriber per stream). When the env var is not exactly "1" the
+// raw chunk callback runs unchanged (zero behaviour change vs pre-E-2).
+import { FramePacer } from '../streaming/frame_pacer';
+
+function framePacerEnabled(): boolean {
+  // import.meta.env is the canonical Vite env surface. Use a guarded
+  // read so non-Vite test envs degrade gracefully to OFF.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const env = (import.meta as any)?.env;
+    return env?.VITE_ELAI_FRAME_PACER_ENABLE === '1';
+  } catch {
+    return false;
+  }
+}
 
 // B-24 Phase 4I Group C8 — re-export the 4 media commands so consumers
 // that import from 'state/commands' have a single entry point. The
@@ -88,6 +105,18 @@ function createCommands() {
       const p = c.payload as ResponseCardPayload;
       if (p.stream_id !== streamId) return c;
       return { ...c, payload: { ...p, text: p.text + text } };
+    });
+  }
+
+  /** Replaces (not appends) the text of an in-progress response card. Used
+   *  by the FramePacer subscriber path which delivers cumulative rendered
+   *  strings (see _runStreamingPath). FINAL TRANCHE B2. */
+  function _replaceStreamText(streamId: string, text: string) {
+    cards = cards.map((c) => {
+      if (c.kind !== 'response') return c;
+      const p = c.payload as ResponseCardPayload;
+      if (p.stream_id !== streamId) return c;
+      return { ...c, payload: { ...p, text } };
     });
   }
 
@@ -229,13 +258,53 @@ function createCommands() {
       stream_id: requestId,
     });
 
+    // FINAL TRANCHE B2 / E-2 -- per-stream FramePacer (RAF-buffered drain
+    // at ~60 cps). Wire-dark when VITE_ELAI_FRAME_PACER_ENABLE != "1";
+    // when off, raw chunk callback runs unchanged (zero behaviour change).
+    //
+    // When enabled the pacer buffers incoming chunks and drains at the
+    // configured cps target, replacing the response-card text with the
+    // cumulative `rendered` string on every RAF tick. Per-stream
+    // single-subscriber model per frame_pacer.ts:17.
+    let pacer: FramePacer | null = null;
+    let pacerUnsubscribe: (() => void) | null = null;
+    if (framePacerEnabled()) {
+      pacer = new FramePacer({ cps: 60 });
+      pacerUnsubscribe = pacer.subscribe((rendered) => {
+        // Replace (not append) so the card text matches the paced render
+        // cursor exactly. _replaceStreamText keeps this isolated from
+        // _appendToken so cancellation + finalization stay deterministic.
+        _replaceStreamText(requestId, rendered);
+      });
+    }
+    const onChunk = (chunk: string) => {
+      if (pacer) {
+        pacer.enqueue(chunk);
+      } else {
+        _appendToken(requestId, chunk);
+      }
+    };
+    const tearDownPacer = () => {
+      if (pacer) {
+        pacer.flush();
+        if (pacerUnsubscribe) pacerUnsubscribe();
+        pacer.destroy();
+        pacer = null;
+        pacerUnsubscribe = null;
+      }
+    };
+
     try {
       _streamCleanup = await streamChat(
         text,
         requestId,
-        (chunk) => _appendToken(requestId, chunk),
-        (_stopReason) => _finalizeStream(requestId),
+        onChunk,
+        (_stopReason) => {
+          tearDownPacer();
+          _finalizeStream(requestId);
+        },
         (errMsg, offline) => {
+          tearDownPacer();
           _finalizeStream(requestId);
           cards = cards.filter(
             (c) => !(c.kind === 'response' && (c.payload as ResponseCardPayload).stream_id === requestId),
@@ -254,6 +323,7 @@ function createCommands() {
         },
       );
     } catch (err) {
+      tearDownPacer();
       _finalizeStream(requestId);
       appendCard('status', {
         kind: 'status',

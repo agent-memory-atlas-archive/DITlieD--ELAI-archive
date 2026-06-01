@@ -31,6 +31,8 @@ use crate::{
     cloud_mode::{CloudConfig, CloudModeRouter, RedactingBabyStepExecutor},
     compiled_pipeline::{CompiledPipelineStore, TemplateCrystallizer},
     dispatcher::{BackendConfig, BackendMode},
+    gate::InteractiveGate,
+    grc::{pipeline_grc_disabled_via_env, PipelineGrc},
     hook_dispatcher::{HookDispatcher, InProcessHookDispatcher},
     ipc_accept::AgentRpcServer,
     ipc_gateway::IpcGateway,
@@ -79,6 +81,22 @@ pub struct RuntimeWiring {
     /// `--mode` via `GateMode::from_cli_args` and stash the resolved mode
     /// here before calling apply.
     pub gate_mode: Option<GateMode>,
+    /// B-6 #2 -- production [`InteractiveGate`] handle for the CLI human-
+    /// prompt path. When `Some` AND `gate_mode` is set,
+    /// [`apply_task_runner_wiring`] passes this handle as the second
+    /// argument to [`AutonomousGate::new`] (was always `None` before this
+    /// wire) so the MODIFY / REDIRECT mixed-mode fallback path can reach
+    /// the live CLI prompter without rebuilding the gate. Defaults to
+    /// `None` in [`build_task_runner_wiring`] so existing non-CLI callers
+    /// (dashboard, contract tests) preserve the headless-batch behaviour.
+    /// The CLI `run_subcommand` sets this to
+    /// `Some(Arc::new(CliInteractiveGate))` when `gate_mode == Interactive`
+    /// (or hybrid in future) before calling apply. Closes the B-6
+    /// cross-check finding "CliInteractiveGate defined at
+    /// cli/src/runtime_builder.rs:393 but NEVER instantiated in
+    /// production" (per workflow/sessions/s-night-2026-05-30/cross-check/
+    /// B/B-02_b4_b5_b6.md).
+    pub interactive_gate: Option<Arc<dyn InteractiveGate>>,
     /// C-5 — cloud-mode router config. When `Some`,
     /// [`apply_task_runner_wiring`] constructs a [`CloudModeRouter`] and
     /// installs it on [`TaskRunnerConfig::cloud_router`], and wraps the
@@ -143,6 +161,25 @@ pub struct RuntimeWiring {
     /// surface (zero-regression default). The CLI / dashboard wiring
     /// sites construct this Arc based on `wiring.via_mcp`.
     pub mcp_dispatch: Option<Arc<dyn crate::dispatch::Dispatch>>,
+    /// B-8 (PipelineGrc activation) — production-shaped `PipelineGrc`
+    /// handle. When `Some`, [`apply_task_runner_wiring`] assigns it onto
+    /// [`TaskRunnerConfig::pipeline_grc`] so the 4 safety gates
+    /// (`ground_plan` / `generate_csq` / `check_inline_feasibility` /
+    /// `InlineFeasibilityState::reset`) fire live during the run loop.
+    /// `None` keeps the pre-B-8 no-op behaviour (every gated call site
+    /// falls through silently).
+    ///
+    /// [`build_task_runner_wiring`] defaults this to a fresh
+    /// `Some(Arc<AsyncMutex<PipelineGrc::new_from_default()>>)` UNLESS
+    /// the `ELAI_DISABLE_PIPELINE_GRC` env-var kill-switch is set, in
+    /// which case the field stays `None` and the runner sees the
+    /// pre-B-8 path. Tests that want the legacy `None` path overwrite
+    /// the field on the bundle before calling apply. The construction
+    /// path delegates to [`TaskRunnerConfig::with_pipeline_grc`]
+    /// semantics — the same builder-equivalent assignment the contract
+    /// test at `crates/contracts/tests/pipeline_grc_wired_contract.rs`
+    /// pins.
+    pub pipeline_grc: Option<Arc<AsyncMutex<PipelineGrc>>>,
 }
 
 /// Build the production wiring bundle for `start_task_runner`.
@@ -294,6 +331,24 @@ pub async fn build_task_runner_wiring(
     let background_task_manager =
         Arc::new(BackgroundTaskManager::new(Some(Arc::clone(&ssb))));
 
+    // B-8 (PipelineGrc activation) — construct a default `PipelineGrc`
+    // and stash it in the bundle UNLESS the `ELAI_DISABLE_PIPELINE_GRC`
+    // kill-switch is set. The bundle field mirrors what
+    // `TaskRunnerConfig::with_pipeline_grc` would have produced:
+    // `Arc<AsyncMutex<PipelineGrc>>`. Closes the production-wiring gap
+    // documented in workflow/sessions/s-night-2026-05-30/cross-check/
+    // B/B-03_b7_b8_b9_b10.md (every gated call site was a no-op in
+    // CLI + dashboard runs).
+    let pipeline_grc = if pipeline_grc_disabled_via_env() {
+        tracing::info!(
+            "build_task_runner_wiring: ELAI_DISABLE_PIPELINE_GRC set — \
+             PipelineGrc wiring skipped, all 4 safety gates remain no-ops"
+        );
+        None
+    } else {
+        Some(Arc::new(AsyncMutex::new(PipelineGrc::new_from_default())))
+    };
+
     Ok(RuntimeWiring {
         ssb,
         feasibility_prober,
@@ -304,6 +359,13 @@ pub async fn build_task_runner_wiring(
         // `Some(GateMode::from_cli_args(args.mode.as_deref()))` before
         // calling `apply_task_runner_wiring`.
         gate_mode: None,
+        // B-6 #2: default to None so existing non-CLI callers (dashboard,
+        // contract tests) preserve the headless-batch behaviour (the
+        // pre-wire posture where AutonomousGate::new received `None`).
+        // The CLI run_subcommand overrides this to
+        // `Some(Arc::new(CliInteractiveGate))` when gate_mode is
+        // Interactive (or hybrid in future).
+        interactive_gate: None,
         // C-5: cloud-mode router + provider override. Defaults preserve
         // pre-C-5 behaviour (no router, no redaction wrapper, no
         // ceiling enforcement).
@@ -324,6 +386,10 @@ pub async fn build_task_runner_wiring(
         // dashboard pre-C-39) keep the unchanged tool-dispatch surface.
         // The CLI run_subcommand populates this based on wiring.via_mcp.
         mcp_dispatch: None,
+        // B-8: live by default; `ELAI_DISABLE_PIPELINE_GRC` overrides
+        // to `None` above. Tests that want the legacy no-gate path
+        // overwrite this field on the bundle before calling apply.
+        pipeline_grc,
     })
 }
 
@@ -354,7 +420,19 @@ pub fn apply_task_runner_wiring(
             mode,
             ..AutonomousGateConfig::default()
         };
-        cfg.autonomous_gate = Some(Arc::new(AutonomousGate::new(gate_cfg, None)));
+        // B-6 #2: plumb the optional CliInteractiveGate (set by the CLI
+        // run_subcommand when gate_mode is Interactive) so AutonomousGate
+        // owns a live human-prompter for the MODIFY / REDIRECT mixed-mode
+        // fallback path. Was always `None` before this wire; closes the
+        // "CliInteractiveGate defined but never instantiated in production"
+        // cross-check finding (B-02_b4_b5_b6.md). Non-CLI callers
+        // (dashboard, contract tests) leave the field at its
+        // `build_task_runner_wiring` default of None and preserve the
+        // pre-wire headless-batch behaviour.
+        cfg.autonomous_gate = Some(Arc::new(AutonomousGate::new(
+            gate_cfg,
+            wiring.interactive_gate.clone(),
+        )));
     }
 
     // C-5 — cloud-mode router + redaction wrapper + ceiling enforcement.
@@ -467,6 +545,18 @@ pub fn apply_task_runner_wiring(
             "C-39: --via-mcp default dispatch wired (McpClientDispatch port 8200)"
         );
     }
+
+    // B-8 (PipelineGrc activation) — plumb the shared
+    // `Arc<AsyncMutex<PipelineGrc>>` onto `TaskRunnerConfig.pipeline_grc`
+    // so the 4 safety gates fire live in production. Direct field
+    // assignment mirrors the equivalent of
+    // `TaskRunnerConfig::with_pipeline_grc` but preserves the shared Arc
+    // so multiple sessions / surfaces (CLI + dashboard) can share one
+    // engine via the bundle when desired. When `wiring.pipeline_grc`
+    // is `None` (kill-switch set in `build_task_runner_wiring`, OR
+    // test override), the field stays `None` and every gated call site
+    // short-circuits to the pre-B-8 no-op.
+    cfg.pipeline_grc = wiring.pipeline_grc.clone();
 
     cfg
 }

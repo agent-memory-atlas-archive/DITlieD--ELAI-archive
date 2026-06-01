@@ -2474,7 +2474,256 @@ use crate::mast::MastMode;
 //     top-50 -> top-5 max-pooled)
 // See workflow/reasoning/E-48-decisions.md.
 // TOTAL_VARIANTS 457 -> 458.
-const SCHEMA_VERSION: i64 = 185;
+//
+// E-44 (SCHEMA_VERSION 186): bump 185 -> 186 for DurabilityEvent
+// SINGLE-VARIANT Pattern-2 (38th application). DurabilityEventKind 10-arm
+// discriminator covers tool_idempotency_hit /
+// tool_idempotency_replayed_irreversible / compensation_logged /
+// compensation_replayed / compensation_failed /
+// session_dag_continue_as_new / checkpoint_lazy_migrated /
+// compact_lock_contended / agent_reliability_metrics /
+// tool_error_classified. Wire-dark unless
+// ELAI_DURABILITY_OBSERVABILITY_ENABLE=1. Producer surfaces:
+// orchestrator/src/durability/{idempotent_dispatcher,continue_as_new,
+// checkpoint_migrator,compact_lock,resume_validator}.rs. Closes the
+// TASK-E44-013 observability gap: the 4 of 10 E-44 task primaries
+// already SHIPPED (idempotency_dispatcher, continue_as_new,
+// checkpoint_migrator, compact_lock + resume_validator bonus) had ZERO
+// audit-row surface area before this bump. The remaining 5 primaries
+// (saga compensation log, madsim DST, postcard feature flag,
+// reliability metrics, tool-error 3-bucket recovery) are NOT-SHIPPED;
+// the Kind arms covering them (compensation_*, agent_reliability_metrics,
+// tool_error_classified) reserve wire-tag space so when the producer
+// lands the SCHEMA does not need to bump. Pattern-2 collapse saves 9
+// SCHEMA slots + 9 ALL_VARIANTS rows + 9 alphabetical inserts vs the
+// plan's named 10 sibling variants (per E-46 8-arm + E-48 10-arm
+// precedent). Each plan-promised name maps 1:1 to a Kind:
+// ToolIdempotencyHit, ToolIdempotencyReplayedIrreversible,
+// CompensationLogged, CompensationReplayed, CompensationFailed,
+// SessionDagContinueAsNew, CheckpointLazyMigrated,
+// CompactLockContended, AgentReliabilityMetrics, ToolErrorClassified.
+// SCHEMA_VERSION_PUBLIC consumers do not interact with the discriminator
+// directly. See workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E44-013.md.
+// TOTAL_VARIANTS 458 -> 459.
+//
+// E-31 (SCHEMA_VERSION 187): bump 186 -> 187 for HeadDimInvariantVerified
+// SINGLE-VARIANT Pattern-2 (39th application). Carries
+// HeadDimInvariantVerifiedPayload with a 2-arm
+// HeadDimInvariantVerifiedKind discriminator (Verified / Refused) +
+// free-form details_json. Wire-dark unless
+// ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE=1. Producer surface:
+// python/elai_inference/server.py::assert_head_dim_invariant — emits a
+// Verified row on successful Qwen2.5-Coder boot, raises SidecarBootError
+// on mismatch (no SSB row possible at boot-refuse time, but the Refused
+// kind covers post-boot health-check re-evaluation). Closes
+// TASK-E31-001 (head_dim invariant + SSB row gap from cross-check
+// E-10_e29_e30_e31.md). Scope-lean cut: this bump ships the SSB wire
+// surface only; CloudRouteDecision + TierModelSwap remain deferred per
+// the E-31 plan body. See
+// workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E31-001.md.
+// TOTAL_VARIANTS 459 -> 460.
+//
+// E-3 (SCHEMA_VERSION 188): bump 187 -> 188 for RoleShownModelHidden
+// SINGLE-VARIANT Pattern-2 (40th application). No Kind discriminator --
+// this is the scope-lean MVP slice of E-3 (TASK-E03-001) closing the
+// cross-check finding "SettingsWindow explicitly exposes MODEL names per
+// role" by reversing the default (ROLE shown, MODEL hidden unless the
+// user toggles "show model details" ON in SettingsWindow). Producer:
+// crates/dashboard-v2/src-tauri/src/commands.rs::record_model_visibility
+// (Tauri command emitted by SettingsWindow.svelte on toggle change).
+// The full E-3 plan (role_prompt.rs / voice.toml / RuntimeAdapter::warm
+// / 5 other SSB variants / persona-vector hook) is DEFERRED to follow-on
+// sessions. Wire-dark unless ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1.
+// Payload carries {role: String, model_hidden: bool, session_id:
+// Option<String>, ts_ms: i64}. See
+// workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E03-001.md.
+// TOTAL_VARIANTS 460 -> 461.
+//
+// E-49 (SCHEMA_VERSION 189): bump 188 -> 189 for CodingMetricNamedToken
+// SINGLE-VARIANT Pattern-2 (41st application). Carries
+// CodingMetricNamedTokenPayload with a 3-arm CodingMetricNamedTokenKind
+// discriminator (StablePassAt1 / HarnessAttributionTuple / StopVerified)
+// + free-form details_json. Wire-dark unless
+// ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE=1. Closes TASK-E49-005 / 006 / 007
+// SPEC-DRIFT against the named tokens stable_pass_at_1 /
+// harness_attribution_tuple / stop_verified -- the original E-49 ship
+// landed CodingAgentMetricsCaptured + RUNPOD-PENDING runners but the 3
+// named tokens the spec called out had zero hits across the codebase
+// (per cross-check E-16_e47_e48_e49.md). Pattern-2 collapse saves 2
+// SCHEMA slots + 2 ALL_VARIANTS rows + 2 alphabetical inserts vs the
+// plan's named 3 sibling variants. Each named token maps 1:1 to a Kind:
+//   * stable_pass_at_1 -- n=5 seed stability metric (replaces single-seed
+//     Pass@1); aggregator wraps TestOutcomeReport with std-dev /
+//     identical-output check.
+//   * harness_attribution_tuple -- (model_id, harness_version,
+//     harness_commit_sha) recorded per session start so B-37
+//     harness-vs-model ablation is legible.
+//   * stop_verified -- CI lint refusing legacy HumanEval / MBPP /
+//     SWE-bench Verified mention without explicit STOP-Verified: guard;
+//     prevents accidental re-introduction of contaminated benches.
+// SCHEMA_VERSION_PUBLIC consumers do not interact with the discriminator
+// directly. See workflow/sessions/s-night-2026-05-30/impl-tasks/
+// TASK-E49-005.md.
+// TOTAL_VARIANTS 461 -> 462.
+//
+// E-3 sub-phase 4A (SCHEMA_VERSION 190): bump 189 -> 190 for
+// E3RuntimeHandoffEvent SINGLE-VARIANT Pattern-2 (42nd application).
+// Carries RuntimeHandoffEventPayload with a 6-arm RuntimeHandoffEventKind
+// discriminator (UnifiedPreambleApplied / RuntimePrewarmStarted /
+// RuntimePrewarmComplete / HandoffPayloadCompressed / PersonaVectorApplied /
+// StyleNormalizerApplied) + free-form details_json. Wire-dark unless
+// ELAI_E3_RUNTIME_HANDOFF_ENABLE=1. Pattern-2 collapse rationale (per
+// workflow/sessions/s-21636/exploration/tranche4-E3-dashboard.md): the
+// original E-3 plan called out 6 sibling SsbActionType variants; collapsing
+// to a single envelope saves 5 SCHEMA slots + 5 ALL_VARIANTS rows + matches
+// the documented 40+ precedent applications. Producer surfaces (sub-phase
+// 4A wires only the UnifiedPreambleApplied arm via tracing log; actual
+// Ssb::write_payload injection into runtime_orchestrator.rs::try_complete
+// is deferred to sub-phase 4B alongside the other 5 arms):
+//   * UnifiedPreambleApplied -- crates/orchestrator/src/runtime_orchestrator.rs
+//     wraps messages with build_role_prompt before adapter.complete
+//   * RuntimePrewarmStarted / RuntimePrewarmComplete -- predict_next_role
+//     dispatcher in runtime_orchestrator.rs (4B)
+//   * HandoffPayloadCompressed -- handoff_payload.rs compress_handoff_payload (4B)
+//   * PersonaVectorApplied -- python/elai_inference/server.py (sidecar 4B)
+//   * StyleNormalizerApplied -- crates/cli/src/live_cli.rs post-pass (4B)
+// See workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E03-001.md +
+// docs/thefinalglance/E-plan/E-3_model_handoff_ux.md.
+// TOTAL_VARIANTS 462 -> 463.
+//
+// E-31 sub-phase 6A (SCHEMA_VERSION 191): bump 190 -> 191 for
+// RouteDecisionEvent SINGLE-VARIANT Pattern-2 (43rd application).
+// Carries RouteDecisionEventPayload with a 3-arm RouteDecisionEventKind
+// discriminator (CloudRouteChosen / TierModelSwapped / LocalRouteKept) +
+// free-form details_json. Wire-dark unless
+// ELAI_ROUTE_DECISION_SSB_ENABLE=1. Producer:
+// crates/orchestrator/src/cloud_mode.rs::CloudModeRouter::route via
+// providers::runtime::RuntimeRoutingPolicy::evaluate. Closes the
+// E-31 plan's CloudRouteDecision + TierModelSwap deferred slots in
+// a SINGLE envelope per Pattern-2 precedent (saves 1 SCHEMA slot vs
+// shipping two siblings; matches CodingMetricNamedToken 3-arm shape).
+// Per cross-check + tranche6 exploration: HeadDimInvariantVerifiedKind
+// is a CLOSED 2-arm (Verified/Refused) Pattern-2 variant; this is the
+// NEW sibling Pattern-2 variant per ssb.rs:22883 + ssb.rs:23119 "closed
+// enum; adding a Nth kind requires SCHEMA_VERSION bump" rule. See
+// workflow/sessions/s-21636/exploration/tranche6-E31-wiring.md.
+// TOTAL_VARIANTS 463 -> 464.
+//
+// E-47 (SCHEMA_VERSION 192): bump 191 -> 192 for LoraShipGateEvent
+// SINGLE-VARIANT Pattern-2 (44th application). Carries
+// LoraShipGateEventPayload with a 3-arm LoraShipGateEventPhase
+// discriminator (Refused / CalibrationMissing / CalibrationPassed) +
+// free-form details_json. Wire-dark unless
+// ELAI_LORA_SHIP_GATE_ENABLE=1. Producer:
+// crates/orchestrator/src/lora_ship_gate.rs::notify_lora_ship_gate +
+// `elai lora-gate-check` CLI subcommand. Ships the LoRA ship-gate
+// LOCALLY (default-deferred posture per source report
+// workflow/improvement-sweep-2026-05-19/reports/47-lora-finetuning.md)
+// even though the producer-side LoRA training stack (Unsloth +
+// QLoRA-NF4 + PiSSA + DoRA on RTX 3090) is RUNPOD-PENDING. The 3
+// Phase arms collapse the plan's nominally-3 sibling SSB rows
+// (lora_ship_gate_refused / lora_calibration_gate_passed /
+// lora_calibration_gate_refused) into ONE Pattern-2 variant per the
+// E-43 SkillSystemEvent precedent. Pattern-2 collapse saves 2 SCHEMA
+// slots + 2 ALL_VARIANTS rows + 2 alphabetical inserts. Triple-AND
+// gate semantic (enabled + confirm_user_understanding +
+// calibration_passes_threshold) wired in lora_ship_gate.rs;
+// `DEFERRED_PER_E47_REPORT` is the load-bearing CI lint token enforced
+// by .elai_cc/scripts/check_lora_ship_gate_token.{sh,bat} +
+// .github/workflows/elai-lora-ship-gate.yml. Paper grounding:
+// arXiv:2405.09673 Biderman et al. (5-19pp catastrophic forgetting
+// evidence motivating the no-regression -2.0pp floor). See
+// workflow/reasoning/E-47-decisions.md.
+// TOTAL_VARIANTS 464 -> 465.
+//
+// E-40 Tranche B-2 (SCHEMA_VERSION 193): bump 192 -> 193 for
+// SymbolGraphEvent SINGLE-VARIANT Pattern-2 (45th application).
+// Carries SymbolGraphEventPayload with a 4-arm SymbolGraphEventKind
+// discriminator (SymbolDslExecuted / DataflowImpactComputed /
+// AgentImpactClaimRefuted / ScopeGraphResolved) + free-form
+// details_json. Wire-dark unless ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE=1
+// (5th-list RRF emit) or other per-event gates upstream. Producer:
+// crates/orchestrator/src/symbol_graph/mod.rs::notify_symbol_graph_event
+// + crates/orchestrator/src/symbol_graph/dsl.rs::exec_dsl +
+// crates/orchestrator/src/symbol_graph/dataflow.rs::impact_analysis
+// + the new symbol_dsl_query / symbol_dataflow_impact ToolDefinitions
+// in production_agent_rpc.rs::build_tool_catalog. The 4 Kind arms
+// collapse the plan's nominally-4 sibling SSB rows (symbol_dsl_executed
+// / dataflow_impact_computed / agent_impact_claim_refuted /
+// scope_graph_resolved) into ONE Pattern-2 variant per the E-47
+// LoraShipGateEvent precedent. ScopeGraphResolved is reserved here —
+// the scope_graph implementation lands in Tranche B-3 (TASK-E40-002)
+// but reserving the Kind slot now avoids a 2nd SCHEMA bump on B-3
+// landing. Pattern-2 collapse saves 3 SCHEMA slots + 3 ALL_VARIANTS
+// rows + 3 alphabetical inserts. See
+// workflow/reasoning/E-40-tranche-B2-decisions.md (DECISION-8 addendum).
+// TOTAL_VARIANTS 465 -> 466.
+//
+// Tranche B-6 quad (SCHEMA_VERSION 194 -- 2026-05-31): coordinated single
+// bump covers four plans landing in one orchestrate run:
+//   * C-42 SHIPPABLE-NOW (proc-macro deferred to C-42b):
+//       NEW SsbActionType::McpAuthzEvent + 3-arm McpAuthzEventKind
+//       discriminator (AuthzCheckPassed / AuthzCheckFailed / CorpusReplayed).
+//       Wire-dark unless ELAI_C42_MCP_AUTHZ_EMIT_ENABLE=1. Producer:
+//       crates/plugins/src/authz/compose.rs::compose_with_tool_gate wrapper
+//       at the caller side; check_authz stays pure (deliberate
+//       defense-in-depth boundary -- see checker.rs:1-9).
+//   * C-47 PATTERN-2 COLLAPSE:
+//       NEW SsbActionType::ToolCalibrationEvent + 6-arm
+//       ToolCalibrationEventKind discriminator (HintEmitted / DriftDetected
+//       / CallLogged / CaseAdded / CaseSelected / CalibrationApplied).
+//       3 pre-existing helpers (ToolCalibrationHintEmitted +
+//       ToolCalibrationDriftDetected + ToolCallLogged) are KEPT alive for
+//       one release window as deprecation aliases -- the new variant +
+//       new helper land here; gradual migration happens in C-47b. Wire-dark
+//       unless ELAI_C47_CASE_BASE_ENABLE=1.
+//   * B-39 SINGLE-ADD:
+//       NEW SsbActionType::ReflectBudgetSoftWarn (single variant; reflect_*
+//       family stays alphabetical-contiguous, 5th sibling cheapest).
+//       Wire-dark unless ELAI_B39_SOFTWARN_ENABLE=1. Producer:
+//       crates/reasoning/src/chat_reflect.rs ~L454 (BEFORE the existing
+//       hard-cap log-only block).
+//   * C-50 PATTERN-2 COLLAPSE:
+//       NEW SsbActionType::ContractCodingEvent + 3-arm
+//       ContractCodingEventKind discriminator (RetryAttempted /
+//       RetryResolved / RetryAbandoned). Pre-existing
+//       ContractViolationDetected stays alive (NOT collapsed in this
+//       tranche -- separate landing). Wire-dark unless
+//       ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE=1. Producer:
+//       crates/orchestrator/src/task_runner.rs::fix_and_rerun_until_green
+//       Healed (L1055) + EscalatedToHuman (L1109) + Failed (L1057) branches.
+//
+// TOTAL_VARIANTS delta: +4 new variants (McpAuthzEvent,
+// ToolCalibrationEvent, ReflectBudgetSoftWarn, ContractCodingEvent);
+// 466 -> 470. 3 deprecated tool_calibration_* variants kept for one release
+// window of replay back-compat. See workflow/reasoning/
+// B6-quad-tranche-decisions.md.
+//
+// Tranche B-7 triple (SCHEMA_VERSION 195 -- 2026-05-31): coordinated single
+// bump covers three plans landing in one orchestrate run:
+//   * E-13 SHIPPABLE-NOW: NEW SsbActionType::TddVerificationEvent +
+//       4-arm TddVerificationEventKind discriminator (PropertyGatePass /
+//       MutationGateSurvivorBlock / AntiMockBlock / AssertionOnlyDiffBlock).
+//       Pattern-2 (46th application). Wire-dark unless
+//       ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE=1. Producer (survival cache
+//       arm): crates/orchestrator/src/survival_cache.rs short-circuits
+//       known-survivor cargo-mutants runs.
+//   * E-12 carry: AssertionOnlyDiffBlock collapses INTO arm #4 of
+//       TddVerificationEventKind (NO separate top-level variant). Producer
+//       wiring (assertion_diff scanner) DEFERRED per exploration --
+//       substrate-only this tranche.
+//   * E-50 extension: SaasArchPatternEventKind gains a 12th arm
+//       SaasArchetypeSelected (within-variant arm extension; NO new
+//       top-level variant; NO additional SCHEMA bump). Wire-dark unless
+//       ELAI_E50_ARCHETYPE_SELECTED_EMIT_ENABLE=1. Producer:
+//       crates/orchestrator/src/architecture/recommender.rs::
+//       recommend_archetype_with_emit.
+//
+// TOTAL_VARIANTS delta: +1 new top-level variant (TddVerificationEvent);
+// 470 -> 471. SaasArchPatternEventKind arm extension is variant-internal
+// (no TOTAL_VARIANTS delta). See workflow/reasoning/
+// B7-triple-tranche-decisions.md.
+const SCHEMA_VERSION: i64 = 195;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -3558,6 +3807,12 @@ CREATE TABLE IF NOT EXISTS ssb (
         'tdd_cycle_started',
         'tdd_test_failed',
         'tdd_test_passed',
+        -- Tranche B-7 triple (SCHEMA_VERSION 195): TDD verification gate
+        -- substrate covering E-13 PropertyGatePass / MutationGateSurvivorBlock /
+        -- AntiMockBlock plus E-12 AssertionOnlyDiffBlock arm. Pattern-2
+        -- (46th application). Wire-dark unless
+        -- ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE=1.
+        'tdd_verification_event',
         -- E-14 (SCHEMA_VERSION 131): browser-e2e agent beacons.
         -- browser_e2e_run_started -- once per PlaywrightRunner journey
         --   run entry. Carries journey_name_hash, url_hash, ts_ms.
@@ -4022,7 +4277,104 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- Producers: orchestrator/src/research/web_orchestrator/producers.rs
         -- + web_search/src/{tiered_search_pool,extractor_pool,
         -- cross_encoder_rerank}.rs telemetry hooks.
-        'web_research_event'
+        'web_research_event',
+        -- E-44 (SCHEMA_VERSION 186): durability observability substrate.
+        -- SINGLE-VARIANT Pattern-2 (38th application);
+        -- DurabilityEventKind 10-arm discriminator covers
+        -- tool_idempotency_hit / tool_idempotency_replayed_irreversible /
+        -- compensation_logged / compensation_replayed /
+        -- compensation_failed / session_dag_continue_as_new /
+        -- checkpoint_lazy_migrated / compact_lock_contended /
+        -- agent_reliability_metrics / tool_error_classified.
+        -- Wire-dark unless ELAI_DURABILITY_OBSERVABILITY_ENABLE=1.
+        -- Producers: orchestrator/src/durability/{idempotent_dispatcher,
+        -- continue_as_new,checkpoint_migrator,compact_lock,
+        -- resume_validator}.rs. TASK-E44-013 closure.
+        'durability_event',
+        -- E-31 (SCHEMA_VERSION 187): head_dim invariant verification substrate.
+        -- SINGLE-VARIANT Pattern-2 (39th application);
+        -- HeadDimInvariantVerifiedKind 2-arm discriminator covers
+        -- verified / refused. Wire-dark unless
+        -- ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE=1. Producer:
+        -- python/elai_inference/server.py::assert_head_dim_invariant.
+        -- TASK-E31-001 closure.
+        'head_dim_invariant_verified',
+        -- E-3 (SCHEMA_VERSION 188): role-shown / model-hidden default
+        -- telemetry substrate. SINGLE-VARIANT Pattern-2 (40th application);
+        -- no Kind discriminator (scope-lean MVP). Wire-dark unless
+        -- ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1. Producer:
+        -- crates/dashboard-v2/src-tauri/src/commands.rs::record_model_visibility.
+        -- TASK-E03-001 MVP closure.
+        'role_shown_model_hidden',
+        -- E-49 (SCHEMA_VERSION 189): coding-agent metrics named-token
+        -- substrate. SINGLE-VARIANT Pattern-2 (41st application);
+        -- CodingMetricNamedTokenKind 3-arm discriminator covers
+        -- stable_pass_at_1 / harness_attribution_tuple / stop_verified.
+        -- Wire-dark unless ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE=1.
+        -- Closes TASK-E49-005 / 006 / 007 SPEC-DRIFT.
+        'coding_metric_named_token',
+        -- E-3 sub-phase 4A (SCHEMA_VERSION 190): runtime handoff event
+        -- substrate. SINGLE-VARIANT Pattern-2 (42nd application);
+        -- RuntimeHandoffEventKind 6-arm discriminator covers
+        -- unified_preamble_applied / runtime_prewarm_started /
+        -- runtime_prewarm_complete / handoff_payload_compressed /
+        -- persona_vector_applied / style_normalizer_applied.
+        -- Wire-dark unless ELAI_E3_RUNTIME_HANDOFF_ENABLE=1.
+        -- Producer (4A): runtime_orchestrator.rs build_role_prompt wrap.
+        -- Other 5 arms wired in 4B.
+        'e3_runtime_handoff_event',
+        -- E-31 sub-phase 6A (SCHEMA_VERSION 191): cloud-route decision
+        -- event substrate. SINGLE-VARIANT Pattern-2 (43rd application);
+        -- RouteDecisionEventKind 3-arm discriminator covers
+        -- cloud_route_chosen / tier_model_swapped / local_route_kept.
+        -- Wire-dark unless ELAI_ROUTE_DECISION_SSB_ENABLE=1. Producer:
+        -- crates/orchestrator/src/cloud_mode.rs::CloudModeRouter::route
+        -- via providers::runtime::RuntimeRoutingPolicy::evaluate.
+        -- Closes E-31 plan's deferred CloudRouteDecision + TierModelSwap
+        -- envelopes in a SINGLE Pattern-2 variant.
+        'route_decision_event',
+        -- E-47 (SCHEMA_VERSION 192): LoRA fine-tuning ship-gate
+        -- substrate. SINGLE-VARIANT Pattern-2 (44th application);
+        -- LoraShipGateEventPhase 3-arm discriminator covers
+        -- refused / calibration_missing / calibration_passed.
+        -- Wire-dark unless ELAI_LORA_SHIP_GATE_ENABLE=1. Producer:
+        -- crates/orchestrator/src/lora_ship_gate.rs::notify_lora_ship_gate
+        -- + `elai lora-gate-check` CLI subcommand.
+        'lora_ship_gate_event',
+        -- E-40 Tranche B-2 (SCHEMA_VERSION 193): SymbolGraph
+        -- augmentation substrate. SINGLE-VARIANT Pattern-2 (45th
+        -- application); SymbolGraphEventKind 4-arm discriminator
+        -- covers symbol_dsl_executed / dataflow_impact_computed /
+        -- agent_impact_claim_refuted / scope_graph_resolved.
+        -- Wire-dark unless ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE=1 or
+        -- other per-event gates upstream. Producer: crates/orchestrator/
+        -- src/symbol_graph/mod.rs::notify_symbol_graph_event.
+        'symbol_graph_event',
+        -- Tranche B-6 quad (SCHEMA_VERSION 194): four new Pattern-2 /
+        -- single-add SSB substrates land together. See ssb.rs SCHEMA_VERSION
+        -- header for full tranche docs.
+        -- C-42 SHIPPABLE-NOW: McpAuthzEvent (3-arm Kind
+        -- authz_check_passed / authz_check_failed / corpus_replayed).
+        -- Wire-dark unless ELAI_C42_MCP_AUTHZ_EMIT_ENABLE=1.
+        'mcp_authz_event',
+        -- C-47 Pattern-2 collapse: ToolCalibrationEvent (6-arm Kind
+        -- hint_emitted / drift_detected / call_logged / case_added /
+        -- case_selected / calibration_applied). The 3 pre-existing
+        -- tool_call_logged / tool_calibration_hint_emitted /
+        -- tool_calibration_drift_detected tags above stay alive for one
+        -- release window as deprecation aliases. Wire-dark unless
+        -- ELAI_C47_CASE_BASE_ENABLE=1.
+        'tool_calibration_event',
+        -- B-39 single-add: ReflectBudgetSoftWarn. Wire-dark unless
+        -- ELAI_B39_SOFTWARN_ENABLE=1. Producer:
+        -- crates/reasoning/src/chat_reflect.rs ~L454.
+        'reflect_budget_soft_warn',
+        -- C-50 Pattern-2 collapse: ContractCodingEvent (3-arm Kind
+        -- retry_attempted / retry_resolved / retry_abandoned). Pre-existing
+        -- contract_violation_detected stays alive (NOT collapsed in this
+        -- tranche -- separate landing). Wire-dark unless
+        -- ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE=1.
+        'contract_coding_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -5964,6 +6316,15 @@ pub enum SsbActionType {
     /// model evidence — the "test flipped" signal is the canonical
     /// non-LLM verifier under D-3 aggregation.
     TddTestPassed,
+    /// Tranche B-7 triple (SCHEMA_VERSION 195) — TDD verification gate
+    /// substrate covering E-13 PropertyGate / MutationGate-survivor /
+    /// AntiMock signals + E-12 AssertionOnlyDiff. Carries
+    /// [`TddVerificationEventPayload`] with the
+    /// [`TddVerificationEventKind`] 4-arm discriminator. Pattern-2 (46th
+    /// application). Wire-dark unless
+    /// `ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE=1`. Producer (cache arm):
+    /// `crates/orchestrator/src/survival_cache.rs`.
+    TddVerificationEvent,
     /// E-14 (SCHEMA_VERSION 131) — emitted once per browser-e2e journey
     /// run entry. Carries [`BrowserE2eRunStartedPayload`]
     /// (journey_name_hash, url_hash, ts_ms). Producer:
@@ -7324,6 +7685,318 @@ pub enum SsbActionType {
     /// simonwillison.net/2025/Jun/14 Anthropic multi-agent attribution
     /// lock (Task 9). See workflow/reasoning/E-48-decisions.md.
     WebResearchEvent,
+    /// E-44 (SCHEMA_VERSION 186) -- durability observability substrate.
+    /// SINGLE-VARIANT Pattern-2 (38th application). Carries
+    /// [`DurabilityEventPayload`] with a 10-arm
+    /// [`DurabilityEventKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_DURABILITY_OBSERVABILITY_ENABLE=1` (see
+    /// [`ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV`]).
+    ///
+    /// Kind arms (1:1 with the plan's promised 10 sibling variants):
+    ///   * `tool_idempotency_hit` -- IdempotentDispatcher served a
+    ///     cached result for a deterministic call-shape replay.
+    ///   * `tool_idempotency_replayed_irreversible` -- a cached
+    ///     side-effect-bearing call was elided to preserve at-most-once
+    ///     semantics.
+    ///   * `compensation_logged` -- a SAGA compensation action was
+    ///     appended to the compensation_actions log (producer pending;
+    ///     wire-tag reserved).
+    ///   * `compensation_replayed` -- a recovered session re-executed
+    ///     a logged compensation (producer pending; wire-tag reserved).
+    ///   * `compensation_failed` -- a compensation action errored
+    ///     (producer pending; wire-tag reserved).
+    ///   * `session_dag_continue_as_new` -- the per-session ceiling
+    ///     was hit and `continue_as_new_if_needed` rolled the session
+    ///     over to a new root.
+    ///   * `checkpoint_lazy_migrated` -- the read-side migrator chain
+    ///     transformed a checkpoint from `from_version` -> CURRENT.
+    ///   * `compact_lock_contended` -- the PreCompact hook and 85%
+    ///     compact path raced; the second acquirer waited or aborted.
+    ///   * `agent_reliability_metrics` -- RDC/VAF/GDS/MOP rollup
+    ///     emission (producer pending; wire-tag reserved).
+    ///   * `tool_error_classified` -- a tool error was bucketed into
+    ///     the 3-bucket recovery taxonomy (producer pending; wire-tag
+    ///     reserved).
+    ///
+    /// Single Pattern-2 variant collapses the plan's 10 named sibling
+    /// variants (ToolIdempotencyHit / ToolIdempotencyReplayedIrreversible
+    /// / CompensationLogged / CompensationReplayed / CompensationFailed
+    /// / SessionDagContinueAsNew / CheckpointLazyMigrated /
+    /// CompactLockContended / AgentReliabilityMetrics /
+    /// ToolErrorClassified) into 1 variant + 10 Kind arms (saves 9
+    /// SCHEMA slots + 9 ALL_VARIANTS rows + 9 alphabetical inserts,
+    /// per E-46 8-arm + E-48 10-arm precedent).
+    ///
+    /// Wire-tag reservation: 5 of 10 Kinds (compensation_*,
+    /// agent_reliability_metrics, tool_error_classified) cover
+    /// task primaries that are NOT-SHIPPED at the producer site as of
+    /// SCHEMA_VERSION 186. The Kind arms exist so when the producers
+    /// land they emit immediately without a follow-on SCHEMA bump.
+    ///
+    /// See workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E44-013.md.
+    DurabilityEvent,
+    /// E-31 (SCHEMA_VERSION 187) -- head_dim invariant verification substrate.
+    /// SINGLE-VARIANT Pattern-2 (39th application). Carries
+    /// [`HeadDimInvariantVerifiedPayload`] with a 2-arm
+    /// [`HeadDimInvariantVerifiedKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE=1` (see
+    /// [`ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV`]).
+    ///
+    /// Kind arms:
+    ///   * `verified` -- assert_head_dim_invariant succeeded at sidecar
+    ///     boot: observed head_dim matched expected (128 for the
+    ///     Qwen2.5-Coder family). `details_json` carries
+    ///     `{model_id, head_dim_observed, head_dim_expected, ok: true}`.
+    ///   * `refused` -- post-boot health-check re-evaluation detected a
+    ///     mismatch (the boot-time refuse path raises SidecarBootError
+    ///     before any SSB row can be written, so the `refused` arm
+    ///     covers in-band re-check from a hot config swap). `details_json`
+    ///     carries `{model_id, head_dim_observed, head_dim_expected, ok: false}`.
+    ///
+    /// Producer surface: python/elai_inference/server.py
+    /// `assert_head_dim_invariant`. Mirrors the head_dim_invariant
+    /// contract test (crates/contracts/tests/head_dim_invariant_contract.rs)
+    /// at the runtime layer. Closes TASK-E31-001 (head_dim invariant +
+    /// SSB row gap surfaced by the s-night-2026-05-30 cross-check).
+    ///
+    /// See workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E31-001.md.
+    HeadDimInvariantVerified,
+    /// E-3 (SCHEMA_VERSION 188) -- role-shown / model-hidden default
+    /// telemetry substrate. SINGLE-VARIANT Pattern-2 (40th application).
+    /// No Kind discriminator (scope-lean MVP slice of TASK-E03-001).
+    /// Carries [`RoleShownModelHiddenPayload`]. Wire-dark unless
+    /// `ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1` (see
+    /// [`ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE_ENV`]).
+    ///
+    /// Fire-point: SettingsWindow toggle "show model details" change
+    /// (default OFF -- ROLE visible, MODEL hidden); the Tauri
+    /// `record_model_visibility` command emits one row each time the user
+    /// flips the switch. Reverses the cross-check finding "SettingsWindow
+    /// explicitly exposes MODEL names per role" by making MODEL hidden
+    /// the default and observable so the audit pass can verify reach.
+    ///
+    /// Producer surface:
+    /// crates/dashboard-v2/src-tauri/src/commands.rs::record_model_visibility.
+    ///
+    /// DEFERRED (full E-3 plan, see TASK-E03-001):
+    ///   * role_prompt.rs (per-role prompt registry + VoiceAnchor)
+    ///   * voice.toml (E-5 voice_style facts wiring)
+    ///   * RuntimeAdapter::warm + predict_next_role
+    ///   * 5 other SSB variants (UnifiedPreambleApplied /
+    ///     RuntimePrewarmStarted / RuntimePrewarmComplete /
+    ///     HandoffPayloadCompressed / PersonaVectorApplied /
+    ///     StyleNormalizerApplied)
+    ///   * persona-vector sidecar hook
+    ///
+    /// See workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E03-001.md.
+    RoleShownModelHidden,
+    /// E-49 (SCHEMA_VERSION 189) -- coding-agent metrics named-token
+    /// substrate. SINGLE-VARIANT Pattern-2 (41st application). Carries
+    /// [`CodingMetricNamedTokenPayload`] with a 3-arm
+    /// [`CodingMetricNamedTokenKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE=1` (see
+    /// [`ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE_ENV`]).
+    ///
+    /// Kind arms:
+    ///   * `stable_pass_at_1` -- n=5 seed stability metric wrapping
+    ///     `TestOutcomeReport` with identical-output check + std-dev.
+    ///   * `harness_attribution_tuple` -- (model_id, harness_version,
+    ///     harness_commit_sha) recorded per session start.
+    ///   * `stop_verified` -- CI lint result refusing legacy HumanEval /
+    ///     MBPP / SWE-bench Verified mention without `STOP-Verified:`
+    ///     guard.
+    ///
+    /// Closes the E-49 SPEC-DRIFT against the 3 spec-named tokens
+    /// surfaced by cross-check E-16_e47_e48_e49.md (zero hits for the
+    /// named strings across `.elai_cc/` before this bump).
+    ///
+    /// See workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E49-005.md.
+    CodingMetricNamedToken,
+    /// E-3 sub-phase 4A (SCHEMA_VERSION 190) -- runtime handoff event
+    /// substrate. SINGLE-VARIANT Pattern-2 (42nd application). Carries
+    /// [`RuntimeHandoffEventPayload`] with a 6-arm
+    /// [`RuntimeHandoffEventKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_E3_RUNTIME_HANDOFF_ENABLE=1` (see
+    /// [`ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV`]).
+    ///
+    /// Kind arms:
+    ///   * `unified_preamble_applied` -- emitted by
+    ///     `RuntimeOrchestrator::try_complete` when `build_role_prompt`
+    ///     wraps the system message with a [`crate::role_prompt::VoiceAnchor`]
+    ///     preamble. `details_json` carries
+    ///     `{base_prompt_len, anchor_blake3, preamble_len}`.
+    ///   * `runtime_prewarm_started` -- emitted by `predict_next_role`
+    ///     before kicking off a 1-token CUDA-graph warmup on the
+    ///     predicted next backend. `details_json` carries
+    ///     `{predicted_role, backend, vram_tier}`. (sub-phase 4B)
+    ///   * `runtime_prewarm_complete` -- emitted after the warmup
+    ///     returns. `details_json` carries
+    ///     `{backend, duration_ms, ok, cuda_graph_captured}`. (sub-phase 4B)
+    ///   * `handoff_payload_compressed` -- emitted by
+    ///     `compress_handoff_payload`. `details_json` carries
+    ///     `{original_tokens, compressed_tokens, ratio}`. (sub-phase 4B)
+    ///   * `persona_vector_applied` -- emitted by the sidecar persona-vector
+    ///     hook. `details_json` carries
+    ///     `{model_id, vector_blake3, strength}`. (sub-phase 4B)
+    ///   * `style_normalizer_applied` -- emitted by the live_cli
+    ///     style-normalizer post-pass. `details_json` carries
+    ///     `{source_role, input_blake3, output_blake3, tells_stripped}`.
+    ///     (sub-phase 4B)
+    ///
+    /// Pattern-2 collapse rationale: the original E-3 plan body called
+    /// out 6 sibling variants. The exploration report
+    /// (workflow/sessions/s-21636/exploration/tranche4-E3-dashboard.md)
+    /// collapsed them into one envelope per the 40+ documented
+    /// applications, saving 5 SCHEMA slots and matching the existing
+    /// CodingMetricNamedToken / DurabilityEvent precedent.
+    ///
+    /// See workflow/sessions/s-night-2026-05-30/impl-tasks/TASK-E03-001.md
+    /// + docs/thefinalglance/E-plan/E-3_model_handoff_ux.md.
+    E3RuntimeHandoffEvent,
+    /// E-31 sub-phase 6A (SCHEMA_VERSION 191) -- cloud-route decision
+    /// event substrate. SINGLE-VARIANT Pattern-2 (43rd application).
+    /// Carries [`RouteDecisionEventPayload`] with a 3-arm
+    /// [`RouteDecisionEventKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_ROUTE_DECISION_SSB_ENABLE=1` (see
+    /// [`ELAI_ROUTE_DECISION_SSB_ENABLE_ENV`]).
+    ///
+    /// Kind arms:
+    ///   * `cloud_route_chosen` -- the runtime routing policy
+    ///     selected a cloud arm (CloudSonnet / CloudOpus /
+    ///     CloudDeepSeekFlash). `details_json` carries the
+    ///     `RoutingReason` + the selected `RoutingChoice` string.
+    ///   * `tier_model_swapped` -- the runtime routing policy
+    ///     forced a swap from the per-role configured model to a
+    ///     different model arm (e.g. VRAM headroom too low ->
+    ///     CloudDeepSeekFlash). Producer surface reserved for
+    ///     future TierModelSwap producer (no live emit in 6A).
+    ///   * `local_route_kept` -- the runtime routing policy
+    ///     evaluated the per-step context and kept LocalSidecar.
+    ///     Useful for sanity-check telemetry on the local-first
+    ///     path.
+    ///
+    /// Producer surface: crates/orchestrator/src/cloud_mode.rs
+    /// `CloudModeRouter::route` invokes
+    /// `providers::runtime::RuntimeRoutingPolicy::evaluate` and
+    /// emits via tracing log behind the env gate (Ssb::write_payload
+    /// injection deferred to sub-phase 6B alongside the dashboard tile
+    /// / TierModelSwap producer).
+    ///
+    /// See workflow/sessions/s-21636/exploration/tranche6-E31-wiring.md.
+    RouteDecisionEvent,
+    /// E-47 (SCHEMA_VERSION 192) -- LoRA fine-tuning ship-gate
+    /// substrate. SINGLE-VARIANT Pattern-2 (44th application).
+    /// Carries [`LoraShipGateEventPayload`] with a 3-arm
+    /// [`LoraShipGateEventPhase`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_LORA_SHIP_GATE_ENABLE=1` (see
+    /// [`ELAI_LORA_SHIP_GATE_ENABLE_ENV`]).
+    ///
+    /// Phase arms:
+    ///   * `refused` -- the triple-AND gate (enabled +
+    ///     confirm_user_understanding + deferral token, OR
+    ///     calibration regression) refused the adapter load.
+    ///     `details_json` carries the refusal reason.
+    ///   * `calibration_missing` -- gate is enabled and configured
+    ///     to ship but no `LoraCalibrationReport` was supplied.
+    ///   * `calibration_passed` -- gate is wire-dark OR the
+    ///     calibration report passes the no-regression threshold.
+    ///
+    /// Producer surface:
+    /// `crates/orchestrator/src/lora_ship_gate.rs::notify_lora_ship_gate`
+    /// + `elai lora-gate-check` CLI subcommand.
+    ///
+    /// See workflow/reasoning/E-47-decisions.md.
+    LoraShipGateEvent,
+    /// E-40 Tranche B-2 (SCHEMA_VERSION 193) -- SymbolGraph augmentation
+    /// substrate. SINGLE-VARIANT Pattern-2 (45th application). Carries
+    /// [`SymbolGraphEventPayload`] with a 4-arm [`SymbolGraphEventKind`]
+    /// discriminator + free-form `details_json`. Wire-dark unless
+    /// `ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE=1` (or other per-event gates
+    /// upstream).
+    ///
+    /// Kind arms:
+    ///   * `symbol_dsl_executed` -- `exec_dsl` returned (any DSL parse +
+    ///     execute cycle).
+    ///   * `dataflow_impact_computed` -- `DataflowAnalyzer::impact_analysis`
+    ///     returned (any BFS impact request, including the 5th-list RRF
+    ///     retriever path).
+    ///   * `agent_impact_claim_refuted` -- the Refine+Filter stage
+    ///     refused the agent's claim because an unexpected file was
+    ///     impacted (auditor-loop hook).
+    ///   * `scope_graph_resolved` -- reserved for Tranche B-3 (the
+    ///     scope_graph implementation lands there; reserving the slot
+    ///     now avoids a 2nd SCHEMA bump on B-3 landing).
+    ///
+    /// Producer surfaces:
+    /// - `crates/orchestrator/src/symbol_graph/mod.rs::notify_symbol_graph_event`
+    /// - `crates/orchestrator/src/symbol_graph/dsl.rs::exec_dsl`
+    /// - `crates/orchestrator/src/symbol_graph/dataflow.rs::impact_analysis`
+    /// - The new `symbol_dsl_query` / `symbol_dataflow_impact` tool
+    ///   definitions in `production_agent_rpc.rs::build_tool_catalog`.
+    ///
+    /// See `workflow/reasoning/E-40-tranche-B2-decisions.md`.
+    SymbolGraphEvent,
+    /// Tranche B-6 quad C-42 SHIPPABLE-NOW (SCHEMA_VERSION 194) -- zero-trust
+    /// MCP gateway runtime emit. SINGLE-VARIANT Pattern-2. Carries
+    /// [`McpAuthzEventPayload`] with a 3-arm [`McpAuthzEventKind`]
+    /// discriminator (AuthzCheckPassed / AuthzCheckFailed / CorpusReplayed) +
+    /// free-form `details_json`. Wire-dark unless
+    /// `ELAI_C42_MCP_AUTHZ_EMIT_ENABLE=1`. Producer:
+    /// `crates/plugins/src/authz/compose.rs::compose_with_tool_gate` wrapper
+    /// at the caller side; `check_authz` stays pure (deliberate
+    /// defense-in-depth boundary -- see checker.rs:1-9).
+    ///
+    /// Proc-macro `#[authz(states="...", actors="...")]` declarative
+    /// surface is DEFERRED to C-42b (first proc-macro crate in workspace
+    /// adds friction without changing the threat model -- runtime guard
+    /// closes the SHIPPED-WIRED gap per MASTER-INDEX line 194).
+    ///
+    /// See `workflow/reasoning/B6-quad-tranche-decisions.md`.
+    McpAuthzEvent,
+    /// Tranche B-6 quad C-47 (SCHEMA_VERSION 194) -- case-based calibration
+    /// substrate. SINGLE-VARIANT Pattern-2 with 6-arm
+    /// [`ToolCalibrationEventKind`] discriminator (HintEmitted /
+    /// DriftDetected / CallLogged / CaseAdded / CaseSelected /
+    /// CalibrationApplied) + free-form `details_json`. Wire-dark unless
+    /// `ELAI_C47_CASE_BASE_ENABLE=1`. The 3 pre-existing helpers
+    /// (`ToolCalibrationHintEmitted`, `ToolCalibrationDriftDetected`,
+    /// `ToolCallLogged`) stay alive for one release window as deprecation
+    /// aliases; full migration in C-47b.
+    ///
+    /// See `workflow/reasoning/B6-quad-tranche-decisions.md`.
+    ToolCalibrationEvent,
+    /// Tranche B-6 quad B-39 (SCHEMA_VERSION 194) -- 85% chat-reflect
+    /// budget soft-warn. SINGLE-ADD (NOT Pattern-2; reflect_* family stays
+    /// alphabetical-contiguous as 5th sibling). Carries
+    /// [`ReflectBudgetSoftWarnPayload`]. Wire-dark unless
+    /// `ELAI_B39_SOFTWARN_ENABLE=1`. Producer:
+    /// `crates/reasoning/src/chat_reflect.rs` ~L454 (BEFORE the existing
+    /// hard-cap log-only block).
+    ///
+    /// See `workflow/reasoning/B6-quad-tranche-decisions.md`.
+    ReflectBudgetSoftWarn,
+    /// Tranche B-6 quad C-50 (SCHEMA_VERSION 194) -- ContractRetry*
+    /// substrate. SINGLE-VARIANT Pattern-2 with 3-arm
+    /// [`ContractCodingEventKind`] discriminator (RetryAttempted /
+    /// RetryResolved / RetryAbandoned) + free-form `details_json`.
+    /// Wire-dark unless `ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE=1`. Producer:
+    /// `crates/orchestrator/src/task_runner.rs::fix_and_rerun_until_green`
+    /// Healed (L1055) + EscalatedToHuman (L1109) + Failed (L1057)
+    /// branches.
+    ///
+    /// Pre-existing `ContractViolationDetected` stays alive (NOT collapsed
+    /// in this tranche -- separate landing). Caller wiring at
+    /// `drive_task` is a separate concern guarded by `is_web_project` --
+    /// not modified in this tranche.
+    ///
+    /// See `workflow/reasoning/B6-quad-tranche-decisions.md`.
+    ContractCodingEvent,
 }
 
 impl SsbActionType {
@@ -7828,6 +8501,9 @@ impl SsbActionType {
             Self::TddCycleStarted => "tdd_cycle_started",
             Self::TddTestFailed => "tdd_test_failed",
             Self::TddTestPassed => "tdd_test_passed",
+            // Tranche B-7 triple (SCHEMA_VERSION 195): TDD verification
+            // gate substrate (4-arm Kind discriminator).
+            Self::TddVerificationEvent => "tdd_verification_event",
             // E-14 (SCHEMA_VERSION 131): browser-e2e agent beacon family —
             // journey run + per-assertion + per-snapshot rows.
             Self::BrowserE2eRunStarted => "browser_e2e_run_started",
@@ -8011,6 +8687,57 @@ impl SsbActionType {
             // WebResearchEventKind 10-arm discriminator. Wire-dark
             // unless ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE=1.
             Self::WebResearchEvent => "web_research_event",
+            // E-44 (SCHEMA_VERSION 186): durability observability substrate.
+            // SINGLE-VARIANT Pattern-2 (38th application);
+            // DurabilityEventKind 10-arm discriminator. Wire-dark
+            // unless ELAI_DURABILITY_OBSERVABILITY_ENABLE=1.
+            Self::DurabilityEvent => "durability_event",
+            // E-31 (SCHEMA_VERSION 187): head_dim invariant verification.
+            // SINGLE-VARIANT Pattern-2 (39th application);
+            // HeadDimInvariantVerifiedKind 2-arm discriminator
+            // (verified / refused). Wire-dark unless
+            // ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE=1.
+            Self::HeadDimInvariantVerified => "head_dim_invariant_verified",
+            // E-3 (SCHEMA_VERSION 188): role-shown / model-hidden default
+            // telemetry. SINGLE-VARIANT Pattern-2 (40th application).
+            // No Kind discriminator. Wire-dark unless
+            // ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1.
+            Self::RoleShownModelHidden => "role_shown_model_hidden",
+            // E-49 (SCHEMA_VERSION 189): coding-agent metrics named-token
+            // substrate. SINGLE-VARIANT Pattern-2 (41st application);
+            // CodingMetricNamedTokenKind 3-arm discriminator covers
+            // stable_pass_at_1 / harness_attribution_tuple / stop_verified.
+            // Wire-dark unless ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE=1.
+            Self::CodingMetricNamedToken => "coding_metric_named_token",
+            // E-3 sub-phase 4A (SCHEMA_VERSION 190): runtime handoff event
+            // substrate. SINGLE-VARIANT Pattern-2 (42nd application);
+            // RuntimeHandoffEventKind 6-arm discriminator. Wire-dark
+            // unless ELAI_E3_RUNTIME_HANDOFF_ENABLE=1.
+            Self::E3RuntimeHandoffEvent => "e3_runtime_handoff_event",
+            // E-31 sub-phase 6A (SCHEMA_VERSION 191): cloud-route decision
+            // event substrate. SINGLE-VARIANT Pattern-2 (43rd application);
+            // RouteDecisionEventKind 3-arm discriminator covers
+            // cloud_route_chosen / tier_model_swapped / local_route_kept.
+            // Wire-dark unless ELAI_ROUTE_DECISION_SSB_ENABLE=1.
+            Self::RouteDecisionEvent => "route_decision_event",
+            // E-47 (SCHEMA_VERSION 192): LoRA fine-tuning ship-gate
+            // substrate. SINGLE-VARIANT Pattern-2 (44th application);
+            // LoraShipGateEventPhase 3-arm discriminator covers
+            // refused / calibration_missing / calibration_passed.
+            // Wire-dark unless ELAI_LORA_SHIP_GATE_ENABLE=1.
+            Self::LoraShipGateEvent => "lora_ship_gate_event",
+            // E-40 Tranche B-2 (SCHEMA_VERSION 193): SymbolGraph
+            // augmentation substrate. SINGLE-VARIANT Pattern-2 (45th
+            // application); SymbolGraphEventKind 4-arm discriminator
+            // covers symbol_dsl_executed / dataflow_impact_computed /
+            // agent_impact_claim_refuted / scope_graph_resolved.
+            Self::SymbolGraphEvent => "symbol_graph_event",
+            // Tranche B-6 quad (SCHEMA_VERSION 194): four new SSB
+            // substrates. See header SCHEMA_VERSION block for full docs.
+            Self::McpAuthzEvent => "mcp_authz_event",
+            Self::ToolCalibrationEvent => "tool_calibration_event",
+            Self::ReflectBudgetSoftWarn => "reflect_budget_soft_warn",
+            Self::ContractCodingEvent => "contract_coding_event",
         }
     }
 }
@@ -8511,6 +9238,8 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "tdd_cycle_started"               => Ok(SsbActionType::TddCycleStarted),
         "tdd_test_failed"                 => Ok(SsbActionType::TddTestFailed),
         "tdd_test_passed"                 => Ok(SsbActionType::TddTestPassed),
+        // Tranche B-7 triple (SCHEMA_VERSION 195): TDD verification gate.
+        "tdd_verification_event"          => Ok(SsbActionType::TddVerificationEvent),
         // E-14 (SCHEMA_VERSION 131): browser-e2e agent beacons.
         "browser_e2e_run_started"         => Ok(SsbActionType::BrowserE2eRunStarted),
         "browser_e2e_assertion_failed"    => Ok(SsbActionType::BrowserE2eAssertionFailed),
@@ -8636,6 +9365,28 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         // E-48 (SCHEMA_VERSION 185): web-research orchestrator hardening
         // substrate.
         "web_research_event"              => Ok(SsbActionType::WebResearchEvent),
+        // E-44 (SCHEMA_VERSION 186): durability observability substrate.
+        "durability_event"                => Ok(SsbActionType::DurabilityEvent),
+        // E-31 (SCHEMA_VERSION 187): head_dim invariant verification substrate.
+        "head_dim_invariant_verified"     => Ok(SsbActionType::HeadDimInvariantVerified),
+        // E-3 (SCHEMA_VERSION 188): role-shown / model-hidden default
+        // telemetry substrate.
+        "role_shown_model_hidden"         => Ok(SsbActionType::RoleShownModelHidden),
+        // E-49 (SCHEMA_VERSION 189): coding-agent metrics named-token substrate.
+        "coding_metric_named_token"       => Ok(SsbActionType::CodingMetricNamedToken),
+        // E-3 sub-phase 4A (SCHEMA_VERSION 190): runtime handoff event substrate.
+        "e3_runtime_handoff_event"        => Ok(SsbActionType::E3RuntimeHandoffEvent),
+        // E-31 sub-phase 6A (SCHEMA_VERSION 191): cloud-route decision event substrate.
+        "route_decision_event"            => Ok(SsbActionType::RouteDecisionEvent),
+        // E-47 (SCHEMA_VERSION 192): LoRA fine-tuning ship-gate substrate.
+        "lora_ship_gate_event"            => Ok(SsbActionType::LoraShipGateEvent),
+        // E-40 Tranche B-2 (SCHEMA_VERSION 193): SymbolGraph augmentation substrate.
+        "symbol_graph_event"              => Ok(SsbActionType::SymbolGraphEvent),
+        // Tranche B-6 quad (SCHEMA_VERSION 194): four new SSB substrates.
+        "mcp_authz_event"                 => Ok(SsbActionType::McpAuthzEvent),
+        "tool_calibration_event"          => Ok(SsbActionType::ToolCalibrationEvent),
+        "reflect_budget_soft_warn"        => Ok(SsbActionType::ReflectBudgetSoftWarn),
+        "contract_coding_event"           => Ok(SsbActionType::ContractCodingEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -11690,6 +12441,10 @@ pub enum SsbPayload {
     TddCycleStarted(TddCycleStartedPayload),
     TddTestFailed(TddTestFailedPayload),
     TddTestPassed(TddTestPassedPayload),
+    // Tranche B-7 triple (SCHEMA_VERSION 195): TDD verification gate
+    // substrate. See `TddVerificationEventPayload` + 4-arm
+    // `TddVerificationEventKind`. Pattern-2 (46th application).
+    TddVerificationEvent(TddVerificationEventPayload),
     // E-14 (SCHEMA_VERSION 131): browser-e2e agent beacon family. See
     // `BrowserE2eRunStartedPayload`, `BrowserE2eAssertionFailedPayload`,
     // `BrowserE2eAssertionPassedPayload`, `BrowserE2eSnapshotCapturedPayload`.
@@ -11914,6 +12669,74 @@ pub enum SsbPayload {
     /// `details_json`. Wire-dark unless
     /// `ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE=1`.
     WebResearchEvent(WebResearchEventPayload),
+    /// E-44 (SCHEMA_VERSION 186): durability observability substrate
+    /// Pattern-2 (38th application). Carries
+    /// [`DurabilityEventPayload`] with a 10-arm
+    /// [`DurabilityEventKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_DURABILITY_OBSERVABILITY_ENABLE=1`.
+    DurabilityEvent(DurabilityEventPayload),
+    /// E-31 (SCHEMA_VERSION 187): head_dim invariant verification substrate
+    /// Pattern-2 (39th application). Carries
+    /// [`HeadDimInvariantVerifiedPayload`] with a 2-arm
+    /// [`HeadDimInvariantVerifiedKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE=1`.
+    HeadDimInvariantVerified(HeadDimInvariantVerifiedPayload),
+    /// E-3 (SCHEMA_VERSION 188): role-shown / model-hidden default
+    /// telemetry substrate Pattern-2 (40th application). Carries
+    /// [`RoleShownModelHiddenPayload`] (no Kind discriminator -- the MVP
+    /// slice of TASK-E03-001 tracks a single user-facing toggle). Wire-dark
+    /// unless `ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE=1`.
+    RoleShownModelHidden(RoleShownModelHiddenPayload),
+    /// E-49 (SCHEMA_VERSION 189): coding-agent metrics named-token
+    /// substrate Pattern-2 (41st application). Carries
+    /// [`CodingMetricNamedTokenPayload`] with a 3-arm
+    /// [`CodingMetricNamedTokenKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE=1`.
+    CodingMetricNamedToken(CodingMetricNamedTokenPayload),
+    /// E-3 sub-phase 4A (SCHEMA_VERSION 190): runtime handoff event
+    /// substrate Pattern-2 (42nd application). Carries
+    /// [`RuntimeHandoffEventPayload`] with a 6-arm
+    /// [`RuntimeHandoffEventKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_E3_RUNTIME_HANDOFF_ENABLE=1`.
+    E3RuntimeHandoffEvent(RuntimeHandoffEventPayload),
+    /// E-31 sub-phase 6A (SCHEMA_VERSION 191): cloud-route decision
+    /// event substrate Pattern-2 (43rd application). Carries
+    /// [`RouteDecisionEventPayload`] with a 3-arm
+    /// [`RouteDecisionEventKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_ROUTE_DECISION_SSB_ENABLE=1`.
+    RouteDecisionEvent(RouteDecisionEventPayload),
+    /// E-47 (SCHEMA_VERSION 192): LoRA fine-tuning ship-gate substrate
+    /// Pattern-2 (44th application). Carries
+    /// [`LoraShipGateEventPayload`] with a 3-arm
+    /// [`LoraShipGateEventPhase`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_LORA_SHIP_GATE_ENABLE=1`.
+    LoraShipGateEvent(LoraShipGateEventPayload),
+    /// E-40 Tranche B-2 (SCHEMA_VERSION 193): SymbolGraph augmentation
+    /// substrate. Pattern-2 (45th application). Carries
+    /// [`SymbolGraphEventPayload`] with a 4-arm
+    /// [`SymbolGraphEventKind`] discriminator + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE=1` (or other per-event gates
+    /// upstream).
+    SymbolGraphEvent(SymbolGraphEventPayload),
+    /// Tranche B-6 quad C-42 SHIPPABLE-NOW (SCHEMA_VERSION 194).
+    /// See [`McpAuthzEventPayload`] + [`McpAuthzEventKind`].
+    McpAuthzEvent(McpAuthzEventPayload),
+    /// Tranche B-6 quad C-47 Pattern-2 collapse (SCHEMA_VERSION 194).
+    /// See [`ToolCalibrationEventPayload`] + [`ToolCalibrationEventKind`].
+    ToolCalibrationEvent(ToolCalibrationEventPayload),
+    /// Tranche B-6 quad B-39 (SCHEMA_VERSION 194).
+    /// See [`ReflectBudgetSoftWarnPayload`].
+    ReflectBudgetSoftWarn(ReflectBudgetSoftWarnPayload),
+    /// Tranche B-6 quad C-50 Pattern-2 collapse (SCHEMA_VERSION 194).
+    /// See [`ContractCodingEventPayload`] + [`ContractCodingEventKind`].
+    ContractCodingEvent(ContractCodingEventPayload),
 }
 
 impl SsbPayload {
@@ -12411,6 +13234,8 @@ impl SsbPayload {
             Self::TddCycleStarted(_) => SsbActionType::TddCycleStarted,
             Self::TddTestFailed(_) => SsbActionType::TddTestFailed,
             Self::TddTestPassed(_) => SsbActionType::TddTestPassed,
+            // Tranche B-7 triple (SCHEMA_VERSION 195): TDD verification gate.
+            Self::TddVerificationEvent(_) => SsbActionType::TddVerificationEvent,
             // E-14 (SCHEMA_VERSION 131): browser-e2e agent beacon family.
             Self::BrowserE2eRunStarted(_) => SsbActionType::BrowserE2eRunStarted,
             Self::BrowserE2eAssertionFailed(_) => SsbActionType::BrowserE2eAssertionFailed,
@@ -12545,6 +13370,28 @@ impl SsbPayload {
             // E-48 (SCHEMA_VERSION 185): web-research orchestrator
             // hardening substrate.
             Self::WebResearchEvent(_) => SsbActionType::WebResearchEvent,
+            // E-44 (SCHEMA_VERSION 186): durability observability substrate.
+            Self::DurabilityEvent(_) => SsbActionType::DurabilityEvent,
+            // E-31 (SCHEMA_VERSION 187): head_dim invariant verification substrate.
+            Self::HeadDimInvariantVerified(_) => SsbActionType::HeadDimInvariantVerified,
+            // E-3 (SCHEMA_VERSION 188): role-shown / model-hidden default
+            // telemetry substrate.
+            Self::RoleShownModelHidden(_) => SsbActionType::RoleShownModelHidden,
+            // E-49 (SCHEMA_VERSION 189): coding-agent metrics named-token substrate.
+            Self::CodingMetricNamedToken(_) => SsbActionType::CodingMetricNamedToken,
+            // E-3 sub-phase 4A (SCHEMA_VERSION 190): runtime handoff event substrate.
+            Self::E3RuntimeHandoffEvent(_) => SsbActionType::E3RuntimeHandoffEvent,
+            // E-31 sub-phase 6A (SCHEMA_VERSION 191): cloud-route decision event substrate.
+            Self::RouteDecisionEvent(_) => SsbActionType::RouteDecisionEvent,
+            // E-47 (SCHEMA_VERSION 192): LoRA fine-tuning ship-gate substrate.
+            Self::LoraShipGateEvent(_) => SsbActionType::LoraShipGateEvent,
+            // E-40 Tranche B-2 (SCHEMA_VERSION 193): SymbolGraph augmentation substrate.
+            Self::SymbolGraphEvent(_) => SsbActionType::SymbolGraphEvent,
+            // Tranche B-6 quad (SCHEMA_VERSION 194): four new SSB substrates.
+            Self::McpAuthzEvent(_) => SsbActionType::McpAuthzEvent,
+            Self::ToolCalibrationEvent(_) => SsbActionType::ToolCalibrationEvent,
+            Self::ReflectBudgetSoftWarn(_) => SsbActionType::ReflectBudgetSoftWarn,
+            Self::ContractCodingEvent(_) => SsbActionType::ContractCodingEvent,
         }
     }
 }
@@ -13488,6 +14335,31 @@ impl ReflectEventSink for Ssb {
                     synthesis,
                 }),
             ),
+            // Tranche B-6 quad B-39: 85% soft-warn beacon. Wire-dark
+            // unless ELAI_B39_SOFTWARN_ENABLE=1. The env-gate is read at
+            // emit-time (cheap: ASCII compare against a 4-char env var).
+            ReflectEvent::BudgetSoftWarn {
+                turn_id,
+                used,
+                soft_cap,
+                hard_cap,
+                pct,
+            } => {
+                if !env_gate_truthy(ELAI_B39_SOFTWARN_ENABLE_ENV) {
+                    return;
+                }
+                (
+                    SsbActionType::ReflectBudgetSoftWarn,
+                    SsbPayload::ReflectBudgetSoftWarn(ReflectBudgetSoftWarnPayload {
+                        turn_id_hash: blake3_label_prefix(&turn_id),
+                        used,
+                        soft_cap,
+                        hard_cap,
+                        pct,
+                        ts_ms: system_time_ms_i64(),
+                    }),
+                )
+            }
         };
 
         // Serialize payload eagerly on the caller's thread; spawn write async.
@@ -18120,6 +18992,55 @@ pub struct NoveltyClassifiedPayload {
     pub dkg_match_count: u32,
     pub near_duplicate_threshold: f64,
     pub ts_ms: i64,
+    /// FINAL TRANCHE B4 / D-15 -- lifecycle stage of the classified
+    /// candidate.
+    ///
+    /// Optional + additive: existing rows pre-dating B4 deserialize with
+    /// `None` (rmp_serde `#[serde(default)]` on `Option<T>` returns
+    /// `Option::None` for missing fields), preserving wire-form backward
+    /// compat against the existing `NoveltyClassified` action_type.
+    ///
+    /// Per the TRANCHE5_C41 gotcha rule we explicitly do NOT collapse the
+    /// 3-arm lifecycle (Queued / Ratified / Rejected) into a new Pattern-2
+    /// SsbActionType variant: the arms are SEQUENTIAL lifecycle stages of
+    /// a single template (the same candidate transitions Queued -> Ratified
+    /// or Queued -> Rejected through D-13 falsifiability follow-up), not
+    /// distinct fire-points sharing one envelope. Pattern-2 collapse
+    /// requires sibling fire-points; lifecycle requires payload extension.
+    /// See workflow/reasoning/FINAL-push-decisions.md DECISION-4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_status: Option<DiscoveryCandidateStatus>,
+}
+
+/// FINAL TRANCHE B4 / D-15 -- 3-arm lifecycle stage of a discovery candidate.
+///
+/// Emitted as an optional field on [`NoveltyClassifiedPayload`]; serialized
+/// as snake_case ("queued" / "ratified" / "rejected"). NOT a new
+/// `SsbActionType` variant per the TRANCHE5_C41 gotcha rule (lifecycle =
+/// payload extension, sibling fire-points = Pattern-2 envelope).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryCandidateStatus {
+    /// Candidate detected by `dispatch_novelty`; awaiting D-13
+    /// falsifiability follow-up.
+    Queued,
+    /// Candidate confirmed by an adversarial cross-family verifier.
+    Ratified,
+    /// Candidate rejected by the falsifiability path (duplicate, trivial
+    /// recombination, or contradicted by held-out checks).
+    Rejected,
+}
+
+impl DiscoveryCandidateStatus {
+    /// Snake-case wire label (matches the `#[serde(rename_all)]` form).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Ratified => "ratified",
+            Self::Rejected => "rejected",
+        }
+    }
 }
 
 /// D-18 — payload for [`SsbActionType::ObservableEffectVerified`].
@@ -18367,6 +19288,119 @@ pub struct TddTestPassedPayload {
     pub mutation_score: Option<f32>,
     pub ts_ms: i64,
 }
+
+/// Tranche B-7 triple (SCHEMA_VERSION 195) -- per-kind discriminator
+/// carried by [`TddVerificationEventPayload`]. Pattern-2 (46th
+/// application).
+///
+/// Closed enum; adding a 5th kind requires bumping the schema again.
+/// Future deferred arms documented in
+/// `workflow/reasoning/B7-triple-tranche-decisions.md`
+/// (FuzzPanic / MutantHunterSpawned / IntegrationPropertyCoverage /
+/// PropertyGateVacuousRejected) land as future arms on THIS enum, NOT
+/// as new top-level variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TddVerificationEventKind {
+    /// E-13 PropertyGate emitted a passing proptest verdict. Details
+    /// carry the property name hash + sample size + shrunk-failure
+    /// breadcrumb if any. Vacuous-pass detection is a separate (deferred)
+    /// arm.
+    PropertyGatePass,
+    /// E-13 MutationGate detected a survivor whose blake3 cache key
+    /// matches a previously-recorded survivor row (short-circuit hit).
+    /// The producing call site is
+    /// [`crate::survival_cache::SurvivalCache::is_known_survivor`].
+    /// Details carry the mutation_id_hash + status + cached_at_ms.
+    MutationGateSurvivorBlock,
+    /// E-13 anti-mock heuristic
+    /// ([`crate::tdd_verifier::anti_mock::anti_mock_scan`]) fired on a
+    /// test-file write. Details carry the hit count + first-3-hit
+    /// fingerprint hashes.
+    AntiMockBlock,
+    /// E-12 Tier-B AssertionOnlyDiff scanner blocked a commit that added
+    /// `assert!` / `assert_eq!` / `expect(` lines without any matching
+    /// implementation diff in the same change set. Producer wiring is
+    /// DEFERRED for the B-7 tranche (substrate-only). Details (when
+    /// producer lands): added_assertions + impl_diff_lines (0) +
+    /// file_path_hash.
+    AssertionOnlyDiffBlock,
+}
+
+impl TddVerificationEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PropertyGatePass => "property_gate_pass",
+            Self::MutationGateSurvivorBlock => "mutation_gate_survivor_block",
+            Self::AntiMockBlock => "anti_mock_block",
+            Self::AssertionOnlyDiffBlock => "assertion_only_diff_block",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]. Returns `None` on unknown input so the
+    /// SSB read path can fail closed.
+    #[must_use]
+    pub fn from_snake_case(s: &str) -> Option<Self> {
+        match s {
+            "property_gate_pass" => Some(Self::PropertyGatePass),
+            "mutation_gate_survivor_block" => Some(Self::MutationGateSurvivorBlock),
+            "anti_mock_block" => Some(Self::AntiMockBlock),
+            "assertion_only_diff_block" => Some(Self::AssertionOnlyDiffBlock),
+            _ => None,
+        }
+    }
+}
+
+/// Tranche B-7 triple (SCHEMA_VERSION 195) -- payload for
+/// [`SsbActionType::TddVerificationEvent`].
+///
+/// Wire-dark default; emission gated by
+/// [`ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE_ENV`]. Pattern-2 single
+/// envelope with the 4-arm [`TddVerificationEventKind`] discriminator +
+/// free-form `details_json` so future arms can extend without a schema
+/// bump.
+///
+/// Field semantics:
+///   * `kind` -- the per-fire-point discriminator.
+///   * `task_id_hash` -- blake3-prefix u64 of the TDD task identifier
+///     (matches the `task_id_hash` on the originating `TddCycleStarted`
+///     row when the event lands inside an active cycle). `0` when the
+///     event is emitted out-of-band (e.g. an AssertionOnlyDiff scan on
+///     a committed-but-not-currently-cycling change).
+///   * `details_json` -- per-kind context. Conventional fields per arm:
+///       - property_gate_pass: property_name_hash, sample_size,
+///         shrunk_breadcrumb (optional).
+///       - mutation_gate_survivor_block: mutation_id_hash, status,
+///         cached_at_ms.
+///       - anti_mock_block: hit_count, fingerprint_hashes (array, up to
+///         3 entries).
+///       - assertion_only_diff_block: added_assertions,
+///         impl_diff_lines (always 0 for this arm), file_path_hash.
+///   * `ts_ms` -- fire-point wall-clock (millis since UNIX_EPOCH).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TddVerificationEventPayload {
+    pub kind: TddVerificationEventKind,
+    pub task_id_hash: u64,
+    pub details_json: serde_json::Value,
+    pub ts_ms: i64,
+}
+
+/// Tranche B-7 triple -- env var name re-export for callers that prefer
+/// to reference the gate via `ssb::ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE_ENV`
+/// rather than hard-coding the literal. Wire-dark default: emission
+/// silently skipped until the operator sets this to a truthy value.
+pub const ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE_ENV: &str =
+    "ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE";
+
+/// Tranche B-7 triple -- env var name for the E-50 archetype-selected
+/// arm extension. Wire-dark default: emission silently skipped until the
+/// operator sets this to a truthy value. Separate gate from the parent
+/// `ELAI_SAAS_ARCH_PATTERNS_ENABLE` so the new arm can be rolled out
+/// independently.
+pub const ELAI_E50_ARCHETYPE_SELECTED_EMIT_ENABLE_ENV: &str =
+    "ELAI_E50_ARCHETYPE_SELECTED_EMIT_ENABLE";
 
 /// E-14 — payload for [`SsbActionType::BrowserE2eRunStarted`].
 ///
@@ -21239,11 +22273,14 @@ pub const ELAI_COST_TOKEN_ECONOMICS_ENABLE_ENV: &str = "ELAI_COST_TOKEN_ECONOMIC
 /// [`CostEventKind`] / [`PriorArtEventKind`] shape exactly (snake_case
 /// wire labels + `as_str()` helper). Pattern-2 (29th application).
 ///
-/// 11 fire-points covering the May 2026 SaaS architecture survey's
+/// 12 fire-points covering the May 2026 SaaS architecture survey's
 /// production-readiness gate + RLS emit + scoped-token enforcement +
 /// MoR decision fork + realtime / async / rate-limit / OTel-SLO
-/// scaffolding. Closed enum; adding a 12th kind requires bumping the
-/// schema again.
+/// scaffolding plus the Tranche B-7 triple `SaasArchetypeSelected`
+/// extension (E-50 archetype taxonomy refresh -- closes the
+/// "archetype_selected SSB absent" master-index framing without
+/// a separate top-level variant). Closed enum; adding a 13th kind
+/// requires bumping the schema again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SaasArchPatternEventKind {
@@ -21284,6 +22321,18 @@ pub enum SaasArchPatternEventKind {
     /// inside the chosen archetype; e.g. swap Neon for Supabase on
     /// `SaasDashboard`).
     ArchetypeBlockOverridden,
+    /// Tranche B-7 triple (SCHEMA_VERSION 195) -- E-50 archetype taxonomy
+    /// refresh: emitted by
+    /// [`crate::architecture::recommender::recommend_archetype_with_emit`]
+    /// when an archetype is selected (or auto-defaulted) for an
+    /// idea-framing brief. Wire-dark unless
+    /// `ELAI_E50_ARCHETYPE_SELECTED_EMIT_ENABLE=1`. `details_json` carries
+    /// the selection source (recommender_high / recommender_medium /
+    /// recommender_low / user_override / default) + confidence_bps
+    /// (`u16`, 0..=10_000, avoids f32 round-trip drift per addendum D13)
+    /// + selected_at_step. Closes the master-index "archetype_selected
+    /// SSB absent" framing without adding a new top-level variant.
+    SaasArchetypeSelected,
 }
 
 impl SaasArchPatternEventKind {
@@ -21302,6 +22351,7 @@ impl SaasArchPatternEventKind {
             Self::OtelSloRunbookScaffolded => "otel_slo_runbook_scaffolded",
             Self::PlatformUnsupportedForScopeCheck => "platform_unsupported_for_scope_check",
             Self::ArchetypeBlockOverridden => "archetype_block_overridden",
+            Self::SaasArchetypeSelected => "saas_archetype_selected",
         }
     }
 }
@@ -21352,6 +22402,10 @@ pub struct SaasArchPatternEventPayload {
     ///     fallback_marker
     ///   * archetype_block_overridden: layer, original_vendor,
     ///     override_vendor, reason
+    ///   * saas_archetype_selected: source (recommender_high /
+    ///     recommender_medium / recommender_low / user_override /
+    ///     default), confidence_bps (u16 in 0..=10_000), selected_at_step
+    ///     (u32), brief_hash (blake3-prefix u64)
     pub details_json: serde_json::Value,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
@@ -22301,6 +23355,1197 @@ pub struct WebResearchEventPayload {
 /// row to point at.
 pub const ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE_ENV: &str =
     "ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE";
+
+// ---------------------------------------------------------------------------
+// E-44 (SCHEMA_VERSION 186) -- durability observability substrate.
+// ---------------------------------------------------------------------------
+
+/// E-44 -- 10-arm fire-point discriminator carried by
+/// [`DurabilityEventPayload`]. Pattern-2 (38th application).
+///
+/// Each arm maps 1:1 to one of the plan's promised 10 sibling
+/// SsbActionType variants (TASK-E44-013 closure). 5 of 10 Kinds cover
+/// task primaries whose producer modules are NOT-SHIPPED at the time of
+/// SCHEMA_VERSION 186; their wire tags are reserved here so the
+/// follow-on producers (SAGA log, reliability metrics rollup, tool-error
+/// taxonomy) ship without a further SCHEMA bump.
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()` is
+/// the canonical helper for log-line and SSB dashboard labels.
+///
+/// Closed enum; adding an 11th kind requires a SCHEMA_VERSION bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurabilityEventKind {
+    /// IdempotentDispatcher served a cached result for a deterministic
+    /// call-shape replay. `details_json` carries
+    /// `call_shape_hash: u64` (hex), `tool_id: String`, `cache_age_ms: u64`.
+    /// Producer: `crates/orchestrator/src/durability/idempotent_dispatcher.rs`.
+    ToolIdempotencyHit,
+    /// A cached side-effect-bearing call was elided to preserve at-most-once
+    /// semantics. `details_json` carries `call_shape_hash: u64` (hex),
+    /// `tool_id: String`, `effect_class: String` (`"file_write"` /
+    /// `"network"` / `"db_write"`). Producer: idempotent_dispatcher.rs.
+    ToolIdempotencyReplayedIrreversible,
+    /// A SAGA compensation action was appended to the compensation_actions
+    /// log. `details_json` carries `saga_id: String`, `action_id: String`,
+    /// `step_index: u32`, `compensate_tool: String`. Producer: PENDING
+    /// (TASK-E44-002 saga.rs not yet shipped); wire tag reserved.
+    CompensationLogged,
+    /// A recovered session re-executed a logged compensation.
+    /// `details_json` carries `saga_id: String`, `action_id: String`,
+    /// `outcome: String` (`"ok"` / `"err"`), `duration_ms: u64`. Producer:
+    /// PENDING (TASK-E44-002); wire tag reserved.
+    CompensationReplayed,
+    /// A compensation action errored. `details_json` carries
+    /// `saga_id: String`, `action_id: String`, `error_class: String`,
+    /// `error_message: String` (truncated to 200 chars). Producer: PENDING
+    /// (TASK-E44-002); wire tag reserved.
+    CompensationFailed,
+    /// The per-session ceiling (event count OR phase count) was hit and
+    /// `continue_as_new_if_needed` rolled the session over to a new root.
+    /// `details_json` carries `old_session_id: String`,
+    /// `new_session_id: String`, `trigger: String` (`"event_count"` /
+    /// `"phase_count"`), `event_count: u64`, `phase_count: u32`,
+    /// `ceiling: u64`. Producer:
+    /// `crates/orchestrator/src/durability/continue_as_new.rs`.
+    SessionDagContinueAsNew,
+    /// The read-side migrator chain transformed a checkpoint from
+    /// `from_version` to CURRENT. `details_json` carries
+    /// `from_version: u32`, `to_version: u32`, `transform_count: u32`,
+    /// `bytes_before: u64`, `bytes_after: u64`. Producer:
+    /// `crates/orchestrator/src/durability/checkpoint_migrator.rs`.
+    CheckpointLazyMigrated,
+    /// The PreCompact hook and 85% compact path raced; the second
+    /// acquirer waited or aborted. `details_json` carries
+    /// `lock_path: String`, `holder_pid: u32`, `wait_ms: u64`,
+    /// `outcome: String` (`"acquired_after_wait"` / `"aborted"`).
+    /// Producer: `crates/orchestrator/src/durability/compact_lock.rs`.
+    CompactLockContended,
+    /// RDC (Reliability Decay Curve) / VAF / GDS / MOP rollup emission.
+    /// `details_json` carries `agent_id: String`, `phase_id: String`,
+    /// `rdc: f32`, `vaf: f32`, `gds: f32`, `mop: f32`,
+    /// `sample_window: u32`. Producer: PENDING (TASK-E44-008
+    /// reliability.rs not yet shipped); wire tag reserved.
+    AgentReliabilityMetrics,
+    /// A tool error was bucketed into the 3-bucket recovery taxonomy.
+    /// `details_json` carries `tool_id: String`, `error_class: String`
+    /// (`"transient"` / `"contract_violation"` / `"unrecoverable"`),
+    /// `error_message: String` (truncated to 200 chars),
+    /// `recovery_action: String` (`"retry"` / `"compensate"` / `"abort"`).
+    /// Producer: PENDING (TASK-E44-009 error_taxonomy.rs not yet
+    /// shipped); wire tag reserved.
+    ToolErrorClassified,
+}
+
+impl DurabilityEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ToolIdempotencyHit => "tool_idempotency_hit",
+            Self::ToolIdempotencyReplayedIrreversible => "tool_idempotency_replayed_irreversible",
+            Self::CompensationLogged => "compensation_logged",
+            Self::CompensationReplayed => "compensation_replayed",
+            Self::CompensationFailed => "compensation_failed",
+            Self::SessionDagContinueAsNew => "session_dag_continue_as_new",
+            Self::CheckpointLazyMigrated => "checkpoint_lazy_migrated",
+            Self::CompactLockContended => "compact_lock_contended",
+            Self::AgentReliabilityMetrics => "agent_reliability_metrics",
+            Self::ToolErrorClassified => "tool_error_classified",
+        }
+    }
+}
+
+/// E-44 (SCHEMA_VERSION 186) -- payload for
+/// [`SsbActionType::DurabilityEvent`].
+///
+/// Wire-dark default; emission gated by
+/// `ELAI_DURABILITY_OBSERVABILITY_ENABLE` env var (see
+/// [`ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV`]).
+///
+/// Carries the 10-arm Kind discriminator + optional canonical
+/// session/agent ids + free-form JSON details so each kind's specific
+/// scalars ride along without per-kind payload structs (Pattern-2
+/// single-variant scope-lean -- same shape as
+/// [`WebResearchEventPayload`] / [`PlanningDecompositionEventPayload`]).
+///
+/// Does NOT derive `Eq` -- `details_json` may carry NaN-not-equal `f32`
+/// values (reliability metrics rdc / vaf / gds / mop) per the Pattern-2
+/// 28th / 31st / 34th / 36th / 37th precedents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DurabilityEventPayload {
+    /// Fire-point discriminator. See [`DurabilityEventKind`].
+    pub kind: DurabilityEventKind,
+    /// Optional canonical session id.
+    pub session_id: Option<String>,
+    /// Optional canonical agent id (for arms where it applies).
+    pub agent_id: Option<String>,
+    /// Free-form per-kind context. Serialized as JSON so future kinds
+    /// can extend without a schema bump. Conventional fields per kind:
+    /// see [`DurabilityEventKind`] docstrings.
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// E-44 -- env var name. Wire-dark default: emission silently skipped
+/// until the operator sets this to a truthy value (`"1"` / `"true"` /
+/// `"yes"` / `"on"`). Mirrors the precedent set by
+/// [`ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE_ENV`] /
+/// [`ELAI_PLANNING_DECOMPOSITION_ENABLE_ENV`] /
+/// [`ELAI_TREE_SITTER_GRAMMARS_ENABLE_ENV`].
+///
+/// Sites that consult this gate live in
+/// `crates/orchestrator/src/durability/*.rs` producer hooks (helpers
+/// like `notify_idempotency_hit()` introduced alongside this
+/// SCHEMA_VERSION bump as wire-dark scaffolding).
+pub const ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV: &str =
+    "ELAI_DURABILITY_OBSERVABILITY_ENABLE";
+
+// ---------------------------------------------------------------------------
+// E-31 (SCHEMA_VERSION 187) -- head_dim invariant verification substrate.
+// ---------------------------------------------------------------------------
+
+/// E-31 -- 2-arm fire-point discriminator carried by
+/// [`HeadDimInvariantVerifiedPayload`]. Pattern-2 (39th application).
+///
+/// The boot-time refuse path raises `SidecarBootError` BEFORE any SSB
+/// writer is reachable, so the `Refused` arm is reserved for in-band
+/// re-check from a hot config swap (producer pending; wire tag reserved
+/// here so a follow-on producer ships without a further SCHEMA bump).
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()` is
+/// the canonical helper for log-line and SSB dashboard labels.
+///
+/// Closed enum; adding a 3rd kind requires a SCHEMA_VERSION bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadDimInvariantVerifiedKind {
+    /// `assert_head_dim_invariant` succeeded at sidecar boot: observed
+    /// head_dim matched expected (128 for the Qwen2.5-Coder family).
+    /// `details_json` carries `{model_id, head_dim_observed,
+    /// head_dim_expected, ok: true}`. Producer:
+    /// `python/elai_inference/server.py::assert_head_dim_invariant`.
+    Verified,
+    /// Post-boot health-check re-evaluation detected a mismatch.
+    /// `details_json` carries `{model_id, head_dim_observed,
+    /// head_dim_expected, ok: false}`. Producer: PENDING (hot-swap
+    /// health-check path not yet shipped); wire tag reserved.
+    Refused,
+}
+
+impl HeadDimInvariantVerifiedKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+/// E-31 (SCHEMA_VERSION 187) -- payload for
+/// [`SsbActionType::HeadDimInvariantVerified`].
+///
+/// Wire-dark default; emission gated by
+/// `ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE` env var (see
+/// [`ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV`]).
+///
+/// Mirrors the head_dim_invariant contract test at the runtime layer:
+/// the contract test asserts head_dim == 128 from config.json on disk;
+/// the sidecar `assert_head_dim_invariant` asserts the same on the
+/// loaded model object. Both must agree for the Qwen2.5-Coder family
+/// to attain stable SDPA / FA2 / xformers attention performance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeadDimInvariantVerifiedPayload {
+    /// Fire-point discriminator. See [`HeadDimInvariantVerifiedKind`].
+    pub kind: HeadDimInvariantVerifiedKind,
+    /// Model id / path that was checked (e.g.
+    /// `"huihui-ai/Qwen2.5-Coder-3B-Instruct-abliterated"`).
+    pub model_id: String,
+    /// Head dimension observed on the loaded model
+    /// (hidden_size / num_attention_heads).
+    pub head_dim_observed: u32,
+    /// Head dimension expected by the sidecar attention paths.
+    /// Default 128 for Qwen2.5-Coder family.
+    pub head_dim_expected: u32,
+    /// True when observed == expected. False reserved for `Refused` arm.
+    pub ok: bool,
+    /// Free-form per-fire-point context (extra config diagnostics).
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// E-31 -- env var name. Wire-dark default: emission silently skipped
+/// until the operator sets this to a truthy value (`"1"` / `"true"` /
+/// `"yes"` / `"on"`). Mirrors the precedent set by
+/// [`ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV`] /
+/// [`ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE_ENV`].
+///
+/// The sidecar producer
+/// (`python/elai_inference/server.py::assert_head_dim_invariant`)
+/// reads the equivalent OS env var directly; the const here is the
+/// Rust-side declaration consumed by any future Rust SSB writer
+/// (e.g. a dashboard-side hot-swap health check).
+pub const ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV: &str =
+    "ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE";
+
+// ---------------------------------------------------------------------------
+// E-3 (SCHEMA_VERSION 188) -- role-shown / model-hidden default telemetry.
+// ---------------------------------------------------------------------------
+
+/// E-3 (SCHEMA_VERSION 188) -- payload for
+/// [`SsbActionType::RoleShownModelHidden`].
+///
+/// Scope-lean MVP slice of TASK-E03-001: tracks the SettingsWindow
+/// "show model details" toggle so the audit pass can verify the default
+/// (MODEL hidden, ROLE visible) is reached. No Kind discriminator -- this
+/// is a single user-facing toggle, not a multi-fire-point envelope.
+///
+/// Wire-dark default; emission gated by
+/// `ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE` env var (see
+/// [`ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE_ENV`]).
+///
+/// Producer: `crates/dashboard-v2/src-tauri/src/commands.rs::record_model_visibility`
+/// (Tauri command emitted by `SettingsWindow.svelte` on toggle change).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RoleShownModelHiddenPayload {
+    /// Agent role string (e.g. `"executor"`, `"auditor"`,
+    /// `"prompt-engineer"`). Free-form so the payload survives future
+    /// role taxonomy churn without a SCHEMA bump.
+    pub role: String,
+    /// True when the MODEL name is hidden in the UI for this role
+    /// (the E-3 default). False when the user toggled "show model details"
+    /// ON and the MODEL string is rendered.
+    pub model_hidden: bool,
+    /// Optional canonical session id. None when fired before a session
+    /// is bound (cold-boot UI render).
+    pub session_id: Option<String>,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// E-3 -- env var name. Wire-dark default: emission silently skipped
+/// until the operator sets this to a truthy value (`"1"` / `"true"` /
+/// `"yes"` / `"on"`). Mirrors the precedent set by
+/// [`ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV`] /
+/// [`ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV`].
+///
+/// Consulted by `record_model_visibility` in dashboard-v2 commands.rs
+/// before write_payload; the UI toggle itself is always reactive (the
+/// telemetry is opt-in observation, not a feature flag for the toggle).
+pub const ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE_ENV: &str =
+    "ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE";
+
+// ---------------------------------------------------------------------------
+// E-49 (SCHEMA_VERSION 189) -- coding-agent metrics named-token substrate.
+// ---------------------------------------------------------------------------
+
+/// E-49 -- 3-arm fire-point discriminator carried by
+/// [`CodingMetricNamedTokenPayload`]. Pattern-2 (41st application).
+///
+/// Covers the 3 spec-named metric tokens the original E-49 ship did not
+/// land under their canonical strings (per cross-check
+/// E-16_e47_e48_e49.md: zero hits for `stable_pass_at_1` /
+/// `harness_attribution_tuple` / `stop_verified` across `.elai_cc/`).
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()` is
+/// the canonical helper for log-line and SSB dashboard labels.
+///
+/// Closed enum; adding a 4th kind requires a SCHEMA_VERSION bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodingMetricNamedTokenKind {
+    /// `stable_pass_at_1` -- n=5 seed stability metric. The runner
+    /// executes the same test 5 times with different deterministic seeds
+    /// and asserts identical output across runs. `details_json` carries
+    /// `{seed_count, identical_outputs, std_dev, mean_score,
+    /// test_id, model_id}`. Replaces single-seed Pass@1 reporting per
+    /// the E-49 plan's "credible stack" addition.
+    StablePassAt1,
+    /// `harness_attribution_tuple` -- per-session record of
+    /// `(model_id, harness_version, harness_commit_sha)` so the B-37
+    /// harness-vs-model ablation lever is legible at audit time.
+    /// `details_json` carries `{model_id, harness_version,
+    /// harness_commit_sha, harness_repo, session_id}`. Producer reads
+    /// the git commit sha at runtime via `std::process::Command` from
+    /// the harness checkout root.
+    HarnessAttributionTuple,
+    /// `stop_verified` -- result of the CI lint that refuses legacy
+    /// HumanEval / MBPP / SWE-bench Verified mention without an
+    /// accompanying `STOP-Verified:` guard comment. `details_json`
+    /// carries `{files_scanned, violations_count, violations: [{path,
+    /// line, token}], guard_present}`. Producer:
+    /// `scripts/check_stop_verified.sh` (CI lint). Prevents accidental
+    /// re-introduction of contaminated benches; coordinates with C-54
+    /// SWE-Bench Verified RUNPOD work.
+    StopVerified,
+}
+
+impl CodingMetricNamedTokenKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::StablePassAt1 => "stable_pass_at_1",
+            Self::HarnessAttributionTuple => "harness_attribution_tuple",
+            Self::StopVerified => "stop_verified",
+        }
+    }
+}
+
+/// E-49 (SCHEMA_VERSION 189) -- payload for
+/// [`SsbActionType::CodingMetricNamedToken`].
+///
+/// Wire-dark default; emission gated by
+/// `ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE` env var (see
+/// [`ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE_ENV`]).
+///
+/// Closes the 3 SPEC-DRIFT TASK rows (TASK-E49-005 / 006 / 007) by
+/// surfacing the named tokens the original E-49 ship omitted under the
+/// canonical strings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodingMetricNamedTokenPayload {
+    /// Fire-point discriminator. See [`CodingMetricNamedTokenKind`].
+    pub kind: CodingMetricNamedTokenKind,
+    /// Canonical session id this metric row belongs to.
+    pub session_id: String,
+    /// Optional model id the metric was measured against (None for the
+    /// `stop_verified` CI-lint arm which is model-agnostic).
+    pub model_id: Option<String>,
+    /// Free-form per-fire-point context. Shape depends on `kind`:
+    ///   * StablePassAt1 -- `{seed_count, identical_outputs, std_dev,
+    ///     mean_score, test_id}`.
+    ///   * HarnessAttributionTuple -- `{harness_version,
+    ///     harness_commit_sha, harness_repo}`.
+    ///   * StopVerified -- `{files_scanned, violations_count,
+    ///     violations: [...], guard_present}`.
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// E-49 -- env var name. Wire-dark default: emission silently skipped
+/// until the operator sets this to a truthy value (`"1"` / `"true"` /
+/// `"yes"` / `"on"`). Mirrors the precedent set by
+/// [`ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV`] /
+/// [`ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV`] /
+/// [`ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE_ENV`].
+pub const ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE_ENV: &str =
+    "ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE";
+
+// ---------------------------------------------------------------------------
+// E-3 sub-phase 4A (SCHEMA_VERSION 190) -- runtime handoff event substrate.
+// ---------------------------------------------------------------------------
+
+/// E-3 sub-phase 4A -- 6-arm fire-point discriminator carried by
+/// [`RuntimeHandoffEventPayload`]. Pattern-2 (42nd application).
+///
+/// Collapses the 6 sibling variants the original E-3 plan called out into a
+/// single envelope (per cross-check + exploration recommendation in
+/// `workflow/sessions/s-21636/exploration/tranche4-E3-dashboard.md`),
+/// matching the documented Pattern-2 precedent set by
+/// [`CodingMetricNamedTokenKind`] (3-arm) and
+/// [`HeadDimInvariantVerifiedKind`] (2-arm).
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()` is the
+/// canonical helper for log-line and SSB dashboard labels.
+///
+/// Closed enum; adding a 7th kind requires a `SCHEMA_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeHandoffEventKind {
+    /// `unified_preamble_applied` -- emitted by
+    /// `RuntimeOrchestrator::try_complete` when `build_role_prompt` wraps
+    /// the system message with a [`crate::role_prompt::VoiceAnchor`]
+    /// preamble. `details_json` carries
+    /// `{base_prompt_len, anchor_blake3, preamble_len}`.
+    UnifiedPreambleApplied,
+    /// `runtime_prewarm_started` -- emitted by `predict_next_role` before
+    /// kicking off a 1-token CUDA-graph warmup on the predicted next
+    /// backend. `details_json` carries
+    /// `{predicted_role, backend, vram_tier}`. (sub-phase 4B)
+    RuntimePrewarmStarted,
+    /// `runtime_prewarm_complete` -- emitted after the warmup returns.
+    /// `details_json` carries
+    /// `{backend, duration_ms, ok, cuda_graph_captured}`. (sub-phase 4B)
+    RuntimePrewarmComplete,
+    /// `handoff_payload_compressed` -- emitted by
+    /// `compress_handoff_payload`. `details_json` carries
+    /// `{original_tokens, compressed_tokens, ratio}`. (sub-phase 4B)
+    HandoffPayloadCompressed,
+    /// `persona_vector_applied` -- emitted by the sidecar persona-vector
+    /// hook. `details_json` carries
+    /// `{model_id, vector_blake3, strength}`. (sub-phase 4B)
+    PersonaVectorApplied,
+    /// `style_normalizer_applied` -- emitted by the live_cli style
+    /// normalizer post-pass. `details_json` carries
+    /// `{source_role, input_blake3, output_blake3, tells_stripped}`.
+    /// (sub-phase 4B)
+    StyleNormalizerApplied,
+}
+
+impl RuntimeHandoffEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::UnifiedPreambleApplied => "unified_preamble_applied",
+            Self::RuntimePrewarmStarted => "runtime_prewarm_started",
+            Self::RuntimePrewarmComplete => "runtime_prewarm_complete",
+            Self::HandoffPayloadCompressed => "handoff_payload_compressed",
+            Self::PersonaVectorApplied => "persona_vector_applied",
+            Self::StyleNormalizerApplied => "style_normalizer_applied",
+        }
+    }
+}
+
+/// E-3 sub-phase 4A (SCHEMA_VERSION 190) -- payload for
+/// [`SsbActionType::E3RuntimeHandoffEvent`].
+///
+/// Wire-dark default; emission gated by
+/// `ELAI_E3_RUNTIME_HANDOFF_ENABLE` env var (see
+/// [`ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV`]).
+///
+/// Covers all 6 fire points of the model-handoff UX plan (E-3). Sub-phase
+/// 4A wires only the `UnifiedPreambleApplied` arm via the role-prompt wrap
+/// in `runtime_orchestrator.rs`; the other 5 arms are reserved (variant
+/// + envelope shipped now so dashboard + CLI consumers can begin building
+/// against a stable wire surface in 4B).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeHandoffEventPayload {
+    /// Fire-point discriminator. See [`RuntimeHandoffEventKind`].
+    pub kind: RuntimeHandoffEventKind,
+    /// Agent role string the handoff applies to (e.g. `"executor"`,
+    /// `"auditor"`). Optional because some fire points (style-normalizer
+    /// post-pass) are role-agnostic.
+    pub role: Option<String>,
+    /// Runtime backend identifier (e.g. `"sidecar"`, `"anthropic_api"`).
+    /// Optional because the preamble-applied arm fires before backend
+    /// selection commits.
+    pub backend: Option<String>,
+    /// Canonical session id this handoff belongs to. None when fired
+    /// before a session is bound (cold-boot dispatch).
+    pub session_id: Option<String>,
+    /// Free-form per-fire-point context. Shape depends on `kind`:
+    ///   * UnifiedPreambleApplied -- `{base_prompt_len, anchor_blake3,
+    ///     preamble_len}`.
+    ///   * RuntimePrewarmStarted -- `{predicted_role, backend, vram_tier}`.
+    ///   * RuntimePrewarmComplete -- `{backend, duration_ms, ok,
+    ///     cuda_graph_captured}`.
+    ///   * HandoffPayloadCompressed -- `{original_tokens,
+    ///     compressed_tokens, ratio}`.
+    ///   * PersonaVectorApplied -- `{model_id, vector_blake3, strength}`.
+    ///   * StyleNormalizerApplied -- `{source_role, input_blake3,
+    ///     output_blake3, tells_stripped}`.
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// E-3 sub-phase 4A -- env var name. Wire-dark default: emission silently
+/// skipped until the operator sets this to a truthy value (`"1"` /
+/// `"true"` / `"yes"` / `"on"`). Mirrors the precedent set by
+/// [`ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV`] /
+/// [`ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV`] /
+/// [`ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE_ENV`] /
+/// [`ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE_ENV`].
+///
+/// Consulted by `runtime_orchestrator.rs::try_complete` (sub-phase 4A
+/// wires the UnifiedPreambleApplied arm via tracing log + a TODO marker
+/// for the actual Ssb::write_payload injection in sub-phase 4B).
+pub const ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV: &str =
+    "ELAI_E3_RUNTIME_HANDOFF_ENABLE";
+
+// ---------------------------------------------------------------------------
+// E-31 sub-phase 6A (SCHEMA_VERSION 191) -- cloud-route decision event substrate.
+// ---------------------------------------------------------------------------
+
+/// E-31 sub-phase 6A -- 3-arm fire-point discriminator carried by
+/// [`RouteDecisionEventPayload`]. Pattern-2 (43rd application).
+///
+/// Collapses the E-31 plan's two deferred SSB envelopes
+/// (CloudRouteDecision + TierModelSwap) plus a third "kept local" arm
+/// into a single Pattern-2 variant. Matches the documented
+/// [`CodingMetricNamedTokenKind`] (3-arm) precedent and avoids 2 SCHEMA
+/// slot bumps + 2 ALL_VARIANTS rows. The `LocalRouteKept` arm is the
+/// sanity-check telemetry surface for the local-first path (operator
+/// expects most steps to NOT escalate).
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()` is
+/// the canonical helper for log-line and SSB dashboard labels.
+///
+/// Closed enum; adding a 4th kind requires a `SCHEMA_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteDecisionEventKind {
+    /// The runtime routing policy escalated to a cloud arm. The
+    /// `route` field of the payload carries the cloud arm label
+    /// (`cloud_sonnet` / `cloud_opus` / `cloud_deepseek_flash`).
+    /// Producer: `cloud_mode.rs::CloudModeRouter::route`.
+    CloudRouteChosen,
+    /// The routing policy forced a tier-model swap (e.g. VRAM
+    /// headroom too low for the per-role configured model;
+    /// swap from 7B local -> 3B local or local -> cloud cheap arm).
+    /// Producer: PENDING (E-31 sub-phase 6B; wire tag reserved here).
+    TierModelSwapped,
+    /// The routing policy evaluated the per-step context and kept
+    /// the local sidecar route. Useful for telemetry on the
+    /// local-first path. Producer:
+    /// `cloud_mode.rs::CloudModeRouter::route`.
+    LocalRouteKept,
+}
+
+impl RouteDecisionEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CloudRouteChosen => "cloud_route_chosen",
+            Self::TierModelSwapped => "tier_model_swapped",
+            Self::LocalRouteKept => "local_route_kept",
+        }
+    }
+}
+
+/// E-31 sub-phase 6A (SCHEMA_VERSION 191) -- payload for
+/// [`SsbActionType::RouteDecisionEvent`].
+///
+/// Wire-dark default; emission gated by
+/// `ELAI_ROUTE_DECISION_SSB_ENABLE` env var (see
+/// [`ELAI_ROUTE_DECISION_SSB_ENABLE_ENV`]).
+///
+/// Mirrors the
+/// `providers::runtime::escalation_policy::RoutingDecision` shape at the
+/// SSB row layer; the policy module owns the decision-table while the
+/// SSB row owns the audit-trail. The two enums (`RoutingChoice`,
+/// `RoutingReason`) are mirrored as snake-case strings here rather than
+/// as cross-crate typed enums to keep the orchestrator -> providers
+/// dependency edge unidirectional.
+///
+/// Fields:
+///   * `kind` -- 3-arm fire-point discriminator (see
+///     [`RouteDecisionEventKind`]).
+///   * `route` -- snake-case label of the selected
+///     `RoutingChoice` (e.g. `"local_sidecar"`, `"cloud_sonnet"`,
+///     `"cloud_opus"`, `"cloud_deepseek_flash"`).
+///   * `score` -- difficulty score in [0.0, 1.0] (caller-supplied;
+///     mirrors the E-39 `Difficulty` f32). May be 0.0 for fire
+///     points that do not carry a difficulty signal
+///     (`LocalRouteKept` when the local route was unconditional).
+///   * `ms` -- decision latency in millis (caller-measured).
+///   * `reason` -- snake-case label of the
+///     `RoutingReason` (e.g. `"online_threshold_met"`,
+///     `"vram_headroom_low"`).
+///   * `session_id` -- canonical session id when known.
+///   * `details_json` -- free-form per-fire-point context.
+///   * `ts_ms` -- fire-point wall-clock (millis since UNIX_EPOCH).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RouteDecisionEventPayload {
+    /// Fire-point discriminator. See [`RouteDecisionEventKind`].
+    pub kind: RouteDecisionEventKind,
+    /// Snake-case label of the selected `RoutingChoice`.
+    pub route: String,
+    /// Difficulty score in [0.0, 1.0].
+    pub score: f32,
+    /// Decision latency in millis.
+    pub ms: u64,
+    /// Snake-case label of the `RoutingReason`.
+    pub reason: String,
+    /// Canonical session id this decision belongs to.
+    pub session_id: Option<String>,
+    /// Free-form per-fire-point context.
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// E-31 sub-phase 6A -- env var name. Wire-dark default: emission
+/// silently skipped until the operator sets this to a truthy value
+/// (`"1"` / `"true"` / `"yes"` / `"on"`). Mirrors the precedent set by
+/// [`ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV`] /
+/// [`ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV`] /
+/// [`ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE_ENV`].
+///
+/// Consulted by `cloud_mode.rs::CloudModeRouter::route` (sub-phase 6A
+/// wires the `CloudRouteChosen` and `LocalRouteKept` arms via tracing
+/// log; `TierModelSwapped` producer + `Ssb::write_payload` injection
+/// land in sub-phase 6B alongside the dashboard RuntimePanel row).
+pub const ELAI_ROUTE_DECISION_SSB_ENABLE_ENV: &str =
+    "ELAI_ROUTE_DECISION_SSB_ENABLE";
+
+// ---------------------------------------------------------------------------
+// E-47 (SCHEMA_VERSION 192) -- LoRA fine-tuning ship-gate substrate.
+// ---------------------------------------------------------------------------
+
+/// E-47 -- 3-arm phase discriminator carried by
+/// [`LoraShipGateEventPayload`]. Pattern-2 (44th application).
+///
+/// Collapses the E-47 plan's nominally three sibling SSB rows
+/// (`lora_ship_gate_refused` / `lora_calibration_gate_passed` /
+/// `lora_calibration_gate_refused`) into a single Pattern-2 variant
+/// per the E-43 [`SkillEventPhase`] precedent. Matches the
+/// [`SkillEventPhase`] (3-arm) and [`RouteDecisionEventKind`] (3-arm)
+/// shape and avoids 2 SCHEMA slot bumps + 2 ALL_VARIANTS rows.
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()`
+/// is the canonical helper for log-line and SSB dashboard labels.
+///
+/// Closed enum; adding a 4th phase requires a `SCHEMA_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoraShipGateEventPhase {
+    /// The triple-AND ship-gate refused the adapter load.
+    /// `details_json` carries the refusal reason
+    /// (`deferral_token_present` / `calibration_regression` / etc.).
+    Refused,
+    /// The ship-gate is enabled and configured to ship but no
+    /// `LoraCalibrationReport` was supplied. Refuse-and-continue
+    /// posture (no adapter load).
+    CalibrationMissing,
+    /// The ship-gate is either wire-dark (`enabled = false`) or the
+    /// calibration report passes the no-regression threshold.
+    /// Clear-to-proceed posture.
+    CalibrationPassed,
+}
+
+impl LoraShipGateEventPhase {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Refused => "refused",
+            Self::CalibrationMissing => "calibration_missing",
+            Self::CalibrationPassed => "calibration_passed",
+        }
+    }
+}
+
+/// E-47 (SCHEMA_VERSION 192) -- payload for
+/// [`SsbActionType::LoraShipGateEvent`].
+///
+/// Wire-dark default; emission gated by
+/// `ELAI_LORA_SHIP_GATE_ENABLE` env var (see
+/// [`ELAI_LORA_SHIP_GATE_ENABLE_ENV`]).
+///
+/// Mirrors the
+/// [`crate::lora_ship_gate::LoraShipGateOutcome`] shape at the SSB
+/// row layer; the pure-logic module owns the decision function while
+/// the SSB row owns the audit trail. `phase` is the canonical
+/// outcome tag; `details_json` is a free-form per-fire-point context
+/// object (config snapshot, calibration deltas, refusal reason, etc.).
+///
+/// Fields:
+///   * `phase` -- 3-arm outcome discriminator (see
+///     [`LoraShipGateEventPhase`]).
+///   * `session_id` -- canonical session id when known.
+///   * `agent_id` -- emitting agent identifier (CLI or
+///     orchestrator subsystem).
+///   * `details_json` -- free-form per-fire-point context.
+///   * `ts_ms` -- fire-point wall-clock (millis since UNIX_EPOCH).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoraShipGateEventPayload {
+    /// Outcome discriminator. See [`LoraShipGateEventPhase`].
+    pub kind: LoraShipGateEventPhase,
+    /// Canonical session id this event belongs to.
+    pub session_id: Option<String>,
+    /// Emitting agent identifier.
+    pub agent_id: Option<String>,
+    /// Free-form per-fire-point context.
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// E-47 -- env var name. Wire-dark default: emission silently
+/// skipped until the operator sets this to a truthy value
+/// (`"1"` / `"true"` / `"yes"` / `"on"`). Mirrors the precedent set
+/// by [`ELAI_ROUTE_DECISION_SSB_ENABLE_ENV`] /
+/// [`ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE_ENV`] /
+/// [`ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV`].
+///
+/// Consulted by
+/// `crate::lora_ship_gate::lora_ship_gate_enabled_from_env` and the
+/// `notify_lora_ship_gate` helper.
+pub const ELAI_LORA_SHIP_GATE_ENABLE_ENV: &str =
+    "ELAI_LORA_SHIP_GATE_ENABLE";
+
+// ---------------------------------------------------------------------------
+// E-40 Tranche B-2 (SCHEMA_VERSION 193) -- SymbolGraph augmentation
+// substrate. Pattern-2 single-variant with 4-arm discriminator.
+// ---------------------------------------------------------------------------
+
+/// E-40 Tranche B-2 -- 4-arm kind discriminator carried by
+/// [`SymbolGraphEventPayload`]. Pattern-2 (45th application).
+///
+/// Collapses the Tranche B-2 plan's nominally four sibling SSB rows
+/// (`symbol_dsl_executed` / `dataflow_impact_computed` /
+/// `agent_impact_claim_refuted` / `scope_graph_resolved`) into a
+/// single Pattern-2 variant per the E-47 [`LoraShipGateEventPhase`]
+/// precedent.
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()`
+/// is the canonical helper for log-line and SSB dashboard labels.
+///
+/// Closed enum; adding a 5th arm requires a `SCHEMA_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolGraphEventKind {
+    /// `exec_dsl` returned with a match set.
+    SymbolDslExecuted,
+    /// `DataflowAnalyzer::impact_analysis` returned (any BFS impact
+    /// request, including the 5th-list RRF retriever path).
+    DataflowImpactComputed,
+    /// The Refine+Filter stage refused an agent's impact claim
+    /// because at least one impacted file was NOT in the claim.
+    AgentImpactClaimRefuted,
+    /// Reserved for Tranche B-3 -- `ScopeGraph` resolved a symbol's
+    /// scope chain. The B-3 implementation is RUNPOD-PENDING; the
+    /// arm is reserved here to avoid a 2nd SCHEMA bump on B-3 landing.
+    ScopeGraphResolved,
+}
+
+impl SymbolGraphEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SymbolDslExecuted => "symbol_dsl_executed",
+            Self::DataflowImpactComputed => "dataflow_impact_computed",
+            Self::AgentImpactClaimRefuted => "agent_impact_claim_refuted",
+            Self::ScopeGraphResolved => "scope_graph_resolved",
+        }
+    }
+}
+
+/// E-40 Tranche B-2 (SCHEMA_VERSION 193) -- payload for
+/// [`SsbActionType::SymbolGraphEvent`].
+///
+/// Wire-dark default; emission gated by
+/// `ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE` (for the 5th-list RRF
+/// retriever path) or other per-event gates upstream.
+///
+/// `kind` is the canonical outcome tag; `details_json` is a free-form
+/// per-fire-point context object (DSL string, matched symbol names,
+/// claim refutation diff, etc.).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SymbolGraphEventPayload {
+    /// Outcome discriminator. See [`SymbolGraphEventKind`].
+    pub kind: SymbolGraphEventKind,
+    /// Canonical session id this event belongs to.
+    pub session_id: Option<String>,
+    /// Emitting agent identifier.
+    pub agent_id: Option<String>,
+    /// Free-form per-fire-point context.
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// E-40 Tranche B-2 -- env var name. Wire-dark default: emission
+/// silently skipped until the operator sets this to a truthy value
+/// (`"1"` / `"true"` / `"yes"` / `"on"`). Mirrors the precedent set
+/// by [`ELAI_LORA_SHIP_GATE_ENABLE_ENV`].
+///
+/// Same env var also gates the
+/// `elai_knowledge::pipeline` 5th-list RRF input (see
+/// `crates/knowledge/src/pipeline.rs::ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV`)
+/// so an operator opts the entire substrate on with one flip.
+pub const ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV: &str =
+    "ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE";
+
+// ---------------------------------------------------------------------------
+// Tranche B-6 quad (SCHEMA_VERSION 194) -- four new SSB substrates landing in
+// one coordinated orchestrate run. See SCHEMA_VERSION header block for the
+// full tranche docs. Layout below mirrors the SymbolGraphEvent pattern
+// (single Pattern-2 variant + kind discriminator + payload + env-var const).
+// ---------------------------------------------------------------------------
+
+// === C-42 SHIPPABLE-NOW (proc-macro deferred to C-42b) ======================
+
+/// Tranche B-6 quad C-42 -- 3-arm kind discriminator carried by
+/// [`McpAuthzEventPayload`]. Pattern-2 (46th application).
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()` is
+/// the canonical helper for log-line + SSB dashboard labels.
+///
+/// Closed enum; adding a 4th arm requires a `SCHEMA_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthzEventKind {
+    /// `check_authz` returned [`AuthzVerdict::Allow`] and the composed
+    /// gate (ToolGate) also allowed the call -- per-call SSB signal.
+    AuthzCheckPassed,
+    /// `check_authz` returned [`AuthzVerdict::Deny`] or the composed
+    /// ToolGate denied; carries hashed deny_reason in `details_json`.
+    AuthzCheckFailed,
+    /// One of the deterministic-corpus tuples was replayed against the
+    /// composed gate (offline fuzz harness). `details_json.tuple_id`
+    /// carries the corpus slot.
+    CorpusReplayed,
+}
+
+impl McpAuthzEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AuthzCheckPassed => "authz_check_passed",
+            Self::AuthzCheckFailed => "authz_check_failed",
+            Self::CorpusReplayed => "corpus_replayed",
+        }
+    }
+}
+
+/// Tranche B-6 quad C-42 -- payload for [`SsbActionType::McpAuthzEvent`].
+///
+/// Wire-dark default; emission gated by
+/// [`ELAI_C42_MCP_AUTHZ_EMIT_ENABLE_ENV`].
+///
+/// `kind` is the canonical outcome tag; `details_json` is a free-form
+/// per-fire-point context object (hashed deny_reason, layer label, corpus
+/// tuple_id, etc.). Hashed identifiers (no plaintext) so the wire format
+/// is privacy-preserving and stable across sessions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpAuthzEventPayload {
+    /// Outcome discriminator. See [`McpAuthzEventKind`].
+    pub kind: McpAuthzEventKind,
+    /// blake3-prefix u64 of the canonical snake_case tool name.
+    pub tool_name_hash: u64,
+    /// blake3-prefix u64 of the lowercased FSM state string ("planning",
+    /// "executing", "auditing", ...).
+    pub fsm_state_hash: u64,
+    /// blake3-prefix u64 of the snake_case actor/role label ("planner",
+    /// "executor", ...).
+    pub actor_hash: u64,
+    /// blake3-prefix u64 of the layer-attribution label
+    /// (`"allow"` / `"authz"` / `"tool_gate"`). Mirrors paper Section 5's
+    /// rejecting_layer surface.
+    pub layer_hash: u64,
+    /// blake3-prefix u64 of the deny reason string when `kind` is
+    /// [`McpAuthzEventKind::AuthzCheckFailed`]; `None` for passed checks
+    /// and corpus replay rows.
+    pub deny_reason_hash: Option<u64>,
+    /// Severity: `0` advisory (passed / corpus signal), `1` critical
+    /// (authz deny). Stable wire format for dashboard sort.
+    pub severity: u8,
+    /// Free-form per-fire-point context (corpus tuple_id, fuzz seed,
+    /// etc.).
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// Tranche B-6 quad C-42 -- env var name. Wire-dark default: emission
+/// silently skipped until the operator sets this to a truthy value
+/// (`"1"` / `"true"` / `"yes"` / `"on"`). Mirrors the precedent set by
+/// [`ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV`] /
+/// [`ELAI_LORA_SHIP_GATE_ENABLE_ENV`].
+pub const ELAI_C42_MCP_AUTHZ_EMIT_ENABLE_ENV: &str =
+    "ELAI_C42_MCP_AUTHZ_EMIT_ENABLE";
+
+/// Tranche B-6 quad C-42 -- on-disk corpus directory for the
+/// deterministic-tuple replay harness. Relative to the workspace root.
+/// The directory is established with a `.gitkeep` sentinel; the corpus
+/// generator (DEFERRED to C-42b alongside the proc-macro) populates it
+/// with 200+ JSON tuples (tool * FSM state * 5 arg shapes).
+pub const MCP_FUZZ_CORPUS_DIR: &str = ".elai_cc/data/mcp_fuzz_corpus";
+
+/// Tranche M (s-22600) C-42b -- minimum tuple count for the
+/// `plugins_macros` fuzz harness corpus. Per D-M8 (see
+/// `workflow/reasoning/M-trancheM-decisions.md`), the deterministic
+/// corpus generator at `crates/plugins_macros/examples/corpusgen.rs`
+/// emits >= 200 `(tool_name, authz_decision, expected_emit_count)`
+/// tuples; the contract test at
+/// `crates/contracts/tests/m_authz_corpus_loop_contract.rs` pins the
+/// floor against this constant so a future generator-tuning regression
+/// surfaces as a compile-time test failure.
+pub const MCP_FUZZ_CORPUS_MIN_TUPLES: usize = 200;
+
+// === C-47 Pattern-2 collapse ================================================
+
+/// Tranche B-6 quad C-47 -- 6-arm kind discriminator carried by
+/// [`ToolCalibrationEventPayload`]. Pattern-2 (47th application).
+///
+/// Collapses the C-47 case-base surface into one Pattern-2 variant. The
+/// 3 pre-existing helpers (`ToolCalibrationHintEmitted` /
+/// `ToolCalibrationDriftDetected` / `ToolCallLogged`) stay alive for one
+/// release window as deprecation aliases; the new variant + a new
+/// notify-helper land here, gradual migration in C-47b.
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()` is
+/// the canonical helper for log-line + SSB dashboard labels.
+///
+/// Closed enum; adding a 7th arm requires a `SCHEMA_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCalibrationEventKind {
+    /// Hinter emitted a calibration hint to the prompt-assembly side
+    /// channel (mirrors the legacy `ToolCalibrationHintEmitted`).
+    HintEmitted,
+    /// Per-tool aggregate error_rate crossed the drift threshold
+    /// (mirrors the legacy `ToolCalibrationDriftDetected`).
+    DriftDetected,
+    /// One completed tool dispatch was logged into the case base
+    /// (mirrors the legacy `ToolCallLogged`).
+    CallLogged,
+    /// A new aggregated case was added to the case base (NEW signal --
+    /// surfaces the case-base grow event).
+    CaseAdded,
+    /// A nearest-neighbor / aggregate-lookup retrieved a case from the
+    /// base in service of a calibration decision.
+    CaseSelected,
+    /// A calibration outcome (hint application, sampling-rate tweak,
+    /// etc.) was applied to a downstream tool dispatch.
+    CalibrationApplied,
+}
+
+impl ToolCalibrationEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::HintEmitted => "hint_emitted",
+            Self::DriftDetected => "drift_detected",
+            Self::CallLogged => "call_logged",
+            Self::CaseAdded => "case_added",
+            Self::CaseSelected => "case_selected",
+            Self::CalibrationApplied => "calibration_applied",
+        }
+    }
+}
+
+/// Tranche B-6 quad C-47 -- payload for
+/// [`SsbActionType::ToolCalibrationEvent`].
+///
+/// Wire-dark default; emission gated by
+/// [`ELAI_C47_CASE_BASE_ENABLE_ENV`].
+///
+/// Hashed identifiers (no plaintext) so the wire format is
+/// privacy-preserving and stable across sessions (parity with C-45 /
+/// C-46 hashing discipline).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCalibrationEventPayload {
+    /// Outcome discriminator. See [`ToolCalibrationEventKind`].
+    pub kind: ToolCalibrationEventKind,
+    /// blake3-prefix u64 of the snake_case tool name.
+    pub tool_name_hash: u64,
+    /// blake3-prefix u64 of the canonical-sorted call-shape JSON key set
+    /// (mirrors `ToolCallLoggedPayload.call_shape_hash`).
+    pub call_shape_hash: u64,
+    /// blake3-prefix u64 of the snake_case response_kind string for
+    /// `CallLogged`; `None` for kinds that do not carry a per-call
+    /// response.
+    pub response_kind_hash: Option<u64>,
+    /// Free-form per-fire-point context (hint_text_hash, error_rate,
+    /// total_calls, case_id, etc.).
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// Tranche B-6 quad C-47 -- env var name. Wire-dark default: emission
+/// silently skipped until the operator sets this to a truthy value.
+pub const ELAI_C47_CASE_BASE_ENABLE_ENV: &str =
+    "ELAI_C47_CASE_BASE_ENABLE";
+
+/// Tranche D (s-22600) C-47b -- env var name for the cold-tier rusqlite
+/// persistence layer on top of C-47's in-memory LRU. Wire-dark default:
+/// the registry only attempts a durable write when BOTH a
+/// `CasePersistStore` has been installed via
+/// `ToolCalibrationRegistry::with_persist` AND this env-var is set to a
+/// truthy value (`"1"` / `"true"` / `"yes"` / `"on"`). Fail-closed
+/// posture per D-trancheD-decisions.md D3: persist error SKIPS the LRU
+/// admit so the in-memory view stays consistent with the durable store.
+/// The plugins-crate canonical const value is
+/// `"ELAI_C47B_CASE_BASE_PERSIST_ENABLE"`; the orchestrator-side const
+/// here is a wire mirror so contract tests + dashboard wire layers can
+/// reference one symbol regardless of crate boundary.
+pub const ELAI_C47B_CASE_BASE_PERSIST_ENABLE_ENV: &str =
+    "ELAI_C47B_CASE_BASE_PERSIST_ENABLE";
+
+/// Tranche D (s-22600) C-47b -- canonical on-disk path for the sqlite
+/// persistence store. Mirrors the `.elai_cc/data/` convention established
+/// by [`MCP_FUZZ_CORPUS_DIR`] (Tranche B-6 quad). The bootstrap site
+/// (cli + dashboard-v2) opens a `CasePersistStore` against this path
+/// when wiring `ToolCalibrationRegistry::with_persist`. Relative to the
+/// workspace root.
+pub const CASE_BASE_PERSIST_PATH: &str = ".elai_cc/data/case_base/case_base.sqlite3";
+
+// === B-39 single-add ========================================================
+
+/// Tranche B-6 quad B-39 -- payload for
+/// [`SsbActionType::ReflectBudgetSoftWarn`].
+///
+/// Single-add (NOT Pattern-2; reflect_* family stays
+/// alphabetical-contiguous as the 5th sibling). Emitted by
+/// `crates/reasoning/src/chat_reflect.rs` ~L454 when
+/// `used >= soft_cap && used < hard_cap` where
+/// `soft_cap = (hard_cap * REFLECT_BUDGET_SOFT_WARN_PCT) / 100`.
+///
+/// Wire-dark unless [`ELAI_B39_SOFTWARN_ENABLE_ENV`] is set truthy.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ReflectBudgetSoftWarnPayload {
+    /// blake3-prefix u64 of the `turn_id` correlator (raw turn_id stays
+    /// off the wire surface; the dashboard joins via SsbRow.agent_id +
+    /// ts_ms when needed).
+    pub turn_id_hash: u64,
+    /// Tokens used at the point the soft-warn fired (sum across all
+    /// stages reported by `ReflectTokenSummary`).
+    pub used: u32,
+    /// Computed soft cap = `(hard_cap * pct) / 100`. Carried explicitly
+    /// so the dashboard does not have to re-derive it.
+    pub soft_cap: u32,
+    /// Hard cap (the existing `ChatReflectConfig.budget_cap_tokens`).
+    pub hard_cap: u32,
+    /// Threshold percentage that fired (mirrors
+    /// `REFLECT_BUDGET_SOFT_WARN_PCT`; 0..=100).
+    pub pct: u8,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// Tranche B-6 quad B-39 -- env var name. Wire-dark default: emission
+/// silently skipped until the operator sets this to a truthy value.
+pub const ELAI_B39_SOFTWARN_ENABLE_ENV: &str =
+    "ELAI_B39_SOFTWARN_ENABLE";
+
+// === C-50 Pattern-2 collapse ================================================
+
+/// Tranche B-6 quad C-50 -- 3-arm kind discriminator carried by
+/// [`ContractCodingEventPayload`]. Pattern-2 (48th application).
+///
+/// Wire labels are snake_case via `#[serde(rename_all)]`; `as_str()` is
+/// the canonical helper for log-line + SSB dashboard labels.
+///
+/// Pre-existing `ContractViolationDetected` stays alive (NOT collapsed
+/// in this tranche -- separate landing).
+///
+/// Closed enum; adding a 4th arm requires a `SCHEMA_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractCodingEventKind {
+    /// One fix_and_rerun iteration attempted (validator reported
+    /// `Failed`; fixer turn dispatched). `details_json.iterations`
+    /// carries the running counter.
+    RetryAttempted,
+    /// Validator pass after the fixer turn returned `Green` --
+    /// retry-loop healed. `details_json.iterations` carries the final
+    /// count.
+    RetryResolved,
+    /// Retry loop exhausted `max_iterations` and escalated to a human
+    /// reviewer. `details_json.iterations` carries the cap value;
+    /// `details_json.escalation_reason` carries a truncated failure
+    /// summary.
+    RetryAbandoned,
+}
+
+impl ContractCodingEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::RetryAttempted => "retry_attempted",
+            Self::RetryResolved => "retry_resolved",
+            Self::RetryAbandoned => "retry_abandoned",
+        }
+    }
+}
+
+/// Tranche B-6 quad C-50 -- payload for
+/// [`SsbActionType::ContractCodingEvent`].
+///
+/// Wire-dark default; emission gated by
+/// [`ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE_ENV`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContractCodingEventPayload {
+    /// Outcome discriminator. See [`ContractCodingEventKind`].
+    pub kind: ContractCodingEventKind,
+    /// blake3-prefix u64 of the canonical step identifier (matches the
+    /// `step_id` field on `fix_and_rerun_until_green`).
+    pub step_id_hash: u64,
+    /// Iterations counter. `u8` is sufficient: per `fix_and_rerun_contract.rs:278`
+    /// the production cap is exactly 5; u8 max 255 leaves ample headroom.
+    pub iterations: u8,
+    /// Severity: `0` advisory (`RetryAttempted` / `RetryResolved`), `1`
+    /// critical (`RetryAbandoned` -- human escalation). Stable wire format
+    /// for dashboard sort.
+    pub severity: u8,
+    /// Free-form per-fire-point context (truncated failure_summary,
+    /// escalation_reason, final_state label, ...).
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// Tranche B-6 quad C-50 -- env var name. Wire-dark default: emission
+/// silently skipped until the operator sets this to a truthy value.
+pub const ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE_ENV: &str =
+    "ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE";
+
+/// Tranche K / B.2 Option-B -- non-web retry emit env gate. Wire-dark
+/// default: when set to truthy ("1"/"true"/"yes"/"on"), enables a
+/// SECOND `fix_and_rerun_until_green` call site in
+/// `task_runner::drive_task` (inserted AFTER the web `is_web_project`
+/// branch) that fires for non-web projects (where `is_web_project=false`
+/// and the baby step did not pass). The web-side gate
+/// (`ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE`) is unchanged. Both gates are
+/// TRULY INDEPENDENT observability switches: per the W3 finding in the
+/// Tranche K context package, gate selection is funneled through
+/// [`crate::contract_coding::retry_emit::c50_emit_gate_truthy`], so
+/// flipping only the non-web gate does NOT widen web-path emission, and
+/// vice versa. Operators flip per-mode without coupling.
+pub const ELAI_C50_NON_WEB_RETRY_EMIT_ENABLE_ENV: &str =
+    "ELAI_C50_NON_WEB_RETRY_EMIT_ENABLE";
+
+/// Tranche B-6 quad -- shared env-gate predicate. Returns `true` when the
+/// named env var is set to one of `"1"` / `"true"` / `"yes"` / `"on"`
+/// (case-insensitive). Mirrors the precedent set by other Pattern-2
+/// substrates (E-47 LoraShipGate, E-40 SymbolGraph). Reads via
+/// `std::env::var`; cheap enough for emit-hot-paths (microseconds).
+#[must_use]
+pub fn env_gate_truthy(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let trimmed = v.trim();
+            trimmed.eq_ignore_ascii_case("1")
+                || trimmed.eq_ignore_ascii_case("true")
+                || trimmed.eq_ignore_ascii_case("yes")
+                || trimmed.eq_ignore_ascii_case("on")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Tranche B-6 quad -- shared blake3-prefix label hasher. Returns the
+/// first 8 bytes of `blake3(label.as_bytes())` packed LE as `u64`.
+/// Matches the prefix-hashing discipline used by C-45 / C-46 / C-47
+/// payloads. blake3 (NOT blake2 / sha2) per CLAUDE.md HARD RULE.
+#[must_use]
+pub fn blake3_label_prefix(label: &str) -> u64 {
+    let bytes = blake3::hash(label.as_bytes());
+    let prefix: [u8; 8] = bytes.as_bytes()[..8].try_into().unwrap_or([0u8; 8]);
+    u64::from_le_bytes(prefix)
+}
+
+/// Tranche B-6 quad -- system clock ms helper. Saturating-to-`i64::MAX`
+/// on the `u128 -> i64` cast (year 292278994 + safe by construction);
+/// `UNIX_EPOCH` shift errors collapse to `0` (clock set before 1970 is
+/// advisory-only at the SSB ts boundary).
+#[must_use]
+pub fn system_time_ms_i64() -> i64 {
+    // This helper IS the canonical timestamp source for ssb rows; the
+    // ssb writer is by design where ClockProvider injection bottoms out.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ms_u128 = SystemTime::now() // entropy-allow: ssb-canonical-timestamp-source-saturating-on-failure
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    i64::try_from(ms_u128).unwrap_or(i64::MAX)
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -24148,6 +26393,9 @@ mod tests {
                 },
             ),
             // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
+            // FINAL TRANCHE B4: optional candidate_status field added; test
+            // payload sets `Queued` to exercise the new arm. Existing on-disk
+            // rows without the field deserialize as None.
             SsbActionType::NoveltyClassified => SsbPayload::NoveltyClassified(
                 NoveltyClassifiedPayload {
                     template_id: "tpl-d15-test".into(),
@@ -24155,6 +26403,7 @@ mod tests {
                     dkg_match_count: 0,
                     near_duplicate_threshold: 0.05,
                     ts_ms: 1_700_000_080_000,
+                    candidate_status: Some(DiscoveryCandidateStatus::Queued),
                 },
             ),
             // D-18 (SCHEMA_VERSION 84): typed-ObservableEffect predicate beacon.
@@ -25561,6 +27810,219 @@ mod tests {
                         "divergence_axis": "title_text_match"
                     }),
                     ts_ms: 1_700_000_179_001,
+                },
+            ),
+            // E-44 (SCHEMA_VERSION 186): durability observability substrate.
+            // Explicit arm BEFORE the wildcard so write-time
+            // validate_payload_matches_action_type sees a matching
+            // payload type for `durability_event`. TASK-E44-013 closure.
+            SsbActionType::DurabilityEvent => SsbPayload::DurabilityEvent(
+                DurabilityEventPayload {
+                    kind: DurabilityEventKind::ToolIdempotencyHit,
+                    session_id: Some("s-e44-test".into()),
+                    agent_id: Some("agent-e44-test".into()),
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "call_shape_hash": "deadbeef",
+                        "tool_id": "Read",
+                        "cache_age_ms": 1234_u64
+                    }),
+                    ts_ms: 1_700_000_186_001,
+                },
+            ),
+            // E-31 (SCHEMA_VERSION 187): head_dim invariant verification.
+            // Explicit arm BEFORE the wildcard so write-time
+            // validate_payload_matches_action_type sees a matching
+            // payload type for `head_dim_invariant_verified`. TASK-E31-001 closure.
+            SsbActionType::HeadDimInvariantVerified => SsbPayload::HeadDimInvariantVerified(
+                HeadDimInvariantVerifiedPayload {
+                    kind: HeadDimInvariantVerifiedKind::Verified,
+                    model_id: "Qwen/Qwen2.5-Coder-7B-Instruct".into(),
+                    head_dim_observed: 128,
+                    head_dim_expected: 128,
+                    ok: true,
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "hidden_size": 3584_u32,
+                        "num_attention_heads": 28_u32
+                    }),
+                    ts_ms: 1_700_000_187_001,
+                },
+            ),
+            // E-3 (SCHEMA_VERSION 188): role-shown / model-hidden default
+            // telemetry. Explicit arm BEFORE the wildcard so write-time
+            // validate_payload_matches_action_type sees a matching payload
+            // type for `role_shown_model_hidden`. TASK-E03-001 MVP closure.
+            SsbActionType::RoleShownModelHidden => SsbPayload::RoleShownModelHidden(
+                RoleShownModelHiddenPayload {
+                    role: "executor".into(),
+                    model_hidden: true,
+                    session_id: Some("s-e03-test".into()),
+                    ts_ms: 1_700_000_188_001,
+                },
+            ),
+            // E-49 (SCHEMA_VERSION 189): coding-agent metrics named-token
+            // substrate. Explicit arm BEFORE the wildcard so write-time
+            // validate_payload_matches_action_type sees a matching payload
+            // type for `coding_metric_named_token`. TASK-E49-005 closure.
+            SsbActionType::CodingMetricNamedToken => SsbPayload::CodingMetricNamedToken(
+                CodingMetricNamedTokenPayload {
+                    kind: CodingMetricNamedTokenKind::StablePassAt1,
+                    session_id: "s-e49-test".into(),
+                    model_id: Some("Qwen/Qwen2.5-Coder-7B-Instruct".into()),
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "seed_count": 5_u32,
+                        "identical_outputs": true,
+                        "std_dev": 0.0_f64,
+                        "mean_score": 1.0_f64,
+                        "test_id": "test_payload"
+                    }),
+                    ts_ms: 1_700_000_189_001,
+                },
+            ),
+            // E-3 sub-phase 4A (SCHEMA_VERSION 190): runtime handoff event
+            // substrate. Explicit arm BEFORE the wildcard so write-time
+            // validate_payload_matches_action_type sees a matching payload
+            // type for `e3_runtime_handoff_event`. TASK-E03-001 sub-phase 4A.
+            SsbActionType::E3RuntimeHandoffEvent => SsbPayload::E3RuntimeHandoffEvent(
+                RuntimeHandoffEventPayload {
+                    kind: RuntimeHandoffEventKind::UnifiedPreambleApplied,
+                    role: Some("executor".into()),
+                    backend: Some("sidecar".into()),
+                    session_id: Some("s-e03-4a-test".into()),
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "base_prompt_len": 256_u32,
+                        "anchor_blake3": "deadbeef0000",
+                        "preamble_len": 384_u32
+                    }),
+                    ts_ms: 1_700_000_190_001,
+                },
+            ),
+            // E-31 sub-phase 6A (SCHEMA_VERSION 191): cloud-route decision
+            // event substrate. Explicit arm BEFORE the wildcard so write-time
+            // validate_payload_matches_action_type sees a matching payload
+            // type for `route_decision_event`.
+            SsbActionType::RouteDecisionEvent => SsbPayload::RouteDecisionEvent(
+                RouteDecisionEventPayload {
+                    kind: RouteDecisionEventKind::CloudRouteChosen,
+                    route: "cloud_sonnet".into(),
+                    score: 0.5,
+                    ms: 3,
+                    reason: "online_threshold_met".into(),
+                    session_id: Some("s-e31-6a-test".into()),
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "policy": "RuntimeRoutingPolicy",
+                        "difficulty_bin": "medium",
+                        "criticality": "low"
+                    }),
+                    ts_ms: 1_700_000_191_001,
+                },
+            ),
+            // E-47 (SCHEMA_VERSION 192): LoRA ship-gate event substrate.
+            // Explicit arm BEFORE the wildcard so write-time
+            // validate_payload_matches_action_type sees a matching payload
+            // type for `lora_ship_gate_event`.
+            SsbActionType::LoraShipGateEvent => SsbPayload::LoraShipGateEvent(
+                LoraShipGateEventPayload {
+                    kind: LoraShipGateEventPhase::Refused,
+                    session_id: Some("s-e47-test".into()),
+                    agent_id: Some("test-agent".into()),
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "reason": "deferral_token_present",
+                        "token": "DEFERRED_PER_E47_REPORT"
+                    }),
+                    ts_ms: 1_700_000_192_001,
+                },
+            ),
+            // E-40 Tranche B-2 (SCHEMA_VERSION 193): SymbolGraph
+            // augmentation substrate. Explicit arm BEFORE the wildcard
+            // so write-time validate_payload_matches_action_type sees a
+            // matching payload type for `symbol_graph_event`.
+            SsbActionType::SymbolGraphEvent => SsbPayload::SymbolGraphEvent(
+                SymbolGraphEventPayload {
+                    kind: SymbolGraphEventKind::SymbolDslExecuted,
+                    session_id: Some("s-e40-test".into()),
+                    agent_id: Some("test-agent".into()),
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "dsl": "DEF(foo)",
+                        "match_count": 1
+                    }),
+                    ts_ms: 1_700_000_193_001,
+                },
+            ),
+            // Tranche B-6 quad (SCHEMA_VERSION 194): four new SSB substrates.
+            SsbActionType::McpAuthzEvent => SsbPayload::McpAuthzEvent(
+                McpAuthzEventPayload {
+                    kind: McpAuthzEventKind::AuthzCheckPassed,
+                    tool_name_hash: 0xC42_0001,
+                    fsm_state_hash: 0xC42_0002,
+                    actor_hash: 0xC42_0003,
+                    layer_hash: 0xC42_0004,
+                    deny_reason_hash: None,
+                    severity: 0,
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "layer": "allow"
+                    }),
+                    ts_ms: 1_700_000_194_001,
+                },
+            ),
+            SsbActionType::ToolCalibrationEvent => SsbPayload::ToolCalibrationEvent(
+                ToolCalibrationEventPayload {
+                    kind: ToolCalibrationEventKind::CaseAdded,
+                    tool_name_hash: 0xC47_0001,
+                    call_shape_hash: 0xC47_0002,
+                    response_kind_hash: None,
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "case_id": 0
+                    }),
+                    ts_ms: 1_700_000_194_002,
+                },
+            ),
+            SsbActionType::ReflectBudgetSoftWarn => SsbPayload::ReflectBudgetSoftWarn(
+                ReflectBudgetSoftWarnPayload {
+                    turn_id_hash: 0xB39_0001,
+                    used: 17_000,
+                    soft_cap: 17_000,
+                    hard_cap: 20_000,
+                    pct: 85,
+                    ts_ms: 1_700_000_194_003,
+                },
+            ),
+            SsbActionType::ContractCodingEvent => SsbPayload::ContractCodingEvent(
+                ContractCodingEventPayload {
+                    kind: ContractCodingEventKind::RetryResolved,
+                    step_id_hash: 0xC50_0001,
+                    iterations: 2,
+                    severity: 0,
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "final_state": "healed"
+                    }),
+                    ts_ms: 1_700_000_194_004,
+                },
+            ),
+            // Tranche B-7 triple (SCHEMA_VERSION 195): TDD verification gate
+            // substrate. Explicit arm BEFORE the wildcard so write-time
+            // validate_payload_matches_action_type sees a matching payload
+            // type for `tdd_verification_event`.
+            SsbActionType::TddVerificationEvent => SsbPayload::TddVerificationEvent(
+                TddVerificationEventPayload {
+                    kind: TddVerificationEventKind::MutationGateSurvivorBlock,
+                    task_id_hash: 0xE13_0001,
+                    details_json: serde_json::json!({
+                        "caller_site": "test_payload",
+                        "mutation_id_hash": "0x1234abcd",
+                        "status": "live_and_survived",
+                        "cached_at_ms": 1_700_000_195_000_i64
+                    }),
+                    ts_ms: 1_700_000_195_001,
                 },
             ),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
@@ -27551,12 +30013,16 @@ mod tests {
                 reason: Some("low_evidence".into()),
             }),
             // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
+            // FINAL TRANCHE B4: optional candidate_status field added (None
+            // here exercises the additive-default path against the on-disk
+            // wire form).
             SsbPayload::NoveltyClassified(NoveltyClassifiedPayload {
                 template_id: "tpl-d15-test".into(),
                 class: "discovery_candidate".into(),
                 dkg_match_count: 0,
                 near_duplicate_threshold: 0.05,
                 ts_ms: 1_700_000_080_000,
+                candidate_status: None,
             }),
             // D-18 (SCHEMA_VERSION 84): typed-ObservableEffect predicate beacon.
             SsbPayload::ObservableEffectVerified(ObservableEffectVerifiedPayload {
@@ -29197,6 +31663,22 @@ mod tests {
                 }),
                 ts_ms: 1_700_000_177_001,
             }),
+            // Tranche B-7 triple (SCHEMA_VERSION 195): TDD verification
+            // gate substrate. SINGLE-VARIANT Pattern-2 (46th application);
+            // TddVerificationEventKind 4-arm discriminator covers
+            // PropertyGatePass / MutationGateSurvivorBlock / AntiMockBlock
+            // / AssertionOnlyDiffBlock. See
+            // workflow/reasoning/B7-triple-tranche-decisions.md.
+            SsbPayload::TddVerificationEvent(TddVerificationEventPayload {
+                kind: TddVerificationEventKind::AntiMockBlock,
+                task_id_hash: 0x1111_2222_3333_4444,
+                details_json: serde_json::json!({
+                    "caller_site": "test_payload",
+                    "hit_count": 2,
+                    "fingerprint_hashes": ["0xfeedface", "0xdeadbeef"]
+                }),
+                ts_ms: 1_700_000_195_001,
+            }),
         ]
     }
 
@@ -29208,8 +31690,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            388,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused) + 1 E-7 (DarwinianGenerationCompleted single-variant Pattern-2) + 9 batch2-merge-collision recovery (E-3 RuntimeHandoffSignal + E-26 SglangBackendRegistered + E-26 XgrammarSchemaCompiled + E-26 RuntimeColdStartObserved + E-2 StreamingTimingRecorded + E-2 UxPacingVoteRecorded + E-28 StreamingLlmEngaged + E-28 SdpaBackendPinned + E-28 YarnRopeScalingApplied) + 1 E-8 (PromptOptimizationCompleted single-variant Pattern-2) + 1 E-10 (CriticDecisionEvent single-variant Pattern-2) + 1 E-43 (SkillSystemEvent single-variant Pattern-2) + 1 E-9 (BenchmarkRunObserved single-variant Pattern-2) + 1 E-19 (ReasoningQualityProbe single-variant Pattern-2) + 1 E-55 (RewardLadderEvent single-variant Pattern-2 20th application) + 1 E-11 (SaasPriorArtEvent single-variant Pattern-2 21st application) + 1 E-22 (GithubTrendingEvent single-variant Pattern-2 22nd application) + 1 E-23 (DeveloperDiscourseEvent single-variant Pattern-2 23rd application) + 1 E-25 (ClaudeCodeArchitectureEvent single-variant Pattern-2 24th application) + 1 E-29 (AgenticObservabilityEvent single-variant Pattern-2 25th application) + 1 E-31 (CodingModelLeaderboardEvent single-variant Pattern-2 26th application) + 1 E-38 (AiRoadmapSignalEvent single-variant Pattern-2 27th application) + 1 E-39 (CostTokenEvent single-variant Pattern-2 28th application) + 1 E-50 (SaasArchPatternEvent single-variant Pattern-2 29th application)",
+            389,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused) + 1 E-7 (DarwinianGenerationCompleted single-variant Pattern-2) + 9 batch2-merge-collision recovery (E-3 RuntimeHandoffSignal + E-26 SglangBackendRegistered + E-26 XgrammarSchemaCompiled + E-26 RuntimeColdStartObserved + E-2 StreamingTimingRecorded + E-2 UxPacingVoteRecorded + E-28 StreamingLlmEngaged + E-28 SdpaBackendPinned + E-28 YarnRopeScalingApplied) + 1 E-8 (PromptOptimizationCompleted single-variant Pattern-2) + 1 E-10 (CriticDecisionEvent single-variant Pattern-2) + 1 E-43 (SkillSystemEvent single-variant Pattern-2) + 1 E-9 (BenchmarkRunObserved single-variant Pattern-2) + 1 E-19 (ReasoningQualityProbe single-variant Pattern-2) + 1 E-55 (RewardLadderEvent single-variant Pattern-2 20th application) + 1 E-11 (SaasPriorArtEvent single-variant Pattern-2 21st application) + 1 E-22 (GithubTrendingEvent single-variant Pattern-2 22nd application) + 1 E-23 (DeveloperDiscourseEvent single-variant Pattern-2 23rd application) + 1 E-25 (ClaudeCodeArchitectureEvent single-variant Pattern-2 24th application) + 1 E-29 (AgenticObservabilityEvent single-variant Pattern-2 25th application) + 1 E-31 (CodingModelLeaderboardEvent single-variant Pattern-2 26th application) + 1 E-38 (AiRoadmapSignalEvent single-variant Pattern-2 27th application) + 1 E-39 (CostTokenEvent single-variant Pattern-2 28th application) + 1 E-50 (SaasArchPatternEvent single-variant Pattern-2 29th application) + 1 B-7 triple (TddVerificationEvent single-variant Pattern-2 46th application)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

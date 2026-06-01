@@ -35,8 +35,8 @@
 //! hand-rolled flag parsing (no new clap dep).
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::benchmarks::conformal_validation_runner::{
     default_mini_fixture_path, ConformalValidationError, ConformalValidationReport,
     ConformalValidationRunner, VecConformalValidationSsbEmitter,
@@ -136,13 +136,10 @@ pub async fn run_async(
         runner = runner.with_epsilon(e);
     }
     let emitter = VecConformalValidationSsbEmitter::new();
-    let now_ms = i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
+    // B-15 Tranche E E.1: ClockProvider via zero-sized OsClock Copy impl.
+    // Trait default `now_ms` absorbs `.unwrap_or(0)` saturation
+    // (crates/core/src/clock.rs:59-64).
+    let now_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
     let report = runner.run_all(&emitter, now_ms).await?;
     Ok(report)
 }

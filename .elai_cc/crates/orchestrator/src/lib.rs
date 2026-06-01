@@ -119,6 +119,13 @@ pub mod coherence_check;
 // gotchas.md E41_AGENTROLE_FROZEN_AT_17 (230 match-arm cascade avoidance).
 // See `codeact_sandbox.rs` module docs.
 pub mod codeact_sandbox;
+// E-52 Tranche B-3 (s-22300): LOCAL-ONLY diagnostic probe producer. Wires the
+// already-shipped `DiagnosticProbe*` SSB substrate (variants + payloads +
+// canonical encoders at `ssb.rs:6400+/19553+/26690+/30303+`) and the
+// `elai_knowledge::diagnostic` envelope into a runner-side dispatcher. Wire-
+// dark via `ELAI_LSP_DIAGNOSTIC_PROBE_ENABLE=1`. multilspy / ts-morph / lsp-
+// server / lsp-types DEFERRED — see workflow/sessions/s-22300/stubs.md.
+pub mod diagnostic_probe;
 // E-44: durability layer additions (idempotent dispatcher + saga/lock/
 // migrator/continue-as-new wrappers on top of the existing SessionDag +
 // AgentCheckpoint surface). All additions are additive — no existing
@@ -339,6 +346,14 @@ pub mod scope_freeze;
 // Opus 4.6, Section 5.1 Table 2). See workflow/papers/scientific-workflow-interface.md.
 pub mod skill_registry;
 pub mod skill_telemetry;
+// E-47: LoRA fine-tuning ship-gate. Triple-AND check (enabled +
+// confirm_user_understanding + calibration passing) gates the boot-path
+// adapter-load step. Wire-dark unless ELAI_LORA_SHIP_GATE_ENABLE=1.
+// Producer-side LoRA training stack (Unsloth + QLoRA-NF4 + PiSSA + DoRA)
+// is RUNPOD-PENDING; the gate ships locally so the default-deferred
+// posture from workflow/improvement-sweep-2026-05-19/reports/47-lora-finetuning.md
+// is enforced from day one. See workflow/reasoning/E-47-decisions.md.
+pub mod lora_ship_gate;
 pub mod ssb;
 // C-45: CANTANTE contrastive credit attribution. Paper-grounded against
 // arXiv:2605.13295 (Zehle 2026, Section 3.2 — K rollouts NOT K^N, scalar
@@ -676,6 +691,11 @@ pub mod metamorphic_testing;
 // `ConsensusRule::VerifierKindHeterogeneous` so we don't ship a
 // parallel aggregator. See workflow/reasoning/E-13-decisions.md.
 pub mod tdd_verifier;
+// Tranche B-7 triple (E-13 SHIPPABLE-NOW) -- rusqlite-backed survival
+// cache for cargo-mutants survivor rows. Wire-dark default; gated by
+// `ELAI_E13_SURVIVAL_CACHE_ENABLE=1`. See `survival_cache::SurvivalCache`
+// + workflow/tooling/mutant-hunter.md.
+pub mod survival_cache;
 // E-18 — Tool-use reliability gate. Reuse-heavy composition over D-11
 // RegistryCheck + E-35 SearchReplaceMatcher / SidecarXGrammarHook +
 // C-47 ToolCalibrationRegistry + C-42 AuthzPolicy + C-35 ToolGate.
@@ -691,6 +711,16 @@ pub mod ssb_viewer;
 // library surface ships now so dashboards / CLI commands have a stable
 // target to program against.
 pub mod per_role_runtime;
+// E-3 sub-phase 4A (SCHEMA_VERSION 190): per-role prompt builder +
+// VoiceAnchor loaded from .elai_cc/config/voice.toml. Pure module (no
+// I/O on the hot path); consumed by runtime_orchestrator::try_complete
+// to wrap the system prompt with a unified voice preamble BEFORE the
+// adapter dispatch so every backend sees the same anchor. Wire-dark
+// unless ELAI_E3_RUNTIME_HANDOFF_ENABLE=1. See
+// docs/thefinalglance/E-plan/E-3_model_handoff_ux.md.
+pub mod handoff_payload;
+pub mod role_predict;
+pub mod role_prompt;
 pub mod runtime_config;
 pub mod runtime_event_sink_ssb;
 pub mod runtime_orchestrator;
@@ -717,6 +747,16 @@ pub mod tool_gate_ssb_adapter;
 // (CAST). See workflow/papers/case-based-calibration.md.
 #[cfg(feature = "mcp")]
 pub mod tool_calibration_ssb_adapter;
+// C-42b (Tranche D, s-22600): orchestrator-side adapter that bridges
+// the plugins-crate `authz::McpAuthzSsbEmitter` trait (composed-verdict
+// SSB row for the per-call authz decision) into `Ssb::write_payload`.
+// Mirrors the trait-in-plugins / impl-in-orchestrator pattern of
+// `tool_calibration_ssb_adapter` (C-47) and `tool_gate_ssb_adapter`
+// (C-35) so the plugins -> orchestrator dependency stays acyclic.
+// See workflow/reasoning/D-trancheD-decisions.md (D7-DUAL-EMIT) +
+// workflow/sessions/s-22600/exploration/trancheD-integration.md.
+#[cfg(feature = "mcp")]
+pub mod mcp_authz_ssb_adapter;
 // E-18: orchestrator-side adapter that bridges the plugins-crate
 // `ReliabilityGateSsbEmitter` trait (tool-use reliability gate
 // telemetry) into `Ssb::write_payload`. Same dependency-inversion
@@ -747,6 +787,16 @@ pub mod system_probe;
 // workflow/reasoning/E-40-decisions.md.
 pub mod symbol_graph;
 pub mod telescope_caller;
+// E-25 Tranche B-4 (D1): concrete 6-tier compaction-ladder runner. Wraps the
+// existing compact + context_budget + telescope_caller helpers behind a sync
+// surface that emits one ClaudeCodeArchitectureEvent SSB row per applied
+// tier. Wire-dark default OFF (ELAI_E25_COMPACTION_LADDER_ENABLE).
+pub mod compaction_ladder;
+// E-25 Tranche B-4 (D2): runtime expansion of !`cmd` blocks inside SKILL.md
+// bodies. Allowlisted commands only (git/ls/pwd/date); 2s timeout; shell
+// metacharacters rejected; emits ClaudeCodeArchitectureEvent per block. Wire-
+// dark default OFF (ELAI_E25_SKILL_TEMPLATING_ENABLE).
+pub mod skill_templating;
 pub mod feasibility_probe;
 /// C-30 — Surgical Mode pipeline: DKG blast-radius decomposition + LOC gates.
 pub mod surgical_decomposer;
@@ -1394,6 +1444,10 @@ pub use tool_gate_ssb_adapter::OrchestratorToolGateSsbEmitter;
 // C-47: orchestrator adapter for the plugins-side CaseBaseSsbEmitter trait.
 #[cfg(feature = "mcp")]
 pub use tool_calibration_ssb_adapter::OrchestratorCaseBaseSsbEmitter;
+// C-42b (Tranche D): orchestrator adapter for the plugins-side
+// McpAuthzSsbEmitter trait (composed-verdict per-call SSB row).
+#[cfg(feature = "mcp")]
+pub use mcp_authz_ssb_adapter::OrchestratorMcpAuthzSsbEmitter;
 
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{

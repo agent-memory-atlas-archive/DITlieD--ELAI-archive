@@ -5,6 +5,13 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use elai_orchestrator::{ContentBlock, ConversationMessage, MessageRole, Session};
+// E-25 Tranche B-4 (D4): SessionForked SSB emit at fork sites. Wire-dark
+// unless ELAI_E25_SESSION_FORK_EMIT_ENABLE=1.
+use elai_orchestrator::architecture::claude_code_arch::{
+    ClaudeCodeArchPrimitive, ClaudeCodeArchitectureEventKind,
+    ClaudeCodeArchitectureEventPayload,
+};
+use elai_orchestrator::ssb::SsbPayload;
 use elai_core::{ClockProvider, EntropySource, OsEntropy};
 use elai_core::paths::{ELAI_DATA_DIR_NAME, SESSIONS_DIR_NAME};
 
@@ -48,6 +55,66 @@ fn warn_legacy_sessions_if_stranded(project_root: &Path, canonical_sessions: &Pa
              Move them to `.elai_cc/sessions/` to restore visibility.",
             count,
         );
+    }
+}
+
+/// E-25 Tranche B-4 (D4): env-gate name controlling SessionForked SSB emit
+/// at the cli /session fork command call sites. Default OFF.
+pub(crate) const ELAI_E25_SESSION_FORK_EMIT_ENABLE_VAR: &str =
+    "ELAI_E25_SESSION_FORK_EMIT_ENABLE";
+
+/// E-25 Tranche B-4 (D4): emit one `ClaudeCodeArchitectureEvent` (kind =
+/// `SessionForked`) when the env-gate is ON. Best-effort -- failures are
+/// swallowed because session-fork control flow must not block on telemetry.
+/// `fork_path` discriminates which fork code path emitted the row
+/// (`session_forked_dag` / `session_forked_fallback` / `session_forked_branch`).
+pub(crate) fn emit_session_forked(
+    ssb: Option<&std::sync::Arc<elai_orchestrator::ssb::Ssb>>,
+    fork_event: &'static str,
+    parent_session_id: &str,
+    child_session_id: &str,
+    branch_point: Option<&str>,
+) {
+    if std::env::var(ELAI_E25_SESSION_FORK_EMIT_ENABLE_VAR)
+        .map(|v| v != "1")
+        .unwrap_or(true)
+    {
+        return;
+    }
+    let Some(ssb_arc) = ssb else { return; };
+    // B-15 Tranche E E.1: ClockProvider via the zero-sized OsClock Copy
+    // impl. Matches the @L357/385/565 inline `elai_core::OsClock`
+    // precedent already established in this file. Trait default `now_ms`
+    // absorbs the `.unwrap_or(0)` saturation (crates/core/src/clock.rs:59-64).
+    let ts_ms = i64::try_from(elai_core::OsClock.now_ms()).unwrap_or(i64::MAX);
+    let details = serde_json::json!({
+        "fork_event": fork_event,
+        "parent_session": parent_session_id,
+        "child_session": child_session_id,
+        "branch_point": branch_point,
+    });
+    let payload = SsbPayload::ClaudeCodeArchitectureEvent(
+        ClaudeCodeArchitectureEventPayload {
+            kind: ClaudeCodeArchitectureEventKind::SessionForked,
+            primitive: ClaudeCodeArchPrimitive::SessionFork,
+            session_id: Some(parent_session_id.to_owned()),
+            details_json: details,
+            ts_ms,
+        },
+    );
+    let ssb_for_spawn = std::sync::Arc::clone(ssb_arc);
+    let agent_id = "cli:session_fork".to_owned();
+    // Best-effort: drive a short-lived current-thread runtime to flush the
+    // async write. Mirrors the /session merge pattern at handoff.rs:585-588.
+    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        let _ = rt.block_on(async move {
+            ssb_for_spawn
+                .write_payload(&agent_id, 0, payload, Vec::new())
+                .await
+        });
     }
 }
 
@@ -499,6 +566,13 @@ pub(crate) fn handle_session_command(
                         &elai_core::OsClock,
                     ) {
                         Ok(branch_ref) => {
+                            emit_session_forked(
+                                cli.ssb.as_ref(),
+                                "session_forked_dag",
+                                &cli.session.id,
+                                &branch_ref.name,
+                                Some(&branch_ref.tip_snap_id),
+                            );
                             println!(
                                 "Session branched (DAG)\n  Branch           {}\n  Tip snapshot     {}\n  Parent session   {}",
                                 branch_ref.name,
@@ -552,6 +626,13 @@ pub(crate) fn handle_session_command(
             )?;
             cli.replace_runtime(runtime)?;
             cli.session = handle;
+            emit_session_forked(
+                cli.ssb.as_ref(),
+                "session_forked_fallback",
+                &parent_session_id,
+                &cli.session.id,
+                branch_name.as_deref(),
+            );
             println!(
                 "Session forked\n  Parent session   {}\n  Active session   {}\n  Branch           {}\n  File             {}\n  Messages         {}",
                 parent_session_id,

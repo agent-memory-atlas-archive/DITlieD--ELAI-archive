@@ -27,8 +27,8 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::credit_attribution::{
     pilot_roles, CreditAttributionHarness, CreditReport, DropPolicy,
 };
@@ -106,10 +106,11 @@ async fn synthetic_score(policy: DropPolicy, _i: u32) -> Result<f32, String> {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+    // B-15 Tranche E E.1: ClockProvider via zero-sized OsClock Copy impl.
+    // The trait's default `now_ms` returns u128 with `.unwrap_or(0)`
+    // saturation absorbed (crates/core/src/clock.rs:59-64); narrow to u64
+    // with the same saturating semantic as the prior direct call.
+    u64::try_from(OsClock.now_ms()).unwrap_or(u64::MAX)
 }
 
 async fn run_attribute(

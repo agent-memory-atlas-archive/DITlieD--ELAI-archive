@@ -18,9 +18,8 @@
 //!
 //! Anti-stale: blake3 (workspace baseline). No `.unwrap()` in library code.
 
-use std::collections::HashMap;
-
 use chrono::{DateTime, Utc};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -42,7 +41,7 @@ pub struct Task {
     /// cutoff so the time-window filter can reject tasks released before any
     /// configured eval model's cutoff. Map keys = model_id (e.g.
     /// `qwen2.5-coder-3b`); values = "YYYY-MM" (e.g. `2024-10`).
-    pub cutoffs: HashMap<String, String>,
+    pub cutoffs: FxHashMap<String, String>,
     /// Prompt body shown to the model.
     pub problem: String,
     /// Canonical reference solution -- MUST pass every `tests` entry per the
@@ -237,7 +236,7 @@ mod tests {
     use chrono::TimeZone;
 
     fn fixture_task() -> Task {
-        let mut cutoffs = HashMap::new();
+        let mut cutoffs = FxHashMap::default();
         cutoffs.insert("qwen2.5-coder-3b".to_string(), "2024-10".to_string());
         Task {
             id: "fixture-1".to_string(),
@@ -279,7 +278,7 @@ mod tests {
     #[test]
     fn validate_rejects_empty_cutoffs() {
         let mut t = fixture_task();
-        t.cutoffs = HashMap::new();
+        t.cutoffs = FxHashMap::default();
         assert!(matches!(t.validate(), Err(TaskSchemaError::EmptyCutoffs(_))));
     }
 

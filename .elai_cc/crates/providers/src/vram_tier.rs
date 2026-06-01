@@ -96,6 +96,37 @@ pub fn detect_vram_tier() -> Result<VramTier, VramDetectionError> {
     }
 }
 
+/// Bytes-per-gibibyte for GB conversion in observational consumers (RouteDecisionEvent
+/// cloud_mode emit). Named constant per CLAUDE.md anti-magic-number rule.
+const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+/// Detect the raw VRAM available in GiB on this machine (f32 GiB).
+///
+/// Used by observational consumers (cloud_mode::emit_route_decision_log) that
+/// need a numeric VRAM measurement rather than the discrete `VramTier` classification.
+///
+/// Detection order:
+/// 1. NVML via `discover_gpus()` — sums total bytes across the single GPU with the
+///    most VRAM (matches `detect_vram_tier`'s multi-GPU policy: pick max).
+/// 2. Conservative fallback: `0.0` when no GPUs are visible or NVML errors. This
+///    matches the prior hardcoded placeholder and the doctor.rs graceful-fallback
+///    pattern (never bubble GPU-discovery errors past the observational layer).
+///
+/// Returns f32 GiB. Never panics.
+pub fn detect_vram_gb() -> f32 {
+    match crate::discover_gpus() {
+        Ok(gpus) if !gpus.is_empty() => {
+            let max_vram = gpus.iter().map(|g| g.total_vram_bytes).max().unwrap_or(0);
+            // u64 -> f64 -> f32: u64::MAX in GiB is ~1.7e10, well within f32 range;
+            // f64 intermediate preserves the integer GiB count exactly for any
+            // realistic GPU VRAM (<1 EiB).
+            let gb_f64 = (max_vram as f64) / BYTES_PER_GIB;
+            gb_f64 as f32
+        }
+        _ => 0.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -85,7 +85,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::UNIX_EPOCH;
+
+use elai_core::clock::{ClockProvider, OsClock};
 
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
@@ -492,11 +494,11 @@ impl TamperBenchmark {
             *scenario_kind_counts
                 .entry(manifest.kind.clone())
                 .or_insert(0) += 1;
-            let started = Instant::now();
+            let started = OsClock.instant_now();
             let outcome = self
                 .run_one_scenario(idx as u32, subdir, manifest)
                 .await?;
-            let wall_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let final_outcome = if wall_ms > self.max_wall_ms_per_scenario {
                 Outcome::Timeout
             } else {
@@ -725,8 +727,9 @@ fn sandbox_root_for_run(scenario_id: &str, run_index: u32) -> PathBuf {
     let mut hasher = blake3::Hasher::new();
     hasher.update(scenario_id.as_bytes());
     hasher.update(&run_index.to_le_bytes());
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nanos = OsClock
+        .system_now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     hasher.update(&nanos.to_le_bytes());

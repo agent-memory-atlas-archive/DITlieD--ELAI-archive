@@ -20,8 +20,8 @@
 //!   * No `.unwrap()` / `.expect()` outside `#[cfg(test)]`.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 
 use super::types::{SpillManifest, ToolCallSnapshot};
@@ -86,13 +86,9 @@ pub fn spill_call(call: &ToolCallSnapshot, spill_dir: &Path) -> Result<SpillReco
     let hex_full = digest.to_hex().to_string();
     let prefix_hex: String = hex_full.chars().take(16).collect(); // 8 bytes = 16 hex chars
 
-    // Timestamp suffix for monotonic ordering. SystemTime can fail in
-    // theory; in practice we are post-1970, but we guard against the
-    // Err arm rather than `.unwrap()`ing per CLAUDE.md.
-    let ts_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_millis() as u64,
-        Err(_) => 0,
-    };
+    // Timestamp suffix for monotonic ordering. The injected ClockProvider
+    // saturates on pre-1970 system clocks via OsClock::now_ms() defaults.
+    let ts_ms: u64 = OsClock.now_ms().try_into().unwrap_or(u64::MAX);
 
     let fname = format!("{ts_ms}-{prefix_hex}.json");
     let path = spill_dir.join(fname);
