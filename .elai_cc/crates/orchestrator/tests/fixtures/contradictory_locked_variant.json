@@ -1,0 +1,8 @@
+{
+  "variant_id": "cfg-contradictory",
+  "config": {
+    "score_weights": "tampered"
+  },
+  "active_tripwires": [],
+  "fsm_substate": "AdmittingVariant"
+}

@@ -1,0 +1,11 @@
+{
+  "variant_label": "low-margin-mutant-001",
+  "pipeline_mode": "surgical",
+  "config": {
+    "retry_budget": 3,
+    "context_window_tokens": 24000,
+    "rag_top_k": 8,
+    "force_alpha": 0.01
+  },
+  "eval_log": "suite=math-floors n=20 score=0.01 marginal improvement below promotion tau; no traps; no security fields"
+}

@@ -186,6 +186,7 @@ impl RuntimeClient {
             file_path: "",
             fsm_phase,
             metric_values: FxHashMap::default(),
+            language_agnostic: false,
         };
 
         let verdicts = match self.rule_engine.evaluate(&self.compiled_rules, &ctx) {

@@ -49,9 +49,12 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "tamper" {
         return parse_bench_tamper_args(&rest[1..]);
     }
+    if sub == "seccodeplt" {
+        return parse_bench_seccodeplt_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -731,6 +734,28 @@ fn parse_bench_tamper_args(rest: &[String]) -> Result<CliAction, String> {
         fail_fast,
         max_wall_ms_per_scenario,
     })
+}
+
+/// F-2b — parse `elai bench seccodeplt [--json]`. The corpus is embedded at
+/// compile time + the report dir is fixed (`<cwd>/benchmarks/seccodeplt/`), so
+/// the only flag is `--json` (full report to stdout). No `--suite` flag (the
+/// bench_cmd pattern has none). Hand-rolled per the CLAUDE.md "no new clap dep"
+/// rule.
+fn parse_bench_seccodeplt_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench seccodeplt` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchSeccodeplt { json })
 }
 
 fn validate_bool_arg(name: &str, value: &str) -> Result<(), String> {

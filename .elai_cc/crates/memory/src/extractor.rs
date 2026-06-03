@@ -215,3 +215,93 @@ fn slug(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod cold_wiring_tests {
+    //! Cold-wiring (s-81344): deterministic coverage for the public
+    //! extract_facts heuristic (all 4 patterns + skip-assistant + empty-session
+    //! error + slug normalization). Pure — fixed string inputs, no clock/rng.
+    use super::*;
+
+    fn user_turn(id: &str, text: &str) -> Turn {
+        Turn {
+            message_id: id.to_string(),
+            role: "user".to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    fn conv(turns: Vec<Turn>) -> Conversation {
+        Conversation {
+            session_id: "sess-1".to_string(),
+            turns,
+        }
+    }
+
+    #[test]
+    fn empty_session_id_is_error() {
+        let c = Conversation {
+            session_id: String::new(),
+            turns: vec![],
+        };
+        assert!(extract_facts(&c).is_err());
+    }
+
+    #[test]
+    fn no_pattern_yields_empty() {
+        let c = conv(vec![user_turn("m1", "the weather is nice today")]);
+        assert_eq!(extract_facts(&c).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn prefer_over_extracts_preference_with_evidence() {
+        let c = conv(vec![user_turn("m1", "i prefer tracing over log")]);
+        let facts = extract_facts(&c).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].fact_type, FactType::Preference);
+        assert_eq!(facts[0].key, "prefers_tracing_over_log");
+        assert!((facts[0].confidence - 0.85).abs() < f32::EPSILON);
+        assert_eq!(
+            facts[0].evidence,
+            vec!["sess-1".to_string(), "m1".to_string()]
+        );
+    }
+
+    #[test]
+    fn i_prefer_without_over_extracts_preference() {
+        let c = conv(vec![user_turn("m2", "i prefer functional programming")]);
+        let facts = extract_facts(&c).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].key, "prefers_functional_programming");
+        assert!((facts[0].confidence - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn dislike_extracts_preference() {
+        let c = conv(vec![user_turn("m3", "i hate goto statements")]);
+        let facts = extract_facts(&c).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].key, "dislikes_goto_statements");
+    }
+
+    #[test]
+    fn assistant_turns_are_skipped() {
+        let c = conv(vec![
+            Turn {
+                message_id: "a1".to_string(),
+                role: "assistant".to_string(),
+                text: "i prefer rust over go".to_string(),
+            },
+            user_turn("u1", "nothing to extract here"),
+        ]);
+        assert_eq!(extract_facts(&c).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn slug_strips_trailing_punctuation_via_key() {
+        let c = conv(vec![user_turn("m4", "i prefer rust!")]);
+        let facts = extract_facts(&c).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].key, "prefers_rust");
+    }
+}

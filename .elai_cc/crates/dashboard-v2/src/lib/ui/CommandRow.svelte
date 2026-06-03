@@ -87,6 +87,7 @@
 
   .cmd-row__label {
     flex: 1;
+    min-width: 0;
     font-family: var(--font-sans);
     font-size: 12px;
     color: var(--text-primary);

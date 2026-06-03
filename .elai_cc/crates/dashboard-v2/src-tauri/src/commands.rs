@@ -51,6 +51,17 @@ use elai_orchestrator::architecture::claude_code_arch::{
     ClaudeCodeArchitectureEventPayload,
 };
 use elai_orchestrator::ssb_viewer::SelfModMsiSnapshotRow;
+// F-8 / Slice A5: SymbolicConflictRow is the SCF detector's held-pending
+// surface. Unlike SelfModProposalRow it is NOT gated behind the
+// `self-modification` feature — `SsbViewer::symbolic_conflicts` is part of
+// the detector path, which composes independently of Layer 1A self-mod.
+use elai_orchestrator::ssb_viewer::SymbolicConflictRow;
+// F-11: DarwinianAdmitRow is the config-DGM admit-loop feed. Like
+// SymbolicConflictRow it is NOT gated behind the `self-modification` feature —
+// `SsbViewer::darwinian_admits` is an always-compiled read-side query (the
+// producer is the wire-dark darwin-loop CLI, gated by feature + env at the
+// orchestrator/CLI layer, not here).
+use elai_orchestrator::ssb_viewer::DarwinianAdmitRow;
 // B-3 #28: SelfModProposalRow only consumed by the
 // #[cfg(feature="self-modification")] branches of get_pending_proposals /
 // get_applied_proposals; gate the import to match so default builds don't
@@ -1138,6 +1149,67 @@ pub fn get_applied_proposals(state: State<'_, AppState>) -> CmdResult<Value> {
 #[tauri::command]
 pub fn get_applied_proposals(_state: State<'_, AppState>) -> CmdResult<Value> {
     Ok(json!([]))
+}
+
+/// F-8 / Slice A5 — dashboard read cap for the SCF symbolic-conflict feed.
+/// The viewer clamps to its own `DRAWER_QUERY_HARD_CAP` (500); this is the
+/// dashboard-side request size kept well under that ceiling so the IPC
+/// payload stays small at the ReasoningDrawer's 10s poll cadence.
+const SYMBOLIC_CONFLICTS_FEED_CAP: usize = 200;
+
+/// F-8 / Slice A5 — list the held-pending self-mod config variants the SCF
+/// symbolic detector flagged against an active locked-key invariant
+/// (`self_mod_safety::LOCKED_KEYS`). Surfaces the
+/// `symbolic_conflict_detected` SSB rows newest-first.
+///
+/// POLICY is WARN-then-escalate, never hard fail-closed BLOCK — these rows
+/// are held-pending variants awaiting human escalation, NOT rejections.
+/// Unlike `get_applied_proposals`, this command is NOT gated behind the
+/// `self-modification` feature: the detector path composes independently
+/// (the `elai self-mod apply` CLI entrypoint + the darwinian-evolve seam).
+///
+/// Returns an empty array when no SSB DB is reachable. Serde serializes
+/// `SymbolicConflictRow`'s field names verbatim, so the frontend
+/// `SymbolicConflict` DTO must mirror them exactly.
+#[tauri::command]
+pub fn get_symbolic_conflicts(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows: Vec<SymbolicConflictRow> = viewer
+        .symbolic_conflicts(SYMBOLIC_CONFLICTS_FEED_CAP)
+        .unwrap_or_default();
+    serde_json::to_value(rows).map_err(map_err)
+}
+
+/// F-11 — dashboard read cap for the config-DGM admit-loop feed. The viewer
+/// clamps to its own `DRAWER_QUERY_HARD_CAP` (500); this is the dashboard-side
+/// request size kept well under that ceiling so the IPC payload stays small at
+/// the ReasoningDrawer's 10s poll cadence.
+const DARWINIAN_ADMITS_FEED_CAP: usize = 200;
+
+/// F-11 — list the config-DGM admit-loop events newest-first: each candidate
+/// routed through the four-guard chain (`darwinian_admit` SSB rows). Surfaces
+/// `Admitted` / `RejectedByGuard` (with the firing guard) / `LoopClosed`.
+///
+/// Like `get_symbolic_conflicts` this command is NOT gated behind the
+/// `self-modification` feature: `SsbViewer::darwinian_admits` is an
+/// always-compiled read-side query; the PRODUCER (the darwin-loop CLI) is the
+/// wire-dark surface (gated by feature `darwinian-evolve` + env
+/// `ELAI_DARWINIAN_LOOP_ENABLE=1`), not this reader.
+///
+/// Returns an empty array when no SSB DB is reachable. Serde serializes
+/// `DarwinianAdmitRow`'s field names verbatim, so the frontend `DarwinianAdmit`
+/// DTO must mirror them exactly.
+#[tauri::command]
+pub fn get_darwinian_admits(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows: Vec<DarwinianAdmitRow> = viewer
+        .darwinian_admits(DARWINIAN_ADMITS_FEED_CAP)
+        .unwrap_or_default();
+    serde_json::to_value(rows).map_err(map_err)
 }
 
 /// Phase A4 — operator confirms a pending Layer 1A proposal. Delegates to
@@ -5679,6 +5751,10 @@ pub async fn start_chat_stream(
         let stream_id_task = stream_id.clone();
         let app_task = app.clone();
         let prompt_owned = prompt.clone();
+        // F-10 REFINE leg: capture the SSB handle (if wired) for the
+        // monotonicity guard. Cloned out of `state` before the move into the
+        // spawned task so the guard uses the EXISTING Ssb, never a new one.
+        let ssb_for_refine = state.writer.clone();
 
         let join = tokio::task::spawn(async move {
             let client_ref: &dyn elai_reasoning::ChatInferenceClient = &*client;
@@ -5689,6 +5765,24 @@ pub async fn start_chat_stream(
                 &format!("chat-stream:{stream_id_task}"),
                 json!({ "text": output.final_reply, "stream_id": stream_id_task }),
             );
+            // F-10 REFINE leg (W-10, fire-and-forget; runs AFTER the reply
+            // event is emitted so it is off the user-perceived hot path).
+            // Mirrors the CLI live_cli.rs refine call-site: compares this
+            // turn's CWE-class set against the prior refine iteration's set
+            // and emits a non-blocking SecurityClassRegressionBlocked row on a
+            // regression. No per-session log path here (the dashboard has no
+            // session dir on this path); the SSB beacon + Finding are the
+            // durable record. loop_id = stream_id.
+            if let Some(ssb) = ssb_for_refine.as_ref() {
+                elai_orchestrator::run_refine_leg(
+                    ssb.as_ref(),
+                    &stream_id_task,
+                    &output.final_reply,
+                    "",
+                    None,
+                )
+                .await;
+            }
             let _ = app_task.emit(
                 &format!("chat-stream-end:{stream_id_task}"),
                 json!({
@@ -9413,6 +9507,126 @@ pub async fn get_per_level_verdicts(
         return Ok(Vec::new());
     };
     compute_per_level_verdicts(viewer.as_ref(), &task_id)
+}
+
+// ---------------------------------------------------------------------------
+// F-4 Slice B-5 — TEST INTEGRITY EVENT SURFACE (AuditTimelineWindow)
+// ---------------------------------------------------------------------------
+//
+// Surfaces `SsbActionType::TestIntegrityEvent` rows to the dashboard so the
+// AuditTimelineWindow can display a red fabrication-block badge alongside the
+// per-level audit verdicts. Two sql_str arms are queried:
+//   - "test_integrity_verified"  (TestIntegrityEventKind::Verified)
+//   - "anti_fabrication_block"   (TestIntegrityEventKind::FabricationBlocked)
+//
+// Both are returned in a single Vec<TestIntegrityEventJson> sorted by SSB seq
+// (oldest first, matching `recent_rows_of_type` ORDER BY seq ASC default).
+// The frontend badge only needs `kind`, `passed`, and `has_stdout_hash`;
+// `test_name` is included for the detail hover.
+//
+// cross-lang-pair: dashboard/tauri/api (drift gate: cross_lang_diff.py)
+
+/// DTO returned by `get_test_integrity_events`. Mirrors the SSB payload
+/// fields that the AuditTimelineWindow needs — `test_name`, `passed`,
+/// `has_stdout_hash` (boolean projection of `Option<String>`), and
+/// `kind` (snake_case label: "verified" or "fabrication_blocked").
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct TestIntegrityEventJson {
+    pub test_name: String,
+    pub passed: bool,
+    pub has_stdout_hash: bool,
+    pub kind: String,
+}
+
+/// Return all `TestIntegrityEvent` SSB rows for `task_id`. Both kind arms
+/// ("test_integrity_verified" and "anti_fabrication_block") are fetched and
+/// merged. Cold start (no rows) returns an empty Vec. `task_id` is accepted
+/// for future per-task scoping; current implementation reads all rows via
+/// `recent_rows_of_type` (DRIFT-6: per-task scoping follows TaskRunner reader
+/// work, same as `get_per_level_verdicts`).
+#[tauri::command]
+pub async fn get_test_integrity_events(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> CmdResult<Vec<TestIntegrityEventJson>> {
+    let _ = task_id; // reserved for per-task scoping (DRIFT-6)
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let verified_rows = viewer
+        .recent_rows_of_type(
+            elai_orchestrator::SsbActionType::TestIntegrityEvent(
+                elai_orchestrator::TestIntegrityEventKind::Verified,
+            )
+            .as_sql_str(),
+            MAX_LIMIT,
+        )
+        .unwrap_or_default();
+    let blocked_rows = viewer
+        .recent_rows_of_type(
+            elai_orchestrator::SsbActionType::TestIntegrityEvent(
+                elai_orchestrator::TestIntegrityEventKind::FabricationBlocked,
+            )
+            .as_sql_str(),
+            MAX_LIMIT,
+        )
+        .unwrap_or_default();
+    let mut out: Vec<TestIntegrityEventJson> = Vec::with_capacity(
+        verified_rows.len() + blocked_rows.len(),
+    );
+    for detail in verified_rows {
+        let inner = detail
+            .payload_json
+            .get("TestIntegrityEvent")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        let test_name = inner
+            .get("test_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let passed = inner
+            .get("passed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let has_stdout_hash = inner
+            .get("stdout_hash")
+            .map(|v| !v.is_null())
+            .unwrap_or(false);
+        out.push(TestIntegrityEventJson {
+            test_name,
+            passed,
+            has_stdout_hash,
+            kind: "verified".to_owned(),
+        });
+    }
+    for detail in blocked_rows {
+        let inner = detail
+            .payload_json
+            .get("TestIntegrityEvent")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        let test_name = inner
+            .get("test_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let passed = inner
+            .get("passed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let has_stdout_hash = inner
+            .get("stdout_hash")
+            .map(|v| !v.is_null())
+            .unwrap_or(false);
+        out.push(TestIntegrityEventJson {
+            test_name,
+            passed,
+            has_stdout_hash,
+            kind: "fabrication_blocked".to_owned(),
+        });
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

@@ -370,9 +370,26 @@ async fn test_adaptive_tool_emits_branch_and_converge_on_validate() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_build_production_hook_dispatcher_installs_ruff_runner() {
-    let arc = build_production_hook_dispatcher();
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = build_ssb(&dir);
+    // F-9 / Slice D3: project_root required so gate can resolve registry_check.py.
+    let arc = build_production_hook_dispatcher(ssb, true, dir.path());
     let _: Arc<InProcessHookDispatcher> = arc.clone();
     assert!(arc.has_ruff_runner(), "ruff runner must be installed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_build_production_hook_dispatcher_installs_dep_writetime_gate() {
+    // F-9 / Slice D3: DepWriteTimeGate must be installed DEFAULT-ON in the
+    // production dispatcher so every PreToolUse file-write path probes the
+    // registry for unknown dependency names.
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = build_ssb(&dir);
+    let arc = build_production_hook_dispatcher(ssb, true, dir.path());
+    assert!(
+        arc.has_dep_writetime_gate(),
+        "DepWriteTimeGate must be installed DEFAULT-ON in production dispatcher"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

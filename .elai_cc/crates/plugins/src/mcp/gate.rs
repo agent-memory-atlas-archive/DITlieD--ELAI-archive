@@ -4,8 +4,10 @@
 //! when gate manifest missing. Uses safe default (eager=[], gated=ALL, denied=[]).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use thiserror::Error;
 use crate::mcp_bridge::McpToolSpec;
+use crate::mcp::committed_set::CommittedSetChecker;
 
 pub type FullSchema = McpToolSpec;
 
@@ -75,12 +77,59 @@ pub enum ToolGateError {
 #[derive(Debug, Clone)]
 enum GateSource { Config(ToolGateConfig), SafeDefault }
 
-#[derive(Debug, Clone)]
-pub struct ToolGate { source: GateSource }
+/// C-35 dynamic gate + F-3 Slice C2 commitment seam.
+///
+/// `committed_checker` is an optional [`CommittedSetChecker`] adapter injected
+/// by `elai-orchestrator` at construction time via [`ToolGate::with_committed_checker`].
+/// When absent (the default), commitment checks are no-ops (permissive). When
+/// present, every [`check_tool_allowed`] call is augmented by
+/// [`CommittedSetChecker::check_committed`].
+pub struct ToolGate {
+    source: GateSource,
+    /// F-3 Slice C2: optional orchestrator adapter for per-task commitment
+    /// enforcement. `None` means no commitment check (default / no-op path).
+    committed_checker: Option<Arc<dyn CommittedSetChecker + Send + Sync>>,
+}
+
+impl std::fmt::Debug for ToolGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolGate")
+            .field("source", &self.source)
+            .field("committed_checker", &self.committed_checker.is_some())
+            .finish()
+    }
+}
+
+impl Clone for ToolGate {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            committed_checker: self.committed_checker.clone(),
+        }
+    }
+}
 
 impl ToolGate {
-    pub fn from_config(config: ToolGateConfig) -> Self { Self { source: GateSource::Config(config) } }
-    pub fn safe_default() -> Self { Self { source: GateSource::SafeDefault } }
+    pub fn from_config(config: ToolGateConfig) -> Self {
+        Self { source: GateSource::Config(config), committed_checker: None }
+    }
+    pub fn safe_default() -> Self {
+        Self { source: GateSource::SafeDefault, committed_checker: None }
+    }
+
+    /// F-3 Slice C2: attach an orchestrator-provided [`CommittedSetChecker`]
+    /// adapter. Returns `self` for builder-style chaining.
+    ///
+    /// The `Arc` is cloneable so the same adapter can be shared across gate
+    /// instances within a session without extra locking.
+    pub fn with_committed_checker(
+        mut self,
+        checker: Arc<dyn CommittedSetChecker + Send + Sync>,
+    ) -> Self {
+        self.committed_checker = Some(checker);
+        self
+    }
+
     pub fn reason(&self) -> &str {
         match &self.source { GateSource::SafeDefault => "manifest_absent", GateSource::Config(_) => "config_loaded" }
     }
@@ -125,13 +174,36 @@ impl ToolGate {
         }
     }
     pub fn check_tool_allowed(&self, fsm_state: &str, tool_name: &str) -> Result<(), ToolGateError> {
+        // FSM-state gate check (C-35).
         match &self.source {
-            GateSource::SafeDefault => Ok(()),
+            GateSource::SafeDefault => {}
             GateSource::Config(cfg) => {
                 if cfg.states.get(&fsm_state.to_lowercase()).map(|s| s.denied.iter().any(|d| d == tool_name)).unwrap_or(false) {
-                    Err(ToolGateError::ToolDenied { tool_name: tool_name.to_owned(), fsm_state: fsm_state.to_owned() })
-                } else { Ok(()) }
+                    return Err(ToolGateError::ToolDenied { tool_name: tool_name.to_owned(), fsm_state: fsm_state.to_owned() });
+                }
             }
+        }
+        // F-3 Slice C2: commitment check (defence-in-depth layer on top of FSM gate).
+        if let Some(checker) = &self.committed_checker {
+            checker.check_committed(fsm_state, tool_name).map_err(|reason| {
+                ToolGateError::ToolDenied {
+                    tool_name: format!("{tool_name} [commitment: {reason}]"),
+                    fsm_state: fsm_state.to_owned(),
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    /// F-3 Slice C2: run only the commitment check, bypassing the FSM-state
+    /// gate. Used by callers that have already passed `check_tool_allowed` and
+    /// only need to re-verify the commitment layer (e.g. after a hot-reload).
+    ///
+    /// When no checker is wired, returns `Ok(())`.
+    pub fn check_committed_only(&self, fsm_state: &str, tool_name: &str) -> Result<(), String> {
+        match &self.committed_checker {
+            None => Ok(()),
+            Some(checker) => checker.check_committed(fsm_state, tool_name),
         }
     }
 }

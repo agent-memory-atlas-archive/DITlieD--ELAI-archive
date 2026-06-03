@@ -10,6 +10,7 @@ pub mod schema;
 pub mod self_discovery;
 pub mod stubs;
 pub mod trust_resolver;
+pub mod vibesec_seed;
 
 #[cfg(test)]
 mod contract_tests;

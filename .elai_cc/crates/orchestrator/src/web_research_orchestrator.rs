@@ -22,10 +22,13 @@ use elai_web_search::fetcher::WebFetcher;
 use elai_web_search::source_quality::SourceQualityTable;
 use elai_web_search::{SearchError, SearchResult, WebSearchError};
 
+use crate::capability_flow::{commit_minimal_set, CommittedToolSet};
 use crate::research_budget::{EvidenceItem, ResearchBudgetManager};
 use crate::research_tier::ResearchTierConfig;
 use crate::research_tree::{NodeId, NodeStatus, ResearchNode, SourceCitation,
     SourceQuality, EvidenceLevel};
+use crate::ssb::{SsbPayload, ToolFilterEventKind, ToolFilterPayload};
+use crate::tool_filter::ToolCategory;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -162,6 +165,17 @@ pub struct WebResearchOrchestrator {
     clock: Arc<dyn ClockProvider>,
     chunk_counter: u64,
     step_emitter: Option<Arc<dyn WebResearchStepEmitter>>,
+    /// F-3p1 / Slice C3 (PRODUCER): committed tool set locked before the
+    /// first untrusted-byte boundary (`fetch_and_extract`). Shared with any
+    /// enforcement layer that holds the same `Arc` (e.g. `Fsm::check_tool_allowed`
+    /// via `Fsm::with_committed_tool_set`). `None` until
+    /// [`Self::with_committed_tool_set`] is called; the loop commits into
+    /// the slot once per `run_node_loop` call before `formulate_query`.
+    committed_tool_set: Arc<tokio::sync::Mutex<Option<CommittedToolSet>>>,
+    /// F-3p1 / Slice C3 (PRODUCER): SSB writer for `ToolFilterEvent{Committed}`
+    /// rows. `None` until [`Self::with_ssb_writer`] is called; emission is
+    /// a no-op when absent (telemetry gap is acceptable, enforcement always runs).
+    ssb_writer: Option<Arc<crate::ssb::Ssb>>,
 }
 
 impl WebResearchOrchestrator {
@@ -188,7 +202,30 @@ impl WebResearchOrchestrator {
             clock,
             chunk_counter: 0,
             step_emitter: None,
+            committed_tool_set: Arc::new(tokio::sync::Mutex::new(None)),
+            ssb_writer: None,
         }
+    }
+
+    /// F-3p1 / Slice C3: share the committed-tool-set slot with an external
+    /// enforcement layer (e.g. `Fsm`) so both read from the same `Arc`.
+    ///
+    /// When not called, the orchestrator still commits to its own internal slot;
+    /// enforcement inside `fsm.check_tool_allowed` is a no-op unless the same
+    /// `Arc` is wired there too.
+    pub fn with_committed_tool_set(
+        mut self,
+        slot: Arc<tokio::sync::Mutex<Option<CommittedToolSet>>>,
+    ) -> Self {
+        self.committed_tool_set = slot;
+        self
+    }
+
+    /// F-3p1 / Slice C3: attach an SSB writer for `ToolFilterEvent{Committed}`
+    /// rows. When absent, commits still run but no SSB row is emitted.
+    pub fn with_ssb_writer(mut self, writer: Arc<crate::ssb::Ssb>) -> Self {
+        self.ssb_writer = Some(writer);
+        self
     }
 
     /// Attach a per-iteration step emitter. The task runner uses this to bridge
@@ -237,6 +274,51 @@ impl WebResearchOrchestrator {
         let mut last_fetcher: &'static str = "";
 
         node.status = NodeStatus::Active;
+
+        // F-3p1 / Slice C3 (PRODUCER): commit the minimal tool set BEFORE the
+        // first untrusted-byte boundary (`fetch_and_extract`). The commit is
+        // scoped to the current node's task_id so each node gets a fresh,
+        // tamper-evident hash. This runs ONCE per `run_node_loop` call rather
+        // than per iteration so the committed set is stable for the full loop.
+        {
+            let now_ms = i64::try_from(
+                self.clock.now_ms()
+            ).unwrap_or(i64::MAX);
+            let task_id = format!("web-research-node-{}", node.id.0);
+            let committed = commit_minimal_set(
+                &task_id,
+                &[ToolCategory::Web, ToolCategory::Read],
+                now_ms,
+            );
+            let commit_hash = committed.commit_hash.clone();
+            let allowed_labels: Vec<String> = committed
+                .allowed_categories
+                .iter()
+                .map(|c| format!("{c:?}").to_ascii_lowercase())
+                .collect();
+            *self.committed_tool_set.lock().await = Some(committed);
+            // Emit ToolFilterEvent{Committed} SSB row -- telemetry, non-fatal.
+            if let Some(writer) = self.ssb_writer.as_ref() {
+                let payload = SsbPayload::ToolFilterEvent(ToolFilterPayload {
+                    commit_hash,
+                    allowed_categories: allowed_labels,
+                    denied_tool: None,
+                    taint_source: None,
+                    task_id,
+                    kind: ToolFilterEventKind::Committed,
+                });
+                if let Err(e) = writer
+                    .write_payload("web-research-orchestrator", 0, payload, Vec::new())
+                    .await
+                {
+                    warn!(
+                        node_id = node.id.0,
+                        error = %e,
+                        "web_research_orchestrator: ToolFilterEvent(Committed) SSB write failed (non-fatal)"
+                    );
+                }
+            }
+        }
 
         for iteration in 0..max_iterations {
             node.iterations = iteration + 1;

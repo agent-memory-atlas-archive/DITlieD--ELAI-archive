@@ -1158,5 +1158,6 @@
   }
   .credit-table td {
     padding: 2px 0;
+    overflow-wrap: anywhere;
   }
 </style>

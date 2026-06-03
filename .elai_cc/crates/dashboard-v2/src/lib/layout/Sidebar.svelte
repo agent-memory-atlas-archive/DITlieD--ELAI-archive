@@ -493,13 +493,13 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      background: #10141A;
-      border: 1px solid rgba(255,255,255,0.07);
+      background: var(--bg-base);
+      border: 1px solid var(--border-default);
       border-radius: 4px;
       padding: 4px 8px;
-      font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+      font-family: var(--font-mono);
       font-size: 10px;
-      color: #D7DCE3;
+      color: var(--text-primary);
       white-space: nowrap;
       pointer-events: none;
       z-index: 9999;
@@ -508,8 +508,8 @@
     }
     .sidebar-tooltip-global .tip-kbd {
       font-size: 10px;
-      color: #5A7A9E;
-      background: rgba(90,122,158,0.08);
+      color: var(--steel);
+      background: var(--steel-ghost);
       border-radius: 2px;
       padding: 1px 4px;
     }

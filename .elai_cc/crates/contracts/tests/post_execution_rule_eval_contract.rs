@@ -183,6 +183,7 @@ fn contract_source_is_file_content_not_task_text() {
         file_path: "",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
     let pre = evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &[], &pre_ctx);
     assert!(

@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use elai_orchestrator::ssb::SsbActionType;
+use elai_orchestrator::ssb::{SkillLibraryEventKind, SsbActionType, TestIntegrityEventKind, ToolFilterEventKind, VibeGateBlockedKind};
 
 /// Total number of SsbActionType variants currently locked. Bumping this
 /// requires regenerating action_type_lock.golden in the SAME commit; the
@@ -482,7 +482,71 @@ use elai_orchestrator::ssb::SsbActionType;
 // arm extension (E-50 SaasArchetypeSelected, 12th arm) is variant-internal
 // and does NOT bump TOTAL_VARIANTS. See workflow/reasoning/
 // B7-triple-tranche-decisions.md.
-const TOTAL_VARIANTS: usize = 471;
+// F-1 / F-2a (SCHEMA_VERSION 196, 2026-06-01): +2 new top-level variants
+// (VibeGateBlocked + SecurityRuleBlocked). VibeGateBlocked is Pattern-2
+// single variant with 4-arm VibeGateBlockedKind (CodeVuln / Secret /
+// DepHallucinated / Skill) but counts as ONE variant. 471 -> 473.
+// Session: s-6344. See workflow/reasoning/F-1-F2a-decisions.md.
+// F-4 / Slice B-1 (SCHEMA_VERSION 197, 2026-06-02): +1 new top-level variant
+// (TestIntegrityEvent). Pattern-2 single variant with 2-arm
+// TestIntegrityEventKind (Verified / FabricationBlocked); counts as ONE
+// variant. 473 -> 474. Session: s-6344.
+// F-3p1 / Slice C1 (SCHEMA_VERSION 198, 2026-06-02): +1 new top-level variant
+// (ToolFilterEvent). Pattern-2 single variant with 2-arm ToolFilterEventKind
+// (Committed / UntrustedQuarantined); counts as ONE variant. 474 -> 475.
+// Session: s-6344. See workflow/reasoning/F-3p1-decisions.md.
+//
+// F-9 / Slice D1 (SCHEMA_VERSION 199, 2026-06-02): WriteTimeSlopsquatBlocked
+// flat beacon (DepWriteTimeGate). 475 -> 476. Session: s-6344.
+//
+// F-10 / Slice A1 (SCHEMA_VERSION 200, 2026-06-02): SecurityClassRegressionBlocked
+// flat beacon (security-monotonicity iteration guard). loop_kind is a payload
+// field, not a Kind on the action-type enum, so this counts as ONE variant.
+// 476 -> 477. Session: s-60824.
+//
+// F-2b / Slice A1 (SCHEMA_VERSION 201, 2026-06-02): InsecureRateMeasured flat
+// beacon (insecure-rate keystone bench). Bench telemetry, not a gate; loop_kind
+// has no analogue here (single flat payload). Counts as ONE variant.
+// 477 -> 478. Session: s-60824.
+// F-6 / Slice A1 (SCHEMA_VERSION 202, 2026-06-02): +1 new top-level variant
+// (SkillLibraryEvent). Pattern-2 single variant with 3-arm SkillLibraryEventKind
+// (Acquired / TrustPromoted / DemotedStale); counts as ONE variant here (the
+// Acquired arm is the representative arm in ALL_VARIANTS + golden). The
+// skill_trust_promoted / skill_demoted_stale sql arms are parse/sql-only and
+// NOT in ALL_VARIANTS. 478 -> 479. Session: s-60824.
+//
+// F-5 / Slice A1 (SCHEMA_VERSION 203, 2026-06-02): StalenessQuarantineBroadcast
+// SINGLE FLAT beacon (cross-subsystem staleness-quarantine cascade). No Kind
+// discriminator; one sql_str (staleness_quarantine_broadcast). Counts as ONE
+// variant. 479 -> 480. Session: s-60824.
+//
+// F-8 / Slice A1 (SCHEMA_VERSION 204, 2026-06-02): SymbolicConflictDetected
+// SINGLE FLAT beacon (SCF symbolic semantic conflict detector). No Kind
+// discriminator; one sql_str (symbolic_conflict_detected). WARN-then-escalate
+// (held pending), never hard fail-closed BLOCK. Counts as ONE variant.
+// 480 -> 481. Session: s-60824.
+//
+// F-7 / Slice A1 (SCHEMA_VERSION 205, 2026-06-02): TemplateUtilityRanked
+// SINGLE FLAT beacon (CBR template Laplace-utility ranking, HALF B only). No
+// Kind discriminator; one sql_str (template_utility_ranked). Records the
+// Laplace-smoothed outcome utility that gates crystallized-template reuse at
+// try_execute. Counts as ONE variant. 481 -> 482. Session: s-60824.
+//
+// F-13 / Slice A1 (SCHEMA_VERSION 206, 2026-06-03): SessionArchived SINGLE FLAT
+// beacon (session-archive-on-schema-bump). No Kind discriminator; one sql_str
+// (session_archived). store_kind ('ssb'|'session_dag') is a payload field, not
+// a Pattern-2 Kind. Forensic opt-in, default-OFF ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE
+// (W-2 in-file deviation, F-11 precedent). Counts as ONE variant. 482 -> 483.
+// Session: s-6312.
+//
+// F-11 / Slice A1 (SCHEMA_VERSION 207, 2026-06-03): DarwinianAdmit Pattern-2
+// single-variant WITH a 3-arm DarwinianAdmitKind discriminator (Admitted /
+// RejectedByGuard / LoopClosed) on the payload; ONE sql_str (darwinian_admit).
+// SEPARATE action_type from the pre-existing E-7 darwinian_generation_completed.
+// Config-DGM admit-loop beacon, wire-dark unless ELAI_DARWINIAN_LOOP_ENABLE=1
+// AND cfg(feature darwinian-evolve). Counts as ONE variant. 483 -> 484.
+// Session: s-6312.
+const TOTAL_VARIANTS: usize = 484;
 
 /// All SsbActionType variants in enum DECLARATION order. Append-only -- new
 /// variants go at the end of this array AND at the end of the enum AND get a
@@ -1520,6 +1584,61 @@ const ALL_VARIANTS: [SsbActionType; TOTAL_VARIANTS] = [
     SsbActionType::ToolCalibrationEvent,
     SsbActionType::ReflectBudgetSoftWarn,
     SsbActionType::ContractCodingEvent,
+    // F-1 / F-2a (SCHEMA_VERSION 196, 2026-06-01): vibe-coding security gate
+    // variants. VibeGateBlocked is Pattern-2 single variant (4-arm Kind
+    // discriminator; counts as ONE variant here). SecurityRuleBlocked is a
+    // flat beacon. Session: s-6344.
+    SsbActionType::VibeGateBlocked(VibeGateBlockedKind::CodeVuln),
+    SsbActionType::SecurityRuleBlocked,
+    // F-4 / Slice B-1 (SCHEMA_VERSION 197, 2026-06-02): TestIntegrityEvent
+    // Pattern-2 single variant (2-arm Kind discriminator; counts as ONE
+    // variant here). Verified arm is the representative arm. Session: s-6344.
+    SsbActionType::TestIntegrityEvent(TestIntegrityEventKind::Verified),
+    // F-3p1 / Slice C1 (SCHEMA_VERSION 198, 2026-06-02): ToolFilterEvent
+    // Pattern-2 single variant (2-arm ToolFilterEventKind discriminator;
+    // counts as ONE variant here). Committed arm is the representative arm.
+    // Session: s-6344.
+    SsbActionType::ToolFilterEvent(ToolFilterEventKind::Committed),
+    // F-9 / Slice D1 (SCHEMA_VERSION 199, 2026-06-02): WriteTimeSlopsquatBlocked
+    // flat beacon. Not Pattern-2; single sql_str. Session: s-6344.
+    SsbActionType::WriteTimeSlopsquatBlocked,
+    // F-10 / Slice A1 (SCHEMA_VERSION 200, 2026-06-02): SecurityClassRegressionBlocked
+    // flat beacon (security-monotonicity iteration guard). loop_kind is a payload
+    // field; not Pattern-2. Single sql_str. Session: s-60824.
+    SsbActionType::SecurityClassRegressionBlocked,
+    // F-2b / Slice A1 (SCHEMA_VERSION 201, 2026-06-02): InsecureRateMeasured flat
+    // beacon (insecure-rate keystone bench). Bench telemetry; not Pattern-2.
+    // Single sql_str. Session: s-60824.
+    SsbActionType::InsecureRateMeasured,
+    // F-6 / Slice A1 (SCHEMA_VERSION 202, 2026-06-02): SkillLibraryEvent
+    // Pattern-2 single variant (3-arm SkillLibraryEventKind discriminator;
+    // counts as ONE variant here). Acquired arm is the representative arm.
+    // Session: s-60824.
+    SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::Acquired),
+    // F-5 / Slice A1 (SCHEMA_VERSION 203, 2026-06-02): StalenessQuarantineBroadcast
+    // SINGLE FLAT beacon (cross-subsystem staleness-quarantine cascade). No Kind
+    // discriminator; one sql_str (staleness_quarantine_broadcast). Session: s-60824.
+    SsbActionType::StalenessQuarantineBroadcast,
+    // F-8 / Slice A1 (SCHEMA_VERSION 204, 2026-06-02): SymbolicConflictDetected
+    // SINGLE FLAT beacon (SCF symbolic semantic conflict detector). No Kind
+    // discriminator; one sql_str (symbolic_conflict_detected). Session: s-60824.
+    SsbActionType::SymbolicConflictDetected,
+    // F-7 / Slice A1 (SCHEMA_VERSION 205, 2026-06-02): TemplateUtilityRanked
+    // SINGLE FLAT beacon (CBR template Laplace-utility ranking, HALF B only).
+    // No Kind discriminator; one sql_str (template_utility_ranked).
+    // Session: s-60824.
+    SsbActionType::TemplateUtilityRanked,
+    // F-13 / Slice A1 (SCHEMA_VERSION 206, 2026-06-03): SessionArchived
+    // SINGLE FLAT beacon (session-archive-on-schema-bump). No Kind
+    // discriminator; one sql_str (session_archived). Session: s-6312.
+    SsbActionType::SessionArchived,
+    // F-11 / Slice A1 (SCHEMA_VERSION 207, 2026-06-03): DarwinianAdmit config-DGM
+    // admit-loop beacon. Pattern-2 single-variant; the 3-arm DarwinianAdmitKind
+    // discriminator (Admitted / RejectedByGuard / LoopClosed) is on the payload,
+    // one sql_str (darwinian_admit). SEPARATE from E-7 darwinian_generation_-
+    // completed. Wire-dark unless ELAI_DARWINIAN_LOOP_ENABLE=1 AND cfg(feature
+    // darwinian-evolve). Session: s-6312.
+    SsbActionType::DarwinianAdmit,
 ];
 
 /// Compile-time exhaustiveness check: if a new variant lands in ssb.rs without
@@ -2100,6 +2219,31 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::ToolCalibrationEvent => (),
         SsbActionType::ReflectBudgetSoftWarn => (),
         SsbActionType::ContractCodingEvent => (),
+        // F-1 / F-2a (SCHEMA_VERSION 196): vibe-coding security gate variants.
+        SsbActionType::VibeGateBlocked(_) => (),
+        SsbActionType::SecurityRuleBlocked => (),
+        // F-4 / Slice B-1 (SCHEMA_VERSION 197): test integrity event.
+        SsbActionType::TestIntegrityEvent(_) => (),
+        // F-3p1 / Slice C1 (SCHEMA_VERSION 198): capability-flow tool-filter event.
+        SsbActionType::ToolFilterEvent(_) => (),
+        // F-9 / Slice D1 (SCHEMA_VERSION 199): write-time dep slopsquat blocked.
+        SsbActionType::WriteTimeSlopsquatBlocked => (),
+        // F-10 / Slice A1 (SCHEMA_VERSION 200): security-class regression blocked.
+        SsbActionType::SecurityClassRegressionBlocked => (),
+        // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
+        SsbActionType::InsecureRateMeasured => (),
+        // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
+        SsbActionType::SkillLibraryEvent(_) => (),
+        // F-5 / Slice A1 (SCHEMA_VERSION 203): staleness-quarantine broadcast.
+        SsbActionType::StalenessQuarantineBroadcast => (),
+        // F-8 / Slice A1 (SCHEMA_VERSION 204): symbolic semantic conflict.
+        SsbActionType::SymbolicConflictDetected => (),
+        // F-7 / Slice A1 (SCHEMA_VERSION 205): CBR template utility ranking.
+        SsbActionType::TemplateUtilityRanked => (),
+        // F-13 / Slice A1 (SCHEMA_VERSION 206): session-archive-on-bump.
+        SsbActionType::SessionArchived => (),
+        // F-11 / Slice A1 (SCHEMA_VERSION 207): config-DGM admit-loop beacon.
+        SsbActionType::DarwinianAdmit => (),
     }
 }
 

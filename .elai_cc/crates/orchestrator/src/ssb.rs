@@ -2723,7 +2723,190 @@ use crate::mast::MastMode;
 // 470 -> 471. SaasArchPatternEventKind arm extension is variant-internal
 // (no TOTAL_VARIANTS delta). See workflow/reasoning/
 // B7-triple-tranche-decisions.md.
-const SCHEMA_VERSION: i64 = 195;
+//
+// F-1 / F-2a (SCHEMA_VERSION 196 -- 2026-06-01): coordinated single
+// bump covers two new vibe-coding security gate variants:
+//   * SsbActionType::VibeGateBlocked -- Pattern-2 single variant with
+//       4-arm VibeGateBlockedKind discriminator (CodeVuln / Secret /
+//       DepHallucinated / Skill). sql_str arms:
+//       vibesec_code_vuln_blocked / vibesec_secret_blocked /
+//       vibesec_dep_hallucinated_blocked / vibesec_skill_blocked.
+//       DepHallucinated + Skill are RESERVED (parse/sql arms only;
+//       NO producer this session per plan). Wire-dark unless
+//       ELAI_VIBE_GATE_ENABLE=1.
+//   * SsbActionType::SecurityRuleBlocked -- flat beacon (no Kind
+//       discriminator). sql_str: security_rule_blocked.
+//       Wire-dark unless ELAI_SECURITY_RULE_BLOCKED_ENABLE=1.
+// TOTAL_VARIANTS delta: +2 (471 -> 473).
+// Session: s-6344. See workflow/reasoning/F-1-F2a-decisions.md.
+//
+// F-4 / Slice B-1 (SCHEMA_VERSION 197 -- 2026-06-02): coordinated single
+// bump for the SSB foundation + IntegrationRunResult.output_capture slice.
+//   * SsbActionType::TestIntegrityEvent -- SINGLE-VARIANT Pattern-2 (50th
+//       application). 2-arm TestIntegrityEventKind discriminator:
+//       Verified / FabricationBlocked. sql_str arms:
+//       test_integrity_verified / anti_fabrication_block.
+//       Carries TestIntegrityEventPayload { test_name, passed,
+//       stdout_hash: Option<String>, kind }.
+//   * stdout_hash: Option<String> (#[serde(default)]) added to
+//       TestOutcomePayload -- backward-compatible additive field.
+// TOTAL_VARIANTS delta: +1 (473 -> 474).
+// Session: s-6344. See workflow/reasoning/F-4-B1-decisions.md.
+//
+// F-3p1 / Slice C1 (SCHEMA_VERSION 198 -- 2026-06-02): capability-flow core
+// + SSB ToolFilterEvent substrate.
+//   * SsbActionType::ToolFilterEvent -- SINGLE-VARIANT Pattern-2 (51st
+//       application). 2-arm ToolFilterEventKind discriminator:
+//       Committed / UntrustedQuarantined. sql_str arms:
+//       tool_filter_committed / untrusted_var_quarantined.
+//       Carries ToolFilterPayload { commit_hash, allowed_categories,
+//       denied_tool: Option<String>, taint_source: Option<String>, task_id }.
+//   * CapabilityFlowBlocked is RESERVED (Tier-3); no producer this session
+//       per W-8 (no in-plan caller). NOT added to the enum.
+// TOTAL_VARIANTS delta: +1 (474 -> 475).
+// Session: s-6344. See workflow/reasoning/F-3p1-decisions.md.
+//
+// F-9 / Slice D1 (SCHEMA_VERSION 199 -- 2026-06-02): VibeSecDep write-time
+// slopsquat gate + SSB WriteTimeSlopsquatBlocked substrate.
+//   * SsbActionType::WriteTimeSlopsquatBlocked -- flat beacon (not Pattern-2).
+//     sql_str: write_time_slopsquat_blocked.
+//     Carries WriteTimeSlopsquatBlockedPayload { dep_name_hash: u64,
+//     ecosystem: String, verdict_kind: String, registry_age_days: Option<u32>,
+//     ts_ms: i64 }.
+//   * WriteTimeSlopVerdictKind { NotFound, TooNew, RegistryUnreachable } --
+//     kind-as-String (verdict_kind field, not a Pattern-2 enum variant).
+// TOTAL_VARIANTS delta: +1 (475 -> 476).
+// Session: s-6344. See workflow/reasoning/F-9-D1-decisions.md.
+//
+// F-10 / Slice A1 (SCHEMA_VERSION 200 -- 2026-06-02): security-monotonicity
+// iteration guard + SSB SecurityClassRegressionBlocked substrate.
+//   * SsbActionType::SecurityClassRegressionBlocked -- flat beacon (not a
+//     Pattern-2 Kind variant on the action-type enum). sql_str:
+//     security_class_regression_blocked.
+//     Carries SecurityClassRegressionBlockedPayload { delta_blake3: String,
+//     introduced_classes: Vec<String>, prior_classes: Vec<String>,
+//     loop_kind: LoopKind, loop_id: String, lang: String }.
+//   * LoopKind { Refine, AutoAdvance, SelfMod } -- snake_case payload field
+//     discriminating the 3 production legs (REFINE call-site, AUTO-ADVANCE
+//     evidence-check, SELF-MOD precondition). It is a PAYLOAD field, NOT a
+//     discriminator on the SsbActionType enum arm.
+// Default-ON; kill-switch only (ELAI_SECURITY_MONOTONICITY_DISABLE).
+// TOTAL_VARIANTS delta: +1 (476 -> 477).
+// Session: s-60824. See workflow/reasoning/F-10-decisions.md.
+//
+// F-2b / Slice A1 (SCHEMA_VERSION 201 -- 2026-06-02): insecure-rate keystone
+// bench beacon + SSB InsecureRateMeasured substrate.
+//   * SsbActionType::InsecureRateMeasured -- flat beacon (not Pattern-2).
+//     sql_str: insecure_rate_measured.
+//     Carries InsecureRateMeasuredPayload { suite: String, model_id: String,
+//     n_samples: u32, insecure_rate_before: f64, insecure_rate_after: f64,
+//     gate_recall: f64, seed: u64, corpus_blake3: String }.
+//   * Bench-run telemetry (emitted when the static-gate insecure-rate
+//     benchmark runs over the SeCodePLT-structured CWE corpus). NO new
+//     ELAI_*_ENABLE flag -- it is NOT a wire-dark gate; it fires only inside
+//     the bench. before = corpus ground-truth insecure-rate; after =
+//     gate-approved-subset insecure-rate (static FN residual); gate_recall =
+//     (before - after) / before. HONEST static-gate insecure-rate, DISTINCT
+//     from the SeCodePLT dynamic secure-coding rate.
+// TOTAL_VARIANTS delta: +1 (477 -> 478).
+// Session: s-60824. See workflow/reasoning/F-2-decisions.md.
+//
+// F-6 / Slice A1 (SCHEMA_VERSION 202 -- 2026-06-02): learned-skill library
+// trust ladder + SSB SkillLibraryEvent substrate.
+//   * SsbActionType::SkillLibraryEvent -- SINGLE-VARIANT Pattern-2. 3-arm
+//     SkillLibraryEventKind discriminator: Acquired / TrustPromoted /
+//     DemotedStale. sql_str arms: skill_acquired / skill_trust_promoted /
+//     skill_demoted_stale.
+//     Carries SkillLibraryEventPayload { skill_id: String, description: String,
+//     tier: String, prior_tier: Option<String>, reason: String,
+//     invocations: u32, failure_rate: f64, kind }.
+//   * SkillTrustTier { S1, S2, S3, S4 } is a NEW LOCAL enum in
+//     crate::skill_trust (NOT a Pattern-2 Kind on the SsbActionType enum and
+//     NOT bridged to elai_memory::TrustTier). The SSB row's tier/prior_tier
+//     are snake_case SkillTrustTier labels.
+//   * No ELAI_*_ENABLE default-off flag (W-2); the autonomy barrier in
+//     crate::autonomous_gate governs dispatch, not a wire-dark gate.
+// TOTAL_VARIANTS delta: +1 (478 -> 479).
+// Session: s-60824. See workflow/reasoning/F-6-decisions.md.
+//
+// F-5 / Slice A1 (SCHEMA_VERSION 203 -- 2026-06-02): cross-subsystem
+// staleness-quarantine + bi-temporal contradiction cascade substrate.
+//   * SsbActionType::StalenessQuarantineBroadcast -- SINGLE FLAT beacon (NO
+//     Pattern-2 Kind). sql_str: staleness_quarantine_broadcast. Mirrors the
+//     B-30 LanguageGrammarStatus / E-5 MemoryFactSuperseded flat-beacon shape.
+//   * Carries StalenessQuarantineBroadcastPayload { fact_id: String,
+//     staleness_ratio: f64, dependents_demoted: u32,
+//     cosmos_artifacts_flagged: u32, tick_ms: u64, broadcast_id: String,
+//     dropped_count: u32 }. Emitted at the orchestrator/CLI decay-tick
+//     boundary (NOT inside crates/memory decay.rs); the CLI drains a bounded
+//     QuarantineBroadcastQueue and applies the knowledge-side cascade
+//     (DKG concept_stale=2 + non-destructive staleness_quarantined marker edge
+//     + Cosmos artifact flag). dropped_count surfaces DROP-OLDEST overflow.
+//   * No ELAI_*_ENABLE flag for the SSB row itself; decay cadence + queue
+//     constants are ELAI-owned (QUARANTINE_QUEUE_CAPACITY=256).
+// TOTAL_VARIANTS delta: +1 (479 -> 480).
+// Session: s-60824. See workflow/reasoning/F-5-decisions.md.
+//
+// F-8 / Slice A1 (SCHEMA_VERSION 204 -- 2026-06-02): SCF symbolic semantic
+// conflict detector. LLM-free symbolic check that flags a self-mod config
+// variant contradicting an active locked-key invariant BEFORE archive
+// admission.
+//   * SsbActionType::SymbolicConflictDetected -- SINGLE FLAT beacon (NO
+//     Pattern-2 Kind). sql_str: symbolic_conflict_detected. Mirrors the F-5
+//     StalenessQuarantineBroadcast / F-10 SecurityClassRegressionBlocked
+//     flat-beacon shape.
+//   * Carries SymbolicConflictPayload { fingerprint: String, kind: String,
+//     key: String, detail: String, candidate_id: String, fsm_substate:
+//     String }. Emitted at the `elai self-mod apply` CLI entrypoint (a W-3
+//     production entrypoint) when the symbolic detector flags a contradiction
+//     against self_mod_safety::LOCKED_KEYS; the variant is held PENDING (NOT
+//     hard-fail-closed BLOCK -- POLICY is WARN-then-escalate). The detector
+//     ALSO composes at the F-10 darwinian-evolve seam (external_benches.rs)
+//     so it fires in that loop when it ships (GATED).
+//   * No ELAI_*_ENABLE flag for the SSB row itself; detector thresholds are
+//     ELAI-owned. fingerprint is a blake3 hex-prefix of the conflict tuple.
+// TOTAL_VARIANTS delta: +1 (480 -> 481).
+// Session: s-60824. See workflow/reasoning/F-8-decisions.md.
+//
+// F-7 / Slice A1 (SCHEMA_VERSION 205 -- 2026-06-02): CBR template utility
+// ranking (HALF B only -- Laplace-smoothed outcome utility). Records the
+// Laplace-utility score that gates which crystallized pipeline template is
+// (re)used at try_execute, so low-sample templates stop being over-trusted.
+//   * SsbActionType::TemplateUtilityRanked -- SINGLE FLAT beacon (NO Pattern-2
+//     Kind). sql_str: template_utility_ranked. Mirrors the F-8
+//     SymbolicConflictDetected / F-5 StalenessQuarantineBroadcast flat-beacon
+//     shape.
+//   * Carries TemplateUtilityRankedPayload { concept_class: String,
+//     plan_skeleton_hash: u64, utility: f32, first_try_ratio: f32,
+//     sample_n: u32, chosen_pipeline_id: String }. utility =
+//     laplace_utility(successes, total) = (successes + ALPHA) / (total + ALPHA
+//     + BETA) with ALPHA = BETA = 1.0 (ELAI-owned constants). first_try_ratio
+//     is the recorded baseline (the persisted CompiledPipeline
+//     first_try_success_rate) kept alongside for before/after dashboard
+//     display (W-2 no-removal). successes/total come from the PERSISTED
+//     CompiledPipeline.first_try_success_rate + use_count read via the
+//     CompiledPipelineStore -- NOT from SSB compiled-pipeline events (those
+//     carry NO per-firing pass/fail). block_ratio + coverage are DROPPED (no
+//     producer; zero-filling would be a CSQ footgun) -- documented as future
+//     signals, not shipped.
+//   * No ELAI_*_ENABLE flag for the SSB row itself; ALPHA/BETA smoothing
+//     constants are ELAI-owned. The Springdrift +10.7% figure is UNGROUNDED
+//     and is explicitly NOT a target -- it is not encoded anywhere in this
+//     payload or its thresholds.
+// TOTAL_VARIANTS delta: +1 (481 -> 482).
+// Session: s-60824. See workflow/reasoning/F-7-decisions.md.
+//
+// F-11 / Slice A1 (SCHEMA_VERSION 207, 2026-06-03): DarwinianAdmit Pattern-2
+// single-variant WITH a 3-arm DarwinianAdmitKind discriminator (Admitted /
+// RejectedByGuard / LoopClosed). Emitted by the config-DGM admit-loop driver
+// (crates/cli/src/darwin_loop_cmd.rs -> orchestrator::darwin_admit_loop) when a
+// candidate is routed through the four-guard chain (tripwire blake3 fingerprint,
+// trap-pattern scorer, is_security_sensitive, Two-Gate). Wire-dark unless
+// ELAI_DARWINIAN_LOOP_ENABLE=1 AND cfg(feature = "darwinian-evolve"). Distinct
+// from the pre-existing E-7 DarwinianGenerationCompleted action_type. TOTAL_-
+// VARIANTS delta: +1 (482 -> 483 in action_type_lock; F-13 already at 483 so
+// this bumps to 484). Session: s-6312. See workflow/reasoning/F-11-decisions.md.
+const SCHEMA_VERSION: i64 = 207;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -4374,7 +4557,86 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- contract_violation_detected stays alive (NOT collapsed in this
         -- tranche -- separate landing). Wire-dark unless
         -- ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE=1.
-        'contract_coding_event'
+        'contract_coding_event',
+        -- F-1 (SCHEMA_VERSION 196): VibeGateBlocked Pattern-2 single variant.
+        -- 4-arm VibeGateBlockedKind discriminator: CodeVuln / Secret /
+        -- DepHallucinated / Skill. DepHallucinated + Skill are RESERVED
+        -- (parse/sql arms only; no producer this session). Wire-dark unless
+        -- ELAI_VIBE_GATE_ENABLE=1.
+        'vibesec_code_vuln_blocked',
+        'vibesec_secret_blocked',
+        'vibesec_dep_hallucinated_blocked',
+        'vibesec_skill_blocked',
+        -- F-2a (SCHEMA_VERSION 196): SecurityRuleBlocked flat beacon.
+        -- Wire-dark unless ELAI_SECURITY_RULE_BLOCKED_ENABLE=1.
+        'security_rule_blocked',
+        -- F-4 / Slice B-1 (SCHEMA_VERSION 197): TestIntegrityEvent Pattern-2
+        -- single variant. 2-arm TestIntegrityEventKind discriminator:
+        -- Verified / FabricationBlocked. Carries stdout_hash for
+        -- fabrication-detection pipeline.
+        'test_integrity_verified',
+        'anti_fabrication_block',
+        -- F-3p1 / Slice C1 (SCHEMA_VERSION 198): ToolFilterEvent Pattern-2
+        -- single variant. 2-arm ToolFilterEventKind discriminator:
+        -- Committed / UntrustedQuarantined. CapabilityFlowBlocked is
+        -- RESERVED (Tier-3) and is NOT included here.
+        'tool_filter_committed',
+        'untrusted_var_quarantined',
+        -- F-9 / Slice D1 (SCHEMA_VERSION 199): DepWriteTimeGate slopsquat
+        -- blocked beacon.  Emitted by DepWriteTimeGate::analyze() on
+        -- NotFound / TooNew registry verdicts.  Fail-open on Unreachable
+        -- (W-10 network-axis policy -- not blocked, Warn only).
+        'write_time_slopsquat_blocked',
+        -- F-10 / Slice A1 (SCHEMA_VERSION 200): security-monotonicity guard.
+        -- Emitted when a refine / auto-advance / self-mod iteration would
+        -- introduce a CWE class absent from the prior iteration. Default-ON;
+        -- kill-switch ELAI_SECURITY_MONOTONICITY_DISABLE. loop_kind payload
+        -- field discriminates the 3 production legs.
+        'security_class_regression_blocked',
+        -- F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench
+        -- beacon. Emitted once per static-gate insecure-rate benchmark run over
+        -- the SeCodePLT-structured CWE corpus. Bench telemetry, not a gate.
+        'insecure_rate_measured',
+        -- F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2
+        -- single variant. 3-arm SkillLibraryEventKind discriminator:
+        -- Acquired / TrustPromoted / DemotedStale. Carries the skill id, the
+        -- tier transition, and invocation/failure-rate evidence.
+        'skill_acquired',
+        'skill_trust_promoted',
+        'skill_demoted_stale',
+        -- F-5 / Slice A1 (SCHEMA_VERSION 203): StalenessQuarantineBroadcast
+        -- single flat beacon. Emitted at the orchestrator/CLI boundary when a
+        -- memory-decay tick quarantines a fact (staleness_ratio crosses the
+        -- decay threshold); the broadcast cascades to DKG concept_stale=2 and
+        -- Cosmos artifact flagging via a bounded queue drained by the CLI.
+        'staleness_quarantine_broadcast',
+        -- F-8 / Slice A1 (SCHEMA_VERSION 204): SymbolicConflictDetected single
+        -- flat beacon. Emitted at the `elai self-mod apply` CLI entrypoint when
+        -- the LLM-free symbolic detector flags a self-mod config variant that
+        -- contradicts an active locked-key invariant (self_mod_safety::
+        -- LOCKED_KEYS) BEFORE archive admission; the variant is held PENDING
+        -- (WARN-then-escalate, never hard fail-closed BLOCK).
+        'symbolic_conflict_detected',
+        -- F-7 / Slice A1 (SCHEMA_VERSION 205): TemplateUtilityRanked single
+        -- flat beacon. Emitted at the try_execute gate-threshold seam when the
+        -- Laplace-smoothed outcome utility of a crystallized pipeline template
+        -- is computed from the PERSISTED CompiledPipeline first_try_success_rate
+        -- + use_count; gates whether the template is reused. WARN/observe only
+        -- (records the score), never a hard BLOCK.
+        'template_utility_ranked',
+        -- F-13 / Slice A1 (SCHEMA_VERSION 206): SessionArchived single flat
+        -- beacon. Emitted at the run_migration destructive-DROP site (the
+        -- Ssb::new production open path) when a stale-version DB is opened with
+        -- ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE set; the stale ssb.db is cold-archived
+        -- to workflow/sessions/{id}/archive/ before the DROP. store_kind is a
+        -- payload field ('ssb'|'session_dag'), not a Pattern-2 Kind.
+        'session_archived',
+        -- F-11 / Slice A1 (SCHEMA_VERSION 207): DarwinianAdmit config-DGM
+        -- admit-loop beacon. Pattern-2 single-variant; the 3-arm
+        -- DarwinianAdmitKind discriminator (admitted/rejected_by_guard/
+        -- loop_closed) is a payload field, not a separate wire tag. Wire-dark
+        -- unless ELAI_DARWINIAN_LOOP_ENABLE=1 AND cfg(feature darwinian-evolve).
+        'darwinian_admit'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -7997,6 +8259,159 @@ pub enum SsbActionType {
     ///
     /// See `workflow/reasoning/B6-quad-tranche-decisions.md`.
     ContractCodingEvent,
+    /// F-1 (SCHEMA_VERSION 196) -- vibe-coding security gate blocked event.
+    /// Pattern-2 single variant with 4-arm [`VibeGateBlockedKind`]
+    /// discriminator (CodeVuln / Secret / DepHallucinated / Skill). The
+    /// sql_str arms are:
+    ///   * `CodeVuln`        -> `vibesec_code_vuln_blocked`
+    ///   * `Secret`          -> `vibesec_secret_blocked`
+    ///   * `DepHallucinated` -> `vibesec_dep_hallucinated_blocked` (RESERVED)
+    ///   * `Skill`           -> `vibesec_skill_blocked` (RESERVED)
+    ///
+    /// DepHallucinated and Skill are parse/sql arms only this session;
+    /// no producer fires them. Wire-dark unless `ELAI_VIBE_GATE_ENABLE=1`.
+    /// Carries [`VibeGateBlockedPayload`].
+    VibeGateBlocked(VibeGateBlockedKind),
+    /// F-2a (SCHEMA_VERSION 196) -- security rule blocked flat beacon.
+    /// Emitted by the rule engine each time a configured security rule
+    /// rejects a candidate edit. No Kind discriminator (scope-lean MVP).
+    /// Wire-dark unless `ELAI_SECURITY_RULE_BLOCKED_ENABLE=1`.
+    /// Carries [`SecurityRuleBlockedPayload`].
+    SecurityRuleBlocked,
+    /// F-4 / Slice B-1 (SCHEMA_VERSION 197) -- test integrity verification
+    /// event. Pattern-2 single variant with 2-arm
+    /// [`TestIntegrityEventKind`] discriminator (Verified /
+    /// FabricationBlocked). The sql_str arms are:
+    ///   * `Verified`           -> `test_integrity_verified`
+    ///   * `FabricationBlocked` -> `anti_fabrication_block`
+    ///
+    /// Carries [`TestIntegrityEventPayload`] which includes `stdout_hash`
+    /// for the fabrication-detection pipeline.
+    TestIntegrityEvent(TestIntegrityEventKind),
+    /// F-3p1 / Slice C1 (SCHEMA_VERSION 198) -- capability-flow tool-filter
+    /// commitment + untrusted-variable quarantine event.
+    /// Pattern-2 single variant with 2-arm [`ToolFilterEventKind`]
+    /// discriminator (Committed / UntrustedQuarantined). The sql_str arms are:
+    ///   * `Committed`            -> `tool_filter_committed`
+    ///   * `UntrustedQuarantined` -> `untrusted_var_quarantined`
+    ///
+    /// `CapabilityFlowBlocked` is RESERVED (Tier-3) and is NOT an arm of
+    /// this variant -- it has no in-plan producer (W-8).
+    ///
+    /// Carries [`ToolFilterPayload`].
+    ToolFilterEvent(ToolFilterEventKind),
+    /// F-9 / Slice D1 (SCHEMA_VERSION 199) -- write-time anti-slopsquat gate
+    /// blocked a dependency import.
+    ///
+    /// Emitted by `crate::vibesec::dep_writetime_gate::DepWriteTimeGate::analyze`
+    /// when a dependency name resolves to `NotFound` or `TooNew` in the
+    /// registry.  Registry-unreachable cases do NOT emit this variant (fail-open
+    /// per W-10 network-axis policy).
+    ///
+    /// `verdict_kind` is a String (not a Pattern-2 kind enum variant) carrying
+    /// one of the [`WriteTimeSlopVerdictKind`] snake_case labels:
+    ///   * `"not_found"` -- package absent from registry.
+    ///   * `"too_new"` -- package exists but its latest publish is older than
+    ///     the per-ecosystem staleness threshold (stale/abandoned fork). Now
+    ///     PRODUCED: the SubprocessRegistryChecker maps a `result=="fail"` +
+    ///     "stale"/">…d" reason to TooNew (BLOCK-1 reconcile, F-Unit-D).
+    ///   * `"registry_unreachable"` -- RESERVED; must never be emitted (gate
+    ///     is fail-open on unreachable).
+    ///
+    /// Carries [`WriteTimeSlopsquatBlockedPayload`].
+    WriteTimeSlopsquatBlocked,
+    /// F-10 / Slice A1 (SCHEMA_VERSION 200) -- security-class regression
+    /// blocked. Emitted when a refine / auto-advance / self-mod iteration
+    /// would introduce a CWE class that was absent from the prior iteration
+    /// (a security-monotonicity violation). Flat beacon (no Kind discriminator
+    /// on the action-type enum); the 3 production legs are distinguished by
+    /// the `loop_kind` field of [`SecurityClassRegressionBlockedPayload`].
+    /// Default-ON; suppressed only by `ELAI_SECURITY_MONOTONICITY_DISABLE`.
+    /// Carries [`SecurityClassRegressionBlockedPayload`].
+    SecurityClassRegressionBlocked,
+    /// F-2b / Slice A1 (SCHEMA_VERSION 201) -- insecure-rate keystone bench
+    /// beacon. Emitted once when the static-gate insecure-rate benchmark runs
+    /// over a SeCodePLT-structured CWE corpus, recording the corpus
+    /// ground-truth insecure-rate (before), the gate-approved-subset
+    /// insecure-rate (after = static-gate false-negative residual), and the
+    /// derived gate recall. Flat beacon (no Kind discriminator). This is a
+    /// bench-run telemetry beacon, NOT a wire-dark gate: it has no
+    /// `ELAI_*_ENABLE` flag and is emitted only inside the benchmark itself.
+    /// Carries [`InsecureRateMeasuredPayload`].
+    InsecureRateMeasured,
+    /// F-6 / Slice A1 (SCHEMA_VERSION 202) -- learned-skill library event.
+    /// Pattern-2 single variant with 3-arm [`SkillLibraryEventKind`]
+    /// discriminator (Acquired / TrustPromoted / DemotedStale). The sql_str
+    /// arms are:
+    ///   * `Acquired`      -> `skill_acquired`
+    ///   * `TrustPromoted` -> `skill_trust_promoted`
+    ///   * `DemotedStale`  -> `skill_demoted_stale`
+    ///
+    /// Carries [`SkillLibraryEventPayload`]. No `ELAI_*_ENABLE` default-off
+    /// flag (W-2); the autonomy barrier governs dispatch, not a wire-dark
+    /// gate.
+    SkillLibraryEvent(SkillLibraryEventKind),
+    /// F-5 / Slice A1 (SCHEMA_VERSION 203) -- cross-subsystem
+    /// staleness-quarantine broadcast. SINGLE FLAT beacon (no Kind
+    /// discriminator), mirroring the B-30 `LanguageGrammarStatus` /
+    /// E-5 `MemoryFactSuperseded` flat-beacon shape. Emitted at the
+    /// orchestrator/CLI decay-tick boundary when a memory-decay tick
+    /// quarantines a fact whose staleness ratio crosses the decay threshold;
+    /// the broadcast cascades to DKG `concept_stale=2` + a non-destructive
+    /// `staleness_quarantined` marker edge + Cosmos artifact flagging via a
+    /// bounded `QuarantineBroadcastQueue` drained by the CLI. The
+    /// `dropped_count` field surfaces DROP-OLDEST overflow (W-2 no silent
+    /// drop). Carries [`StalenessQuarantineBroadcastPayload`].
+    StalenessQuarantineBroadcast,
+    /// F-8 / Slice A1 (SCHEMA_VERSION 204) -- SCF symbolic semantic conflict
+    /// detected. SINGLE FLAT beacon (no Pattern-2 Kind), mirroring the F-5
+    /// `StalenessQuarantineBroadcast` / F-10 `SecurityClassRegressionBlocked`
+    /// flat-beacon shape. Emitted at the `elai self-mod apply` CLI entrypoint
+    /// when the LLM-free symbolic detector flags a self-mod config variant that
+    /// contradicts an active locked-key invariant (`self_mod_safety::
+    /// LOCKED_KEYS`) BEFORE archive admission. POLICY is WARN-then-escalate: the
+    /// variant is held PENDING, never hard-fail-closed BLOCK. Carries
+    /// [`SymbolicConflictPayload`].
+    SymbolicConflictDetected,
+    /// F-7 / Slice A1 (SCHEMA_VERSION 205): a crystallized pipeline template's
+    /// Laplace-smoothed outcome utility was computed and used to gate template
+    /// reuse at the `try_execute` seam. SINGLE FLAT beacon (no Pattern-2 Kind),
+    /// mirroring the F-8 `SymbolicConflictDetected` / F-5
+    /// `StalenessQuarantineBroadcast` flat-beacon shape. The utility is
+    /// `laplace_utility(successes, total)` over the PERSISTED `CompiledPipeline`
+    /// `first_try_success_rate` + `use_count`; a 1/1 template scores 2/3 (not
+    /// 1.0) so low-sample templates stop being over-trusted. Carries
+    /// [`TemplateUtilityRankedPayload`].
+    TemplateUtilityRanked,
+    /// F-13 / Slice A1 (SCHEMA_VERSION 206): the stale-version `ssb.db` (or the
+    /// precautionary `session_dag.db`) was cold-archived to
+    /// `workflow/sessions/{id}/archive/ssb-v{N}.sqlite` BEFORE the destructive
+    /// `run_migration` DROP, gated behind the wire-dark
+    /// `ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE` kill-switch (forensic opt-in;
+    /// default-OFF by design — F-11 in-file W-2 deviation precedent). SINGLE
+    /// FLAT beacon (no Pattern-2 Kind); `store_kind` is a payload field
+    /// (`"ssb"` | `"session_dag"`), NOT a discriminator. Emitted via a direct
+    /// synchronous INSERT inside `run_migration` (the async writer does not
+    /// exist yet at migration time). Carries [`SessionArchivedPayload`].
+    SessionArchived,
+    /// F-11 (SCHEMA_VERSION 207) — config-DGM admit-loop beacon. Pattern-2
+    /// single-variant WITH a 3-arm [`DarwinianAdmitKind`] discriminator on the
+    /// payload (`Admitted` / `RejectedByGuard` / `LoopClosed`). Emitted once per
+    /// candidate routed through the four-guard chain (tripwire blake3 fingerprint
+    /// -> trap-pattern scorer on the LIVE candidate -> `is_security_sensitive`
+    /// keyword filter -> `two_gate_promote`). `LoopClosed` proves
+    /// `config_archive::select_parent` ran AFTER `insert_variant`. Carries
+    /// [`DarwinianAdmitPayload`]. SEPARATE action_type from the pre-existing E-7
+    /// `DarwinianGenerationCompleted` (do NOT reuse). Wire-dark unless
+    /// `ELAI_DARWINIAN_LOOP_ENABLE=1` AND the orchestrator is compiled with
+    /// `--features darwinian-evolve`. Paper grounding:
+    ///   - arXiv:2505.22954 (DGM) — propose->evaluate->insert->select archive
+    ///     loop; deceptive-dip caveat (a single closed generation is NOT a
+    ///     capability claim).
+    ///   - arXiv:2510.04399 (Two-Gate) — bounded-capacity margin/capacity gate;
+    ///     config-only mutant keeps the loop inside the PAC-safe regime.
+    /// See workflow/reasoning/F-11-decisions.md.
+    DarwinianAdmit,
 }
 
 impl SsbActionType {
@@ -8738,6 +9153,42 @@ impl SsbActionType {
             Self::ToolCalibrationEvent => "tool_calibration_event",
             Self::ReflectBudgetSoftWarn => "reflect_budget_soft_warn",
             Self::ContractCodingEvent => "contract_coding_event",
+            // F-1 / F-2a (SCHEMA_VERSION 196): vibe-coding security gate variants.
+            // VibeGateBlocked is Pattern-2; each Kind arm maps to its own sql_str.
+            Self::VibeGateBlocked(kind) => kind.as_sql_str(),
+            Self::SecurityRuleBlocked => "security_rule_blocked",
+            // F-4 / Slice B-1 (SCHEMA_VERSION 197): TestIntegrityEvent Pattern-2.
+            // Each Kind arm maps to its own sql_str via the Kind's as_sql_str().
+            Self::TestIntegrityEvent(kind) => kind.as_sql_str(),
+            // F-3p1 / Slice C1 (SCHEMA_VERSION 198): ToolFilterEvent Pattern-2.
+            // Each Kind arm maps to its own sql_str via the Kind's as_sql_str().
+            Self::ToolFilterEvent(kind) => kind.as_sql_str(),
+            // F-9 / Slice D1 (SCHEMA_VERSION 199): DepWriteTimeGate slopsquat blocked.
+            Self::WriteTimeSlopsquatBlocked => "write_time_slopsquat_blocked",
+            // F-10 / Slice A1 (SCHEMA_VERSION 200): security-monotonicity guard.
+            Self::SecurityClassRegressionBlocked => "security_class_regression_blocked",
+            // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
+            Self::InsecureRateMeasured => "insecure_rate_measured",
+            // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2.
+            // Each Kind arm maps to its own sql_str via the Kind's as_sql_str().
+            Self::SkillLibraryEvent(kind) => kind.as_sql_str(),
+            // F-5 / Slice A1 (SCHEMA_VERSION 203): StalenessQuarantineBroadcast
+            // flat beacon (no Kind discriminator).
+            Self::StalenessQuarantineBroadcast => "staleness_quarantine_broadcast",
+            // F-8 / Slice A1 (SCHEMA_VERSION 204): SymbolicConflictDetected
+            // flat beacon (no Kind discriminator).
+            Self::SymbolicConflictDetected => "symbolic_conflict_detected",
+            // F-7 / Slice A1 (SCHEMA_VERSION 205): TemplateUtilityRanked
+            // flat beacon (no Kind discriminator).
+            Self::TemplateUtilityRanked => "template_utility_ranked",
+            // F-13 / Slice A1 (SCHEMA_VERSION 206): SessionArchived
+            // flat beacon (no Kind discriminator).
+            Self::SessionArchived => "session_archived",
+            // F-11 / Slice A1 (SCHEMA_VERSION 207): DarwinianAdmit config-DGM
+            // admit-loop beacon. Pattern-2 single-variant; the 3-arm
+            // DarwinianAdmitKind discriminator lives on the payload, so the
+            // wire tag is a single string (mirrors DarwinianGenerationCompleted).
+            Self::DarwinianAdmit => "darwinian_admit",
         }
     }
 }
@@ -9387,6 +9838,39 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "tool_calibration_event"          => Ok(SsbActionType::ToolCalibrationEvent),
         "reflect_budget_soft_warn"        => Ok(SsbActionType::ReflectBudgetSoftWarn),
         "contract_coding_event"           => Ok(SsbActionType::ContractCodingEvent),
+        // F-1 / F-2a (SCHEMA_VERSION 196): vibe-coding security gate variants.
+        "vibesec_code_vuln_blocked"        => Ok(SsbActionType::VibeGateBlocked(VibeGateBlockedKind::CodeVuln)),
+        "vibesec_secret_blocked"           => Ok(SsbActionType::VibeGateBlocked(VibeGateBlockedKind::Secret)),
+        "vibesec_dep_hallucinated_blocked" => Ok(SsbActionType::VibeGateBlocked(VibeGateBlockedKind::DepHallucinated)),
+        "vibesec_skill_blocked"            => Ok(SsbActionType::VibeGateBlocked(VibeGateBlockedKind::Skill)),
+        "security_rule_blocked"            => Ok(SsbActionType::SecurityRuleBlocked),
+        // F-4 / Slice B-1 (SCHEMA_VERSION 197): TestIntegrityEvent Pattern-2.
+        "test_integrity_verified" => Ok(SsbActionType::TestIntegrityEvent(TestIntegrityEventKind::Verified)),
+        "anti_fabrication_block"  => Ok(SsbActionType::TestIntegrityEvent(TestIntegrityEventKind::FabricationBlocked)),
+        // F-3p1 / Slice C1 (SCHEMA_VERSION 198): ToolFilterEvent Pattern-2.
+        "tool_filter_committed"       => Ok(SsbActionType::ToolFilterEvent(ToolFilterEventKind::Committed)),
+        "untrusted_var_quarantined"   => Ok(SsbActionType::ToolFilterEvent(ToolFilterEventKind::UntrustedQuarantined)),
+        // F-9 / Slice D1 (SCHEMA_VERSION 199): DepWriteTimeGate slopsquat blocked.
+        "write_time_slopsquat_blocked" => Ok(SsbActionType::WriteTimeSlopsquatBlocked),
+        // F-10 / Slice A1 (SCHEMA_VERSION 200): security-monotonicity guard.
+        "security_class_regression_blocked" => Ok(SsbActionType::SecurityClassRegressionBlocked),
+        // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
+        "insecure_rate_measured" => Ok(SsbActionType::InsecureRateMeasured),
+        // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2 (3 arms).
+        "skill_acquired"        => Ok(SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::Acquired)),
+        "skill_trust_promoted"  => Ok(SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::TrustPromoted)),
+        "skill_demoted_stale"   => Ok(SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::DemotedStale)),
+        // F-5 / Slice A1 (SCHEMA_VERSION 203): StalenessQuarantineBroadcast flat beacon.
+        "staleness_quarantine_broadcast" => Ok(SsbActionType::StalenessQuarantineBroadcast),
+        // F-8 / Slice A1 (SCHEMA_VERSION 204): SymbolicConflictDetected flat beacon.
+        "symbolic_conflict_detected" => Ok(SsbActionType::SymbolicConflictDetected),
+        // F-7 / Slice A1 (SCHEMA_VERSION 205): TemplateUtilityRanked flat beacon.
+        "template_utility_ranked" => Ok(SsbActionType::TemplateUtilityRanked),
+        // F-13 / Slice A1 (SCHEMA_VERSION 206): SessionArchived flat beacon.
+        "session_archived" => Ok(SsbActionType::SessionArchived),
+        // F-11 / Slice A1 (SCHEMA_VERSION 207): DarwinianAdmit config-DGM
+        // admit-loop beacon (Pattern-2; Kind on payload).
+        "darwinian_admit" => Ok(SsbActionType::DarwinianAdmit),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -9460,6 +9944,13 @@ pub struct TestOutcomePayload {
     pub test_name: String,
     pub passed: bool,
     pub duration_ms: u64,
+    /// F-4 / Slice B-1 (SCHEMA_VERSION 197): blake3 hex-prefix (first 16
+    /// chars) of the captured stdout from the test run. `None` when no
+    /// stdout was captured (pre-B1 rows, non-output-capture callers).
+    /// Backward-compatible: `#[serde(default)]` means absent field
+    /// deserializes as `None` for all pre-197 rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -12737,6 +13228,59 @@ pub enum SsbPayload {
     /// Tranche B-6 quad C-50 Pattern-2 collapse (SCHEMA_VERSION 194).
     /// See [`ContractCodingEventPayload`] + [`ContractCodingEventKind`].
     ContractCodingEvent(ContractCodingEventPayload),
+    // F-1 (SCHEMA_VERSION 196): vibe-coding security gate blocked event.
+    // See `VibeGateBlockedPayload` + `VibeGateBlockedKind`. Pattern-2
+    // (single variant; VibeGateBlockedKind 4-arm discriminator).
+    VibeGateBlocked(VibeGateBlockedPayload),
+    // F-2a (SCHEMA_VERSION 196): security rule blocked flat beacon.
+    // See `SecurityRuleBlockedPayload`.
+    SecurityRuleBlocked(SecurityRuleBlockedPayload),
+    // F-4 / Slice B-1 (SCHEMA_VERSION 197): test integrity verification event.
+    // See `TestIntegrityEventPayload` + `TestIntegrityEventKind`. Pattern-2
+    // (single variant; TestIntegrityEventKind 2-arm discriminator).
+    TestIntegrityEvent(TestIntegrityEventPayload),
+    // F-3p1 / Slice C1 (SCHEMA_VERSION 198): capability-flow tool-filter event.
+    // See `ToolFilterPayload` + `ToolFilterEventKind`. Pattern-2
+    // (single variant; ToolFilterEventKind 2-arm discriminator).
+    ToolFilterEvent(ToolFilterPayload),
+    // F-9 / Slice D1 (SCHEMA_VERSION 199): write-time dep slopsquat blocked.
+    // See `WriteTimeSlopsquatBlockedPayload` + `WriteTimeSlopVerdictKind`.
+    // Flat beacon (not Pattern-2); verdict_kind is a String field.
+    WriteTimeSlopsquatBlocked(WriteTimeSlopsquatBlockedPayload),
+    // F-10 / Slice A1 (SCHEMA_VERSION 200): security-class regression blocked.
+    // See `SecurityClassRegressionBlockedPayload` + `LoopKind`.
+    // Flat beacon (no Kind on the action-type enum); loop_kind is a payload field.
+    SecurityClassRegressionBlocked(SecurityClassRegressionBlockedPayload),
+    // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
+    // See `InsecureRateMeasuredPayload`. Flat beacon (no Kind discriminator).
+    InsecureRateMeasured(InsecureRateMeasuredPayload),
+    // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
+    // See `SkillLibraryEventPayload` + `SkillLibraryEventKind`. Pattern-2
+    // (single variant; SkillLibraryEventKind 3-arm discriminator).
+    SkillLibraryEvent(SkillLibraryEventPayload),
+    // F-5 / Slice A1 (SCHEMA_VERSION 203): staleness-quarantine broadcast.
+    // See `StalenessQuarantineBroadcastPayload`. SINGLE FLAT beacon (no Kind
+    // discriminator), mirroring LanguageGrammarStatus / MemoryFactSuperseded.
+    StalenessQuarantineBroadcast(StalenessQuarantineBroadcastPayload),
+    // F-8 / Slice A1 (SCHEMA_VERSION 204): SCF symbolic semantic conflict.
+    // See `SymbolicConflictPayload`. SINGLE FLAT beacon (no Kind discriminator),
+    // mirroring StalenessQuarantineBroadcast / SecurityClassRegressionBlocked.
+    SymbolicConflictDetected(SymbolicConflictPayload),
+    // F-7 / Slice A1 (SCHEMA_VERSION 205): CBR template Laplace-utility ranking.
+    // See `TemplateUtilityRankedPayload`. SINGLE FLAT beacon (no Kind
+    // discriminator), mirroring SymbolicConflictDetected /
+    // StalenessQuarantineBroadcast.
+    TemplateUtilityRanked(TemplateUtilityRankedPayload),
+    // F-13 / Slice A1 (SCHEMA_VERSION 206): session-archive-on-schema-bump.
+    // See `SessionArchivedPayload`. SINGLE FLAT beacon (no Kind discriminator);
+    // store_kind ("ssb"|"session_dag") is a payload field, not a discriminator.
+    SessionArchived(SessionArchivedPayload),
+    // F-11 / Slice A1 (SCHEMA_VERSION 207): config-DGM admit-loop beacon.
+    // See `DarwinianAdmitPayload`. Pattern-2 single-variant WITH a 3-arm
+    // `DarwinianAdmitKind` discriminator (Admitted / RejectedByGuard /
+    // LoopClosed) carried on the payload. Wire-dark unless
+    // ELAI_DARWINIAN_LOOP_ENABLE=1 AND cfg(feature = "darwinian-evolve").
+    DarwinianAdmit(DarwinianAdmitPayload),
 }
 
 impl SsbPayload {
@@ -13392,6 +13936,33 @@ impl SsbPayload {
             Self::ToolCalibrationEvent(_) => SsbActionType::ToolCalibrationEvent,
             Self::ReflectBudgetSoftWarn(_) => SsbActionType::ReflectBudgetSoftWarn,
             Self::ContractCodingEvent(_) => SsbActionType::ContractCodingEvent,
+            // F-1 / F-2a (SCHEMA_VERSION 196): vibe-coding security gate variants.
+            Self::VibeGateBlocked(p) => SsbActionType::VibeGateBlocked(p.kind),
+            Self::SecurityRuleBlocked(_) => SsbActionType::SecurityRuleBlocked,
+            // F-4 / Slice B-1 (SCHEMA_VERSION 197): test integrity verification.
+            Self::TestIntegrityEvent(p) => SsbActionType::TestIntegrityEvent(p.kind),
+            // F-3p1 / Slice C1 (SCHEMA_VERSION 198): capability-flow tool-filter.
+            Self::ToolFilterEvent(p) => SsbActionType::ToolFilterEvent(p.kind),
+            // F-9 / Slice D1 (SCHEMA_VERSION 199): write-time dep slopsquat blocked.
+            Self::WriteTimeSlopsquatBlocked(_) => SsbActionType::WriteTimeSlopsquatBlocked,
+            // F-10 / Slice A1 (SCHEMA_VERSION 200): security-monotonicity guard.
+            Self::SecurityClassRegressionBlocked(_) => {
+                SsbActionType::SecurityClassRegressionBlocked
+            }
+            // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
+            Self::InsecureRateMeasured(_) => SsbActionType::InsecureRateMeasured,
+            // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
+            Self::SkillLibraryEvent(p) => SsbActionType::SkillLibraryEvent(p.kind),
+            // F-5 / Slice A1 (SCHEMA_VERSION 203): staleness-quarantine broadcast.
+            Self::StalenessQuarantineBroadcast(_) => SsbActionType::StalenessQuarantineBroadcast,
+            // F-8 / Slice A1 (SCHEMA_VERSION 204): symbolic semantic conflict.
+            Self::SymbolicConflictDetected(_) => SsbActionType::SymbolicConflictDetected,
+            // F-7 / Slice A1 (SCHEMA_VERSION 205): CBR template utility ranking.
+            Self::TemplateUtilityRanked(_) => SsbActionType::TemplateUtilityRanked,
+            // F-13 / Slice A1 (SCHEMA_VERSION 206): session-archive-on-bump.
+            Self::SessionArchived(_) => SsbActionType::SessionArchived,
+            // F-11 / Slice A1 (SCHEMA_VERSION 207): config-DGM admit-loop beacon.
+            Self::DarwinianAdmit(_) => SsbActionType::DarwinianAdmit,
         }
     }
 }
@@ -13676,7 +14247,17 @@ impl Ssb {
         // --- Writer connection (dedicated, not pooled) ---
         let writer_conn = Connection::open(&config.db_path)?;
         apply_pragmas(&writer_conn)?;
-        run_migration(&writer_conn)?;
+        // F-13: run_migration is widened to receive db_path + session_id +
+        // project_id so it can cold-archive a stale-version ssb.db BEFORE the
+        // destructive DROP (gated wire-dark) and emit a session_archived row via
+        // a direct synchronous INSERT (the async writer below does not exist
+        // yet). The DROP semantics are unchanged when the gate is disabled.
+        run_migration(
+            &writer_conn,
+            &config.db_path,
+            &config.session_id,
+            &config.project_id,
+        )?;
 
         #[cfg(debug_assertions)]
         writer_conn.update_hook(Some(
@@ -13840,19 +14421,146 @@ fn apply_pragmas(conn: &Connection) -> Result<(), rusqlite::Error> {
 // Migration
 // ---------------------------------------------------------------------------
 
-fn run_migration(conn: &Connection) -> Result<(), rusqlite::Error> {
+/// Run the SSB schema migration on a freshly-opened writer connection.
+///
+/// F-13: when a STALE on-disk `user_version` is detected and the wire-dark
+/// `ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE` gate is set, the stale `ssb.db` is
+/// cold-archived to `workflow/sessions/{session_id}/archive/ssb-v{N}.sqlite`
+/// BEFORE the destructive DROP (the archive is ADDITIVE — the DROP still runs
+/// unconditionally). After the recreate, a `session_archived` SSB row is emitted
+/// via a DIRECT synchronous INSERT on this same `conn` (the async single-writer
+/// task does not exist yet at migration time). Archive failures are fail-OPEN
+/// (logged, the DROP continues) because blocking startup would brick the
+/// session for data the code itself marks "acceptable to lose".
+///
+/// The signature is widened (vs the historical `(conn)`) to receive `db_path`
+/// (the archive copy source) + `session_id` + `project_id` (for the synchronous
+/// row INSERT). The ONLY caller is [`Ssb::new`], where all three live on
+/// [`SsbConfig`]; the blast radius is contained to that one call site.
+fn run_migration(
+    conn: &Connection,
+    db_path: &std::path::Path,
+    session_id: &str,
+    project_id: &str,
+) -> Result<(), rusqlite::Error> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version == SCHEMA_VERSION {
         return Ok(());
     }
     // SSB is session-scoped. Stale schema → drop and recreate (data loss
     // is acceptable for old sessions).
+    //
+    // F-13: best-effort forensic archive BEFORE the DROP. Captured here so the
+    // synchronous INSERT after recreate can record a truthful archive_path +
+    // manifest_blake3. None unless the gate is enabled AND the copy succeeded.
+    // Carries (relative_archive_path, manifest_blake3) when a copy succeeded.
+    let mut archived: Option<(String, String)> = None;
     if version > 0 {
+        if crate::session_archive::archive_on_bump_enabled() {
+            // WAL byte-faithfulness: apply_pragmas put the writer connection in
+            // WAL mode, so un-checkpointed pages live in the -wal sidecar. Fold
+            // them into the main db file BEFORE the copy so the archive's blake3
+            // prefix matches a re-read of the archived file (acceptance gate).
+            // Fail-open: a checkpoint error must not block the DROP.
+            if let Err(e) = conn.pragma_update(None, "wal_checkpoint", "TRUNCATE") {
+                tracing::warn!(
+                    error = %e,
+                    session_id,
+                    "F-13: wal_checkpoint(TRUNCATE) before archive failed; archive may miss WAL pages"
+                );
+            }
+            match crate::session_archive::archive_stale_ssb(db_path, session_id, version) {
+                Ok(Some(dest)) => {
+                    match crate::session_archive::archive_manifest_digest(&dest) {
+                        Ok(digest) => {
+                            let rel = dest.to_string_lossy().replace('\\', "/");
+                            archived = Some((rel, digest));
+                        }
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            session_id,
+                            "F-13: archive manifest digest failed; archive kept, row skipped"
+                        ),
+                    }
+                }
+                Ok(None) => {} // gate raced to disabled — treat as no-op.
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    session_id,
+                    "F-13: stale-ssb archive failed; continuing the DROP (fail-open)"
+                ),
+            }
+        }
         conn.execute_batch("DROP TABLE IF EXISTS ssb_files; DROP TABLE IF EXISTS ssb;")?;
     }
     conn.execute_batch(CREATE_SSB_TABLE)?;
     conn.execute_batch(CREATE_SSB_FILES_TABLE)?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+
+    // F-13: emit the session_archived beacon AFTER the recreate (the ssb table
+    // exists by now) via a DIRECT synchronous INSERT. The async single-writer
+    // task is not yet spawned and the #[cfg(debug_assertions)] append-only
+    // update_hook is attached by Ssb::new AFTER this returns, so this insert is
+    // safe. Fail-open: an emit error must not block startup.
+    if let Some((rel_path, manifest_blake3)) = archived {
+        if let Err(e) = insert_session_archived_row(
+            conn,
+            project_id,
+            session_id,
+            version,
+            &rel_path,
+            &manifest_blake3,
+        ) {
+            tracing::warn!(
+                error = %e,
+                session_id,
+                "F-13: session_archived row insert failed (archive file kept on disk)"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Direct synchronous INSERT of one `session_archived` row on the writer
+/// connection during migration. Mirrors the column set of `execute_write`
+/// (project_id, session_id, agent_id, superstep, action_type, payload,
+/// created_at). The payload is rmp_serde-encoded exactly like the async path.
+fn insert_session_archived_row(
+    conn: &Connection,
+    project_id: &str,
+    session_id: &str,
+    stale_version: i64,
+    rel_path: &str,
+    manifest_blake3: &str,
+) -> Result<(), SsbError> {
+    let payload = SsbPayload::SessionArchived(SessionArchivedPayload {
+        session_id: session_id.to_owned(),
+        stale_version,
+        archive_path: rel_path.to_owned(),
+        manifest_blake3: manifest_blake3.to_owned(),
+        store_kind: "ssb".to_owned(),
+    });
+    let bytes = rmp_serde::to_vec_named(&payload)?;
+    let created_at = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX);
+    conn.execute(
+        "INSERT INTO ssb (project_id, session_id, agent_id, superstep, action_type, payload, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            project_id,
+            session_id,
+            "ssb-migration",
+            0_i64,
+            SsbActionType::SessionArchived.as_sql_str(),
+            bytes,
+            created_at,
+        ],
+    )?;
     Ok(())
 }
 
@@ -24486,6 +25194,833 @@ pub struct ContractCodingEventPayload {
 pub const ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE_ENV: &str =
     "ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE";
 
+// === F-1 (SCHEMA_VERSION 196) -- VibeGateBlocked substrate ===============
+
+/// F-1 (SCHEMA_VERSION 196) -- 4-arm kind discriminator carried by
+/// [`VibeGateBlockedPayload`]. Pattern-2 (49th application).
+///
+/// Wire labels are snake_case; `as_sql_str()` is the canonical helper for
+/// log-line + SSB dashboard labels and for the Pattern-2 `as_sql_str`
+/// delegation in `SsbActionType::VibeGateBlocked`.
+///
+/// Closed enum; adding a 5th arm requires a `SCHEMA_VERSION` bump.
+///
+/// DepHallucinated and Skill are RESERVED this session (parse/sql arms
+/// only; no producer fires them until the vibe-gate producer wiring lands
+/// in a follow-on plan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VibeGateBlockedKind {
+    /// A known-CWE code-level vulnerability was detected in a candidate
+    /// edit (static analysis or SAST-rule match). Producer: vibe gate
+    /// SAST arm (F-1 follow-on wiring).
+    CodeVuln,
+    /// A secret or credential pattern was detected in a candidate edit
+    /// (regex or entropy-based scanner). Producer: vibe gate secret-scan
+    /// arm (F-1 follow-on wiring).
+    Secret,
+    /// A dependency name that cannot be resolved in any known registry
+    /// was detected (anti-slopsquatting guard). RESERVED -- parse/sql
+    /// arm only; no producer this session.
+    DepHallucinated,
+    /// A third-party skill import failed the mcp-scan allowlist check.
+    /// RESERVED -- parse/sql arm only; no producer this session.
+    Skill,
+}
+
+impl VibeGateBlockedKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::CodeVuln       => "vibesec_code_vuln_blocked",
+            Self::Secret         => "vibesec_secret_blocked",
+            Self::DepHallucinated => "vibesec_dep_hallucinated_blocked",
+            Self::Skill          => "vibesec_skill_blocked",
+        }
+    }
+}
+
+/// F-1 (SCHEMA_VERSION 196) -- payload for
+/// [`SsbActionType::VibeGateBlocked`].
+///
+/// Wire-dark default; emission gated by `ELAI_VIBE_GATE_ENABLE` env var
+/// (see [`ELAI_VIBE_GATE_ENABLE_ENV`]).
+///
+/// Fields:
+///   * `kind`          -- 4-arm fire-point discriminator (see
+///     [`VibeGateBlockedKind`]).
+///   * `rule_id`       -- optional identifier of the specific rule or
+///     pattern that triggered the block (e.g. CWE ID string, secret-scan
+///     rule name, registry slug). `None` when the blocking signal has no
+///     named rule (e.g. entropy-only secret detection).
+///   * `cwe`           -- optional CWE identifier string (e.g. `"CWE-89"`).
+///     Populated only for `CodeVuln` arm; `None` for other arms.
+///   * `file_path`     -- project-relative path of the file where the
+///     violation was detected. Empty string when path is not applicable.
+///   * `source_blake3` -- blake3 hex-prefix (first 16 chars) of the
+///     candidate source snippet that triggered the block. Never the full
+///     source text (privacy + size discipline).
+///   * `citation`      -- optional URL or reference grounding the rule
+///     (e.g. OWASP link, CVE advisory URL). `None` for rules with no
+///     public citation.
+///   * `fsm_state`     -- optional snake-case FSM state label at emission
+///     time (e.g. `"executing"`, `"testing_first"`). `None` when the gate
+///     fires outside the FSM cycle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VibeGateBlockedPayload {
+    /// Fire-point discriminator. See [`VibeGateBlockedKind`].
+    pub kind: VibeGateBlockedKind,
+    /// Optional rule or pattern identifier.
+    pub rule_id: Option<String>,
+    /// Optional CWE identifier (CodeVuln arm only).
+    pub cwe: Option<String>,
+    /// Project-relative path of the file with the violation.
+    pub file_path: String,
+    /// blake3 hex-prefix of the triggering candidate snippet.
+    pub source_blake3: String,
+    /// Optional citation URL or reference.
+    pub citation: Option<String>,
+    /// Optional FSM state label at emission time.
+    pub fsm_state: Option<String>,
+}
+
+/// F-1 (SCHEMA_VERSION 196) -- env var name for [`VibeGateBlockedPayload`]
+/// emission. Wire-dark default: emission silently skipped until the
+/// operator sets this to a truthy value (`"1"` / `"true"` / `"yes"` /
+/// `"on"`). Mirrors the precedent set by [`ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE_ENV`]
+/// and other Pattern-2 substrates.
+pub const ELAI_VIBE_GATE_ENABLE_ENV: &str = "ELAI_VIBE_GATE_ENABLE";
+
+// === F-2a (SCHEMA_VERSION 196) -- SecurityRuleBlocked substrate ==========
+
+/// F-2a (SCHEMA_VERSION 196) -- payload for
+/// [`SsbActionType::SecurityRuleBlocked`].
+///
+/// Wire-dark default; emission gated by `ELAI_SECURITY_RULE_BLOCKED_ENABLE`
+/// env var (see [`ELAI_SECURITY_RULE_BLOCKED_ENABLE_ENV`]).
+///
+/// Fields:
+///   * `rule_id`          -- identifier of the security rule that blocked
+///     the candidate (e.g. `"no_raw_exec"`, `"require_input_sanitize"`).
+///   * `cwe`              -- CWE identifier string associated with the rule
+///     (e.g. `"CWE-78"`). Populated by the rule author at rule definition
+///     time.
+///   * `file_path`        -- project-relative path of the file where the
+///     rule violation was detected.
+///   * `language`         -- snake-case language label (e.g. `"rust"`,
+///     `"python"`, `"typescript"`). Lowercase; matches the language-tag
+///     vocabulary used by the DKG engine.
+///   * `candidate_blake3` -- blake3 hex-prefix (first 16 chars) of the
+///     candidate edit blob. Never the full source text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SecurityRuleBlockedPayload {
+    /// Identifier of the security rule that blocked.
+    pub rule_id: String,
+    /// CWE identifier associated with the rule.
+    pub cwe: String,
+    /// Project-relative path where the rule violation was detected.
+    pub file_path: String,
+    /// Snake-case language label (e.g. `"rust"`, `"python"`).
+    pub language: String,
+    /// blake3 hex-prefix of the candidate edit blob.
+    pub candidate_blake3: String,
+}
+
+/// F-2a (SCHEMA_VERSION 196) -- env var name for
+/// [`SecurityRuleBlockedPayload`] emission. Wire-dark default.
+pub const ELAI_SECURITY_RULE_BLOCKED_ENABLE_ENV: &str =
+    "ELAI_SECURITY_RULE_BLOCKED_ENABLE";
+
+// === F-4 / Slice B-1 (SCHEMA_VERSION 197) -- TestIntegrityEvent substrate ==
+
+/// F-4 / Slice B-1 (SCHEMA_VERSION 197) -- 2-arm kind discriminator carried
+/// by [`TestIntegrityEventPayload`]. Pattern-2 (50th application).
+///
+/// Wire labels are snake_case; `as_sql_str()` is the canonical helper for
+/// log-line + SSB dashboard labels and for the Pattern-2 `as_sql_str`
+/// delegation in `SsbActionType::TestIntegrityEvent`.
+///
+/// Closed enum; adding a 3rd arm requires a `SCHEMA_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestIntegrityEventKind {
+    /// A test run completed and its stdout hash was recorded for future
+    /// comparison. The test PASSED (`passed=true` in the payload).
+    /// Emitted by the test-integrity verifier after a confirmed passing run.
+    Verified,
+    /// A test run whose recorded stdout hash does NOT match the previously
+    /// stored baseline -- indicating possible output fabrication or
+    /// non-determinism. The pipeline blocks the baby-step from advancing.
+    FabricationBlocked,
+}
+
+impl TestIntegrityEventKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::Verified           => "test_integrity_verified",
+            Self::FabricationBlocked => "anti_fabrication_block",
+        }
+    }
+}
+
+/// F-4 / Slice B-1 (SCHEMA_VERSION 197) -- payload for
+/// [`SsbActionType::TestIntegrityEvent`].
+///
+/// Fields:
+///   * `test_name`   -- name or identifier of the test that was run
+///     (e.g. crate::module::test_fn_name or the test file path).
+///   * `passed`      -- `true` if the underlying test passed (exit 0 /
+///     assertion success); `false` on test failure. Distinct from the
+///     `kind` discriminator -- a `Verified` kind implies `passed=true`;
+///     a `FabricationBlocked` kind may have `passed` set to either value
+///     depending on whether the output-hash mismatch was detected on a
+///     passing or failing run.
+///   * `stdout_hash` -- blake3 hex-prefix (first 16 chars) of the
+///     captured stdout from the run. `None` when stdout was not captured
+///     (e.g. non-output-capture callers, legacy test harness).
+///   * `kind`        -- 2-arm fire-point discriminator. See
+///     [`TestIntegrityEventKind`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TestIntegrityEventPayload {
+    /// Name or identifier of the test run.
+    pub test_name: String,
+    /// `true` if the test passed; `false` on failure.
+    pub passed: bool,
+    /// blake3 hex-prefix of the captured stdout. `None` when not captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_hash: Option<String>,
+    /// 2-arm fire-point discriminator. See [`TestIntegrityEventKind`].
+    pub kind: TestIntegrityEventKind,
+}
+
+// === F-3p1 / Slice C1 (SCHEMA_VERSION 198) -- ToolFilterEvent substrate =====
+
+/// F-3p1 / Slice C1 (SCHEMA_VERSION 198) -- 2-arm kind discriminator carried
+/// by [`ToolFilterPayload`]. Pattern-2 (51st application).
+///
+/// Wire labels are snake_case; `as_sql_str()` is the canonical helper for
+/// log-line + SSB dashboard labels and for the Pattern-2 `as_sql_str`
+/// delegation in `SsbActionType::ToolFilterEvent`.
+///
+/// Closed enum; adding a 3rd arm requires a `SCHEMA_VERSION` bump.
+///
+/// `CapabilityFlowBlocked` is RESERVED (Tier-3) and is NOT an arm of this
+/// enum -- it has no in-plan producer (W-8) and must not be added until a
+/// plan ships a caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolFilterEventKind {
+    /// A [`CommittedToolSet`](crate::capability_flow::CommittedToolSet) was
+    /// successfully locked for a task. Emitted by
+    /// `commit_minimal_set` callers at task-start time.
+    Committed,
+    /// A variable derived from an untrusted span (non-Clean
+    /// [`ClassifierVerdict`](elai_safety::prompt_armor::ClassifierVerdict))
+    /// was quarantined before reaching a tool call. Emitted by
+    /// `taint_from_verdict` callers when they detect a taint and block
+    /// the downstream action.
+    UntrustedQuarantined,
+}
+
+impl ToolFilterEventKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::Committed            => "tool_filter_committed",
+            Self::UntrustedQuarantined => "untrusted_var_quarantined",
+        }
+    }
+}
+
+/// F-3p1 / Slice C1 (SCHEMA_VERSION 198) -- payload for
+/// [`SsbActionType::ToolFilterEvent`].
+///
+/// Fields:
+///   * `commit_hash`         -- blake3 64-hex digest from the
+///     [`CommittedToolSet`](crate::capability_flow::CommittedToolSet).
+///     Empty string for `UntrustedQuarantined` rows where no commitment
+///     was active.
+///   * `allowed_categories`  -- sorted snake_case labels of the committed
+///     categories (e.g. `["read", "web"]`). Empty vec for
+///     `UntrustedQuarantined` rows.
+///   * `denied_tool`         -- the tool name that was denied, present for
+///     `UntrustedQuarantined` rows; `None` for `Committed` rows.
+///   * `taint_source`        -- verdict label (`"suspect"` / `"malicious"`)
+///     that produced the taint, present for `UntrustedQuarantined` rows;
+///     `None` for `Committed` rows.
+///   * `task_id`             -- opaque task identifier supplied to
+///     `commit_minimal_set`.
+///   * `kind`                -- 2-arm fire-point discriminator. See
+///     [`ToolFilterEventKind`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolFilterPayload {
+    /// blake3 64-hex commit hash from [`CommittedToolSet`](crate::capability_flow::CommittedToolSet).
+    pub commit_hash: String,
+    /// Sorted snake_case labels of committed categories.
+    pub allowed_categories: Vec<String>,
+    /// Tool name that was denied (`UntrustedQuarantined` arm only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denied_tool: Option<String>,
+    /// Taint source verdict label (`UntrustedQuarantined` arm only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taint_source: Option<String>,
+    /// Opaque task identifier.
+    pub task_id: String,
+    /// 2-arm fire-point discriminator. See [`ToolFilterEventKind`].
+    pub kind: ToolFilterEventKind,
+}
+
+// === F-9 / Slice D1 (SCHEMA_VERSION 199) -- WriteTimeSlopsquatBlocked substrate
+
+/// F-9 / Slice D1 (SCHEMA_VERSION 199) -- 3-arm verdict kind for
+/// [`WriteTimeSlopsquatBlockedPayload`].
+///
+/// Stored as a String in the payload (`verdict_kind` field) rather than
+/// as a Pattern-2 enum variant so the SSB table CHECK constraint stays flat
+/// (`write_time_slopsquat_blocked` single sql_str).
+///
+/// `RegistryUnreachable` is RESERVED; the gate is fail-open on unreachable
+/// and MUST NOT emit a `WriteTimeSlopsquatBlocked` row for that case (W-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteTimeSlopVerdictKind {
+    /// Package was not found in the registry (slopsquat / hallucination
+    /// candidate). The only arm that currently fires in production.
+    NotFound,
+    /// Package exists but its latest publish is older than the per-ecosystem
+    /// staleness threshold (stale/abandoned fork). Produced by the
+    /// SubprocessRegistryChecker stale arm (BLOCK-1 reconcile, F-Unit-D).
+    TooNew,
+    /// Registry probe was unreachable. The gate stays fail-open on unreachable
+    /// (verdict Warn/Allow, never Block); revised W-10 emits this arm as an
+    /// ADVISORY row so the fail-open leaves an observable trace ("no silent
+    /// fail-open without an advisory SSB row").
+    RegistryUnreachable,
+}
+
+impl WriteTimeSlopVerdictKind {
+    /// Snake-case label stored in the `verdict_kind` String field.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotFound            => "not_found",
+            Self::TooNew              => "too_new",
+            Self::RegistryUnreachable => "registry_unreachable",
+        }
+    }
+}
+
+/// F-9 / Slice D1 (SCHEMA_VERSION 199) -- payload for
+/// [`SsbActionType::WriteTimeSlopsquatBlocked`].
+///
+/// Emitted by `crate::vibesec::dep_writetime_gate::DepWriteTimeGate::analyze`
+/// when a dependency resolves to `NotFound` or `TooNew` (blocking), or as an
+/// ADVISORY row on `RegistryUnreachable` (fail-open, revised W-10).
+///
+/// Fields:
+///   * `dep_name_hash`      -- 64-bit big-endian blake3 prefix of the
+///     dependency name (never the raw name for privacy).
+///   * `ecosystem`          -- `"cargo"` / `"pypi"` / `"npm"`.
+///   * `verdict_kind`       -- snake_case [`WriteTimeSlopVerdictKind`] label
+///     (`"not_found"` / `"too_new"` block the write; `"registry_unreachable"`
+///     is emitted as an ADVISORY row on the fail-open path, revised W-10).
+///   * `registry_age_days`  -- package age in days when the verdict is
+///     `TooNew`; `None` for `NotFound`.
+///   * `ts_ms`              -- wall-clock milliseconds since UNIX_EPOCH.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteTimeSlopsquatBlockedPayload {
+    /// blake3 64-bit prefix of the dependency name.
+    pub dep_name_hash: u64,
+    /// Package ecosystem (`"cargo"` / `"pypi"` / `"npm"`).
+    pub ecosystem: String,
+    /// Verdict kind label.  See [`WriteTimeSlopVerdictKind`].
+    pub verdict_kind: String,
+    /// Package age in days (`TooNew` arm only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_age_days: Option<u32>,
+    /// Wall-clock timestamp (ms since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+// === F-10 / Slice A1 (SCHEMA_VERSION 200) -- SecurityClassRegression substrate
+
+/// F-10 / Slice A1 (SCHEMA_VERSION 200) -- which production iteration loop
+/// raised a security-class regression. This is a PAYLOAD field on
+/// [`SecurityClassRegressionBlockedPayload`], NOT a discriminator on the
+/// [`SsbActionType`] enum (the action type stays a flat beacon). The three
+/// arms map one-to-one to the three production legs that call the guard:
+///   * `Refine`      -- the REFINE call-site (a refine iteration would
+///     introduce a new CWE class versus the prior candidate).
+///   * `AutoAdvance` -- the AUTO-ADVANCE evidence-check (advancing to the
+///     next step would carry a regressed security class).
+///   * `SelfMod`     -- the SELF-MOD precondition (a self-modification would
+///     introduce a CWE class absent from the pre-mod baseline).
+///
+/// Wire labels are snake_case (`refine` / `auto_advance` / `self_mod`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopKind {
+    /// REFINE call-site leg.
+    Refine,
+    /// AUTO-ADVANCE evidence-check leg.
+    AutoAdvance,
+    /// SELF-MOD precondition leg.
+    SelfMod,
+}
+
+/// F-10 / Slice A1 (SCHEMA_VERSION 200) -- payload for
+/// [`SsbActionType::SecurityClassRegressionBlocked`].
+///
+/// Emitted by the security-monotonicity iteration guard when a candidate
+/// iteration would introduce one or more CWE classes that were NOT present
+/// in the prior iteration's classification (a non-monotone security
+/// regression). Default-ON; emission is suppressed only when
+/// `ELAI_SECURITY_MONOTONICITY_DISABLE` is set (kill-switch, never a
+/// default-off ENABLE flag).
+///
+/// Fields:
+///   * `delta_blake3`       -- blake3 hex-prefix (16 chars) of the candidate
+///     edit blob whose classification regressed. Never the full source text.
+///   * `introduced_classes` -- snake/CWE-id labels of the security classes
+///     newly introduced by this iteration (the regression set; non-empty
+///     when a row is emitted).
+///   * `prior_classes`      -- the security-class labels present in the prior
+///     iteration (the monotonic baseline being compared against).
+///   * `loop_kind`          -- which production leg raised the regression.
+///     See [`LoopKind`].
+///   * `loop_id`            -- stable identifier of the iteration loop
+///     instance (e.g. refine-loop / auto-advance step id) for correlation.
+///   * `lang`               -- snake-case language label (e.g. `"rust"`,
+///     `"python"`, `"typescript"`). Lowercase; matches the language-tag
+///     vocabulary used by the F-1 vibegate scanner.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SecurityClassRegressionBlockedPayload {
+    /// blake3 hex-prefix of the regressing candidate edit blob.
+    pub delta_blake3: String,
+    /// Security-class labels newly introduced by this iteration.
+    pub introduced_classes: Vec<String>,
+    /// Security-class labels present in the prior iteration.
+    pub prior_classes: Vec<String>,
+    /// Which production leg raised the regression.
+    pub loop_kind: LoopKind,
+    /// Stable identifier of the iteration loop instance.
+    pub loop_id: String,
+    /// Snake-case language label (e.g. `"rust"`, `"python"`).
+    pub lang: String,
+}
+
+// === F-2b / Slice A1 (SCHEMA_VERSION 201) -- InsecureRateMeasured substrate
+
+/// F-2b / Slice A1 (SCHEMA_VERSION 201) -- payload for
+/// [`SsbActionType::InsecureRateMeasured`].
+///
+/// Emitted ONCE per static-gate insecure-rate benchmark run. The benchmark
+/// runs the REAL ELAI static write-gate (`evaluate_vibegate`) over a
+/// SeCodePLT-structured CWE corpus and records:
+///   * `insecure_rate_before` -- the corpus ground-truth insecure-rate across
+///     ALL candidate completions (the baseline insecure fraction).
+///   * `insecure_rate_after`  -- the insecure-rate of the gate-APPROVED subset
+///     (vulnerable completions the static gate did NOT Block; i.e. the static
+///     false-negative residual).
+///   * `gate_recall`          -- (before - after) / before; the fraction of
+///     vulnerable completions the static gate caught.
+///
+/// This is an HONEST static-gate insecure-rate. It is DISTINCT from the
+/// SeCodePLT dynamic secure-coding rate (sandbox-executed); the dynamic 3-way
+/// score, functional pass@1, and the live-model number are a separate,
+/// RunPod-gated measurement and are NOT carried here.
+///
+/// Fields:
+///   * `suite`         -- benchmark suite label (e.g. the corpus / harness id).
+///   * `model_id`      -- model identifier under test (the static gate is
+///     model-independent, so this records the candidate-generation source for
+///     provenance, not a gate input).
+///   * `n_samples`     -- number of candidate completions evaluated.
+///   * `seed`          -- deterministic RNG seed used to assemble the run.
+///   * `corpus_blake3` -- blake3 hex-prefix of the corpus blob (provenance;
+///     never the full corpus text).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InsecureRateMeasuredPayload {
+    /// Benchmark suite / harness label.
+    pub suite: String,
+    /// Model identifier of the candidate-generation source (provenance).
+    pub model_id: String,
+    /// Number of candidate completions evaluated.
+    pub n_samples: u32,
+    /// Corpus ground-truth insecure-rate across all candidates (before).
+    pub insecure_rate_before: f64,
+    /// Insecure-rate of the gate-approved subset (after = FN residual).
+    pub insecure_rate_after: f64,
+    /// Derived gate recall: (before - after) / before.
+    pub gate_recall: f64,
+    /// Deterministic RNG seed used to assemble the run.
+    pub seed: u64,
+    /// blake3 hex-prefix of the corpus blob (provenance).
+    pub corpus_blake3: String,
+}
+
+// === F-6 / Slice A1 (SCHEMA_VERSION 202) -- SkillLibraryEvent substrate ======
+
+/// F-6 / Slice A1 (SCHEMA_VERSION 202) -- 3-arm kind discriminator carried by
+/// [`SkillLibraryEventPayload`]. Pattern-2 (single variant on
+/// [`SsbActionType`]; this 3-arm Kind selects the wire tag).
+///
+/// Wire labels are snake_case; `as_sql_str()` is the canonical helper for
+/// log-line + SSB dashboard labels and for the Pattern-2 `as_sql_str`
+/// delegation in `SsbActionType::SkillLibraryEvent`.
+///
+/// Closed enum; adding a 4th arm requires a `SCHEMA_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillLibraryEventKind {
+    /// A new skill was acquired into the learned-skill library (born at the
+    /// S1 floor after a critic-gated success in C6b).
+    Acquired,
+    /// A skill climbed one trust rung (S1->S2, S2->S3, or the human-granted
+    /// S3->S4 apex jump).
+    TrustPromoted,
+    /// A skill was knocked down one rung by the C6c staleness sweep because
+    /// its staleness score crossed the demotion threshold.
+    DemotedStale,
+}
+
+impl SkillLibraryEventKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::Acquired      => "skill_acquired",
+            Self::TrustPromoted => "skill_trust_promoted",
+            Self::DemotedStale  => "skill_demoted_stale",
+        }
+    }
+}
+
+/// F-6 / Slice A1 (SCHEMA_VERSION 202) -- payload for
+/// [`SsbActionType::SkillLibraryEvent`].
+///
+/// Fields:
+///   * `skill_id`     -- stable id of the learned skill.
+///   * `description`  -- human-readable skill description.
+///   * `tier`         -- snake-case [`crate::skill_trust::SkillTrustTier`]
+///     label of the skill AFTER the event (e.g. `"s1"` on acquire, the new
+///     rung on promote/demote).
+///   * `prior_tier`   -- snake-case tier label BEFORE the event; `None` on
+///     `Acquired` (no prior rung).
+///   * `reason`       -- short human-readable cause (e.g. the gate that
+///     cleared, or the staleness score that fired the demotion).
+///   * `invocations`  -- cumulative successful invocations at event time.
+///   * `failure_rate` -- failure rate (failures / total) at event time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillLibraryEventPayload {
+    /// Stable id of the learned skill.
+    pub skill_id: String,
+    /// Human-readable skill description.
+    pub description: String,
+    /// Snake-case skill tier AFTER the event.
+    pub tier: String,
+    /// Snake-case skill tier BEFORE the event; `None` on `Acquired`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_tier: Option<String>,
+    /// Short human-readable cause for the event.
+    pub reason: String,
+    /// Cumulative successful invocations at event time.
+    pub invocations: u32,
+    /// Failure rate (failures / total) at event time.
+    pub failure_rate: f64,
+    /// 3-arm fire-point discriminator. See [`SkillLibraryEventKind`].
+    pub kind: SkillLibraryEventKind,
+}
+
+// === F-5 / Slice A1 (SCHEMA_VERSION 203) -- StalenessQuarantineBroadcast =====
+
+/// F-5 / Slice A1 (SCHEMA_VERSION 203) -- payload for
+/// [`SsbActionType::StalenessQuarantineBroadcast`].
+///
+/// Emitted ONCE per quarantined fact at the orchestrator/CLI memory-decay-tick
+/// boundary. A decay tick that drives a fact's staleness ratio across the decay
+/// threshold quarantines the fact; the broadcast cascades the quarantine to the
+/// downstream subsystems (DKG `concept_stale=2` write-through + a non-destructive
+/// `staleness_quarantined` marker edge in `dkg_edges`, and Cosmos artifact
+/// flagging) via a bounded `QuarantineBroadcastQueue` drained by the CLI. The
+/// emit lives at the orchestrator/CLI boundary (the decay-scheduler
+/// `DecayTickObserver` hook OR the inline `live_cli.rs` decay tick), NOT inside
+/// `crates/memory` `decay.rs`: `crates/memory` has no dependency on
+/// `crates/knowledge`, so the cascade is applied by the CLI (which depends on
+/// both).
+///
+/// Fields:
+///   * `fact_id`                  -- stable id of the quarantined fact.
+///   * `staleness_ratio`          -- decay staleness ratio at quarantine time
+///     (0.0 fresh .. 1.0+ fully stale); the value that crossed the threshold.
+///   * `dependents_demoted`       -- count of DKG concepts demoted to
+///     `concept_stale=2` by this cascade.
+///   * `cosmos_artifacts_flagged` -- count of Cosmos artifacts flagged stale by
+///     this cascade.
+///   * `tick_ms`                  -- wall-clock ms of the decay tick that fired
+///     the quarantine.
+///   * `broadcast_id`             -- unique id for this broadcast (blake3
+///     hex-prefix of `fact_id` + `tick_ms`); correlates the SSB row with the
+///     queue record and the cascade application.
+///   * `dropped_count`           -- number of queue records DROPPED-OLDEST due
+///     to `QUARANTINE_QUEUE_CAPACITY` overflow at emit time (W-2 no silent
+///     drop; 0 in the steady state).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StalenessQuarantineBroadcastPayload {
+    /// Stable id of the quarantined fact.
+    pub fact_id: String,
+    /// Decay staleness ratio at quarantine time (the value that crossed the
+    /// threshold).
+    pub staleness_ratio: f64,
+    /// Count of DKG concepts demoted to `concept_stale=2` by this cascade.
+    pub dependents_demoted: u32,
+    /// Count of Cosmos artifacts flagged stale by this cascade.
+    pub cosmos_artifacts_flagged: u32,
+    /// Wall-clock ms of the decay tick that fired the quarantine.
+    pub tick_ms: u64,
+    /// Unique broadcast id (blake3 hex-prefix of `fact_id` + `tick_ms`).
+    pub broadcast_id: String,
+    /// Queue records DROPPED-OLDEST due to capacity overflow at emit time.
+    pub dropped_count: u32,
+}
+
+// === F-8 / Slice A1 (SCHEMA_VERSION 204) -- SymbolicConflictDetected =========
+
+/// F-8 / Slice A1 (SCHEMA_VERSION 204) -- payload for
+/// [`SsbActionType::SymbolicConflictDetected`].
+///
+/// Emitted ONCE per flagged self-mod config variant at the `elai self-mod
+/// apply` CLI entrypoint (a W-3 production entrypoint) when the LLM-free SCF
+/// symbolic detector flags a contradiction between a proposed `ConfigVariant`
+/// and an active locked-key invariant (`self_mod_safety::LOCKED_KEYS`) BEFORE
+/// archive admission. POLICY is WARN-then-escalate: the variant is held
+/// PENDING (a non-blocking held outcome), NEVER hard-fail-closed BLOCK. The
+/// 27.9% SCF precision figure is sim-only / UNVERIFIED and is explicitly NOT a
+/// target -- it is not encoded anywhere in this payload or its thresholds.
+///
+/// The detector ALSO composes at the F-10 darwinian-evolve seam
+/// (`external_benches.rs`) so the same beacon fires inside the
+/// `#[cfg(feature = "darwinian-evolve")]` promotion loop when that ships.
+///
+/// Fields (all `String` -- a flat symbolic record, no numeric thresholds on the
+/// wire):
+///   * `fingerprint`  -- blake3 hex-prefix of the conflict tuple
+///     (`kind` + `key` + `detail`); stable id correlating the SSB row
+///     with the held-pending record. (F-7 doc fix: the impl in
+///     `symbolic_conflict.rs::conflict_fingerprint` hashes `kind + key +
+///     detail`, NOT `candidate_id`; the doc previously misstated the third
+///     component. DOC-ONLY -- the hash itself is unchanged.)
+///   * `kind`         -- conflict class (e.g. the `TripwireKind` name, or a
+///     locked-key-contradiction label); free-form symbolic tag.
+///   * `key`          -- the locked invariant key that the variant contradicts
+///     (one of `self_mod_safety::LOCKED_KEYS`, verified via `is_locked`).
+///   * `detail`       -- human-readable contradiction detail (what the variant
+///     proposed vs the locked invariant); for the WARN message + dashboard.
+///   * `candidate_id` -- stable id of the proposed `ConfigVariant` that was
+///     flagged and held pending.
+///   * `fsm_substate` -- the FSM agent sub-state at flag time (provenance of
+///     the admission attempt).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SymbolicConflictPayload {
+    /// blake3 hex-prefix of the conflict tuple (`kind` + `key` + `detail`).
+    pub fingerprint: String,
+    /// Conflict class / symbolic tag (e.g. a `TripwireKind` name or a
+    /// locked-key-contradiction label).
+    pub kind: String,
+    /// The locked invariant key the variant contradicts (one of
+    /// `self_mod_safety::LOCKED_KEYS`).
+    pub key: String,
+    /// Human-readable contradiction detail (proposed vs locked invariant).
+    pub detail: String,
+    /// Stable id of the flagged-and-held-pending `ConfigVariant`.
+    pub candidate_id: String,
+    /// FSM agent sub-state at flag time (provenance of the admission attempt).
+    pub fsm_substate: String,
+}
+
+// === F-7 / Slice A1 (SCHEMA_VERSION 205) -- TemplateUtilityRanked ============
+
+/// F-7 / Slice A1 (SCHEMA_VERSION 205) -- payload for
+/// [`SsbActionType::TemplateUtilityRanked`].
+///
+/// Emitted ONCE per crystallized-pipeline template whose Laplace-smoothed
+/// outcome utility is computed at the `try_execute` gate-threshold seam (the
+/// W-3 production entrypoint) to decide whether the cached template is reused.
+/// The cache holds exactly ONE template per `(concept_class, plan_skeleton_hash)`
+/// key, so this is a GATE-THRESHOLD swap (utility vs the raw
+/// `first_try_success_rate`), NOT a between-candidates sort.
+///
+/// `utility` is `laplace_utility(successes, total) = (successes + ALPHA) /
+/// (total + ALPHA + BETA)` with `ALPHA = BETA = 1.0` (ELAI-owned constants).
+/// Add-one (Laplace) smoothing means a 1/1 template scores `2/3 ~= 0.667`
+/// rather than `1.0`, and a 95/100 template scores `~0.941`, so a single lucky
+/// firing no longer over-trusts a low-sample template. `successes` and `total`
+/// are derived from the PERSISTED `CompiledPipeline.first_try_success_rate` +
+/// `use_count` read via the `CompiledPipelineStore` -- NOT from SSB
+/// compiled-pipeline events (those carry NO per-firing pass/fail signal).
+///
+/// `first_try_ratio` is the recorded raw baseline (the persisted
+/// `first_try_success_rate`) kept alongside the smoothed `utility` for
+/// before/after dashboard display (W-2 no-removal -- the baseline is preserved,
+/// not replaced).
+///
+/// `block_ratio` and `coverage` are DELIBERATELY ABSENT: there is no producer
+/// for them on this path, and zero-filling absent signals would be a CSQ
+/// footgun (a 0.0 would read as "fully blocked / zero coverage" when the truth
+/// is "unknown"). They are documented as FUTURE signals to add only once a real
+/// producer exists; this slice ships Laplace over success/total only.
+///
+/// The Springdrift +10.7% figure is UNGROUNDED and is explicitly NOT a target:
+/// it is not encoded anywhere in this payload or its thresholds. F-7 gates on
+/// wiring + smoothing-correctness, not a numeric uplift.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemplateUtilityRankedPayload {
+    /// Concept-class key the crystallized template is bucketed under (one half
+    /// of the cache key).
+    pub concept_class: String,
+    /// Stable hash of the plan skeleton (the other half of the cache key).
+    pub plan_skeleton_hash: u64,
+    /// Laplace-smoothed outcome utility:
+    /// `(successes + ALPHA) / (total + ALPHA + BETA)`, `ALPHA = BETA = 1.0`.
+    pub utility: f32,
+    /// Raw recorded baseline: the persisted
+    /// `CompiledPipeline.first_try_success_rate` (kept for before/after
+    /// dashboard display, W-2 no-removal).
+    pub first_try_ratio: f32,
+    /// Sample size (`total` firings) backing the utility, i.e. the persisted
+    /// `use_count`; low values are exactly where Laplace smoothing matters.
+    pub sample_n: u32,
+    /// Stable id of the crystallized pipeline template whose utility was ranked.
+    pub chosen_pipeline_id: String,
+}
+
+// === F-13 / Slice A1 (SCHEMA_VERSION 206) -- SessionArchived ================
+
+/// F-13 / Slice A1 (SCHEMA_VERSION 206) -- payload for
+/// [`SsbActionType::SessionArchived`].
+///
+/// Emitted ONCE per cold-archived store at the `run_migration` destructive-DROP
+/// site (the production SSB open path, `Ssb::new`) when a stale-version DB is
+/// opened with `ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE` set. BEFORE the DROP, the
+/// stale `ssb.db` (and, precautionarily, the `session_dag.db`) is copied to
+/// `workflow/sessions/{id}/archive/ssb-v{N}.sqlite`; the DROP then proceeds
+/// unconditionally (the archive is ADDITIVE, killer_risk #5). The row is
+/// emitted via a DIRECT synchronous INSERT on the writer connection AFTER the
+/// recreate, because the async single-writer task does not exist yet at
+/// migration time.
+///
+/// SINGLE FLAT beacon (no Pattern-2 Kind). `store_kind` is a PAYLOAD FIELD
+/// (`"ssb"` | `"session_dag"`), NOT a discriminator — one variant covers both
+/// store copies. The `manifest_blake3` integrity prefix is computed from the
+/// ARCHIVED bytes (blake3 ONLY, CLAUDE.md HARD RULE; mirrors checkpoint.rs
+/// content_hash) so the cold archive is integrity-checkable later.
+///
+/// This guard ships DEFAULT-OFF by design (forensic opt-in over data the
+/// migration comment marks "data loss is acceptable for old sessions"); the
+/// W-2 disposition + the wire-dark-allowlist row are recorded in
+/// workflow/reasoning/F-13-session-archive-decisions.md.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionArchivedPayload {
+    /// The session whose stale-version store was archived.
+    pub session_id: String,
+    /// The on-disk `user_version` the store carried BEFORE the bump (the
+    /// version embedded in the archive file name `*-v{stale_version}.sqlite`).
+    pub stale_version: i64,
+    /// Relative path of the archive file under the per-session workflow dir,
+    /// e.g. `workflow/sessions/{id}/archive/ssb-v{N}.sqlite`.
+    pub archive_path: String,
+    /// blake3 hex-prefix of the archived bytes (integrity check; blake3 ONLY).
+    pub manifest_blake3: String,
+    /// Which store was archived: `"ssb"` (the destructive journal) or
+    /// `"session_dag"` (the precautionary, non-destructive copy).
+    pub store_kind: String,
+}
+
+// === F-11 / Slice A1 (SCHEMA_VERSION 207) -- DarwinianAdmit ==================
+
+/// F-11 (SCHEMA_VERSION 207) -- 3-arm discriminator for
+/// [`DarwinianAdmitPayload`] (Pattern-2 single-variant).
+///
+/// Lifted into a payload-internal enum to preserve the single-variant pattern
+/// on [`SsbActionType`]. Mirrors the E-7 [`DarwinianPhase`] layout. Encoded via
+/// `serde rename_all = "snake_case"` so the wire tags are
+/// `admitted` / `rejected_by_guard` / `loop_closed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DarwinianAdmitKind {
+    /// Candidate passed all four guards and was inserted into the config
+    /// archive (`config_archive::insert_variant`). The FIRST production caller
+    /// of the DGM archive admit path.
+    Admitted,
+    /// A guard rejected the candidate before admit. `guard_rejected_by` on the
+    /// payload names the firing guard (`tripwire` / `trap` / `security` /
+    /// `two_gate`). The candidate was NOT inserted.
+    RejectedByGuard,
+    /// `config_archive::select_parent` ran AFTER `insert_variant` for this
+    /// generation -- the loop is closed (propose -> evaluate -> guard ->
+    /// insert -> select-next-parent). This is the loop-closure proof.
+    LoopClosed,
+}
+
+impl DarwinianAdmitKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Admitted => "admitted",
+            Self::RejectedByGuard => "rejected_by_guard",
+            Self::LoopClosed => "loop_closed",
+        }
+    }
+}
+
+/// F-11 (SCHEMA_VERSION 207) -- payload for
+/// [`SsbActionType::DarwinianAdmit`].
+///
+/// Emitted by the config-DGM admit-loop driver
+/// (`crates/cli/src/darwin_loop_cmd.rs` -> [`crate::darwin_admit_loop`]) once
+/// per candidate routed through the four-guard chain, plus one `LoopClosed`
+/// beacon per closed generation. Wire-dark default; emission gated by
+/// `ELAI_DARWINIAN_LOOP_ENABLE` env var AND `cfg(feature = "darwinian-evolve")`
+/// cargo feature.
+///
+/// `candidate_blake3` is a blake3 hex-prefix (16 chars) of the candidate
+/// `config_blob` -- blake3 ONLY (CLAUDE.md HARD RULE; never blake2/sha2). No
+/// hard-coded threshold numbers live in this payload; `alpha` is the real,
+/// candidate-derived evaluation score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DarwinianAdmitPayload {
+    /// Admit/reject/loop-closed discriminator. See [`DarwinianAdmitKind`].
+    pub kind: DarwinianAdmitKind,
+    /// Stable id of the candidate config variant the loop evaluated.
+    pub variant_id: String,
+    /// Parent variant id the candidate mutated from (`None` for a root seed on
+    /// an empty archive).
+    pub parent_id: Option<String>,
+    /// Real evaluation score in `[0.0, 1.0]` derived from the candidate (the
+    /// Two-Gate margin basis). NOT a synthetic/mock constant.
+    pub alpha: f64,
+    /// Name of the firing guard on `RejectedByGuard` (`tripwire` / `trap` /
+    /// `security` / `two_gate`); `None` on `Admitted` / `LoopClosed`.
+    pub guard_rejected_by: Option<String>,
+    /// blake3 hex-prefix (16 chars) of the candidate `config_blob` (blake3
+    /// ONLY).
+    pub candidate_blake3: String,
+    /// Deterministic seed the generation ran under (`ELAI_SEED` / `--seed`).
+    pub seed: u64,
+}
+
+/// F-10 / Slice A1 (SCHEMA_VERSION 200) -- kill-switch env var name for the
+/// security-monotonicity iteration guard. Default-ON: the guard runs unless
+/// this var is set to a truthy value. There is intentionally NO default-off
+/// ENABLE flag (W-2 -- security gates must not be wire-dark by default).
+pub const ELAI_SECURITY_MONOTONICITY_DISABLE_ENV: &str =
+    "ELAI_SECURITY_MONOTONICITY_DISABLE";
+
 /// Tranche K / B.2 Option-B -- non-web retry emit env gate. Wire-dark
 /// default: when set to truthy ("1"/"true"/"yes"/"on"), enables a
 /// SECOND `fix_and_rerun_until_green` call site in
@@ -24592,7 +26127,7 @@ mod tests {
                 tool_id: "t".into(), success: true, output_summary: "ok".into(),
             }),
             SsbActionType::TestOutcome => SsbPayload::TestOutcome(TestOutcomePayload {
-                test_name: "t".into(), passed: true, duration_ms: 1,
+                test_name: "t".into(), passed: true, duration_ms: 1, stdout_hash: None,
             }),
             SsbActionType::Finding => SsbPayload::Finding(FindingPayload {
                 severity: "INFO".into(), category: "c".into(), message: "m".into(),
@@ -28025,6 +29560,231 @@ mod tests {
                     ts_ms: 1_700_000_195_001,
                 },
             ),
+            // F-1 (SCHEMA_VERSION 196): VibeGateBlocked Pattern-2 single
+            // variant. Explicit arm so write-time validate_payload_matches_action_type
+            // resolves the payload type correctly. Uses CodeVuln arm; the
+            // source_blake3 field is the blake3 hex-prefix of the literal
+            // "test_payload_vibe_gate" label.
+            SsbActionType::VibeGateBlocked(_) => SsbPayload::VibeGateBlocked(
+                VibeGateBlockedPayload {
+                    kind: VibeGateBlockedKind::CodeVuln,
+                    rule_id: Some("test-rule-id".into()),
+                    cwe: Some("CWE-89".into()),
+                    file_path: "src/main.rs".into(),
+                    source_blake3: {
+                        let h = blake3::hash(b"test_payload_vibe_gate");
+                        format!("{:.16}", h.to_hex())
+                    },
+                    citation: Some("https://cwe.mitre.org/data/definitions/89.html".into()),
+                    fsm_state: Some("executing".into()),
+                },
+            ),
+            // F-2a (SCHEMA_VERSION 196): SecurityRuleBlocked flat beacon.
+            // Explicit arm so write-time validation resolves the payload type.
+            // The candidate_blake3 field is the blake3 hex-prefix of the
+            // literal "test_payload_security_rule" label.
+            SsbActionType::SecurityRuleBlocked => SsbPayload::SecurityRuleBlocked(
+                SecurityRuleBlockedPayload {
+                    rule_id: "no_raw_exec".into(),
+                    cwe: "CWE-78".into(),
+                    file_path: "src/runner.rs".into(),
+                    language: "rust".into(),
+                    candidate_blake3: {
+                        let h = blake3::hash(b"test_payload_security_rule");
+                        format!("{:.16}", h.to_hex())
+                    },
+                },
+            ),
+            // F-4 / Slice B-1 (SCHEMA_VERSION 197): TestIntegrityEvent Pattern-2
+            // single variant. Explicit arm so write-time validation resolves the
+            // payload type correctly. Uses Verified arm; stdout_hash is the
+            // blake3 hex-prefix of the literal "test_payload_test_integrity".
+            SsbActionType::TestIntegrityEvent(_) => SsbPayload::TestIntegrityEvent(
+                TestIntegrityEventPayload {
+                    test_name: "crate::ssb::tests::test_integrity_sample".into(),
+                    passed: true,
+                    stdout_hash: Some({
+                        let h = blake3::hash(b"test_payload_test_integrity");
+                        format!("{:.16}", h.to_hex())
+                    }),
+                    kind: TestIntegrityEventKind::Verified,
+                },
+            ),
+            // F-3p1 / Slice C1 (SCHEMA_VERSION 198): ToolFilterEvent Pattern-2
+            // single variant. Explicit arm so write-time validation resolves the
+            // payload type correctly. Uses Committed arm; commit_hash is the
+            // blake3 64-hex of the literal "test_payload_tool_filter_committed".
+            SsbActionType::ToolFilterEvent(_) => SsbPayload::ToolFilterEvent(
+                ToolFilterPayload {
+                    commit_hash: blake3::hash(b"test_payload_tool_filter_committed")
+                        .to_hex()
+                        .to_string(),
+                    allowed_categories: vec!["read".into(), "web".into()],
+                    denied_tool: None,
+                    taint_source: None,
+                    task_id: "task-test-0".into(),
+                    kind: ToolFilterEventKind::Committed,
+                },
+            ),
+            // F-9 / Slice D1 (SCHEMA_VERSION 199): WriteTimeSlopsquatBlocked flat beacon.
+            SsbActionType::WriteTimeSlopsquatBlocked => {
+                SsbPayload::WriteTimeSlopsquatBlocked(WriteTimeSlopsquatBlockedPayload {
+                    dep_name_hash: {
+                        let h = blake3::hash(b"test_payload_write_time_slopsquat_blocked");
+                        let bytes = h.as_bytes();
+                        u64::from_be_bytes([
+                            bytes[0], bytes[1], bytes[2], bytes[3],
+                            bytes[4], bytes[5], bytes[6], bytes[7],
+                        ])
+                    },
+                    ecosystem: "cargo".into(),
+                    verdict_kind: WriteTimeSlopVerdictKind::NotFound.as_str().to_owned(),
+                    registry_age_days: None,
+                    ts_ms: 1_748_900_000_000,
+                })
+            }
+            // F-10 / Slice A1 (SCHEMA_VERSION 200): SecurityClassRegressionBlocked flat
+            // beacon. Explicit arm so write-time validation resolves the payload type.
+            // delta_blake3 is the blake3 hex-prefix of the literal
+            // "test_payload_security_class_regression" label.
+            SsbActionType::SecurityClassRegressionBlocked => {
+                SsbPayload::SecurityClassRegressionBlocked(
+                    SecurityClassRegressionBlockedPayload {
+                        delta_blake3: {
+                            let h = blake3::hash(b"test_payload_security_class_regression");
+                            format!("{:.16}", h.to_hex())
+                        },
+                        introduced_classes: vec!["CWE-78".into()],
+                        prior_classes: vec!["CWE-89".into()],
+                        loop_kind: LoopKind::Refine,
+                        loop_id: "refine-loop-test-0".into(),
+                        lang: "rust".into(),
+                    },
+                )
+            }
+            // F-2b / Slice A1 (SCHEMA_VERSION 201): InsecureRateMeasured flat beacon.
+            // Explicit arm so write-time validation resolves the payload type.
+            // corpus_blake3 is the blake3 hex-prefix of a fixed test label; the
+            // before/after/recall numbers here are arbitrary fixtures (the real
+            // keystone numbers are COMPUTED by the bench, never hard-coded).
+            SsbActionType::InsecureRateMeasured => {
+                SsbPayload::InsecureRateMeasured(InsecureRateMeasuredPayload {
+                    suite: "secodeplt_structured_test".into(),
+                    model_id: "test-model-0".into(),
+                    n_samples: 4,
+                    insecure_rate_before: 0.5,
+                    insecure_rate_after: 0.25,
+                    gate_recall: 0.5,
+                    seed: 7,
+                    corpus_blake3: {
+                        let h = blake3::hash(b"test_payload_insecure_rate_measured");
+                        format!("{:.16}", h.to_hex())
+                    },
+                })
+            }
+            // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2
+            // single variant. Explicit arm so write-time validation resolves the
+            // payload type correctly. Uses the Acquired arm (prior_tier None).
+            SsbActionType::SkillLibraryEvent(_) => SsbPayload::SkillLibraryEvent(
+                SkillLibraryEventPayload {
+                    skill_id: "skill-test-0".into(),
+                    description: "test learned skill".into(),
+                    tier: "s1".into(),
+                    prior_tier: None,
+                    reason: "critic-gated acquisition".into(),
+                    invocations: 0,
+                    failure_rate: 0.0,
+                    kind: SkillLibraryEventKind::Acquired,
+                },
+            ),
+            // F-5 / Slice A1 (SCHEMA_VERSION 203): StalenessQuarantineBroadcast
+            // flat beacon. Explicit arm so write-time validation resolves the
+            // payload type correctly. broadcast_id is a blake3 hex-prefix of a
+            // deterministic test fixture (no hard-coded cascade counts).
+            SsbActionType::StalenessQuarantineBroadcast => {
+                SsbPayload::StalenessQuarantineBroadcast(StalenessQuarantineBroadcastPayload {
+                    fact_id: "fact-test-0".into(),
+                    staleness_ratio: 0.92,
+                    dependents_demoted: 3,
+                    cosmos_artifacts_flagged: 1,
+                    tick_ms: 1_700_000_000_000,
+                    broadcast_id: {
+                        let h = blake3::hash(b"test_payload_staleness_quarantine_broadcast");
+                        format!("{:.16}", h.to_hex())
+                    },
+                    dropped_count: 0,
+                })
+            }
+            // F-8 / Slice A1 (SCHEMA_VERSION 204): SymbolicConflictDetected flat
+            // beacon. Explicit arm so write-time validation resolves the payload
+            // type correctly. fingerprint is a blake3 hex-prefix of the conflict
+            // tuple (no hard-coded precision/threshold numbers).
+            SsbActionType::SymbolicConflictDetected => {
+                SsbPayload::SymbolicConflictDetected(SymbolicConflictPayload {
+                    fingerprint: {
+                        let h = blake3::hash(
+                            b"test_payload_symbolic_conflict|locked_key_contradiction|cloud_monthly_budget|cfg-variant-test-0",
+                        );
+                        format!("{:.16}", h.to_hex())
+                    },
+                    kind: "locked_key_contradiction".into(),
+                    // Real entry from self_mod_safety::LOCKED_KEYS.
+                    key: "cloud_monthly_budget".into(),
+                    detail: "variant proposes raising cloud_monthly_budget; key is a self_mod_safety LOCKED invariant".into(),
+                    candidate_id: "cfg-variant-test-0".into(),
+                    fsm_substate: "AdmittingVariant".into(),
+                })
+            }
+            // F-7 / Slice A1 (SCHEMA_VERSION 205): TemplateUtilityRanked flat
+            // beacon. Explicit arm so write-time validation resolves the payload
+            // type correctly. utility is laplace_utility(successes, total) =
+            // (successes + 1) / (total + 2); a 1/1 template scores 2/3 ~= 0.667.
+            SsbActionType::TemplateUtilityRanked => {
+                SsbPayload::TemplateUtilityRanked(TemplateUtilityRankedPayload {
+                    concept_class: "rest_crud_api".into(),
+                    plan_skeleton_hash: 0x5f3e_27a1_0b9c_d4e2,
+                    // 1 success / 1 firing -> (1+1)/(1+2) = 2/3.
+                    utility: 2.0_f32 / 3.0_f32,
+                    first_try_ratio: 1.0,
+                    sample_n: 1,
+                    chosen_pipeline_id: "pipeline-test-0".into(),
+                })
+            }
+            // F-13 / Slice A1 (SCHEMA_VERSION 206): SessionArchived flat beacon.
+            // Explicit arm so write-time validation resolves the payload type
+            // correctly. manifest_blake3 is a blake3 hex-prefix of the archived
+            // bytes (no hard-coded threshold numbers).
+            SsbActionType::SessionArchived => {
+                SsbPayload::SessionArchived(SessionArchivedPayload {
+                    session_id: "test-session-0".into(),
+                    stale_version: 205,
+                    archive_path:
+                        "workflow/sessions/test-session-0/archive/ssb-v205.sqlite".into(),
+                    manifest_blake3: {
+                        let h = blake3::hash(b"test_payload_session_archived|ssb-v205.sqlite");
+                        format!("{:.16}", h.to_hex())
+                    },
+                    store_kind: "ssb".into(),
+                })
+            }
+            // F-11 / Slice A1 (SCHEMA_VERSION 207): DarwinianAdmit config-DGM
+            // admit-loop beacon. Explicit arm so write-time validation resolves
+            // the payload type. candidate_blake3 is a blake3 hex-prefix (no
+            // hard-coded threshold numbers); kind is the LoopClosed arm here.
+            SsbActionType::DarwinianAdmit => {
+                SsbPayload::DarwinianAdmit(DarwinianAdmitPayload {
+                    kind: DarwinianAdmitKind::LoopClosed,
+                    variant_id: "test-variant-0".into(),
+                    parent_id: Some("test-parent-0".into()),
+                    alpha: 0.61,
+                    guard_rejected_by: None,
+                    candidate_blake3: {
+                        let h = blake3::hash(b"test_payload_darwinian_admit|test-variant-0");
+                        format!("{:.16}", h.to_hex())
+                    },
+                    seed: 42,
+                })
+            }
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload
@@ -28831,6 +30591,7 @@ mod tests {
                 test_name: "test_foo".into(),
                 passed: true,
                 duration_ms: 42,
+                stdout_hash: None,
             }),
             SsbPayload::Finding(FindingPayload {
                 severity: "high".into(),
@@ -31679,6 +33440,214 @@ mod tests {
                 }),
                 ts_ms: 1_700_000_195_001,
             }),
+            // F-4 / Slice B-1 (SCHEMA_VERSION 197): TestIntegrityEvent
+            // SINGLE-VARIANT Pattern-2 (50th application); 2-arm
+            // TestIntegrityEventKind discriminator covers Verified /
+            // FabricationBlocked. Two entries cover both arms.
+            // See workflow/reasoning/F-4-B1-decisions.md.
+            SsbPayload::TestIntegrityEvent(TestIntegrityEventPayload {
+                test_name: "crate::ssb::tests::sample_verified".into(),
+                passed: true,
+                stdout_hash: Some({
+                    let h = blake3::hash(b"all_test_payloads_verified");
+                    format!("{:.16}", h.to_hex())
+                }),
+                kind: TestIntegrityEventKind::Verified,
+            }),
+            SsbPayload::TestIntegrityEvent(TestIntegrityEventPayload {
+                test_name: "crate::ssb::tests::sample_fabrication_blocked".into(),
+                passed: false,
+                stdout_hash: Some({
+                    let h = blake3::hash(b"all_test_payloads_fabrication_blocked");
+                    format!("{:.16}", h.to_hex())
+                }),
+                kind: TestIntegrityEventKind::FabricationBlocked,
+            }),
+            // F-3p1 / Slice C1 (SCHEMA_VERSION 198): ToolFilterEvent
+            // SINGLE-VARIANT Pattern-2 (51st application); 2-arm
+            // ToolFilterEventKind discriminator covers Committed /
+            // UntrustedQuarantined. Two entries cover both arms.
+            // See workflow/reasoning/F-3p1-decisions.md.
+            SsbPayload::ToolFilterEvent(ToolFilterPayload {
+                commit_hash: blake3::hash(b"all_test_payloads_tool_filter_committed")
+                    .to_hex()
+                    .to_string(),
+                allowed_categories: vec!["read".into(), "web".into()],
+                denied_tool: None,
+                taint_source: None,
+                task_id: "task-all-test-0".into(),
+                kind: ToolFilterEventKind::Committed,
+            }),
+            SsbPayload::ToolFilterEvent(ToolFilterPayload {
+                commit_hash: String::new(),
+                allowed_categories: vec![],
+                denied_tool: Some("bash".into()),
+                taint_source: Some("malicious".into()),
+                task_id: "task-all-test-1".into(),
+                kind: ToolFilterEventKind::UntrustedQuarantined,
+            }),
+            // F-9 / Slice D1 (SCHEMA_VERSION 199): WriteTimeSlopsquatBlocked flat beacon.
+            // 1 entry (not Pattern-2; single sql_str).
+            SsbPayload::WriteTimeSlopsquatBlocked(WriteTimeSlopsquatBlockedPayload {
+                dep_name_hash: {
+                    let h = blake3::hash(b"all_test_payloads_write_time_slopsquat_blocked");
+                    let bytes = h.as_bytes();
+                    u64::from_be_bytes([
+                        bytes[0], bytes[1], bytes[2], bytes[3],
+                        bytes[4], bytes[5], bytes[6], bytes[7],
+                    ])
+                },
+                ecosystem: "pypi".into(),
+                verdict_kind: WriteTimeSlopVerdictKind::NotFound.as_str().to_owned(),
+                registry_age_days: None,
+                ts_ms: 1_748_900_000_001,
+            }),
+            // F-10 / Slice A1 (SCHEMA_VERSION 200): SecurityClassRegressionBlocked
+            // flat beacon. 1 entry (not Pattern-2; single sql_str). loop_kind is a
+            // payload field, so a single entry exercises the round-trip.
+            SsbPayload::SecurityClassRegressionBlocked(SecurityClassRegressionBlockedPayload {
+                delta_blake3: {
+                    let h = blake3::hash(b"all_test_payloads_security_class_regression");
+                    format!("{:.16}", h.to_hex())
+                },
+                introduced_classes: vec!["CWE-22".into(), "CWE-78".into()],
+                prior_classes: vec!["CWE-78".into()],
+                loop_kind: LoopKind::SelfMod,
+                loop_id: "self-mod-loop-all-0".into(),
+                lang: "python".into(),
+            }),
+            // F-2b / Slice A1 (SCHEMA_VERSION 201): InsecureRateMeasured flat beacon.
+            // 1 entry (not Pattern-2; single sql_str). The numbers are arbitrary
+            // fixtures -- the real keystone numbers are COMPUTED by the bench.
+            SsbPayload::InsecureRateMeasured(InsecureRateMeasuredPayload {
+                suite: "secodeplt_structured_all".into(),
+                model_id: "qwen2.5-coder-7b".into(),
+                n_samples: 8,
+                insecure_rate_before: 0.625,
+                insecure_rate_after: 0.125,
+                gate_recall: 0.8,
+                seed: 11,
+                corpus_blake3: {
+                    let h = blake3::hash(b"all_test_payloads_insecure_rate_measured");
+                    format!("{:.16}", h.to_hex())
+                },
+            }),
+            // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent SINGLE-VARIANT
+            // Pattern-2; 3-arm SkillLibraryEventKind discriminator covers Acquired
+            // / TrustPromoted / DemotedStale. Three entries cover all arms.
+            // See workflow/reasoning/F-6-decisions.md.
+            SsbPayload::SkillLibraryEvent(SkillLibraryEventPayload {
+                skill_id: "skill-all-test-acquired".into(),
+                description: "acquired skill".into(),
+                tier: "s1".into(),
+                prior_tier: None,
+                reason: "critic-gated acquisition".into(),
+                invocations: 0,
+                failure_rate: 0.0,
+                kind: SkillLibraryEventKind::Acquired,
+            }),
+            SsbPayload::SkillLibraryEvent(SkillLibraryEventPayload {
+                skill_id: "skill-all-test-promoted".into(),
+                description: "promoted skill".into(),
+                tier: "s2".into(),
+                prior_tier: Some("s1".into()),
+                reason: "cleared invocation/failure/age gate".into(),
+                invocations: 4,
+                failure_rate: 0.0,
+                kind: SkillLibraryEventKind::TrustPromoted,
+            }),
+            SsbPayload::SkillLibraryEvent(SkillLibraryEventPayload {
+                skill_id: "skill-all-test-demoted".into(),
+                description: "demoted skill".into(),
+                tier: "s1".into(),
+                prior_tier: Some("s2".into()),
+                reason: "staleness score crossed threshold".into(),
+                invocations: 4,
+                failure_rate: 0.25,
+                kind: SkillLibraryEventKind::DemotedStale,
+            }),
+            // F-5 / Slice A1 (SCHEMA_VERSION 203): StalenessQuarantineBroadcast
+            // SINGLE FLAT beacon (no Kind). One entry. broadcast_id is a blake3
+            // hex-prefix; dropped_count nonzero here to exercise the overflow
+            // surface field on round-trip. See workflow/reasoning/F-5-decisions.md.
+            SsbPayload::StalenessQuarantineBroadcast(StalenessQuarantineBroadcastPayload {
+                fact_id: "fact-all-test-quarantined".into(),
+                staleness_ratio: 0.87,
+                dependents_demoted: 2,
+                cosmos_artifacts_flagged: 1,
+                tick_ms: 1_700_000_000_500,
+                broadcast_id: {
+                    let h = blake3::hash(b"all_test_payloads_staleness_quarantine_broadcast");
+                    format!("{:.16}", h.to_hex())
+                },
+                dropped_count: 3,
+            }),
+            // F-8 / Slice A1 (SCHEMA_VERSION 204): SymbolicConflictDetected
+            // SINGLE FLAT beacon (no Kind). One entry. fingerprint is a blake3
+            // hex-prefix of the conflict tuple; key is a real
+            // self_mod_safety::LOCKED_KEYS entry. WARN-then-escalate (held
+            // pending), not a BLOCK. See workflow/reasoning/F-8-decisions.md.
+            SsbPayload::SymbolicConflictDetected(SymbolicConflictPayload {
+                fingerprint: {
+                    let h = blake3::hash(
+                        b"all_test_payloads_symbolic_conflict|locked_key_contradiction|gate_definitions|cfg-variant-all-test",
+                    );
+                    format!("{:.16}", h.to_hex())
+                },
+                kind: "locked_key_contradiction".into(),
+                key: "gate_definitions".into(),
+                detail: "variant rewrites gate_definitions; key is a self_mod_safety LOCKED invariant (Goodhart vector)".into(),
+                candidate_id: "cfg-variant-all-test".into(),
+                fsm_substate: "AdmittingVariant".into(),
+            }),
+            // F-7 / Slice A1 (SCHEMA_VERSION 205): TemplateUtilityRanked SINGLE
+            // FLAT beacon (no Kind). One entry. utility is Laplace-smoothed over
+            // the persisted CompiledPipeline first_try_success_rate + use_count;
+            // here 95 successes / 100 firings -> (95+1)/(100+2) ~= 0.941, while
+            // first_try_ratio keeps the raw 0.95 baseline (W-2 no-removal). See
+            // workflow/reasoning/F-7-decisions.md.
+            SsbPayload::TemplateUtilityRanked(TemplateUtilityRankedPayload {
+                concept_class: "static_site_generator".into(),
+                plan_skeleton_hash: 0xa17c_4d9e_2f80_61b3,
+                // 95 success / 100 firings -> (95+1)/(100+2) ~= 0.9412.
+                utility: 96.0_f32 / 102.0_f32,
+                first_try_ratio: 0.95,
+                sample_n: 100,
+                chosen_pipeline_id: "pipeline-all-test".into(),
+            }),
+            // F-13 / Slice A1 (SCHEMA_VERSION 206): SessionArchived SINGLE FLAT
+            // beacon (no Kind). One entry. manifest_blake3 is a blake3 hex-prefix
+            // of the archived bytes; store_kind is a payload field ('ssb' here).
+            // Forensic opt-in (default-OFF ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE). See
+            // workflow/reasoning/F-13-session-archive-decisions.md.
+            SsbPayload::SessionArchived(SessionArchivedPayload {
+                session_id: "all-test-session".into(),
+                stale_version: 205,
+                archive_path:
+                    "workflow/sessions/all-test-session/archive/ssb-v205.sqlite".into(),
+                manifest_blake3: {
+                    let h = blake3::hash(b"all_test_payloads_session_archived|ssb-v205.sqlite");
+                    format!("{:.16}", h.to_hex())
+                },
+                store_kind: "ssb".into(),
+            }),
+            // F-11 / Slice A1 (SCHEMA_VERSION 207): DarwinianAdmit config-DGM
+            // admit-loop beacon. Pattern-2 single-variant with a 3-arm
+            // DarwinianAdmitKind (Admitted / RejectedByGuard / LoopClosed); ONE
+            // entry covers the variant. candidate_blake3 is a blake3 hex-prefix
+            // of the candidate config_blob. See workflow/reasoning/F-11-decisions.md.
+            SsbPayload::DarwinianAdmit(DarwinianAdmitPayload {
+                kind: DarwinianAdmitKind::RejectedByGuard,
+                variant_id: "all-test-variant".into(),
+                parent_id: None,
+                alpha: 0.99,
+                guard_rejected_by: Some("trap".into()),
+                candidate_blake3: {
+                    let h = blake3::hash(b"all_test_payloads_darwinian_admit|all-test-variant");
+                    format!("{:.16}", h.to_hex())
+                },
+                seed: 42,
+            }),
         ]
     }
 
@@ -31690,8 +33659,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            389,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused) + 1 E-7 (DarwinianGenerationCompleted single-variant Pattern-2) + 9 batch2-merge-collision recovery (E-3 RuntimeHandoffSignal + E-26 SglangBackendRegistered + E-26 XgrammarSchemaCompiled + E-26 RuntimeColdStartObserved + E-2 StreamingTimingRecorded + E-2 UxPacingVoteRecorded + E-28 StreamingLlmEngaged + E-28 SdpaBackendPinned + E-28 YarnRopeScalingApplied) + 1 E-8 (PromptOptimizationCompleted single-variant Pattern-2) + 1 E-10 (CriticDecisionEvent single-variant Pattern-2) + 1 E-43 (SkillSystemEvent single-variant Pattern-2) + 1 E-9 (BenchmarkRunObserved single-variant Pattern-2) + 1 E-19 (ReasoningQualityProbe single-variant Pattern-2) + 1 E-55 (RewardLadderEvent single-variant Pattern-2 20th application) + 1 E-11 (SaasPriorArtEvent single-variant Pattern-2 21st application) + 1 E-22 (GithubTrendingEvent single-variant Pattern-2 22nd application) + 1 E-23 (DeveloperDiscourseEvent single-variant Pattern-2 23rd application) + 1 E-25 (ClaudeCodeArchitectureEvent single-variant Pattern-2 24th application) + 1 E-29 (AgenticObservabilityEvent single-variant Pattern-2 25th application) + 1 E-31 (CodingModelLeaderboardEvent single-variant Pattern-2 26th application) + 1 E-38 (AiRoadmapSignalEvent single-variant Pattern-2 27th application) + 1 E-39 (CostTokenEvent single-variant Pattern-2 28th application) + 1 E-50 (SaasArchPatternEvent single-variant Pattern-2 29th application) + 1 B-7 triple (TddVerificationEvent single-variant Pattern-2 46th application)",
+            404,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused) + 1 E-7 (DarwinianGenerationCompleted single-variant Pattern-2) + 9 batch2-merge-collision recovery (E-3 RuntimeHandoffSignal + E-26 SglangBackendRegistered + E-26 XgrammarSchemaCompiled + E-26 RuntimeColdStartObserved + E-2 StreamingTimingRecorded + E-2 UxPacingVoteRecorded + E-28 StreamingLlmEngaged + E-28 SdpaBackendPinned + E-28 YarnRopeScalingApplied) + 1 E-8 (PromptOptimizationCompleted single-variant Pattern-2) + 1 E-10 (CriticDecisionEvent single-variant Pattern-2) + 1 E-43 (SkillSystemEvent single-variant Pattern-2) + 1 E-9 (BenchmarkRunObserved single-variant Pattern-2) + 1 E-19 (ReasoningQualityProbe single-variant Pattern-2) + 1 E-55 (RewardLadderEvent single-variant Pattern-2 20th application) + 1 E-11 (SaasPriorArtEvent single-variant Pattern-2 21st application) + 1 E-22 (GithubTrendingEvent single-variant Pattern-2 22nd application) + 1 E-23 (DeveloperDiscourseEvent single-variant Pattern-2 23rd application) + 1 E-25 (ClaudeCodeArchitectureEvent single-variant Pattern-2 24th application) + 1 E-29 (AgenticObservabilityEvent single-variant Pattern-2 25th application) + 1 E-31 (CodingModelLeaderboardEvent single-variant Pattern-2 26th application) + 1 E-38 (AiRoadmapSignalEvent single-variant Pattern-2 27th application) + 1 E-39 (CostTokenEvent single-variant Pattern-2 28th application) + 1 E-50 (SaasArchPatternEvent single-variant Pattern-2 29th application) + 1 B-7 triple (TddVerificationEvent single-variant Pattern-2 46th application) + 2 F-4/B-1 (TestIntegrityEvent single-variant Pattern-2 50th application -- Verified + FabricationBlocked) + 2 F-3p1/C1 (ToolFilterEvent single-variant Pattern-2 51st application -- Committed + UntrustedQuarantined) + 1 F-9/D1 (WriteTimeSlopsquatBlocked flat beacon) + 1 F-10/A1 (SecurityClassRegressionBlocked flat beacon) + 1 F-2b/A1 (InsecureRateMeasured flat beacon) + 3 F-6/A1 (SkillLibraryEvent single-variant Pattern-2 -- Acquired + TrustPromoted + DemotedStale) + 1 F-5/A1 (StalenessQuarantineBroadcast flat beacon) + 1 F-8/A1 (SymbolicConflictDetected flat beacon) + 1 F-7/A1 (TemplateUtilityRanked flat beacon) + 1 F-13/A1 (SessionArchived flat beacon) + 1 F-11/A1 (DarwinianAdmit single-variant Pattern-2 -- Admitted + RejectedByGuard + LoopClosed)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {
@@ -31941,7 +33910,7 @@ mod tests {
                     )),
                 ("[a-z_]{1,20}", any::<bool>(), 0u64..100000)
                     .prop_map(|(test_name, passed, duration_ms)| SsbPayload::TestOutcome(
-                        TestOutcomePayload { test_name, passed, duration_ms }
+                        TestOutcomePayload { test_name, passed, duration_ms, stdout_hash: None }
                     )),
                 ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z ]{1,30}", any::<Option<String>>(), any::<Option<u32>>())
                     .prop_map(|(severity, category, message, file_path, line)| SsbPayload::Finding(

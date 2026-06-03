@@ -242,6 +242,7 @@
     font-family: var(--font-mono);
     font-size: 12px;
     color: var(--text-primary);
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

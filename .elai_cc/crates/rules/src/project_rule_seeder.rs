@@ -378,6 +378,70 @@ impl ProjectRuleSeeder {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Security seed rules (F-2a) — mutable=0, lifecycle-immune (spec F-plan A2)
+    // -----------------------------------------------------------------------
+
+    /// Seed the 12 immutable F-2a security rules (CWE-89/79/327/862) into the
+    /// rules DB with `mutable=0`.  These rows are immune to auto-retirement and
+    /// cannot be overwritten by convention-derived rules.
+    ///
+    /// Idempotent: rows whose `rule_id` already exists are silently skipped.
+    /// Returns the count of newly inserted rows (0 if already present).
+    pub fn seed_security_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        let rows = crate::vibesec_seed::CANONICAL_ROWS;
+        let mut inserted = 0usize;
+
+        for &(rule_id, predicate_json) in rows {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+                rusqlite::params![rule_id],
+                |row| row.get(0),
+            )?;
+            if exists {
+                debug!(rule_id, "security seed rule already exists, skipping");
+                continue;
+            }
+
+            let (title, severity, cwe_comment) = security_rule_meta(rule_id);
+
+            conn.execute(
+                "INSERT INTO rules \
+                 (rule_id, domain, tier, status, title, description, predicate, \
+                  phase_mask, severity, mutable, created_at, source) \
+                 VALUES (?1, 'security', 1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, 'SEED')",
+                rusqlite::params![
+                    rule_id,
+                    SEEDED_STATUS,
+                    title,
+                    cwe_comment,
+                    predicate_json,
+                    u32::MAX,
+                    severity,
+                    now,
+                ],
+            )?;
+            inserted += 1;
+            debug!(rule_id, "inserted immutable security seed rule");
+        }
+
+        debug!(
+            total = rows.len(),
+            inserted,
+            "security rule seeding complete"
+        );
+        Ok(inserted)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +539,121 @@ pub fn check_and_retire_seeded_rules(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Return (title, severity, cwe_description) metadata for a known F-2a security rule_id.
+///
+/// Used exclusively by [`ProjectRuleSeeder::seed_security_rules`].
+/// The tuples are ordered by rule_id prefix for readability; all IDs must
+/// appear in [`crate::vibesec_seed::CANONICAL_ROWS`].
+fn security_rule_meta(rule_id: &str) -> (&'static str, &'static str, &'static str) {
+    match rule_id {
+        "SEC-SQLI-001" => (
+            "SQL injection via Python f-string interpolation (CWE-89)",
+            "BLOCK",
+            "CWE-89: SQL injection through direct variable interpolation into SQL string via f-string.",
+        ),
+        "SEC-SQLI-002" => (
+            "SQL injection via Python % or .format() string interpolation (CWE-89)",
+            "BLOCK",
+            "CWE-89: SQL injection through % or .format() interpolation into SQL string.",
+        ),
+        "SEC-SQLI-003" => (
+            "SQL injection via TypeScript template-literal interpolation (CWE-89)",
+            "BLOCK",
+            "CWE-89: SQL injection through template-literal ${} interpolation into SQL string.",
+        ),
+        "SEC-XSS-001" => (
+            "XSS via Python mark_safe / Markup with variable content (CWE-79)",
+            "BLOCK",
+            "CWE-79: Cross-site scripting through use of mark_safe or Markup bypassing auto-escaping.",
+        ),
+        "SEC-XSS-002" => (
+            "XSS via TypeScript innerHTML / outerHTML assignment (CWE-79)",
+            "BLOCK",
+            "CWE-79: Cross-site scripting through direct innerHTML or outerHTML assignment.",
+        ),
+        "SEC-XSS-003" => (
+            "XSS via TypeScript dangerouslySetInnerHTML (CWE-79)",
+            "BLOCK",
+            "CWE-79: Cross-site scripting through React dangerouslySetInnerHTML without sanitization.",
+        ),
+        "SEC-WCRYPTO-001" => (
+            "Weak hash: Python hashlib MD5 or SHA-1 in production (CWE-327)",
+            "BLOCK",
+            "CWE-327: Use of a broken or risky cryptographic algorithm (MD5/SHA-1 for integrity).",
+        ),
+        "SEC-WCRYPTO-002" => (
+            "Weak cipher: Python DES or RC4 usage (CWE-327)",
+            "BLOCK",
+            "CWE-327: Use of a broken or risky cryptographic algorithm (DES/RC4).",
+        ),
+        "SEC-WCRYPTO-003" => (
+            "Weak hash: TypeScript crypto.createHash with MD5 or SHA1 (CWE-327)",
+            "BLOCK",
+            "CWE-327: Use of a broken or risky cryptographic algorithm (MD5/SHA1 in Node.js crypto).",
+        ),
+        "SEC-WCRYPTO-004" => (
+            "Weak cipher: TypeScript crypto.createCipheriv with DES or RC4 (CWE-327)",
+            "BLOCK",
+            "CWE-327: Use of a broken or risky cryptographic algorithm (DES/RC4 in Node.js crypto).",
+        ),
+        "SEC-AUTHZ-001" => (
+            "Possible missing authz: Python FastAPI route without security dependency (CWE-862)",
+            "WARN",
+            "CWE-862: Missing authorization check on FastAPI route handler.",
+        ),
+        "SEC-AUTHZ-002" => (
+            "Possible missing authz: TypeScript Express route without auth middleware (CWE-862)",
+            "WARN",
+            "CWE-862: Missing authorization check on Express route handler.",
+        ),
+        // F-2c: hardcoded credentials (CWE-798).
+        "SEC-CREDS-001" => (
+            "Hardcoded credential: Python secret-named variable assigned a literal (CWE-798)",
+            "BLOCK",
+            "CWE-798: Use of hard-coded credentials (secret-named variable assigned a string literal).",
+        ),
+        "SEC-CREDS-002" => (
+            "Hardcoded credential: TypeScript secret-named variable assigned a literal (CWE-798)",
+            "BLOCK",
+            "CWE-798: Use of hard-coded credentials (secret-named variable assigned a string literal).",
+        ),
+        // F-2c: eval/exec code injection (CWE-95).
+        "SEC-EVAL-001" => (
+            "Code injection: Python eval/exec on a non-literal argument (CWE-95)",
+            "BLOCK",
+            "CWE-95: Eval injection via eval/exec on a non-literal (dynamic) argument.",
+        ),
+        "SEC-EVAL-002" => (
+            "Code injection: TypeScript eval / new Function on a non-literal argument (CWE-95)",
+            "BLOCK",
+            "CWE-95: Eval injection via eval / new Function on a non-literal (dynamic) argument.",
+        ),
+        // F-2c: hardcoded cryptographic key (CWE-321).
+        "SEC-KEY-001" => (
+            "Hardcoded crypto key: Python literal key passed to AES/DES/ARC4/Fernet (CWE-321)",
+            "BLOCK",
+            "CWE-321: Use of a hard-coded cryptographic key (literal key at the crypto sink).",
+        ),
+        "SEC-KEY-002" => (
+            "Hardcoded crypto key: TypeScript literal key passed to createCipheriv (CWE-321)",
+            "BLOCK",
+            "CWE-321: Use of a hard-coded cryptographic key (literal key at the crypto sink).",
+        ),
+        // F-2c: secrets written to logs (CWE-532).
+        "SEC-LOG-001" => (
+            "Secret in logs: Python secret-named identifier in a logging/print sink (CWE-532)",
+            "BLOCK",
+            "CWE-532: Insertion of sensitive information into a log file (secret in a log/print sink).",
+        ),
+        "SEC-LOG-002" => (
+            "Secret in logs: TypeScript secret-named identifier in a console sink (CWE-532)",
+            "BLOCK",
+            "CWE-532: Insertion of sensitive information into a log file (secret in a console sink).",
+        ),
+        _ => ("Unknown security rule", "WARN", "Unknown CWE."),
+    }
+}
 
 /// Generate a regex pattern that matches identifiers violating the given style.
 /// Used as GREP_PATTERN predicates. The regex is inverted: it matches

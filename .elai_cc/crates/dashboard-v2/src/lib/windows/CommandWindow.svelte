@@ -21,6 +21,12 @@
   import ClaimConfidenceChip from '$lib/components/ClaimConfidenceChip.svelte';
   import HonestCorrectionBlock from '$lib/components/HonestCorrectionBlock.svelte';
   import SycophancyGuardBadge from '$lib/components/SycophancyGuardBadge.svelte';
+  // E-33 Task 3 / E-2 Task 2 -- SkeletonBubble mounts during TTFT gap
+  // (streaming=true, text='') so the response area has visual weight before
+  // the first token arrives. shimmerEnabled follows motion.allow so
+  // prefers-reduced-motion users get a static outline instead of the sweep.
+  import SkeletonBubble from '$lib/components/SkeletonBubble.svelte';
+  import { motion } from '$lib/state/motion.svelte';
   // FINAL TRANCHE B2 / E-2 -- FramePacer is imported here so the symbol
   // is visible to the response-card render scope; the actual instance
   // lives in commands.svelte.ts (_runStreamingPath) where the per-stream
@@ -758,7 +764,14 @@
             {@const p = card.payload as import('../api/types').ResponseCardPayload}
             <div class="orbit-card orbit-card--response">
               <div class="card-inner">
-                <pre class="response-text mono">{p.text || ' '}</pre>
+                {#if p.streaming && !p.text}
+                  <!-- E-33 Task 3 / E-2 Task 2: skeleton while waiting for TTFT.
+                       Replaced by real text on first token; shimmer off under
+                       prefers-reduced-motion (motion.allow=false). -->
+                  <SkeletonBubble shimmerEnabled={motion.allow} />
+                {:else}
+                  <pre class="response-text mono">{p.text || ' '}</pre>
+                {/if}
                 {#if p.streaming}
                   <Pulse mode="line" size={1} />
                 {/if}

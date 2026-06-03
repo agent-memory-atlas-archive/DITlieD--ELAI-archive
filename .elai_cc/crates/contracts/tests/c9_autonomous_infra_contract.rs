@@ -41,6 +41,12 @@ fn all_pass() -> AutonomousEvidence {
         step_zero_blocks: true,
         babystep_zero_blocks: true,
         plan_zero_blocks: true,
+        // F-10: AUTO-ADVANCE security-monotonicity vacuous-default true.
+        security_monotonicity: true,
+        // SP5 wiring-fix: off-agent EXECUTING -> AUDITING legs default FALSE;
+        // all-true fixture sets them explicitly (ADR-8).
+        layer3_entrypoint_covered: true,
+        layer4_trace_present: true,
     }
 }
 
@@ -61,6 +67,8 @@ fn ctx_at(level: PipelineLevel, risk: RiskLevel) -> AutonomousGateContext {
         execution_history: elai_orchestrator::ExecutionHistory::default(),
         attempt_index: 0,
         suggested_prompt_prefix: None,
+        // F-6 (C6a): no candidate learned skill in the base contract fixture.
+        candidate_skill_tier: None,
     }
 }
 
@@ -430,6 +438,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        // F-6 / Slice A3: legacy contract path -- no learned-skill store.
+        skill_store: None,
         via_mcp: false,
         // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
@@ -437,6 +447,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         pipeline_grc: None,
         // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
         interactive_gate: None,
+        // F-1 B2: legacy contract path -- seed integrity defaults to ok.
+        vibegate_seed_ok: true,
     };
     let cfg_none = apply_task_runner_wiring(root.join("cursor.json"), &wiring_none);
     assert!(
@@ -457,6 +469,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        // F-6 / Slice A3: legacy contract path -- no learned-skill store.
+        skill_store: None,
         via_mcp: false,
         // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
@@ -464,6 +478,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         pipeline_grc: None,
         // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
         interactive_gate: None,
+        // F-1 B2: legacy contract path -- seed integrity defaults to ok.
+        vibegate_seed_ok: true,
     };
     let cfg_inter = apply_task_runner_wiring(root.join("cursor.json"), &wiring_inter);
     let gate = cfg_inter
@@ -485,6 +501,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        // F-6 / Slice A3: legacy contract path -- no learned-skill store.
+        skill_store: None,
         via_mcp: false,
         // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
@@ -492,6 +510,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         pipeline_grc: None,
         // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
         interactive_gate: None,
+        // F-1 B2: legacy contract path -- seed integrity defaults to ok.
+        vibegate_seed_ok: true,
     };
     let cfg_auto = apply_task_runner_wiring(root.join("cursor.json"), &wiring_auto);
     let gate_auto = cfg_auto

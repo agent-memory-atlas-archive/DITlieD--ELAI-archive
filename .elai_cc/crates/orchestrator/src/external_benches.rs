@@ -542,14 +542,119 @@ pub struct PowerVerdict {
 /// capacity breakdown per arXiv:2510.04399 §Theorem 11) remain
 /// RUNPOD-PENDING — this scaffold uses the existing cell-count proxy
 /// already baked into `two_gate_promote`.
+///
+/// # F-10 SELF-MOD security-monotonicity precondition
+///
+/// BEFORE the two-gate margin/capacity checks run, the proposal's CWE-class
+/// set is compared against the pre-modification baseline via
+/// [`crate::security_monotonicity::SecurityMonotonicityGate::check_monotonicity`]
+/// (`loop_kind=SelfMod`). On a regression (a CWE class present in the proposal
+/// but absent from the baseline) the promotion is BLOCKED before archive
+/// admission: the wrapper emits a `SecurityClassRegressionBlocked` SSB row
+/// (severity `"escalate"`) and returns
+/// [`crate::promotion_gate::PromotionDecisionKind::BlockedSecurityRegression`]
+/// WITHOUT calling [`crate::promotion_gate::two_gate_promote`]. The 4-arg
+/// `two_gate_promote` signature is unchanged — the precondition lives entirely
+/// in this caller. Default-ON (kill-switch
+/// `ELAI_SECURITY_MONOTONICITY_DISABLE`).
+///
+/// `baseline_source` is the current (pre-mod) config/source rendering;
+/// `proposal_source` is the candidate rendering; `lang` is the language label
+/// (`"rust"` / `"python"` / ...); `loop_id` correlates the SSB row to the
+/// self-mod pipeline instance.
+///
+/// # F-8 SCF symbolic-conflict pre-check (WARN-then-escalate)
+///
+/// AFTER the F-10 security precondition and BEFORE the two-gate margin/capacity
+/// checks, the (optional) candidate [`crate::self_mod_types::ConfigVariant`] is
+/// screened by the LLM-free symbolic detector
+/// ([`crate::symbolic_conflict::screen_config_variant_for_conflicts`]) against
+/// the active locked-key invariants + tripwire quiescence. On a conflict the
+/// wrapper emits one `SymbolicConflictDetected` SSB row per conflict (the
+/// held-pending record) and CONTINUES — this leg is WARN-then-escalate, NEVER a
+/// hard fail-closed BLOCK (SCF's 27.9% precision is sim-only / UNVERIFIED and a
+/// NON-target). It does NOT add a 5th `Blocked*` `PromotionDecisionKind` arm
+/// and does NOT alter the 4-arg `two_gate_promote` signature: the conflict
+/// surfaces as telemetry, the operator/dashboard holds the candidate. `variant`
+/// is `None` for non-config-variant promotions (the screen is skipped);
+/// `active_tripwires` is the currently-active tripwire set at promotion time
+/// (empty = quiescent).
 #[cfg(feature = "darwinian-evolve")]
-#[must_use]
-pub fn promote_after_bench_completed(
+#[allow(clippy::too_many_arguments)]
+pub async fn promote_after_bench_completed(
     candidate_fitness: f64,
     descriptor: &crate::template_archive::BehaviourDescriptor,
     archive: &crate::template_archive::MapElitesArchive,
     cfg: &crate::promotion_gate::PromotionConfig,
+    ssb: &crate::ssb::Ssb,
+    baseline_source: &str,
+    proposal_source: &str,
+    lang: &str,
+    loop_id: &str,
+    variant: Option<&crate::self_mod_types::ConfigVariant>,
+    active_tripwires: &[crate::tripwire::TripwireKind],
 ) -> Result<crate::promotion_gate::PromotionDecision, crate::promotion_gate::GateError> {
+    use crate::security_monotonicity::{
+        emit_security_class_regression_blocked, MonotonicityVerdict, SecurityMonotonicityGate,
+    };
+    use crate::ssb::LoopKind;
+
+    // F-10 SELF-MOD precondition: classify the proposal against the
+    // pre-modification baseline. A regressed proposal is blocked BEFORE the
+    // two-gate margin/capacity checks (and before archive admission).
+    let baseline_classes = crate::cwe_classifier::classify_delta(baseline_source, lang);
+    let verdict = SecurityMonotonicityGate::check_monotonicity(
+        LoopKind::SelfMod,
+        loop_id,
+        &baseline_classes,
+        proposal_source,
+        lang,
+    );
+    if let MonotonicityVerdict::Regressed { introduced_classes } = verdict {
+        // The SELF-MOD leg is BLOCKING: severity "escalate".
+        emit_security_class_regression_blocked(
+            ssb,
+            LoopKind::SelfMod,
+            loop_id,
+            &baseline_classes,
+            &introduced_classes,
+            proposal_source,
+            lang,
+            "escalate",
+        )
+        .await;
+        return Ok(crate::promotion_gate::PromotionDecision {
+            kind: crate::promotion_gate::PromotionDecisionKind::BlockedSecurityRegression,
+            reason: Some(format!(
+                "security-monotonicity regression: self-mod proposal '{loop_id}' ({lang}) \
+                 introduced {introduced_classes:?} absent from baseline"
+            )),
+        });
+    }
+
+    // F-8 SCF symbolic-conflict pre-check (WARN-then-escalate). Composes AFTER
+    // the F-10 security precondition and BEFORE the two-gate checks. On a
+    // conflict the screen emits SymbolicConflictDetected beacon(s) (the
+    // held-pending record) and we CONTINUE: this leg never blocks promotion
+    // (no early return, no Blocked* kind) — the candidate is held by the
+    // operator/dashboard, not fail-closed at the gate.
+    if let Some(cv) = variant {
+        let held = crate::symbolic_conflict::screen_config_variant_for_conflicts(
+            ssb,
+            cv,
+            active_tripwires,
+            "promote_after_bench_completed",
+        )
+        .await;
+        if held {
+            tracing::warn!(
+                loop_id,
+                candidate_id = %cv.variant_id,
+                "symbolic_conflict: self-mod variant flagged + held pending (WARN-then-escalate)"
+            );
+        }
+    }
+
     let candidate = crate::template_archive::ArchiveEntry {
         template_blake3: [0u8; 32],
         fitness: candidate_fitness,

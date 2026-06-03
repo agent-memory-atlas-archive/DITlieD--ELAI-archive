@@ -10,7 +10,6 @@
   // Wire-dark unless ELAI_COST_TOKEN_ECONOMICS_ENABLE=1 on the
   // orchestrator side. Mirrors CriticDecisionPanel layout. Polls every
   // 5s, gracefully renders empty state when no rows exist.
-  import { invoke } from "@tauri-apps/api/core";
   import { onMount, onDestroy } from "svelte";
 
   type VelocityWindowSnapshot = {
@@ -56,22 +55,47 @@
   let cost_state_quotas = $state<FreeTierQuotaRow[]>([]);
   let cost_state_error: string | null = $state(null);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
+  let tauriInvoke: (<T>(cmd: string, args?: Record<string, unknown>) => Promise<T>) | null = null;
+
+  async function ensureInvoke(): Promise<typeof tauriInvoke> {
+    if (tauriInvoke !== null) return tauriInvoke;
+    const w = typeof window !== "undefined" ? (window as unknown as Record<string, unknown>) : {};
+    if (!w.__TAURI_INTERNALS__ && !w.__TAURI__) {
+      return null;
+    }
+    try {
+      const mod = await import("@tauri-apps/api/core");
+      tauriInvoke = mod.invoke;
+    } catch (err) {
+      console.warn("[CostPanel] @tauri-apps/api/core import failed", err);
+      tauriInvoke = null;
+    }
+    return tauriInvoke;
+  }
 
   async function refresh() {
     try {
-      cost_state_velocity = await invoke<VelocityCapStatus>(
+      const inv = await ensureInvoke();
+      if (!inv) {
+        cost_state_velocity = null;
+        cost_state_router = [];
+        cost_state_automix = [];
+        cost_state_quotas = [];
+        return;
+      }
+      cost_state_velocity = await inv<VelocityCapStatus>(
         "get_velocity_cap_status",
         { limit: 200 }
       );
-      cost_state_router = await invoke<CostRouterDecisionRow[]>(
+      cost_state_router = await inv<CostRouterDecisionRow[]>(
         "get_cost_router_recent",
         { limit: 25 }
       );
-      cost_state_automix = await invoke<AutomixVerdictRow[]>(
+      cost_state_automix = await inv<AutomixVerdictRow[]>(
         "get_automix_verdicts_recent",
         { limit: 25 }
       );
-      cost_state_quotas = await invoke<FreeTierQuotaRow[]>(
+      cost_state_quotas = await inv<FreeTierQuotaRow[]>(
         "get_free_tier_quotas",
         { limit: 50 }
       );

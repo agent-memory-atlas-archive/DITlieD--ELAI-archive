@@ -113,6 +113,7 @@ fn grep_rule_matches_file_content_but_not_task_text() {
         file_path: "",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
     let pre_verdicts = evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &[], &pre_ctx);
     let pre_non_allow = non_allow(&pre_verdicts);
@@ -129,6 +130,7 @@ fn grep_rule_matches_file_content_but_not_task_text() {
         file_path: "src/foo.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
     let post_verdicts =
         evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &[], &post_ctx);
@@ -177,6 +179,7 @@ fn missing_file_is_skipped_not_a_violation() {
         file_path: "",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
     let verdicts = evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &[], &ctx);
     let non_allow: Vec<_> = verdicts

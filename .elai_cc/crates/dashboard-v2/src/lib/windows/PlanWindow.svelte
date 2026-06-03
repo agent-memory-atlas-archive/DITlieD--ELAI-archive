@@ -957,6 +957,8 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-secondary);
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .children-list {

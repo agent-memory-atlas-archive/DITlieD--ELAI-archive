@@ -43,7 +43,7 @@
   .toggle-wrap {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--s-2);
     cursor: pointer;
     user-select: none;
   }
@@ -55,7 +55,7 @@
 
   .toggle {
     position: relative;
-    width: 32px;
+    width: var(--s-8);
     height: 18px;
     border-radius: var(--r-pill);
     border: none;

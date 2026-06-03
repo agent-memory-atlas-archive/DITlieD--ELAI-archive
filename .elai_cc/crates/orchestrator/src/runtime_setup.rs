@@ -36,6 +36,7 @@ use crate::{
     hook_dispatcher::{HookDispatcher, InProcessHookDispatcher},
     ipc_accept::AgentRpcServer,
     ipc_gateway::IpcGateway,
+    skill_trust::SkillStore,
     task_runner::{AgentPoolBabyStepExecutor, BabyStepExecutor},
     DefaultFeasibilityProber, DefaultLayer1aProcessor, FeasibilityProber, Layer1aProcessor, Ssb,
     SsbConfig, TaskRunnerConfig, SSB_DB_FILE_NAME,
@@ -152,6 +153,16 @@ pub struct RuntimeWiring {
     /// rest of the runtime so all background spawns surface in the
     /// dashboard timeline. Closes audit WARN-4.
     pub background_task_manager: Option<Arc<BackgroundTaskManager>>,
+    /// F-6 / Slice A3 — production learned-skill store (the C6b critic-gated
+    /// acquisition authority). Constructed in [`build_task_runner_wiring`]
+    /// mirroring the [`TemplateCrystallizer`] Arc and threaded into
+    /// `TaskRunnerConfig.skill_store` by [`apply_task_runner_wiring`] so the
+    /// crystallizer post-execute hook can insert a [`crate::skill_trust::LearnedSkill`]
+    /// (born at the S1 floor) on an N-consecutive-success crystallization
+    /// gate AND a reused `MiniCriticVerdict::Pass`. `None` keeps the legacy
+    /// path (acquisition hook is a strict no-op); tests that want the
+    /// no-store path overwrite this field on the bundle.
+    pub skill_store: Option<Arc<AsyncMutex<SkillStore>>>,
     pub via_mcp: bool,
     /// C-39 -- production tool dispatch impl. When `Some`,
     /// [`apply_task_runner_wiring`] plumbs this `Arc<dyn Dispatch>` onto
@@ -180,6 +191,16 @@ pub struct RuntimeWiring {
     /// test at `crates/contracts/tests/pipeline_grc_wired_contract.rs`
     /// pins.
     pub pipeline_grc: Option<Arc<AsyncMutex<PipelineGrc>>>,
+    /// F-1 B2/B5 — result of the vibesec seed integrity check run once at
+    /// wiring time over the project rules.db (after [`build_task_runner_wiring`]
+    /// seeds the `mutable=0` security rows via
+    /// [`elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_security_rules`]
+    /// and runs [`crate::vibegate::check_vibegate_seed_integrity`]). `true` when
+    /// the on-disk seed rows match the embedded blake3 baseline; `false` when
+    /// the seed was tampered. Callers thread this into
+    /// [`build_production_hook_dispatcher`] so a tampered seed forces the
+    /// VibeGate code-vuln axis to block fail-closed on every write.
+    pub vibegate_seed_ok: bool,
 }
 
 /// Build the production wiring bundle for `start_task_runner`.
@@ -291,6 +312,40 @@ pub async fn build_task_runner_wiring(
                 rules_db_path.display()
             )
         })?;
+
+    // F-1 B5 — seed the 12 immutable (mutable=0) F-2a security rules into the
+    // project rules.db. Idempotent (rows present are skipped). This gives the
+    // `mutable=0` immune-rule + blake3 integrity subsystem a real production
+    // caller (it was test-only before). The live VibeGate code-vuln axis itself
+    // evaluates the embedded in-memory ruleset (rule_loader::CANONICAL_ROWS), so
+    // the DB seed is the defence-in-depth copy the integrity guard protects.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_security_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: F-2a security seed rules ensured (mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding F-2a security rules failed; \
+             VibeGate seed integrity will fail-closed"
+        ),
+    }
+
+    // F-1 B2 — run the vibesec seed integrity check once at startup over the
+    // freshly-seeded rules.db. A `false` result is threaded onto the dispatcher
+    // (RuntimeWiring::vibegate_seed_ok) so a tampered seed forces every code-vuln
+    // pre-gate to block fail-closed. blake3 baseline (never blake2/sha2).
+    let vibegate_seed_ok = crate::vibegate::check_vibegate_seed_integrity(&rules_conn);
+    if !vibegate_seed_ok {
+        tracing::error!(
+            "build_task_runner_wiring: vibesec seed integrity check FAILED; \
+             VibeGate will block all code-vuln writes fail-closed"
+        );
+    }
+
     let rules_db = Arc::new(tokio::sync::Mutex::new(rules_conn));
 
     // 5. Build the Layer 1A processor and run `ensure_tables` once. The
@@ -330,6 +385,14 @@ pub async fn build_task_runner_wiring(
     // rows surface in the dashboard timeline.
     let background_task_manager =
         Arc::new(BackgroundTaskManager::new(Some(Arc::clone(&ssb))));
+
+    // F-6 / Slice A3 — production learned-skill store. Mirrors the
+    // crystallizer Arc above: a fresh in-memory `SkillStore` wrapped in an
+    // `Arc<AsyncMutex<_>>` so the crystallizer post-execute hook can acquire
+    // a learned skill (born at S1) on a critic-gated crystallization. The
+    // store has no on-disk persistence in this slice (acquisition + beacon
+    // only); a persistent backing is a later-slice concern.
+    let skill_store = Arc::new(AsyncMutex::new(SkillStore::new()));
 
     // B-8 (PipelineGrc activation) — construct a default `PipelineGrc`
     // and stash it in the bundle UNLESS the `ELAI_DISABLE_PIPELINE_GRC`
@@ -381,6 +444,10 @@ pub async fn build_task_runner_wiring(
         crystallizer: Some(crystallizer),
         compiled_pipeline_store: Some(compiled_pipeline_store),
         background_task_manager: Some(background_task_manager),
+        // F-6 / Slice A3 — live by default so the critic-gated acquisition
+        // hook can insert learned skills in production runs. Tests that want
+        // the legacy None path overwrite this on the bundle.
+        skill_store: Some(skill_store),
         via_mcp: false,
         // C-39: default to None so non-CLI callers (legacy tests,
         // dashboard pre-C-39) keep the unchanged tool-dispatch surface.
@@ -390,6 +457,8 @@ pub async fn build_task_runner_wiring(
         // to `None` above. Tests that want the legacy no-gate path
         // overwrite this field on the bundle before calling apply.
         pipeline_grc,
+        // F-1 B2 — result of the vibesec seed integrity check computed above.
+        vibegate_seed_ok,
     })
 }
 
@@ -526,6 +595,10 @@ pub fn apply_task_runner_wiring(
     cfg.crystallizer = wiring.crystallizer.clone();
     cfg.compiled_pipeline_store = wiring.compiled_pipeline_store.clone();
     cfg.background_task_manager = wiring.background_task_manager.clone();
+    // F-6 / Slice A3 — thread the live learned-skill store onto
+    // TaskRunnerConfig so the crystallizer post-execute hook reaches it via
+    // ResolvedConfig. `None` on the bundle keeps the acquisition hook a no-op.
+    cfg.skill_store = wiring.skill_store.clone();
 
     // C-39 — plumb the optional Dispatch impl onto TaskRunnerConfig so
     // future tool-call sites can route through this seam. When
@@ -540,6 +613,16 @@ pub fn apply_task_runner_wiring(
         cfg.mcp_dispatch = Some(dispatch.clone());
     } else if wiring.via_mcp {
         let mcp = crate::dispatch::McpClientDispatch::new(8200, wiring.ssb.clone());
+        // F-3p1 / Slice C3 (ENFORCE-B): bind the dispatch's CapabilityFlowAdapter
+        // to the SAME process-global committed-tool-set slot the producer commits
+        // into. Default-ON: pass-through until the producer commits, then every
+        // dispatch_tool call enforces the committed set.
+        #[cfg(feature = "mcp")]
+        let mcp = mcp.with_capability_flow_adapter(Arc::new(
+            crate::capability_flow::CapabilityFlowAdapter::from_slot(
+                crate::capability_flow::committed_slot(),
+            ),
+        ));
         cfg.mcp_dispatch = Some(Arc::new(mcp));
         tracing::info!(
             "C-39: --via-mcp default dispatch wired (McpClientDispatch port 8200)"
@@ -654,10 +737,40 @@ where
 ///
 /// Plan reference: C-13 task 2 + DECISION D3 option 3A
 /// (workflow/reasoning/C-13-decisions.md).
+///
+/// F-1 B2 — installs the VibeGate SSB writer and the seed-integrity flag so
+/// `VibeGateBlocked` / `SecurityRuleBlocked` rows actually emit in production
+/// and a tampered seed forces fail-closed. `ssb` is the runtime's
+/// `Arc<Ssb>` (clone of `wiring.ssb`); `vibegate_seed_ok` is the result of the
+/// integrity check run at wiring time (`wiring.vibegate_seed_ok`). Rows are
+/// stamped with [`crate::task_runner::RUNNER_AGENT_ID`] /
+/// [`crate::task_runner::RUNNER_SUPERSTEP`], matching the SSB beacons the runner
+/// writes elsewhere.
+///
+/// F-9 / Slice D3 — installs the write-time anti-slopsquatting gate
+/// ([`DepWriteTimeGate`]) using `SubprocessRegistryChecker::default_at_root`
+/// with `project_root`.  DEFAULT-ON: always installed in production so
+/// every PreToolUse file-write path probes the registry for unknown deps.
 #[must_use]
-pub fn build_production_hook_dispatcher() -> Arc<InProcessHookDispatcher> {
+pub fn build_production_hook_dispatcher(
+    ssb: Arc<Ssb>,
+    vibegate_seed_ok: bool,
+    project_root: &std::path::Path,
+) -> Arc<InProcessHookDispatcher> {
+    use crate::vibesec::dep_writetime_gate::{DepWriteTimeGate, SubprocessRegistryChecker};
     let ruff = Arc::new(elai_plugins::post_tool_use::RuffPostToolUseRunner::new());
-    let dispatcher = InProcessHookDispatcher::new(None).with_ruff_runner(ruff);
+    let registry_checker: std::sync::Arc<dyn crate::vibesec::dep_writetime_gate::RegistryExistenceChecker + Send + Sync> =
+        std::sync::Arc::new(SubprocessRegistryChecker::default_at_root(project_root));
+    let dep_gate = Arc::new(DepWriteTimeGate::new(Some(ssb.clone()), registry_checker));
+    let dispatcher = InProcessHookDispatcher::new(None)
+        .with_ruff_runner(ruff)
+        .with_vibegate_ssb(
+            ssb,
+            crate::task_runner::RUNNER_AGENT_ID,
+            crate::task_runner::RUNNER_SUPERSTEP,
+        )
+        .with_vibegate_seed_ok(vibegate_seed_ok)
+        .with_dep_writetime_gate(dep_gate);
     Arc::new(dispatcher)
 }
 

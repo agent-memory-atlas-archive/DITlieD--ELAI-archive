@@ -254,10 +254,15 @@ fn build_minimal_wiring(root: &std::path::Path) -> RuntimeWiring {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        // F-6 / Slice A3: legacy contract fixture -- no learned-skill store.
+        skill_store: None,
         via_mcp: false,
         // C-39: legacy contract fixture -- no Dispatch wired.
         mcp_dispatch: None,
         // B-08: legacy contract fixture -- pipeline_grc opt-in elsewhere.
         pipeline_grc: None,
+        // F-1 B2: legacy contract fixture -- seed integrity defaults to ok
+        // (this fixture does not exercise the vibesec seed path).
+        vibegate_seed_ok: true,
     }
 }

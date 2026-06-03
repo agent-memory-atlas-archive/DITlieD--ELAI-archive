@@ -69,6 +69,28 @@ pub struct TestOutcome {
 }
 
 // ---------------------------------------------------------------------------
+// IntegrationTestRowSummary — per-test row for AntiFabricationGate (B2)
+// ---------------------------------------------------------------------------
+
+/// One integration-test row produced by the auditor and stored in
+/// [`TransitionContext::integration_test_rows`]. The `stdout_hash` field
+/// carries the blake3 hex digest of the captured stdout for a passing test;
+/// when it is `None` for a `passed == true` row the `AntiFabricationGate`
+/// treats this as a fabrication signature and blocks AUDITING -> MEMORIZING.
+///
+/// Source: F-plan B2 (anti-fabrication gate slice).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationTestRowSummary {
+    pub test_name: String,
+    pub passed: bool,
+    /// blake3 hex digest of the captured stdout for this test run.
+    /// Required when `passed == true`; `None` on a passing row is the
+    /// fabrication signal the gate blocks on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_hash: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // AuditFinding — summary of audit findings for gate 6
 // ---------------------------------------------------------------------------
 
@@ -164,12 +186,43 @@ pub struct TransitionContext {
     /// `0` disables the gate (consistent with `IntentConfig` semantics).
     pub min_intent_pairs: usize,
 
-    // E-52 Tranche B-3: LSP diagnostic probe outcome (EXECUTING -> AUDITING).
-    // Optional + default-degrade so existing transition sites that don't yet
-    // run the producer keep transitioning. `DiagnosticProbeGate` returns
-    // `Ok(())` on `None`. See workflow/reasoning/E-52-tranche-B3-decisions.md.
+    // E-52 Tranche B-3 / SP5 wiring-fix: LSP diagnostic probe outcome
+    // (EXECUTING -> AUDITING). R1/R2 fail-closed: `DiagnosticProbeGate`
+    // returns `Err` on `None` (probe never ran) AND on a non-authoritative
+    // run_status (TimedOut / ToolMissing). Only an authoritative + clean
+    // Completed outcome passes. See E-52-tranche-B3-decisions.md and
+    // wiring-elai-phase0-grounding.md:47.
     pub diagnostic_probe_outcome:
         Option<elai_knowledge::diagnostic::DiagnosticProbeOutcome>,
+
+    // F-plan B2 / SP5 wiring-fix: per-integration-test rows for
+    // AntiFabricationGate (AUDITING -> MEMORIZING). R1/R2 fail-closed:
+    // `AntiFabricationGate` returns `Err` when this field is `None` OR an
+    // empty vec (missing evidence = hard FAIL), and on any passing row with a
+    // missing blake3 `stdout_hash`.
+    #[serde(default)]
+    pub integration_test_rows: Option<Vec<IntegrationTestRowSummary>>,
+
+    // SP5 wiring-fix: Layer-3 entrypoint-coverage signal for
+    // EntrypointAndTraceGate (EXECUTING -> AUDITING). DERIVED by the caller
+    // from the off-agent `wiring_evidence`/`wiring_violation` SSB rows (leg ==
+    // LAYER3_LEG) via `task_runner::derive_layer3_entrypoint_covered`, NOT a
+    // re-run of the coverage command (ADR-2: the gate reads the off-agent
+    // artifact). `None` is a hard FAIL at the gate (R1: the coverage runner
+    // never ran / never persisted a row). `Some(false)` is also a FAIL (a new
+    // function was not driven from a real entrypoint). Only `Some(true)`
+    // passes the Layer-3 leg.
+    #[serde(default)]
+    pub layer3_entrypoint_covered: Option<bool>,
+
+    // SP5 wiring-fix: Layer-4 off-agent trace signal for
+    // EntrypointAndTraceGate (EXECUTING -> AUDITING). DERIVED by the caller
+    // from the off-agent `wiring_evidence` SSB rows (leg == LAYER4_LEG) via
+    // `task_runner::derive_layer4_trace_present`. `None` is a hard FAIL (R1:
+    // no trace assertion ran). `Some(false)` is a FAIL (the driven entrypoint
+    // left no off-agent row). Only `Some(true)` passes the Layer-4 leg (R4).
+    #[serde(default)]
+    pub layer4_trace_present: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -640,18 +693,21 @@ impl EvidenceGate for IntentPairsGate {
 }
 
 // ---------------------------------------------------------------------------
-// E-52 Tranche B-3: DiagnosticProbeGate (EXECUTING -> AUDITING).
-// Co-fires with TestFlippedGate. Soft-passes on TimedOut / ToolMissing per
-// E-52-decisions.md (c)/(d) and the LOCAL-ONLY honesty rule from
-// E-52-tranche-B3-decisions.md. Default-degrades on `None` outcome so
-// callers that have not yet wired `diagnostic_probe::dispatch_diagnostic_probe`
-// keep transitioning. See workflow/reasoning/E-52-tranche-B3-decisions.md.
+// E-52 Tranche B-3 / SP5 wiring-fix: DiagnosticProbeGate (EXECUTING ->
+// AUDITING). Co-fires with TestFlippedGate. R1/R2 fail-closed: a `None`
+// outcome (probe never ran) AND a non-authoritative run_status (TimedOut /
+// ToolMissing) are now hard FAILs for the autonomous path -- a degraded or
+// absent probe is not authoritative evidence of cleanliness and must not wave
+// the transition through. Only an authoritative Completed run that is clean
+// passes. See workflow/reasoning/E-52-tranche-B3-decisions.md and
+// wiring-elai-phase0-grounding.md:47 (SP5 re-scope).
 // ---------------------------------------------------------------------------
 
-/// EXECUTING -> AUDITING: when a `DiagnosticProbeOutcome` is present AND
-/// `run_status.is_authoritative()` AND `!outcome.is_clean()`, block the
-/// transition with the failing diagnostics' file paths. All other shapes
-/// (None / TimedOut / ToolMissing / clean Completed) pass.
+/// EXECUTING -> AUDITING: passes ONLY when a `DiagnosticProbeOutcome` is
+/// present AND `run_status.is_authoritative()` AND `outcome.is_clean()`.
+/// A `None` outcome, a non-authoritative run (TimedOut / ToolMissing), or an
+/// authoritative-but-dirty run all block the transition (R1/R2 fail-closed:
+/// absent or degraded probe evidence is a hard FAIL).
 pub struct DiagnosticProbeGate;
 
 impl EvidenceGate for DiagnosticProbeGate {
@@ -664,13 +720,35 @@ impl EvidenceGate for DiagnosticProbeGate {
     }
 
     fn check(&self, ctx: &TransitionContext) -> Result<(), EvidenceError> {
+        // R1/R2 fail-closed: a `None` diagnostic-probe outcome means the LSP
+        // probe never ran. Absence of the probe artifact is a hard FAIL --
+        // EXECUTING -> AUDITING is BLOCKED until a real, authoritative probe
+        // result is supplied. (Previously `None` returned Ok(()), the
+        // fail-open path in wiring-elai-phase0-grounding.md:47.)
         let Some(outcome) = ctx.diagnostic_probe_outcome.as_ref() else {
-            return Ok(());
+            return Err(EvidenceError {
+                gate_name: self.name(),
+                missing_artifacts: vec!["diagnostic_probe_outcome".into()],
+                suggestion: "Run the LSP diagnostic probe and provide its \
+                    outcome before transitioning EXECUTING -> AUDITING. A \
+                    missing probe is a hard FAIL, not a soft pass."
+                    .into(),
+            });
         };
         if !outcome.run_status.is_authoritative() {
-            // TimedOut / ToolMissing: soft-pass with the auditor responsible
-            // for honest reporting downstream.
-            return Ok(());
+            // R1/R2 necessary-not-sufficient: TimedOut / ToolMissing are NOT
+            // authoritative evidence of cleanliness. A non-authoritative run
+            // is a hard FAIL for the autonomous path -- the auditor must
+            // re-run the probe (or a human must intervene) rather than the
+            // gate waving the transition through on a degraded result.
+            return Err(EvidenceError {
+                gate_name: self.name(),
+                missing_artifacts: vec!["diagnostic_probe_authoritative".into()],
+                suggestion: "Diagnostic probe was non-authoritative (TimedOut \
+                    / ToolMissing). Re-run the probe to obtain an \
+                    authoritative Completed outcome before AUDITING."
+                    .into(),
+            });
         }
         if outcome.is_clean() {
             return Ok(());
@@ -699,8 +777,217 @@ impl EvidenceGate for DiagnosticProbeGate {
 }
 
 // ---------------------------------------------------------------------------
+// F-plan B2 / SP5 wiring-fix: AntiFabricationGate (AUDITING -> MEMORIZING)
+// Co-fires with ZeroBlocksGate. R1/R2 fail-closed: absent OR empty
+// `TransitionContext::integration_test_rows` is a hard FAIL (missing evidence
+// = proof of absence), not a soft pass. Also blocks when any present row
+// carries `passed == true` with `stdout_hash == None` — the fabrication
+// signature that indicates the auditor claimed a test passed without
+// capturing any off-agent output evidence.
+// ---------------------------------------------------------------------------
+
+/// AUDITING -> MEMORIZING: for every integration-test row where `passed ==
+/// true`, a `stdout_hash` (blake3 hex) MUST be present. A `None` hash on a
+/// passing row is the fabrication signature — it means the auditor reported a
+/// pass without capturing any output, which is indistinguishable from a
+/// fabricated result.
+///
+/// R1/R2 (wiring-enforcement.md): absent `integration_test_rows` (`None`) OR
+/// a present-but-empty rows vec is a hard FAIL. The integration tests never
+/// ran to produce the off-agent stdout_hash artifact, so the transition is
+/// BLOCKED. No env-var gate, no default-degrade — fail-closed by default.
+///
+/// Source: F-plan B2 (anti-fabrication gate slice); SP5 wiring re-scope
+/// (wiring-elai-rescope-decisions.md L45-47).
+pub struct AntiFabricationGate;
+
+impl EvidenceGate for AntiFabricationGate {
+    fn name(&self) -> &'static str {
+        "anti_fabrication"
+    }
+
+    fn transition(&self) -> (FsmState, FsmState) {
+        (FsmState::Auditing, FsmState::Memorizing)
+    }
+
+    fn check(&self, ctx: &TransitionContext) -> Result<(), EvidenceError> {
+        // R1/R2 fail-closed: absent integration-test rows means the auditor
+        // never ran the integration tests that would have produced an
+        // off-agent stdout_hash artifact. Absence of proof is proof of
+        // absence for gate purposes -- AUDITING -> MEMORIZING is BLOCKED, not
+        // waved through. (Previously this returned Ok(()) on None, the
+        // fail-open path called out in wiring-elai-phase0-grounding.md:48.)
+        let Some(rows) = ctx.integration_test_rows.as_ref() else {
+            return Err(EvidenceError {
+                gate_name: self.name(),
+                missing_artifacts: vec!["integration_test_rows".into()],
+                suggestion: "Run the integration tests and provide their rows \
+                    (each passing row carrying a blake3 stdout_hash) before \
+                    transitioning AUDITING -> MEMORIZING. Absent rows are a \
+                    hard FAIL, not a soft pass."
+                    .into(),
+            });
+        };
+        // R1: an empty (but present) rows vec is also FAIL -- the auditor
+        // wired the field but produced zero evidence rows.
+        if rows.is_empty() {
+            return Err(EvidenceError {
+                gate_name: self.name(),
+                missing_artifacts: vec!["integration_test_rows_empty".into()],
+                suggestion: "Integration-test rows are present but empty; zero \
+                    evidence rows is a hard FAIL for AUDITING -> MEMORIZING."
+                    .into(),
+            });
+        }
+
+        let fabricated: Vec<String> = rows
+            .iter()
+            .filter(|r| r.passed && r.stdout_hash.is_none())
+            .map(|r| r.test_name.clone())
+            .collect();
+
+        if fabricated.is_empty() {
+            Ok(())
+        } else {
+            Err(EvidenceError {
+                gate_name: self.name(),
+                missing_artifacts: fabricated,
+                suggestion: "Passing integration tests must include a stdout_hash (blake3). \
+                    Missing hash indicates fabricated pass result."
+                    .into(),
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SP5 wiring-fix: EntrypointAndTraceGate (EXECUTING -> AUDITING)
+// Co-fires with TestFlippedGate + DiagnosticProbeGate. Consumes the Layer-3
+// (entrypoint coverage) and Layer-4 (off-agent SSB trace) signals the caller
+// derives from the off-agent `wiring_evidence`/`wiring_violation` SSB rows
+// (legs LAYER3_LEG / LAYER4_LEG). R1/R2/R4: a real entrypoint must have RUN
+// the new code (Layer-3 coverage hit > 0) AND left an off-agent SSB row the
+// producing agent did not author (Layer-4). A unit-test flip (`test_flipped`)
+// has zero causal connection to production wiring, so it is
+// necessary-but-not-sufficient — this gate adds the load-bearing off-agent
+// legs. Absent (`None`) or false signal on EITHER leg is a hard FAIL.
+// Source: wiring-elai-adr.md ADR-1/ADR-2 + wiring-enforcement.md R1/R4.
+// ---------------------------------------------------------------------------
+
+/// EXECUTING -> AUDITING: require BOTH a Layer-3 entrypoint-coverage result
+/// (the new function ran under a real entrypoint, proven by an off-agent
+/// `wiring_evidence(leg=layer3_coverage)` SSB row with no matching
+/// `wiring_violation`) AND a Layer-4 off-agent trace artifact (a real
+/// `wiring_evidence(leg=layer4_trace)` SSB row landed). Absent (`None`) or
+/// `Some(false)` on EITHER leg is a hard FAIL — the feature was never driven
+/// from a real entrypoint, so it is wire-dark and must not auto-advance on a
+/// unit-test proxy alone.
+///
+/// Cross-cluster contract: the two `TransitionContext` fields
+/// (`layer3_entrypoint_covered` / `layer4_trace_present`) are POPULATED by the
+/// caller from the SSB-row derive helpers
+/// (`task_runner::derive_layer3_entrypoint_covered` /
+/// `derive_layer4_trace_present`). This gate only CONSUMES the derived bool —
+/// it never re-runs the coverage command (ADR-2: read the off-agent artifact,
+/// not a re-run).
+pub struct EntrypointAndTraceGate;
+
+impl EvidenceGate for EntrypointAndTraceGate {
+    fn name(&self) -> &'static str {
+        "entrypoint_and_trace"
+    }
+
+    fn transition(&self) -> (FsmState, FsmState) {
+        (FsmState::Executing, FsmState::Auditing)
+    }
+
+    fn check(&self, ctx: &TransitionContext) -> Result<(), EvidenceError> {
+        // Layer-3: entrypoint coverage. `None` => the coverage runner never
+        // ran / never persisted a row => hard FAIL (R1/R2). `Some(false)` =>
+        // a new function had a hit-count of 0 (never driven from a real
+        // entrypoint) OR an in-window layer3 violation row exists.
+        match ctx.layer3_entrypoint_covered {
+            None => {
+                return Err(EvidenceError {
+                    gate_name: self.name(),
+                    missing_artifacts: vec!["layer3_entrypoint_covered".into()],
+                    suggestion: "Layer-3 entrypoint-coverage evidence is absent \
+                        (no wiring_evidence row with entrypoint=layer3_coverage). \
+                        Run the instrumented binary from a real entrypoint and \
+                        persist the coverage row before AUDITING (R1: missing = \
+                        FAIL)."
+                        .into(),
+                });
+            }
+            Some(false) => {
+                return Err(EvidenceError {
+                    gate_name: self.name(),
+                    missing_artifacts: vec!["layer3_entrypoint_uncovered".into()],
+                    suggestion: "Layer-3 coverage is NOT clean: a newly-added \
+                        function has a hit-count of 0 (never driven from a real \
+                        entrypoint) or an in-window layer3 violation row exists. \
+                        Wire the producer to its in-plan consumer before AUDITING."
+                        .into(),
+                });
+            }
+            Some(true) => {}
+        }
+        // Layer-4: off-agent SSB trace row. `None` => no trace assertion ran
+        // / no row persisted => hard FAIL. `Some(false)` => the driven
+        // entrypoint left no off-agent row (db-not-found / zero-rows = FAIL,
+        // R1/R2/R4).
+        match ctx.layer4_trace_present {
+            None => {
+                return Err(EvidenceError {
+                    gate_name: self.name(),
+                    missing_artifacts: vec!["layer4_trace_present".into()],
+                    suggestion: "Layer-4 off-agent trace evidence is absent (no \
+                        wiring_evidence row with entrypoint=layer4_trace). Drive \
+                        the real entrypoint and assert the SSB row landed \
+                        in-window before AUDITING (R1: missing = FAIL)."
+                        .into(),
+                });
+            }
+            Some(false) => {
+                return Err(EvidenceError {
+                    gate_name: self.name(),
+                    missing_artifacts: vec!["layer4_trace_zero_rows".into()],
+                    suggestion: "Layer-4 trace assertion observed ZERO off-agent \
+                        SSB rows for the driven entrypoint (db-not-found or \
+                        zero-rows). A real entrypoint must leave a trace the \
+                        agent did not author — zero rows is a hard FAIL (R4)."
+                        .into(),
+                });
+            }
+            Some(true) => Ok(()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Gate registry: maps transitions to their required gates
 // ---------------------------------------------------------------------------
+
+/// The set of FSM transitions that REQUIRE at least one evidence gate. If
+/// `gates_for_transition` returns an empty set for any of these, that is a
+/// gate-wiring failure (R1: an empty gate set must FAIL, not silently PASS) —
+/// a required gate was dropped, renamed, or never registered. Transitions NOT
+/// in this set are legitimately ungated (e.g. FEASIBILITY_PROBE per
+/// phase-3A.txt L169-171) and an empty gate set there is a real PASS.
+///
+/// This list is hand-maintained and cross-checked against `all_gates()` by the
+/// `test_required_transitions_have_gates` unit test below — adding a gated
+/// transition without updating this list (or vice versa) fails that test.
+const TRANSITIONS_REQUIRING_GATES: &[(FsmState, FsmState)] = &[
+    (FsmState::Idle, FsmState::Planning),
+    (FsmState::Planning, FsmState::TestingFirst),
+    (FsmState::TestingFirst, FsmState::Executing),
+    (FsmState::Executing, FsmState::Auditing),
+    (FsmState::Executing, FsmState::Planning),
+    (FsmState::Auditing, FsmState::Memorizing),
+    (FsmState::Memorizing, FsmState::Planning),
+    (FsmState::Memorizing, FsmState::Complete),
+];
 
 /// All evidence gates. Caller looks up the gate(s) for a transition.
 /// C-29 appends `IntentPairsGate` (PLANNING -> TESTING_FIRST). The
@@ -720,6 +1007,14 @@ pub fn all_gates() -> Vec<Box<dyn EvidenceGate>> {
         // E-52 Tranche B-3: diagnostic probe gate (EXECUTING -> AUDITING).
         // Co-fires with TestFlippedGate. Slot 9 — order-stable append.
         Box::new(DiagnosticProbeGate),
+        // F-plan B2: anti-fabrication gate (AUDITING -> MEMORIZING).
+        // Co-fires with ZeroBlocksGate. Slot 10 — order-stable append.
+        Box::new(AntiFabricationGate),
+        // SP5 wiring-fix: entrypoint-coverage (Layer-3) + off-agent trace
+        // (Layer-4) gate (EXECUTING -> AUDITING). Co-fires with
+        // TestFlippedGate + DiagnosticProbeGate. Slot 11 — order-stable
+        // append so existing index-based gate tests keep working.
+        Box::new(EntrypointAndTraceGate),
     ]
 }
 
@@ -745,12 +1040,32 @@ pub fn gates_for_transition(source: FsmState, target: FsmState) -> Vec<Box<dyn E
 
 /// Run all gates for a transition. Returns Ok(()) if all pass, or the first
 /// EvidenceError encountered.
+///
+/// R1 fail-closed: if `source -> target` is in `TRANSITIONS_REQUIRING_GATES`
+/// but `gates_for_transition` returns ZERO gates, that is a hard FAIL —
+/// missing evidence is proof of absence, and a required gate that silently
+/// resolved to the empty set must scream, not shrug (ArchUnit
+/// failOnEmptyShould). Previously an empty gate set always returned `Ok(())`,
+/// so an unregistered/renamed gate let the transition pass with no checks
+/// (wiring-elai-phase0-grounding.md:49). Transitions NOT in the list (e.g.
+/// FEASIBILITY_PROBE edges) are legitimately ungated and still return `Ok`.
 pub fn check_transition(
     source: FsmState,
     target: FsmState,
     ctx: &TransitionContext,
 ) -> Result<(), EvidenceError> {
     let gates = gates_for_transition(source, target);
+    if gates.is_empty() && TRANSITIONS_REQUIRING_GATES.contains(&(source, target)) {
+        return Err(EvidenceError {
+            gate_name: "check_transition",
+            missing_artifacts: vec![format!("gates_for[{source:?}->{target:?}]")],
+            suggestion: "This transition requires at least one evidence gate \
+                but the gate registry returned none — a required gate was \
+                dropped, renamed, or never registered in all_gates(). An empty \
+                gate set on a gated transition is a hard FAIL (R1)."
+                .into(),
+        });
+    }
     for gate in &gates {
         gate.check(ctx)?;
     }
@@ -1194,12 +1509,11 @@ mod tests {
             if gate.name() == "intent_pairs" {
                 continue;
             }
-            // E-52 Tranche B-3: DiagnosticProbeGate also has documented
-            // pass-through semantics on empty context (None outcome -> Ok)
-            // per workflow/reasoning/E-52-tranche-B3-decisions.md.
-            if gate.name() == "diagnostic_probe" {
-                continue;
-            }
+            // SP5 wiring-fix: DiagnosticProbeGate and AntiFabricationGate are
+            // now FAIL-CLOSED on empty context (None outcome / None rows ->
+            // Err), so they are no longer exempted here — they MUST reject
+            // empty context like the mandatory gates. The earlier E-52
+            // pass-through exemption encoded the old fail-open and is removed.
             let result = gate.check(&empty);
             assert!(
                 result.is_err(),
@@ -1290,10 +1604,12 @@ mod tests {
         // C-29: PLANNING -> TESTING_FIRST has 2 gates (GroundingSweep + IntentPairs).
         assert_eq!(gates_for_transition(FsmState::Planning, FsmState::TestingFirst).len(), 2);
         assert_eq!(gates_for_transition(FsmState::TestingFirst, FsmState::Executing).len(), 1);
-        // E-52 Tranche B-3: EXECUTING -> AUDITING has 2 gates (TestFlipped + DiagnosticProbe).
-        assert_eq!(gates_for_transition(FsmState::Executing, FsmState::Auditing).len(), 2);
+        // E-52 Tranche B-3 + SP5 wiring-fix: EXECUTING -> AUDITING has 3 gates
+        // (TestFlipped + DiagnosticProbe + EntrypointAndTrace).
+        assert_eq!(gates_for_transition(FsmState::Executing, FsmState::Auditing).len(), 3);
         assert_eq!(gates_for_transition(FsmState::Executing, FsmState::Planning).len(), 1);
-        assert_eq!(gates_for_transition(FsmState::Auditing, FsmState::Memorizing).len(), 1);
+        // F-plan B2: AUDITING -> MEMORIZING has 2 gates (ZeroBlocks + AntiFabrication).
+        assert_eq!(gates_for_transition(FsmState::Auditing, FsmState::Memorizing).len(), 2);
     }
 
     // -----------------------------------------------------------------------
@@ -1309,6 +1625,95 @@ mod tests {
         assert_eq!(
             gates_for_transition(FsmState::Memorizing, FsmState::Complete).len(),
             1
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SP5 wiring-fix: EntrypointAndTraceGate (EXECUTING -> AUDITING)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn entrypoint_trace_gate_none_layer3_is_fail() {
+        // None layer3 signal => coverage runner never ran => hard FAIL (R1).
+        let err = EntrypointAndTraceGate
+            .check(&TransitionContext::default())
+            .unwrap_err();
+        assert_eq!(err.gate_name, "entrypoint_and_trace");
+        assert_eq!(err.missing_artifacts, vec!["layer3_entrypoint_covered"]);
+    }
+
+    #[test]
+    fn entrypoint_trace_gate_layer3_uncovered_is_fail() {
+        let ctx = TransitionContext {
+            layer3_entrypoint_covered: Some(false),
+            layer4_trace_present: Some(true),
+            ..TransitionContext::default()
+        };
+        let err = EntrypointAndTraceGate.check(&ctx).unwrap_err();
+        assert_eq!(err.missing_artifacts, vec!["layer3_entrypoint_uncovered"]);
+    }
+
+    #[test]
+    fn entrypoint_trace_gate_none_layer4_is_fail() {
+        // Layer-3 covered but no Layer-4 trace signal => hard FAIL (R1).
+        let ctx = TransitionContext {
+            layer3_entrypoint_covered: Some(true),
+            layer4_trace_present: None,
+            ..TransitionContext::default()
+        };
+        let err = EntrypointAndTraceGate.check(&ctx).unwrap_err();
+        assert_eq!(err.missing_artifacts, vec!["layer4_trace_present"]);
+    }
+
+    #[test]
+    fn entrypoint_trace_gate_layer4_zero_rows_is_fail() {
+        let ctx = TransitionContext {
+            layer3_entrypoint_covered: Some(true),
+            layer4_trace_present: Some(false),
+            ..TransitionContext::default()
+        };
+        let err = EntrypointAndTraceGate.check(&ctx).unwrap_err();
+        assert_eq!(err.missing_artifacts, vec!["layer4_trace_zero_rows"]);
+    }
+
+    #[test]
+    fn entrypoint_trace_gate_both_present_passes() {
+        let ctx = TransitionContext {
+            layer3_entrypoint_covered: Some(true),
+            layer4_trace_present: Some(true),
+            ..TransitionContext::default()
+        };
+        assert!(EntrypointAndTraceGate.check(&ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // SP5 wiring-fix: check_transition empty-gate-set fail-closed (R1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn required_transitions_resolve_to_at_least_one_gate() {
+        // R1 cross-check: every TRANSITIONS_REQUIRING_GATES member must
+        // resolve to >= 1 gate today. A dropped/renamed gate would make one
+        // resolve to zero and this test (plus check_transition) FAILs closed.
+        for (src, tgt) in TRANSITIONS_REQUIRING_GATES {
+            assert!(
+                !gates_for_transition(*src, *tgt).is_empty(),
+                "required transition {src:?}->{tgt:?} resolved to zero gates"
+            );
+        }
+    }
+
+    #[test]
+    fn check_transition_ungated_edge_is_ok() {
+        // FEASIBILITY_PROBE edges are genuinely ungated (not in the required
+        // list) — an empty gate set there is a real PASS, not a FAIL.
+        assert!(
+            check_transition(
+                FsmState::FeasibilityProbe,
+                FsmState::Planning,
+                &TransitionContext::default()
+            )
+            .is_ok()
         );
     }
 
@@ -1351,11 +1756,13 @@ mod tests {
         names.sort();
         names.dedup();
         // C-29 appended IntentPairsGate (8th gate). E-52 Tranche B-3
-        // appended DiagnosticProbeGate (9th). Assertion follows the live
-        // registry length so future appends do not silently regress the
-        // uniqueness contract.
+        // appended DiagnosticProbeGate (9th). F-plan B2 appended
+        // AntiFabricationGate (10th). SP5 wiring-fix appended
+        // EntrypointAndTraceGate (11th). Assertion follows the live registry
+        // length so future appends do not silently regress the uniqueness
+        // contract.
         assert_eq!(names.len(), total);
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 11);
     }
 
     // -----------------------------------------------------------------------

@@ -27,16 +27,160 @@
 //! warning (degradation cascade picks up the absence-of-DKG signal).
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use anyhow::{anyhow, Result};
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::dkg_db_path as core_dkg_db_path;
-use elai_knowledge::dkg::DkgEngine;
+use elai_knowledge::cosmos_worker::CosmosWorker;
+use elai_knowledge::dkg::{DkgEngine, QuarantineRecordView};
 use elai_knowledge::knowledge_ssb_sink::{
     DkgRebuildCompleteEvent, DkgRebuildStartedEvent, KnowledgeSsbSink,
 };
+use elai_memory::quarantine_broadcast::{QuarantineBroadcastQueue, QuarantineRecord};
+
+/// F-5 / Slice A4: env kill-switch for the staleness-quarantine cascade.
+///
+/// Default-ON: the cascade runs UNLESS this var is set to a truthy value
+/// (`1` / `true` / `yes` / `on`). There is no separate ENABLE flag — the
+/// cascade is wire-bright by default (the whole point of F-5 is that decay
+/// propagates), and the kill-switch exists only as an emergency off-ramp.
+pub const ELAI_STALENESS_CASCADE_KILL: &str = "ELAI_STALENESS_CASCADE_KILL";
+
+/// True iff the staleness-quarantine cascade is DISABLED via
+/// [`ELAI_STALENESS_CASCADE_KILL`]. Default-ON: returns `false` unless the var
+/// is set to a truthy value.
+pub fn staleness_cascade_killed() -> bool {
+    std::env::var(ELAI_STALENESS_CASCADE_KILL)
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+/// F-12: env kill-switch for the semantic-contradiction second pass.
+///
+/// Default-ON: the pass runs UNLESS this var is set to a truthy value
+/// (`1` / `true` / `yes` / `on`). There is no separate ENABLE flag — the
+/// deterministic-NLI second pass is wire-bright by default (W-2: no
+/// default-OFF graveyard), gated only on this disable-only off-ramp. The
+/// Tier-2 ONNX judge is additionally model-presence-gated (a fail-safe SKIP,
+/// not a feature flag).
+pub const ELAI_SEMANTIC_CONTRADICTION_KILL: &str = "ELAI_SEMANTIC_CONTRADICTION_KILL";
+
+/// True iff the semantic-contradiction second pass is DISABLED via
+/// [`ELAI_SEMANTIC_CONTRADICTION_KILL`]. Default-ON: returns `false` unless
+/// the var is set to a truthy value.
+pub fn semantic_contradiction_killed() -> bool {
+    std::env::var(ELAI_SEMANTIC_CONTRADICTION_KILL)
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+/// F-5 / Slice A4: process-global staleness-broadcast queue.
+///
+/// The memory-decay seam (`live_cli.rs` inline decay tick) PUSHES quarantine
+/// records here after each tick; the DKG-rebuild seam
+/// ([`ensure_dkg_or_rebuild`]) DRAINS + applies them post-rebuild. Both seams
+/// run in the same process for a long-lived task_runner, so a process-global
+/// `Arc<QuarantineBroadcastQueue>` is the bridge. The W-5 trigger
+/// (`elai dkg staleness-tick`) constructs its OWN local queue for a
+/// self-contained single-process full cycle and does not touch this global.
+pub fn quarantine_queue() -> &'static Arc<QuarantineBroadcastQueue> {
+    static QUEUE: OnceLock<Arc<QuarantineBroadcastQueue>> = OnceLock::new();
+    QUEUE.get_or_init(|| Arc::new(QuarantineBroadcastQueue::new()))
+}
+
+/// F-5 / Slice A4: aggregate result of one [`apply_staleness_cascade`] drain.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CascadeApplyReport {
+    /// Quarantine records drained from the queue this pass.
+    pub records_drained: usize,
+    /// Records DROPPED-OLDEST by the queue since the last drain (W-2 surfaced).
+    pub dropped_count: u64,
+    /// DKG concepts demoted to `concept_stale = 2` across the batch.
+    pub dependents_demoted: u64,
+    /// Non-destructive `staleness_quarantined` marker edges inserted.
+    pub marker_edges_inserted: u64,
+    /// Cosmos artifacts flagged stale across the batch.
+    pub cosmos_artifacts_flagged: u32,
+}
+
+/// F-5 / Slice A4: drain `queue` and apply every quarantine record to the DKG
+/// (`apply_staleness_broadcast`) and, when `cosmos` is provided, to the cosmos
+/// artifact tier (`flag_on_staleness_broadcast`).
+///
+/// `now_secs` is the cosmos-side wall-clock (seconds) used to compute the
+/// Stale-window back-date; the DKG side is timestamp-free. Returns the
+/// aggregate [`CascadeApplyReport`] (including the queue's `dropped_count` for
+/// the W-2 no-silent-drop guarantee).
+pub fn apply_staleness_cascade(
+    engine: &DkgEngine,
+    queue: &QuarantineBroadcastQueue,
+    cosmos: Option<&CosmosWorker>,
+    now_secs: i64,
+) -> Result<CascadeApplyReport> {
+    let (records, dropped_count) = queue.drain();
+    let mut report = CascadeApplyReport {
+        records_drained: records.len(),
+        dropped_count,
+        ..Default::default()
+    };
+    if records.is_empty() {
+        return Ok(report);
+    }
+
+    // Project memory records into the knowledge-side view (no cross-crate dep).
+    let views: Vec<QuarantineRecordView> = records
+        .iter()
+        .map(|r: &QuarantineRecord| QuarantineRecordView::new(r.fact_id.clone(), r.staleness_ratio))
+        .collect();
+
+    let dkg_stats = engine
+        .apply_staleness_broadcast(&views)
+        .map_err(|e| anyhow!("apply_staleness_cascade: DKG apply failed: {e}"))?;
+    report.dependents_demoted = dkg_stats.dependents_demoted;
+    report.marker_edges_inserted = dkg_stats.marker_edges_inserted;
+
+    if let Some(worker) = cosmos {
+        let fact_ids: Vec<String> = records.iter().map(|r| r.fact_id.clone()).collect();
+        let cosmos_stats = worker
+            .flag_on_staleness_broadcast(&fact_ids, now_secs)
+            .map_err(|e| anyhow!("apply_staleness_cascade: cosmos flag failed: {e}"))?;
+        report.cosmos_artifacts_flagged = cosmos_stats.artifacts_flagged;
+    }
+
+    Ok(report)
+}
+
+/// F-5 / Slice A4: drain the process-global [`quarantine_queue`] into `engine`
+/// (DKG only — no cosmos worker handle at the rebuild seam). Kill-switch gated;
+/// a non-empty drain is logged at INFO. Errors are logged + swallowed: a
+/// cascade-apply failure must never abort the DKG load/rebuild path that owns
+/// this call.
+fn drain_quarantine_into_engine(engine: &DkgEngine, now_secs: u64) {
+    if staleness_cascade_killed() {
+        return;
+    }
+    if quarantine_queue().is_empty() {
+        return;
+    }
+    let now_i64 = i64::try_from(now_secs).unwrap_or(i64::MAX);
+    match apply_staleness_cascade(engine, quarantine_queue(), None, now_i64) {
+        Ok(report) if report.records_drained > 0 => {
+            tracing::info!(
+                records_drained = report.records_drained,
+                dependents_demoted = report.dependents_demoted,
+                marker_edges_inserted = report.marker_edges_inserted,
+                dropped_count = report.dropped_count,
+                "F-5 staleness cascade applied to DKG post-rebuild"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "F-5 staleness cascade apply errored (non-fatal)");
+        }
+    }
+}
 
 /// Default DKG staleness window: 24 hours (in seconds). Below this age,
 /// `ensure_dkg_or_rebuild` returns the existing on-disk engine without
@@ -178,6 +322,10 @@ pub fn ensure_dkg_or_rebuild_with_clock(
                 e
             )
         })?;
+        // F-5 / Slice A4: drain any buffered staleness-quarantine records into
+        // this freshly-loaded engine (cosmos handle is not in scope at this
+        // seam; the W-5 trigger applies cosmos in a single-process cycle).
+        drain_quarantine_into_engine(&engine, now_secs);
         return Ok(engine);
     }
 
@@ -205,6 +353,9 @@ pub fn ensure_dkg_or_rebuild_with_clock(
                 duration_ms,
                 node_count: node_count_u32,
             });
+            // F-5 / Slice A4: drain buffered staleness-quarantine records into
+            // the freshly-rebuilt engine.
+            drain_quarantine_into_engine(&engine, now_secs);
             Ok(engine)
         }
         Err(e) => {

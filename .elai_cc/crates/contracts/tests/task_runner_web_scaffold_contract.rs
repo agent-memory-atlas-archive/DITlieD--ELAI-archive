@@ -246,8 +246,12 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             crystallizer: None,
             compiled_pipeline_store: None,
             background_task_manager: None,
+            // F-6 / Slice A3: legacy contract fixture -- no learned-skill store.
+            skill_store: None,
             // C-39: legacy contract fixture -- no Dispatch wired.
             mcp_dispatch: None,
+            // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
+            token_tracker: None,
         },
     );
 
@@ -348,8 +352,12 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             crystallizer: None,
             compiled_pipeline_store: None,
             background_task_manager: None,
+            // F-6 / Slice A3: legacy contract fixture -- no learned-skill store.
+            skill_store: None,
             // C-39: legacy contract fixture -- no Dispatch wired.
             mcp_dispatch: None,
+            // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
+            token_tracker: None,
         },
     );
 
@@ -446,8 +454,12 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             crystallizer: None,
             compiled_pipeline_store: None,
             background_task_manager: None,
+            // F-6 / Slice A3: legacy contract fixture -- no learned-skill store.
+            skill_store: None,
             // C-39: legacy contract fixture -- no Dispatch wired.
             mcp_dispatch: None,
+            // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
+            token_tracker: None,
         },
     );
 

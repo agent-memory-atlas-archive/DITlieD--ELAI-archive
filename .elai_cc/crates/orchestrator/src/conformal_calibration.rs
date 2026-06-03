@@ -9,10 +9,15 @@
 //! [`RefusalDecision::Answer`] carrying the model's confidence.
 //!
 //! Grounding sources (per CLAUDE.md grounded-by-default rule):
-//!   * arXiv:2503.01345 — UniCR (Unified Conformal Refusal): tau is the
+//!   * arXiv:2509.01455 — UniCR ("Trusted Uncertainty in Large Language
+//!     Models: A Unified Framework for Confidence Calibration and
+//!     Risk-Controlled Refusal", Krasniqi 2025; single-author preprint, NOT
+//!     peer-reviewed — treat as a weak source): tau is the (1 - epsilon)
 //!     empirical-quantile threshold over the calibration corpus's
-//!     non-conformity scores, with `epsilon = 0.1` as the default
-//!     operating point.
+//!     non-conformity scores, with `epsilon = 0.1` as the default operating
+//!     point. The distribution-free guarantee derives from conformal risk
+//!     control (Vovk/Gammerman/Shafer below; Angelopoulos et al.,
+//!     arXiv:2208.02814), not from this preprint.
 //!   * Vovk, V., Gammerman, A., Shafer, G. — *Algorithmic Learning in a
 //!     Random World* (Springer, 2005), §2.2: the quantile-based
 //!     conformal predictor is the original construction the UniCR
@@ -49,7 +54,7 @@ use crate::ssb::{ConformalRefusalDecidedPayload, ConformalTauComputedPayload};
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default UniCR operating point (arXiv:2503.01345 §6). Tunable by the
+/// Default UniCR operating point (arXiv:2509.01455). Tunable by the
 /// orchestrator caller; the seed corpus + integration test exercise the
 /// default explicitly.
 pub const DEFAULT_EPSILON: f64 = 0.1;
@@ -523,7 +528,7 @@ pub fn compute_tau_with_min(
 /// `claim_score` is the same `[0.0, 1.0]` composite confidence the
 /// calibration corpus carries.
 ///
-/// Per UniCR (arXiv:2503.01345) §3.2 and Vovk et al. §2.2: out-of-range
+/// Per UniCR (arXiv:2509.01455) and Vovk et al. §2.2: out-of-range
 /// scores are clamped into `[0.0, 1.0]` BEFORE the conformal predicate
 /// is evaluated, so the robust behaviour for `+INFINITY` is to clamp to
 /// `1.0` (maximally confident) → nonconformity `0.0` → Answer.

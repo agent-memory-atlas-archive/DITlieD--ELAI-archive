@@ -87,6 +87,7 @@ fn ctx<'a>(
         file_path,
         fsm_phase: phase,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     }
 }
 

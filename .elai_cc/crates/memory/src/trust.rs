@@ -94,3 +94,62 @@ impl Default for Provenance {
         Provenance { source: String::new(), tier: TrustTier::T3ModelEmitted }
     }
 }
+
+#[cfg(test)]
+mod cold_wiring_tests {
+    //! Cold-wiring (s-81344): deterministic coverage for TrustTier codec +
+    //! safety filter + Provenance constructors (previously no inline tests).
+    use super::*;
+
+    #[test]
+    fn trust_tier_codec_roundtrips() {
+        let pairs = [
+            (TrustTier::T0UserDirect, "T0"),
+            (TrustTier::T1CodebaseDerived, "T1"),
+            (TrustTier::T2WebSourced, "T2"),
+            (TrustTier::T3ModelEmitted, "T3"),
+        ];
+        for (t, tag) in pairs {
+            assert_eq!(t.as_str(), tag);
+            assert_eq!(TrustTier::from_str(tag).unwrap(), t);
+        }
+        assert!(TrustTier::from_str("T9").is_err());
+    }
+
+    #[test]
+    fn safety_critical_allows_only_t0_t1() {
+        assert!(TrustTier::T0UserDirect.is_safety_critical_allowed());
+        assert!(TrustTier::T1CodebaseDerived.is_safety_critical_allowed());
+        assert!(!TrustTier::T2WebSourced.is_safety_critical_allowed());
+        assert!(!TrustTier::T3ModelEmitted.is_safety_critical_allowed());
+    }
+
+    #[test]
+    fn trust_tier_default_is_most_pessimistic() {
+        assert_eq!(TrustTier::default(), TrustTier::T3ModelEmitted);
+    }
+
+    #[test]
+    fn provenance_constructors_set_source_and_tier() {
+        let u = Provenance::user_direct("cli");
+        assert_eq!(u.source, "cli");
+        assert_eq!(u.tier, TrustTier::T0UserDirect);
+
+        let c = Provenance::codebase_derived("src/main.rs:42");
+        assert_eq!(c.tier, TrustTier::T1CodebaseDerived);
+
+        let w = Provenance::web_sourced("https://x.com");
+        assert_eq!(w.source, "https://x.com");
+        assert_eq!(w.tier, TrustTier::T2WebSourced);
+
+        let m = Provenance::model_emitted("llm");
+        assert_eq!(m.tier, TrustTier::T3ModelEmitted);
+    }
+
+    #[test]
+    fn provenance_default_is_empty_t3() {
+        let d = Provenance::default();
+        assert!(d.source.is_empty());
+        assert_eq!(d.tier, TrustTier::T3ModelEmitted);
+    }
+}

@@ -77,6 +77,14 @@ pub struct EvaluationContext<'a> {
     pub fsm_phase: FsmPhaseBit,
     /// Metric values for MetricGate evaluation (metric_name -> value).
     pub metric_values: FxHashMap<String, f64>,
+    /// When `true`, GrepPattern language filters are bypassed: a
+    /// language-scoped rule matches regardless of `file_path` extension.
+    /// Set by callers that evaluate against text with no reliable file
+    /// extension (e.g. the VibeGate baby-step pre-gate, which scans the
+    /// task-summary text with `file_path=""`). Without this, a `language`
+    /// -scoped GrepPattern is skipped whenever the file extension is unknown,
+    /// silently bypassing the security rule on the very path F-1 must guard.
+    pub language_agnostic: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -530,11 +538,15 @@ impl DefaultRuleEngine {
                 file_context,
                 ..
             } => {
-                // A-21: Language filter — skip if pattern language doesn't match file
-                let lang_matches = language.as_ref().is_none_or(|lang| {
-                    detect_language_from_ext(context.file_path)
-                        .as_deref() == Some(lang.as_str())
-                });
+                // A-21: Language filter — skip if pattern language doesn't match file.
+                // F-1 B3: when `language_agnostic` is set the filter is bypassed so a
+                // language-scoped rule still fires against text with no file extension
+                // (the VibeGate baby-step pre-gate scans task text with file_path="").
+                let lang_matches = context.language_agnostic
+                    || language.as_ref().is_none_or(|lang| {
+                        detect_language_from_ext(context.file_path).as_deref()
+                            == Some(lang.as_str())
+                    });
                 // A-21: File context filter — skip if prod/test context doesn't match
                 let ctx_matches = file_context.as_ref().is_none_or(|ctx| {
                     let test = is_test_file(context.file_path);
@@ -991,6 +1003,7 @@ mod tests {
             file_path,
             fsm_phase: FsmPhaseBit::EXECUTING,
             metric_values: FxHashMap::default(),
+            language_agnostic: false,
         }
     }
 
@@ -1370,6 +1383,7 @@ mod tests {
             file_path: "src/main.rs",
             fsm_phase: FsmPhaseBit::EXECUTING,
             metric_values: FxHashMap::default(),
+            language_agnostic: false,
         };
         assert_eq!(ctx.action, "write");
         assert_eq!(ctx.fsm_phase, FsmPhaseBit::EXECUTING);

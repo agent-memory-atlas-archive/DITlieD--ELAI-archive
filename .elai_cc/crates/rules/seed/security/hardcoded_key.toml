@@ -1,0 +1,27 @@
+# F-2c security ruleset -- Hardcoded Cryptographic Key (CWE-321)
+# mutable=0: immutable seed rows, lifecycle-immune.
+# Scope: python + typescript production code.
+# GrepPattern-ONLY (F-2c controller decision -- NoOpAst makes Composite AST
+# children wire-dark on the live gate). Anchored to the crypto SINK plus a
+# literal-key argument: this is a narrower sink than CWE-798 (the constructor
+# name bounds FP). Complements weak_crypto.toml, which gates the ALGORITHM, not
+# the KEY-PROVENANCE. A key sourced from a variable (AES.new(key, ...)) does NOT
+# fire -- only a literal byte/hex key at the sink does.
+
+[[rules]]
+rule_id = "SEC-KEY-001"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Hardcoded crypto key: Python literal key passed to AES/DES/ARC4/Fernet (CWE-321)"
+predicate_json = '{"type":"grep_pattern","pattern":"(AES|DES|ARC4)\\.new\\s*\\(\\s*b?\"[^\"\\n]{8,}\"|Fernet\\s*\\(\\s*b?\"[^\"\\n]{8,}\"","scope":null,"context_lines":2,"language":"python","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-KEY-002"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Hardcoded crypto key: TypeScript literal key passed to createCipheriv (CWE-321)"
+predicate_json = '{"type":"grep_pattern","pattern":"createCipheriv\\s*\\(\\s*\"[^\"\\n]+\"\\s*,\\s*\"[0-9a-fA-F]{16,}\"","scope":null,"context_lines":2,"language":"typescript","file_context":"production"}'
+phase_mask = 4294967295

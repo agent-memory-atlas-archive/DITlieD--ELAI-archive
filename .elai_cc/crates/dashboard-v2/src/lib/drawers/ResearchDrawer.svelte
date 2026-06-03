@@ -465,6 +465,13 @@
     color: var(--text-ghost);
   }
 
+  .rn-stage-row > * {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .rn-stage-row-stage {
     color: var(--text-secondary);
     letter-spacing: 0.04em;

@@ -546,6 +546,7 @@
     padding: 0.25rem 0.5rem;
     border-bottom: 1px solid var(--surface-border, #2a2a2a);
     font-size: 0.85rem;
+    overflow-wrap: anywhere;
   }
 
   .pr-table th,

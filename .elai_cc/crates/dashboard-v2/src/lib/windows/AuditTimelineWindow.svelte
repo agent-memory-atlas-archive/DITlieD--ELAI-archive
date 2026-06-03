@@ -19,8 +19,9 @@
     LevelAuditVerdictJson,
     AuditorMode,
     AuditFinding,
+    TestIntegrityEventJson,
   } from '../api/types';
-  import { getPerLevelVerdicts } from '../api/stub';
+  import { getPerLevelVerdicts, getTestIntegrityEvents } from '../api/stub';
 
   // Active task id — sourced from the workspace store in a follow-up wiring.
   // Until then we accept it via a prop with a sentinel default so the window
@@ -31,6 +32,7 @@
   let { taskId = 'active' }: Props = $props();
 
   let verdicts = $state<LevelAuditVerdictJson[]>([]);
+  let fabricationEvents = $state<TestIntegrityEventJson[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let selectedFindings = $state<AuditFinding[] | null>(null);
@@ -61,8 +63,12 @@
     loading = true;
     error = null;
     try {
-      const rows = await getPerLevelVerdicts(taskId);
+      const [rows, fabRows] = await Promise.all([
+        getPerLevelVerdicts(taskId),
+        getTestIntegrityEvents(taskId),
+      ]);
       verdicts = rows;
+      fabricationEvents = fabRows;
     } catch (e) {
       error = String(e);
     } finally {
@@ -92,6 +98,9 @@
 
   let cascadeCount = $derived(verdicts.filter((v) => v.cascade_to_parent).length);
   let blockCount = $derived(verdicts.filter((v) => v.verdict === 'block').length);
+  let fabricationBlocks = $derived(
+    fabricationEvents.filter((e) => e.kind === 'fabrication_blocked').length,
+  );
 </script>
 
 <div class="audit-timeline">
@@ -101,6 +110,9 @@
       <span class="atl-stat" data-label="verdicts">{verdicts.length}</span>
       <span class="atl-stat atl-block" data-label="blocks">{blockCount}</span>
       <span class="atl-stat atl-cascade" data-label="cascades">{cascadeCount}</span>
+      {#if fabricationBlocks > 0}
+        <span class="atl-stat atl-fabrication" data-label="fabrication blocks" aria-label="{fabricationBlocks} anti-fabrication block{fabricationBlocks === 1 ? '' : 's'}">{fabricationBlocks}</span>
+      {/if}
       <button type="button" class="atl-refresh" on:click={load}>Refresh</button>
     </div>
   </header>
@@ -236,6 +248,7 @@
 
   .atl-block { color: #ef4444; }
   .atl-cascade { color: #f97316; }
+  .atl-fabrication { color: #dc2626; font-weight: 600; }
 
   .atl-refresh {
     background: transparent;

@@ -211,7 +211,7 @@
     white-space: nowrap;
   }
 
-  .project { color: var(--text-secondary); }
+  .project { color: var(--text-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .branch  { color: var(--text-ghost); }
 
   .sep {
@@ -261,7 +261,7 @@
   .gate-label--autonomous { color: var(--teal); }
   .gate-label--interactive { color: var(--text-ghost); }
 
-  .model-label { color: var(--text-ghost); }
+  .model-label { color: var(--text-ghost); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
   .vram-label {
     color: var(--text-secondary);

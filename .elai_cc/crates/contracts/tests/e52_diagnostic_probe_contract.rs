@@ -1,15 +1,15 @@
 //! E-52 Tranche B-3 contract tests for the DiagnosticProbeGate +
 //! TransitionContext.diagnostic_probe_outcome wiring.
 //!
-//! Pins:
-//!   - None outcome -> Ok (back-compat for callers that haven't threaded the
-//!     producer yet).
+//! Pins (SP5 wiring-fix: now fail-closed):
+//!   - None outcome -> Err (R1/R2: the probe never ran, absent evidence is a
+//!     hard FAIL, no back-compat soft-pass).
 //!   - Clean Completed outcome -> Ok.
 //!   - Error-severity Completed outcome -> Err with the failing file paths
 //!     in `missing_artifacts`.
-//!   - Error counters with ToolMissing run_status -> Ok (soft-pass per
-//!     E-52-decisions.md (c)/(d)).
-//!   - Error counters with TimedOut run_status -> Ok (soft-pass).
+//!   - ToolMissing run_status -> Err (non-authoritative = necessary-not-
+//!     sufficient, hard FAIL for the autonomous path).
+//!   - TimedOut run_status -> Err (non-authoritative, hard FAIL).
 //!   - Gate is registered for EXECUTING -> AUDITING via `all_gates()`.
 //!
 //! Plan ref: workflow/sessions/s-22300/exploration/tranche-B3-E52.md S-5.
@@ -63,18 +63,24 @@ fn error_outcome(run_status: DiagnosticProbeRunStatus) -> DiagnosticProbeOutcome
 }
 
 // ---------------------------------------------------------------------------
-// 1. Back-compat: None outcome -> Ok
+// 1. SP5 fail-closed: None outcome -> Err (probe never ran = hard FAIL)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_diagnostic_probe_gate_passes_when_outcome_absent() {
+fn test_diagnostic_probe_gate_fails_when_outcome_absent() {
     let ctx = TransitionContext {
         diagnostic_probe_outcome: None,
         ..Default::default()
     };
+    let err = DiagnosticProbeGate.check(&ctx).unwrap_err();
+    assert_eq!(err.gate_name, "diagnostic_probe");
     assert!(
-        DiagnosticProbeGate.check(&ctx).is_ok(),
-        "None outcome must default-degrade to Ok per Tranche B-3 back-compat"
+        err.missing_artifacts
+            .iter()
+            .any(|a| a == "diagnostic_probe_outcome"),
+        "None outcome must hard-FAIL (R1/R2): absent probe = missing evidence; \
+         got {:?}",
+        err.missing_artifacts
     );
 }
 
@@ -119,36 +125,46 @@ fn test_diagnostic_probe_gate_fails_on_error_status() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. ToolMissing run_status -> Ok (soft-pass)
+// 4. SP5 fail-closed: ToolMissing run_status -> Err (non-authoritative =
+//    necessary-not-sufficient, hard FAIL for the autonomous path).
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_diagnostic_probe_gate_softpasses_on_tool_missing() {
+fn test_diagnostic_probe_gate_fails_on_tool_missing() {
     let ctx = TransitionContext {
         diagnostic_probe_outcome: Some(error_outcome(DiagnosticProbeRunStatus::ToolMissing)),
         ..Default::default()
     };
+    let err = DiagnosticProbeGate.check(&ctx).unwrap_err();
+    assert_eq!(err.gate_name, "diagnostic_probe");
     assert!(
-        DiagnosticProbeGate.check(&ctx).is_ok(),
-        "ToolMissing must soft-pass per E-52-decisions.md (c)/(d), \
-         even with non-zero error_count"
+        err.missing_artifacts
+            .iter()
+            .any(|a| a == "diagnostic_probe_authoritative"),
+        "ToolMissing is non-authoritative and must hard-FAIL (R1/R2); got {:?}",
+        err.missing_artifacts
     );
 }
 
 // ---------------------------------------------------------------------------
-// 5. TimedOut run_status -> Ok (soft-pass) — pinned to keep the auditor
-//    responsible for honest reporting downstream.
+// 5. SP5 fail-closed: TimedOut run_status -> Err (non-authoritative, hard
+//    FAIL; a degraded probe is not authoritative evidence of cleanliness).
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_diagnostic_probe_gate_softpasses_on_timed_out() {
+fn test_diagnostic_probe_gate_fails_on_timed_out() {
     let ctx = TransitionContext {
         diagnostic_probe_outcome: Some(error_outcome(DiagnosticProbeRunStatus::TimedOut)),
         ..Default::default()
     };
+    let err = DiagnosticProbeGate.check(&ctx).unwrap_err();
+    assert_eq!(err.gate_name, "diagnostic_probe");
     assert!(
-        DiagnosticProbeGate.check(&ctx).is_ok(),
-        "TimedOut must soft-pass; auditor reports the partial outcome"
+        err.missing_artifacts
+            .iter()
+            .any(|a| a == "diagnostic_probe_authoritative"),
+        "TimedOut is non-authoritative and must hard-FAIL (R1/R2); got {:?}",
+        err.missing_artifacts
     );
 }
 

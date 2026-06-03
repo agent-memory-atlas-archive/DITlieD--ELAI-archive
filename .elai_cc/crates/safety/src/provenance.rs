@@ -300,4 +300,72 @@ mod tests {
         let back: Provenance = serde_json::from_str(&s).expect("deserialize");
         assert_eq!(p, back);
     }
+
+    // Cold-wiring (s-81344): coverage for previously-untested labels,
+    // constructors, and Provenanced::new / into_value. Pure + deterministic.
+
+    #[test]
+    fn trust_level_labels_exhaustive() {
+        assert_eq!(TrustLevel::Trusted.label(), "trusted");
+        assert_eq!(TrustLevel::Recallable.label(), "recallable");
+        assert_eq!(TrustLevel::Untrusted.label(), "untrusted");
+    }
+
+    #[test]
+    fn text_source_labels_exhaustive() {
+        assert_eq!(TextSource::UserPrompt.label(), "user_prompt");
+        assert_eq!(TextSource::System.label(), "system");
+        assert_eq!(
+            TextSource::ToolOutput {
+                server_url: "http://localhost:8200".to_string(),
+                tool_name: "search".to_string(),
+            }
+            .label(),
+            "tool_output"
+        );
+        assert_eq!(
+            TextSource::Web { url: "https://e.com".to_string() }.label(),
+            "web"
+        );
+        assert_eq!(
+            TextSource::File { source_path: PathBuf::from("/tmp/x") }.label(),
+            "file"
+        );
+        assert_eq!(
+            TextSource::SandboxOutput { sandbox_id: "sb-1".to_string() }.label(),
+            "sandbox_output"
+        );
+        assert_eq!(
+            TextSource::Memory { source_key: "k".to_string() }.label(),
+            "memory"
+        );
+    }
+
+    #[test]
+    fn constructors_set_expected_source_and_trust() {
+        let sys = Provenance::system();
+        assert!(sys.is_trusted());
+        assert_eq!(sys.source.label(), "system");
+
+        let file = Provenance::from_file(PathBuf::from("/home/user/upload.csv"));
+        assert!(file.is_untrusted());
+        assert_eq!(file.source.label(), "file");
+
+        let sandbox = Provenance::from_sandbox("exec-42");
+        assert!(sandbox.is_untrusted());
+        assert_eq!(sandbox.source.label(), "sandbox_output");
+
+        let tool = Provenance::from_tool_output("http://localhost", "grep");
+        assert!(tool.is_untrusted());
+        assert_eq!(tool.source.label(), "tool_output");
+    }
+
+    #[test]
+    fn provenanced_new_preserves_value_and_untrusted_provenance() {
+        let pv = Provenanced::new("secret".to_string(), Provenance::from_sandbox("box-7"));
+        assert_eq!(pv.value(), "secret");
+        assert!(pv.is_untrusted());
+        assert_eq!(pv.provenance().source.label(), "sandbox_output");
+        assert_eq!(pv.into_value(), "secret");
+    }
 }

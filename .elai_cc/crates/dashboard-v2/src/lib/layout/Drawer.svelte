@@ -55,6 +55,12 @@
     'mode-routing-dashboard': 'MODE ROUTING DASHBOARD',
     'failure-modes':        'FAILURE MODES (E-29)',
     'skills':               'APPLICATION SKILLS (C-41)',
+    'vibegate':             'VIBE GATE',
+    'security-rules':       'SECURITY RULES',
+    'deps-security':        'DEPS SECURITY',
+    'security-monotonicity': 'SECURITY MONOTONICITY',
+    'staleness-quarantine': 'STALENESS QUARANTINE',
+    'template-ranking':     'TEMPLATE RANKING',
   };
 
   function handleBackdropClick(e: MouseEvent) {

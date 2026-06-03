@@ -120,6 +120,7 @@ mod static_tests {
             file_path,
             fsm_phase: FsmPhaseBit::EXECUTING,
             metric_values: FxHashMap::default(),
+            language_agnostic: false,
         }
     }
 
@@ -137,6 +138,7 @@ mod static_tests {
             file_path,
             fsm_phase: FsmPhaseBit::EXECUTING,
             metric_values: m,
+            language_agnostic: false,
         }
     }
 
@@ -3061,6 +3063,7 @@ mod proptest_tests {
             file_path: "src/test.py",
             fsm_phase: FsmPhaseBit::EXECUTING,
             metric_values: FxHashMap::default(),
+            language_agnostic: false,
         }
     }
 

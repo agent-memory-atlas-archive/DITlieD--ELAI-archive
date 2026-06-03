@@ -291,8 +291,8 @@ fn e45_f7_action_type_lock_total_variants_updated() {
     );
     let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
     assert!(
-        body.contains("TOTAL_VARIANTS: usize = 394"),
-        "TOTAL_VARIANTS must be bumped to 394 (E-45 +3 variants); file: {}",
+        body.contains("TOTAL_VARIANTS: usize = 482"),
+        "TOTAL_VARIANTS must match the live action_type_lock.rs value (482); file: {}",
         lock_rs.display()
     );
     // The 3 E-45 variants must appear in ALL_VARIANTS.

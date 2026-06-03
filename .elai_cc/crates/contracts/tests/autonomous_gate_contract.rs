@@ -45,6 +45,16 @@ fn all_pass_evidence() -> AutonomousEvidence {
         step_zero_blocks: true,
         babystep_zero_blocks: true,
         plan_zero_blocks: true,
+        // F-10: AUTO-ADVANCE security-monotonicity check; vacuous-default true
+        // for non-monotonicity contexts (same struct-literal extension pattern
+        // as framing_converged / the B-41 per-level fields). Test bodies are
+        // unchanged.
+        security_monotonicity: true,
+        // SP5 wiring-fix: off-agent EXECUTING -> AUDITING legs default FALSE,
+        // so an all-true fixture must set them explicitly. wiring-elai-adr.md
+        // ADR-8.
+        layer3_entrypoint_covered: true,
+        layer4_trace_present: true,
     }
 }
 
@@ -68,6 +78,8 @@ fn ctx_at(level: PipelineLevel, risk: RiskLevel) -> AutonomousGateContext {
         execution_history: elai_orchestrator::ExecutionHistory::default(),
         attempt_index: 0,
         suggested_prompt_prefix: None,
+        // F-6 (C6a): no candidate learned skill in the base contract fixture.
+        candidate_skill_tier: None,
     }
 }
 

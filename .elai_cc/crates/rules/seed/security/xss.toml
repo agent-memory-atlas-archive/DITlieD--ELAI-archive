@@ -1,0 +1,31 @@
+# F-2a security ruleset -- Cross-Site Scripting (CWE-79)
+# mutable=0: immutable seed rows, lifecycle-immune.
+# Scope: python + typescript production code.
+# Anchored to explicit unsafe-HTML-render sinks; avoids broad string matches.
+
+[[rules]]
+rule_id = "SEC-XSS-001"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "XSS via Python mark_safe or Markup bypassing auto-escaping (CWE-79)"
+predicate_json = '{"type":"grep_pattern","pattern":"mark_safe\\s*\\(|Markup\\s*\\(|jinja2\\.Markup\\s*\\(","scope":null,"context_lines":2,"language":"python","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-XSS-002"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "XSS via TypeScript innerHTML or outerHTML assignment (CWE-79)"
+predicate_json = '{"type":"grep_pattern","pattern":"\\.innerHTML\\s*=|\\.outerHTML\\s*=|insertAdjacentHTML\\s*\\(","scope":null,"context_lines":2,"language":"typescript","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-XSS-003"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "XSS via TypeScript dangerouslySetInnerHTML (React) (CWE-79)"
+predicate_json = '{"type":"grep_pattern","pattern":"dangerouslySetInnerHTML\\s*=\\s*\\{\\s*\\{\\s*__html","scope":null,"context_lines":2,"language":"typescript","file_context":"production"}'
+phase_mask = 4294967295

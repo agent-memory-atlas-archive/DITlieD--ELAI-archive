@@ -844,6 +844,26 @@ impl CumulativeTokenTracker {
             (v, a) => profile.effective_ceiling = v.min(a),
         }
     }
+
+    /// C.5 (s-14276) — live per-session budget probe for the PreCompact
+    /// compaction-ladder gate. Returns the IN-WINDOW occupancy, i.e. the
+    /// most recent prompt's token count ([`Self::last_response_prompt`]),
+    /// NOT the cumulative lifetime spend ([`Self::prompt_tokens_total`]).
+    ///
+    /// SEMANTIC (load-bearing, pinned by
+    /// [`cumulative_token_tracker_tests::current_session_budget_returns_last_response_prompt`]):
+    /// the PreCompact dispatcher gate (`hook_dispatcher.rs::dispatch_pre_compact`)
+    /// fires when `used / limit > 0.85`. `used` MUST be the live context-window
+    /// size at compaction time. Cumulative session spend over a long task can
+    /// exceed the window many times over and would trip the 0.85 gate every
+    /// PreCompact (causing repeated handoff saves + SSB churn). The most recent
+    /// prompt size is what actually occupies the window, so it is the correct
+    /// "current budget" signal. A fresh tracker returns `0` (default), so the
+    /// gate sees fraction `0.0` and NOOPs — the safe degradation.
+    #[must_use]
+    pub fn current_session_budget(&self) -> u64 {
+        self.last_response_prompt
+    }
 }
 
 #[cfg(test)]
@@ -865,6 +885,31 @@ mod cumulative_token_tracker_tests {
         assert_eq!(t.cache_write_tokens, 5);
         assert_eq!(t.last_response_prompt, 200);
         assert_eq!(t.last_response_completion, 80);
+    }
+
+    #[test]
+    fn current_session_budget_returns_last_response_prompt() {
+        // C.5 (s-14276): pins the load-bearing semantic — the PreCompact
+        // budget probe returns IN-WINDOW occupancy (last_response_prompt),
+        // NOT cumulative lifetime spend (prompt_tokens_total). A fresh
+        // tracker returns 0 so the 0.85 gate NOOPs (safe default).
+        let mut t = CumulativeTokenTracker::new();
+        assert_eq!(t.current_session_budget(), 0, "fresh tracker = 0");
+        t.record_response(&ProviderUsage::from_u32(100, 50, 10, 5));
+        t.record_response(&ProviderUsage::from_u32(200, 80, 20, 0));
+        // prompt_tokens_total accumulated to 300; last_response_prompt is 200.
+        assert_eq!(t.prompt_tokens_total, 300);
+        assert_eq!(
+            t.current_session_budget(),
+            200,
+            "current_session_budget MUST return last_response_prompt (200), \
+             NOT cumulative prompt_tokens_total (300)"
+        );
+        assert_ne!(
+            t.current_session_budget(),
+            t.prompt_tokens_total,
+            "in-window occupancy must differ from lifetime spend here"
+        );
     }
 
     #[test]

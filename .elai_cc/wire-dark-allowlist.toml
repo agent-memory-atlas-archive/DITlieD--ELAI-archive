@@ -1,0 +1,148 @@
+# wire-dark-allowlist.toml - gate-owned (rule R9, frozen via .claude/gate-manifest.txt).
+#
+# A new default-OFF flag (ELAI_*_ENABLE, cargo feature) FAILS the wiring gate UNLESS
+# it has an [[flag]] row here. Default-off is not a terminal state; a flag with no
+# promotion path is wire-dark by design (Fowler time-bomb, Statsig STALE_ALL_FALSE,
+# Samsara inversion - see WIRING-ENFORCEMENT-RESEARCH-2026-06-02.md section 3.7).
+#
+# This file is authored out-of-band; a plan run being evaluated by the gate may not
+# edit it (gate_freeze_check.py enforces R8). After a reviewed change, re-lock:
+#   python .claude/tools/gate_freeze_check.py --lock
+#
+# Schema (every field required; a row missing any field does NOT grant an exemption):
+#   [[flag]]
+#   name              = "ELAI_X_ENABLE"   # exact flag / cargo-feature name
+#   type              = "experiment"      # "kill_switch" (ops, may be long-lived) or
+#                                         # "experiment" (must promote or die)
+#   owner             = "name"            # who is accountable for promotion/removal
+#   expiry_date       = "YYYY-MM-DD"      # hard date; past expiry is a build break
+#   promotion_plan_id = "E-NN"            # the plan that flips it on by default
+#   smoke_test        = "..."            # the test that exercises the ON path
+#
+# ---- ACTIVE EXEMPTIONS ----
+# D-FZ population (R9). Each row carries ALL six required fields; a row missing any
+# field grants NO exemption. expiry_date is a hard date (past expiry = build break).
+# smoke_test names the test that drives the ON path; the auditor verifies it exists
+# and exercises the flag-ON branch (Layer-3/4). The first four are the known E-plan
+# wire-dark flags (grounded from CLAUDE.md E-38/E-10/E-43/E-31 pointers); the fifth
+# exempts the wiring-fix loop-trigger stub introduced this build (see note below).
+
+[[flag]]
+name              = "ELAI_AI_ROADMAP_SIGNALS_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-38"
+smoke_test        = "crates/orchestrator/tests/roadmap_signals_panel_on_path.rs::roadmap_panel_emits_signal_when_enabled"
+
+[[flag]]
+name              = "ELAI_CRITIC_OF_DESIGN_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-10"
+smoke_test        = "crates/contracts/tests/c10_anti_spiral_contract.rs::critic_decision_event_row_emitted_when_enabled"
+
+[[flag]]
+name              = "ELAI_SKILL_SYSTEM_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-43"
+smoke_test        = "crates/orchestrator/tests/skill_system_event_on_path.rs::skill_loaded_emits_skill_system_event"
+
+[[flag]]
+name              = "ELAI_ROUTE_DECISION_SSB_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-31"
+smoke_test        = "crates/orchestrator/tests/route_decision_ssb_on_path.rs::cloud_route_chosen_emits_route_decision_event"
+
+# WIRE-DARK loop-trigger stub introduced this build (WIRING-FIX-ELAI WAVE 4).
+# This is NOT an ELAI_*_ENABLE env flag; it is a registered code stub carrying the
+# marker `// WIRE-DARK[wiring-fix-elai]:` at crates/orchestrator/src/task_runner.rs
+# (the deferred production loop-trigger that, once landed, invokes the Layer-3
+# coverage runner -- WiringCoverageCmd::run + persist_wiring_coverage_payloads --
+# before the EXECUTING->AUDITING EntrypointAndTraceGate so the derive_layer3/4
+# helpers read live off-agent rows instead of fail-closing on absent rows). It is
+# registered here so the R9 leg does not self-trip on our own gate's stub. ON-path:
+# once the trigger is wired, drive `elai wiring coverage --instrument` from a real
+# baby-step EXECUTING->AUDITING transition and assert a `wiring_evidence` row with
+# entrypoint==layer3_coverage lands in ssb.db (the smoke_test below asserts that).
+[[flag]]
+name              = "WIRE-DARK[wiring-fix-elai]"
+type              = "experiment"
+owner             = "wiring-fix-elai"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "WIRING-FIX-ELAI-SP6-loop-trigger"
+smoke_test        = "crates/orchestrator/tests/wiring_loop_trigger_on_path.rs::exec_to_audit_transition_emits_layer3_coverage_evidence"
+
+# ---- F-PLAN COMPLETION FLAGS (session s-6312, F-plan 100% run) ----
+# F-13: forensic-archive opt-in over data the code itself marks "acceptable to lose"
+# (NOT a security gate, so default-off is the justified W-2 exception, not a graveyard).
+[[flag]]
+name              = "ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "F-13"
+smoke_test        = "crates/orchestrator/tests/session_archive_observable_smoke.rs::stale_open_with_gate_enabled_archives_and_emits"
+
+# F-11: autonomous config-DGM self-mod loop, opt-in by env (deliberate W-2 deviation for
+# an autonomous self-mod loop). Default Tier-1 enforcement is unaffected.
+[[flag]]
+name              = "ELAI_DARWINIAN_LOOP_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "F-11"
+smoke_test        = "crates/cli/tests/darwin_loop_observable_smoke.rs::darwin_loop_one_generation_emits_admit_rows"
+
+# darwinian-evolve cargo feature: gates the F-11 DGM loop AND the F-10 self-mod
+# monotonicity leg (external_benches.rs promote_after_bench_completed) AND the F-8
+# darwinian-archive seam. Single promotion path via F-11's first closed generation.
+[[flag]]
+name              = "darwinian-evolve"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "F-11"
+smoke_test        = "crates/cli/tests/darwin_loop_observable_smoke.rs::darwin_loop_one_generation_emits_admit_rows"
+
+# ---- CANDIDATES TO TRIAGE ----
+# Known existing default-OFF flags (grounded from CLAUDE.md). Each is wire-dark today.
+# Fill expiry_date + a real ON-path smoke_test, confirm type/owner, then move the row
+# up into ACTIVE EXEMPTIONS and uncomment. Until then they are NOT exempt.
+#
+# [[flag]]
+# name              = "ELAI_AI_ROADMAP_SIGNALS_ENABLE"   # E-38 RoadmapPanel / roadmap_signals.rs
+# type              = "experiment"
+# owner             = "TODO"
+# expiry_date       = "TODO"
+# promotion_plan_id = "E-38"
+# smoke_test        = "TODO"
+#
+# [[flag]]
+# name              = "ELAI_CRITIC_OF_DESIGN_ENABLE"     # E-10 CriticDecisionPanel
+# type              = "experiment"
+# owner             = "TODO"
+# expiry_date       = "TODO"
+# promotion_plan_id = "E-10"
+# smoke_test        = "TODO"
+#
+# [[flag]]
+# name              = "ELAI_SKILL_SYSTEM_ENABLE"         # E-43 skill_system_event
+# type              = "experiment"
+# owner             = "TODO"
+# expiry_date       = "TODO"
+# promotion_plan_id = "E-43"
+# smoke_test        = "TODO"
+#
+# [[flag]]
+# name              = "ELAI_ROUTE_DECISION_SSB_ENABLE"   # E-31 RouteDecisionEvent
+# type              = "experiment"
+# owner             = "TODO"
+# expiry_date       = "TODO"
+# promotion_plan_id = "E-31"
+# smoke_test        = "TODO"

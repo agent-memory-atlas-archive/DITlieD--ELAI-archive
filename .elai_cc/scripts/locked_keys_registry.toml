@@ -129,3 +129,45 @@ signature_blake3 = ""
 # owner_session = "bootstrap-seed"
 # freeze_ts_ms = 0
 # signature_blake3 = ""
+
+# WIRING-FIX-ELAI / D-FZ — wiring-gate fileset L3 locks (LIVE, rule R8 freeze-the-gate).
+#
+# These rows freeze the three data surfaces that constitute the ELAI wiring
+# gate's config + allowlist + manifest + entrypoint set. An agent under
+# evaluation that can rewrite these always writes itself to PASS (Berkeley RDI
+# / ImpossibleBench, WIRING-ENFORCEMENT-RESEARCH-2026-06-02 section R8).
+# Locking them means a staged edit to any of them in a plan-run commit fires
+# LockedKeysViolationDetected (off-agent SSB row, Layer-4 evidence) and the
+# .githooks/pre-commit (D-FZ gate_and_locked_keys_check.sh) blocks the commit
+# fail-closed. A deliberate, human-reviewed gate change uses the L3_OVERRIDE
+# path (git commit --no-verify after documenting the override) and re-records
+# the gate_freeze_check.py baseline (--lock). Paths are .elai_cc-repo-relative;
+# LockedKeysAuditor normalises separators before match.
+#
+# Grounding: arxiv:1908.04734 (Everitt current-RF — the agent must not edit the
+# surfaces that grade its own wiring) + arxiv:1905.12186 (Cohen Boxed Myopic) +
+# .claude/rules/wiring-enforcement.md R8.
+
+[[locked_keys]]
+path = "smoke-manifest.toml"
+line_range = [0, 4294967295]
+reason = "D-FZ R8: Layer-3 smoke manifest is gate-owned; a run may not author its own smoke entries (WIRING-ENFORCEMENT R8 freeze-the-gate)"
+owner_session = "d-fz-freeze"
+freeze_ts_ms = 0
+signature_blake3 = ""
+
+[[locked_keys]]
+path = "wire-dark-allowlist.toml"
+line_range = [0, 4294967295]
+reason = "D-FZ R9: default-OFF flag exemption registry is gate-owned; a run may not self-exempt a wire-dark flag (WIRING-ENFORCEMENT R8/R9)"
+owner_session = "d-fz-freeze"
+freeze_ts_ms = 0
+signature_blake3 = ""
+
+[[locked_keys]]
+path = "elai_cc.toml"
+line_range = [0, 4294967295]
+reason = "D-FZ R8: [wiring.entrypoints] + [wiring.layer3] are the BFS roots + coverage thresholds the reachability/coverage legs gate against; a run may not relax its own entrypoint set or fail-under threshold"
+owner_session = "d-fz-freeze"
+freeze_ts_ms = 0
+signature_blake3 = ""

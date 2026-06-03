@@ -277,6 +277,128 @@ fn parse_pep508_dep_name(line: &str) -> Option<String> {
     }
 }
 
+/// Ecosystem for a dependency candidate extracted from a PR diff.
+///
+/// NOTE: `crates/cli/src/dep_audit.rs` contains a *distinct* `Ecosystem`
+/// type with a broader variant set (Cargo/Pip/Npm/Go/Maven/…). This type
+/// lives at `crate::github_pr::package_verify::Ecosystem` and covers only
+/// the manifest formats we parse in PR diffs. Do NOT glob-import both
+/// modules in the same file to avoid an ambiguous name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ecosystem {
+    Pypi,
+    Npm,
+    Cargo,
+}
+
+/// A dependency candidate with its detected ecosystem, produced by
+/// [`extract_dep_candidates_rich`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepCandidate {
+    pub name: String,
+    pub ecosystem: Ecosystem,
+}
+
+/// Extract dependency name candidates from a unified diff, tagging each
+/// with its [`Ecosystem`]. Uses TOML section tracking
+/// (`[dependencies]` / `[dev-dependencies]` / `[build-dependencies]`) to
+/// distinguish Cargo entries from generic TOML keys.
+///
+/// Back-compat: the original [`extract_dep_candidates`] is unchanged —
+/// callers that only need the names can keep using it.
+///
+/// W-8 note (F-Unit-D): this DIFF-based extractor belongs to the github_pr
+/// PR-review leg (E-41) — it consumes unified-diff `+`/`-` lines, a different
+/// input contract from the write-time gate's RAW-SOURCE extractor in
+/// `crate::vibesec::dep_writetime_gate::extract_dep_candidates`. The two are
+/// intentionally NOT unified: merging a diff parser with a raw-source parser
+/// would be higher-risk than keeping them separate (lower-risk option chosen).
+/// The PR-leg consumer that wires this into a registry probe is the E-41
+/// follow-up; until then the in-crate exerciser is the test module below.
+#[must_use]
+pub fn extract_dep_candidates_rich(diff: &str) -> Vec<DepCandidate> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum TomlSection {
+        Deps,
+        Other,
+    }
+
+    let mut out: Vec<DepCandidate> = Vec::new();
+    let mut toml_section = TomlSection::Other;
+
+    for line in diff.lines() {
+        // Detect TOML section headers on both context lines and added lines
+        // so we track which section we're in even when diff context shifts.
+        let trimmed_body = if line.starts_with('+') && !line.starts_with("+++") {
+            &line[1..]
+        } else if !line.starts_with('-') && !line.starts_with("@@") && !line.starts_with("diff ") {
+            // Context line — update section tracking only.
+            let ctx = line.trim();
+            if ctx.starts_with('[') {
+                let section_lower = ctx.to_ascii_lowercase();
+                toml_section = if section_lower.contains("dependencies") {
+                    TomlSection::Deps
+                } else {
+                    TomlSection::Other
+                };
+            }
+            continue;
+        } else {
+            continue;
+        };
+
+        // Update TOML section tracking from added lines too.
+        let body_trimmed = trimmed_body.trim();
+        if body_trimmed.starts_with('[') {
+            let section_lower = body_trimmed.to_ascii_lowercase();
+            toml_section = if section_lower.contains("dependencies") {
+                TomlSection::Deps
+            } else {
+                TomlSection::Other
+            };
+            // Section headers are never dep candidates themselves.
+            continue;
+        }
+
+        // --- Cargo (TOML) shape: `name = "version"` or `name = { version = ... }` ---
+        // Only emit as Cargo when we are inside a [*dependencies] section.
+        if toml_section == TomlSection::Deps {
+            if let Some(eq_idx) = trimmed_body.find('=') {
+                let lhs = trimmed_body[..eq_idx].trim();
+                let rhs = trimmed_body[eq_idx + 1..].trim_start();
+                if !lhs.is_empty()
+                    && is_dep_name_shape(lhs)
+                    && (rhs.starts_with('"') || rhs.starts_with('{'))
+                {
+                    out.push(DepCandidate {
+                        name: lhs.to_string(),
+                        ecosystem: Ecosystem::Cargo,
+                    });
+                    continue;
+                }
+            }
+        }
+
+        // --- npm (package.json) shape: `"name": "1.2.3"` ---
+        if let Some(name) = parse_json_dep_name(trimmed_body) {
+            out.push(DepCandidate {
+                name,
+                ecosystem: Ecosystem::Npm,
+            });
+            continue;
+        }
+
+        // --- PyPI (pyproject.toml / requirements) shape: PEP 508 specifier ---
+        if let Some(name) = parse_pep508_dep_name(trimmed_body) {
+            out.push(DepCandidate {
+                name,
+                ecosystem: Ecosystem::Pypi,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +443,54 @@ mod tests {
         assert!(flag_candidate(&"x".repeat(65))); // too long
         assert!(!flag_candidate("ab")); // boundary OK
         assert!(!flag_candidate(&"y".repeat(64))); // boundary OK
+    }
+
+    #[test]
+    fn rich_extractor_cargo_section_tracking() {
+        let diff = r#"
++++ b/Cargo.toml
+@@
+ [package]
+ name = "elai"
++
+ [dependencies]
++serde = "1"
++tokio = { version = "1", features = ["full"] }
+ [dev-dependencies]
++pretty_assertions = "1"
+"#;
+        let candidates = extract_dep_candidates_rich(diff);
+        assert!(candidates.iter().any(|c| c.name == "serde" && c.ecosystem == Ecosystem::Cargo));
+        assert!(candidates.iter().any(|c| c.name == "tokio" && c.ecosystem == Ecosystem::Cargo));
+        assert!(candidates.iter().any(|c| c.name == "pretty_assertions" && c.ecosystem == Ecosystem::Cargo));
+        // [package] keys are NOT deps.
+        assert!(!candidates.iter().any(|c| c.name == "name"));
+        assert!(!candidates.iter().any(|c| c.name == "elai"));
+    }
+
+    #[test]
+    fn rich_extractor_npm_ecosystem() {
+        let diff = r#"
++++ b/package.json
+@@
++    "lodash": "4.17.21",
++    "reqquests": "1.0.0",
+"#;
+        let candidates = extract_dep_candidates_rich(diff);
+        assert!(candidates.iter().any(|c| c.name == "lodash" && c.ecosystem == Ecosystem::Npm));
+        assert!(candidates.iter().any(|c| c.name == "reqquests" && c.ecosystem == Ecosystem::Npm));
+    }
+
+    #[test]
+    fn rich_extractor_pypi_pep508() {
+        let diff = r#"
++++ b/pyproject.toml
+@@
++    "requests>=2.28",
++    "orjson==3.9.0",
+"#;
+        let candidates = extract_dep_candidates_rich(diff);
+        assert!(candidates.iter().any(|c| c.name == "requests" && c.ecosystem == Ecosystem::Pypi));
+        assert!(candidates.iter().any(|c| c.name == "orjson" && c.ecosystem == Ecosystem::Pypi));
     }
 }

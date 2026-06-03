@@ -81,6 +81,13 @@ pub(crate) fn run(
         contracts_dir: contracts,
         source_root: project_root.clone(),
         ssb_db_path: None,
+        // SP2 (WAVE 2 + WAVE 6 fix): None walks up from source_root through its
+        // ancestors for the first .claude/tools/elai_graph.json that exists,
+        // inside WiringAuditCmd::graph_path(). The canonical graph is generated
+        // at the OUTER workflow root (one level above .elai_cc), so the inner
+        // path alone would miss it. A CLI override flag can be wired later; the
+        // reachability leg fails closed if no graph is found anywhere up-tree.
+        graph_path: None,
         seed: 0,
         scope,
     };

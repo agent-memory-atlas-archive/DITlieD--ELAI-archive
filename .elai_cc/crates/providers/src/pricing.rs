@@ -173,7 +173,7 @@ pub fn summary_lines(usage: TokenUsage, label: &str) -> Vec<String> {
 mod tests {
     use super::{
         estimate_cost_usd, estimate_cost_usd_with_pricing, format_usd, pricing_for_model,
-        summary_lines_for_model,
+        summary_lines_for_model, ModelPricing,
     };
     use elai_core::TokenUsage;
 
@@ -222,5 +222,27 @@ mod tests {
         };
         let lines = summary_lines_for_model(usage, "usage", Some("custom-model"));
         assert!(lines[0].contains("pricing=estimated-default"));
+    }
+
+    // Cold-wiring (s-81344): cover pricing_for_model branches NOT exercised by
+    // the cost tests above — case-insensitivity, the sonnet branch, and the
+    // explicit None for non-Anthropic-family models.
+    #[test]
+    fn pricing_for_model_case_insensitivity_and_branches() {
+        // Case-insensitive match (the .to_ascii_lowercase() path).
+        assert!(pricing_for_model("CLAUDE-OPUS-4-6").is_some());
+        assert!(pricing_for_model("Claude-Haiku-4-5").is_some());
+        // Sonnet branch returns the default sonnet tier exactly.
+        assert_eq!(
+            pricing_for_model("claude-sonnet-4-6"),
+            Some(ModelPricing::default_sonnet_tier())
+        );
+        // No haiku/opus/sonnet substring -> None.
+        assert!(pricing_for_model("gpt-4o").is_none());
+        assert!(pricing_for_model("").is_none());
+        // Haiku is the cheapest tier (distinct from the sonnet/opus default).
+        let haiku = pricing_for_model("some-haiku-alias").expect("haiku pricing");
+        assert!((haiku.input_cost_per_million - 1.0).abs() < f64::EPSILON);
+        assert!((haiku.cache_read_cost_per_million - 0.1).abs() < f64::EPSILON);
     }
 }

@@ -261,7 +261,34 @@ export type DrawerKey =
   // C-41 — Application Skills System (9 skills under .elai_cc/skills/,
   // pre-classify routing telemetry via skill_triggered + skill_executed
   // SSB rows). Wire-dark unless ELAI_APPLICATION_SKILLS_ENABLE=1.
-  | 'skills';
+  | 'skills'
+  // F-1 / A5: per-surface VibeGateDrawer (list_vibegate_blocks command).
+  // Default-ON (B1/W-2): VibeGateBlocked rows emit with no env override.
+  | 'vibegate'
+  // F-2a / A5: per-surface SecurityRulesPanel (get_security_blocks_recent command).
+  // Default-ON (B1/W-2): SecurityRuleBlocked rows emit with no env override.
+  | 'security-rules'
+  // F-9 / Slice D5: DepsSecurityPanel (write_time_slop_status command).
+  // Default-ON (B1/W-2): WriteTimeSlopsquatBlocked rows emit with no env override.
+  | 'deps-security'
+  // F-10 / Slice A5: SecurityMonotonicityDrawer (get_security_monotonicity_blocks).
+  // Default-ON (W-2): SecurityClassRegressionBlocked rows emit unless the
+  // ELAI_SECURITY_MONOTONICITY_DISABLE kill-switch is set.
+  | 'security-monotonicity'
+  // F-5 / Slice A5: StalenessQuarantineDrawer (get_staleness_quarantine).
+  // No ENABLE gate (W-2): staleness_quarantine_broadcast rows emit at the
+  // decay-tick boundary when a fact crosses the staleness threshold.
+  | 'staleness-quarantine'
+  // F-7 / Slice A5: TemplateRankingDrawer (get_template_ranking).
+  // No ENABLE gate (W-2): template_utility_ranked rows emit at the try_execute
+  // gate-threshold seam + the CLI. Renders smoothed utility vs raw
+  // first_try_ratio side-by-side (the F-7 before/after view).
+  | 'template-ranking'
+  // F-13 / Slice A5: SessionArchiveDrawer (get_session_archives).
+  // Producer gate ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE is default-OFF / wire-dark
+  // (forensic opt-in): session_archived rows emit at the run_migration DROP
+  // site when a stale-version SSB is cold-archived before the destructive DROP.
+  | 'session-archive';
 
 // ------------------------------------------------------------------
 // C-41 — Application Skills System DTOs.
@@ -1479,6 +1506,96 @@ export interface SelfModMsiSnapshot {
   msi_value: number;
   status: string;
   ts_ms: number;
+}
+
+// ------------------------------------------------------------------
+// F-8 / Slice A5 — SCF symbolic-conflict feed. One row per held-pending
+// self-mod config variant the SCF symbolic detector flagged against an
+// active locked-key invariant (`self_mod_safety::LOCKED_KEYS`). POLICY is
+// WARN-then-escalate, never hard fail-closed — these are held-pending
+// variants awaiting human escalation, NOT rejections.
+//
+// Mirrors `orchestrator::ssb_viewer::SymbolicConflictRow` field-for-field
+// (serde serializes the Rust field names verbatim over the IPC boundary).
+// ------------------------------------------------------------------
+export interface SymbolicConflict {
+  /** SSB sequence number (newest-first ordering key). */
+  seq: number;
+  /** Row creation wall-clock ms. */
+  ts_ms: number;
+  /** blake3 hex-prefix of the conflict tuple (kind + key + candidate_id). */
+  fingerprint: string;
+  /** Conflict class / symbolic tag. */
+  kind: string;
+  /** The locked invariant key the variant contradicts. */
+  key: string;
+  /** Human-readable contradiction detail (proposed vs locked invariant). */
+  detail: string;
+  /** Stable id of the flagged-and-held-pending config variant. */
+  candidate_id: string;
+  /** FSM agent sub-state at flag time. */
+  fsm_substate: string;
+}
+
+// ------------------------------------------------------------------
+// F-11 — config-DGM admit-loop feed row. Each entry is one candidate routed
+// through the four-guard chain (tripwire blake3 fingerprint, trap-pattern
+// scorer, is_security_sensitive, Two-Gate): Admitted (passed all guards +
+// inserted), RejectedByGuard (a guard fired — guard_rejected_by names it), or
+// LoopClosed (select_parent ran after insert_variant). Wire-dark producer (the
+// darwin-loop CLI, gated by feature darwinian-evolve + ELAI_DARWINIAN_LOOP_-
+// ENABLE=1); empty in steady state.
+//
+// Mirrors `orchestrator::ssb_viewer::DarwinianAdmitRow` field-for-field (serde
+// serializes the Rust field names verbatim over the IPC boundary).
+// ------------------------------------------------------------------
+export interface DarwinianAdmit {
+  /** SSB sequence number (newest-first ordering key). */
+  seq: number;
+  /** Row creation wall-clock ms. */
+  ts_ms: number;
+  /** Discriminator: 'admitted' | 'rejected_by_guard' | 'loop_closed'. */
+  kind: string;
+  /** Stable id of the candidate config variant the loop evaluated. */
+  variant_id: string;
+  /** Parent variant id the candidate mutated from (null for a root seed). */
+  parent_id: string | null;
+  /** Real evaluation score in [0, 1] (the Two-Gate margin basis). */
+  alpha: number;
+  /** Firing guard on 'rejected_by_guard' (tripwire/trap/security/two_gate); null otherwise. */
+  guard_rejected_by: string | null;
+  /** blake3 hex-prefix (16 chars) of the candidate config_blob. */
+  candidate_blake3: string;
+}
+
+// ------------------------------------------------------------------
+// F-12 — semantic-contradiction feed. Each pair is one
+// memory_conflict_detected SSB row whose conflict_kind is
+// "semantic_contradiction" (the deterministic-NLI second pass in the live
+// memory tick). The InvalidatedOlder rows additionally carry a soft-closed
+// older fact row in the FactStore; SurfaceToUser rows leave both valid.
+//
+// Mirrors `commands_e5::SemanticContradictionDto` field-for-field (serde
+// serializes the Rust field names verbatim over the IPC boundary).
+// ------------------------------------------------------------------
+export interface SemanticContradiction {
+  /** Older row id (fact_id_a). */
+  fact_id_a: string;
+  /** Newer row id (fact_id_b). */
+  fact_id_b: string;
+  /** Free-form conflict kind (always "semantic_contradiction" here). */
+  conflict_kind: string;
+  /** SSB sequence number (newest-first ordering key). */
+  seq: number;
+  /** Row creation wall-clock ms. */
+  ts_ms: number;
+}
+
+export interface SemanticContradictionsResponse {
+  /** Whether an SSB viewer was attached (false in browser-dev / no DB). */
+  viewer_attached: boolean;
+  /** The semantic-contradiction pairs, newest first. */
+  pairs: SemanticContradiction[];
 }
 
 // ------------------------------------------------------------------
@@ -3062,4 +3179,290 @@ export interface FreeTierQuotaRow {
   status: string;
   remaining_pct: number;
   ts_ms: number;
+}
+
+// ------------------------------------------------------------------
+// F-1 / A5: per-surface DTOs for the split DrawerKey surfaces.
+// Mirrors commands_vibegate.rs::VibeGateRow and
+// commands_f2.rs::SecurityRuleRow (Rust source of truth).
+// Field `ts` (not `ts_ms`) matches the Rust serde output.
+// ------------------------------------------------------------------
+
+/** One VibeGateBlocked row for the VibeGateDrawer (DrawerKey vibegate). */
+export interface VibeGateRow {
+  seq: number;
+  ts: number;
+  /** "CodeVuln" | "Secret" | "DepHallucinated" | "Skill" */
+  kind: string;
+  rule_id: string | null;
+  cwe: string | null;
+  file_path: string;
+  source_blake3: string;
+  citation: string | null;
+  fsm_state: string | null;
+}
+
+// ------------------------------------------------------------------
+// F-4 Slice B-5 — TestIntegrityEvent DTO (AuditTimelineWindow fabrication badge).
+//
+// Mirrors Rust `TestIntegrityEventJson` in commands.rs:
+//   test_name: String, passed: bool, has_stdout_hash: bool, kind: String
+// kind is one of "verified" | "fabrication_blocked" (sql_str arms of
+// TestIntegrityEventKind). Cross-lang drift gate: cross_lang_diff.py.
+// ------------------------------------------------------------------
+export interface TestIntegrityEventJson {
+  test_name: string;
+  passed: boolean;
+  has_stdout_hash: boolean;
+  kind: 'verified' | 'fabrication_blocked';
+}
+
+/** One SecurityRuleBlocked flat-beacon row for the SecurityRulesPanel (DrawerKey security-rules). */
+export interface SecurityRuleRow {
+  seq: number;
+  ts: number;
+  rule_id: string;
+  cwe: string;
+  file_path: string;
+  language: string;
+  candidate_blake3: string;
+}
+
+/**
+ * F-2b / A5 -- the static-gate insecure-rate keystone for the
+ * SecurityRulesPanel before/after tile. Mirrors the Rust `InsecureRateRow`
+ * in commands_f2.rs (field names exact). These are the REAL ELAI static
+ * write-gate (`evaluate_vibegate`) measurements over a SeCodePLT-structured
+ * CWE corpus; DISTINCT from the SeCodePLT dynamic secure-coding rate.
+ */
+export interface InsecureRateRow {
+  suite: string;
+  model_id: string;
+  n_samples: number;
+  insecure_rate_before: number;
+  insecure_rate_after: number;
+  gate_recall: number;
+  ts: number;
+}
+
+// ------------------------------------------------------------------
+// F-9 / Slice D5 -- DepsSecurityPanel DTOs.
+// Mirrors Rust structs in commands_f9.rs (camelCase on the wire via
+// serde defaults). cross-lang-pair: dashboard/tauri/api.
+// ------------------------------------------------------------------
+
+/** One WriteTimeSlopsquatBlocked SSB row for the DepsSecurityPanel (DrawerKey deps-security). */
+export interface WriteTimeSlopRow {
+  seq: number;
+  ts_ms: number;
+  /** blake3 64-bit prefix of the dependency name (never the raw name). */
+  dep_name_hash: number;
+  /** Package ecosystem: "cargo" | "pypi" | "npm". */
+  ecosystem: string;
+  /** Verdict kind label: "not_found" | "too_new". */
+  verdict_kind: string;
+  /** Package age in days (only present for the "too_new" arm). */
+  registry_age_days: number | null;
+}
+
+/** Per-verdict-kind block count for the DepsSecurityPanel summary header. */
+export interface WriteTimeSlopCount {
+  verdict_kind: string;
+  count: number;
+}
+
+/** Top-level DTO returned by write_time_slop_status (DrawerKey deps-security). */
+export interface WriteTimeSlopStatusDto {
+  /** True unless ELAI_HOOKS_DISABLED is set (global hook dispatcher kill-switch). */
+  env_active: boolean;
+  /** Total number of WriteTimeSlopsquatBlocked rows in the query window. */
+  total_blocked: number;
+  /** Per-verdict-kind breakdown from the recent rows (sorted by count desc). */
+  counts_by_verdict: WriteTimeSlopCount[];
+  /** Most recent rows, newest first, capped at 50. */
+  recent_rows: WriteTimeSlopRow[];
+}
+
+/**
+ * One security_class_regression_blocked SSB row for the
+ * SecurityMonotonicityDrawer (DrawerKey security-monotonicity, F-10 / A5).
+ */
+export interface SecurityMonotonicityRow {
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts: number;
+  /** Production leg: "refine" | "auto_advance" | "self_mod" (LoopKind label). */
+  loop_kind: string;
+  /** Stable identifier of the iteration-loop instance. */
+  loop_id: string;
+  /** Security-class labels newly introduced by this iteration (the regression set). */
+  introduced_classes: string[];
+  /** Security-class labels present in the prior iteration (the baseline). */
+  prior_classes: string[];
+  /** blake3 hex-prefix of the regressing candidate edit blob (never raw source). */
+  delta_blake3: string;
+  /** Snake-case language label (e.g. "rust" | "python" | "typescript"). */
+  lang: string;
+}
+
+/**
+ * Response envelope returned by get_security_monotonicity_blocks
+ * (DrawerKey security-monotonicity, F-10 / A5).
+ */
+export interface SecurityMonotonicityResponse {
+  /** Most recent rows, newest first, capped at 50. */
+  rows: SecurityMonotonicityRow[];
+  /**
+   * True when the guard is ENABLED (default-ON; false only when the
+   * ELAI_SECURITY_MONOTONICITY_DISABLE kill-switch is set).
+   */
+  env_active: boolean;
+}
+
+/**
+ * One SkillLibraryEvent SSB row for the SkillsPanel Trust-Ladder timeline
+ * (F-6 / A5). Merges the three arms (skill_acquired / skill_trust_promoted /
+ * skill_demoted_stale) into a single newest-first stream.
+ */
+export interface SkillLibraryRow {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts: number;
+  /** Stable id of the learned skill. */
+  skill_id: string;
+  /** Tier AFTER the event (snake-case wire label: "s1".."s4"). */
+  tier: string;
+  /** Tier BEFORE the event for a transition; null for an acquisition. */
+  prior_tier: string | null;
+  /** Fire-point: "acquired" | "trust_promoted" | "demoted_stale". */
+  kind: string;
+  /** Cumulative successful invocations at event time. */
+  invocations: number;
+  /** Failure rate (failures / total) at event time. */
+  failure_rate: number;
+}
+
+/**
+ * One rung of the derived current-state Trust-Ladder (F-6 / A5): the tier each
+ * skill currently sits at, folded from the newest event per skill_id.
+ */
+export interface SkillLadderEntry {
+  /** Stable id of the learned skill. */
+  skill_id: string;
+  /** Current tier (snake-case wire label) per the newest event. */
+  tier: string;
+  /** Cumulative successful invocations at the newest event. */
+  invocations: number;
+  /** Failure rate at the newest event. */
+  failure_rate: number;
+  /** SSB row timestamp (epoch millis) of the newest event. */
+  ts: number;
+}
+
+/**
+ * Response envelope returned by get_skill_library (F-6 / A5). Carries the
+ * merged newest-first event timeline and the derived per-skill ladder snapshot.
+ */
+export interface SkillLibraryResponse {
+  /** Most recent SkillLibraryEvent rows across all arms, newest first. */
+  events: SkillLibraryRow[];
+  /** Derived per-skill current-tier snapshot, sorted by skill id. */
+  ladder: SkillLadderEntry[];
+}
+
+/**
+ * One staleness_quarantine_broadcast SSB row for the StalenessQuarantineDrawer
+ * (DrawerKey staleness-quarantine, F-5 / A5). Emitted at the orchestrator/CLI
+ * memory-decay-tick boundary when a fact crosses the staleness threshold; the
+ * cascade demotes downstream DKG concepts to concept_stale=2 + a non-destructive
+ * staleness_quarantined marker edge + flags Cosmos artifacts.
+ */
+export interface StalenessQuarantineRow {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts: number;
+  /** Stable id of the quarantined fact. */
+  fact_id: string;
+  /** Decay staleness ratio at quarantine time (0.0 fresh .. 1.0+ fully stale). */
+  staleness_ratio: number;
+  /** Count of DKG concepts demoted to concept_stale=2 by this cascade. */
+  dependents_demoted: number;
+  /** Count of Cosmos artifacts flagged stale by this cascade. */
+  cosmos_artifacts_flagged: number;
+  /** Queue records DROPPED-OLDEST due to capacity overflow at emit time. */
+  dropped_count: number;
+}
+
+/**
+ * Response envelope returned by get_staleness_quarantine (F-5 / A5). Carries the
+ * newest-first staleness_quarantine_broadcast row stream.
+ */
+export interface StalenessQuarantineResponse {
+  /** Most recent rows, newest first, capped at 50. */
+  rows: StalenessQuarantineRow[];
+}
+
+/**
+ * One template_utility_ranked SSB row for the TemplateRankingDrawer
+ * (DrawerKey template-ranking, F-7 / A5). Emitted at the
+ * CompiledExecutor::try_execute gate-threshold seam and by the
+ * `elai template-ranking list` CLI when a crystallized-pipeline template's
+ * Laplace-smoothed outcome utility is computed. The drawer renders `utility`
+ * (smoothed, "after") next to `first_try_ratio` (raw recorded baseline,
+ * "before") side-by-side. A 1/1 template scores utility ~= 0.667 while its
+ * first_try_ratio is 1.0; the two converge as sample_n grows.
+ */
+export interface TemplateRankingRow {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts: number;
+  /** Concept-class key the crystallized template is bucketed under. */
+  concept_class: string;
+  /** Stable hash of the plan skeleton (the other half of the cache key). */
+  plan_skeleton_hash: number;
+  /** Laplace-smoothed outcome utility (ALPHA=BETA=1.0); the "after" value. */
+  utility: number;
+  /** Raw recorded baseline (persisted first_try_success_rate); the "before". */
+  first_try_ratio: number;
+  /** Sample size (total firings = persisted use_count) backing the utility. */
+  sample_n: number;
+  /** Stable id of the crystallized pipeline template whose utility was ranked. */
+  chosen_pipeline_id: string;
+}
+
+/**
+ * Response envelope returned by get_template_ranking (F-7 / A5). Carries the
+ * newest-first template_utility_ranked row stream.
+ */
+export interface TemplateRankingResponse {
+  /** Most recent rows, newest first, capped at 50. */
+  rows: TemplateRankingRow[];
+}
+
+/**
+ * One session_archived SSB row for the SessionArchiveDrawer
+ * (DrawerKey session-archive, F-13 / A5). Emitted at the run_migration
+ * destructive-DROP site (the Ssb::new production open path) when a stale-version
+ * DB is opened with ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE set; the stale ssb.db is
+ * cold-archived to workflow/sessions/{id}/archive/ssb-v{N}.sqlite BEFORE the
+ * DROP. Field names mirror the Rust `SessionArchiveRow` verbatim (serde).
+ */
+export interface SessionArchive {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** The session whose stale-version store was archived. */
+  session_id: string;
+  /** The on-disk user_version the store carried BEFORE the bump. */
+  stale_version: number;
+  /** Relative path of the archive file under the per-session workflow dir. */
+  archive_path: string;
+  /** blake3 hex-prefix of the archived bytes (integrity check). */
+  manifest_blake3: string;
+  /** Which store: "ssb" (destructive journal) or "session_dag" (precautionary). */
+  store_kind: string;
 }

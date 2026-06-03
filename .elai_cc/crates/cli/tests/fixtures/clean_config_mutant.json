@@ -1,0 +1,11 @@
+{
+  "variant_label": "clean-config-mutant-001",
+  "pipeline_mode": "surgical",
+  "config": {
+    "retry_budget": 3,
+    "context_window_tokens": 24000,
+    "rag_top_k": 8,
+    "temperature": 0.2
+  },
+  "eval_log": "suite=math-floors n=20 score=0.61 all checks passed; no marker edits; tests run unmodified"
+}

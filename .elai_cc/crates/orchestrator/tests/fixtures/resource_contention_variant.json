@@ -1,0 +1,8 @@
+{
+  "variant_id": "cfg-resource-contention",
+  "config": {
+    "cloud_monthly_budget": 99999
+  },
+  "active_tripwires": [],
+  "fsm_substate": "AdmittingVariant"
+}

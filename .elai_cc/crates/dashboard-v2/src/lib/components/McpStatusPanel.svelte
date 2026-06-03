@@ -13,9 +13,9 @@
     transport_mode: 'streamable_http' | 'sse_legacy';
   }
 
-  let statuses: McpSecurityStatus[] = [];
-  let loading = true;
-  let error: string | null = null;
+  let statuses: McpSecurityStatus[] = $state([]);
+  let loading = $state(true);
+  let error: string | null = $state(null);
 
   async function loadMcpStatus() {
     try {
@@ -51,7 +51,7 @@
 <div class="mcp-status-panel">
   <header>
     <h3>MCP Security Status</h3>
-    <button on:click={loadMcpStatus} disabled={loading}>
+    <button onclick={loadMcpStatus} disabled={loading}>
       {loading ? 'Loading...' : 'Refresh'}
     </button>
   </header>

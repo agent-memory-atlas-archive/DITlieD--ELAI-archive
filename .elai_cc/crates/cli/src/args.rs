@@ -229,6 +229,17 @@ pub(crate) enum CliAction {
     Help {
         output_format: CliOutputFormat,
     },
+    /// F-5 / Slice A4: `elai dkg staleness-tick --workspace <path>` — the W-5
+    /// trigger. Forces one memory decay tick, collects facts past the
+    /// staleness-quarantine threshold, pushes them onto a local cascade queue,
+    /// emits one `StalenessQuarantineBroadcast` SSB row per record, drains the
+    /// queue, applies the DKG (`apply_staleness_broadcast`) + cosmos
+    /// (`flag_on_staleness_broadcast`) consumers, and prints
+    /// `dependents_demoted: N`. Single-process full cycle. Handler:
+    /// `crate::dkg_staleness_cmd::run_dkg_staleness_tick`.
+    DkgStalenessTick {
+        workspace: PathBuf,
+    },
     /// B-29 Phase 4: `elai symbol_graph build [--project-root <path>]`
     /// Runs a full symbol-graph build for the given project root.
     SymbolGraphBuild {
@@ -329,6 +340,19 @@ pub(crate) enum CliAction {
         action: Option<String>,
         output_format: CliOutputFormat,
     },
+    /// F-7 / Slice A4: `elai template-ranking list [--json]` — rank
+    /// compiled-pipeline templates by Laplace-smoothed outcome utility (HALF B
+    /// CBR ranking). Reads the persisted `CompiledPipelineStore`, prints
+    /// utility alongside the raw `first_try_ratio` baseline (the before/after),
+    /// and emits a `template_utility_ranked` SSB row per template (default-ON;
+    /// `ELAI_TEMPLATE_CBR_DISABLED` kill-switch). Top-level subcommand (not a
+    /// REPL slash command) parsed by
+    /// `parse_template_ranking_subcommand_args`; handler lives in
+    /// `crate::template_ranking_cmd::run_template_ranking_subcommand`.
+    TemplateRanking {
+        action: Option<String>,
+        json: bool,
+    },
     /// C-27: `elai wiring audit [--scope all|stub-ban|dkg-reachability|observable-effect]
     /// [--config PATH] [--contracts PATH] [--output toml|json]`
     /// — run the deterministic Tier T-0 wiring contract audit. Mirrors the
@@ -339,6 +363,19 @@ pub(crate) enum CliAction {
         scope: Option<String>,
         config_path: Option<String>,
         contracts_dir: Option<String>,
+        output_format: CliOutputFormat,
+    },
+    /// WIRING-FIX-ELAI Phase 2 (SP3): `elai wiring-coverage [--manifest PATH]
+    /// [--diff-base REF] [--output json]` — Layer-3 entrypoint-coverage gate.
+    /// Builds the instrumented `elai` binary, drives the auditor-owned smoke
+    /// scenarios against the REAL binary under production-default env, and
+    /// BLOCKs any NEW (diff-introduced) function whose execution count is 0
+    /// unless cfg(test) or a registered `// WIRE-DARK[B-N]:` marker suppresses
+    /// it. Exits 0 on clean, 1 on any violation OR un-measurable evidence
+    /// (R2 fail-closed). Handler at `crate::wiring_coverage_cmd::run`.
+    WiringCoverage {
+        manifest_path: Option<String>,
+        diff_base: Option<String>,
         output_format: CliOutputFormat,
     },
     /// D-8: `elai archive verify [--path PATH] [--json] [--fail-fast]`.
@@ -736,6 +773,19 @@ pub(crate) enum CliAction {
         fail_fast: Option<String>,
         max_wall_ms_per_scenario: Option<String>,
     },
+    /// F-2b: `elai bench seccodeplt [--json]`. Drives the REAL ELAI static
+    /// write-gate (`vibegate::evaluate_vibegate`) over a SeCodePLT-structured
+    /// CWE corpus OFFLINE (no model, no sandbox) and computes a before/after
+    /// insecure-rate + gate recall. Writes a timestamped
+    /// `seccodeplt-<unix_ms>.json` report under `<cwd>/benchmarks/seccodeplt/`
+    /// and emits exactly one `SsbActionType::InsecureRateMeasured` beacon
+    /// (W-2: always-emitted on run; no `ELAI_*_ENABLE` gate). With `--json`
+    /// the full report JSON is also printed to stdout. Exits 0 on a clean
+    /// run, 1 on infrastructural error. Owns its own tokio runtime
+    /// (`Ssb::new` constructed inside `block_on` per the F-2b playbook).
+    BenchSeccodeplt {
+        json: bool,
+    },
     /// E-17 SP6: `elai bench rag --tier <STANDARD|DEEP> --top-k <N>
     /// [--project-root PATH] [--json] -- <QUERY...>`. Runs the local
     /// knowledge pipeline at the requested tier and emits the final-stage
@@ -878,6 +928,19 @@ pub(crate) enum CliAction {
         action: SafetyAction,
         output_format: CliOutputFormat,
     },
+    /// F-8 / Slice A4: `elai self-mod apply --proposal-fixture PATH
+    /// [--no-env-override]`. The SCF symbolic-conflict detector's W-3
+    /// production entrypoint + W-5 live trigger. Drives a real `ConfigVariant`
+    /// (loaded from the fixture) through the REAL
+    /// `elai_orchestrator::screen_config_variant_for_conflicts` compose unit,
+    /// emitting `symbolic_conflict_detected` SSB beacon(s) and HOLDING the
+    /// candidate pending on conflict (WARN-then-escalate, never fail-closed).
+    /// Handler: `crate::self_mod_cmd::run`. See
+    /// `workflow/reasoning/F-8-decisions.md`.
+    SelfMod {
+        action: SelfModAction,
+        output_format: CliOutputFormat,
+    },
     /// E-40: `elai scip <defs|refs|callers|callees|pagerank|status|import>`.
     /// Orchestrator-rooted symbol-graph operator surface. Loads
     /// `.claude/tools/elai_graph.json` on dispatch + invokes the
@@ -968,6 +1031,27 @@ pub(crate) enum CliAction {
     /// emit cadence. See workflow/reasoning/E-25-trancheC-decisions.md.
     CheckpointSub {
         sub: CheckpointSub,
+    },
+    /// F-9 / Slice D4: `elai dep-check <path> [--offline]` — write-time
+    /// anti-slopsquatting dep-check CLI surface. Reads the file at
+    /// `path`, extracts dependency import lines, runs
+    /// `DepWriteTimeGate.analyze_collect`, prints one BLOCK line per
+    /// `NotFound`/`TooNew` finding, and emits `WriteTimeSlopsquatBlocked`
+    /// SSB rows (durably) to the canonical session `ssb.db`.
+    ///
+    /// DEFAULT mode (no flag) = `SubprocessRegistryChecker` — the REAL live
+    /// network detection leg (W-10/W-5 gated). `--offline` =
+    /// `StubRegistryChecker` — the deterministic demo/contract harness that
+    /// exercises the same gate code path (offline mode is safe on real code,
+    /// only curated known-hallucinated names Block; WARN-3).
+    /// Handler: `crate::dep_check_cmd`.
+    DepCheck {
+        /// File path to scan for dependency imports.
+        path: String,
+        /// When true, use `StubRegistryChecker` (deterministic offline demo).
+        /// When false (default), use `SubprocessRegistryChecker` (the real
+        /// live registry probe).
+        offline: bool,
     },
 }
 
@@ -1087,6 +1171,59 @@ pub(crate) enum SafetyAction {
     /// stack and emit `injection_fixture_replayed` SSB row. Live
     /// model integration RUNPOD-PENDING.
     FixtureReplay { fixture: String },
+    /// `elai safety tool-filter --fixture NAME` — commit a minimal
+    /// researcher tool set (Read + Web), load the named AgentDojo-style
+    /// fixture from `crates/contracts/tests/fixtures/tool_filter/`, replay
+    /// each injection step, assert every out-of-set call is denied, emit
+    /// `tool_filter_committed` + `untrusted_var_quarantined` SSB rows, and
+    /// render a JSON report `{ commit_hash, denied_tool, asr_before,
+    /// asr_after }` where `asr_after` must be strictly less than
+    /// `asr_before`.
+    ToolFilter { fixture: String },
+    /// F-10 / Slice A4: `elai safety monotonicity --fixture PATH
+    /// [--no-env-override]` — security-monotonicity iteration guard live
+    /// trigger. Loads the JSON fixture
+    /// (`{ lang, prior_reply, current_reply }`), classifies the prior reply's
+    /// CWE-class set, constructs the REAL
+    /// `SecurityMonotonicityGate::check_monotonicity` (`loop_kind=Refine`),
+    /// and on `MonotonicityVerdict::Regressed` emits the
+    /// `SecurityClassRegressionBlocked` SSB beacon + Finding (durably, via an
+    /// own current-thread runtime so `Ssb::new` is constructed inside
+    /// `block_on`) and prints the verdict. `--no-env-override` documents that
+    /// the run must NOT be suppressed by an ambient kill-switch — when the
+    /// flag is set and `ELAI_SECURITY_MONOTONICITY_DISABLE` is truthy the
+    /// handler errors instead of silently degrading to `Monotone`.
+    /// Handler: `crate::safety_cmd::run_monotonicity`.
+    Monotonicity {
+        /// Path to the JSON fixture (`{ lang, prior_reply, current_reply }`).
+        fixture: String,
+        /// When true, refuse to run if the kill-switch env var is set truthy
+        /// (the run must observe the real verdict, not a suppressed one).
+        no_env_override: bool,
+    },
+}
+
+/// F-8 / Slice A4 — `elai self-mod <sub>` sub-verb. SCF symbolic-conflict
+/// detector operator surface. Bundled with the parent `SelfMod` variant so the
+/// dispatcher matches a single arm. See `workflow/reasoning/F-8-decisions.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SelfModAction {
+    /// `elai self-mod apply --proposal-fixture PATH [--no-env-override]` — the
+    /// W-3 production entrypoint + W-5 live trigger. Loads a `ConfigVariant`
+    /// fixture (`{ variant_id, config, active_tripwires, fsm_substate }`), runs
+    /// the REAL symbolic-conflict screen against the live `LOCKED_KEYS` +
+    /// tripwire model, and on conflict emits the real `symbolic_conflict_detected`
+    /// SSB beacon(s) (the held-pending record) + reports `status = pending`. The
+    /// candidate is NOT applied and NOT hard-rejected — WARN-then-escalate, never
+    /// fail-closed. `--no-env-override` refuses to run when
+    /// `ELAI_SYMBOLIC_CONFLICT_DISABLE` is truthy (the caller demanded a real
+    /// screen). Handler: `crate::self_mod_cmd::run_apply`.
+    Apply {
+        /// Path to the JSON proposal fixture.
+        proposal_fixture: String,
+        /// When true, refuse to run if the kill-switch env var is set truthy.
+        no_env_override: bool,
+    },
 }
 
 /// E-5 session-2 — `elai memory <sub>` sub-verb. Bundled with the
@@ -1168,6 +1305,22 @@ pub(crate) enum SkillsAction {
     /// emits the body verbatim), and (2) drift detection runs
     /// idempotently so re-runs report drift_count=0 on a clean tree.
     Export { target: String, dry_run: bool },
+    /// F-6 / Slice A4 (C6c) -- `elai skills-mgmt library list` -- print every
+    /// learned skill in the in-memory [`elai_orchestrator::SkillStore`] with
+    /// its trust tier (S1..S4), invocation/failure counts, and staleness.
+    LibraryList,
+    /// F-6 / Slice A4 -- `elai skills-mgmt library promote <id> [--human-grant]`
+    /// -- climb a learned skill one trust rung. The apex jump `S3 -> S4`
+    /// requires `--human-grant`. Emits one `SkillLibraryEvent(TrustPromoted)`
+    /// SSB row on success.
+    LibraryPromote { id: String, human_grant: bool },
+    /// F-6 / Slice A4 -- `elai skills-mgmt library show <id>` -- print one
+    /// learned skill's full record (tier, counts, ages, staleness score).
+    LibraryShow { id: String },
+    /// F-6 / Slice A4 (C6c) -- `elai skills-mgmt library tick` -- run one
+    /// staleness-demotion sweep (`SkillStore::demote_if_stale`) and emit one
+    /// `SkillLibraryEvent(DemotedStale)` SSB row per demoted skill.
+    LibraryTick,
 }
 
 /// C-45 — `elai credit <sub>` sub-verb. Paper-grounded against
@@ -1843,6 +1996,19 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 output_format,
             })
         }
+        // F-9 / Slice D4: `elai dep-check <path> [--offline]`.
+        // DEFAULT uses SubprocessRegistryChecker (real live registry probe);
+        // --offline switches to StubRegistryChecker (deterministic demo).
+        "dep-check" => {
+            let path = rest
+                .iter()
+                .skip(1)
+                .find(|a| !a.starts_with('-'))
+                .cloned()
+                .ok_or_else(|| "dep-check requires a <path> argument".to_string())?;
+            let offline = rest.iter().any(|a| a == "--offline");
+            Ok(CliAction::DepCheck { path, offline })
+        }
         // E-17 SP1 task 1 — `elai doctor [knowledge-models ...]`.
         // `elai doctor` (bare) is also reachable via the single-word
         // command alias at line 1438, but the parse_args dispatch table
@@ -1938,6 +2104,11 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // crates/cli/src/safety_cmd.rs. Layers additively atop E-24 +
         // E-30. See workflow/reasoning/E-37-decisions.md.
         "safety" => parse_safety_subcommand_args(&rest[1..], output_format),
+        // F-8 / Slice A4 — `elai self-mod apply --proposal-fixture PATH`.
+        // SCF symbolic-conflict detector W-3 production entrypoint + W-5 live
+        // trigger; handler at crates/cli/src/self_mod_cmd.rs. See
+        // workflow/reasoning/F-8-decisions.md.
+        "self-mod" => parse_self_mod_subcommand_args(&rest[1..], output_format),
         "scip" => parse_scip_subcommand_args(&rest[1..], output_format),
         // D-16 — `elai conformal-calibration status|update`. Durable
         // UniCR tau persistence CLI surface; handler at
@@ -2000,6 +2171,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "init" => Ok(CliAction::Init { output_format }),
         "run" => parse_run_subcommand_args(&rest[1..]),
         "symbol_graph" | "symbol-graph" => crate::args_symbol::parse_symbol_graph_args(&rest[1..]),
+        // F-5 / Slice A4: `elai dkg staleness-tick --workspace <path>` (W-5).
+        "dkg" => parse_dkg_args(&rest[1..]),
         // B-29 Phase 5b: thin shell wrappers around the SymbolGraphCache
         // traversal API so external scripts (Python eval, agents) can call
         // compute_impact_radius / compute_symbol_context / detect_entry_points
@@ -2089,6 +2262,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 Err(error) => Err(error.to_string()),
             }
         }
+        // F-7 / Slice A4: `elai template-ranking list [--json]` — top-level
+        // subcommand (not a REPL slash command; mirrors `archive` / `ppm`
+        // local-parser shape, no slash-command grammar entry needed).
+        "template-ranking" => parse_template_ranking_subcommand_args(&rest[1..]),
         // C-27: `elai wiring audit ...` routes through the slash-command
         // parser. Mirrors the pipeline/measure shape (string-typed,
         // single-grammar source).
@@ -2112,6 +2289,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 Err(error) => Err(error.to_string()),
             }
         }
+        // WIRING-FIX-ELAI Phase 2 (SP3): `elai wiring-coverage [--manifest PATH]
+        // [--diff-base REF]`. Top-level subcommand (not a REPL slash command):
+        // local arg parse, mirrors `archive`. Validation lives in the handler.
+        "wiring-coverage" => parse_wiring_coverage_subcommand_args(&rest[1..], output_format),
         // D-8: `elai archive verify [--path PATH] [--json] [--fail-fast]`
         // Surfaces ArchiveChain::verify_chain (D-1) as a CLI subcommand +
         // CI hook. Parser is local (no slash-command grammar needed --
@@ -2576,6 +2757,59 @@ pub(crate) fn parse_output_format_value(value: &str) -> Result<CliOutputFormat, 
     }
 }
 
+/// WIRING-FIX-ELAI Phase 2 (SP3): parse `elai wiring-coverage` args. Local
+/// parser (mirrors `archive`). Recognises `--manifest <path>` / `--manifest=<p>`,
+/// `--diff-base <ref>` / `--diff-base=<ref>`. Unknown args are an error.
+///
+/// ADR-6: `rest: &[String]` (NOT `&[&str]`) to match the dispatch-site `&rest[1..]`
+/// slice type; indexes via `rest[i].as_str()` and missing flag values via
+/// `rest.get(i + 1).ok_or(..)?` (no `.unwrap()` per CLAUDE.md no-unwrap rule).
+fn parse_wiring_coverage_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut manifest_path: Option<String> = None;
+    let mut diff_base: Option<String> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--manifest" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "--manifest requires a path value".to_string())?;
+                manifest_path = Some(v.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--manifest=") => {
+                manifest_path = Some(flag["--manifest=".len()..].to_string());
+                i += 1;
+            }
+            "--diff-base" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "--diff-base requires a ref value".to_string())?;
+                diff_base = Some(v.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--diff-base=") => {
+                diff_base = Some(flag["--diff-base=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "elai wiring-coverage: unknown argument `{other}`. \
+                     Use --manifest, --diff-base."
+                ));
+            }
+        }
+    }
+    Ok(CliAction::WiringCoverage {
+        manifest_path,
+        diff_base,
+        output_format,
+    })
+}
+
 /// D-8 — parse `elai archive verify [--path PATH] [--json] [--fail-fast]`.
 ///
 /// Only one sub-verb is currently supported (`verify`). Other archive
@@ -2624,6 +2858,37 @@ pub(crate) fn parse_archive_subcommand_args(rest: &[String]) -> Result<CliAction
         json,
         fail_fast,
     })
+}
+
+/// F-7 / Slice A4 — parse `elai template-ranking <action> [--json]`.
+///
+/// `action` is the optional lower-cased subcommand (`list` | `help` | absent =>
+/// list); validation of unknown actions lives at the handler boundary in
+/// `crate::template_ranking_cmd::run_template_ranking_subcommand`. Mirrors the
+/// `parse_archive_subcommand_args` local-parser shape (top-level subcommand, no
+/// slash-command grammar).
+pub(crate) fn parse_template_ranking_subcommand_args(
+    rest: &[String],
+) -> Result<CliAction, String> {
+    let mut action: Option<String> = None;
+    let mut json = false;
+    for arg in rest {
+        match arg.as_str() {
+            "--json" => json = true,
+            flag if flag.starts_with("--") => {
+                return Err(format!("unknown `template-ranking` argument: {flag}"));
+            }
+            sub => {
+                if action.is_some() {
+                    return Err(format!(
+                        "unexpected extra `template-ranking` argument: {sub}"
+                    ));
+                }
+                action = Some(sub.to_ascii_lowercase());
+            }
+        }
+    }
+    Ok(CliAction::TemplateRanking { action, json })
 }
 
 /// D-2 — parse `elai ppm <sub> [args]`.
@@ -2993,6 +3258,48 @@ pub(crate) fn parse_wip_squash_args(rest: &[String]) -> Result<CliAction, String
         })?,
     };
     Ok(CliAction::WipSquash { project_root })
+}
+
+/// F-5 / Slice A4 — parse `elai dkg staleness-tick --workspace <path>` (W-5).
+/// `--workspace` defaults to the current working directory when omitted.
+pub(crate) fn parse_dkg_args(rest: &[String]) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    let flag_rest = if rest.is_empty() { &rest[..] } else { &rest[1..] };
+
+    let mut workspace: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < flag_rest.len() {
+        match flag_rest[i].as_str() {
+            "--workspace" => {
+                let value = flag_rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --workspace".to_string())?;
+                workspace = Some(PathBuf::from(value));
+                i += 2;
+            }
+            flag if flag.starts_with("--workspace=") => {
+                workspace = Some(PathBuf::from(&flag["--workspace=".len()..]));
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `dkg` argument: {other}"));
+            }
+        }
+    }
+
+    let workspace = match workspace {
+        Some(p) => p,
+        None => std::env::current_dir().map_err(|e| {
+            format!("`dkg` cannot determine cwd for --workspace default: {e}")
+        })?,
+    };
+
+    match sub {
+        "staleness-tick" | "staleness_tick" => Ok(CliAction::DkgStalenessTick { workspace }),
+        other => Err(format!(
+            "unknown `dkg` sub-command: '{other}' (expected 'staleness-tick')"
+        )),
+    }
 }
 
 /// C-43 — parse the `elai freeze` sub-verb. Grammar:
@@ -3655,7 +3962,7 @@ pub(crate) fn parse_safety_subcommand_args(
     let sub = rest
         .first()
         .ok_or_else(|| {
-            "missing `safety` sub-action; expected one of: status, list-pins, verify-pins, fixture-replay"
+            "missing `safety` sub-action; expected one of: status, list-pins, verify-pins, fixture-replay, tool-filter, monotonicity"
                 .to_string()
         })?
         .as_str();
@@ -3718,9 +4025,136 @@ pub(crate) fn parse_safety_subcommand_args(
                 output_format,
             })
         }
+        "tool-filter" => {
+            let mut fixture: Option<String> = None;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--fixture" => {
+                        let value = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--fixture`".to_string())?;
+                        fixture = Some(value.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--fixture=") => {
+                        fixture = Some(flag["--fixture=".len()..].to_string());
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown `safety tool-filter` argument: {other}"
+                        ));
+                    }
+                }
+            }
+            let fixture = fixture.ok_or_else(|| {
+                "`safety tool-filter` requires --fixture <NAME|all>; NAME resolves <NAME>.json under crates/contracts/tests/fixtures/tool_filter/, `all` replays every fixture in that dir".to_string()
+            })?;
+            Ok(CliAction::Safety {
+                action: SafetyAction::ToolFilter { fixture },
+                output_format,
+            })
+        }
+        "monotonicity" => {
+            let mut fixture: Option<String> = None;
+            let mut no_env_override = false;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--fixture" => {
+                        let value = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--fixture`".to_string())?;
+                        fixture = Some(value.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--fixture=") => {
+                        fixture = Some(flag["--fixture=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--no-env-override" => {
+                        no_env_override = true;
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown `safety monotonicity` argument: {other}"
+                        ));
+                    }
+                }
+            }
+            let fixture = fixture.ok_or_else(|| {
+                "`safety monotonicity` requires --fixture <PATH> (a JSON fixture with lang/prior_reply/current_reply)".to_string()
+            })?;
+            Ok(CliAction::Safety {
+                action: SafetyAction::Monotonicity { fixture, no_env_override },
+                output_format,
+            })
+        }
         other => Err(format!(
             "unknown `safety` sub-action `{other}`; \
-             expected one of: status, list-pins, verify-pins, fixture-replay"
+             expected one of: status, list-pins, verify-pins, fixture-replay, tool-filter, monotonicity"
+        )),
+    }
+}
+
+/// F-8 / Slice A4 — `elai self-mod apply --proposal-fixture PATH
+/// [--no-env-override]` argument parser. Mirrors the `safety monotonicity`
+/// flag-walking pattern. Handler at crates/cli/src/self_mod_cmd.rs. See
+/// workflow/reasoning/F-8-decisions.md.
+pub(crate) fn parse_self_mod_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).ok_or_else(|| {
+        "missing `self-mod` sub-action; expected: apply".to_string()
+    })?;
+    match sub {
+        "apply" => {
+            let mut proposal_fixture: Option<String> = None;
+            let mut no_env_override = false;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--proposal-fixture" => {
+                        let value = rest.get(i + 1).ok_or_else(|| {
+                            "missing value for `--proposal-fixture`".to_string()
+                        })?;
+                        proposal_fixture = Some(value.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--proposal-fixture=") => {
+                        proposal_fixture =
+                            Some(flag["--proposal-fixture=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--no-env-override" => {
+                        no_env_override = true;
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown `self-mod apply` argument: {other}"
+                        ));
+                    }
+                }
+            }
+            let proposal_fixture = proposal_fixture.ok_or_else(|| {
+                "`self-mod apply` requires --proposal-fixture <PATH> \
+                 (a ConfigVariant JSON fixture: { variant_id, config, active_tripwires })"
+                    .to_string()
+            })?;
+            Ok(CliAction::SelfMod {
+                action: SelfModAction::Apply {
+                    proposal_fixture,
+                    no_env_override,
+                },
+                output_format,
+            })
+        }
+        other => Err(format!(
+            "unknown `self-mod` sub-action `{other}`; expected one of: apply"
         )),
     }
 }

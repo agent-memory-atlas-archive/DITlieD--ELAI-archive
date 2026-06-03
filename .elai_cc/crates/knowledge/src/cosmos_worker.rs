@@ -628,6 +628,20 @@ pub struct TickReport {
     pub outcomes: Vec<RefreshOutcome>,
 }
 
+/// F-5 / Slice A4: aggregate result of one
+/// [`CosmosWorker::flag_on_staleness_broadcast`] batch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CosmosFlagStats {
+    /// Number of cosmos artifacts transitioned Fresh -> Stale by this cascade.
+    /// Artifacts that were already Stale or Decayed (or had no on-disk meta)
+    /// are NOT counted — the flag is idempotent and only reports new
+    /// demotions.
+    pub artifacts_flagged: u32,
+    /// Names of the artifacts that were flagged, in manifest order. Primarily
+    /// for tests / logging.
+    pub flagged_names: Vec<String>,
+}
+
 impl CosmosWorker {
     /// Construct a worker rooted at `cosmos_root` (typically the result of
     /// [`default_cosmos_root`]).
@@ -736,6 +750,61 @@ impl CosmosWorker {
         } else {
             CosmosStatus::Decayed
         }
+    }
+
+    /// F-5 / Slice A4: apply a batch of memory-side staleness-quarantine fact
+    /// ids to the cosmos artifact tier (the cosmos half of the cross-subsystem
+    /// cascade).
+    ///
+    /// For every manifest artifact whose `name` EXACTLY equals a quarantined
+    /// `fact_id` AND is currently [`CosmosStatus::Fresh`] at `now`, the
+    /// artifact is flagged [`CosmosStatus::Stale`]. `CosmosStatus` is NOT a
+    /// stored field — it is computed by [`Self::status_for`] from
+    /// `refreshed_at` vs the cadence window. The flag is therefore expressed
+    /// non-destructively by back-dating `refreshed_at` to exactly the
+    /// Stale-window boundary (`now - interval_secs`), so the next
+    /// [`Self::status_for`] yields `Stale` (age `== interval`, which is
+    /// `>= interval` and `< decay`). The body, blake3, and size are left
+    /// untouched; the next [`Self::tick`] will re-research the now-stale
+    /// artifact through the normal refresh path.
+    ///
+    /// The locked 3-variant [`CosmosStatus`] enum is reused as-is (the
+    /// existing `Stale` arm) — no new variant is added.
+    ///
+    /// Match criterion mirrors the DKG side: EXACT name equality, the
+    /// conservative choice that avoids over-flagging unrelated artifacts.
+    /// Already-Stale / already-Decayed artifacts are left untouched and not
+    /// counted (idempotent). Artifacts with no on-disk meta are skipped (there
+    /// is nothing to back-date).
+    ///
+    /// `now` is supplied by the caller (not read from `self.clock`) to mirror
+    /// [`Self::refresh_one`]'s explicit-`now` style and keep the method
+    /// deterministically testable.
+    pub fn flag_on_staleness_broadcast(
+        &self,
+        fact_ids: &[String],
+        now: i64,
+    ) -> Result<CosmosFlagStats, CosmosError> {
+        let mut stats = CosmosFlagStats::default();
+        for spec in &self.manifest.artifacts {
+            if !fact_ids.iter().any(|id| id == &spec.name) {
+                continue;
+            }
+            let mut meta = match self.read_meta(&spec.name)? {
+                Some(m) => m,
+                None => continue, // No meta on disk yet — nothing to back-date.
+            };
+            if !matches!(self.status_for(&meta, now), CosmosStatus::Fresh) {
+                continue; // Already Stale / Decayed — idempotent skip.
+            }
+            // Non-destructive demotion: back-date refreshed_at to the
+            // Stale-window boundary. age == interval_secs => Stale.
+            meta.refreshed_at = now.saturating_sub(meta.refresh_cadence.interval_secs());
+            self.write_meta(&meta)?;
+            stats.artifacts_flagged = stats.artifacts_flagged.saturating_add(1);
+            stats.flagged_names.push(spec.name.clone());
+        }
+        Ok(stats)
     }
 
     fn body_path(&self, name: &str) -> PathBuf {

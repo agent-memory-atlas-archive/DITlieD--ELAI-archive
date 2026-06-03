@@ -267,7 +267,7 @@
     font-size: 12px;
   }
   .label  { color: #999; min-width: 110px; }
-  .value  { color: #ddd; }
+  .value  { color: #ddd; min-width: 0; overflow-wrap: anywhere; }
   .value.mono { font-family: monospace; }
   details { margin: 8px 0; }
   details summary {

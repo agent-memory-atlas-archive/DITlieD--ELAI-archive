@@ -44,6 +44,7 @@ use crate::ssb::{
     CompiledPipelineFiredPayload, DecompileTriggeredPayload, DecompileTriggerReason,
     Ssb, SsbPayload, TemplateCrystallizedPayload,
 };
+use crate::template_utility::laplace_utility_from_fields;
 
 // ---------------------------------------------------------------------------
 // Constants — named, no magic numbers (per codeRules).
@@ -496,7 +497,20 @@ impl CompiledExecutor {
                 key.1,
             ));
         };
-        if pipeline.first_try_success_rate < self.confidence_threshold {
+        // F-7 (Half B): gate on the Laplace add-one SMOOTHED utility rather than
+        // the raw `first_try_success_rate`. The raw rate over-trusts thin
+        // evidence — a single 1/1 firing reads as 1.0 and sails past a 0.9
+        // confidence threshold. `laplace_utility_from_fields` reconstructs the
+        // success count from the stored rate + `use_count` and applies the
+        // (successes + ALPHA) / (total + ALPHA + BETA) posterior mean, so 1/1
+        // scores 0.667 and a low-sample template now decompiles to the LLM.
+        // This is EQUAL-OR-STRICTER than the old gate for low samples and
+        // converges to the raw rate as `use_count` grows: it is never MORE
+        // permissive than before. `first_try_success_rate` is retained as the
+        // recorded baseline (W-2 no-removal); `confidence_threshold` is unchanged.
+        let gate_utility =
+            laplace_utility_from_fields(pipeline.first_try_success_rate, pipeline.use_count);
+        if gate_utility < self.confidence_threshold {
             // Low confidence — decompile (caller falls through to LLM).
             drop(cache);
             self.emit_decompile_triggered(

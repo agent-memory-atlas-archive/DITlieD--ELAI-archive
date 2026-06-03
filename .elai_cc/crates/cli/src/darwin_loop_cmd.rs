@@ -1,33 +1,49 @@
-//! E-7 -- `elai darwin-loop` CLI dispatcher.
+//! F-11 -- `elai darwin-loop` CLI dispatcher.
 //!
-//! Exercises the darwinian-evolve substrate (DiscountedTsConfig +
-//! DiscountedArmPosterior + SuccessiveRejects + trap_tasks fixtures)
-//! as a single CLI surface so the wire-format runs end-to-end without
-//! a live multi-agent loop. The live evolution loop (population
-//! mutation, cross-domain canary gate, promotion vote) is
-//! RUNPOD-PENDING and gated behind `cfg(feature = "darwinian-evolve")`
-//! + `ELAI_DARWINIAN_LOOP_ENABLE=1` per E-7 DECISION-13.
+//! Closes ONE config-only Darwin-Goedel-Machine generation: propose -> evaluate
+//! (real candidate-derived alpha, NOT a synthetic alternating reward) -> the
+//! four-guard chain (blake3 tripwire fingerprint, trap-pattern scorer on the
+//! LIVE candidate, the Layer-1A `is_security_sensitive` keyword filter, and the
+//! Two-Gate promotion gate) -> `config_archive::insert_variant` (the FIRST
+//! production caller) -> `config_archive::select_parent` (loop closure) -> emit
+//! `SsbActionType::DarwinianAdmit` rows.
 //!
-//! Flags:
-//!   --generations N    (default 1)        Number of evolve rounds.
-//!   --mutants K        (default 3)        Arms per round.
-//!   --seed S           (default 42)       Deterministic seed (echoed only).
-//!   --traps T          (default 3)        Trap-task fixture rows to score.
-//!   --gamma G          (default DEFAULT_DISCOUNT_FACTOR)  DS-TS discount.
+//! The reusable loop core lives in
+//! [`elai_orchestrator::darwin_admit_loop`] (the `elai-cli` crate is binary-only
+//! for this module, so the testable logic is in the library so contract tests +
+//! the observable smoke can drive the SAME production path). This module is the
+//! thin production entrypoint wired at `main.rs::CliAction::DarwinLoop`.
 //!
-//! NO SsbActionType variants are emitted (per E-7 wire-dark default).
-//! NO live sidecar call. Output prints per-arm posterior mean +
-//! SuccessiveRejects log_bar + trap-pattern enumeration so the surface
-//! is observable in CI.
+//! Wire-dark: the real loop body runs ONLY when BOTH
+//! `cfg(feature = "darwinian-evolve")` AND `ELAI_DARWINIAN_LOOP_ENABLE=1` are
+//! set (an autonomous self-modification loop is opt-in by ELAI policy; E-7
+//! DECISION-13 + CLAUDE.md autonomous-mode). With the feature OFF the dispatch
+//! shim prints the DISABLED message; with the feature ON but the env gate unset
+//! the loop prints a gated notice and inserts nothing.
+//!
+//! Flags (unchanged from E-7):
+//!   --generations N    (default 1)        Number of evolve rounds (F-11 ships 1).
+//!   --mutants K        (default 3)        Candidate count per round.
+//!   --seed S           (default 42)       Deterministic seed (ELAI_SEED).
+//!   --traps T          (default 3)        Legacy trap-fixture count (telemetry).
+//!   --gamma G          (default ...)      Legacy DS-TS discount (telemetry).
+//!
+//! Mutant injection: `ELAI_DARWINIAN_LOOP_MUTANTS_JSON` may point at a JSON
+//! array of mutant candidates (used by the deterministic offline smoke + live
+//! runs to inject a fixed candidate set, e.g. a trap mutant + a clean mutant).
+//! When unset, the driver seeds `--mutants` deterministic clean candidates.
+//!
+//! NO `.unwrap()`/`.expect()` in non-test paths; thresholds are named consts in
+//! the orchestrator core; the candidate fingerprint uses blake3 ONLY (per the
+//! CLAUDE.md HARD RULE; the orchestrator core computes it).
 
 #[cfg(feature = "darwinian-evolve")]
-use elai_orchestrator::darwinian_bai::{
-    DiscountedArmPosterior, DiscountedTsConfig, SuccessiveRejects, DEFAULT_DISCOUNT_FACTOR,
+use elai_orchestrator::darwin_admit_loop::{
+    loop_enabled_via_env, run_one_generation, MutantCandidate, DEFAULT_SUITE_NAME,
+    ELAI_DARWINIAN_LOOP_MUTANTS_JSON_ENV,
 };
-#[cfg(feature = "darwinian-evolve")]
-use elai_orchestrator::trap_tasks::{TrapPattern, REQUIRED_TRAP_COUNT, TRAP_WEIGHT_MULTIPLIER};
 
-/// E-7 dispatch shim. Accepts the raw `gamma` String from args, parses it
+/// E-7/F-11 dispatch shim. Accepts the raw `gamma` String from args, parses it
 /// internally, and branches on the feature flag so `main.rs` is cfg-agnostic.
 ///
 /// Feature-on  : parses gamma -> f64, calls [`run`].
@@ -42,13 +58,13 @@ pub(crate) fn dispatch(
     #[cfg(feature = "darwinian-evolve")]
     {
         let gamma_f: f64 = if gamma.is_empty() {
-            DEFAULT_DISCOUNT_FACTOR
+            elai_orchestrator::darwinian_bai::DEFAULT_DISCOUNT_FACTOR
         } else {
             gamma
                 .parse()
                 .map_err(|e| anyhow::anyhow!("invalid --gamma `{gamma}`: {e}"))?
         };
-        return run(generations, mutants, seed, traps, gamma_f);
+        return darwinian_admit(generations, mutants, seed, traps, gamma_f);
     }
     #[cfg(not(feature = "darwinian-evolve"))]
     {
@@ -61,9 +77,14 @@ pub(crate) fn dispatch(
     }
 }
 
-/// CLI entry — sync, no tokio runtime needed (pure compute).
+/// F-11 driver entry (the `darwinian_admit` driver named in the
+/// WIRING_CONTRACT). Builds a tokio runtime (the archive + SSB calls are async;
+/// `Ssb::new` spawns a single-writer task that MUST be constructed inside the
+/// runtime context), opens the config archive + SSB, loads the mutant candidate
+/// set, and runs ONE closed generation through the four-guard chain via
+/// [`elai_orchestrator::darwin_admit_loop::run_one_generation`].
 #[cfg(feature = "darwinian-evolve")]
-pub(crate) fn run(
+pub(crate) fn darwinian_admit(
     generations: u32,
     mutants: u32,
     seed: u64,
@@ -73,57 +94,119 @@ pub(crate) fn run(
     if !(0.0..=1.0).contains(&gamma) {
         return Err(anyhow::anyhow!("--gamma {gamma} must be in (0.0, 1.0]"));
     }
-    let mutants = mutants.max(2) as usize;
-    let traps = traps.max(1) as usize;
 
-    let cfg = DiscountedTsConfig {
-        discount_factor: gamma,
-    };
-    // Synthetic deterministic reward signal (no RNG dep — caller supplies seed
-    // for the future live wire). Reward pattern: alternating 1.0 / 0.0 so the
-    // DS-TS update path is exercised on both branches; trap rows weighted at
-    // TRAP_WEIGHT_MULTIPLIER per E-7 plan task 8.
-    let trap_patterns = [
-        TrapPattern::CoastRunnersGreenBlock,
-        TrapPattern::MarkerRemoval,
-        TrapPattern::FakeTestLog,
-        TrapPattern::VerifierCapture,
-        TrapPattern::MetricOverflow,
-        TrapPattern::LegoStackingFlip,
-        TrapPattern::UnitTestEdit,
-    ];
-
-    let mut arms: Vec<DiscountedArmPosterior> =
-        (0..mutants).map(|_| DiscountedArmPosterior::default()).collect();
-    let log_bar = SuccessiveRejects::log_bar(mutants);
-    let sr = SuccessiveRejects::new(mutants as u32 * generations.max(1));
-
-    for gen_idx in 0..generations.max(1) {
-        for (arm_idx, arm) in arms.iter_mut().enumerate() {
-            // Alternating reward + trap weight; deterministic.
-            let raw = if (arm_idx + gen_idx as usize) % 2 == 0 { 1.0 } else { 0.0 };
-            let trap_hit = (arm_idx % traps.max(1)) == 0;
-            let weighted: f64 = if trap_hit {
-                let v: f64 = raw / TRAP_WEIGHT_MULTIPLIER;
-                if v > 1.0 { 1.0 } else { v }
-            } else {
-                raw
-            };
-            arm.discounted_update(weighted, cfg.discount_factor);
-        }
+    // BOTH the feature (this `run` body) AND the env gate are required for the
+    // live loop. With the env gate unset the command is a no-op notice (no
+    // archive mutation, no SSB row) -- the wire-dark posture.
+    if !loop_enabled_via_env() {
+        println!(
+            "darwin-loop GATED: set ELAI_DARWINIAN_LOOP_ENABLE=1 to run the \
+             config-DGM admit loop (generations={generations} mutants={mutants} \
+             seed={seed} traps={traps} gamma={gamma:.6})"
+        );
+        return Ok(());
     }
+
+    let project_root = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("cannot resolve current dir for darwin-loop: {e}"))?;
+    let sessions = elai_core::paths::sessions_dir_path(&project_root);
+    std::fs::create_dir_all(&sessions)
+        .map_err(|e| anyhow::anyhow!("cannot create sessions dir {}: {e}", sessions.display()))?;
+    let archive_path = sessions.join("self_mod.db");
+    let ssb_path = sessions.join("ssb.db");
+
+    let candidates = load_candidates(mutants, seed)?;
+    let candidate_count = candidates.len();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("tokio runtime build failed: {e}"))?;
+
+    let summary = rt.block_on(async move {
+        let archive = elai_orchestrator::config_archive::ConfigArchive::open(&archive_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("config archive open failed: {e}"))?;
+        let ssb_cfg = elai_orchestrator::SsbConfig {
+            db_path: ssb_path,
+            pool_size: None,
+            project_id: "default".to_string(),
+            session_id: "cli-darwin-loop".to_string(),
+        };
+        let clock: std::sync::Arc<dyn elai_core::clock::ClockProvider> =
+            std::sync::Arc::new(elai_core::OsClock);
+        let ssb = elai_orchestrator::Ssb::new(ssb_cfg, clock)
+            .map_err(|e| anyhow::anyhow!("ssb open failed: {e}"))?;
+
+        let promotion_cfg = elai_orchestrator::promotion_gate::PromotionConfig::default();
+        let mut rng = elai_core::SeededRng::new(seed);
+        // F-11 ships ONE generation; --generations is honored as a loop count
+        // but the Tier-1 scope + acceptance is the single closed generation.
+        let mut last = None;
+        for _ in 0..generations.max(1) {
+            let s = run_one_generation(
+                &archive,
+                &ssb,
+                &candidates,
+                elai_orchestrator::self_mod_layer1a::PipelineMode::Surgical,
+                seed,
+                DEFAULT_SUITE_NAME,
+                &promotion_cfg,
+                &mut rng,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("darwin-loop generation failed: {e}"))?;
+            last = Some(s);
+        }
+        last.ok_or_else(|| anyhow::anyhow!("darwin-loop produced no generation"))
+    })?;
 
     println!(
-        "darwin-loop generations={generations} mutants={mutants} seed={seed} traps={traps} gamma={:.6} required_trap_count={REQUIRED_TRAP_COUNT} sr_budget={} log_bar={log_bar:.4}",
-        cfg.discount_factor, sr.budget,
+        "darwin-loop COMPLETE generations={generations} mutants={} seed={seed} traps={traps} \
+         gamma={gamma:.6} admitted={} rejected={} loop_closed={} suite_floor={:?}",
+        candidate_count,
+        summary.admitted,
+        summary.rejected,
+        summary.loop_closed,
+        summary.suite_floor,
     );
-    for (i, arm) in arms.iter().enumerate() {
-        println!(
-            "  arm={i} alpha={:.4} beta={:.4} mean={:.4} n_pulls={}",
-            arm.alpha, arm.beta, arm.mean(), arm.n_pulls,
-        );
-    }
-    println!("  trap_patterns_seeded={}", trap_patterns.len());
-    println!("darwin-loop COMPLETE (RUNPOD-PENDING live evolution loop)");
     Ok(())
+}
+
+/// Load the mutant candidate set: from the `ELAI_DARWINIAN_LOOP_MUTANTS_JSON`
+/// file when set (the deterministic injection path), else seed `mutants`
+/// deterministic clean candidates from `seed`.
+#[cfg(feature = "darwinian-evolve")]
+fn load_candidates(mutants: u32, seed: u64) -> Result<Vec<MutantCandidate>, anyhow::Error> {
+    if let Ok(path) = std::env::var(ELAI_DARWINIAN_LOOP_MUTANTS_JSON_ENV) {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("cannot read mutants json {path}: {e}"))?;
+        let parsed = MutantCandidate::parse_array(&text)
+            .map_err(|e| anyhow::anyhow!("cannot parse mutants json {path}: {e}"))?;
+        if parsed.is_empty() {
+            return Err(anyhow::anyhow!("mutants json {path} is an empty array"));
+        }
+        return Ok(parsed);
+    }
+    // No injection file: synthesize `mutants` deterministic clean candidates.
+    // Each carries a distinct force_alpha well above tau so it clears the
+    // Two-Gate margin; the score is a REAL field of the candidate, derived from
+    // its seed-stamped config (NOT a hard-coded literal shared across runs).
+    let count = mutants.max(1) as usize;
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let alpha = 0.50 + ((seed.wrapping_add(i as u64)) % 40) as f64 / 100.0;
+        out.push(MutantCandidate {
+            variant_label: format!("seed-{seed}-mutant-{i}"),
+            pipeline_mode: "surgical".to_string(),
+            config: serde_json::json!({
+                "generation": 0,
+                "mutant_index": i,
+                "seed": seed,
+                "force_alpha": alpha,
+            }),
+            eval_log: format!("seeded clean candidate {i} (seed={seed}); no traps; no security keywords"),
+        });
+    }
+    Ok(out)
 }

@@ -4187,6 +4187,166 @@ impl SsbViewer {
         Ok(out)
     }
 
+    /// F-8 / Slice A1 (SCHEMA_VERSION 204) — SCF symbolic semantic conflicts.
+    ///
+    /// Returns the most recent [`SsbActionType::SymbolicConflictDetected`] rows
+    /// (newest first), each describing a self-mod config variant that the
+    /// LLM-free symbolic detector flagged as contradicting an active locked-key
+    /// invariant (`self_mod_safety::LOCKED_KEYS`) and held PENDING at the
+    /// `elai self-mod apply` admission boundary. POLICY is WARN-then-escalate,
+    /// never hard fail-closed BLOCK — these rows surface held-pending variants
+    /// for human escalation, not rejections. `cap` is clamped to
+    /// [`DRAWER_QUERY_HARD_CAP`] to bound the IPC payload.
+    pub fn symbolic_conflicts(
+        &self,
+        cap: usize,
+    ) -> Result<Vec<SymbolicConflictRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                SsbActionType::SymbolicConflictDetected.as_sql_str(),
+                limit_i64,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<SymbolicConflictRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::SymbolicConflictDetected(p) = payload {
+                out.push(SymbolicConflictRow {
+                    seq,
+                    ts_ms,
+                    fingerprint: p.fingerprint,
+                    kind: p.kind,
+                    key: p.key,
+                    detail: p.detail,
+                    candidate_id: p.candidate_id,
+                    fsm_substate: p.fsm_substate,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// F-13 — list `session_archived` rows newest-first. Each row records a
+    /// stale-version SSB (or precautionary session-DAG) store that was
+    /// cold-archived to `workflow/sessions/{id}/archive/ssb-v{N}.sqlite` BEFORE
+    /// the destructive `run_migration` DROP (gated wire-dark behind
+    /// `ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE`). `cap` is clamped to
+    /// [`DRAWER_QUERY_HARD_CAP`] to bound the IPC payload. Returns an empty Vec
+    /// when no archives have been recorded (the default, gate-OFF, state).
+    pub fn session_archives(
+        &self,
+        cap: usize,
+    ) -> Result<Vec<SessionArchiveRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::SessionArchived.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<SessionArchiveRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::SessionArchived(p) = payload {
+                out.push(SessionArchiveRow {
+                    seq,
+                    ts_ms,
+                    session_id: p.session_id,
+                    stale_version: p.stale_version,
+                    archive_path: p.archive_path,
+                    manifest_blake3: p.manifest_blake3,
+                    store_kind: p.store_kind,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// F-11 — list `darwinian_admit` rows newest-first. Each row records ONE
+    /// candidate routed through the config-DGM four-guard chain: `Admitted`
+    /// (passed all guards + inserted), `RejectedByGuard` (a guard fired —
+    /// `guard_rejected_by` names it), or `LoopClosed` (`select_parent` ran after
+    /// `insert_variant`). Wire-dark producer: the rows only appear after a
+    /// `darwin-loop` run with `ELAI_DARWINIAN_LOOP_ENABLE=1` + feature
+    /// `darwinian-evolve`. `cap` is clamped to [`DRAWER_QUERY_HARD_CAP`] to bound
+    /// the IPC payload. Returns an empty Vec when no admit rows exist (the
+    /// default, gate-OFF state).
+    pub fn darwinian_admits(
+        &self,
+        cap: usize,
+    ) -> Result<Vec<DarwinianAdmitRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::DarwinianAdmit.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<DarwinianAdmitRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::DarwinianAdmit(p) = payload {
+                out.push(DarwinianAdmitRow {
+                    seq,
+                    ts_ms,
+                    kind: p.kind.as_str().to_string(),
+                    variant_id: p.variant_id,
+                    parent_id: p.parent_id,
+                    alpha: p.alpha,
+                    guard_rejected_by: p.guard_rejected_by,
+                    candidate_blake3: p.candidate_blake3,
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// B-23 Phase 4H Group F (4H.8) — latest MSI snapshot per pipeline mode
     /// (newest `msi_update` row for each surgical/greenfield/oracle bucket).
     pub fn latest_msi_per_mode(&self) -> Result<Vec<SelfModMsiSnapshotRow>, SsbViewerError> {
@@ -4512,6 +4672,83 @@ pub struct SelfModProposalRow {
     pub pipeline_mode: String,
     pub applied_by: Option<String>,
     pub ts_ms: i64,
+}
+
+/// F-8 / Slice A1 (SCHEMA_VERSION 204) — DTO emitted by
+/// [`SsbViewer::symbolic_conflicts`]. One row per held-pending self-mod config
+/// variant the SCF symbolic detector flagged against a locked-key invariant.
+/// Flat record (mirrors the flat `SymbolicConflictPayload`); WARN-then-escalate
+/// — these are held-pending variants for human escalation, not rejections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolicConflictRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// blake3 hex-prefix of the conflict tuple (kind + key + candidate_id).
+    pub fingerprint: String,
+    /// Conflict class / symbolic tag.
+    pub kind: String,
+    /// The locked invariant key the variant contradicts.
+    pub key: String,
+    /// Human-readable contradiction detail (proposed vs locked invariant).
+    pub detail: String,
+    /// Stable id of the flagged-and-held-pending config variant.
+    pub candidate_id: String,
+    /// FSM agent sub-state at flag time.
+    pub fsm_substate: String,
+}
+
+/// F-13 — DTO for [`SsbViewer::session_archives`]. One row per stale-version
+/// store cold-archived BEFORE a destructive `run_migration` DROP (gated wire-
+/// dark behind `ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE`). Flat record mirroring the
+/// flat `SessionArchivedPayload`; field names serialize verbatim, so the
+/// frontend `SessionArchive` DTO must mirror them exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionArchiveRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// The session whose stale-version store was archived.
+    pub session_id: String,
+    /// The on-disk `user_version` the store carried BEFORE the bump.
+    pub stale_version: i64,
+    /// Relative path of the archive file under the per-session workflow dir.
+    pub archive_path: String,
+    /// blake3 hex-prefix of the archived bytes (integrity check).
+    pub manifest_blake3: String,
+    /// Which store: `"ssb"` (destructive journal) or `"session_dag"`
+    /// (precautionary, non-destructive copy).
+    pub store_kind: String,
+}
+
+/// F-11 — DTO for [`SsbViewer::darwinian_admits`]. One row per candidate routed
+/// through the config-DGM four-guard chain. Mirrors the
+/// [`crate::ssb::DarwinianAdmitPayload`] fields (the 3-arm
+/// [`crate::ssb::DarwinianAdmitKind`] is flattened to a `kind` string), so the
+/// frontend `DarwinianAdmit` DTO must mirror them exactly (serde serializes the
+/// Rust field names verbatim over the IPC boundary).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DarwinianAdmitRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// Admit/reject/loop-closed discriminator as a snake-case string
+    /// (`admitted` / `rejected_by_guard` / `loop_closed`).
+    pub kind: String,
+    /// Stable id of the candidate config variant the loop evaluated.
+    pub variant_id: String,
+    /// Parent variant id the candidate mutated from (`None` for a root seed).
+    pub parent_id: Option<String>,
+    /// Real evaluation score in `[0.0, 1.0]` (the Two-Gate margin basis).
+    pub alpha: f64,
+    /// Firing guard on `rejected_by_guard` (`tripwire`/`trap`/`security`/
+    /// `two_gate`); `None` otherwise.
+    pub guard_rejected_by: Option<String>,
+    /// blake3 hex-prefix (16 chars) of the candidate `config_blob`.
+    pub candidate_blake3: String,
 }
 
 /// B-23 Phase 4H Group F — DTO for [`SsbViewer::latest_msi_per_mode`].

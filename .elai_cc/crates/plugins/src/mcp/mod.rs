@@ -7,6 +7,10 @@
 //! workflow/reasoning/C-35-decisions.md (M1, M2, M3) for the rationale.
 
 pub mod gate;
+// F-3 Slice C2: CommittedSetChecker object-safe trait seam. Keeps elai-plugins
+// free of an elai-orchestrator compile-time dependency while allowing ToolGate
+// to enforce commitment checks at call time.
+pub mod committed_set;
 pub mod lazy;
 // E-30: MCP server version pin loader + enforcement backend.
 // See workflow/reasoning/E-30-decisions.md M3 for the destination decision

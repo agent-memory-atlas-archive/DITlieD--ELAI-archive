@@ -91,6 +91,14 @@ import type {
   CompletenessRatioInfo,
   SelfModProposalRow,
   SelfModMsiSnapshot,
+  // F-8 / Slice A5 — SCF symbolic-conflict feed row.
+  SymbolicConflict,
+  // F-11 — config-DGM admit-loop feed row.
+  DarwinianAdmit,
+  // F-12 — semantic-contradiction feed.
+  SemanticContradictionsResponse,
+  // F-13 / Slice A5 — session-archive feed row.
+  SessionArchive,
   ReflectState,
   MediaValidationEntry,
   MediaSsbEvent,
@@ -102,6 +110,8 @@ import type {
   CosmosArtifactStatus,
   // B-41 — Per-level audit timeline.
   LevelAuditVerdictJson,
+  // F-4 Slice B-5 — TestIntegrityEvent fabrication badge.
+  TestIntegrityEventJson,
   // B-37 Phase 4M — Multi-runtime adapter surface.
   RuntimeInfo,
   RuntimeBackendId,
@@ -130,6 +140,12 @@ import type {
   // C-41 — Application Skills System DTOs.
   SkillManifest,
   SkillRoutingEvent,
+  // F-6 / A5 — learned-skill library Trust-Ladder DTO.
+  SkillLibraryResponse,
+  // F-5 / A5 — staleness-quarantine cascade DTO.
+  StalenessQuarantineResponse,
+  // F-7 / A5 — template-ranking (Laplace utility) DTO.
+  TemplateRankingResponse,
   // E-25 Tranche N (s-22600 2026-06-01): Compaction-Ladder dashboard.
   CompactionLadderStateDto,
   CompactionEventDto,
@@ -579,6 +595,62 @@ export async function get_applied_proposals(): Promise<
   if (live) return live;
   await delay();
   return OPTIMIZATION_PROPOSALS.filter((p) => p.status === 'applied');
+}
+
+// F-8 / Slice A5 — held-pending SCF symbolic-conflict feed. No mock data:
+// browser-only dev returns an empty array (steady state for the detector is
+// no rows; conflicts only appear when a self-mod variant contradicts a
+// locked-key invariant). Live path reads the `get_symbolic_conflicts`
+// Tauri command newest-first.
+export async function get_symbolic_conflicts(): Promise<SymbolicConflict[]> {
+  logStub('get_symbolic_conflicts');
+  const live = await tryInvoke<SymbolicConflict[]>('get_symbolic_conflicts');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+// F-12 — semantic-contradiction feed. No mock data: browser-only dev returns
+// the empty envelope (steady state is no rows; rows only appear after the live
+// memory tick's deterministic-NLI second pass emits a memory_conflict_detected
+// row with conflict_kind="semantic_contradiction"). Live path reads the
+// `get_semantic_contradictions` Tauri command newest-first.
+export async function get_semantic_contradictions(
+  limit = 100,
+): Promise<SemanticContradictionsResponse> {
+  logStub('get_semantic_contradictions', { limit });
+  const live = await tryInvoke<SemanticContradictionsResponse>(
+    'get_semantic_contradictions',
+    { limit },
+  );
+  if (live) return live;
+  await delay();
+  return { viewer_attached: false, pairs: [] };
+}
+
+// F-11 — config-DGM admit-loop feed. No mock data: browser-only dev returns an
+// empty array (steady state is no rows; admit/reject/loop-closed rows only
+// appear after a `darwin-loop` run with ELAI_DARWINIAN_LOOP_ENABLE=1 + feature
+// darwinian-evolve). Live path reads the `get_darwinian_admits` Tauri command
+// newest-first.
+export async function get_darwinian_admits(): Promise<DarwinianAdmit[]> {
+  logStub('get_darwinian_admits');
+  const live = await tryInvoke<DarwinianAdmit[]>('get_darwinian_admits');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+// F-13 / Slice A5 — session-archive feed. Browser-only dev returns an empty
+// array (steady state is no rows: archives only appear when a stale-version SSB
+// is opened with the wire-dark ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE gate set). Live
+// path reads the `get_session_archives` Tauri command newest-first.
+export async function get_session_archives(): Promise<SessionArchive[]> {
+  logStub('get_session_archives');
+  const live = await tryInvoke<SessionArchive[]>('get_session_archives');
+  if (live) return live;
+  await delay();
+  return [];
 }
 
 export async function apply_proposal_from_user(proposalId: string): Promise<{ ok: boolean }> {
@@ -3715,6 +3787,55 @@ export async function recent_skill_routing_events(
   return [];
 }
 
+// F-6 / A5 — learned-skill library Trust-Ladder surface. Merges the three
+// SkillLibraryEvent arms into a newest-first timeline + a derived per-skill
+// current-tier ladder. Falls back to an empty response off the desktop shell.
+export async function get_skill_library(
+  limit?: number,
+): Promise<SkillLibraryResponse> {
+  logStub('get_skill_library', { limit });
+  const live = await tryInvoke<SkillLibraryResponse>('get_skill_library', {
+    limit,
+  });
+  if (live) return live;
+  await delay(50, 120);
+  return { events: [], ladder: [] };
+}
+
+// F-5 / A5 — staleness-quarantine cascade surface. Returns the newest-first
+// staleness_quarantine_broadcast row stream (fact_id + staleness ratio +
+// dependents demoted + Cosmos artifacts flagged + dropped_count). Falls back to
+// an empty response off the desktop shell.
+export async function get_staleness_quarantine(
+  limit?: number,
+): Promise<StalenessQuarantineResponse> {
+  logStub('get_staleness_quarantine', { limit });
+  const live = await tryInvoke<StalenessQuarantineResponse>(
+    'get_staleness_quarantine',
+    { limit },
+  );
+  if (live) return live;
+  await delay(50, 120);
+  return { rows: [] };
+}
+
+// F-7 / A5 — template-ranking (Laplace utility) surface. Returns the
+// newest-first template_utility_ranked row stream (concept_class +
+// plan_skeleton_hash + smoothed utility + raw first_try_ratio + sample_n +
+// chosen_pipeline_id). Falls back to an empty response off the desktop shell.
+export async function get_template_ranking(
+  limit?: number,
+): Promise<TemplateRankingResponse> {
+  logStub('get_template_ranking', { limit });
+  const live = await tryInvoke<TemplateRankingResponse>(
+    'get_template_ranking',
+    { limit },
+  );
+  if (live) return live;
+  await delay(50, 120);
+  return { rows: [] };
+}
+
 // ============================================================
 // E-25 Tranche N — Compaction-Ladder dashboard.
 //
@@ -3745,6 +3866,24 @@ export async function get_compaction_ladder_state(): Promise<CompactionLadderSta
     default_target_tokens: 20_000,
     tiers: [...E25_STUB_TIERS],
   };
+}
+
+// ------------------------------------------------------------------
+// F-4 Slice B-5 — TestIntegrityEvent surface for AuditTimelineWindow.
+//
+// Live Tauri invoke per brief: no mock fallback. Returns an empty array
+// when the backend has no rows for the task or the IPC is unavailable.
+// Command name "get_test_integrity_events" MUST match the Rust
+// #[tauri::command] fn name exactly (Tauri snake_case convention).
+// ------------------------------------------------------------------
+export async function getTestIntegrityEvents(
+  taskId: string,
+): Promise<TestIntegrityEventJson[]> {
+  logStub('getTestIntegrityEvents', { taskId });
+  const live = await tryInvoke<TestIntegrityEventJson[]>('get_test_integrity_events', {
+    taskId,
+  });
+  return live ?? [];
 }
 
 export async function recent_compaction_events(

@@ -167,6 +167,34 @@ pub mod github_pr;
 pub mod idea_framing;
 pub mod hooks;
 pub mod hook_dispatcher;
+// F-1 VibeGate: compound security evaluator + secret regex patterns.
+// vibegate_secrets is a private impl module (regex set); vibegate is the
+// public surface wired into hook_dispatcher::InProcessHookDispatcher.
+mod vibegate_secrets;
+pub mod vibegate;
+// F-10 Slice A2: deterministic CWE-class classifier. Reuses the F-1
+// vibegate scanner (Layer 1) + compiled-once injection-class regexes the
+// F-1 seed corpus does not gate (Layer 2: CWE-78/95/502/22). Input layer
+// of the security-monotonicity gate.
+pub mod cwe_classifier;
+pub use cwe_classifier::{classify_delta, delta_fingerprint, CweClass};
+// F-10 Slice A3: security-monotonicity iteration guard. Compares the CWE-class
+// set of one self-improvement iteration against the prior iteration's set and
+// emits a SecurityClassRegressionBlocked beacon when a new class is introduced.
+// Wired at all three production legs (REFINE, AUTO-ADVANCE, SELF-MOD).
+pub mod security_monotonicity;
+pub use security_monotonicity::{
+    emit_security_class_regression_blocked, run_refine_leg, MonotonicityVerdict,
+    SecurityMonotonicityGate,
+};
+// F-9 / Slice D1: VibeSecDep write-time slopsquat gate.  Detects dependency
+// imports at PreToolUse time and probes the registry; emits
+// WriteTimeSlopsquatBlocked SSB rows on NotFound / TooNew verdicts.
+pub mod vibesec;
+pub use vibesec::dep_writetime_gate::{
+    DepWriteTimeGate, LruExistenceCache, RegistryExistenceChecker,
+    StubRegistryChecker, SubprocessRegistryChecker,
+};
 pub mod shortcoder_hook;
 pub mod provider_signals;
 pub mod indexing_service;
@@ -186,6 +214,8 @@ pub mod ipc;
 pub mod ipc_gateway;
 pub mod ipc_types;
 pub mod tool_filter;
+// F-3p1: capability commitment + untrusted-taint bridge (cap-flow core).
+pub mod capability_flow;
 mod lane_events;
 mod mcp;
 mod mcp_client;
@@ -222,6 +252,15 @@ pub mod per_level_audit_dispatch;
 // C-25: compiled pipeline cache, template crystallizer, compiled executor,
 // on-disk store. See `workflow/reasoning/C-25-decisions.md`.
 pub mod compiled_pipeline;
+// F-7 / Slice A2: pure Laplace add-one utility scoring for CBR template
+// ranking (HALF B only). No SSB cascade here (A1 owns the beacon); pure
+// detector over compiled_pipeline first_try_success_rate + use_count.
+// See `workflow/reasoning/F-7-decisions.md`.
+pub mod template_utility;
+// F-6 / Slice A1: learned-skill trust ladder (S1..S4) + skill store +
+// staleness demotion. LOCAL trust enum, no bridge to elai_memory::TrustTier.
+// See `workflow/reasoning/F-6-decisions.md`.
+pub mod skill_trust;
 // C-25: background-task manager with soft/hard timeout auto-detach +
 // 2 new SSB beacons. See `workflow/reasoning/C-25-decisions.md`.
 pub mod background_task;
@@ -234,6 +273,7 @@ mod session;
 #[cfg(test)]
 mod session_control;
 pub mod plan_skeleton;
+pub mod session_archive;
 pub mod session_dag;
 pub mod workload_profiling;
 // C-32 — Code-Completeness Layer 2: skeleton-first + MiniCritic +
@@ -298,6 +338,14 @@ pub use compiled_pipeline::{
 pub use background_task::{
     BackgroundTaskError, BackgroundTaskHandle, BackgroundTaskManager,
 };
+// F-6 / Slice A1 public surface: the skill ladder + store are reached by the
+// autonomy gate (candidate_skill_tier evidence), the C6b acquisition hook, the
+// C6c scheduler tick, and the CLI/dashboard library surfaces.
+pub use skill_trust::{
+    DemotedSkill, LearnedSkill, SkillStore, SkillStoreError, SkillTrustTier,
+    SKILL_EXPECTED_LIFETIME_SECS, SKILL_STALE_THRESHOLD, TIER_MAX_FAILURE_RATE,
+    TIER_MIN_AGE_SECS, TIER_MIN_INVOCATIONS,
+};
 pub use session_dag::{
     SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,
     BranchRef, DagMessageRole, MergeResult, Stub,
@@ -331,6 +379,10 @@ pub mod self_mod_proposal;
 pub mod self_mod_orchestrator;
 pub mod self_mod_safety;
 pub mod self_mod_types;
+// F-8 SCF: LLM-free symbolic semantic conflict detector for the self-mod
+// pre-execution path. Pure/deterministic guard SIGNAL (WARN-then-escalate,
+// never fail-closed) — see workflow/reasoning/F-8-decisions.md.
+pub mod symbolic_conflict;
 // C-43: Phase 4H scope-freeze enforcer + manifest. Loads
 // `<workspace>/scope-freeze.toml`, walks `frozen_items` against on-disk
 // mtimes, and produces the 2 SSB beacons (ScopeFreezeRatified +
@@ -478,6 +530,14 @@ pub mod archive_crypto;
 pub mod l3_lock;
 #[cfg(feature = "darwinian-evolve")]
 pub mod darwinian_bai;
+// F-11: config-DGM admit-loop driver core. Closes ONE config-only generation
+// (propose -> evaluate -> four-guard chain -> insert_variant -> select_parent)
+// and emits SsbActionType::DarwinianAdmit rows. Wire-dark behind
+// darwinian-evolve + ELAI_DARWINIAN_LOOP_ENABLE=1. The CLI surface
+// (crates/cli/src/darwin_loop_cmd.rs) is a thin wrapper around
+// run_one_generation. See workflow/reasoning/F-11-decisions.md.
+#[cfg(feature = "darwinian-evolve")]
+pub mod darwin_admit_loop;
 // E-8: self-evolving prompts substrate. The LPO span guard
 // + structured-auditor-feedback exporter + gotchas-injection helper
 // are unconditional (no E-7 surface required); they support the
@@ -588,6 +648,8 @@ pub mod canary;
 // workflow/reasoning/C-27-decisions.md.
 pub mod determinism;
 pub mod wiring_contract;
+// WIRING-FIX-ELAI Phase 2 (SP3) — Layer-3 entrypoint-coverage runner.
+pub mod wiring_coverage;
 // D-9: L3 frozen-surface access-control auditor. Companion to the
 // wiring_contract module — registry-backed file/line lock walker.
 // See docs/thefinalglance/D-plan/D-9_l3_frozen_surfaces.md.
@@ -912,10 +974,10 @@ pub use idea_framing::{
 };
 pub use evidence::{
     all_gates, check_transition, daira_adaptive_run, gates_for_transition, AuditFinding,
-    DairaScope, DairaScopeResult, DkgChangelogGate, EvidenceError, EvidenceGate,
-    FindingSeverity, GroundingSweepGate, IntentPairsGate, KnowledgeReadiness,
-    KnowledgeReadinessGate, ReplanFastTrackGate, TestFailReasonsGate, TestFlippedGate,
-    TestOutcome, TransitionContext, ZeroBlocksGate,
+    AntiFabricationGate, DairaScope, DairaScopeResult, DiagnosticProbeGate, DkgChangelogGate,
+    EvidenceError, EvidenceGate, FindingSeverity, GroundingSweepGate, IntegrationTestRowSummary,
+    IntentPairsGate, KnowledgeReadiness, KnowledgeReadinessGate, ReplanFastTrackGate,
+    TestFailReasonsGate, TestFlippedGate, TestOutcome, TransitionContext, ZeroBlocksGate,
 };
 pub use gate::{
     default_risk_level, run_interactive_gate, EvidenceSummary, GateDecision, GateResult,
@@ -1340,7 +1402,49 @@ pub use ssb::{
     // contract crate tests can decode rows without `::ssb::*` paths.
     VlmImageValidationEventPayload, VlmImageValidationKind,
     ELAI_VLM_IMAGE_VALIDATION_ENABLE_ENV,
+    // F-1 (SCHEMA_VERSION 196): VibeGate security gate payloads +
+    // F-2a SecurityRuleBlocked flat beacon. Re-exported so dashboard-v2
+    // commands + contract tests can decode rows without `::ssb::*` paths.
+    // The two ELAI_*_ENABLE consts are LEGACY (the live emit path is now
+    // default-ON behind the ELAI_VIBEGATE_DISABLED kill-switch per B1/W-2);
+    // they remain re-exported only for the existing SSB round-trip tests.
+    VibeGateBlockedKind, VibeGateBlockedPayload, SecurityRuleBlockedPayload,
+    ELAI_VIBE_GATE_ENABLE_ENV, ELAI_SECURITY_RULE_BLOCKED_ENABLE_ENV,
+    // F-4 Slice B-1 (SCHEMA_VERSION 197): TestIntegrityEvent Pattern-2 substrate.
+    // Re-exported so dashboard-v2 get_test_integrity_events Tauri command +
+    // contract tests can decode rows and construct SsbActionType arms without
+    // reaching into `orchestrator::ssb::*` directly.
+    TestIntegrityEventKind, TestIntegrityEventPayload,
+    // F-3p1 (SCHEMA_VERSION 198): ToolFilterEvent Pattern-2 substrate.
+    // Re-exported so dashboard-v2 + contract tests can decode rows and
+    // construct SsbActionType arms without reaching into `::ssb::*` directly.
+    // Emission is unconditional default-ON (W-2: no default-off terminal
+    // state); there is no enable-env const to expose.
+    ToolFilterEventKind, ToolFilterPayload,
+    // F-9 Slice D1 (SCHEMA_VERSION 199): WriteTimeSlopsquatBlocked flat beacon.
+    // Re-exported so dashboard-v2 + contract tests can decode rows and construct
+    // SsbActionType::WriteTimeSlopsquatBlocked arms without reaching into
+    // `orchestrator::ssb::*` directly.
+    WriteTimeSlopVerdictKind, WriteTimeSlopsquatBlockedPayload,
+    // F-7 Slice A1 (SCHEMA_VERSION 205): TemplateUtilityRanked single flat
+    // beacon. Re-exported so the cli template_ranking_cmd emitter +
+    // dashboard-v2 + contract tests can construct the payload without
+    // reaching into `orchestrator::ssb::*` directly.
+    TemplateUtilityRankedPayload,
 };
+// F-3p1: capability-flow public surface. Re-exported so dashboard-v2 and
+// contract tests can use CommittedToolSet + CapabilityFlowDenial + taint helpers
+// without reaching into `orchestrator::capability_flow` directly.
+pub use capability_flow::{
+    check_against_commitment, commit_minimal_set, committed_slot, taint_from_verdict,
+    taint_text, CapabilityFlowDenial, CommittedToolSet, UntrustedTaint,
+};
+// F-3 Slice C2: CapabilityFlowAdapter -- orchestrator-side impl of the
+// elai-plugins::CommittedSetChecker trait seam. Re-exported so session-driver
+// and dashboard-v2 bootstrap can wire the adapter into ToolGate without
+// reaching into `capability_flow` internals.
+#[cfg(feature = "mcp")]
+pub use capability_flow::CapabilityFlowAdapter;
 // D-2: PPM client + sidecar hook public surface.
 pub use ppm_client::{
     apply_ppm_gate, emit_ppm_score, PpmClient, PpmClientError, PpmScore,
@@ -1369,6 +1473,18 @@ pub use wiring_contract::{
     ReachabilityGraph, StubBanAuditor, StubBanEntry, WiringAuditCmd, WiringAuditError,
     WiringAuditReport, WiringAuditScope, WiringContract, WiringContractError,
     WiringEntrypointSet, WiringEntrypointSetLoader,
+};
+// WIRING-FIX-ELAI Phase 2 (SP3) — Layer-3 coverage runner public surface.
+// `layer3_coverage_clean` + `WiringCoverageReport::is_clean` are the
+// cross-boundary symbols the D-EV cluster (WAVE-4) consumes to populate the
+// `Evidence::layer3_entrypoint_covered` field; `LAYER3_LEG` is the canonical
+// SSB leg discriminator string WAVE-4 selects rows on. `LAYER4_LEG` is the
+// symmetric Layer-4 leg WAVE 5 emits and WAVE-4's
+// `derive_layer4_trace_present` selects on.
+pub use wiring_coverage::{
+    layer3_coverage_clean, parse_llvm_cov_json, parse_new_functions_from_diff, CoverageViolation,
+    CoveredFunction, NewFunction, SmokeFeature, SmokeManifestLoader, WiringCoverageCmd,
+    WiringCoverageError, WiringCoverageReport, LAYER3_LEG, LAYER4_LEG,
 };
 // D-9 — L3 frozen-surface access-control public surface.
 pub use locked_keys_auditor::{
@@ -1511,6 +1627,14 @@ pub use msi::{
     MSI_IMPROVING_THRESHOLD as MSI_IMPROVING, MSI_LAMBDA as MSI_LAMBDA_SPEC, MSI_WINDOW,
 };
 pub use osc::{compute_osc_verdict, compute_similarity};
+// F-8 SCF symbolic conflict detector re-exports.
+pub use symbolic_conflict::{
+    conflict_fingerprint, current_process_model, detect_conflicts,
+    emit_symbolic_conflict_detected, intent_from_config_variant, intent_from_proposed_change,
+    intent_from_structural_change, screen_config_variant_for_conflicts,
+    tripwire_quiescent_violated, ConflictKind, IntentCondition, IntentOp, ProcessModel,
+    SymbolicConflict, SymbolicIntent, CONFLICT_FINGERPRINT_HEX_LEN, RESOURCE_RAIL_KEYS,
+};
 pub use regression::detect as detect_regressions;
 // E-30: named failure-taxonomy entries for the 5 plan-named symptom categories.
 pub use regression::{
@@ -1647,6 +1771,7 @@ pub use task_runner::{
     trigger_cosmos_refresh,
 };
 pub use rule_loader::load_seed_rules_from_dir;
+pub use rule_loader::load_security_seed_rules_builtin;
 // Phase A1b — chokepoint helpers exposed at the orchestrator crate root so
 // the CLI run subcommand and the dashboard-v2 Tauri setup() callback both
 // reach the same RuntimeWiring + apply_task_runner_wiring entry points.

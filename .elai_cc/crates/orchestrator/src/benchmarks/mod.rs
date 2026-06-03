@@ -50,3 +50,12 @@ pub mod canary_runner;
 // gated by a 5000ms wall budget. Emits one
 // `DeterminismTamperSuiteCompleted` SSB row per run.
 pub mod tamper_runner;
+// F-2b: SeCodePLT-structured static-gate insecure-rate benchmark. Drives the
+// REAL ELAI static write-gate (`vibegate::evaluate_vibegate`) over a
+// SeCodePLT-structured CWE corpus (Python + TypeScript) OFFLINE (no model, no
+// sandbox) and computes a before/after insecure-rate + gate recall. before =
+// corpus ground-truth insecure-rate; after = the static false-negative
+// residual (vulnerable candidates the gate did NOT Block). Both are COMPUTED
+// from the scorer, never literals. Distinct from SeCodePLT's DYNAMIC
+// secure-coding rate (the live-model 3-way metric is RunPod-gated).
+pub mod seccodeplt_runner;

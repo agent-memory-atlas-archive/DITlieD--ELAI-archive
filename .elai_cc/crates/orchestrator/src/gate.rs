@@ -355,7 +355,11 @@ impl InteractiveGate for MockInteractiveGate {
 mod tests {
     use super::*;
     use crate::evidence::{
-        AuditFinding, FindingSeverity, KnowledgeReadiness, TestOutcome, TransitionContext,
+        AuditFinding, FindingSeverity, IntegrationTestRowSummary, KnowledgeReadiness, TestOutcome,
+        TransitionContext,
+    };
+    use elai_knowledge::diagnostic::{
+        DiagnosticProbeOutcome, DiagnosticProbeRunStatus, ProbeKind,
     };
 
     // -----------------------------------------------------------------------
@@ -389,6 +393,12 @@ mod tests {
     }
 
     fn ctx_executing_to_auditing() -> TransitionContext {
+        // EXECUTING -> AUDITING now fires three fail-closed gates:
+        //   TestFlippedGate         (test_outcomes with a flipped-to-pass row)
+        //   DiagnosticProbeGate     (authoritative + clean probe outcome)
+        //   EntrypointAndTraceGate  (Layer-3 covered + Layer-4 trace present)
+        // This helper represents a CLEAN forward transition, so every gate
+        // input is set to its passing value.
         TransitionContext {
             test_outcomes: Some(vec![TestOutcome {
                 name: "test_impl".into(),
@@ -396,15 +406,45 @@ mod tests {
                 is_syntax_error: false,
                 flipped_to_pass: true,
             }]),
+            // DiagnosticProbeGate: authoritative (Completed) + clean
+            // (error_count == 0) outcome. None or a non-authoritative
+            // run_status is a hard FAIL.
+            diagnostic_probe_outcome: Some(DiagnosticProbeOutcome {
+                kind: ProbeKind::RustAnalyzer,
+                error_count: 0,
+                warning_count: 0,
+                info_count: 0,
+                hint_count: 0,
+                duration_ms: 12,
+                diagnostics: vec![],
+                run_status: DiagnosticProbeRunStatus::Completed,
+            }),
+            // EntrypointAndTraceGate: both off-agent legs present.
+            layer3_entrypoint_covered: Some(true),
+            layer4_trace_present: Some(true),
             ..Default::default()
         }
     }
 
     fn ctx_auditing_to_memorizing() -> TransitionContext {
+        // AUDITING -> MEMORIZING now fires two fail-closed gates:
+        //   ZeroBlocksGate       (audit_findings with no BLOCK severity)
+        //   AntiFabricationGate  (>=1 integration row; passing rows carry a
+        //                         blake3 stdout_hash)
+        // This helper represents a CLEAN forward transition.
         TransitionContext {
             audit_findings: Some(vec![AuditFinding {
                 severity: FindingSeverity::Info,
                 message: "style nit".into(),
+            }]),
+            // AntiFabricationGate: at least one row; the passing row carries a
+            // real blake3 stdout_hash (a passing row with `None` hash is the
+            // fabrication signature the gate blocks on). None or an empty vec
+            // is a hard FAIL.
+            integration_test_rows: Some(vec![IntegrationTestRowSummary {
+                test_name: "it_pipeline_smoke".into(),
+                passed: true,
+                stdout_hash: Some(blake3::hash(b"pipeline smoke stdout").to_hex().to_string()),
             }]),
             ..Default::default()
         }

@@ -68,27 +68,32 @@
     const tauriAvail = !!(window as unknown as { __TAURI_INTERNALS__?: unknown })
       .__TAURI_INTERNALS__;
     if (!tauriAvail) return undefined;
-    try {
-      const mod = await import('@tauri-apps/api/core');
-      return (await mod.invoke<T>(cmd, args)) as T;
-    } catch (e) {
-      console.warn(`[incidents] invoke('${cmd}') failed`, e);
-      return undefined;
-    }
+    // Tauri is present: let a real invoke error PROPAGATE so reload() can surface
+    // it. Swallowing here would make a backend failure indistinguishable from
+    // "no incidents" on a security surface.
+    const mod = await import('@tauri-apps/api/core');
+    return (await mod.invoke<T>(cmd, args)) as T;
   }
 
   async function reload() {
-    const out = await callInvoke<IncidentRow[]>('get_recent_incidents', {
-      limit: 50,
-    });
-    if (out === undefined) {
-      rows = [];
-      loadError = null;
-    } else {
-      rows = out;
-      loadError = null;
+    try {
+      const out = await callInvoke<IncidentRow[]>('get_recent_incidents', {
+        limit: 50,
+      });
+      if (out === undefined) {
+        // No Tauri runtime (browser-dev / SSR): benign, render the empty state.
+        rows = [];
+        loadError = null;
+      } else {
+        rows = out;
+        loadError = null;
+      }
+    } catch (e) {
+      // Tauri present but the command failed: surface it, do not mask as empty.
+      loadError = String(e);
+    } finally {
+      loaded = true;
     }
-    loaded = true;
   }
 
   function shortHash(s: string | null | undefined): string {

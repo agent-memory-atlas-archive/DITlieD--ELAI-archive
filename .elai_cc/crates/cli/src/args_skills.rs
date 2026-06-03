@@ -126,8 +126,79 @@ pub(crate) fn parse_skills_subcommand_args(
                 output_format,
             })
         }
+        // F-6 / Slice A4 (C6c): learned-skill library surface.
+        //   elai skills-mgmt library list
+        //   elai skills-mgmt library promote <id> [--human-grant]
+        //   elai skills-mgmt library show <id>
+        //   elai skills-mgmt library tick
+        "library" => parse_skills_library_args(&rest[1..], output_format),
         other => Err(format!(
-            "unknown `skills` sub-action `{other}`; expected one of: list, eval, publish, export"
+            "unknown `skills` sub-action `{other}`; expected one of: list, eval, publish, export, library"
+        )),
+    }
+}
+
+/// F-6 / Slice A4 (C6c) -- parse `elai skills-mgmt library <sub>` arguments.
+/// Four sub-verbs over the learned-skill trust ladder:
+///   `library list`                          enumerate the store
+///   `library promote <id> [--human-grant]`  climb one rung (S4 needs grant)
+///   `library show <id>`                      print one record
+///   `library tick`                           run one staleness-demotion sweep
+fn parse_skills_library_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .ok_or_else(|| {
+            "missing `library` sub-verb; expected: list, promote, show, tick".to_string()
+        })?
+        .as_str();
+    match sub {
+        "list" => Ok(CliAction::SkillsManagement {
+            action: SkillsAction::LibraryList,
+            output_format,
+        }),
+        "tick" => Ok(CliAction::SkillsManagement {
+            action: SkillsAction::LibraryTick,
+            output_format,
+        }),
+        "show" => {
+            let id = rest
+                .get(1)
+                .ok_or_else(|| "`library show` requires a skill id".to_string())?
+                .clone();
+            Ok(CliAction::SkillsManagement {
+                action: SkillsAction::LibraryShow { id },
+                output_format,
+            })
+        }
+        "promote" => {
+            let id = rest
+                .get(1)
+                .filter(|s| !s.starts_with("--"))
+                .ok_or_else(|| "`library promote` requires a skill id".to_string())?
+                .clone();
+            let mut human_grant = false;
+            let mut i = 2;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--human-grant" => {
+                        human_grant = true;
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!("unknown `library promote` argument: {other}"));
+                    }
+                }
+            }
+            Ok(CliAction::SkillsManagement {
+                action: SkillsAction::LibraryPromote { id, human_grant },
+                output_format,
+            })
+        }
+        other => Err(format!(
+            "unknown `library` sub-verb `{other}`; expected one of: list, promote, show, tick"
         )),
     }
 }

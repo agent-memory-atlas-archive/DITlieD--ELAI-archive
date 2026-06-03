@@ -1,0 +1,40 @@
+# F-2a security ruleset -- Weak Cryptographic Algorithm (CWE-327)
+# mutable=0: immutable seed rows, lifecycle-immune.
+# Scope: python + typescript production code.
+# Anchored to specific deprecated algorithm identifiers; no broad crypto matches.
+
+[[rules]]
+rule_id = "SEC-WCRYPTO-001"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Weak hash: Python hashlib MD5 or SHA-1 in production (CWE-327)"
+predicate_json = '{"type":"grep_pattern","pattern":"hashlib\\.(md5|sha1)\\s*\\(","scope":null,"context_lines":2,"language":"python","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-WCRYPTO-002"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Weak cipher: Python DES or RC4 usage (CWE-327)"
+predicate_json = '{"type":"grep_pattern","pattern":"Crypto\\.Cipher\\.DES|from Crypto\\.Cipher import DES|ARC4|from Crypto\\.Cipher import ARC4","scope":null,"context_lines":2,"language":"python","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-WCRYPTO-003"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Weak hash: TypeScript crypto.createHash with MD5 or SHA1 (CWE-327)"
+predicate_json = '{"type":"grep_pattern","pattern":"createHash\\s*\\(\\s*\"(md5|sha1)\"\\s*\\)","scope":null,"context_lines":2,"language":"typescript","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-WCRYPTO-004"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Weak cipher: TypeScript crypto.createCipheriv with DES or RC4 (CWE-327)"
+predicate_json = '{"type":"grep_pattern","pattern":"createCipheriv\\s*\\(\\s*\"(des|des-cbc|des-ecb|rc4)\"","scope":null,"context_lines":2,"language":"typescript","file_context":"production"}'
+phase_mask = 4294967295

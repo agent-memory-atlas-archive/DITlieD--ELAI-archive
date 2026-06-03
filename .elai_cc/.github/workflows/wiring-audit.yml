@@ -1,0 +1,71 @@
+# Cross-platform wiring-audit gate (SP1 / rescope-decisions line 19-20).
+#
+# The live wiring audit previously existed ONLY as a step inside
+# windows.yml:112-119, which made it (a) Windows-only and (b) bypassable via a
+# `[ci skip]` substring in the commit message. R3 forbids opt-in / opt-out
+# escape hatches on the gate itself: this Linux leg runs UNCONDITIONALLY on
+# every push + PR and has NO `[ci skip]` guard. It also runs the action-type
+# golden-lock leg of cross_lang_diff.py (now unconditional per R3).
+#
+# This file is FROZEN per R8 (wiring-enforcement): it is part of the gate and
+# must not be regenerated per-plan. Changes require a separate human-reviewed
+# commit (gate-manifest.txt entry).
+
+name: wiring-audit
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  wiring-audit:
+    name: wiring contract audit (cross-platform)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .elai_cc/target/
+          key: ${{ runner.os }}-cargo-wiring-audit-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wiring-audit-
+
+      # R3: NO `[ci skip]` guard on the wiring audit. The gate runs every time.
+      - name: Build elai CLI (release)
+        working-directory: .elai_cc
+        run: cargo build -p elai-cli --release --locked
+
+      - name: Wiring contract audit (C-27 T-0, cross-platform)
+        working-directory: .elai_cc
+        run: |
+          ./target/release/elai wiring audit \
+            --config elai_cc.toml \
+            --contracts ../docs/thefinalglance
+
+      # R3: action-type golden-lock leg runs UNCONDITIONALLY (no --check flag).
+      # cross_lang_diff.py now invokes the SsbActionType lock test by default;
+      # rc!=0 (drift OR cargo-absent) fails the job.
+      - name: Cross-language action-type lock
+        run: |
+          python .claude/tools/cross_lang_diff.py --git-staged

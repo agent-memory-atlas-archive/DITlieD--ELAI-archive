@@ -56,3 +56,53 @@ impl Default for TierCeiling {
         TierCeiling::AllTiers
     }
 }
+
+#[cfg(test)]
+mod cold_wiring_tests {
+    //! Cold-wiring (s-81344): deterministic coverage for the safety-critical
+    //! query-type matcher + tier ceiling predicate (previously no inline tests).
+    use super::*;
+
+    #[test]
+    fn is_safety_critical_matches_declared_types() {
+        for q in [
+            "destructive_command_intent",
+            "merge_decision",
+            "auth_decision",
+            "credential_fetch",
+        ] {
+            assert!(SafetyCriticalQueryType::is_safety_critical(q));
+        }
+        assert!(!SafetyCriticalQueryType::is_safety_critical("fetch_data"));
+        assert!(!SafetyCriticalQueryType::is_safety_critical(""));
+        // Match is exact/case-sensitive on the snake_case wire tag.
+        assert!(!SafetyCriticalQueryType::is_safety_critical("MERGE_DECISION"));
+    }
+
+    #[test]
+    fn tier_ceiling_all_tiers_permits_everything() {
+        let c = TierCeiling::AllTiers;
+        for t in [
+            TrustTier::T0UserDirect,
+            TrustTier::T1CodebaseDerived,
+            TrustTier::T2WebSourced,
+            TrustTier::T3ModelEmitted,
+        ] {
+            assert!(c.permits(t));
+        }
+    }
+
+    #[test]
+    fn tier_ceiling_t0t1_only_excludes_t2_t3() {
+        let c = TierCeiling::T0T1Only;
+        assert!(c.permits(TrustTier::T0UserDirect));
+        assert!(c.permits(TrustTier::T1CodebaseDerived));
+        assert!(!c.permits(TrustTier::T2WebSourced));
+        assert!(!c.permits(TrustTier::T3ModelEmitted));
+    }
+
+    #[test]
+    fn tier_ceiling_default_is_all_tiers() {
+        assert_eq!(TierCeiling::default(), TierCeiling::AllTiers);
+    }
+}

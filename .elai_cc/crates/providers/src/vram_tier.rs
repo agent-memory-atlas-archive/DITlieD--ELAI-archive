@@ -168,4 +168,23 @@ mod tests {
         assert!(parse_vram_override("99").is_err());
         assert!(parse_vram_override("").is_err());
     }
+
+    // Cold-wiring (s-81344): the existing classify_* tests use round VRAM
+    // values comfortably inside each tier; this locks the EXACT `>=` threshold
+    // boundaries (40/20/14/10 GiB) so a future off-by-one in a comparison
+    // operator is caught.
+    #[test]
+    fn classify_threshold_boundaries_are_inclusive() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // Each threshold is the inclusive lower bound for its tier; one byte
+        // below drops to the next lower tier.
+        assert_eq!(classify_vram_bytes(40 * GIB), VramTier::Vram48Gb);
+        assert_eq!(classify_vram_bytes(40 * GIB - 1), VramTier::Vram24Gb);
+        assert_eq!(classify_vram_bytes(20 * GIB), VramTier::Vram24Gb);
+        assert_eq!(classify_vram_bytes(20 * GIB - 1), VramTier::Vram16Gb);
+        assert_eq!(classify_vram_bytes(14 * GIB), VramTier::Vram16Gb);
+        assert_eq!(classify_vram_bytes(14 * GIB - 1), VramTier::Vram12Gb);
+        assert_eq!(classify_vram_bytes(10 * GIB), VramTier::Vram12Gb);
+        assert_eq!(classify_vram_bytes(10 * GIB - 1), VramTier::Vram8Gb);
+    }
 }

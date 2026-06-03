@@ -40,6 +40,11 @@ fn all_pass() -> AutonomousEvidence {
         framing_converged: true,
         // B-41: 5 per-level audit zero-blocks checks; vacuous-default true
         // for non-per-level contexts (Default impl flips these to true).
+        // SP5 wiring-fix: the off-agent EXECUTING -> AUDITING legs default
+        // FALSE in Default, so an all-pass fixture MUST set them true
+        // explicitly (else gate.decide returns RequestHuman, not AutoAdvance).
+        layer3_entrypoint_covered: true,
+        layer4_trace_present: true,
         ..AutonomousEvidence::default()
     }
 }
@@ -62,6 +67,8 @@ fn ctx_at(level: PipelineLevel, risk: RiskLevel) -> AutonomousGateContext {
         execution_history: elai_orchestrator::ExecutionHistory::default(),
         attempt_index: 0,
         suggested_prompt_prefix: None,
+        // F-6 (C6a): no candidate learned skill in the base contract fixture.
+        candidate_skill_tier: None,
     }
 }
 

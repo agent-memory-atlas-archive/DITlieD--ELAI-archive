@@ -1,0 +1,14 @@
+# F-9 / Slice D4 fixture: Cargo.toml containing a hallucinated dependency.
+# Used by f9_dep_writetime_gate_contract tests to verify DepWriteTimeGate
+# returns a Block(NotFound) finding for a non-existent crate.
+# `reqquests` is in StubRegistryChecker::KNOWN_HALLUCINATED -> NotFound -> Block.
+# `serde` is not hallucinated -> Found (no finding) under the WARN-3 stub.
+
+[package]
+name = "test-hallucinated"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqquests = "0.1"
+serde = { version = "1", features = ["derive"] }

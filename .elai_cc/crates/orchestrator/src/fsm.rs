@@ -578,6 +578,13 @@ pub struct Fsm {
     /// details_json; NO new FsmSubstate variant minted (E-25 exploration
     /// GAP-4 + decisions D4 -- key overlay on FsmState, not FsmSubstate).
     opus_plan_active: AtomicBool,
+    /// F-3p1 / Slice C3 (ENFORCE A): optional committed-tool-set slot shared
+    /// with the producer (`WebResearchOrchestrator`). When `Some`, every
+    /// `check_tool_allowed` call that passes the FSM-state gate is also
+    /// checked against the `CommittedToolSet` (if one is active in the slot).
+    /// `None` when no capability-commitment enforcement is wired at this
+    /// session (back-compat for callers that do not use `WebResearchOrchestrator`).
+    committed_tool_set: Option<Arc<Mutex<Option<crate::capability_flow::CommittedToolSet>>>>,
 }
 
 /// E-38 -- pluggable producer of [`crate::compliance::ComplianceVerdict`]
@@ -664,6 +671,7 @@ impl Fsm {
             ssb_writer: OnceLock::new(),
             compliance_provider: None,
             opus_plan_active: AtomicBool::new(false),
+            committed_tool_set: None,
         }
     }
 
@@ -710,6 +718,18 @@ impl Fsm {
     /// Mutable setter companion to [`Self::with_compliance_provider`].
     pub fn set_compliance_provider(&mut self, provider: Arc<dyn ComplianceProvider>) {
         self.compliance_provider = Some(provider);
+    }
+
+    /// F-3p1 / Slice C3 (ENFORCE A): share the committed-tool-set slot with
+    /// the `WebResearchOrchestrator` producer. When wired, `check_tool_allowed`
+    /// enforces the active [`crate::capability_flow::CommittedToolSet`] (if any)
+    /// in addition to the FSM-state gate. Returns `self` for builder chaining.
+    pub fn with_committed_tool_set(
+        mut self,
+        slot: Arc<Mutex<Option<crate::capability_flow::CommittedToolSet>>>,
+    ) -> Self {
+        self.committed_tool_set = Some(slot);
+        self
     }
 
     /// Mutable setter companion to [`Self::with_deterministic_audit_gate`].
@@ -800,6 +820,7 @@ impl Fsm {
             ssb_writer: OnceLock::new(),
             compliance_provider: None,
             opus_plan_active: AtomicBool::new(false),
+            committed_tool_set: None,
         })
     }
 
@@ -1155,6 +1176,19 @@ impl Fsm {
     /// Check whether a tool is allowed in the current FSM state.
     /// Returns `Ok(())` if allowed, `Err(ToolBlockedByState)` if blocked.
     /// Phase 3A.2: enforcement point. Source: phase-3A.txt L125-126.
+    ///
+    /// F-3p1 / Slice C3 (ENFORCE A): after the FSM-state gate passes, also
+    /// checks the active [`crate::capability_flow::CommittedToolSet`] (if a slot
+    /// is wired AND a commitment is active). On commitment denial:
+    ///   1. Emits a `ToolDenied` SSB row (reusing `SsbActionType::ToolDenied`)
+    ///      carrying the `commit_hash` in the `fsm_state` field for correlation.
+    ///   2. Emits a `ToolFilterEvent{UntrustedQuarantined}` SSB row.
+    ///   3. Returns `FsmError::ToolBlockedByState` (fail-closed; uses the
+    ///      classified tool category so the error surface is consistent).
+    /// DEFAULT-ON: commitment enforcement runs whenever a slot is wired; there
+    /// is no env-gate on the enforcement path itself. SSB emission is likewise
+    /// unconditional (default-ON) whenever an SSB writer is present — there is
+    /// no enable-env gate on the telemetry rows.
     pub async fn check_tool_allowed(&self, tool_name: &str) -> Result<(), FsmError> {
         let state = self.inner.lock().await.state;
         state.check_tool_allowed(tool_name).map_err(|category| {
@@ -1163,7 +1197,76 @@ impl Fsm {
                 state,
                 category,
             }
-        })
+        })?;
+
+        // F-3p1 / Slice C3: commitment enforcement (defence-in-depth layer).
+        if let Some(slot) = self.committed_tool_set.as_ref() {
+            if let Some(committed) = slot.lock().await.as_ref() {
+                if let Err(denial) =
+                    crate::capability_flow::check_against_commitment(committed, tool_name)
+                {
+                    let crate::capability_flow::CapabilityFlowDenial::CategoryNotCommitted {
+                        ref tool_name,
+                        ref category,
+                        ref commit_hash,
+                    } = denial;
+
+                    // Emit ToolDenied SSB row (reuse existing variant).
+                    if let Some(writer) = self.ssb_writer.get() {
+                        let denied_payload = crate::ssb::SsbPayload::ToolDenied(
+                            crate::ssb::ToolGateEventPayload {
+                                tool_name: tool_name.clone(),
+                                // Carry commit_hash in fsm_state for correlation.
+                                fsm_state: format!("commitment:{commit_hash}"),
+                                prompt_tokens_saved: 0,
+                            },
+                        );
+                        if let Err(e) = writer
+                            .write_payload("fsm-commitment", 0, denied_payload, Vec::new())
+                            .await
+                        {
+                            tracing::warn!(
+                                tool = tool_name.as_str(),
+                                error = %e,
+                                "fsm: ToolDenied SSB write failed (non-fatal)"
+                            );
+                        }
+                        // Emit ToolFilterEvent{UntrustedQuarantined} SSB row.
+                        let quarantine_payload =
+                            crate::ssb::SsbPayload::ToolFilterEvent(crate::ssb::ToolFilterPayload {
+                                commit_hash: commit_hash.clone(),
+                                allowed_categories: committed
+                                    .allowed_categories
+                                    .iter()
+                                    .map(|c| format!("{c:?}").to_ascii_lowercase())
+                                    .collect(),
+                                denied_tool: Some(tool_name.clone()),
+                                taint_source: None,
+                                task_id: String::new(),
+                                kind: crate::ssb::ToolFilterEventKind::UntrustedQuarantined,
+                            });
+                        if let Err(e) = writer
+                            .write_payload("fsm-commitment", 0, quarantine_payload, Vec::new())
+                            .await
+                        {
+                            tracing::warn!(
+                                tool = tool_name.as_str(),
+                                error = %e,
+                                "fsm: ToolFilterEvent(UntrustedQuarantined) SSB write failed (non-fatal)"
+                            );
+                        }
+                    }
+
+                    return Err(FsmError::ToolBlockedByState {
+                        tool_name: tool_name.clone(),
+                        state,
+                        category: *category,
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Reset FSM to IDLE. Escape hatch from any state.

@@ -9,7 +9,13 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as stub from '$lib/api/stub';
-  import type { SkillManifest, SkillRoutingEvent } from '$lib/api/types';
+  import type {
+    SkillManifest,
+    SkillRoutingEvent,
+    SkillLibraryResponse,
+    SkillLibraryRow,
+    SkillLadderEntry,
+  } from '$lib/api/types';
 
   let skills = $state<SkillManifest[]>([]);
   let events = $state<SkillRoutingEvent[]>([]);
@@ -17,6 +23,33 @@
   let lastRefreshTs = $state<number | null>(null);
   let pollHandle: number | null = null;
   let enabled = $state(false);
+
+  // F-6 / A5 — learned-skill library Trust-Ladder state. Additive: this section
+  // is independent of the C-41/E-43 application-skills render above. The
+  // learned-skill library has NO wire-dark ENABLE gate (W-2); acquisition is
+  // governed by the producer-side autonomy barrier, so this always queries.
+  let library = $state<SkillLibraryResponse>({ events: [], ladder: [] });
+  let libraryError = $state<string | null>(null);
+
+  // The four rungs of the F-6 trust ladder, lowest to apex. Only S4 is cleared
+  // for autonomous dispatch (sub-S4 routes to a human via the autonomy barrier).
+  const LADDER_TIERS = ['s1', 's2', 's3', 's4'] as const;
+
+  // Group the derived ladder snapshot by tier so the panel can render one
+  // column/row per rung. BTreeMap-sorted on the Rust side; we keep insertion
+  // order here (skill_id-sorted) within each tier bucket.
+  let ladderByTier = $derived.by(() => {
+    const buckets: Record<string, SkillLadderEntry[]> = {
+      s1: [],
+      s2: [],
+      s3: [],
+      s4: [],
+    };
+    for (const e of library.ladder) {
+      (buckets[e.tier] ??= []).push(e);
+    }
+    return buckets;
+  });
 
   // Read the orchestrator gate via the same import.meta convention the
   // dashboard uses elsewhere. Falling back to `false` keeps the empty-state
@@ -45,6 +78,42 @@
       lastRefreshTs = Date.now();
     } catch (e) {
       loadError = String(e);
+    }
+    // F-6 / A5 — independent fetch so a learned-skill-library failure never
+    // blanks the C-41/E-43 application-skills render above (and vice versa).
+    try {
+      library = await stub.get_skill_library(refreshLimit);
+      libraryError = null;
+    } catch (e) {
+      libraryError = String(e);
+    }
+  }
+
+  function tierLabel(tier: string): string {
+    switch (tier) {
+      case 's1':
+        return 'S1 fresh';
+      case 's2':
+        return 'S2 proven';
+      case 's3':
+        return 'S3 exercised';
+      case 's4':
+        return 'S4 apex (autonomy-permitted)';
+      default:
+        return tier;
+    }
+  }
+
+  function kindLabel(kind: string): string {
+    switch (kind) {
+      case 'acquired':
+        return 'acquired';
+      case 'trust_promoted':
+        return 'promoted';
+      case 'demoted_stale':
+        return 'demoted (stale)';
+      default:
+        return kind;
     }
   }
 
@@ -205,6 +274,93 @@
     </table>
   {/if}
 
+  <!-- F-6 / A5 — learned-skill library Trust-Ladder. Additive section; the
+       C-41/E-43 application-skills render above is untouched. -->
+  <div class="section-label trust-ladder-head">
+    Learned-skill Trust-Ladder
+    {#if library.ladder.length > 0}
+      <span class="counts">{library.ladder.length} skill(s) tracked</span>
+    {/if}
+  </div>
+
+  {#if libraryError}
+    <div class="error-banner">Skill library unavailable: {libraryError}</div>
+  {/if}
+
+  {#if library.ladder.length === 0}
+    <div class="empty">
+      No learned skills acquired yet. Skills are acquired after a critic-gated
+      success (MiniCritic <code>Pass</code>) and climb S1 &rarr; S4; only
+      <code>S4</code> is cleared for autonomous dispatch.
+    </div>
+  {:else}
+    <div class="ladder">
+      {#each LADDER_TIERS as tier (tier)}
+        <div class="ladder-rung" class:rung-apex={tier === 's4'}>
+          <div class="rung-label mono">{tierLabel(tier)}</div>
+          <div class="rung-skills">
+            {#if ladderByTier[tier].length === 0}
+              <span class="rung-empty">—</span>
+            {:else}
+              {#each ladderByTier[tier] as s (s.skill_id)}
+                <span
+                  class="skill-chip mono"
+                  title={`${s.invocations} inv · fail ${(s.failure_rate * 100).toFixed(0)}%`}
+                >
+                  {s.skill_id}
+                </span>
+              {/each}
+            {/if}
+          </div>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  <div class="section-label">
+    Recent library events ({library.events.length} / {refreshLimit})
+  </div>
+  {#if library.events.length === 0}
+    <div class="empty">
+      No <code>skill_acquired</code> / <code>skill_trust_promoted</code> /
+      <code>skill_demoted_stale</code> SSB rows recorded yet.
+    </div>
+  {:else}
+    <table class="events-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Skill</th>
+          <th>Event</th>
+          <th>Tier</th>
+          <th class="num">Inv</th>
+          <th class="num">Fail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each library.events as ev (ev.seq)}
+          <tr
+            class:row-acquired={ev.kind === 'acquired'}
+            class:row-demoted={ev.kind === 'demoted_stale'}
+          >
+            <td class="mono">{formatTs(ev.ts)}</td>
+            <td class="mono">{ev.skill_id}</td>
+            <td class="mono">{kindLabel(ev.kind)}</td>
+            <td class="mono">
+              {#if ev.prior_tier}
+                {ev.prior_tier} &rarr; {ev.tier}
+              {:else}
+                {ev.tier}
+              {/if}
+            </td>
+            <td class="num mono">{ev.invocations}</td>
+            <td class="num mono">{(ev.failure_rate * 100).toFixed(0)}%</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
+
   <div class="footer">
     {#if lastRefreshTs}
       refreshed {new Date(lastRefreshTs).toLocaleTimeString()}
@@ -344,5 +500,56 @@
   .mono {
     font-family: 'JetBrains Mono', 'Consolas', monospace;
     font-size: 11px;
+  }
+  /* F-6 / A5 — Trust-Ladder styles. */
+  .trust-ladder-head {
+    margin-top: 16px;
+    border-top: 1px solid #2a2a2a;
+    padding-top: 10px;
+  }
+  .ladder {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+  .ladder-rung {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 4px 6px;
+    background: #141414;
+    border-left: 2px solid #2a2a2a;
+    border-radius: 2px;
+  }
+  .ladder-rung.rung-apex {
+    border-left-color: #80c080;
+    background: #131a13;
+  }
+  .rung-label {
+    flex: 0 0 180px;
+    color: #aaa;
+    font-size: 10px;
+  }
+  .rung-skills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .rung-empty {
+    color: #555;
+  }
+  .skill-chip {
+    background: #1a2a3a;
+    color: #80a0c0;
+    padding: 1px 6px;
+    border-radius: 2px;
+    font-size: 10px;
+  }
+  tr.row-acquired td:first-child {
+    color: #80c080;
+  }
+  tr.row-demoted td:first-child {
+    color: #e0a050;
   }
 </style>

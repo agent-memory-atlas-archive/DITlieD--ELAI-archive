@@ -245,3 +245,66 @@ async fn contract_gate_off_skips_persist_branch_entirely() {
         "CONTRACT: gate OFF must skip persist; no row should land in sqlite"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Contract -- C-47b CLI-arm (s-14276): the producer-side wire.
+//
+// The CLI MCP tool-call write path is McpClientDispatch::dispatch_tool
+// (orchestrator/src/dispatch/mcp.rs). It historically called
+// bridge.http_call_tool() DIRECTLY, which BYPASSES record_call -- so a
+// wired calibration registry would have recorded NOTHING. The CLI arm
+// switches dispatch_tool to dispatch_tool_call_with_gate when (and only
+// when) a calibration registry is installed, so record_call fires and the
+// observation persists into the SAME case_base.sqlite3 the dashboard arm
+// reads. These two cases lock that wire in place: a registry field that
+// is reachable via a builder, AND the call-path switch landing at the
+// source-text level (a registry field without the switch is a silent
+// no-op -- per the scoping agent's HIGH validation warning).
+// ---------------------------------------------------------------------------
+
+/// SOURCE-GREP (feature-independent): the load-bearing proof that the
+/// call-path switch landed. We assert the orchestrator dispatch source
+/// names BOTH `dispatch_tool_call_with_gate` (the record_call-bearing
+/// dispatcher the CLI arm routes through when the registry is wired) AND
+/// the `calibration_registry` field. The file is parsed as a literal
+/// string so the match is exact; any future edit that reverts the switch
+/// back to a bare `http_call_tool`-only path will break this test.
+#[test]
+fn contract_cli_arm_dispatch_routes_through_gate_when_registry_wired() {
+    let dispatch_src = include_str!("../../orchestrator/src/dispatch/mcp.rs");
+    assert!(
+        dispatch_src.contains("dispatch_tool_call_with_gate"),
+        "CONTRACT (C-47b CLI-arm): McpClientDispatch::dispatch_tool MUST \
+         route through `dispatch_tool_call_with_gate` so record_call fires \
+         and calibration persists. A bare http_call_tool-only path is a \
+         silent producer no-op. The call-path switch did not land."
+    );
+    assert!(
+        dispatch_src.contains("calibration_registry"),
+        "CONTRACT (C-47b CLI-arm): McpClientDispatch MUST hold a \
+         `calibration_registry` field (the long-lived shared Arc threaded \
+         into each per-call bridge). The registry holder did not land."
+    );
+    assert!(
+        dispatch_src.contains("with_calibration_registry"),
+        "CONTRACT (C-47b CLI-arm): McpClientDispatch MUST expose a \
+         `with_calibration_registry` builder so the run_subcommand wiring \
+         seam can attach the shared registry. The builder did not land."
+    );
+}
+
+/// STRUCTURAL (cfg(mcp)): the builder is reachable and returns Self, so
+/// the run_subcommand wiring seam can chain it onto McpClientDispatch::new.
+/// Constructed from the noop ctor (no Ssb / runtime needed) with a fresh
+/// in-memory-only registry -- this only proves the type-level wire, not a
+/// live MCP round-trip (which is RUNPOD/integration-class, out of scope
+/// for the contract suite per the context package).
+#[cfg(feature = "mcp")]
+#[test]
+fn contract_cli_arm_with_calibration_registry_builder_compiles() {
+    use elai_orchestrator::dispatch::McpClientDispatch;
+    let reg = Arc::new(ToolCalibrationRegistry::new());
+    // If this compiles + runs, the field + builder exist with the
+    // expected signature `with_calibration_registry(self, Arc<...>) -> Self`.
+    let _dispatch = McpClientDispatch::new_noop().with_calibration_registry(reg);
+}

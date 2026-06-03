@@ -1736,6 +1736,13 @@ pub struct CriterionResult {
     pub success: bool,
     pub reason: Option<String>,
     pub duration_ms: u64,
+    /// F-4 / Slice B-1: concatenated criterion output text, if available.
+    /// Populated by [`CommandIntegrationRunner`] from stdout + stderr; `None`
+    /// for no-op runners and criteria with no `check_command`. Used by the
+    /// test-integrity verifier to compute the `stdout_hash` for
+    /// [`crate::ssb::TestIntegrityEventPayload`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_capture: Option<String>,
 }
 
 /// Aggregate outcome of running all exit criteria for one IntegrationSpec.
@@ -1747,6 +1754,14 @@ pub struct IntegrationRunResult {
     pub criterion_results: Vec<CriterionResult>,
     pub failure_reason: Option<String>,
     pub total_duration_ms: u64,
+    /// F-4 / Slice B-1: concatenation of all criterion `reason` texts for
+    /// this run, separated by `"\n"`. Populated from the criterion results
+    /// in [`run_integration_checkpoint`]. `None` when all criteria had no
+    /// reason text (e.g. fully passing no-op run). Used downstream by the
+    /// test-integrity verifier to compute the aggregate `stdout_hash` for
+    /// [`crate::ssb::TestIntegrityEventPayload`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_capture: Option<String>,
 }
 
 /// Object-safe runner that executes the `check_command` of each `ExitCriterion`.
@@ -1781,6 +1796,7 @@ impl IntegrationRunner for NoOpIntegrationRunner {
             success: true,
             reason: None,
             duration_ms: 0,
+            output_capture: None,
         }
     }
 }
@@ -1829,6 +1845,7 @@ impl IntegrationRunner for CommandIntegrationRunner {
                     success: true,
                     reason: Some("no check_command — treated as informational".to_string()),
                     duration_ms: 0,
+                    output_capture: None,
                 };
             }
         };
@@ -1858,6 +1875,7 @@ impl IntegrationRunner for CommandIntegrationRunner {
                     success: false,
                     reason: Some(format!("spawn error: {e}")),
                     duration_ms: u64::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX),
+                    output_capture: None,
                 };
             }
         };
@@ -1884,6 +1902,7 @@ impl IntegrationRunner for CommandIntegrationRunner {
                             )),
                             duration_ms: u64::try_from(_clock.elapsed_since(start).as_millis())
                                 .unwrap_or(u64::MAX),
+                            output_capture: None,
                         };
                     }
                     std::thread::sleep(poll);
@@ -1902,6 +1921,7 @@ impl IntegrationRunner for CommandIntegrationRunner {
                         reason: Some(format!("wait_with_output: {e}")),
                         duration_ms: u64::try_from(_clock.elapsed_since(start).as_millis())
                             .unwrap_or(u64::MAX),
+                        output_capture: None,
                     };
                 }
             },
@@ -1911,6 +1931,7 @@ impl IntegrationRunner for CommandIntegrationRunner {
                     success: false,
                     reason: Some(format!("try_wait: {e}")),
                     duration_ms: u64::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX),
+                    output_capture: None,
                 };
             }
         };
@@ -1918,16 +1939,26 @@ impl IntegrationRunner for CommandIntegrationRunner {
         let duration_ms =
             u64::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX);
         let success = output.status.success();
+        let stdout_text = String::from_utf8_lossy(&output.stdout);
+        let stderr_text = String::from_utf8_lossy(&output.stderr);
         let reason = if success {
             None
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             let code = output
                 .status
                 .code()
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "signal".to_string());
-            Some(format!("exit={code}: {}", stderr.trim()))
+            Some(format!("exit={code}: {}", stderr_text.trim()))
+        };
+        // F-4 / Slice B-1: capture stdout + stderr for test-integrity hashing.
+        // Concatenate stdout then stderr separated by a newline so the hash
+        // covers the full process output regardless of exit status.
+        let combined = format!("{}{}", stdout_text, stderr_text);
+        let output_capture = if combined.is_empty() {
+            None
+        } else {
+            Some(combined)
         };
 
         CriterionResult {
@@ -1935,6 +1966,7 @@ impl IntegrationRunner for CommandIntegrationRunner {
             success,
             reason,
             duration_ms,
+            output_capture,
         }
     }
 }
@@ -1992,6 +2024,21 @@ pub fn run_integration_checkpoint(
         duration_ms: total_duration_ms,
     });
 
+    // F-4 / Slice B-1: build the aggregate output capture from each
+    // criterion's reason text. Using `reason` (not raw stdout) keeps the
+    // field bounded in size -- the full per-criterion output_capture is
+    // available on each CriterionResult for deeper inspection.
+    let combined_reasons: String = criterion_results
+        .iter()
+        .filter_map(|r| r.reason.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let output_capture = if combined_reasons.is_empty() {
+        None
+    } else {
+        Some(combined_reasons)
+    };
+
     IntegrationRunResult {
         level,
         node_id,
@@ -1999,6 +2046,7 @@ pub fn run_integration_checkpoint(
         criterion_results,
         failure_reason: first_failure,
         total_duration_ms,
+        output_capture,
     }
 }
 
@@ -2978,6 +3026,7 @@ mod tests {
                 success: false,
                 reason: Some(self.reason.clone()),
                 duration_ms: 1,
+                output_capture: None,
             }
         }
     }

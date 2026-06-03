@@ -1,0 +1,32 @@
+# F-2a security ruleset -- SQL Injection (CWE-89)
+# mutable=0: immutable seed rows, lifecycle-immune.
+# Scope: python + typescript production code.
+# False-positive bound: anchored to SQL verb prefix after execute call or
+# direct f-string/template-literal interpolation pattern.
+
+[[rules]]
+rule_id = "SEC-SQLI-001"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "SQL injection via Python f-string interpolation (CWE-89)"
+predicate_json = '{"type":"grep_pattern","pattern":"(execute|executemany|raw)\\s*\\(\\s*f\"(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)","scope":null,"context_lines":2,"language":"python","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-SQLI-002"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "SQL injection via Python .format() or % interpolation into SQL verb (CWE-89)"
+predicate_json = '{"type":"grep_pattern","pattern":"\"(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)[^\"]*\"\\.format\\s*\\(|\"(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)[^\"]*\"\\s*%","scope":null,"context_lines":2,"language":"python","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-SQLI-003"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "SQL injection via TypeScript template-literal interpolation (CWE-89)"
+predicate_json = '{"type":"grep_pattern","pattern":"(query|execute|raw)\\s*\\(\\s*`\\s*(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)[^`]*\\$\\{","scope":null,"context_lines":2,"language":"typescript","file_context":"production"}'
+phase_mask = 4294967295

@@ -1,0 +1,8 @@
+{
+  "variant_id": "cfg-clean",
+  "config": {
+    "freshness_half_life": 7.0
+  },
+  "active_tripwires": [],
+  "fsm_substate": "AdmittingVariant"
+}

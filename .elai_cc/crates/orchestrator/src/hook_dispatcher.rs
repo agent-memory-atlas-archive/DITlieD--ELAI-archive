@@ -37,6 +37,7 @@ use crate::ssb::{
     HookEventPayload, HookLatencyViolationPayload, ShortCoderCompressionPayload, Ssb, SsbPayload,
     TieredAnalysisPayload,
 };
+use crate::vibesec::dep_writetime_gate::DepWriteTimeGate;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -490,6 +491,26 @@ pub struct InProcessHookDispatcher {
     /// the task_runner per-task firing site) that have no SessionDag handle.
     handoff_saver: Option<Arc<dyn PreCompactHandoffSaver>>,
     disabled: bool,
+    /// F-1 VibeGate: optional SSB writer + agent metadata used to emit
+    /// [`crate::ssb::SsbPayload::VibeGateBlocked`] rows from the async
+    /// `dispatch_pre_tool_use` path. `None` = VibeGate findings still block
+    /// (fail-closed) but no dedicated SSB row is emitted (they still travel
+    /// as `HookEvent` rows via `emit_hook_events_to_ssb` at the task_runner
+    /// call site).
+    ///
+    /// Tuple: `(writer, agent_id, superstep)`.
+    vibegate_ssb: Option<(Arc<crate::ssb::Ssb>, String, i64)>,
+    /// F-1 VibeGate: seed integrity flag. Set to `false` when
+    /// [`crate::vibegate::check_vibegate_seed_integrity`] returns `false`.
+    /// When `false`, every `dispatch_pre_tool_use` call emits a fail-closed
+    /// Block finding for the code-vuln axis so the gate cannot be bypassed
+    /// by a tampered seed.
+    vibegate_seed_ok: bool,
+    /// F-9 / Slice D3: optional write-time anti-slopsquatting gate.
+    /// When `Some`, `dispatch_pre_tool_use` calls `gate.analyze(source,
+    /// file_path)` and extends findings with any Block/Warn verdicts.
+    /// `None` preserves pre-F-9 behaviour (gate absent, no registry probe).
+    dep_writetime_gate: Option<Arc<DepWriteTimeGate>>,
 }
 
 impl InProcessHookDispatcher {
@@ -518,6 +539,9 @@ impl InProcessHookDispatcher {
             clock: Arc::new(OsClock),
             handoff_saver: None,
             disabled,
+            vibegate_ssb: None,
+            vibegate_seed_ok: true,
+            dep_writetime_gate: None,
         }
     }
 
@@ -536,6 +560,61 @@ impl InProcessHookDispatcher {
     #[must_use]
     pub fn has_handoff_saver(&self) -> bool {
         self.handoff_saver.is_some()
+    }
+
+    /// F-1 VibeGate: install the SSB writer used to emit
+    /// [`crate::ssb::SsbPayload::VibeGateBlocked`] rows from
+    /// `dispatch_pre_tool_use`. Without this, VibeGate findings still block
+    /// (fail-closed via the HookEvent path) but no dedicated VibeGateBlocked
+    /// SSB row is emitted.
+    ///
+    /// `agent_id` and `superstep` are written verbatim onto every row;
+    /// pass `crate::task_runner::RUNNER_AGENT_ID` / `RUNNER_SUPERSTEP` from
+    /// the task_runner setup path.
+    #[must_use]
+    pub fn with_vibegate_ssb(
+        mut self,
+        writer: Arc<crate::ssb::Ssb>,
+        agent_id: impl Into<String>,
+        superstep: i64,
+    ) -> Self {
+        self.vibegate_ssb = Some((writer, agent_id.into(), superstep));
+        self
+    }
+
+    /// F-1 VibeGate: run the seed integrity check once and record the result.
+    ///
+    /// If the check fails, all subsequent `dispatch_pre_tool_use` calls block
+    /// fail-closed on the code-vuln axis (even if the source is clean). Logs
+    /// via `tracing::error` on failure. Safe to call multiple times; only the
+    /// last result is retained.
+    pub fn check_vibegate_seed_integrity(&mut self, conn: &rusqlite::Connection) {
+        self.vibegate_seed_ok = crate::vibegate::check_vibegate_seed_integrity(conn);
+    }
+
+    /// F-1 VibeGate: builder-style setter for a pre-computed seed-integrity
+    /// result. Use this when the integrity check has already run against the
+    /// rules.db at wiring time (e.g. `build_task_runner_wiring`) and the
+    /// `rusqlite::Connection` is no longer in scope at dispatcher-construction.
+    /// `false` makes every `dispatch_pre_tool_use` code-vuln check block
+    /// fail-closed, identical to [`Self::check_vibegate_seed_integrity`].
+    #[must_use]
+    pub fn with_vibegate_seed_ok(mut self, seed_ok: bool) -> Self {
+        self.vibegate_seed_ok = seed_ok;
+        self
+    }
+
+    /// F-9 / Slice D3: install the write-time anti-slopsquatting gate.
+    ///
+    /// When installed, `dispatch_pre_tool_use` calls `gate.analyze(source,
+    /// file_path)` and merges Block/Warn findings for unrecognised or
+    /// registry-absent dependency names.  `None` (the default) preserves
+    /// pre-F-9 behaviour.  DEFAULT-ON: production bootstrap always passes
+    /// `Some`; test callers may omit this for offline runs.
+    #[must_use]
+    pub fn with_dep_writetime_gate(mut self, gate: Arc<DepWriteTimeGate>) -> Self {
+        self.dep_writetime_gate = Some(gate);
+        self
     }
 
     /// Batch 2A — construct with a ShortCoder PostToolUse hook installed.
@@ -582,6 +661,12 @@ impl InProcessHookDispatcher {
     #[must_use]
     pub fn has_ruff_runner(&self) -> bool {
         self.ruff.is_some()
+    }
+
+    /// Returns true when the F-9 write-time dep-existence gate is installed.
+    #[must_use]
+    pub fn has_dep_writetime_gate(&self) -> bool {
+        self.dep_writetime_gate.is_some()
     }
 
     /// Returns true if the env-var escape hatch is engaged.
@@ -926,7 +1011,99 @@ impl HookDispatcher for InProcessHookDispatcher {
                     }
                 }
             }
-            self.analyze(&invocation)
+
+            // F-1 VibeGate: compound security evaluator.
+            // Runs AFTER the E-30 argv check (which early-returns on Deny).
+            // evaluate_vibegate is infallible; findings are merged into the
+            // tiered-analysis findings and returned together so the existing
+            // task_runner `findings.iter().any(HookFinding::is_block)` check
+            // blocks fail-closed without any additional change at that site.
+            let mut findings = self.analyze(&invocation)?;
+
+            // F-9 / Slice D3: write-time anti-slopsquatting gate.
+            // Runs synchronously (analyze() is not async) after the tiered
+            // pass and before VibeGate so all Block findings are collected
+            // before the early-return check below.  Fail-open per W-10:
+            // Unreachable verdicts emit Warn, not Block.
+            if !self.disabled {
+                if let Some(gate) = self.dep_writetime_gate.as_ref() {
+                    let source = invocation.source.unwrap_or("");
+                    let file_path = invocation.file_path.unwrap_or("");
+                    let dep_findings = gate.analyze(source, file_path);
+                    findings.extend(dep_findings);
+                }
+            }
+
+            if !self.disabled {
+                let source = invocation.source.unwrap_or("");
+                let file_path = invocation.file_path.unwrap_or("");
+                let tool_name = invocation.action_type;
+                let vibe_findings = crate::vibegate::evaluate_vibegate(
+                    tool_name,
+                    source,
+                    file_path,
+                );
+
+                // Seed-integrity fail-closed override: if the seed check ran and
+                // failed, inject a synthetic Block regardless of vibe findings.
+                if !self.vibegate_seed_ok {
+                    let mut with_seed_fail = vibe_findings;
+                    with_seed_fail.push(HookFinding {
+                        tier: HookTier::T1,
+                        verdict: HookVerdictKind::Block,
+                        rule_id: Some("vibesec-seed-integrity-fail".to_string()),
+                        category: crate::vibegate::VIBESEC_CODE_VULN_CATEGORY.to_string(),
+                        message:
+                            "vibesec_code_vuln: seed integrity check failed; blocking fail-closed"
+                                .to_string(),
+                        fix_template: None,
+                    });
+                    // Emit SSB rows for the seed-fail block if writer is present.
+                    if let Some((writer, agent_id, superstep)) = self.vibegate_ssb.as_ref() {
+                        let fsm = if invocation.fsm_state.is_empty() {
+                            None
+                        } else {
+                            Some(invocation.fsm_state.as_str())
+                        };
+                        crate::vibegate::emit_vibegate_blocked_to_ssb(
+                            writer,
+                            agent_id,
+                            *superstep,
+                            source,
+                            file_path,
+                            fsm,
+                            &with_seed_fail,
+                        )
+                        .await;
+                    }
+                    findings.extend(with_seed_fail);
+                    return Ok(findings);
+                }
+
+                if !vibe_findings.is_empty() {
+                    // Emit dedicated VibeGateBlocked SSB rows before returning.
+                    if let Some((writer, agent_id, superstep)) = self.vibegate_ssb.as_ref() {
+                        let fsm = if invocation.fsm_state.is_empty() {
+                            None
+                        } else {
+                            Some(invocation.fsm_state.as_str())
+                        };
+                        crate::vibegate::emit_vibegate_blocked_to_ssb(
+                            writer,
+                            agent_id,
+                            *superstep,
+                            source,
+                            file_path,
+                            fsm,
+                            &vibe_findings,
+                        )
+                        .await;
+                    }
+                    findings.extend(vibe_findings);
+                }
+            }
+
+            Ok(findings)
         })
     }
 

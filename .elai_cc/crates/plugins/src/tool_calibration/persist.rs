@@ -136,6 +136,30 @@ impl CasePersistStore {
         }
         let conn = Connection::open(path.as_ref())
             .map_err(|e| ToolCalibrationError::Persist(e.to_string()))?;
+        // C-47b CLI-arm: the case_base.sqlite3 file is opened by BOTH the
+        // dashboard arm (AppState) and the CLI arm (McpClientDispatch). The
+        // default rollback journal takes a whole-DB lock on write and the
+        // default busy_timeout is 0, so a cross-process write contending
+        // with the other process's lock would surface SQLITE_BUSY
+        // immediately (record_call then fails-closed per D3 and silently
+        // drops the case -- durability loss). WAL lets a reader and a
+        // writer proceed concurrently and busy_timeout makes transient
+        // contention retry for up to 5s instead of failing instantly.
+        // Best-effort: a PRAGMA failure is non-fatal (the store still
+        // works with default journal mode), so we log + continue rather
+        // than refusing to open.
+        if let Err(e) = conn.pragma_update(None, "journal_mode", "WAL") {
+            tracing::warn!(
+                error = %e,
+                "C-47b: PRAGMA journal_mode=WAL failed; continuing with default journal mode"
+            );
+        }
+        if let Err(e) = conn.busy_timeout(std::time::Duration::from_millis(5_000)) {
+            tracing::warn!(
+                error = %e,
+                "C-47b: busy_timeout set failed; continuing with default (0ms)"
+            );
+        }
         conn.execute_batch(CREATE_TABLE_SQL)
             .map_err(|e| ToolCalibrationError::Persist(e.to_string()))?;
         Ok(Self {

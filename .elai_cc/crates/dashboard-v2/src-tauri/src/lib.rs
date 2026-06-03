@@ -298,6 +298,52 @@ mod commands_e37;
 // SymbolGraphWindow. Reads .claude/tools/elai_graph.json. See
 // workflow/reasoning/E-40-decisions.md. cross-lang-pair: dashboard/tauri/api.
 mod commands_e40;
+// F-1 / A5: VibeGateDrawer per-surface split. One command (`list_vibegate_blocks`)
+// reads all VibeGateBlocked arms into the dedicated vibegate DrawerKey surface.
+// Default-ON (B1/W-2): rows emit with no env override. cross-lang-pair: dashboard/tauri/api.
+mod commands_vibegate;
+// F-2a / A5: SecurityRulesPanel per-surface split. Two commands read into the
+// dedicated security-rules DrawerKey surface:
+//   * `get_security_blocks_recent` -- security_rule_blocked flat-beacon rows.
+//   * `get_insecure_rate_latest` (F-2b / A5) -- the static-gate insecure-rate
+//     keystone (insecure_rate_measured before -> after + gate_recall).
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_f2;
+// F-9 / Slice D5: DepsSecurityPanel (write_time_slop_status command).
+// Default-ON (B1/W-2). cross-lang-pair: dashboard/tauri/api.
+mod commands_f9;
+// F-10 / Slice A5: SecurityMonotonicityDrawer
+// (get_security_monotonicity_blocks command). Default-ON (W-2); kill-switch
+// ELAI_SECURITY_MONOTONICITY_DISABLE. cross-lang-pair: dashboard/tauri/api.
+mod commands_f10;
+// F-6 / Slice A5: learned-skill library Trust-Ladder surface
+// (get_skill_library command). Merges the three SkillLibraryEvent arms
+// (skill_acquired / skill_trust_promoted / skill_demoted_stale) into a
+// newest-first timeline + a derived per-skill current-tier ladder snapshot.
+// No wire-dark ENABLE gate (W-2); acquisition governed by the producer-side
+// autonomy barrier. cross-lang-pair: dashboard/tauri/api.
+mod commands_f6;
+// F-5 / Slice A5: StalenessQuarantineDrawer
+// (get_staleness_quarantine command). Reads staleness_quarantine_broadcast
+// flat-beacon rows emitted at the orchestrator/CLI decay-tick boundary. No
+// wire-dark ENABLE gate (W-2); decay cadence + queue constants are ELAI-owned.
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_f5;
+// F-7 / Slice A5: TemplateRankingDrawer
+// (get_template_ranking command). Reads template_utility_ranked flat-beacon
+// rows emitted at the try_execute gate-threshold seam + the
+// `elai template-ranking list` CLI. Renders smoothed utility vs raw
+// first_try_ratio side-by-side. No wire-dark ENABLE gate (W-2); any
+// ELAI_TEMPLATE_CBR_* env is a producer-side kill-switch (default-ON).
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_f7;
+// F-13 / Slice A5: SessionArchiveDrawer (get_session_archives command). Reads
+// session_archived flat-beacon rows emitted at the run_migration destructive-
+// DROP site when a stale-version SSB is cold-archived before the DROP. The
+// producer gate (ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE) is default-OFF / wire-dark
+// (forensic opt-in); the read command is always live. cross-lang-pair:
+// dashboard/tauri/api.
+mod commands_f13;
 mod media_validation;
 mod reflect_bridge;
 mod remote_sidecar_helpers;
@@ -430,6 +476,12 @@ pub fn run() {
             commands::get_active_optimizations,
             commands::get_pending_proposals,
             commands::get_applied_proposals,
+            // F-8 / Slice A5 — SCF symbolic-conflict feed (held-pending
+            // self-mod config variants flagged against locked-key invariants).
+            commands::get_symbolic_conflicts,
+            // F-11 — config-DGM admit-loop feed (Admitted / RejectedByGuard /
+            // LoopClosed rows from the darwin-loop four-guard chain).
+            commands::get_darwinian_admits,
             commands::apply_proposal_from_user,
             commands::reject_proposal,
             commands::get_msi_status,
@@ -705,6 +757,10 @@ pub fn run() {
             // B-41 — Per-level auditor verdicts feed for AuditTimelineWindow.
             // cross-lang-pair: dashboard/tauri/api
             commands::get_per_level_verdicts,
+            // F-4 Slice B-5 — TestIntegrityEvent surface for fabrication-block
+            // badge in AuditTimelineWindow.
+            // cross-lang-pair: dashboard/tauri/api
+            commands::get_test_integrity_events,
             // B-37D — MULTI-RUNTIME BACKEND ABSTRACTION (Phase 4M, Wave-2A).
             // list_runtimes / test_runtime / set_role_runtime surface the
             // 11-backend RuntimeOrchestrator (per-role mapping + fallback
@@ -748,6 +804,10 @@ pub fn run() {
             // NOOP dispatcher) reserved for the follow-up vertical slice.
             commands_e5::get_memory_facts,
             commands_e5::get_trust_score,
+            // F-12 — semantic-contradiction read surface (SSB viewer,
+            // memory_conflict_detected rows filtered to
+            // conflict_kind="semantic_contradiction").
+            commands_e5::get_semantic_contradictions,
             // E-1 dashboard slice — CHAT-MEMORY (MemoryNotes + CoreBlock)
             // read-only surface for the Svelte MemoryNotesPanel. Producer
             // wiring (NoteStore::insert + CoreBlockStore::upsert emitters
@@ -1058,6 +1118,44 @@ pub fn run() {
             commands_e54::get_eval_corpus_status,
             commands_e54::get_sycophancy_matched_pair_results,
             commands_e54::get_kor_orthogonality_status,
+            // F-1 / A5: per-surface split — VibeGateDrawer (DrawerKey vibegate).
+            // Default-ON (B1/W-2): VibeGateBlocked rows emit with no env override.
+            commands_vibegate::list_vibegate_blocks,
+            // F-2a / A5: per-surface split — SecurityRulesPanel (DrawerKey security-rules).
+            // Default-ON (B1/W-2): SecurityRuleBlocked rows emit with no env override.
+            commands_f2::get_security_blocks_recent,
+            // F-2b / A5: static-gate insecure-rate keystone for SecurityRulesPanel.
+            // Reads the newest insecure_rate_measured flat-beacon row.
+            commands_f2::get_insecure_rate_latest,
+            // F-9 / Slice D5: per-surface split — DepsSecurityPanel (DrawerKey deps-security).
+            // Default-ON (B1/W-2): WriteTimeSlopsquatBlocked rows emit with no env override.
+            commands_f9::write_time_slop_status,
+            // F-10 / Slice A5: per-surface split — SecurityMonotonicityDrawer
+            // (DrawerKey security-monotonicity). Default-ON (W-2);
+            // SecurityClassRegressionBlocked rows emit unless the
+            // ELAI_SECURITY_MONOTONICITY_DISABLE kill-switch is set.
+            commands_f10::get_security_monotonicity_blocks,
+            // F-6 / Slice A5: learned-skill library Trust-Ladder surface.
+            // Merges the three SkillLibraryEvent arms into a newest-first
+            // timeline + derived per-skill current-tier ladder. No ENABLE gate
+            // (W-2); acquisition governed by the producer-side autonomy barrier.
+            commands_f6::get_skill_library,
+            // F-5 / Slice A5: per-surface split — StalenessQuarantineDrawer
+            // (DrawerKey staleness-quarantine). No ENABLE gate (W-2);
+            // staleness_quarantine_broadcast rows emit at the decay-tick
+            // boundary whenever a fact crosses the staleness threshold.
+            commands_f5::get_staleness_quarantine,
+            // F-7 / Slice A5: per-surface split — TemplateRankingDrawer
+            // (DrawerKey template-ranking). No ENABLE gate (W-2);
+            // template_utility_ranked rows emit at the try_execute gate seam +
+            // the CLI. Renders smoothed utility vs raw first_try_ratio.
+            commands_f7::get_template_ranking,
+            // F-13 / Slice A5: per-surface split — SessionArchiveDrawer
+            // (DrawerKey session-archive). Producer gate
+            // ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE is default-OFF / wire-dark; this
+            // read command always queries the SSB viewer for session_archived
+            // rows (cold-archived stale-version stores).
+            commands_f13::get_session_archives,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the
@@ -1401,8 +1499,15 @@ pub fn run() {
                         // (Tier-1 surface). See
                         // workflow/reasoning/C-13-decisions.md (DECISION D3
                         // option 3A).
+                        // F-9 / Slice D3 — project_root threaded in so the
+                        // DepWriteTimeGate resolves registry_check.py via
+                        // SubprocessRegistryChecker::default_at_root.
                         wiring.hook_dispatcher = Some(
-                            elai_orchestrator::runtime_setup::build_production_hook_dispatcher(),
+                            elai_orchestrator::runtime_setup::build_production_hook_dispatcher(
+                                wiring.ssb.clone(),
+                                wiring.vibegate_seed_ok,
+                                &project_root,
+                            ),
                         );
 
                         let cfg = elai_orchestrator::apply_task_runner_wiring(

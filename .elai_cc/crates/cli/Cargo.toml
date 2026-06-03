@@ -78,7 +78,12 @@ obscura = ["elai-orchestrator/obscura", "elai-web-search/obscura", "dep:elai-web
 # default because the CLI ships elai-plugins with `features = ["mcp"]`
 # unconditionally; the feature flag here exists so the cfg(feature="mcp")
 # gates in mcp_client.rs are not flagged as "unexpected" by check-cfg.
-mcp = ["elai-plugins/mcp"]
+# C-47b CLI-arm: also forward to elai-orchestrator/mcp so the cfg(mcp)
+# `McpClientDispatch::with_calibration_registry` builder + the gated
+# call-path switch in dispatch/mcp.rs are compiled in lock-step with the
+# CLI-side registry-wiring block in run_subcommand.rs (both keyed on the
+# CLI's own `mcp` feature, which is in the default set).
+mcp = ["elai-plugins/mcp", "elai-orchestrator/mcp"]
 # E-7: enable the darwinian-evolve substrate in the CLI binary. Pure
 # cfg-gate pass-through to elai-orchestrator/darwinian-evolve (no new
 # external deps). Required for `elai darwin-loop`. See

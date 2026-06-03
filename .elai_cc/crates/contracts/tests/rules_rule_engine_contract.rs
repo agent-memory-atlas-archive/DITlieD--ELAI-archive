@@ -292,6 +292,7 @@ fn contract_evaluate_short_circuits_block_before_ast() {
         file_path: "src/main.py",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     // If this panics, short-circuit is broken.
@@ -349,6 +350,7 @@ fn contract_evaluate_accumulates_warns_then_blocks() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -430,6 +432,7 @@ fn contract_schema_on_non_json_does_not_abort() {
 
     let context = EvaluationContext {
         action: "write",
+            language_agnostic: false,
         source: "fn main() { DANGER }",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
@@ -479,6 +482,7 @@ fn contract_and_composite_fires_on_all_children_match() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -504,6 +508,7 @@ fn contract_metric_gate_lt_fires_when_value_below_threshold() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::from_iter([("loc".into(), 50.0)]),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -529,6 +534,7 @@ fn contract_metric_gate_gt_does_not_fire_when_below() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::from_iter([("loc".into(), 50.0)]),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -556,6 +562,7 @@ fn contract_metric_gate_between_fires_in_range() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::from_iter([("cc".into(), 5.0)]),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -581,6 +588,7 @@ fn contract_metric_gate_missing_key_returns_allow() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -617,6 +625,7 @@ fn contract_escalate_verdict_routes_to_auditor() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&[(rule, compiled)], &context).unwrap();
@@ -654,6 +663,7 @@ fn contract_escalate_verdict_routes_to_human() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&[(rule, compiled)], &context).unwrap();
@@ -682,6 +692,7 @@ fn contract_evidence_grep_match_non_empty() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -713,6 +724,7 @@ fn contract_evidence_metric_gate_contains_value() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::from_iter([("cc".into(), 10.0)]),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -740,6 +752,7 @@ fn contract_determinism_100x() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     let first = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -803,6 +816,7 @@ fn contract_escalate_composite_routes_to_target() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&[(rule, composite)], &context).unwrap();
@@ -840,6 +854,7 @@ fn contract_escalate_routes_to_next_tier_rule() {
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
 
     let result = e.evaluate(&[(rule, compiled)], &context).unwrap();

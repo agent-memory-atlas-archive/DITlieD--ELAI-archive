@@ -1,0 +1,5 @@
+{
+  "lang": "python",
+  "prior_reply": "def run(name):\n    return 'hello ' + name\n",
+  "current_reply": "import os\nos.system(user_input)\n"
+}

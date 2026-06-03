@@ -85,6 +85,20 @@ impl Drop for DecayHandle {
 /// `SsbActionType::MemoryEvolutionRun(phase="decay_tick")` row per pass.
 /// Non-async + returns nothing — the caller owns its own runtime and
 /// fire-and-forgets per the live_cli.rs pattern.
+///
+/// F-5 staleness-quarantine emit seam: this is also the hook where the
+/// cross-subsystem cascade originates. The CLI/orchestrator boundary (the
+/// only layer that depends on both `crates/memory` and `crates/knowledge`)
+/// builds an `on_tick` closure that captures both the scheduler's
+/// `Arc<Mutex<FactStore>>` and a shared
+/// [`crate::quarantine_broadcast::QuarantineBroadcastQueue`]. After the tick,
+/// that closure runs [`crate::quarantine_broadcast::collect_quarantined`]
+/// against the store and pushes the resulting records onto the queue. Memory
+/// itself stays knowledge-free — it only fills the queue; the CLI drains it
+/// and applies the DKG / Cosmos effects (see live_cli.rs A4 wiring). The
+/// observer signature intentionally carries only `&DecayTickStats`; the
+/// store + queue handles are captured by the closure, not threaded through
+/// this type, so no `crates/knowledge` dependency leaks into this crate.
 pub type DecayTickObserver =
     Arc<dyn Fn(&DecayTickStats) + Send + Sync + 'static>;
 

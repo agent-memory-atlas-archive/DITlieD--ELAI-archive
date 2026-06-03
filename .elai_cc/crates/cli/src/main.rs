@@ -10,6 +10,10 @@ mod classifier;
 mod commands;
 mod dashboard;
 mod dep_audit;
+// F-9 / Slice D4: `elai dep-check <path> [--offline]` — write-time
+// anti-slopsquatting dep-check CLI surface. DEFAULT uses the real live
+// SubprocessRegistryChecker; --offline switches to StubRegistryChecker.
+mod dep_check_cmd;
 mod doctor;
 mod handoff;
 mod indexing;
@@ -52,6 +56,7 @@ pub(crate) mod report_fns;
 pub(crate) mod knowledge_stack;
 mod measure;
 mod pipeline_subcommand;
+mod template_ranking_cmd;
 mod symbol_graph;
 mod progress;
 mod resume;
@@ -64,6 +69,8 @@ mod task_cmd;
 mod wip_squash_subcommand;
 // C-27: T(-1)+T-0 wiring contract audit dispatcher.
 mod wiring_audit;
+// WIRING-FIX-ELAI Phase 2 (SP3): Layer-3 entrypoint-coverage CLI driver.
+mod wiring_coverage_cmd;
 mod archive_verify;
 // C-43: `elai freeze status|verify|ratify` — Phase 4H scope-freeze CLI
 // driver. Wraps elai_orchestrator::scope_freeze. ELAI design hypothesis
@@ -132,6 +139,13 @@ mod structured_output_cmd;
 // Read-only; live model fixture replay RUNPOD-PENDING. See
 // workflow/reasoning/E-37-decisions.md.
 mod safety_cmd;
+// F-8 / Slice A4: `elai self-mod apply --proposal-fixture PATH` — SCF
+// symbolic-conflict detector W-3 production entrypoint + W-5 live trigger.
+// Drives a real ConfigVariant through the REAL
+// screen_config_variant_for_conflicts compose unit; emits
+// symbolic_conflict_detected + holds pending (WARN-then-escalate). See
+// workflow/reasoning/F-8-decisions.md.
+mod self_mod_cmd;
 // E-40: `elai scip <query|defs|refs|callers|callees|pagerank|status|import>` —
 // orchestrator-rooted symbol-graph operator surface. Production caller for
 // elai_orchestrator::symbol_graph (defends against E37_WIRE_DARK_GAP_PATTERN).
@@ -224,6 +238,11 @@ mod bench_canary;
 // IN-PROCESS through D-8's verify_archive and emits a single
 // DeterminismTamperSuiteCompleted SSB row + a JSON report.
 mod bench_tamper;
+// F-2b: `elai bench seccodeplt [--json]` — SeCodePLT-structured static-gate
+// insecure-rate benchmark. Drives the REAL evaluate_vibegate over the embedded
+// CWE corpus OFFLINE, writes a timestamped seccodeplt-<ts>.json report under
+// benchmarks/seccodeplt/, and emits one InsecureRateMeasured SSB beacon.
+mod bench_seccodeplt;
 // D-28: `elai farm-adv-rm <run|verdict>` — adversarial example farming
 // runner CLI surface. See workflow/reasoning/D-28-decisions.md.
 mod farm_adv_rm;
@@ -276,6 +295,10 @@ mod tool_formatting;
 // helper that emits paired SSB beacons (DkgRebuildStarted /
 // DkgRebuildComplete) around the rebuild path.
 mod dkg_lifecycle;
+// F-5 / Slice A4: `elai dkg staleness-tick` (W-5 trigger) — single-process
+// staleness-quarantine cascade driver. Composes dkg_lifecycle + memory decay +
+// the knowledge DKG/cosmos consumers.
+mod dkg_staleness_cmd;
 // B-15 Tranche O.1 (orchestrate s-22600): five top-level helpers
 // (shortcoder_compress_text, cmd_incident_record, build_pr_review_action,
 // check_anthropic_gateway, CharEstimatorProvider) carved out of main.rs
@@ -534,6 +557,15 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Safety { action, output_format } => {
             safety_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
         }
+        // F-8 / Slice A4 — `elai self-mod apply --proposal-fixture PATH`.
+        // SCF symbolic-conflict detector W-3 production entrypoint + W-5 live
+        // trigger; handler at crates/cli/src/self_mod_cmd.rs. Drives a real
+        // ConfigVariant through the REAL screen_config_variant_for_conflicts
+        // compose unit (emits symbolic_conflict_detected + holds pending,
+        // WARN-then-escalate). See workflow/reasoning/F-8-decisions.md.
+        CliAction::SelfMod { action, output_format } => {
+            self_mod_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
         // E-40 — `elai scip query|defs|refs|callers|callees|pagerank|status|import`.
         // Orchestrator-rooted symbol-graph operator surface; handler at
         // crates/cli/src/scip_cmd.rs. Production caller for the new
@@ -619,6 +651,13 @@ fn run() -> Result<(), anyhow::Error> {
             repl::run_repl(model, allowed_tools, permission_mode, export_jsonl)?;
         }
         CliAction::DepAudit { project_dir, output_format } => doctor::run_dep_audit_command(&project_dir, output_format)?,
+        // F-9 / Slice D4: `elai dep-check <path> [--offline]` — write-time
+        // anti-slopsquatting dep-check. DEFAULT uses the real live
+        // SubprocessRegistryChecker; --offline uses StubRegistryChecker. The
+        // handler opens its OWN session ssb.db (via a current-thread runtime +
+        // block_on) and writes WriteTimeSlopsquatBlocked rows durably (BLOCK-3
+        // observable_effect).
+        CliAction::DepCheck { path, offline } => dep_check_cmd::run(path, offline)?,
         CliAction::Local { port } => repl::run_local_repl(port)?,
         CliAction::Dashboard => dashboard::run_dashboard()?,
         // Phase A1a: production caller of `start_task_runner`. Pinned by
@@ -668,6 +707,10 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::RemoteSidecar => remote_sidecar::run_remote_sidecar()?,
         CliAction::HelpTopic(topic) => live_cli::print_help_topic(topic),
         CliAction::Help { output_format } => help::print_help(output_format)?,
+        // F-5 / Slice A4: `elai dkg staleness-tick --workspace <path>` (W-5).
+        CliAction::DkgStalenessTick { workspace } => {
+            dkg_staleness_cmd::run_dkg_staleness_tick(&workspace)?
+        }
         // B-29 Phase 4: symbol graph CLI subcommands.
         CliAction::SymbolGraphBuild { project_root } => {
             symbol_graph::run_symbol_graph_build(project_root)?
@@ -715,6 +758,19 @@ fn run() -> Result<(), anyhow::Error> {
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
             pipeline_subcommand::run_pipeline_subcommand(action.as_deref(), &project_root)?
         }
+        // F-7 / Slice A4: `elai template-ranking list [--json]` — rank
+        // compiled-pipeline templates by Laplace-smoothed outcome utility
+        // (HALF B CBR ranking). Reads the persisted CompiledPipelineStore +
+        // emits a template_utility_ranked beacon per template (default-ON).
+        CliAction::TemplateRanking { action, json } => {
+            let project_root = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            template_ranking_cmd::run_template_ranking_subcommand(
+                action.as_deref(),
+                json,
+                &project_root,
+            )?
+        }
         // C-27: `elai wiring audit ...` — deterministic Tier T-0 wiring
         // contract audit. Owns its own tokio runtime (sync entry, mirrors
         // pipeline/measure subcommands). Exits 1 on any violation.
@@ -725,6 +781,19 @@ fn run() -> Result<(), anyhow::Error> {
             output_format,
         } => {
             wiring_audit::run(scope, config_path, contracts_dir, output_format)?;
+        }
+        // WIRING-FIX-ELAI Phase 2 (SP3): `elai wiring-coverage ...` — Layer-3
+        // entrypoint-coverage gate. Sync entry (mirrors wiring audit). Exits 1
+        // on any violation OR un-measurable evidence (R2 fail-closed). This
+        // arm is mandatory: the CliAction match is exhaustive, so a missing
+        // arm is a COMPILE error (the compile-time wiring proof — producer
+        // CliAction::WiringCoverage has a real consumer here, R6).
+        CliAction::WiringCoverage {
+            manifest_path,
+            diff_base,
+            output_format,
+        } => {
+            wiring_coverage_cmd::run(manifest_path, diff_base, output_format)?;
         }
         // D-8: `elai archive verify [--path PATH] [--json] [--fail-fast]`
         // Walks the JSONL ArchiveChain via D-1's verify primitives and
@@ -793,6 +862,12 @@ fn run() -> Result<(), anyhow::Error> {
         }
         CliAction::BenchTamper { scenarios, output, fail_fast, max_wall_ms_per_scenario } => {
             bench_cmd::run_bench_tamper(scenarios, output, fail_fast, max_wall_ms_per_scenario)?;
+        }
+        // F-2b: SeCodePLT-structured static-gate insecure-rate benchmark.
+        // Drives the REAL evaluate_vibegate OFFLINE, writes a timestamped
+        // report, emits one InsecureRateMeasured SSB beacon. Exits 0/1.
+        CliAction::BenchSeccodeplt { json } => {
+            bench_cmd::run_bench_seccodeplt(json)?;
         }
         // D-28: `elai farm-adv-rm <run|verdict>` — adversarial example
         // farming runner. Drives AdvRmFarmer (orchestrator-side) and

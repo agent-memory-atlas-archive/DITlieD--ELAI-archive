@@ -492,6 +492,8 @@ async fn measure_phase_4g(metrics_dir: &std::path::Path) -> ScopeOutcome {
             execution_history: elai_orchestrator::anti_spiral_extended::ExecutionHistory::new(),
             attempt_index: 0,
             suggested_prompt_prefix: None,
+            // F-6 (C6a) — benchmark fixtures dispatch no learned skill.
+            candidate_skill_tier: None,
         };
         let t = Instant::now();
         let _ = gate.decide(&ctx).await;
@@ -527,6 +529,8 @@ async fn measure_phase_4g(metrics_dir: &std::path::Path) -> ScopeOutcome {
             execution_history: elai_orchestrator::anti_spiral_extended::ExecutionHistory::new(),
             attempt_index: 0,
             suggested_prompt_prefix: None,
+            // F-6 (C6a) — benchmark fixtures dispatch no learned skill.
+            candidate_skill_tier: None,
         };
         let decision = accuracy_gate.decide(&ctx).await;
         let auto = matches!(

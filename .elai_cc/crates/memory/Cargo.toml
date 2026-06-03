@@ -23,6 +23,21 @@ tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 # D-8 unblock: pre-existing E-5 source uses rustc_hash::FxHashSet but the
 # dep was not declared. Workspace pin already exists at root Cargo.toml L45.
 rustc-hash = { workspace = true }
+# F-12 Tier-2 (feature `nli-onnx`, default-OFF): OnnxNliJudge over ort. The
+# exact pins MIRROR crates/knowledge/Cargo.toml:61-62 (already in-tree +
+# Cargo.lock-resolved; no new external crate). ort =2.0.0-rc.12 is the
+# CLAUDE.md-pinned in-tree version (the reranker's runtime). Anti-slopsquat:
+# both already resolved in Cargo.lock via the knowledge crate.
+ort = { version = "=2.0.0-rc.12", optional = true }
+tokenizers = { version = "0.22", default-features = false, features = ["progressbar", "onig"], optional = true }
+
+[features]
+default = []
+# F-12 Tier-2: stages OnnxNliJudge (the live cross-encoder judge) over ort.
+# Default-OFF because no NLI ONNX model is on disk today; the Tier-1
+# DeterministicNliJudge is the DEFAULT-ON enforcement (no default-OFF
+# graveyard). The default build compiles WITHOUT ort.
+nli-onnx = ["dep:ort", "dep:tokenizers"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -161,8 +161,21 @@ fn runtime_routing_config() -> &'static RoutingConfig {
 /// or the first token after the last pipe. Compound commands where the
 /// pattern appears only in a non-primary position are allowed through.
 pub fn check_routing(command: &str) -> Option<RoutingRejection> {
-    let config = runtime_routing_config();
+    check_routing_with_config(command, runtime_routing_config())
+}
 
+/// Cold-wiring (s-81344): config-explicit variant of [`check_routing`].
+///
+/// Identical logic to [`check_routing`] but takes the [`RoutingConfig`]
+/// explicitly instead of reading the process-global `OnceLock`
+/// ([`runtime_routing_config`]). This lets a caller (and the unit tests)
+/// supply a config whose `allow_override_prefix` takes precedence over the
+/// [`OVERRIDE_PREFIX`] const without mutating global state. `check_routing`
+/// delegates here with the runtime global, so the live behaviour is unchanged.
+pub fn check_routing_with_config(
+    command: &str,
+    config: &RoutingConfig,
+) -> Option<RoutingRejection> {
     // When routing is disabled, all commands pass through.
     if !config.enabled {
         return None;
@@ -170,7 +183,11 @@ pub fn check_routing(command: &str) -> Option<RoutingRejection> {
 
     let trimmed = command.trim();
 
-    // Override escape: configured prefix skips all routing.
+    // Override escape: configured prefix skips all routing. The prefix char is
+    // taken from the config; an empty config prefix falls back to the
+    // OVERRIDE_PREFIX const (so config beats const only when config supplies a
+    // non-empty prefix). `.unwrap_or` here is the safe Option method, not the
+    // banned `.unwrap()`.
     let override_prefix = config
         .allow_override_prefix
         .chars()
@@ -452,6 +469,65 @@ mod tests {
         assert_eq!(
             extract_primary_command("echo hi; cat foo").trim(),
             "echo hi"
+        );
+    }
+
+    // -- Cold-wiring (s-81344): check_routing_with_config --
+
+    #[test]
+    fn with_config_disabled_passes_all_commands() {
+        let disabled = RoutingConfig {
+            enabled: false,
+            allow_override_prefix: "!".to_string(),
+        };
+        // A normally-routed command passes through when the PASSED config
+        // disables routing (proves the supplied config's `enabled` governs).
+        assert!(check_routing_with_config("cat /tmp/foo.txt", &disabled).is_none());
+        let enabled = RoutingConfig {
+            enabled: true,
+            allow_override_prefix: "!".to_string(),
+        };
+        assert!(check_routing_with_config("cat /tmp/foo.txt", &enabled).is_some());
+    }
+
+    #[test]
+    fn with_config_custom_prefix_beats_override_const() {
+        // Config supplies a custom override prefix '@' (NOT the OVERRIDE_PREFIX
+        // '!' const). The custom prefix must bypass routing, proving the config
+        // value takes precedence over the const.
+        let custom = RoutingConfig {
+            enabled: true,
+            allow_override_prefix: "@".to_string(),
+        };
+        assert!(check_routing_with_config("@cat /tmp/foo.txt", &custom).is_none());
+        // The un-prefixed command still routes under the same config (the
+        // custom config did not simply disable everything).
+        assert!(check_routing_with_config("cat /tmp/foo.txt", &custom).is_some());
+    }
+
+    #[test]
+    fn with_config_empty_prefix_falls_back_to_override_const() {
+        // Empty prefix -> chars().next() is None -> unwrap_or(OVERRIDE_PREFIX),
+        // so the const '!' is the active bypass char.
+        let empty = RoutingConfig {
+            enabled: true,
+            allow_override_prefix: String::new(),
+        };
+        assert!(check_routing_with_config("!cat /tmp/foo.txt", &empty).is_none());
+    }
+
+    #[test]
+    fn check_routing_delegates_to_with_config_default() {
+        // check_routing must equal check_routing_with_config(_, runtime default).
+        let default_cfg = RoutingConfig::default();
+        let a = check_routing("cat /tmp/foo.txt");
+        let b = check_routing_with_config("cat /tmp/foo.txt", &default_cfg);
+        assert_eq!(a.is_some(), b.is_some());
+        assert_eq!(a.map(|r| r.target_tool), b.map(|r| r.target_tool));
+        // A non-routed (piped) command agrees on both paths too.
+        assert_eq!(
+            check_routing("ps aux | grep nginx").is_none(),
+            check_routing_with_config("ps aux | grep nginx", &default_cfg).is_none()
         );
     }
 }

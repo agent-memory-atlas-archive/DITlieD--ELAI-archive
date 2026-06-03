@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use elai_core::{ClockProvider as _, OsClock};
+use serde::{Deserialize, Serialize};
 
 use crate::bm25::BM25Chunk;
 use crate::error::KnowledgeError;
@@ -17,6 +18,56 @@ use crate::vector::VectorModule;
 const CHUNK_WINDOW_LINES: usize = 50;
 const CHUNK_OVERLAP_LINES: usize = 10;
 const BINARY_DETECT_BYTES: usize = 512;
+
+// ---------------------------------------------------------------------------
+// Cold-wiring (s-81344): code_vector secondary-index config
+// ---------------------------------------------------------------------------
+
+/// serde-deserializable config for the optional GraphCodeBERT secondary
+/// ("code_vector") index. `enabled` defaults to `true`, so [`code_vec_gate`]
+/// reduces to the existing [`VectorIndexer::has_code_index`] check and
+/// behaviour is unchanged until an operator installs a config with
+/// `enabled = false`.
+///
+/// CONFIG SPLICE (deferred): the environment flag `ELAI_CODE_VEC` is read in
+/// the HOT cli crate (`cli/knowledge_stack.rs`), not here. Populating this
+/// config from that env var is the deferred cli loader splice
+/// (`TODO[wiring.knowledge.code_vec_enabled]`); until then the default keeps
+/// the pre-config behaviour. serde derive is available crate-wide
+/// (Cargo.toml workspace `serde` + `derive`); no new dependency added.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CodeVecConfig {
+    /// When `true` (default), the code_vector stage runs whenever the index
+    /// is actually present ([`VectorIndexer::has_code_index`]). When `false`,
+    /// the stage is suppressed even if the index exists — letting an operator
+    /// turn the secondary ranker off without dropping the on-disk index.
+    pub enabled: bool,
+}
+
+impl Default for CodeVecConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+// TODO[wiring.knowledge.code_vec_enabled]: cli loader splice deferred until
+// s-60824 commits. Post-commit, read ELAI_CODE_VEC in the HOT
+// cli/knowledge_stack.rs build path and call
+// `QueryPipeline::with_code_vec_config(CodeVecConfig { enabled: <env_bool> })`.
+// Cold half (this struct + code_vec_gate + pipeline field/builder/gate) is
+// complete and behaviour-preserving at the default. See
+// workflow/sessions/s-81344/stubs.md.
+
+/// Cold-wiring (s-81344): pure gate for the code_vector secondary-index stage.
+/// Returns `true` only when the config flag is on AND the index is present.
+/// Kept as a free function so the boolean precedence is unit-testable without
+/// constructing a [`VectorIndexer`] (which would need a populated on-disk
+/// index). The pipeline gate calls this with `cfg.enabled` and
+/// `indexer.has_code_index()`.
+pub fn code_vec_gate(config_enabled: bool, has_code_index: bool) -> bool {
+    config_enabled && has_code_index
+}
 
 // ---------------------------------------------------------------------------
 // VectorIndexer — file -> chunks -> embeddings -> BruteForceIndex
@@ -507,5 +558,35 @@ mod tests {
         let result = truncate_snippet(&s, 100);
         assert!(result.len() <= 104); // 100 + "..."
         assert!(result.ends_with("..."));
+    }
+
+    // Cold-wiring (s-81344): CodeVecConfig + code_vec_gate coverage.
+
+    #[test]
+    fn code_vec_gate_requires_flag_and_index() {
+        assert!(code_vec_gate(true, true));
+        assert!(!code_vec_gate(false, true)); // config disables even with index
+        assert!(!code_vec_gate(true, false)); // no index -> off
+        assert!(!code_vec_gate(false, false));
+    }
+
+    #[test]
+    fn code_vec_default_preserves_has_code_index_behaviour() {
+        // Default enabled=true => gate == has_code_index (the pre-config gate).
+        let cfg = CodeVecConfig::default();
+        assert!(cfg.enabled);
+        assert!(code_vec_gate(cfg.enabled, true));
+        assert!(!code_vec_gate(cfg.enabled, false));
+    }
+
+    #[test]
+    fn code_vec_config_deserializes_via_serde_default() {
+        let off: CodeVecConfig = serde_json::from_str(r#"{"enabled": false}"#).unwrap();
+        assert!(!off.enabled);
+        let on: CodeVecConfig = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
+        assert!(on.enabled);
+        // Empty object -> #[serde(default)] -> Default -> enabled=true.
+        let defaulted: CodeVecConfig = serde_json::from_str("{}").unwrap();
+        assert!(defaulted.enabled);
     }
 }

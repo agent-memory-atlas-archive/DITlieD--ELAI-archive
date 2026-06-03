@@ -51,6 +51,26 @@ pub struct McpClientDispatch {
     /// CliMcpDispatch row carrying tool_name + port. When `None` (test
     /// constructor), dispatch is observable only via the return value.
     ssb: Option<Arc<Ssb>>,
+    /// C-47b CLI-arm: long-lived shared calibration registry. When `Some`
+    /// (env-gate `ELAI_C47B_CASE_BASE_PERSIST_ENABLE` on at the
+    /// `run_subcommand` wiring seam), [`Self::dispatch_tool`] routes the
+    /// per-call bridge through `dispatch_tool_call_with_gate` so the
+    /// post-dispatch `record_call` fires and observations persist to the
+    /// shared `case_base.sqlite3` (same file the dashboard arm reads).
+    /// When `None` (the default, gate off), `dispatch_tool` keeps the
+    /// exact `http_call_tool` path -- byte-identical default behaviour.
+    /// Cloned into each transient `DefaultMcpBridge` so accumulation lands
+    /// in the one shared registry, not in throwaway per-call state.
+    #[cfg(feature = "mcp")]
+    calibration_registry: Option<Arc<elai_plugins::ToolCalibrationRegistry>>,
+    /// F-3p1 / Slice C3 (ENFORCE B): optional `CapabilityFlowAdapter` wired
+    /// into the `ToolGate` of each per-call `DefaultMcpBridge`. When `Some`,
+    /// every tool dispatch is routed through `dispatch_tool_call_with_gate`
+    /// so `ToolGate::check_tool_allowed` consults the adapter's
+    /// `CommittedSetChecker::check_committed` before the actual bridge call.
+    /// DEFAULT-ON once wired; no env gate on the enforcement path.
+    #[cfg(feature = "mcp")]
+    capability_flow_adapter: Option<Arc<crate::capability_flow::CapabilityFlowAdapter>>,
 }
 
 impl McpClientDispatch {
@@ -65,7 +85,18 @@ impl McpClientDispatch {
     /// row records the current MCP transport label vs the roadmap
     /// target so dashboards can render drift over time.
     pub fn new(port: u16, ssb: Arc<Ssb>) -> Self {
-        let this = Self { port, ssb: Some(ssb) };
+        let this = Self {
+            port,
+            ssb: Some(ssb),
+            // C-47b: registry is attached post-construction via
+            // `with_calibration_registry` at the wiring seam; default None.
+            #[cfg(feature = "mcp")]
+            calibration_registry: None,
+            // F-3p1 / Slice C3: adapter attached post-construction via
+            // `with_capability_flow_adapter`; default None (pass-through).
+            #[cfg(feature = "mcp")]
+            capability_flow_adapter: None,
+        };
         this.emit_transport_version_once();
         this
     }
@@ -75,7 +106,14 @@ impl McpClientDispatch {
     /// Ssb instance.
     pub fn new_noop() -> Self {
         // Default port matches DEFAULT_MCP_SERVER_URL in plugins/src/mcp_bridge.rs.
-        Self { port: 8200, ssb: None }
+        Self {
+            port: 8200,
+            ssb: None,
+            #[cfg(feature = "mcp")]
+            calibration_registry: None,
+            #[cfg(feature = "mcp")]
+            capability_flow_adapter: None,
+        }
     }
 
     /// Builder: attach an SSB writer post-construction. Used by the
@@ -83,6 +121,45 @@ impl McpClientDispatch {
     /// dispatcher is constructed.
     pub fn with_ssb(mut self, ssb: Arc<Ssb>) -> Self {
         self.ssb = Some(ssb);
+        self
+    }
+
+    /// F-3p1 / Slice C3 (ENFORCE B): wire a `CapabilityFlowAdapter` into
+    /// each per-call `DefaultMcpBridge` so `ToolGate::check_tool_allowed`
+    /// consults the adapter's committed-set enforcement layer on every
+    /// `dispatch_tool` call.
+    ///
+    /// Call this once at session-start (e.g. from `run_subcommand` or the
+    /// dashboard bootstrap) after constructing a `CapabilityFlowAdapter` and
+    /// sharing the same `Arc` with the `WebResearchOrchestrator` producer.
+    ///
+    /// When not called, the dispatch path is byte-identical to the legacy
+    /// pre-C3 behaviour (zero behaviour change on the default leg).
+    #[cfg(feature = "mcp")]
+    pub fn with_capability_flow_adapter(
+        mut self,
+        adapter: Arc<crate::capability_flow::CapabilityFlowAdapter>,
+    ) -> Self {
+        self.capability_flow_adapter = Some(adapter);
+        self
+    }
+
+    /// C-47b CLI-arm builder: attach the long-lived shared calibration
+    /// registry. Called once at the `run_subcommand` wiring seam when the
+    /// `ELAI_C47B_CASE_BASE_PERSIST_ENABLE` env-gate is on. Mirrors the
+    /// dashboard arm's `AppState.calibration_registry` field: the registry
+    /// (with its `CasePersistStore`) is constructed once and the `Arc` is
+    /// cloned into every per-call `DefaultMcpBridge` inside
+    /// [`Self::dispatch_tool`], so observations accumulate in the one
+    /// shared case base rather than in throwaway per-call bridge state.
+    /// When this is never called, `dispatch_tool` keeps the exact
+    /// `http_call_tool` path (zero behaviour change on the default leg).
+    #[cfg(feature = "mcp")]
+    pub fn with_calibration_registry(
+        mut self,
+        registry: Arc<elai_plugins::ToolCalibrationRegistry>,
+    ) -> Self {
+        self.calibration_registry = Some(registry);
         self
     }
 
@@ -194,8 +271,10 @@ impl Dispatch for McpClientDispatch {
         // first error surfaces to the caller.
         #[cfg(feature = "mcp")]
         {
+            use std::sync::Arc as StdArc;
             use elai_plugins::mcp_bridge::DefaultMcpBridge;
-            let bridge = DefaultMcpBridge::default();
+            use elai_plugins::ToolGate;
+            use elai_plugins::LazySchemaCache;
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -203,9 +282,65 @@ impl Dispatch for McpClientDispatch {
             let url = format!("http://localhost:{}", self.port);
             let tool_name = req.tool_name.clone();
             let args = req.args.clone();
-            let result = rt.block_on(async move {
-                bridge.http_call_tool(&url, &tool_name, args).await
-            });
+            // F-3p1 / Slice C3 (ENFORCE B): when a CapabilityFlowAdapter is
+            // wired, build a ToolGate with the adapter as its committed checker
+            // so ToolGate::check_tool_allowed consults the committed set via
+            // the CommittedSetChecker trait. This is a strict SUPERSET of the
+            // existing paths: when the adapter's inner slot is None (no active
+            // commitment), check_committed returns Ok(()) -- zero regression on
+            // sessions that do not use WebResearchOrchestrator. The gate source
+            // is SafeDefault so no per-state tool rules change; ONLY the
+            // committed-set layer is added.
+            //
+            // C-47b CLI-arm: calibration registry path layered on top of the
+            // capability adapter path -- both can coexist.
+            let result = match (
+                self.capability_flow_adapter.as_ref(),
+                self.calibration_registry.as_ref(),
+            ) {
+                (Some(adapter), Some(registry)) => {
+                    let gate = StdArc::new(
+                        ToolGate::safe_default()
+                            .with_committed_checker(adapter.clone() as StdArc<dyn elai_plugins::CommittedSetChecker + Send + Sync>),
+                    );
+                    let cache = StdArc::new(LazySchemaCache::new(1));
+                    let bridge = DefaultMcpBridge::default()
+                        .with_tool_gate(gate, cache)
+                        .with_calibration_registry(registry.clone());
+                    rt.block_on(async move {
+                        bridge
+                            .dispatch_tool_call_with_gate(&url, &tool_name, "", args)
+                            .await
+                    })
+                }
+                (Some(adapter), None) => {
+                    let gate = StdArc::new(
+                        ToolGate::safe_default()
+                            .with_committed_checker(adapter.clone() as StdArc<dyn elai_plugins::CommittedSetChecker + Send + Sync>),
+                    );
+                    let cache = StdArc::new(LazySchemaCache::new(1));
+                    let bridge = DefaultMcpBridge::default().with_tool_gate(gate, cache);
+                    rt.block_on(async move {
+                        bridge
+                            .dispatch_tool_call_with_gate(&url, &tool_name, "", args)
+                            .await
+                    })
+                }
+                (None, Some(registry)) => {
+                    // Legacy C-47b path (no capability adapter).
+                    let bridge =
+                        DefaultMcpBridge::default().with_calibration_registry(registry.clone());
+                    rt.block_on(async move {
+                        bridge
+                            .dispatch_tool_call_with_gate(&url, &tool_name, "", args)
+                            .await
+                    })
+                }
+                (None, None) => {
+                    let bridge = DefaultMcpBridge::default();
+                    rt.block_on(async move { bridge.http_call_tool(&url, &tool_name, args).await })
+                }
+            };
             result
                 .map(|r| r.content)
                 .map_err(|e| format!("cli_mcp_dispatch: bridge call failed: {}", e))

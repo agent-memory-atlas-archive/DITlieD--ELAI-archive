@@ -1,0 +1,23 @@
+# F-2a security ruleset -- Missing Authorization (CWE-862)
+# mutable=0: immutable seed rows, lifecycle-immune.
+# Scope: python + typescript production code.
+# WARN severity: absence-of-pattern checks are inherently imprecise;
+# authorization may live in a middleware stack not co-located with the handler.
+
+[[rules]]
+rule_id = "SEC-AUTHZ-001"
+domain = "security"
+tier = 1
+severity = "WARN"
+title = "Possible missing authz: Python FastAPI route without Depends security (CWE-862)"
+predicate_json = '{"type":"grep_pattern","pattern":"@(app|router)\\.(get|post|put|delete|patch)\\s*\\(","scope":null,"context_lines":2,"language":"python","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-AUTHZ-002"
+domain = "security"
+tier = 1
+severity = "WARN"
+title = "Possible missing authz: TypeScript Express route handler without inline auth middleware (CWE-862)"
+predicate_json = '{"type":"grep_pattern","pattern":"(app|router)\\.(get|post|put|delete|patch)\\s*\\(\\s*\"[^\"]+\"\\s*,\\s*async\\s*\\(req","scope":null,"context_lines":2,"language":"typescript","file_context":"production"}'
+phase_mask = 4294967295

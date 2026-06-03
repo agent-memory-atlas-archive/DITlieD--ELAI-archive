@@ -91,6 +91,11 @@ pub use mcp::gate::{
     GatedCatalog, Summarize, SummaryRow, ToolGate, ToolGateConfig, ToolGateError,
     ToolGateStateConfig, load_gate,
 };
+// F-3 Slice C2: CommittedSetChecker object-safe trait seam + no-op default.
+// Re-exported from plugins root so elai-orchestrator (and tests) can reference
+// the trait without walking internal submodule paths.
+#[cfg(feature = "mcp")]
+pub use mcp::committed_set::{CommittedSetChecker, NoopCommittedSetChecker};
 #[cfg(feature = "mcp")]
 pub use mcp::lazy::{LazyCacheError, LazySchemaCache};
 // C-47: re-export the calibration surface so the orchestrator + dashboard-v2

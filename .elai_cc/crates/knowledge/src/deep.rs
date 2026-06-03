@@ -34,8 +34,13 @@
 // `retain`/`len`/`insert`/`into_values` API surface; no caller breakage.
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::arag::RetrievalResult;
-use crate::pipeline::PipelineStage;
+use crate::pipeline::{
+    PipelineStage, RRF_BM25_WEIGHT, RRF_CODE_VEC_WEIGHT, RRF_SYMBOL_GRAPH_VEC_WEIGHT,
+    RRF_TEXT_VEC_WEIGHT,
+};
 
 /// E-17 SP2: default upper bound on the per-stage candidate pool that
 /// enters the RRF accumulator on the DEEP tier. Prior-work-typical
@@ -53,6 +58,71 @@ pub const RRF_FLOOR_DEFAULT: f64 = 0.005;
 /// accumulator at pipeline.rs:816 — this constant is the named-constant
 /// twin (codeRules baseline: no magic numbers).
 pub const RRF_K_CONSTANT: f64 = 60.0;
+
+/// Cold-wiring (s-81344): serde-deserializable config for the DEEP-tier RRF
+/// reranker. The [`Default`] impl returns the current shipped constants
+/// ([`DEEP_CAP_DEFAULT`], [`RRF_FLOOR_DEFAULT`], [`RRF_K_CONSTANT`], and the
+/// pipeline `RRF_*_WEIGHT` constants), so installing the default config is a
+/// behaviour-preserving no-op. A deserialized or explicitly constructed value
+/// lets an operator retune the DEEP pool cap, RRF floor, k, and per-ranker
+/// weights without a code change. serde derive is available crate-wide
+/// (Cargo.toml workspace `serde` + `derive`); no new dependency added.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KnowledgeDeepConfig {
+    /// Upper bound on the per-stage candidate pool entering the RRF
+    /// accumulator on the DEEP tier. Default = [`DEEP_CAP_DEFAULT`] (100).
+    pub max_candidates: usize,
+    /// RRF score floor below which fused candidates are dropped
+    /// post-freshness-multiplier. Default = [`RRF_FLOOR_DEFAULT`] (0.005).
+    pub rrf_floor: f64,
+    /// RRF rank constant k. Default = [`RRF_K_CONSTANT`] (60.0, Cormack
+    /// SIGIR 2009). NOTE: an independent `RRF_K_CONSTANT` (= 60.0) also
+    /// lives in elai-orchestrator (`symbol_graph/refine_filter.rs`); the two
+    /// are not linked — keep them in sync manually if either is retuned.
+    pub rrf_k: f64,
+    /// Per-ranker RRF weights. Default mirrors the pipeline `RRF_*_WEIGHT`
+    /// constants.
+    pub weights: RrfWeights,
+}
+
+impl Default for KnowledgeDeepConfig {
+    fn default() -> Self {
+        Self {
+            max_candidates: DEEP_CAP_DEFAULT,
+            rrf_floor: RRF_FLOOR_DEFAULT,
+            rrf_k: RRF_K_CONSTANT,
+            weights: RrfWeights::default(),
+        }
+    }
+}
+
+/// Cold-wiring (s-81344): per-ranker RRF weights for [`KnowledgeDeepConfig`].
+/// Defaults mirror the pipeline weight constants (`pipeline.rs` `RRF_*_WEIGHT`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RrfWeights {
+    /// BM25 ranker weight. Default = `RRF_BM25_WEIGHT` (1.0).
+    pub bm25: f64,
+    /// code_vector ranker weight. Default = `RRF_CODE_VEC_WEIGHT` (1.0).
+    pub code_vec: f64,
+    /// text-vector ("vector" stage) weight. Default = `RRF_TEXT_VEC_WEIGHT` (0.8).
+    pub text_vec: f64,
+    /// 5th-list symbol_graph_vec weight. Default =
+    /// `RRF_SYMBOL_GRAPH_VEC_WEIGHT` (0.9).
+    pub symbol_graph_vec: f64,
+}
+
+impl Default for RrfWeights {
+    fn default() -> Self {
+        Self {
+            bm25: RRF_BM25_WEIGHT,
+            code_vec: RRF_CODE_VEC_WEIGHT,
+            text_vec: RRF_TEXT_VEC_WEIGHT,
+            symbol_graph_vec: RRF_SYMBOL_GRAPH_VEC_WEIGHT,
+        }
+    }
+}
 
 /// Cap each input stage's candidate vector to at most `max` entries.
 ///
@@ -200,5 +270,75 @@ mod tests {
         assert!(DEEP_CAP_DEFAULT >= 20 && DEEP_CAP_DEFAULT <= 200);
         assert!(RRF_FLOOR_DEFAULT > 0.0 && RRF_FLOOR_DEFAULT < 0.0164);
         assert!((RRF_K_CONSTANT - 60.0).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // Cold-wiring (s-81344): KnowledgeDeepConfig coverage. Bit-equality on the
+    // float fields proves the Default is a byte-for-byte mirror of the shipped
+    // constants (the existing deep_pool_cap_contract.rs asserts on those
+    // constants, so a drift here would regress the contract).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deep_config_default_mirrors_shipped_constants() {
+        let cfg = KnowledgeDeepConfig::default();
+        assert_eq!(cfg.max_candidates, DEEP_CAP_DEFAULT);
+        assert_eq!(cfg.rrf_floor.to_bits(), RRF_FLOOR_DEFAULT.to_bits());
+        assert_eq!(cfg.rrf_k.to_bits(), RRF_K_CONSTANT.to_bits());
+        assert_eq!(cfg.weights.bm25.to_bits(), RRF_BM25_WEIGHT.to_bits());
+        assert_eq!(cfg.weights.code_vec.to_bits(), RRF_CODE_VEC_WEIGHT.to_bits());
+        assert_eq!(cfg.weights.text_vec.to_bits(), RRF_TEXT_VEC_WEIGHT.to_bits());
+        assert_eq!(
+            cfg.weights.symbol_graph_vec.to_bits(),
+            RRF_SYMBOL_GRAPH_VEC_WEIGHT.to_bits()
+        );
+    }
+
+    #[test]
+    fn deep_config_serde_default_fills_missing_fields() {
+        let cfg: KnowledgeDeepConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(cfg.max_candidates, DEEP_CAP_DEFAULT);
+        assert_eq!(cfg.rrf_k.to_bits(), RRF_K_CONSTANT.to_bits());
+        assert_eq!(cfg.weights.text_vec.to_bits(), RRF_TEXT_VEC_WEIGHT.to_bits());
+    }
+
+    #[test]
+    fn deep_config_explicit_override_changes_only_named_fields() {
+        let cfg: KnowledgeDeepConfig =
+            serde_json::from_str(r#"{"max_candidates": 25, "rrf_floor": 0.01}"#).unwrap();
+        assert_eq!(cfg.max_candidates, 25);
+        assert_eq!(cfg.rrf_floor.to_bits(), 0.01_f64.to_bits());
+        // Unspecified fields fall back to the shipped defaults.
+        assert_eq!(cfg.rrf_k.to_bits(), RRF_K_CONSTANT.to_bits());
+        assert_eq!(cfg.weights.bm25.to_bits(), RRF_BM25_WEIGHT.to_bits());
+    }
+
+    #[test]
+    fn deep_config_max_candidates_drives_pool_cap() {
+        // Proves the config value (not the bare const) governs the cap when a
+        // consumer passes cfg.max_candidates into deep_pool_cap.
+        let cfg = KnowledgeDeepConfig {
+            max_candidates: 2,
+            ..KnowledgeDeepConfig::default()
+        };
+        let mut stages = vec![make_stage("bm25", 5)];
+        let dropped = deep_pool_cap(&mut stages, cfg.max_candidates);
+        assert_eq!(dropped, 3);
+        assert_eq!(stages[0].results.len(), 2);
+    }
+
+    #[test]
+    fn deep_config_rrf_floor_drives_quality_gate() {
+        let cfg = KnowledgeDeepConfig {
+            rrf_floor: 0.5,
+            ..KnowledgeDeepConfig::default()
+        };
+        let mut scores: BTreeMap<String, (f64, RetrievalResult)> = BTreeMap::new();
+        scores.insert("hi".into(), (0.9, make_result("hi", 0.9)));
+        scores.insert("lo".into(), (0.1, make_result("lo", 0.1)));
+        let dropped = rrf_quality_gate(&mut scores, cfg.rrf_floor);
+        assert_eq!(dropped, 1);
+        assert!(scores.contains_key("hi"));
+        assert!(!scores.contains_key("lo"));
     }
 }

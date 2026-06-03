@@ -39,6 +39,21 @@
     facts: MemoryFactDto[];
   };
 
+  // F-12 — semantic-contradiction pair shape (mirrors
+  // commands_e5::SemanticContradictionDto over the IPC boundary).
+  type SemanticContradictionDto = {
+    fact_id_a: string;
+    fact_id_b: string;
+    conflict_kind: string;
+    seq: number;
+    ts_ms: number;
+  };
+
+  type SemanticContradictionsResponse = {
+    viewer_attached: boolean;
+    pairs: SemanticContradictionDto[];
+  };
+
   let storePath = $state<string>('');
   let storeJustCreated = $state(false);
   let facts = $state<MemoryFactDto[]>([]);
@@ -47,6 +62,10 @@
   let scopeFilter = $state<string>('all');
   let typeFilter = $state<string>('all');
   let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+  // F-12 — semantic-contradiction section state.
+  let semanticPairs = $state<SemanticContradictionDto[]>([]);
+  let semanticLoaded = $state(false);
 
   const FACT_TYPES = [
     'voice_style',
@@ -75,6 +94,24 @@
       loadError = String(e);
     } finally {
       loaded = true;
+    }
+    await reloadSemanticContradictions();
+  }
+
+  // F-12 — load the semantic-contradiction pairs (SSB viewer feed). Failures
+  // are swallowed (the section renders an empty state) so a viewer error
+  // never blocks the facts table above.
+  async function reloadSemanticContradictions() {
+    try {
+      const res = await invoke<SemanticContradictionsResponse>(
+        'get_semantic_contradictions',
+        { limit: 100 },
+      );
+      semanticPairs = res.pairs;
+    } catch {
+      semanticPairs = [];
+    } finally {
+      semanticLoaded = true;
     }
   }
 
@@ -222,6 +259,40 @@
       </div>
     {/each}
   {/if}
+
+  <!-- F-12 — Semantic Contradictions (cross-key, deterministic-NLI second
+       pass). Each row is a memory_conflict_detected SSB beacon with
+       conflict_kind="semantic_contradiction". -->
+  <div class="group semantic">
+    <div class="group-head">
+      <span class="type-tag">SEMANTIC CONTRADICTIONS (F-12)</span>
+      <span class="count-pill">{semanticPairs.length}</span>
+    </div>
+    {#if !semanticLoaded}
+      <div class="muted-small">loading…</div>
+    {:else if semanticPairs.length === 0}
+      <div class="muted-small">
+        No semantic contradictions detected. The deterministic-NLI second pass
+        flags cross-key contradictions (e.g. prefers_db=postgres vs
+        migrated_off=postgres) during the memory tick.
+      </div>
+    {:else}
+      <div class="rows">
+        {#each semanticPairs as pair (pair.seq)}
+          <div class="row band-near">
+            <div class="row-head">
+              <span class="key mono">{pair.fact_id_a} → {pair.fact_id_b}</span>
+              <span class="scope-pill">{pair.conflict_kind}</span>
+            </div>
+            <div class="row-meta">
+              <span>seq {pair.seq}</span>
+              <span>{humanizeRelative(pair.ts_ms)}</span>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>

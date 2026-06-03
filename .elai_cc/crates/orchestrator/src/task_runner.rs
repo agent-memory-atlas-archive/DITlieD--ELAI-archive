@@ -114,8 +114,10 @@ use crate::ssb::{
     PhaseCompletePayload, PhaseNodeReadyPayload, PreviewAvailablePayload, ProviderSignalsPayload,
     ReasoningTracePayload, SearchTriggerFiredPayload, Ssb, SsbActionType, SsbEntry, SsbPayload,
     SsbReader, StepNodeReadyPayload, SupervisionEventPayload, TaskSubmittedPayload,
-    TestOutcomePayload, VramTierDetectedPayload, WebResearchStepPayload,
+    TestIntegrityEventKind, TestIntegrityEventPayload, TestOutcomePayload, VramTierDetectedPayload,
+    WebResearchStepPayload,
 };
+use crate::evidence::{AntiFabricationGate, EvidenceGate, IntegrationTestRowSummary, TransitionContext};
 use crate::supervision::{EscalationAction, SupervisionManager, SupervisionOutcome, SupervisionPolicy};
 use crate::web_research_orchestrator::{
     WebResearchOrchestrator, WebResearchStageEvent, WebResearchStepEmitter, WebResearchStepEvent,
@@ -128,16 +130,23 @@ use crate::web_research_orchestrator::{
 /// Agent ID emitted on every runner-produced SSB row.
 pub const RUNNER_AGENT_ID: &str = "task_runner";
 
-/// E-25 Tranche N (s-22600 2026-06-01): probe-budget sentinel passed to
-/// `crate::compaction_ladder::run_compaction_ladder` from the PreCompact
-/// hook branch. The PreCompact dispatcher does not surface a live token
-/// budget today, so this fixed sentinel keeps the ladder traversal
-/// deterministic until a follow-up tranche wires
-/// `context_budget::current_session_budget()` through.
+/// E-25 Tranche N (s-22600 2026-06-01): probe-budget FALLBACK sentinel
+/// passed to `crate::compaction_ladder::run_compaction_ladder` from the
+/// PreCompact hook branch when NO live tracker is plumbed.
 ///
-/// TODO[N-FOLLOWUP]: replace with a live ContextWindow budget probe
-/// once `context_budget::adaptive_reduce` surfaces a session-scoped
-/// token count to the runner.
+/// C.5 (s-14276): the live probe accessor
+/// [`crate::context_budget::CumulativeTokenTracker::current_session_budget`]
+/// now EXISTS and supersedes this sentinel whenever
+/// [`TaskRunnerConfig::token_tracker`] is `Some` (the PreCompact branch
+/// reads the in-window occupancy and feeds it to both the 0.85 gate and the
+/// ladder budget arg). This const REMAINS the fallback used when no tracker
+/// is co-located with the runner (e.g. local-only lane / tests) and is the
+/// `limit` arg of the `with_pre_compact_token_state` gate; it is also still
+/// asserted by `n_compaction_ladder_wire_contract.rs::T1`.
+///
+/// RESIDUAL: the field is only LIVE once a runtime builder populates
+/// `TaskRunnerConfig::token_tracker` from a co-located `CloudGroundingClient`
+/// tracker — see `workflow/reasoning/C5-budget-probe-decisions.md`.
 pub const PRE_COMPACT_PROBE_BUDGET: u64 = 30_000;
 
 /// E-25 Tranche N: target post-ladder budget. Matches the
@@ -388,6 +397,12 @@ pub enum TaskRunnerError {
 
     #[error("payload decode error: {0}")]
     PayloadDecode(#[from] rmp_serde::decode::Error),
+
+    /// F-4 Slice B3: AntiFabricationGate detected one or more passing
+    /// integration tests that lack a `stdout_hash` — the fabrication
+    /// signature. `test_names` lists each offending test name.
+    #[error("fabrication detected: {test_names:?}")]
+    FabricationDetected { test_names: Vec<String> },
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,6 +1135,17 @@ where
                 step_zero_blocks: true,
                 babystep_zero_blocks: true,
                 plan_zero_blocks: true,
+                // F-10: no SsbReader handle at this synthetic-evidence site;
+                // vacuous-default true so the monotonicity check doesn't
+                // double-block the fix_and_rerun-cap RequestHuman path.
+                security_monotonicity: true,
+                // SP5 wiring-fix: this is already a RequestHuman path (the
+                // validator failed max_iterations times). The two off-agent
+                // EXECUTING -> AUDITING legs are FAIL-CLOSED here (no SsbReader
+                // handle to derive them, and this site is not auto-advancing) —
+                // consistent with their FALSE Default.
+                layer3_entrypoint_covered: false,
+                layer4_trace_present: false,
             };
             let reason = format!(
                 "fix_and_rerun cap reached after {max_iterations} iterations; \
@@ -1988,6 +2014,18 @@ pub struct DefaultWebResearchRunner {
     clock: Arc<dyn elai_core::clock::ClockProvider>,
     tier_config_toml: String,
     root_question_max_chars: usize,
+    /// F-3p1 / Slice C3 (PRODUCER bootstrap): shared committed-tool-set slot.
+    /// When `Some`, [`Self::build_orchestrator`] threads this same `Arc` into
+    /// the orchestrator via `with_committed_tool_set` so the per-node commit
+    /// is visible to the enforcement gates (ENFORCE-A `Fsm`, ENFORCE-B
+    /// `CapabilityFlowAdapter`) that hold the same `Arc`. `None` keeps the
+    /// orchestrator's own internal (enforcement-isolated) slot.
+    committed_tool_set: Option<Arc<tokio::sync::Mutex<Option<crate::capability_flow::CommittedToolSet>>>>,
+    /// F-3p1 / Slice C3 (PRODUCER bootstrap): SSB writer for the
+    /// `ToolFilterEvent{Committed}` row. When `Some`,
+    /// [`Self::build_orchestrator`] threads it into the orchestrator via
+    /// `with_ssb_writer` so the commit emits an observable SSB row.
+    ssb_writer: Option<Arc<crate::ssb::Ssb>>,
 }
 
 /// TOML config driving [`DefaultWebResearchRunner`]'s `SourceQualityTable`.
@@ -2013,6 +2051,8 @@ impl DefaultWebResearchRunner {
             clock,
             tier_config_toml: DEFAULT_SOURCE_TIERS_TOML.to_owned(),
             root_question_max_chars: DEFAULT_ROOT_QUESTION_MAX_CHARS,
+            committed_tool_set: None,
+            ssb_writer: None,
         }
     }
 
@@ -2020,6 +2060,25 @@ impl DefaultWebResearchRunner {
     /// `SourceQualityTable`. Pass `""` for the empty default.
     pub fn with_tier_config_toml(mut self, toml: impl Into<String>) -> Self {
         self.tier_config_toml = toml.into();
+        self
+    }
+
+    /// F-3p1 / Slice C3 (PRODUCER bootstrap): share the committed-tool-set slot
+    /// with the enforcement gates. Pass [`crate::capability_flow::committed_slot`]
+    /// so the producer commit lands in the same `Arc` that ENFORCE-A (`Fsm`)
+    /// and ENFORCE-B (`CapabilityFlowAdapter`) read.
+    pub fn with_committed_tool_set(
+        mut self,
+        slot: Arc<tokio::sync::Mutex<Option<crate::capability_flow::CommittedToolSet>>>,
+    ) -> Self {
+        self.committed_tool_set = Some(slot);
+        self
+    }
+
+    /// F-3p1 / Slice C3 (PRODUCER bootstrap): attach the SSB writer so the
+    /// per-node `commit_minimal_set` emits a `ToolFilterEvent{Committed}` row.
+    pub fn with_ssb_writer(mut self, writer: Arc<crate::ssb::Ssb>) -> Self {
+        self.ssb_writer = Some(writer);
         self
     }
 
@@ -2081,6 +2140,19 @@ impl DefaultWebResearchRunner {
                 );
             }
         }
+
+        // F-3p1 / Slice C3 (PRODUCER bootstrap): thread the shared commit slot
+        // + SSB writer so the per-node `commit_minimal_set` lands in the slot
+        // the enforcement gates read AND emits the ToolFilterEvent{Committed}
+        // row. No-op when the runner was constructed without them (legacy path).
+        let orchestrator = match self.committed_tool_set.as_ref() {
+            Some(slot) => orchestrator.with_committed_tool_set(slot.clone()),
+            None => orchestrator,
+        };
+        let orchestrator = match self.ssb_writer.as_ref() {
+            Some(writer) => orchestrator.with_ssb_writer(writer.clone()),
+            None => orchestrator,
+        };
 
         Ok(orchestrator)
     }
@@ -2740,6 +2812,14 @@ pub struct TaskRunnerConfig {
     /// auto-detach + spawn/complete SSB rows).
     pub background_task_manager:
         Option<Arc<crate::background_task::BackgroundTaskManager>>,
+    /// F-6 / Slice A3 — optional learned-skill store. When `Some`, the
+    /// crystallizer post-execute hook acquires a `LearnedSkill` (born at the
+    /// S1 floor) on an N-consecutive-success crystallization gate AND a
+    /// reused `MiniCriticVerdict::Pass` (fail-closed: no Pass verdict in
+    /// scope or in the recent SSB log => no acquisition). `None` preserves
+    /// pre-F-6 behaviour (the acquisition step is a strict no-op).
+    pub skill_store:
+        Option<Arc<AsyncMutex<crate::skill_trust::SkillStore>>>,
     /// C-39 — optional production tool dispatch impl. When `Some`, the
     /// CLI `--via-mcp` flag has selected either
     /// [`crate::dispatch::InProcessDispatch`] or
@@ -2749,6 +2829,20 @@ pub struct TaskRunnerConfig {
     /// preserves the pre-C-39 default (legacy ToolDispatcher only;
     /// the dispatch trait is unused).
     pub mcp_dispatch: Option<Arc<dyn crate::dispatch::Dispatch>>,
+    /// C.5 (s-14276) — optional shared cumulative-token tracker used to feed
+    /// a LIVE per-session budget into the PreCompact compaction-ladder gate
+    /// (replacing the [`PRE_COMPACT_PROBE_BUDGET`] sentinel when present). The
+    /// runtime builder populates this from
+    /// [`crate::grounding_client::CloudGroundingClient::cumulative_token_tracker`]
+    /// (the same `Arc` the grounding client mutates on every round-trip) IFF a
+    /// `CloudGroundingClient` is co-located with the runner in the main run
+    /// path. When `None`, the PreCompact branch keeps the sentinel behaviour
+    /// byte-for-byte (pre-C.5). `tokio::sync::Mutex` (NOT `std::sync::Mutex`)
+    /// because the PreCompact branch is async — mirrors the grounding-client
+    /// tracker type exactly so a single `Arc` is shared between the two
+    /// readers.
+    pub token_tracker:
+        Option<Arc<tokio::sync::Mutex<crate::context_budget::CumulativeTokenTracker>>>,
 }
 
 impl TaskRunnerConfig {
@@ -2798,11 +2892,36 @@ impl TaskRunnerConfig {
             crystallizer: None,
             compiled_pipeline_store: None,
             background_task_manager: None,
+            // F-6 / Slice A3: None preserves pre-F-6 behaviour (acquisition
+            // hook is a no-op). Production wiring sites populate this Arc.
+            skill_store: None,
             // C-39: default to None preserves pre-C-39 behavior. Production
             // wiring sites (CLI run_subcommand via apply_task_runner_wiring)
             // populate this Arc when --via-mcp is set.
             mcp_dispatch: None,
+            // C.5: default None preserves pre-C.5 PreCompact behaviour
+            // (sentinel PRE_COMPACT_PROBE_BUDGET). No CumulativeTokenTracker is
+            // co-located in the main run path today, so this stays None; a
+            // future session wires it via with_token_tracker once the runtime
+            // exposes a shared per-session token counter (see
+            // workflow/reasoning/C5-budget-probe-decisions.md).
+            token_tracker: None,
         }
+    }
+
+    /// C.5 (s-14276) builder: inject a shared [`CumulativeTokenTracker`] so
+    /// the PreCompact compaction-ladder gate reads a live per-session budget
+    /// instead of the [`PRE_COMPACT_PROBE_BUDGET`] sentinel. Production sites
+    /// pass the `Arc` returned by
+    /// [`crate::grounding_client::CloudGroundingClient::cumulative_token_tracker`]
+    /// so the runner and the grounding client observe the same counter.
+    #[must_use]
+    pub fn with_token_tracker(
+        mut self,
+        tracker: Arc<tokio::sync::Mutex<crate::context_budget::CumulativeTokenTracker>>,
+    ) -> Self {
+        self.token_tracker = Some(tracker);
+        self
     }
 
     /// Builder: inject a live `PipelineGrc` instance (B-8a).
@@ -3036,6 +3155,12 @@ struct ResolvedConfig {
     /// callers read it through ResolvedConfig.
     #[allow(dead_code)]
     background_task_manager: Option<Arc<crate::background_task::BackgroundTaskManager>>,
+    /// F-6 / Slice A3 — optional learned-skill store, threaded from
+    /// `TaskRunnerConfig::skill_store`. When `Some`, the crystallizer
+    /// post-execute hook acquires a `LearnedSkill` (S1 floor) on a
+    /// critic-gated crystallization (fail-closed when no
+    /// `MiniCriticVerdict::Pass` is reachable). `None` => acquisition no-op.
+    skill_store: Option<Arc<AsyncMutex<crate::skill_trust::SkillStore>>>,
     /// C-39 — production tool-dispatch seam (parallel observability layer to
     /// the legacy `tool_dispatcher` field above). When `Some`, the runner
     /// invokes `dispatch.dispatch_tool(...)` at every real production
@@ -3211,6 +3336,17 @@ struct ResolvedConfig {
     #[allow(dead_code)]
     observable_effect_runtime:
         Option<Arc<crate::runtime_config::ObservableEffectRuntimeState>>,
+    /// C.5 (s-14276) — optional shared cumulative-token tracker (see
+    /// [`TaskRunnerConfig::token_tracker`]). When `Some`, the PreCompact
+    /// branch reads `current_session_budget()` (in-window occupancy) and
+    /// feeds it to both the `with_pre_compact_token_state` 0.85 gate and the
+    /// compaction-ladder budget arg, replacing the
+    /// [`PRE_COMPACT_PROBE_BUDGET`] sentinel. When `None`, the PreCompact
+    /// branch keeps the sentinel behaviour byte-for-byte (pre-C.5).
+    /// `tokio::sync::Mutex` because the PreCompact branch is async; the read
+    /// copies the `u64` into a local and drops the guard before any `.await`.
+    token_tracker:
+        Option<Arc<tokio::sync::Mutex<crate::context_budget::CumulativeTokenTracker>>>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -3350,6 +3486,10 @@ impl ResolvedConfig {
             crystallizer: cfg.crystallizer,
             compiled_pipeline_store: cfg.compiled_pipeline_store,
             background_task_manager: cfg.background_task_manager,
+            // F-6 / Slice A3: thread the optional learned-skill store onto
+            // ResolvedConfig so the crystallizer post-execute hook can
+            // acquire a critic-gated learned skill.
+            skill_store: cfg.skill_store,
             // C-39: thread the optional Dispatch impl onto ResolvedConfig so
             // the per-baby-step tool-call site (see `drive_task`'s
             // `tool_dispatcher` block) can emit one CliMcpDispatch or
@@ -3439,6 +3579,11 @@ impl ResolvedConfig {
             // D-10..D-16 toggle pattern. Plan: docs/thefinalglance/D-plan/
             // D-18_observable_effect_typed.md.
             observable_effect_runtime: None,
+            // C.5 (s-14276): thread the optional tracker straight through
+            // (None when the caller did not supply one — matching every
+            // other optional slot). The PreCompact branch reads it and
+            // falls back to PRE_COMPACT_PROBE_BUDGET when None.
+            token_tracker: cfg.token_tracker,
         }
     }
 }
@@ -3468,6 +3613,7 @@ impl ResolvedConfig {
 /// `task_summary` is captured BEFORE the executor consumes `exec_ctx` so
 /// the classifier always sees the same baby-step intent string.
 async fn run_crystallizer_post_execute_hook(
+    writer: &Arc<Ssb>,
     resolved: &ResolvedConfig,
     task_summary: &str,
     passed: bool,
@@ -3527,6 +3673,10 @@ async fn run_crystallizer_post_execute_hook(
             )
             .await
     };
+    // The N-consecutive-success crystallization gate fired iff `crystallized`
+    // is `Some`. Capture that BEFORE the `if let` consumes the value so the
+    // F-6 acquisition step can key off the same gate.
+    let did_crystallize = crystallized.is_some();
     if let Some(pipeline) = crystallized {
         let mut store_guard = store.lock().await;
         store_guard.upsert(pipeline, now_secs);
@@ -3537,6 +3687,204 @@ async fn run_crystallizer_post_execute_hook(
             );
         }
     }
+
+    // F-6 / Slice A3 (C6b) — critic-gated learned-skill acquisition. Runs ONLY
+    // when the crystallization gate fired (N consecutive successes for this
+    // concept) AND a reused `MiniCriticVerdict::Pass` is reachable. Strict
+    // no-op when `skill_store` is None (legacy / pre-F-6 callers) or when the
+    // crystallization gate did not fire. Errors are logged + swallowed (this
+    // is an observation/governance hook; failure must not derail the loop).
+    if did_crystallize {
+        acquire_learned_skill(writer, resolved, &concept_class, now_secs).await;
+    }
+}
+
+/// F-6 / Slice A3 (C6b) — critic-gated learned-skill acquisition.
+///
+/// Inserts (or refreshes) a [`crate::skill_trust::LearnedSkill`] born at the
+/// S1 floor into the runtime's [`crate::skill_trust::SkillStore`], keyed on
+/// the crystallized `concept_class`, and emits one
+/// `SkillLibraryEvent(Acquired)` SSB beacon.
+///
+/// GATE (all must hold; any miss = a strict, silent no-op):
+///   1. `resolved.skill_store` is `Some` (the store is wired in production).
+///   2. The caller has already confirmed the N-consecutive-success
+///      crystallization gate fired (the call site guards on `did_crystallize`).
+///   3. A `MiniCriticVerdict::Pass` is REACHABLE. We do NOT spawn a 4th
+///      critic and we do NOT duplicate the verdict SSB row — we REUSE the
+///      verdict already produced by the BestOfN MiniCritic. The
+///      `ExecutionOutcome` does not carry the verdict (HIGH-1), so here we
+///      query the MOST-RECENT `MiniCriticVerdict::Pass` row from the SSB log
+///      (recency-bounded: the single latest Pass by `seq`). FAIL-CLOSED: if
+///      no Pass verdict is found, we do NOT acquire.
+async fn acquire_learned_skill(
+    writer: &Arc<Ssb>,
+    resolved: &ResolvedConfig,
+    concept_class: &str,
+    now_secs: u64,
+) {
+    let Some(store) = resolved.skill_store.as_ref() else {
+        return;
+    };
+
+    // Reuse the BestOfN MiniCritic verdict. The verdict is not threaded
+    // through ExecutionOutcome (would break the c25 pipeline contract
+    // literals), so resolve it from the SSB log: the latest
+    // `MiniCriticVerdict::Pass` row, recency-bounded to the single most-recent
+    // Pass by `seq`. No Pass => fail-closed (no acquisition).
+    if !latest_mini_critic_pass_reachable(writer) {
+        tracing::debug!(
+            concept_class,
+            "F-6 acquire_learned_skill: no reachable MiniCriticVerdict::Pass — \
+             fail-closed, skipping acquisition"
+        );
+        return;
+    }
+
+    // Acquire or refresh the learned skill. W2 fix: a re-crystallization of a
+    // concept whose skill has already climbed the ladder must NOT knock it back
+    // to S1 — a promoted skill would otherwise never hold its rung across a
+    // session that re-crystallizes the same concept. So: a brand-NEW concept is
+    // seeded at the S1 floor (`acquire`); an EXISTING skill PRESERVES its
+    // current tier while recording the fresh critic-gated success (one more
+    // invocation) and refreshing `last_verified` (resetting its staleness
+    // clock).
+    let description =
+        format!("learned skill for concept class '{concept_class}' (critic-gated acquisition)");
+    let tier = {
+        let mut guard = store.lock().await;
+        match guard.get(concept_class) {
+            Some(existing) => {
+                // Preserve tier/acquired_at; record the success + re-verify.
+                let refreshed = crate::skill_trust::LearnedSkill {
+                    id: existing.id.clone(),
+                    description: existing.description.clone(),
+                    tier: existing.tier,
+                    invocations: existing.invocations.saturating_add(1),
+                    failures: existing.failures,
+                    acquired_at: existing.acquired_at,
+                    last_verified: now_secs,
+                };
+                guard.upsert(refreshed)
+            }
+            None => guard.acquire(concept_class.to_string(), description.clone(), now_secs),
+        }
+    };
+
+    // Emit the SkillLibraryEvent(Acquired) beacon. Reuse the existing SSB
+    // variant — no new critic, no duplicate verdict row.
+    let payload = SsbPayload::SkillLibraryEvent(crate::ssb::SkillLibraryEventPayload {
+        skill_id: concept_class.to_string(),
+        description,
+        tier: tier.as_str().to_string(),
+        prior_tier: None,
+        reason: "critic_gated_crystallization".to_string(),
+        invocations: 0,
+        failure_rate: 0.0,
+        kind: crate::ssb::SkillLibraryEventKind::Acquired,
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        tracing::warn!(
+            concept_class,
+            error = %e,
+            "F-6 acquire_learned_skill: SkillLibraryEvent(Acquired) SSB write failed (non-fatal)"
+        );
+    }
+}
+
+/// F-6 / Slice A3 (C6b) — fail-closed verdict reuse helper.
+///
+/// Returns `true` iff the SSB log holds at least one
+/// `MiniCriticVerdict::Pass` row (verdict field == `"pass"`). We take the
+/// MOST-RECENT such row (recency-bounded by `seq`) so a stale/old verdict
+/// does not gate a fresh acquisition — but the boolean reachability is all
+/// the acquisition gate needs. Any SSB read/decode error is treated as
+/// "not reachable" (fail-closed: a read failure must NOT acquire).
+fn latest_mini_critic_pass_reachable(writer: &Arc<Ssb>) -> bool {
+    let rows = match writer.query_by_type(SsbActionType::MiniCriticVerdict) {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "F-6 latest_mini_critic_pass_reachable: SSB query failed — fail-closed"
+            );
+            return false;
+        }
+    };
+    // Recency-bounded scan: walk rows newest-first (highest `seq`) and return
+    // `true` on the first decodable `MiniCriticVerdict::Pass`. Sorting by
+    // descending `seq` makes "the MOST-RECENT Pass" the one that gates the
+    // acquisition, per HIGH-1 in workflow/reasoning/F-6-decisions.md. No Pass
+    // in the whole set => `false` (fail-closed: no acquisition).
+    let pass_label = crate::mini_critic::MiniCriticVerdict::Pass.as_str();
+    let mut rows = rows;
+    rows.sort_by(|a, b| b.seq.cmp(&a.seq));
+    rows.iter()
+        .filter_map(|entry| crate::ssb::decode_ssb_payload(&entry.payload).ok())
+        .any(|payload| {
+            matches!(
+                payload,
+                SsbPayload::MiniCriticVerdict(ref p) if p.verdict == pass_label
+            )
+        })
+}
+
+/// F-6 / Slice A4 (C6c) — learned-skill staleness-demotion scheduler tick.
+///
+/// Runs ONE [`crate::skill_trust::SkillStore::demote_if_stale`] sweep over the
+/// runtime's skill store and emits one `SkillLibraryEvent(DemotedStale)` SSB
+/// beacon per demoted skill. Returns the number of skills demoted on this
+/// tick (0 when nothing aged out).
+///
+/// SCALAR-ISOLATION (F-6 W-5): this is a DISTINCT skill scalar — it operates
+/// on the learned-skill [`crate::skill_trust::SkillStore`], NOT the F-5 memory
+/// [`elai_memory::FactStore`] trust-decay window (`elai_memory::decay_tick`).
+/// The two ticks coordinate (both fire on a scheduler cadence) but never
+/// touch the same state: skill rungs (S1..S4) vs memory trust scores. A caller
+/// that owns both schedulers fires each tick independently.
+///
+/// No `ELAI_*_ENABLE` flag (W-2) — the demotion is a maintenance scalar, not a
+/// wire-dark signal. The caller owns the `None`-store guard (the loop only
+/// spawns when a store is wired), so this helper takes the live store directly.
+async fn run_skill_staleness_tick(
+    writer: &Arc<Ssb>,
+    store: &Arc<AsyncMutex<crate::skill_trust::SkillStore>>,
+    now_secs: u64,
+) -> usize {
+    // Run the sweep under the store lock, collecting the demotion records, then
+    // release the lock BEFORE the SSB writes (the writer awaits its own task).
+    let demoted = {
+        let mut guard = store.lock().await;
+        guard.demote_if_stale(now_secs)
+    };
+
+    for record in &demoted {
+        let payload = SsbPayload::SkillLibraryEvent(crate::ssb::SkillLibraryEventPayload {
+            skill_id: record.id.clone(),
+            description: format!("staleness demotion for learned skill '{}'", record.id),
+            tier: record.new_tier.as_str().to_string(),
+            prior_tier: Some(record.prior_tier.as_str().to_string()),
+            reason: "staleness_score_crossed_threshold".to_string(),
+            invocations: 0,
+            failure_rate: 0.0,
+            kind: crate::ssb::SkillLibraryEventKind::DemotedStale,
+        });
+        if let Err(e) = writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+            .await
+        {
+            tracing::warn!(
+                skill_id = %record.id,
+                error = %e,
+                "F-6 run_skill_staleness_tick: SkillLibraryEvent(DemotedStale) SSB write failed (non-fatal)"
+            );
+        }
+    }
+
+    demoted.len()
 }
 
 /// C-49 — iterative-distillation experience post-audit hook.
@@ -4141,6 +4489,30 @@ async fn run_task_runner(
                 &breach_em,
                 REFUSAL_SLA_TICK_INTERVAL_SECS,
                 &*cancel_for_tick.wake,
+                None,
+            )
+            .await;
+        });
+    }
+
+    // F-6 / Slice A4 (C6c): learned-skill staleness-demotion scheduler tick.
+    // Spawned ALONGSIDE (never inside) the F-5 memory decay loop -- a distinct
+    // skill scalar that shares the hourly cadence but never the same state
+    // (skill rungs S1..S4 vs memory trust scores). No `ELAI_*_ENABLE` gate
+    // (W-2): a `None` skill store makes every tick a strict no-op, so the loop
+    // is harmless on a pre-F-6 runtime. Cancellation honours the outer
+    // `CancelHandle::wake` notify so shutdown is clean. Only spawned when a
+    // skill store is wired (avoids an idle no-op loop in the common case).
+    if let Some(skill_store) = resolved.skill_store.as_ref() {
+        let writer_for_skill_tick = writer.clone();
+        let cancel_for_skill_tick = cancel.clone();
+        let store_for_skill_tick = skill_store.clone();
+        tokio::spawn(async move {
+            let _ticks = crate::task_runner::run_skill_staleness_tick_loop(
+                &writer_for_skill_tick,
+                &store_for_skill_tick,
+                SKILL_STALENESS_TICK_INTERVAL_SECS,
+                &*cancel_for_skill_tick.wake,
                 None,
             )
             .await;
@@ -5989,6 +6361,11 @@ async fn drive_task(
     // step with the per-iteration TestOutcome rows — both are surfaced by the
     // dashboard and downstream gate logic, so they cannot disagree.
     let mut baby_step_outcomes: Vec<(u64, bool)> = Vec::new();
+    // F-4 Slice B3: per-integration-checkpoint rows for AntiFabricationGate.
+    // Populated by emit_checkpoint_outcome (BabyStep, Step, Phase, Concept
+    // levels). Each row carries the blake3 hash of captured output so the gate
+    // can verify no passing row was reported without captured evidence.
+    let mut integration_rows: Vec<IntegrationTestRowSummary> = Vec::new();
 
     // Session wire-antispiral: per-task detector + escalation pipe. `None`
     // when the feature is disabled (pre-wire-antispiral behavior).
@@ -6329,7 +6706,7 @@ async fn drive_task(
         // so the dashboard orders rows by (old-boundary-close, new-step-open).
         let current_location = tree.location_index.get(&bs_id).cloned();
         if let (Some(prev), Some(cur)) = (last_location.as_ref(), current_location.as_ref()) {
-            emit_level_transitions(writer, &nav, prev, cur, &integration_runner, &mut state, &tree).await;
+            emit_level_transitions(writer, &nav, prev, cur, &integration_runner, &mut state, &tree, &mut integration_rows).await;
 
             // B-8 Tasks#7: reset PipelineGrc.inline_feasibility_state at every
             // phase boundary so each phase gets a fresh 2-call budget. Engine
@@ -6777,6 +7154,29 @@ async fn drive_task(
                 .as_ref()
                 .map(|t| t.hard_stop())
                 .unwrap_or(false);
+            // F-6 (C6a/C6b) — derive the candidate learned-skill trust tier
+            // BEFORE the sole `decide()` call so the autonomy gate stays
+            // decoupled from the SkillStore (it reads this pre-computed
+            // evidence field at step 7.5, never the store). Library-retrieval
+            // wiring: classify the current baby step into the SAME
+            // `concept_class` key that `acquire_learned_skill` stores skills
+            // under (both go through `classify_task_for_template`), then read
+            // the learned skill's tier back out of the live `skill_store`. A
+            // sub-S4 tier forces `RequestHuman` at step 7.5; an S4 (apex,
+            // human-granted) skill auto-advances. `None` (no store wired, the
+            // task does not classify, or no skill acquired yet for this
+            // concept) leaves the barrier dormant — fail-open: no candidate,
+            // no barrier.
+            let candidate_skill_tier: Option<crate::skill_trust::SkillTrustTier> =
+                match (
+                    resolved.skill_store.as_ref(),
+                    crate::pipeline_builder::classify_task_for_template(&task_summary),
+                ) {
+                    (Some(skill_store), Some((concept_class, _plan_skeleton_hash))) => {
+                        skill_store.lock().await.get(&concept_class).map(|s| s.tier)
+                    }
+                    _ => None,
+                };
             let gctx = crate::autonomous_gate::GateContext {
                 level: crate::autonomous_gate::PipelineLevel::BabyStep,
                 risk_level: crate::gate::RiskLevel::Low,
@@ -6807,6 +7207,9 @@ async fn drive_task(
                 execution_history: exec_history.clone(),
                 attempt_index,
                 suggested_prompt_prefix: prompt_prefix,
+                // F-6 (C6a) — pre-computed candidate-skill trust tier for the
+                // step-7.5 autonomy barrier (derived above).
+                candidate_skill_tier,
             };
             let decision = gate.decide(&gctx).await;
             // Batch FUL-B: hand the optional splitter to the emit path so
@@ -7762,6 +8165,7 @@ async fn drive_task(
         // store and persists to disk. Errors are logged + swallowed (this
         // hook is observational; failure must not derail the baby-step loop).
         run_crystallizer_post_execute_hook(
+            writer,
             &resolved,
             &exec_ctx_task_summary_for_crystallizer,
             outcome_passed,
@@ -8179,7 +8583,8 @@ async fn drive_task(
                     &integration_runner,
                     &mut state,
                 );
-                emit_checkpoint_outcome(writer, DecompositionLevel::BabyStep, bs_id.0, &run).await;
+                let row = emit_checkpoint_outcome(writer, DecompositionLevel::BabyStep, bs_id.0, &run).await;
+                integration_rows.push(row);
                 integration_succeeded = run.success;
                 run.success && outcome_passed && !pre_gate_blocked && !hook_pre_blocked
             }
@@ -8500,8 +8905,38 @@ async fn drive_task(
                 // PLANNING site shape; DECISION-T-F-12 non-fatal-emit
                 // rationale).
                 if let Some(outcome) = diagnostic_probe_outcome.as_ref() {
+                    // SP5 wiring-fix: populate the two EntrypointAndTraceGate
+                    // carrier fields from the OFF-AGENT `wiring_evidence` /
+                    // `wiring_violation` SSB rows (legs LAYER3_LEG / LAYER4_LEG)
+                    // via the derive helpers (ADR-2: read the artifact, never
+                    // re-run the coverage command). `Some(false)` when the rows
+                    // are absent => the gate fail-closes (R1/R4). The
+                    // helpers wrap to Option so the gate can distinguish
+                    // never-derived (None) from derived-false; here we always
+                    // derive, so we pass Some(...).
+                    let layer3_covered =
+                        derive_layer3_entrypoint_covered(writer.as_ref());
+                    let layer4_present =
+                        derive_layer4_trace_present(writer.as_ref());
+                    // WIRE-DARK[wiring-fix-elai]: the off-agent Layer-3 coverage
+                    // rows that `derive_layer3_entrypoint_covered` reads are
+                    // PRODUCED by `WiringCoverageCmd::run` + persisted via
+                    // `persist_wiring_coverage_payloads`. Running that heavy
+                    // runner (build instrumented binary + llvm-cov + smoke
+                    // drive) inside this per-baby-step loop is OUT OF SCOPE for
+                    // WAVE 4 (it is the WAVE-3 runner invoked out-of-band today,
+                    // and the WAVE-5 D-L4 harness produces the Layer-4 rows).
+                    // Until that loop-trigger lands, both helpers correctly
+                    // return false on absent rows, so the gate FAIL-CLOSES
+                    // (blocks auto-advance) rather than fake-passing. REMAINING
+                    // LOOP-TRIGGER WORK: (1) call WiringCoverageCmd::run here
+                    // before the gate, (2) persist_wiring_coverage_payloads(
+                    // writer, &report).await, (3) WAVE-5 emits the LAYER4_LEG
+                    // wiring_evidence row from the trace harness.
                     let exec_audit_ctx = crate::evidence::TransitionContext {
                         diagnostic_probe_outcome: Some(outcome.clone()),
+                        layer3_entrypoint_covered: Some(layer3_covered),
+                        layer4_trace_present: Some(layer4_present),
                         ..crate::evidence::TransitionContext::default()
                     };
                     let gates = crate::evidence::gates_for_transition(
@@ -8657,11 +9092,16 @@ async fn drive_task(
         // of [`RUNNER_SYNTHETIC_DURATION_MS`]. The synthetic executor keeps
         // reporting 1 ms so legacy tests stay stable; the real agent-pool
         // executor reports measured wall-clock.
+        // F-4 Slice B3: baby-step rows have no captured output so stdout_hash
+        // is None. Integration-checkpoint rows use Some(hash) via
+        // emit_checkpoint_outcome; that path feeds integration_rows for the
+        // AntiFabricationGate check after the loop.
         emit_test_outcome(
             writer,
             &format!("baby_step_{}", bs_id.0),
             passed,
             execution_duration_ms,
+            None,
         )
         .await;
         baby_step_outcomes.push((bs_id.0, passed));
@@ -8748,7 +9188,7 @@ async fn drive_task(
     // double-recording can occur for a given (level, node_id) pair inside a
     // single `drive_task` invocation.
     if let Some(last) = last_location.as_ref() {
-        flush_final_integration_checkpoints(writer, &nav, last, &integration_runner, &mut state, &tree).await;
+        flush_final_integration_checkpoints(writer, &nav, last, &integration_runner, &mut state, &tree, &mut integration_rows).await;
     }
 
     // Batch 1A: Stop hook dispatch. Fires exactly once per task, regardless of
@@ -8820,7 +9260,37 @@ async fn drive_task(
             &step_id,
         )
         .await;
-        let pre_compact = HookInvocation::for_task_level("pre_compact", step_id.clone());
+        // C.5 (s-14276): read the LIVE in-window budget from the shared
+        // tracker (when one is plumbed) into a local BEFORE building the
+        // invocation. The guard is dropped at the end of this scope, well
+        // before the `dispatch_pre_compact(...).await` below — we never hold
+        // a Mutex guard across an `.await` (tokio::sync::Mutex; see field
+        // doc). `None` when no tracker is plumbed -> sentinel fallback below.
+        let pre_compact_live_used: Option<u64> = match resolved.token_tracker.as_ref() {
+            Some(tracker) => {
+                let guard = tracker.lock().await;
+                let used = guard.current_session_budget();
+                drop(guard);
+                Some(used)
+            }
+            None => None,
+        };
+        let pre_compact = match pre_compact_live_used {
+            // C.5: live probe present -> drive the 0.85 PreCompact gate with
+            // (used = in-window occupancy, limit = PRE_COMPACT_PROBE_BUDGET).
+            // Saturating narrow to u32 (try_into, NOT as-cast); overflow is
+            // impossible for realistic token counts but the saturating floor
+            // keeps the gate well-defined.
+            Some(used) => HookInvocation::for_task_level("pre_compact", step_id.clone())
+                .with_pre_compact_token_state(
+                    used.try_into().unwrap_or(u32::MAX),
+                    PRE_COMPACT_PROBE_BUDGET.try_into().unwrap_or(u32::MAX),
+                ),
+            // C.5: no tracker -> byte-identical pre-C.5 behaviour (no
+            // pre_compact_token_state chained; dispatch_pre_compact runs as
+            // before, gate NOOP path preserved).
+            None => HookInvocation::for_task_level("pre_compact", step_id.clone()),
+        };
         // B-19 W2: entropy quarantine — use ClockProvider abstraction instead of
         // std::time::Instant::now() so tests can inject a deterministic clock.
         let pre_compact_clock = OsClock;
@@ -8867,11 +9337,20 @@ async fn drive_task(
                 // and await writer.write_payload(..) per emission. Mirrors
                 // commands.rs:3470-3472 SessionForked precedent.
                 //
-                // current_budget_tokens has no live source plumbed through
-                // PreCompact today; use PRE_COMPACT_PROBE_BUDGET sentinel.
-                // TODO[N-FOLLOWUP]: replace sentinel with live
-                // context_budget::current_session_budget() probe once
-                // PreCompact surfaces a real number.
+                // C.5 (s-14276): the live probe accessor
+                // `context_budget::CumulativeTokenTracker::current_session_budget()`
+                // now EXISTS and is read above into `pre_compact_live_used`
+                // (in-window occupancy) when a tracker is plumbed via
+                // `ResolvedConfig::token_tracker`. When present it supersedes
+                // the `PRE_COMPACT_PROBE_BUDGET` sentinel as the ladder's
+                // current-budget input; when absent (None) the sentinel is
+                // used, preserving pre-C.5 behaviour byte-for-byte.
+                //
+                // RESIDUAL: the field is only LIVE once a runtime builder
+                // populates `TaskRunnerConfig::token_tracker` from a
+                // co-located `CloudGroundingClient`. See the C.5 decision doc
+                // for the documented residual when no co-located client
+                // exists in the main run path.
                 if crate::compaction_ladder::compaction_ladder_enabled() {
                     use std::cell::RefCell;
                     use crate::compaction_ladder::{
@@ -8893,9 +9372,13 @@ async fn drive_task(
                     };
                     let ladder =
                         CompactionLadder::default_order(PRE_COMPACT_LADDER_TARGET_BUDGET);
+                    // C.5: live in-window budget when a tracker is plumbed;
+                    // else the PRE_COMPACT_PROBE_BUDGET sentinel (pre-C.5).
+                    let ladder_budget =
+                        pre_compact_live_used.unwrap_or(PRE_COMPACT_PROBE_BUDGET);
                     let result = run_compaction_ladder(
                         &ladder,
-                        PRE_COMPACT_PROBE_BUDGET,
+                        ladder_budget,
                         Some(pre_compact_summary.clone()),
                         &collector,
                     );
@@ -8947,6 +9430,57 @@ async fn drive_task(
                 .await;
                 warn!(seq, error = %e, "task_runner: PreCompact hook dispatch failed");
             }
+        }
+    }
+
+    // --- F-4 Slice B3: AntiFabricationGate check --------------------------
+    // Run BEFORE PhaseComplete so a fabrication detection halts the task at
+    // the AUDITING->MEMORIZING boundary in the task_runner. This is the
+    // canonical enforcement site because:
+    //   (a) integration_rows is fully populated here (all baby steps done,
+    //       flush_final_integration_checkpoints has run);
+    //   (b) writer is in scope for emitting FabricationBlocked rows;
+    //   (c) fsm.rs:888 has no access to integration_test_rows — the FSM
+    //       transition() method only holds last_audit_result, not the
+    //       per-test row data that lives in task_runner.
+    // The gate is DEFAULT-ON (W-2): no env-var guard. When integration_rows
+    // is empty (e.g. tasks with no IntegrationSpec registered) the gate
+    // passes via default-degrade (AntiFabricationGate returns Ok on None).
+    if !integration_rows.is_empty() {
+        let ctx = TransitionContext {
+            integration_test_rows: Some(integration_rows.clone()),
+            ..TransitionContext::default()
+        };
+        if let Err(e) = AntiFabricationGate.check(&ctx) {
+            // Emit a FabricationBlocked row for each fabricated test name.
+            for fabricated_name in &e.missing_artifacts {
+                let block_payload = SsbPayload::TestIntegrityEvent(TestIntegrityEventPayload {
+                    test_name: fabricated_name.clone(),
+                    passed: true,
+                    stdout_hash: None,
+                    kind: TestIntegrityEventKind::FabricationBlocked,
+                });
+                if let Err(write_err) = writer
+                    .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, block_payload, Vec::new())
+                    .await
+                {
+                    error!(
+                        error = %write_err,
+                        test_name = %fabricated_name,
+                        "task_runner: write TestIntegrityEvent::FabricationBlocked failed"
+                    );
+                }
+            }
+            error!(
+                seq,
+                fabricated_count = e.missing_artifacts.len(),
+                "task_runner: AntiFabricationGate blocked AUDITING->MEMORIZING transition: {}",
+                e
+            );
+            // Halt: do not emit PhaseComplete for a fabricated run.
+            return Err(TaskRunnerError::FabricationDetected {
+                test_names: e.missing_artifacts,
+            });
         }
     }
 
@@ -11971,17 +12505,47 @@ fn synthetic_agent_id_for_seq(seq: i64) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-async fn emit_test_outcome(writer: &Arc<Ssb>, test_name: &str, passed: bool, duration_ms: u64) {
+/// F-4 Slice B3: `stdout_hash` carries the blake3 hex digest of the captured
+/// output for integration-checkpoint runs. `None` for baby-step rows where
+/// no output was captured. When `stdout_hash` is `Some`, an additional
+/// `TestIntegrityEvent::Verified` SSB row is emitted so the
+/// `AntiFabricationGate` can correlate passed rows against captured evidence.
+async fn emit_test_outcome(
+    writer: &Arc<Ssb>,
+    test_name: &str,
+    passed: bool,
+    duration_ms: u64,
+    stdout_hash: Option<String>,
+) {
     let payload = SsbPayload::TestOutcome(TestOutcomePayload {
         test_name: test_name.to_owned(),
         passed,
         duration_ms,
+        stdout_hash: stdout_hash.clone(),
     });
     if let Err(e) = writer
         .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
         .await
     {
         error!(error = %e, "task_runner: write TestOutcome failed");
+    }
+    // F-4 Slice B3: emit TestIntegrityEvent::Verified when stdout was captured.
+    // No event is emitted for baby-step rows (stdout_hash == None) — those are
+    // tracked separately via baby_step_outcomes. Only integration-checkpoint
+    // runs that computed a hash contribute a Verified signal.
+    if let Some(hash) = stdout_hash {
+        let integrity_payload = SsbPayload::TestIntegrityEvent(TestIntegrityEventPayload {
+            test_name: test_name.to_owned(),
+            passed,
+            stdout_hash: Some(hash),
+            kind: TestIntegrityEventKind::Verified,
+        });
+        if let Err(e) = writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, integrity_payload, Vec::new())
+            .await
+        {
+            error!(error = %e, "task_runner: write TestIntegrityEvent::Verified failed");
+        }
     }
 }
 
@@ -12631,6 +13195,14 @@ pub const ELAI_REFUSAL_SLA_TICK_ENABLE_ENV: &str = "ELAI_REFUSAL_SLA_TICK_ENABLE
 /// the consumer-side polling interval.
 pub const REFUSAL_SLA_TICK_INTERVAL_SECS: u64 = 60;
 
+/// F-6 / Slice A4 (C6c) -- default cadence for the learned-skill
+/// staleness-demotion scheduler tick (`run_skill_staleness_tick_loop`).
+/// 1 hour mirrors the F-5 memory decay cadence
+/// (`elai_memory::DEFAULT_DECAY_TICK_INTERVAL`) so the two distinct
+/// scalars sweep on the same wall-clock rhythm without sharing state.
+/// ELAI-own value; NOT externally sourced.
+pub const SKILL_STALENESS_TICK_INTERVAL_SECS: u64 = 3_600;
+
 /// Return true iff the env gate is set to a truthy value. Mirrors the
 /// pattern used by other producer-side wire-dark gates (e.g.
 /// `ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE`).
@@ -12703,6 +13275,57 @@ where
                     breach_emitter,
                     now_unix_ms(),
                 ).await;
+                ticks = ticks.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// F-6 / Slice A4 (C6c) -- periodic learned-skill staleness-demotion loop.
+///
+/// Wraps [`run_skill_staleness_tick`] in an interval loop that fires every
+/// `interval_secs` (0 => [`SKILL_STALENESS_TICK_INTERVAL_SECS`]), mirroring
+/// the shape of [`run_refusal_sla_tick`]. Returns the number of ticks run
+/// when the loop exits (cancellation or `max_ticks` cap).
+///
+/// SCALAR-ISOLATION (F-6 W-5): this loop drives the learned-skill scalar only.
+/// It is spawned alongside -- never inside -- the F-5 memory decay loop; the
+/// two share a cadence but never the same state. No `ELAI_*_ENABLE` gate (W-2);
+/// the caller only spawns this loop when a skill store is wired.
+///
+/// Cancellation: `cancel.notified().await` short-circuits the `select!` and
+/// returns the tick count so far. `max_ticks == None` runs forever
+/// (production); `Some(n)` is the bounded test-friendly form.
+pub async fn run_skill_staleness_tick_loop(
+    writer: &Arc<Ssb>,
+    store: &Arc<AsyncMutex<crate::skill_trust::SkillStore>>,
+    interval_secs: u64,
+    cancel: &tokio::sync::Notify,
+    max_ticks: Option<u64>,
+) -> u64 {
+    let secs = if interval_secs == 0 {
+        SKILL_STALENESS_TICK_INTERVAL_SECS
+    } else {
+        interval_secs
+    };
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(secs));
+    // Consume the immediate first tick so the first sweep happens AFTER `secs`.
+    interval.tick().await;
+
+    let mut ticks: u64 = 0;
+    loop {
+        if let Some(cap) = max_ticks {
+            if ticks >= cap {
+                return ticks;
+            }
+        }
+        tokio::select! {
+            _ = cancel.notified() => {
+                return ticks;
+            }
+            _ = interval.tick() => {
+                let now_secs = OsClock.now_secs();
+                let _demoted = run_skill_staleness_tick(writer, store, now_secs).await;
                 ticks = ticks.saturating_add(1);
             }
         }
@@ -12908,9 +13531,16 @@ fn derive_autonomous_evidence(reader: &dyn SsbReader) -> crate::autonomous_gate:
             }
         }
     }
-    // Vacuous-default: zero TestOutcome rows -> both fields true.
-    let tests_fail_correctly = test_rows.is_empty() || had_red;
-    let test_flipped = test_rows.is_empty() || had_green;
+    // R1/R2 fail-closed: zero TestOutcome rows is ABSENCE OF EVIDENCE, not a
+    // pass. The feature never ran the tests that would have left rows, so the
+    // EXECUTING -> AUDITING auto-advance must NOT be permitted. Empty rows ->
+    // test_flipped=false (no test flipped from red to green) and
+    // tests_fail_correctly=false (no red test was ever observed at
+    // TESTING_FIRST). Both were previously vacuously TRUE on empty rows
+    // (the worst fail-open per wiring-elai-rescope-decisions.md L24-26);
+    // missing evidence now blocks auto-advance instead of waving it through.
+    let tests_fail_correctly = !test_rows.is_empty() && had_red;
+    let test_flipped = !test_rows.is_empty() && had_green;
 
     let phase_transition_rows = reader
         .query_by_type(SsbActionType::PhaseTransition)
@@ -12947,6 +13577,19 @@ fn derive_autonomous_evidence(reader: &dyn SsbReader) -> crate::autonomous_gate:
         step_zero_blocks: derive_step_zero_blocks(reader),
         babystep_zero_blocks: derive_babystep_zero_blocks(reader),
         plan_zero_blocks: derive_plan_zero_blocks(reader),
+        // F-10: AUTO-ADVANCE security monotonicity. Vacuous-default true on
+        // cold-start (no SecurityClassRegressionBlocked rows); false IFF an
+        // AutoAdvance-leg regression row exists. Derived here so the Evidence
+        // struct stays a pure SSB snapshot, matching the B-41 pattern.
+        security_monotonicity: derive_security_monotonicity_evidence(reader),
+        // SP5 wiring-fix: EXECUTING -> AUDITING off-agent legs. FAIL-CLOSED:
+        // both read the off-agent `wiring_evidence`/`wiring_violation` SSB
+        // rows by leg and return false when the rows are absent. A false
+        // collapses through Evidence::all_passed() -> RequestHuman, so a
+        // session with no Layer-3 coverage row / no Layer-4 trace row cannot
+        // auto-advance on a unit-test proxy alone (ADR-1/ADR-2, R1/R4).
+        layer3_entrypoint_covered: derive_layer3_entrypoint_covered(reader),
+        layer4_trace_present: derive_layer4_trace_present(reader),
     }
 }
 
@@ -13021,6 +13664,151 @@ pub fn derive_babystep_zero_blocks(reader: &dyn SsbReader) -> bool {
 /// B-41 — Plan-tier per-level audit zero-blocks check.
 pub fn derive_plan_zero_blocks(reader: &dyn SsbReader) -> bool {
     derive_per_level_zero_blocks_for(reader, "plan")
+}
+
+/// F-10 — derive the AUTO-ADVANCE security-monotonicity evidence check from
+/// SSB. Returns `false` IFF at least one `SecurityClassRegressionBlocked` row
+/// exists whose `loop_kind == AutoAdvance` (a self-improvement step would carry
+/// a newly introduced CWE security class — non-monotone, auto-advance blocked).
+/// Cold-start (no such rows) is vacuous-default `true`, preserving the existing
+/// autonomous_gate cold-start contracts UNCHANGED.
+///
+/// Only the `AutoAdvance` leg participates in the gate decision: the `Refine`
+/// and `SelfMod` legs are recorded for observability/self-mod blocking but do
+/// not feed this auto-advance evidence field (a refine-loop regression in an
+/// unrelated turn must not freeze step advancement).
+pub fn derive_security_monotonicity_evidence(reader: &dyn SsbReader) -> bool {
+    let rows = reader
+        .query_by_type(SsbActionType::SecurityClassRegressionBlocked)
+        .unwrap_or_default();
+    for entry in rows.iter() {
+        let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref()) else {
+            continue;
+        };
+        if let SsbPayload::SecurityClassRegressionBlocked(p) = payload {
+            if matches!(p.loop_kind, crate::ssb::LoopKind::AutoAdvance) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// SP5 wiring-fix — derive the EXECUTING -> AUDITING Layer-3 entrypoint
+/// coverage evidence leg from the OFF-AGENT SSB rows (ADR-1/ADR-2: read the
+/// artifact, never re-run the coverage command).
+///
+/// Returns `true` IFF the session has at least one in-window
+/// `wiring_evidence` row whose `entrypoint == LAYER3_LEG` ("layer3_coverage")
+/// AND ZERO in-window `wiring_violation` rows whose `file == LAYER3_LEG`. This
+/// matches the WAVE-3 producer contract (`wiring_coverage::build_ssb_payloads`
+/// emits exactly that shape).
+///
+/// FAIL-CLOSED (R1/R2/R4): absence of an evidence row (the coverage runner
+/// never ran / never persisted), OR presence of any layer3 violation row,
+/// yields `false`. A `false` collapses through
+/// `Evidence::layer3_entrypoint_covered` -> `all_passed()` -> `RequestHuman`,
+/// so a wire-dark feature cannot auto-advance.
+pub fn derive_layer3_entrypoint_covered(reader: &dyn SsbReader) -> bool {
+    use crate::wiring_coverage::LAYER3_LEG;
+    // Any layer3 violation row => NOT clean (short-circuit fail).
+    let violation_rows = reader
+        .query_by_type(SsbActionType::WiringViolation)
+        .unwrap_or_default();
+    for entry in violation_rows.iter() {
+        let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref()) else {
+            continue;
+        };
+        if let SsbPayload::WiringViolation(v) = payload {
+            if v.file == LAYER3_LEG {
+                return false;
+            }
+        }
+    }
+    // At least one layer3 evidence row required (missing => fail-closed).
+    let evidence_rows = reader
+        .query_by_type(SsbActionType::WiringEvidence)
+        .unwrap_or_default();
+    for entry in evidence_rows.iter() {
+        let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref()) else {
+            continue;
+        };
+        if let SsbPayload::WiringEvidence(e) = payload {
+            if e.entrypoint == LAYER3_LEG {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// SP5 wiring-fix — derive the EXECUTING -> AUDITING Layer-4 off-agent trace
+/// evidence leg from the OFF-AGENT SSB rows (ADR-1: shared `wiring_evidence`
+/// action_type, selected by leg).
+///
+/// Returns `true` IFF the session has at least one in-window `wiring_evidence`
+/// row whose `entrypoint == LAYER4_LEG` ("layer4_trace") — i.e. WAVE 5's
+/// trace-assertion harness drove a real entrypoint and observed the off-agent
+/// SSB row land.
+///
+/// FAIL-CLOSED (R1/R4): absence of a layer4 evidence row yields `false`. WAVE
+/// 5 is the producer of these rows; until it lands, this helper correctly
+/// returns `false` (no trace evidence => block auto-advance), which is the
+/// intended fail-closed behavior — NOT a fake pass.
+pub fn derive_layer4_trace_present(reader: &dyn SsbReader) -> bool {
+    use crate::wiring_coverage::LAYER4_LEG;
+    let evidence_rows = reader
+        .query_by_type(SsbActionType::WiringEvidence)
+        .unwrap_or_default();
+    for entry in evidence_rows.iter() {
+        let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref()) else {
+            continue;
+        };
+        if let SsbPayload::WiringEvidence(e) = payload {
+            if e.entrypoint == LAYER4_LEG {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// SP5 wiring-fix — persist the off-agent SSB rows a Layer-3 coverage run
+/// already PRODUCED so the EXECUTING -> AUDITING gate has real rows to read.
+///
+/// The WAVE-3 `WiringCoverageReport` captures its `wiring_evidence` /
+/// `wiring_violation` payloads on `report.ssb_payloads` (`#[serde(skip)]`) but
+/// does NOT persist them (the sync CLI shell has no async `Ssb` write-loop —
+/// see `wiring_coverage_cmd.rs`). This helper is the ORCHESTRATOR-side
+/// persistence the CLI defers to: it writes each captured payload through the
+/// live `Ssb` so `derive_layer3_entrypoint_covered` can later observe them.
+/// Same pattern as the EvidenceGateEvaluated emit at the gate-fire site.
+///
+/// Returns the count of rows successfully persisted. Write failures are logged
+/// (non-fatal) and excluded from the count rather than aborting the run — a
+/// persisted-row shortfall surfaces downstream as the gate fail-closing (R1),
+/// which is the correct conservative direction.
+pub async fn persist_wiring_coverage_payloads(
+    writer: &Arc<Ssb>,
+    report: &crate::WiringCoverageReport,
+) -> usize {
+    let mut persisted = 0usize;
+    for payload in report.ssb_payloads.iter() {
+        match writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload.clone(), Vec::new())
+            .await
+        {
+            Ok(_seq) => persisted += 1,
+            Err(e) => {
+                tracing::warn!(
+                    audit_id = %report.audit_id,
+                    error = %e,
+                    "task_runner: wiring-coverage SSB payload persist failed (non-fatal; gate will fail-close on the missing row)"
+                );
+            }
+        }
+    }
+    persisted
 }
 
 /// B-40 — derive the 7th evidence check `framing_converged` from SSB.
@@ -14509,6 +15297,7 @@ async fn evaluate_pre_gate_and_emit_findings(
         file_path: file_path_stub,
         fsm_phase: FsmPhaseBit::EXECUTING,
         metric_values: FxHashMap::default(),
+        language_agnostic: false,
     };
     let verdicts = evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &domains, &ctx);
     let mut any_block = false;
@@ -14998,6 +15787,7 @@ async fn evaluate_post_execution_rules_and_emit_findings(
             file_path: &file_path_str,
             fsm_phase: FsmPhaseBit::EXECUTING,
             metric_values: FxHashMap::default(),
+            language_agnostic: false,
         };
         let verdicts =
             evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &domains, &ctx);
@@ -15084,6 +15874,7 @@ pub fn evaluate_post_execution_block_found(
             file_path: &file_path_str,
             fsm_phase: FsmPhaseBit::EXECUTING,
             metric_values: FxHashMap::default(),
+            language_agnostic: false,
         };
         let verdicts =
             evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &domains, &ctx);
@@ -15171,6 +15962,9 @@ fn default_integration_spec(level_tag: &str, node_id: u64) -> IntegrationSpec {
 /// bubble-up counters before the phase integration runs (and phase into
 /// concept). This is NOT "outer-to-inner" or "inner-to-outer" in the tree
 /// sense — it is bottom-up, matching the spec's bubble-up cascade.
+///
+/// F-4 Slice B3: `integration_rows` accumulates [`IntegrationTestRowSummary`]
+/// from each checkpoint for the post-loop `AntiFabricationGate` check.
 async fn emit_level_transitions(
     writer: &Arc<Ssb>,
     nav: &DepthFirstNavigator,
@@ -15179,6 +15973,7 @@ async fn emit_level_transitions(
     runner: &dyn IntegrationRunner,
     state: &mut TreeNavigatorState,
     tree: &NavigatorTree,
+    integration_rows: &mut Vec<IntegrationTestRowSummary>,
 ) {
     let concept_changed = prev.concept_id != cur.concept_id;
     let phase_changed = concept_changed || prev.phase_id != cur.phase_id;
@@ -15187,7 +15982,8 @@ async fn emit_level_transitions(
     if step_changed {
         let (result, action) = nav.run_step_integration(prev.step_id, runner, state, tree);
         if let Some(r) = result.as_ref() {
-            emit_checkpoint_outcome(writer, DecompositionLevel::Step, prev.step_id.0, r).await;
+            let row = emit_checkpoint_outcome(writer, DecompositionLevel::Step, prev.step_id.0, r).await;
+            integration_rows.push(row);
         }
         if let Some(a) = action.as_ref() {
             emit_integration_bubble_up(writer, DecompositionLevel::Step, prev.step_id.0, a).await;
@@ -15196,7 +15992,8 @@ async fn emit_level_transitions(
     if phase_changed {
         let (result, action) = nav.run_phase_integration(prev.phase_id, runner, state, tree);
         if let Some(r) = result.as_ref() {
-            emit_checkpoint_outcome(writer, DecompositionLevel::Phase, prev.phase_id.0, r).await;
+            let row = emit_checkpoint_outcome(writer, DecompositionLevel::Phase, prev.phase_id.0, r).await;
+            integration_rows.push(row);
         }
         if let Some(a) = action.as_ref() {
             emit_integration_bubble_up(writer, DecompositionLevel::Phase, prev.phase_id.0, a).await;
@@ -15205,7 +16002,8 @@ async fn emit_level_transitions(
     if concept_changed {
         let (result, action) = nav.run_concept_integration(prev.concept_id, runner, state, tree);
         if let Some(r) = result.as_ref() {
-            emit_checkpoint_outcome(writer, DecompositionLevel::Concept, prev.concept_id.0, r).await;
+            let row = emit_checkpoint_outcome(writer, DecompositionLevel::Concept, prev.concept_id.0, r).await;
+            integration_rows.push(row);
         }
         if let Some(a) = action.as_ref() {
             emit_integration_bubble_up(writer, DecompositionLevel::Concept, prev.concept_id.0, a).await;
@@ -15216,6 +16014,9 @@ async fn emit_level_transitions(
 /// Fire step/phase/concept integration checkpoints for the last baby step's
 /// location. Called once after the loop so the final level boundaries close
 /// without waiting for a non-existent "next" baby step to trigger them.
+///
+/// F-4 Slice B3: `integration_rows` accumulates [`IntegrationTestRowSummary`]
+/// from each checkpoint for the post-loop `AntiFabricationGate` check.
 async fn flush_final_integration_checkpoints(
     writer: &Arc<Ssb>,
     nav: &DepthFirstNavigator,
@@ -15223,11 +16024,13 @@ async fn flush_final_integration_checkpoints(
     runner: &dyn IntegrationRunner,
     state: &mut TreeNavigatorState,
     tree: &NavigatorTree,
+    integration_rows: &mut Vec<IntegrationTestRowSummary>,
 ) {
     let (step_result, step_action) =
         nav.run_step_integration(last.step_id, runner, state, tree);
     if let Some(r) = step_result.as_ref() {
-        emit_checkpoint_outcome(writer, DecompositionLevel::Step, last.step_id.0, r).await;
+        let row = emit_checkpoint_outcome(writer, DecompositionLevel::Step, last.step_id.0, r).await;
+        integration_rows.push(row);
     }
     if let Some(a) = step_action.as_ref() {
         emit_integration_bubble_up(writer, DecompositionLevel::Step, last.step_id.0, a).await;
@@ -15235,7 +16038,8 @@ async fn flush_final_integration_checkpoints(
     let (phase_result, phase_action) =
         nav.run_phase_integration(last.phase_id, runner, state, tree);
     if let Some(r) = phase_result.as_ref() {
-        emit_checkpoint_outcome(writer, DecompositionLevel::Phase, last.phase_id.0, r).await;
+        let row = emit_checkpoint_outcome(writer, DecompositionLevel::Phase, last.phase_id.0, r).await;
+        integration_rows.push(row);
     }
     if let Some(a) = phase_action.as_ref() {
         emit_integration_bubble_up(writer, DecompositionLevel::Phase, last.phase_id.0, a).await;
@@ -15243,7 +16047,8 @@ async fn flush_final_integration_checkpoints(
     let (concept_result, concept_action) =
         nav.run_concept_integration(last.concept_id, runner, state, tree);
     if let Some(r) = concept_result.as_ref() {
-        emit_checkpoint_outcome(writer, DecompositionLevel::Concept, last.concept_id.0, r).await;
+        let row = emit_checkpoint_outcome(writer, DecompositionLevel::Concept, last.concept_id.0, r).await;
+        integration_rows.push(row);
     }
     if let Some(a) = concept_action.as_ref() {
         emit_integration_bubble_up(writer, DecompositionLevel::Concept, last.concept_id.0, a).await;
@@ -15256,15 +16061,29 @@ async fn flush_final_integration_checkpoints(
 /// behaviour), success path uses `INTEGRATION_CHECKPOINT_SUCCESS_CATEGORY`
 /// (B-20A Task 8) so the B-7 dashboard surface can render a per-level
 /// histogram of checkpoint outcomes.
+///
+/// F-4 Slice B3: returns an [`IntegrationTestRowSummary`] for the caller to
+/// accumulate into the `AntiFabricationGate` input. The `stdout_hash` is
+/// computed as `blake3(run.output_capture.as_deref().unwrap_or(""))` so it
+/// is always `Some` — the hash of the empty string covers runs whose output
+/// was empty or absent, while still providing a deterministic integrity anchor.
 async fn emit_checkpoint_outcome(
     writer: &Arc<Ssb>,
     level: DecompositionLevel,
     node_id: u64,
     run: &IntegrationRunResult,
-) {
+) -> IntegrationTestRowSummary {
     let level_tag = checkpoint_level_tag(level);
     let test_name = format!("{level_tag}_{node_id}_integration");
-    emit_test_outcome(writer, &test_name, run.success, run.total_duration_ms).await;
+    // F-4 Slice B3: compute blake3 hash of captured output (or empty string
+    // when no output was captured). unwrap_or("") ensures the hash is always
+    // Some so passing rows never trigger AntiFabricationGate.
+    let stdout_hash = Some({
+        let raw = run.output_capture.as_deref().unwrap_or("");
+        let h = blake3::hash(raw.as_bytes());
+        format!("{:.16}", h.to_hex())
+    });
+    emit_test_outcome(writer, &test_name, run.success, run.total_duration_ms, stdout_hash.clone()).await;
     if run.success {
         emit_finding(
             writer,
@@ -15288,6 +16107,11 @@ async fn emit_checkpoint_outcome(
             &format!("{level_tag} {node_id}: {reason}"),
         )
         .await;
+    }
+    IntegrationTestRowSummary {
+        test_name,
+        passed: run.success,
+        stdout_hash,
     }
 }
 
@@ -15581,6 +16405,183 @@ mod tests {
         unsafe {
             std::env::remove_var(super::ELAI_REFUSAL_SLA_TICK_ENABLE_ENV);
         }
+    }
+
+    /// F-6 / Slice A4 (C6c): the staleness-tick loop runs exactly
+    /// `max_ticks` sweeps, demotes a stale skill one rung on the first
+    /// sweep, and writes one `skill_demoted_stale` SSB row per demotion.
+    #[tokio::test(start_paused = true)]
+    async fn skill_staleness_tick_loop_demotes_and_emits() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("ssb.db");
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+        let cfg = SsbConfig {
+            db_path,
+            pool_size: Some(2),
+            project_id: "default".into(),
+            session_id: "test-skill-staleness".into(),
+        };
+        let ssb = Arc::new(Ssb::new(cfg, clock).expect("ssb"));
+
+        // Seed one skill at S3 whose last_verified is far enough in the past
+        // (relative to OsClock wall time) that its staleness score crosses the
+        // demotion threshold. last_verified = 0 with the real OS clock (years
+        // of elapsed seconds) guarantees score >= SKILL_STALE_THRESHOLD.
+        let store = Arc::new(AsyncMutex::new(crate::skill_trust::SkillStore::new()));
+        {
+            let mut guard = store.lock().await;
+            guard.upsert(crate::skill_trust::LearnedSkill {
+                id: "stale-skill".into(),
+                description: "d".into(),
+                tier: crate::skill_trust::SkillTrustTier::S3,
+                invocations: 0,
+                failures: 0,
+                acquired_at: 0,
+                last_verified: 0,
+            });
+        }
+
+        let cancel = tokio::sync::Notify::new();
+        let driver = super::run_skill_staleness_tick_loop(&ssb, &store, 1, &cancel, Some(1));
+        tokio::pin!(driver);
+        for _ in 0..2 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        let ticks = driver.await;
+        assert_eq!(ticks, 1, "expected exactly one bounded tick");
+
+        // The skill dropped one rung: S3 -> S2.
+        {
+            let guard = store.lock().await;
+            assert_eq!(
+                guard.get("stale-skill").expect("present").tier,
+                crate::skill_trust::SkillTrustTier::S2,
+                "stale S3 skill must demote one rung to S2"
+            );
+        }
+
+        // Exactly one skill_demoted_stale SSB row was written.
+        let rows = ssb
+            .query_by_type(SsbActionType::SkillLibraryEvent(
+                crate::ssb::SkillLibraryEventKind::DemotedStale,
+            ))
+            .expect("query");
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one skill_demoted_stale row must be emitted on the tick"
+        );
+    }
+
+    /// F-6 / B1 production-path proof: the EXACT lookup composition used at the
+    /// autonomous-gate `decide()` call site (task_runner.rs ~7163) —
+    /// `classify_task_for_template(task_summary)` keyed into the live
+    /// `skill_store` — yields `Some(tier)` when a learned skill exists for the
+    /// classified concept. This is what un-darks the step-7.5 barrier:
+    /// `candidate_skill_tier` is set to `Some(_)` on a real per-dispatch path
+    /// instead of the former hard-coded `None`.
+    #[tokio::test]
+    async fn skill_tier_lookup_on_decide_path_returns_some_for_seeded_concept() {
+        // A baby-step task that classifies to the "Counter" concept class —
+        // the SAME key acquire_learned_skill stores under.
+        let task_summary = "implement a counter widget".to_string();
+        let (concept_class, _hash) =
+            crate::pipeline_builder::classify_task_for_template(&task_summary)
+                .expect("counter task must classify");
+        assert_eq!(concept_class, "Counter");
+
+        // Seed the live store with a sub-S4 learned skill under that key.
+        let store: Arc<AsyncMutex<crate::skill_trust::SkillStore>> =
+            Arc::new(AsyncMutex::new(crate::skill_trust::SkillStore::new()));
+        {
+            let mut guard = store.lock().await;
+            guard.upsert(crate::skill_trust::LearnedSkill {
+                id: concept_class.clone(),
+                description: "seeded".into(),
+                tier: crate::skill_trust::SkillTrustTier::S3,
+                invocations: 0,
+                failures: 0,
+                acquired_at: 0,
+                last_verified: 0,
+            });
+        }
+
+        // Reproduce the decide()-site derivation verbatim.
+        let candidate_skill_tier: Option<crate::skill_trust::SkillTrustTier> =
+            match (
+                Some(&store),
+                crate::pipeline_builder::classify_task_for_template(&task_summary),
+            ) {
+                (Some(skill_store), Some((cc, _h))) => {
+                    skill_store.lock().await.get(&cc).map(|s| s.tier)
+                }
+                _ => None,
+            };
+        assert_eq!(
+            candidate_skill_tier,
+            Some(crate::skill_trust::SkillTrustTier::S3),
+            "decide()-path lookup must surface Some(S3) for the seeded concept"
+        );
+
+        // A task that does NOT classify yields None (barrier dormant).
+        let unclassified = "do something vague".to_string();
+        assert!(
+            crate::pipeline_builder::classify_task_for_template(&unclassified).is_none(),
+            "unclassified task must not key a skill"
+        );
+    }
+
+    /// F-6 / W2 fix: re-acquiring a concept whose skill has already climbed the
+    /// ladder must PRESERVE its tier (record the success + re-verify) rather
+    /// than reset it to the S1 floor. Mirrors the acquire_learned_skill
+    /// existing-skill branch (task_runner.rs ~3749).
+    #[tokio::test]
+    async fn reacquire_preserves_existing_higher_tier() {
+        let store = crate::skill_trust::SkillStore::new();
+        let mut store = store;
+        // Seed a promoted S3 skill with prior history.
+        store.upsert(crate::skill_trust::LearnedSkill {
+            id: "Counter".into(),
+            description: "promoted skill".into(),
+            tier: crate::skill_trust::SkillTrustTier::S3,
+            invocations: 5,
+            failures: 0,
+            acquired_at: 100,
+            last_verified: 100,
+        });
+
+        // Replicate the W2 existing-skill refresh branch verbatim.
+        let now_secs = 9_999;
+        let concept_class = "Counter";
+        let tier = match store.get(concept_class) {
+            Some(existing) => {
+                let refreshed = crate::skill_trust::LearnedSkill {
+                    id: existing.id.clone(),
+                    description: existing.description.clone(),
+                    tier: existing.tier,
+                    invocations: existing.invocations.saturating_add(1),
+                    failures: existing.failures,
+                    acquired_at: existing.acquired_at,
+                    last_verified: now_secs,
+                };
+                store.upsert(refreshed)
+            }
+            None => store.acquire(
+                concept_class.to_string(),
+                "new".into(),
+                now_secs,
+            ),
+        };
+
+        // Tier is preserved (NOT knocked back to S1), invocations incremented,
+        // last_verified refreshed, acquired_at untouched.
+        assert_eq!(tier, crate::skill_trust::SkillTrustTier::S3);
+        let s = store.get("Counter").expect("present");
+        assert_eq!(s.tier, crate::skill_trust::SkillTrustTier::S3);
+        assert_eq!(s.invocations, 6);
+        assert_eq!(s.acquired_at, 100);
+        assert_eq!(s.last_verified, now_secs);
     }
 
     #[test]
@@ -16011,9 +17012,13 @@ mod tests {
                 crystallizer: None,
                 compiled_pipeline_store: None,
                 background_task_manager: None,
+                // F-6 / Slice A3: test fixture — no learned-skill store.
+                skill_store: None,
                 // C-39: default to None; tests that need dispatch
                 // wiring override via Self { ... mcp_dispatch: Some(...) }.
                 mcp_dispatch: None,
+                // C.5: test fixture — no live tracker (sentinel fallback).
+                token_tracker: None,
             },
         );
 
@@ -16145,9 +17150,13 @@ mod tests {
                 crystallizer: None,
                 compiled_pipeline_store: None,
                 background_task_manager: None,
+                // F-6 / Slice A3: test fixture — no learned-skill store.
+                skill_store: None,
                 // C-39: default to None; tests that need dispatch
                 // wiring override via Self { ... mcp_dispatch: Some(...) }.
                 mcp_dispatch: None,
+                // C.5: test fixture — no live tracker (sentinel fallback).
+                token_tracker: None,
             },
         );
 
@@ -16350,9 +17359,13 @@ mod tests {
                 crystallizer: None,
                 compiled_pipeline_store: None,
                 background_task_manager: None,
+                // F-6 / Slice A3: test fixture — no learned-skill store.
+                skill_store: None,
                 // C-39: default to None; tests that need dispatch
                 // wiring override via Self { ... mcp_dispatch: Some(...) }.
                 mcp_dispatch: None,
+                // C.5: test fixture — no live tracker (sentinel fallback).
+                token_tracker: None,
             },
         );
 
@@ -16555,7 +17568,8 @@ mod tests {
             step_id: StepId(12),
             ..prev
         };
-        emit_level_transitions(&ssb, &nav, &prev, &cur_same_phase, &runner, &mut state, &tree)
+        let mut rows_a: Vec<IntegrationTestRowSummary> = Vec::new();
+        emit_level_transitions(&ssb, &nav, &prev, &cur_same_phase, &runner, &mut state, &tree, &mut rows_a)
             .await;
 
         // Cross phase (implies step).
@@ -16564,7 +17578,8 @@ mod tests {
             step_id: StepId(21),
             ..prev
         };
-        emit_level_transitions(&ssb, &nav, &prev, &cur_new_phase, &runner, &mut state, &tree)
+        let mut rows_b: Vec<IntegrationTestRowSummary> = Vec::new();
+        emit_level_transitions(&ssb, &nav, &prev, &cur_new_phase, &runner, &mut state, &tree, &mut rows_b)
             .await;
 
         assert!(state
@@ -16628,7 +17643,8 @@ mod tests {
             step_id: StepId(22),
             baby_step_id: crate::research_tree::BabyStepId(222),
         };
-        flush_final_integration_checkpoints(&ssb, &nav, &last, &runner, &mut state, &tree).await;
+        let mut flush_rows: Vec<IntegrationTestRowSummary> = Vec::new();
+        flush_final_integration_checkpoints(&ssb, &nav, &last, &runner, &mut state, &tree, &mut flush_rows).await;
 
         let step_count = state
             .integration_checkpoints
@@ -17128,8 +18144,12 @@ mod tests {
             crystallizer: None,
             compiled_pipeline_store: None,
             background_task_manager: None,
+            // F-6 / Slice A3: legacy test fixture -- no learned-skill store.
+            skill_store: None,
             // C-39: legacy test fixture -- no dispatch wired.
             mcp_dispatch: None,
+            // C.5: legacy test fixture — no live tracker (sentinel fallback).
+            token_tracker: None,
         })
     }
 

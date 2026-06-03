@@ -144,8 +144,12 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        // F-6 / Slice A3: legacy contract fixture -- no learned-skill store.
+        skill_store: None,
         // C-39: legacy contract fixture -- no Dispatch wired.
         mcp_dispatch: None,
+        // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
+        token_tracker: None,
     };
 
     assert!(
@@ -204,8 +208,12 @@ fn contract_task_runner_config_synthetic_fallback_shape() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        // F-6 / Slice A3: legacy contract fixture -- no learned-skill store.
+        skill_store: None,
         // C-39: legacy contract fixture -- no Dispatch wired.
         mcp_dispatch: None,
+        // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
+        token_tracker: None,
     };
     assert!(cfg.baby_step_executor.is_none());
     assert!(!cfg.anti_spiral_enabled);

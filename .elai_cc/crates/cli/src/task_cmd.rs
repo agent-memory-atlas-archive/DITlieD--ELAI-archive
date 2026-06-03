@@ -422,8 +422,14 @@ async fn run_task_async(args: TaskArgs) -> Result<(), TaskCmdError> {
     let elai_config = crate::runtime_config::load_elai_config(&repo_root);
     let cloud_config = elai_config.cloud.to_cloud_config();
     wiring.cloud_config = Some(cloud_config);
+    // F-9 / Slice D3 — repo_root threaded in so the gate resolves
+    // registry_check.py via SubprocessRegistryChecker::default_at_root.
     wiring.hook_dispatcher =
-        Some(elai_orchestrator::runtime_setup::build_production_hook_dispatcher());
+        Some(elai_orchestrator::runtime_setup::build_production_hook_dispatcher(
+            wiring.ssb.clone(),
+            wiring.vibegate_seed_ok,
+            &repo_root,
+        ));
 
     // patch-1.14 — install the production agent pool so non-baby-step
     // dispatchers (per-level auditor, decomposer follow-ups, evidence-gate

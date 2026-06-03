@@ -1,0 +1,81 @@
+# smoke-manifest.toml - gate-owned (rule R8, frozen via .claude/gate-manifest.txt).
+#
+# Every B-N / plan unit that ships a feature MUST add a [[feature]] entry here BEFORE
+# it can pass the wiring gate (Layer 3, WIRING-FIX-CLAUDE-CODE-WORKFLOW.md section 7).
+# The auditor (NOT the main LLM) verifies that:
+#   - an entry exists for the new feature,
+#   - the contract's observable_effect.trigger actually drives the declared entrypoint,
+#   - the declared expect_ssb action_type landed in the real ssb.db within the window.
+# A missing manifest entry for a new feature is a BLOCK.
+#
+# This file is authored out-of-band by the auditor. A plan run being evaluated by the
+# gate may not edit it (gate_freeze_check.py enforces R8). After a reviewed change,
+# re-lock: python .claude/tools/gate_freeze_check.py --lock
+#
+# Schema (one block per shipped feature):
+#   [[feature]]
+#   plan        = "B-N"          # the plan/ticket id that shipped the feature
+#   entrypoint  = "..."          # the REAL entrypoint: CLI subcommand | IPC command |
+#                                # FSM transition | hook | Tauri command | HTTP route
+#   expect_ssb  = "..."          # the action_type the feature emits when the real
+#                                # entrypoint runs (the off-agent proof)
+#   flag_default = "on"          # "on", or a wire-dark-allowlist.toml flag name if the
+#                                # feature is legitimately behind a kill-switch
+#
+# Example (commented; copy, fill, uncomment per real feature):
+# [[feature]]
+# plan        = "B-NN"
+# entrypoint  = "elai <subcommand> --flag value"
+# expect_ssb  = "your_action_type"
+# flag_default = "on"
+
+# ---- WIRING-FIX-ELAI SEED FEATURES (Layer-3 coverage runner + Layer-4 trace) ----
+# The wiring gate dogfoods itself. Both legs emit the SAME canonical action_type
+# `wiring_evidence` (ssb.rs:8598, golden-locked ssb.rs:3233) -- ADR-1 ruled out new
+# SsbActionType variants. The two legs are distinguished by the leg discriminator
+# carried in the WiringEvidencePayload.entrypoint field (wiring_coverage.rs:70/80):
+#   - Layer-3 coverage runner -> entrypoint == "layer3_coverage" (LAYER3_LEG)
+#   - Layer-4 trace harness    -> entrypoint == "layer4_trace"   (LAYER4_LEG)
+# The SmokeManifestLoader (wiring_coverage.rs:119) parses each [[feature]] for the
+# four required string fields plan/entrypoint/expect_ssb/flag_default; a missing
+# field is a fail-closed Parse error (R1). expect_ssb is the action_type only; the
+# leg is asserted by the auditor against the row payload, not declared here.
+
+[[feature]]
+plan        = "WIRING-FIX-ELAI-SP3"
+entrypoint  = "elai wiring coverage --instrument"
+expect_ssb  = "wiring_evidence"
+flag_default = "on"
+
+[[feature]]
+plan        = "WIRING-FIX-ELAI-SP5"
+entrypoint  = "elai wiring trace"
+expect_ssb  = "wiring_evidence"
+flag_default = "on"
+
+# ---- F-PLAN COMPLETION FEATURES (session s-6312) ----
+# Authored out-of-band by the controller (R8); each entry's observable_effect is driven
+# by the named smoke test the wiring-contract-validator / auditor verifies against ssb.db.
+[[feature]]
+plan        = "F-13"
+entrypoint  = "Ssb::new run_migration on stale-version open (ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE=1)"
+expect_ssb  = "session_archived"
+flag_default = "ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE"
+
+[[feature]]
+plan        = "F-11"
+entrypoint  = "elai darwin-loop --generations 1"
+expect_ssb  = "darwinian_admit"
+flag_default = "ELAI_DARWINIAN_LOOP_ENABLE"
+
+[[feature]]
+plan        = "F-2c"
+entrypoint  = "elai bench seccodeplt --json"
+expect_ssb  = "insecure_rate_measured"
+flag_default = "on"
+
+[[feature]]
+plan        = "F-12"
+entrypoint  = "live REPL memory tick: dispatch_chat_memory_reflect (audit_conflicts + adjudicate_semantic)"
+expect_ssb  = "memory_conflict_detected"
+flag_default = "on"

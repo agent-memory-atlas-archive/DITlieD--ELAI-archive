@@ -1,0 +1,30 @@
+# F-2c security ruleset -- Hardcoded Credentials (CWE-798)
+# mutable=0: immutable seed rows, lifecycle-immune.
+# Scope: python + typescript production code.
+# GrepPattern-ONLY (F-2c controller decision): the production gate wires NoOpAst
+# (vibegate.rs:104), so a Grep+AST Composite's AST child never matches and the
+# rule would be wire-dark on the live gate. FP is bounded by a grep-precision
+# anchor: the assigned double-quoted string literal must contain a digit, so
+# pure-alpha placeholders (CHANGEME, example, your-password, "") do NOT fire.
+# Double-quoted literals only (mirrors F-2a + the F-1 secret axis which excludes
+# single-quoted strings to avoid SQL-fragment false positives). Complements the
+# secret axis (vibegate_secrets.rs), which only fires on >=20 char high-entropy
+# literals; this rule catches the shorter hardcoded-credential shape.
+
+[[rules]]
+rule_id = "SEC-CREDS-001"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Hardcoded credential: Python secret-named variable assigned a literal (CWE-798)"
+predicate_json = '{"type":"grep_pattern","pattern":"(?i)(password|passwd|secret|api_key|apikey|token)\\s*=\\s*\"[^\"\\n]{2,}[0-9][^\"\\n]*\"","scope":null,"context_lines":2,"language":"python","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-CREDS-002"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Hardcoded credential: TypeScript secret-named variable assigned a literal (CWE-798)"
+predicate_json = '{"type":"grep_pattern","pattern":"(?i)(password|passwd|secret|api_key|apikey|token)\\s*=\\s*\"[^\"\\n]{2,}[0-9][^\"\\n]*\"","scope":null,"context_lines":2,"language":"typescript","file_context":"production"}'
+phase_mask = 4294967295

@@ -73,6 +73,12 @@ fn contract_all_passed_requires_each_per_level_field() {
         step_zero_blocks: true,
         babystep_zero_blocks: true,
         plan_zero_blocks: true,
+        // F-10: AUTO-ADVANCE security-monotonicity vacuous-default true.
+        security_monotonicity: true,
+        // SP5 wiring-fix: off-agent EXECUTING -> AUDITING legs default FALSE;
+        // baseline all-true fixture sets them explicitly (ADR-8).
+        layer3_entrypoint_covered: true,
+        layer4_trace_present: true,
     };
     assert!(e.all_passed(), "baseline all-true must pass");
     e.concept_zero_blocks = false;

@@ -178,3 +178,116 @@ pub async fn get_trust_score(
         valid_to_ms: fact.valid_to_ms.map(|v| v as u64),
     })
 }
+
+// ---------------------------------------------------------------------------
+// F-12 — semantic contradiction read surface.
+//
+// `get_semantic_contradictions` reads the SSB VIEWER (NOT the FactStore) for
+// `memory_conflict_detected` rows filtered to
+// `conflict_kind == "semantic_contradiction"` — the rows the live memory
+// tick's deterministic-NLI second pass emits. Mirrors the
+// `gateway_authz_recent_denies` (commands_c42) viewer-read shape: empty Vec
+// when no viewer is attached (browser-dev / no session DB), defensive
+// per-row decode that skips (never panics) on a shape mismatch.
+// ---------------------------------------------------------------------------
+
+const SEMANTIC_CONTRADICTION_KIND: &str = "semantic_contradiction";
+const MEMORY_CONFLICT_ACTION_TYPE: &str = "memory_conflict_detected";
+
+/// One semantic-contradiction pair surfaced to the drawer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SemanticContradictionDto {
+    /// Older row id (`fact_id_a`).
+    pub fact_id_a: String,
+    /// Newer row id (`fact_id_b`).
+    pub fact_id_b: String,
+    /// Free-form conflict kind (always "semantic_contradiction" here).
+    pub conflict_kind: String,
+    /// SSB row sequence (monotone; newest first in the response).
+    pub seq: i64,
+    /// SSB row timestamp (ms).
+    pub ts_ms: i64,
+}
+
+/// Response shape for [`get_semantic_contradictions`].
+#[derive(Debug, Clone, Serialize)]
+pub struct SemanticContradictionsResponse {
+    /// Whether an SSB viewer was attached (false in browser-dev / no DB).
+    pub viewer_attached: bool,
+    /// The semantic-contradiction pairs, newest first.
+    pub pairs: Vec<SemanticContradictionDto>,
+}
+
+/// Extract the `MemoryConflictDetectedPayload` object from an
+/// `SsbActionDetail.payload_json`, tolerating both the externally-tagged
+/// shape (`{"MemoryConflictDetected": {...}}`) and a flat shape (`{...}`).
+fn conflict_payload_object(
+    payload_json: &serde_json::Value,
+) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    let obj = payload_json.as_object()?;
+    if let Some(inner) = obj.get("MemoryConflictDetected").and_then(|v| v.as_object()) {
+        return Some(inner);
+    }
+    // Flat shape fallback: the object already carries the payload fields.
+    if obj.contains_key("conflict_kind") {
+        return Some(obj);
+    }
+    None
+}
+
+fn detail_to_semantic_pair(
+    d: elai_orchestrator::SsbActionDetail,
+) -> Option<SemanticContradictionDto> {
+    let obj = conflict_payload_object(&d.payload_json)?;
+    let conflict_kind = obj.get("conflict_kind")?.as_str()?.to_owned();
+    if conflict_kind != SEMANTIC_CONTRADICTION_KIND {
+        return None;
+    }
+    let fact_id_a = obj.get("fact_id_a")?.as_str()?.to_owned();
+    let fact_id_b = obj.get("fact_id_b")?.as_str()?.to_owned();
+    Some(SemanticContradictionDto {
+        fact_id_a,
+        fact_id_b,
+        conflict_kind,
+        seq: d.seq,
+        ts_ms: d.ts,
+    })
+}
+
+/// Tauri command — recent `memory_conflict_detected` SSB rows whose
+/// `conflict_kind == "semantic_contradiction"`, newest first.
+#[tauri::command]
+pub async fn get_semantic_contradictions(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<SemanticContradictionsResponse, String> {
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT).max(1);
+    let viewer = match &state.viewer {
+        Some(v) => v.clone(),
+        None => {
+            return Ok(SemanticContradictionsResponse {
+                viewer_attached: false,
+                pairs: Vec::new(),
+            })
+        }
+    };
+    let pairs: Vec<SemanticContradictionDto> =
+        match viewer.recent_rows_of_type(MEMORY_CONFLICT_ACTION_TYPE, limit) {
+            Ok(details) => details
+                .into_iter()
+                .filter_map(detail_to_semantic_pair)
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    action_type = MEMORY_CONFLICT_ACTION_TYPE,
+                    error = %e,
+                    "get_semantic_contradictions: viewer error"
+                );
+                Vec::new()
+            }
+        };
+    Ok(SemanticContradictionsResponse {
+        viewer_attached: true,
+        pairs,
+    })
+}

@@ -103,11 +103,56 @@ max_workers_per_query = 8
 # DECISION-D5).
 # ============================================================================
 
-# [wiring.entrypoints]
-# symbols = [
-#     "crates/cli/src/main.rs::main",
-#     "crates/dashboard-v2/src-tauri/src/main.rs::main",
-# ]
+[wiring.entrypoints]
+# Real production entrypoint roots for the DkgReachabilityAuditor BFS. The
+# reachability matcher reduces each entry to its TRAILING symbol name (the
+# segment after the last "::") via entrypoint_match_key / symbol_trailing_name
+# (wiring_contract.rs:1146-1175) and matches it against SymbolNode.name
+# (symbol_graph::cache.rs:62 — the bare leaf function name from the mapper).
+# Format is "<repo-relative-path>::<leaf-symbol>"; the path prefix is
+# documentary (only the leaf after "::" is load-bearing for resolution) and is
+# kept exact so each entry points at a real DEF site (all six verified against
+# source). Covers the four production dispatch surfaces (CLI dispatch, FSM
+# transitions, IPC handler, in-process tool dispatch) plus the dashboard/Tauri
+# process entry + command-registration site.
+symbols = [
+    # CLI dispatch root (process entry -> run() -> per-subcommand dispatch).
+    # main.rs:373 fn main(); leaf = "main".
+    "crates/cli/src/main.rs::main",
+    # FSM transition dispatcher (trait-dispatch over evidence gates).
+    # fsm.rs:878 pub async fn transition(); leaf = "transition".
+    "crates/orchestrator/src/fsm.rs::transition",
+    # IPC tool-registry dispatch (async string-keyed handler dispatch).
+    # ipc_registry.rs:94 pub async fn dispatch(); leaf = "dispatch".
+    "crates/tools/src/ipc_registry.rs::dispatch",
+    # In-process tool dispatch (Dispatch trait impl; dyn-dispatch site).
+    # in_process.rs:102 fn dispatch_tool(); leaf = "dispatch_tool".
+    "crates/orchestrator/src/dispatch/in_process.rs::dispatch_tool",
+    # Dashboard/Tauri process entry. main.rs:3 fn main(); leaf = "main".
+    "crates/dashboard-v2/src-tauri/src/main.rs::main",
+    # Tauri command-registration site (generate_handler! invoke() surface).
+    # lib.rs:368 pub fn run(); leaf = "run".
+    "crates/dashboard-v2/src-tauri/src/lib.rs::run",
+]
+
+# ============================================================================
+# D-FZ / WIRING-FIX-ELAI SP3 — Layer-3 instrumented-binary coverage runner.
+# Consumed by the `elai wiring coverage` subcommand (SP3 build-new). The
+# runner builds the instrumented binary (-C instrument-coverage), drives it
+# under production-default env, parses cargo-llvm-cov --json output, and
+# BLOCKs any NEW function whose hit count == 0 unless it is #[cfg(test)] or a
+# registered WIRE-DARK[B-N] stub. fail_under_lines is a hard floor; a value
+# the run can lower is itself frozen via locked_keys_registry.toml (D-FZ).
+# Tooling pin (anti-slopsquat, verified live): cargo-llvm-cov v0.8.7
+# (crates.io 2026-05-13); JSON flag is --json with --output-path, NOT
+# --format=json (grounding wiring-elai-phase0:80,107).
+# ============================================================================
+[wiring.layer3]
+enabled = true
+fail_under_lines = 0.0
+new_fn_zero_hit_is_block = true
+instrument_profile = "coverage"
+llvm_cov_json_flag = "--json"
 
 # ============================================================================
 # C-28: Testing-Trust Tier T-1 — Mutation testing gate config.

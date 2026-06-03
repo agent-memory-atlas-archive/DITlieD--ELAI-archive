@@ -1,0 +1,8 @@
+{
+  "variant_id": "cfg-causal-violation",
+  "config": {
+    "auditor_config": "x"
+  },
+  "active_tripwires": ["ddm"],
+  "fsm_substate": "AdmittingVariant"
+}

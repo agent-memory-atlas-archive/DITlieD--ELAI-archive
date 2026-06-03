@@ -1,4 +1,14 @@
-# E-45 — cross-language pair registry.
+# E-45 — cross-language pair registry. CANONICAL SOURCE OF TRUTH.
+#
+# This file is the single authoritative list of Rust <-> mirror wire-protocol
+# pairs. THREE consumers derive from it and must stay 1:1 with it:
+#   1. cross_lang_drift::types::PairKind (Rust enum; wire_tag/from_wire_tag).
+#   2. .claude/tools/cross_lang_diff.py (_load_toml_pairs() loads these rows at
+#      runtime; do NOT hardcode wire-protocol pairs in the .py — only the
+#      .py-only dashboard-drawer EXTENSION rows live there).
+#   3. action_type_lock golden (SsbActionType cross-lang variants).
+# Adding a row here REQUIRES adding the matching `PairKind` variant in the SAME
+# commit; the .py picks the new row up automatically from this toml.
 #
 # Authoritative list of Rust <-> mirror pairs walked by
 # `elai_orchestrator::cross_lang_drift::DriftDetector`. The `name` field

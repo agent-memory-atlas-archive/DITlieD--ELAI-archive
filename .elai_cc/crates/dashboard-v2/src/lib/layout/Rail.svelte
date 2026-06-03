@@ -14,6 +14,7 @@
     BookUser,
     NotebookText,
     Regex,
+    ShieldAlert,
   } from '@lucide/svelte';
   import type { Component } from 'svelte';
   import type { LucideProps } from '@lucide/svelte';
@@ -38,7 +39,21 @@
     | 'COSMOS'
     | 'MEMORY-FACTS'
     | 'CHAT-MEMORY'
-    | 'GRAMMAR-COMPILE';
+    | 'GRAMMAR-COMPILE'
+    // F-1 / A5: VibeGate per-surface drawer.
+    | 'VIBEGATE'
+    // F-2a / A5: SecurityRules per-surface drawer.
+    | 'SECURITY-RULES'
+    // F-9 / Slice D5: DepsSecurityPanel per-surface drawer.
+    | 'DEPS-SECURITY'
+    // F-10 / Slice A5: SecurityMonotonicityDrawer per-surface drawer.
+    | 'SECURITY-MONOTONICITY'
+    // F-5 / Slice A5: StalenessQuarantineDrawer per-surface drawer.
+    | 'STALENESS-QUARANTINE'
+    // F-7 / Slice A5: TemplateRankingDrawer per-surface drawer.
+    | 'TEMPLATE-RANKING'
+    // F-13 / Slice A5: SessionArchiveDrawer per-surface drawer.
+    | 'SESSION-ARCHIVE';
 
   interface DrawerItem {
     key: DrawerKeyUpper;
@@ -66,6 +81,21 @@
     { key: 'CHAT-MEMORY',          lowerKey: 'chat-memory',          label: 'CHAT MEMORY',          Icon: NotebookText },
     // E-35 — XGrammar grammar-cache visibility.
     { key: 'GRAMMAR-COMPILE',      lowerKey: 'grammar-compile',      label: 'GRAMMAR COMPILE',      Icon: Regex },
+    // F-1 / A5: VibeGate per-surface drawer. Wire-dark unless ELAI_VIBE_GATE_ENABLE=1.
+    { key: 'VIBEGATE',             lowerKey: 'vibegate',             label: 'VIBE GATE',            Icon: ShieldAlert },
+    // F-2a / A5: SecurityRules per-surface drawer. Wire-dark unless ELAI_SECURITY_RULE_BLOCKED_ENABLE=1.
+    { key: 'SECURITY-RULES',       lowerKey: 'security-rules',       label: 'SECURITY RULES',       Icon: ShieldAlert },
+    // F-9 / Slice D5: DepsSecurityPanel per-surface drawer. Default-ON (B1/W-2).
+    { key: 'DEPS-SECURITY',        lowerKey: 'deps-security',        label: 'DEPS SECURITY',        Icon: ShieldAlert },
+    // F-10 / Slice A5: SecurityMonotonicityDrawer per-surface drawer. Default-ON (W-2).
+    { key: 'SECURITY-MONOTONICITY', lowerKey: 'security-monotonicity', label: 'SECURITY MONOTONICITY', Icon: ShieldAlert },
+    // F-5 / Slice A5: StalenessQuarantineDrawer per-surface drawer. No ENABLE gate (W-2).
+    { key: 'STALENESS-QUARANTINE', lowerKey: 'staleness-quarantine', label: 'STALENESS QUARANTINE', Icon: CalendarClock },
+    // F-7 / Slice A5: TemplateRankingDrawer per-surface drawer. No ENABLE gate (W-2).
+    { key: 'TEMPLATE-RANKING',     lowerKey: 'template-ranking',     label: 'TEMPLATE RANKING',     Icon: Sparkles },
+    // F-13 / Slice A5: SessionArchiveDrawer per-surface drawer. Producer gate
+    // ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE is default-OFF / wire-dark (forensic opt-in).
+    { key: 'SESSION-ARCHIVE',      lowerKey: 'session-archive',      label: 'SESSION ARCHIVE',      Icon: Database },
   ];
 
   function tooltip(node: HTMLElement, opts: { label: string }) {

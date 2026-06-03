@@ -12,6 +12,11 @@
     prompt_tokens_saved: number;
     action_type: string;
     ts_ms: number;
+    // F-3 / Slice C5 optional fields (absent on legacy gate rows).
+    commit_hash?: string;
+    allowed_categories?: string[];
+    denied_tool?: string;
+    taint_source?: string;
   }
 
   interface GateSnapshot {
@@ -72,6 +77,18 @@
   let deniedCount = $derived(recentRows.filter(r => r.action_type === "tool_denied").length);
   let lazyCount = $derived(recentRows.filter(r => r.action_type === "tool_lazy_resolved").length);
 
+  // F-3 / Slice C5: Tool Filter / Data-plane derived counts.
+  let committedCount = $derived(recentRows.filter(r => r.action_type === "tool_filter_committed").length);
+  let quarantinedCount = $derived(recentRows.filter(r => r.action_type === "untrusted_var_quarantined").length);
+
+  // ASR (Allow-Set Reduction) tiles: compare legacy tool_denied rows that
+  // have NO commit_hash (pre-F-3, no commitment in effect) against
+  // untrusted_var_quarantined rows (post-F-3, commitment active).
+  // Both counts are computed from the same recentRows window so they are
+  // directly comparable as a before/after indicator.
+  let asrBefore = $derived(recentRows.filter(r => r.action_type === "tool_denied" && !r.commit_hash).length);
+  let asrAfter = $derived(quarantinedCount);
+
   onMount(() => { void refresh(); pollInterval = setInterval(() => { void refresh(); }, 5_000); });
   onDestroy(() => { if (pollInterval !== null) clearInterval(pollInterval); });
 </script>
@@ -105,6 +122,38 @@
       <dt>Lazy resolves</dt><dd>{lazyCount}</dd>
     </dl>
   </section>
+  <section class="filter-dataplane">
+    <h3>Tool Filter / Data-plane (F-3)</h3>
+    <dl>
+      <dt>Commitments (60s)</dt><dd>{committedCount}</dd>
+      <dt>Quarantined (60s)</dt><dd>{quarantinedCount}</dd>
+      <dt>ASR before (no commit)</dt><dd class="asr-before">{asrBefore}</dd>
+      <dt>ASR after (quarantined)</dt><dd class="asr-after">{asrAfter}</dd>
+    </dl>
+    {#if committedCount > 0}
+      <div class="committed-list">
+        <b>Recent commitments</b>
+        {#each recentRows.filter(r => r.action_type === "tool_filter_committed") as row (row.ts_ms)}
+          <div class="commit-row">
+            <span class="chip hash" title={row.commit_hash}>{(row.commit_hash ?? "").slice(0, 12)}</span>
+            <span class="categories">{(row.allowed_categories ?? []).join(", ") || "(none)"}</span>
+            <span class="task-id muted">{row.tool_name}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if quarantinedCount > 0}
+      <div class="quarantined-list">
+        <b>Quarantined tools</b>
+        {#each recentRows.filter(r => r.action_type === "untrusted_var_quarantined") as row (row.ts_ms)}
+          <div class="quarantine-row">
+            <span class="denied-tool">{row.denied_tool ?? "(unknown)"}</span>
+            {#if row.taint_source}<span class="muted">via {row.taint_source}</span>{/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </section>
   <section class="histogram">
     <h3>Token Savings (60s, 10s buckets)</h3>
     <div class="bars">
@@ -128,6 +177,14 @@
   .bucket.eager{color:green}.bucket.gated{color:orange}.bucket.denied{color:red}
   dl{display:grid;grid-template-columns:max-content 1fr;gap:0.25rem 1rem}
   dt{font-weight:bold}
+  .filter-dataplane{margin-top:1rem}
+  .commit-row,.quarantine-row{display:flex;gap:0.5rem;align-items:baseline;font-size:0.8rem;margin-top:0.25rem}
+  .chip.hash{background:#1e3a5f;color:#7ecfff;padding:0 0.35rem;border-radius:3px;font-size:0.7rem;font-family:monospace}
+  .categories{color:#aaa}
+  .task-id{font-size:0.7rem}
+  .denied-tool{color:red;font-weight:bold}
+  .asr-before{color:orange}
+  .asr-after{color:steelblue}
   .bars{display:flex;gap:4px;align-items:flex-end;height:80px}
   .bar-wrap{display:flex;flex-direction:column;align-items:center;width:40px;height:100%}
   .bar{width:100%;background:steelblue;min-height:1px}

@@ -48,16 +48,41 @@ pub struct ToolGateSnapshotDto {
     pub note: String,
 }
 
-/// One row of the panel -- maps a `ToolGateEventPayload` SSB row to the wire
-/// shape the panel consumes.
+/// One row of the panel -- maps a `ToolGateEventPayload` or `ToolFilterPayload`
+/// SSB row to the wire shape the panel consumes.
+///
+/// The four F-3 / Slice C5 fields (`commit_hash`, `allowed_categories`,
+/// `denied_tool`, `taint_source`) are absent on legacy
+/// `tool_gated/tool_eager/tool_lazy_resolved/tool_denied` rows and present on
+/// `tool_filter_committed` + `untrusted_var_quarantined` rows. All four carry
+/// `#[serde(default, skip_serializing_if = "Option::is_none")]` so existing
+/// frontends that only know the legacy shape are unaffected.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolGateRowDto {
     pub tool_name: String,
     pub fsm_state: String,
     pub prompt_tokens_saved: i64,
-    /// One of `"tool_gated" | "tool_eager" | "tool_lazy_resolved" | "tool_denied"`.
+    /// One of `"tool_gated" | "tool_eager" | "tool_lazy_resolved" |
+    /// "tool_denied" | "tool_filter_committed" | "untrusted_var_quarantined"`.
     pub action_type: String,
     pub ts_ms: i64,
+    // --- F-3 / Slice C5 fields (Tool Filter / Data-plane) ---
+    /// blake3 64-hex commit hash from the `CommittedToolSet`. Present on
+    /// `tool_filter_committed` rows; absent on legacy gate rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_hash: Option<String>,
+    /// Sorted snake_case category labels that were committed. Present on
+    /// `tool_filter_committed` rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_categories: Option<Vec<String>>,
+    /// Tool name that was quarantined. Present on `untrusted_var_quarantined`
+    /// rows; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denied_tool: Option<String>,
+    /// Taint source verdict label. Present on `untrusted_var_quarantined`
+    /// rows; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taint_source: Option<String>,
 }
 
 #[cfg(not(feature = "mcp"))]
@@ -113,14 +138,17 @@ pub async fn list_tool_gate_rows(
         None => return Ok(Vec::new()),
     };
 
-    // Pull from all 4 action types. Each action_type lookup is bounded by
-    // `limit` so the worst-case total is 4 * limit rows before the window
-    // filter + sort.
+    // Pull from all 6 action types (4 legacy gate rows + 2 F-3 filter rows).
+    // Each lookup is bounded by `limit` so worst-case total is 6 * limit rows
+    // before the window filter + sort.
     let action_types = [
         "tool_gated",
         "tool_eager",
         "tool_lazy_resolved",
         "tool_denied",
+        // F-3 / Slice C5: Tool Filter / Data-plane rows.
+        "tool_filter_committed",
+        "untrusted_var_quarantined",
     ];
     let mut rows: Vec<ToolGateRowDto> = Vec::with_capacity(action_types.len() * limit);
     for at in action_types {
@@ -168,13 +196,78 @@ fn now_ms() -> i64 {
 
 fn detail_to_row(d: elai_orchestrator::SsbActionDetail) -> Option<ToolGateRowDto> {
     let obj = d.payload_json.as_object()?;
-    Some(ToolGateRowDto {
-        tool_name: obj.get("tool_name")?.as_str()?.to_string(),
-        fsm_state: obj.get("fsm_state")?.as_str()?.to_string(),
-        prompt_tokens_saved: obj.get("prompt_tokens_saved")?.as_i64().unwrap_or(0),
-        action_type: d.action_type.clone(),
-        ts_ms: d.ts,
-    })
+
+    // F-3 / Slice C5: ToolFilterPayload rows have `commit_hash` instead of
+    // `tool_name`. We map them without requiring `tool_name` so they are not
+    // silently dropped by the `?` short-circuit.
+    let is_filter_row = matches!(
+        d.action_type.as_str(),
+        "tool_filter_committed" | "untrusted_var_quarantined"
+    );
+
+    if is_filter_row {
+        // `commit_hash` is mandatory on both filter row variants.
+        let commit_hash = obj.get("commit_hash")?.as_str()?.to_string();
+
+        let allowed_categories = obj
+            .get("allowed_categories")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            });
+
+        let denied_tool = obj
+            .get("denied_tool")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        let taint_source = obj
+            .get("taint_source")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        let task_id = obj
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        Some(ToolGateRowDto {
+            // tool_name carries task_id for filter rows so the frontend can
+            // display a meaningful identifier in the existing tool_name column.
+            tool_name: task_id,
+            fsm_state: obj
+                .get("fsm_state")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            prompt_tokens_saved: 0,
+            action_type: d.action_type.clone(),
+            ts_ms: d.ts,
+            commit_hash: Some(commit_hash),
+            allowed_categories,
+            denied_tool,
+            taint_source,
+        })
+    } else {
+        // Legacy ToolGateEventPayload shape: tool_name + fsm_state mandatory.
+        Some(ToolGateRowDto {
+            tool_name: obj.get("tool_name")?.as_str()?.to_string(),
+            fsm_state: obj.get("fsm_state")?.as_str()?.to_string(),
+            prompt_tokens_saved: obj
+                .get("prompt_tokens_saved")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+            action_type: d.action_type.clone(),
+            ts_ms: d.ts,
+            commit_hash: None,
+            allowed_categories: None,
+            denied_tool: None,
+            taint_source: None,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -301,9 +394,61 @@ mod tests {
             prompt_tokens_saved: 42,
             action_type: "tool_gated".into(),
             ts_ms: 1_700_000_000_000,
+            commit_hash: None,
+            allowed_categories: None,
+            denied_tool: None,
+            taint_source: None,
         };
         let s = serde_json::to_string(&row).expect("serialise");
         let back: ToolGateRowDto = serde_json::from_str(&s).expect("parse");
         assert_eq!(back, row);
+        // Optional fields must be absent from the serialised JSON (backward
+        // compat for frontends that only know the legacy 5-field shape).
+        assert!(!s.contains("commit_hash"));
+        assert!(!s.contains("allowed_categories"));
+    }
+
+    #[test]
+    fn filter_row_dto_round_trip_serde() {
+        let row = ToolGateRowDto {
+            tool_name: "step-abc-123".into(),
+            fsm_state: String::new(),
+            prompt_tokens_saved: 0,
+            action_type: "tool_filter_committed".into(),
+            ts_ms: 1_700_000_000_001,
+            commit_hash: Some(
+                "a".repeat(64),
+            ),
+            allowed_categories: Some(vec!["read".into(), "web".into()]),
+            denied_tool: None,
+            taint_source: None,
+        };
+        let s = serde_json::to_string(&row).expect("serialise");
+        let back: ToolGateRowDto = serde_json::from_str(&s).expect("parse");
+        assert_eq!(back, row);
+        assert!(s.contains("commit_hash"));
+        assert!(s.contains("allowed_categories"));
+        // denied_tool absent on a committed row.
+        assert!(!s.contains("denied_tool"));
+    }
+
+    #[test]
+    fn quarantined_row_dto_round_trip_serde() {
+        let row = ToolGateRowDto {
+            tool_name: "step-xyz".into(),
+            fsm_state: String::new(),
+            prompt_tokens_saved: 0,
+            action_type: "untrusted_var_quarantined".into(),
+            ts_ms: 1_700_000_000_002,
+            commit_hash: Some("b".repeat(64)),
+            allowed_categories: Some(vec!["read".into()]),
+            denied_tool: Some("fs.write".into()),
+            taint_source: Some("classifier_verdict".into()),
+        };
+        let s = serde_json::to_string(&row).expect("serialise");
+        let back: ToolGateRowDto = serde_json::from_str(&s).expect("parse");
+        assert_eq!(back, row);
+        assert!(s.contains("denied_tool"));
+        assert!(s.contains("taint_source"));
     }
 }

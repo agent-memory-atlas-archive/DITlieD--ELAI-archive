@@ -11,10 +11,18 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use elai_core::clock::{ClockProvider, OsClock};
+use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::skill_registry::{find_skills, DiscoveryRoot, SkillOrigin};
+use elai_orchestrator::{
+    LearnedSkill, SkillStore, SkillTrustTier, Ssb, SsbConfig, SsbPayload, TIER_MIN_AGE_SECS,
+    TIER_MIN_INVOCATIONS,
+};
+use elai_orchestrator::ssb::{SkillLibraryEventKind, SkillLibraryEventPayload};
 
 use crate::args::{CliOutputFormat, SkillsAction};
 
@@ -26,6 +34,14 @@ pub(crate) fn run(action: SkillsAction, output_format: CliOutputFormat) -> Resul
         // E-22 (SCHEMA_VERSION 170): normalised SKILL.md export with
         // blake3 drift detection. See workflow/reasoning/E-22-decisions.md.
         SkillsAction::Export { target, dry_run } => run_export(target, dry_run, output_format),
+        // F-6 / Slice A4 (C6c): learned-skill library trust-ladder surface.
+        // See workflow/reasoning/F-6-decisions.md.
+        SkillsAction::LibraryList => run_library_list(output_format),
+        SkillsAction::LibraryPromote { id, human_grant } => {
+            run_library_promote(&id, human_grant, output_format)
+        }
+        SkillsAction::LibraryShow { id } => run_library_show(&id, output_format),
+        SkillsAction::LibraryTick => run_library_tick(output_format),
     }
 }
 
@@ -635,9 +651,328 @@ fn blake3_prefix(s: &str) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// F-6 / Slice A4 (C6c) -- learned-skill library trust-ladder surface.
+//
+// `elai skills-mgmt library <list|promote|show|tick>`.
+//
+// The learned-skill SkillStore is an in-memory authority owned by a live
+// task-runner; a one-shot `elai` CLI invocation does NOT share that runtime's
+// store. So, mirroring the routing_cmd idiom ("re-run the harness so the
+// surface has a verifiable observable effect even before live state exists"),
+// each verb seeds a deterministic demonstration store. The OBSERVABLE EFFECT
+// of `promote`/`tick` is the SSB row written to the session ssb.db plus the
+// stdout report; `list`/`show` render the seeded store. Live wiring to a
+// persistent store is a follow-on (the store is process-local per F-6).
+// ---------------------------------------------------------------------------
+
+/// Stable ids for the seeded demonstration skills. Deterministic so the CLI
+/// surface is reproducible run-to-run.
+const DEMO_SKILL_FRESH: &str = "scaffold-rest-endpoint";
+const DEMO_SKILL_STALE: &str = "migrate-legacy-config";
+
+/// Serializable view of one learned skill for JSON output + the text table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillLibraryView {
+    pub id: String,
+    pub description: String,
+    pub tier: String,
+    pub invocations: u32,
+    pub failures: u32,
+    pub failure_rate: f64,
+    pub acquired_at: u64,
+    pub last_verified: u64,
+    pub staleness_score: f64,
+}
+
+impl SkillLibraryView {
+    fn from_skill(skill: &LearnedSkill, now: u64) -> Self {
+        SkillLibraryView {
+            id: skill.id.clone(),
+            description: skill.description.clone(),
+            tier: skill.tier.as_str().to_owned(),
+            invocations: skill.invocations,
+            failures: skill.failures,
+            failure_rate: skill.failure_rate(),
+            acquired_at: skill.acquired_at,
+            last_verified: skill.last_verified,
+            staleness_score: SkillStore::staleness_score(skill, now),
+        }
+    }
+}
+
+/// Seed a deterministic demonstration [`SkillStore`]: one fresh, climbable
+/// S2 skill (recently verified, already past the min-age + min-invocation
+/// gate so `promote` can advance it) and one stale S3 skill (`last_verified`
+/// far in the past so a `tick` demotes it). `now` is the wall-clock second.
+fn seed_demo_store(now: u64) -> SkillStore {
+    let mut store = SkillStore::new();
+    // Fresh, climbable S2: old enough + enough invocations to clear the gate.
+    store.upsert(LearnedSkill {
+        id: DEMO_SKILL_FRESH.to_owned(),
+        description: "scaffold a REST endpoint from an OpenAPI fragment".to_owned(),
+        tier: SkillTrustTier::S2,
+        invocations: TIER_MIN_INVOCATIONS,
+        failures: 0,
+        acquired_at: now.saturating_sub(TIER_MIN_AGE_SECS.saturating_add(1)),
+        last_verified: now,
+    });
+    // Stale S3: last verified at the epoch floor, so its staleness score
+    // crosses the demotion threshold under any realistic wall clock.
+    store.upsert(LearnedSkill {
+        id: DEMO_SKILL_STALE.to_owned(),
+        description: "migrate a legacy config file to the v2 schema".to_owned(),
+        tier: SkillTrustTier::S3,
+        invocations: TIER_MIN_INVOCATIONS,
+        failures: 0,
+        acquired_at: 0,
+        last_verified: 0,
+    });
+    store
+}
+
+/// Open the session `ssb.db` and emit ONE `SkillLibraryEvent` row, awaited
+/// (durable). `Ssb::new` spawns the single-writer task and MUST be constructed
+/// inside `rt.block_on`, else it panics "no reactor running" (observable only
+/// on a live run; cargo check passes regardless). Mirrors
+/// `bench_seccodeplt::emit_insecure_rate_measured`.
+fn emit_skill_library_event(payload: SkillLibraryEventPayload) -> Result<(), String> {
+    let db_path = sessions_dir_path(&project_root()).join("ssb.db");
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("library: cannot create session dir {}: {e}", parent.display()))?;
+    }
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_owned(),
+        session_id: "cli-skills-library".to_owned(),
+    };
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("library: tokio runtime build failed: {e}"))?;
+    rt.block_on(async move {
+        let ssb = Ssb::new(cfg, clock).map_err(|e| format!("library: SSB open failed: {e}"))?;
+        ssb.write_payload(
+            "cli:skills-library",
+            0,
+            SsbPayload::SkillLibraryEvent(payload),
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| format!("library: SSB write failed: {e}"))?;
+        Ok::<(), String>(())
+    })
+}
+
+fn run_library_list(output_format: CliOutputFormat) -> Result<(), String> {
+    let now = OsClock.now_secs();
+    let store = seed_demo_store(now);
+    let views: Vec<SkillLibraryView> = store
+        .skills()
+        .values()
+        .map(|s| SkillLibraryView::from_skill(s, now))
+        .collect();
+    match output_format {
+        CliOutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&views).unwrap_or_else(|_| "[]".into());
+            println!("{json}");
+        }
+        _ => {
+            println!("learned skill library ({} skills):", views.len());
+            println!("  id                       tier  inv  fail  fail_rate  staleness");
+            for v in &views {
+                println!(
+                    "  {:<24} {:<4}  {:>3}  {:>4}  {:>9.3}  {:>9.3}",
+                    v.id, v.tier, v.invocations, v.failures, v.failure_rate, v.staleness_score
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_library_show(id: &str, output_format: CliOutputFormat) -> Result<(), String> {
+    let now = OsClock.now_secs();
+    let store = seed_demo_store(now);
+    let skill = store
+        .get(id)
+        .ok_or_else(|| format!("learned skill not found: {id}"))?;
+    let view = SkillLibraryView::from_skill(skill, now);
+    match output_format {
+        CliOutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&view).unwrap_or_else(|_| "{}".into());
+            println!("{json}");
+        }
+        _ => {
+            println!("learned skill: {}", view.id);
+            println!("  description    {}", view.description);
+            println!("  tier           {}", view.tier);
+            println!("  invocations    {}", view.invocations);
+            println!("  failures       {}", view.failures);
+            println!("  failure_rate   {:.3}", view.failure_rate);
+            println!("  acquired_at    {}", view.acquired_at);
+            println!("  last_verified  {}", view.last_verified);
+            println!("  staleness      {:.3}", view.staleness_score);
+        }
+    }
+    Ok(())
+}
+
+fn run_library_promote(
+    id: &str,
+    human_grant: bool,
+    output_format: CliOutputFormat,
+) -> Result<(), String> {
+    let now = OsClock.now_secs();
+    let mut store = seed_demo_store(now);
+    let prior_tier = store
+        .get(id)
+        .ok_or_else(|| format!("learned skill not found: {id}"))?
+        .tier;
+    let new_tier = store
+        .promote(id, now, human_grant)
+        .map_err(|e| format!("library promote `{id}` rejected: {e}"))?;
+    // Snapshot the post-promotion counters for the SSB row.
+    let (invocations, failure_rate, description) = match store.get(id) {
+        Some(s) => (s.invocations, s.failure_rate(), s.description.clone()),
+        None => (0, 0.0, String::new()),
+    };
+    emit_skill_library_event(SkillLibraryEventPayload {
+        skill_id: id.to_owned(),
+        description,
+        tier: new_tier.as_str().to_owned(),
+        prior_tier: Some(prior_tier.as_str().to_owned()),
+        reason: if human_grant {
+            "human_granted_promotion".to_owned()
+        } else {
+            "cleared_invocation_failure_age_gate".to_owned()
+        },
+        invocations,
+        failure_rate,
+        kind: SkillLibraryEventKind::TrustPromoted,
+    })?;
+    match output_format {
+        CliOutputFormat::Json => {
+            let view = SkillLibraryView::from_skill(
+                store.get(id).ok_or_else(|| "promoted skill vanished".to_string())?,
+                now,
+            );
+            let json = serde_json::to_string_pretty(&view).unwrap_or_else(|_| "{}".into());
+            println!("{json}");
+        }
+        _ => {
+            println!(
+                "promoted `{id}`: {} -> {} (human_grant={human_grant})",
+                prior_tier.as_str(),
+                new_tier.as_str()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run_library_tick(output_format: CliOutputFormat) -> Result<(), String> {
+    let now = OsClock.now_secs();
+    let mut store = seed_demo_store(now);
+    let demoted = store.demote_if_stale(now);
+    for record in &demoted {
+        emit_skill_library_event(SkillLibraryEventPayload {
+            skill_id: record.id.clone(),
+            description: format!("staleness demotion for learned skill '{}'", record.id),
+            tier: record.new_tier.as_str().to_owned(),
+            prior_tier: Some(record.prior_tier.as_str().to_owned()),
+            reason: "staleness_score_crossed_threshold".to_owned(),
+            invocations: 0,
+            failure_rate: 0.0,
+            kind: SkillLibraryEventKind::DemotedStale,
+        })?;
+    }
+    match output_format {
+        CliOutputFormat::Json => {
+            let views: Vec<SkillLibraryView> = demoted
+                .iter()
+                .filter_map(|d| store.get(&d.id))
+                .map(|s| SkillLibraryView::from_skill(s, now))
+                .collect();
+            let json = serde_json::to_string_pretty(&views).unwrap_or_else(|_| "[]".into());
+            println!("{json}");
+        }
+        _ => {
+            println!("staleness tick: demoted {} skills", demoted.len());
+            for d in &demoted {
+                println!(
+                    "  {}: {} -> {} (staleness {:.3})",
+                    d.id,
+                    d.prior_tier.as_str(),
+                    d.new_tier.as_str(),
+                    d.staleness_score
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seed_demo_store_has_fresh_and_stale_skills() {
+        // Use a realistic wall-clock value so the fresh skill is past the
+        // min-age gate and the stale skill's score crosses the threshold.
+        let now: u64 = 1_900_000_000;
+        let store = seed_demo_store(now);
+        assert_eq!(store.len(), 2, "two demo skills seeded");
+        let fresh = store.get(DEMO_SKILL_FRESH).expect("fresh present");
+        assert_eq!(fresh.tier, SkillTrustTier::S2);
+        // Fresh skill is freshly verified -> staleness ~ 0.
+        assert!(SkillStore::staleness_score(fresh, now) < 0.01);
+        let stale = store.get(DEMO_SKILL_STALE).expect("stale present");
+        assert_eq!(stale.tier, SkillTrustTier::S3);
+        // Stale skill last verified at epoch -> staleness well past 1.0.
+        assert!(SkillStore::staleness_score(stale, now) >= 1.0);
+    }
+
+    #[test]
+    fn demo_fresh_skill_promotes_one_rung() {
+        // The fresh S2 skill is seeded past the min-age + min-invocation gate,
+        // so a non-grant promote climbs it to S3 (the apex S4 jump still needs
+        // a human grant, which this skill is not at yet).
+        let now: u64 = 1_900_000_000;
+        let mut store = seed_demo_store(now);
+        let new = store
+            .promote(DEMO_SKILL_FRESH, now, false)
+            .expect("S2->S3 must clear the gate");
+        assert_eq!(new, SkillTrustTier::S3);
+    }
+
+    #[test]
+    fn demo_stale_skill_demotes_on_tick() {
+        let now: u64 = 1_900_000_000;
+        let mut store = seed_demo_store(now);
+        let demoted = store.demote_if_stale(now);
+        // Only the stale S3 skill demotes (the fresh S2 was just verified).
+        assert_eq!(demoted.len(), 1, "exactly one stale skill demotes");
+        assert_eq!(demoted[0].id, DEMO_SKILL_STALE);
+        assert_eq!(demoted[0].prior_tier, SkillTrustTier::S3);
+        assert_eq!(demoted[0].new_tier, SkillTrustTier::S2);
+    }
+
+    #[test]
+    fn skill_library_view_round_trips_json() {
+        let now: u64 = 1_900_000_000;
+        let store = seed_demo_store(now);
+        let skill = store.get(DEMO_SKILL_FRESH).expect("present");
+        let view = SkillLibraryView::from_skill(skill, now);
+        let json = serde_json::to_string(&view).expect("serialize");
+        let back: SkillLibraryView = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.id, view.id);
+        assert_eq!(back.tier, "s2");
+    }
 
     #[test]
     fn publish_target_parse_round_trip() {

@@ -240,3 +240,131 @@ impl MemoryFact {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod cold_wiring_tests {
+    //! Cold-wiring (s-81344): deterministic unit coverage for the previously
+    //! untested fact.rs codecs + validator. All inputs are fixed literals (no
+    //! wall clock / rng) per the entropy-quarantine rule.
+    use super::*;
+
+    fn make_valid_fact() -> MemoryFact {
+        MemoryFact {
+            fact_id: "fact-1".to_string(),
+            user_id: "user-1".to_string(),
+            project_id: Some("proj-1".to_string()),
+            scope: Scope::Project,
+            fact_type: FactType::Preference,
+            key: "prefers_tracing".to_string(),
+            value: serde_json::json!({ "v": true }),
+            confidence: 0.8,
+            trust_score: 0.7,
+            ingested_at_ms: 1_000,
+            valid_from_ms: 1_000,
+            valid_to_ms: None,
+            decay_rate_per_day: 0.05,
+            last_observed_at_ms: 1_000,
+            evidence_pointers: vec!["ev-1".to_string()],
+            superseded_by: None,
+            trust_tier: TrustTier::T0UserDirect,
+            provenance: Provenance::user_direct("cli"),
+        }
+    }
+
+    #[test]
+    fn fact_type_codec_roundtrips_all_variants() {
+        let pairs = [
+            (FactType::VoiceStyle, "voice_style"),
+            (FactType::Expertise, "expertise"),
+            (FactType::RiskTol, "risk_tol"),
+            (FactType::Opinion, "opinion"),
+            (FactType::Preference, "preference"),
+            (FactType::DomainKnowledge, "domain_knowledge"),
+            (FactType::SessionPattern, "session_pattern"),
+            (FactType::Mistake, "mistake"),
+        ];
+        for (ft, tag) in pairs {
+            assert_eq!(ft.as_str(), tag);
+            assert_eq!(FactType::from_str(tag).unwrap(), ft);
+        }
+        assert!(FactType::from_str("not_a_tag").is_err());
+    }
+
+    #[test]
+    fn fact_type_retrieval_thresholds() {
+        // opinion is the HIGH-protection class (0.7); others per E-5 Task 7.
+        assert!((FactType::Opinion.retrieval_threshold() - 0.7).abs() < f32::EPSILON);
+        assert!((FactType::Preference.retrieval_threshold() - 0.5).abs() < f32::EPSILON);
+        assert!((FactType::Mistake.retrieval_threshold() - 0.4).abs() < f32::EPSILON);
+        assert!((FactType::Expertise.retrieval_threshold() - 0.5).abs() < f32::EPSILON);
+        assert!((FactType::VoiceStyle.retrieval_threshold() - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn scope_codec_roundtrips() {
+        assert_eq!(Scope::Project.as_str(), "project");
+        assert_eq!(Scope::Global.as_str(), "global");
+        assert_eq!(Scope::from_str("project").unwrap(), Scope::Project);
+        assert_eq!(Scope::from_str("global").unwrap(), Scope::Global);
+        assert!(Scope::from_str("nope").is_err());
+    }
+
+    #[test]
+    fn validate_accepts_well_formed_fact() {
+        assert!(make_valid_fact().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_confidence_out_of_range() {
+        let mut f = make_valid_fact();
+        f.confidence = 1.5;
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_trust_score_out_of_range() {
+        let mut f = make_valid_fact();
+        f.trust_score = -0.1;
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_negative_decay_rate() {
+        let mut f = make_valid_fact();
+        f.decay_rate_per_day = -1.0;
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_key_and_user_id() {
+        let mut f = make_valid_fact();
+        f.key = String::new();
+        assert!(f.validate().is_err());
+        let mut f = make_valid_fact();
+        f.user_id = String::new();
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_project_scope_without_project_id() {
+        let mut f = make_valid_fact();
+        f.scope = Scope::Project;
+        f.project_id = None;
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_evidence_pointers() {
+        let mut f = make_valid_fact();
+        f.evidence_pointers.clear();
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_inverted_validity_interval() {
+        let mut f = make_valid_fact();
+        f.valid_from_ms = 5_000;
+        f.valid_to_ms = Some(1_000);
+        assert!(f.validate().is_err());
+    }
+}

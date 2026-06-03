@@ -142,6 +142,40 @@ def _check_npm(pkg: str, max_age_days: int) -> tuple[str, str]:
     return "pass", f"npm: '{pkg}'@{latest} published {age_days}d ago"
 
 
+def _check_cargo(pkg: str, max_age_days: int) -> tuple[str, str]:
+    """Return (result, reason) for a crates.io registry query."""
+    url = f"https://crates.io/api/v1/crates/{pkg}"
+    status, body, err = _http_get_json(url)
+    if status == 404:
+        return "fail", f"cargo 404: crate '{pkg}' does not exist (likely slopsquat)"
+    if status != 200 or body is None:
+        return "inapplicable", f"crates.io query failed (status={status}): {err}"
+
+    crate_info = body.get("crate") or {}
+    updated_str = crate_info.get("updated_at", "")
+    if not updated_str:
+        # Existence confirmed even if timestamp absent.
+        return "pass", f"cargo: crate '{pkg}' exists (updated_at unparseable)"
+    updated_dt = _isoparse(updated_str)
+    if updated_dt is None:
+        return "pass", f"cargo: crate '{pkg}' exists (updated_at unparseable)"
+    age_days = (datetime.now(timezone.utc) - updated_dt).days
+    if age_days > max_age_days:
+        return "fail", f"cargo: '{pkg}' last updated {age_days}d ago (>{max_age_days}d stale)"
+    return "pass", f"cargo: '{pkg}' last updated {age_days}d ago"
+
+
+# Per-ecosystem default maximum-age thresholds (days).
+# pypi/npm: 2 years (any longer and the package is effectively abandoned).
+# cargo: 5 years (Rust crates age more gracefully; tokio/serde haven't
+#   had a major release in years but are manifestly alive).
+_DEFAULT_MAX_AGE_DAYS: dict[str, int] = {
+    "pypi": 730,
+    "npm": 730,
+    "cargo": 1825,
+}
+
+
 def main() -> int:
     try:
         raw = sys.stdin.read()
@@ -168,24 +202,27 @@ def main() -> int:
     candidate = payload.get("candidate", {})
     if isinstance(candidate, str):
         ecosystem = candidate
-        max_age_days = 730
+        max_age_days = _DEFAULT_MAX_AGE_DAYS.get(ecosystem, 730)
     elif isinstance(candidate, dict):
         ecosystem = candidate.get("ecosystem", "pypi")
+        default_age = _DEFAULT_MAX_AGE_DAYS.get(ecosystem, 730)
         try:
-            max_age_days = int(candidate.get("max_age_days", 730))
+            max_age_days = int(candidate.get("max_age_days", default_age))
         except (TypeError, ValueError):
-            max_age_days = 730
+            max_age_days = default_age
     else:
         ecosystem = "pypi"
-        max_age_days = 730
+        max_age_days = _DEFAULT_MAX_AGE_DAYS["pypi"]
 
     if ecosystem == "pypi":
         result, reason = _check_pypi(pkg, max_age_days)
     elif ecosystem == "npm":
         result, reason = _check_npm(pkg, max_age_days)
+    elif ecosystem == "cargo":
+        result, reason = _check_cargo(pkg, max_age_days)
     else:
         result = "inapplicable"
-        reason = f"unsupported ecosystem: '{ecosystem}' (want pypi|npm)"
+        reason = f"unsupported ecosystem: '{ecosystem}' (want pypi|npm|cargo)"
 
     print(json.dumps({"result": result, "reason": reason}))
     return 0

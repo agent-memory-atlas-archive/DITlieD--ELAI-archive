@@ -188,10 +188,87 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
     // parity.
     let mcp_dispatch_port: u16 = 8200;
     let mcp_server_guard: Option<McpServerLifecycle> = if args.via_mcp {
+        // C-47b CLI-arm: build the long-lived shared ToolCalibrationRegistry
+        // with the cold-tier persist store when
+        // ELAI_C47B_CASE_BASE_PERSIST_ENABLE is truthy. This mirrors the
+        // dashboard arm verbatim (dashboard-v2/src-tauri/src/state.rs:597-634)
+        // so CLI tool calls record + persist calibration into the SAME
+        // case_base.sqlite3 the dashboard reads. Fail-open: if
+        // CasePersistStore::open errors (disk permission, path missing,
+        // sqlite locked) we log warn and fall back to in-memory-only (no
+        // panic). When the gate is off the registry is None and
+        // McpClientDispatch::dispatch_tool keeps the exact http_call_tool
+        // path (zero behaviour change, wire-dark by default).
+        #[cfg(feature = "mcp")]
+        let calibration_registry: Option<Arc<elai_plugins::ToolCalibrationRegistry>> = {
+            let gate = std::env::var("ELAI_C47B_CASE_BASE_PERSIST_ENABLE")
+                .map(|v| {
+                    let t = v.trim().to_ascii_lowercase();
+                    t == "1" || t == "true" || t == "yes" || t == "on"
+                })
+                .unwrap_or(false);
+            if gate {
+                let persist_path = project_root
+                    .join(".elai_cc")
+                    .join("data")
+                    .join("case_base")
+                    .join("case_base.sqlite3");
+                let reg = match elai_plugins::CasePersistStore::open(&persist_path) {
+                    Ok(store) => {
+                        tracing::info!(
+                            path = %persist_path.display(),
+                            "C-47b CLI-arm: CasePersistStore opened; calibration registry wired with persist"
+                        );
+                        elai_plugins::ToolCalibrationRegistry::new()
+                            .with_persist(Arc::new(store))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %persist_path.display(),
+                            error = %e,
+                            "C-47b CLI-arm: CasePersistStore::open failed; calibration registry in-memory-only (fail-open)"
+                        );
+                        elai_plugins::ToolCalibrationRegistry::new()
+                    }
+                };
+                // Warm-start the hot LRU from the cold tier so the first
+                // CLI dispatch consults persisted history. Non-fatal:
+                // rehydrate Err (or no persist store) is logged + ignored,
+                // mirroring the dashboard bootstrap spawn (lib.rs:366-382).
+                match reg.rehydrate_all_from_persist().await {
+                    Ok(n) => tracing::info!(
+                        rehydrated = n,
+                        "C-47b CLI-arm: rehydrated calibration cases from persist"
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "C-47b CLI-arm: rehydrate_all_from_persist failed (non-fatal)"
+                    ),
+                }
+                Some(Arc::new(reg))
+            } else {
+                None
+            }
+        };
         let mcp = elai_orchestrator::dispatch::McpClientDispatch::new(
             mcp_dispatch_port,
             wiring.ssb.clone(),
         );
+        #[cfg(feature = "mcp")]
+        let mcp = match calibration_registry {
+            Some(reg) => mcp.with_calibration_registry(reg),
+            None => mcp,
+        };
+        // F-3p1 / Slice C3 (ENFORCE-B): attach a CapabilityFlowAdapter bound to
+        // the SAME process-global committed-tool-set slot the producer commits
+        // into, so every dispatch_tool call consults the committed set. Default-
+        // ON: no env-gate; pass-through until the producer commits.
+        #[cfg(feature = "mcp")]
+        let mcp = mcp.with_capability_flow_adapter(std::sync::Arc::new(
+            elai_orchestrator::CapabilityFlowAdapter::from_slot(
+                elai_orchestrator::committed_slot(),
+            ),
+        ));
         wiring.mcp_dispatch = Some(std::sync::Arc::new(mcp));
         let guard = McpServerLifecycle::start_in_process(
             mcp_dispatch_port,
@@ -275,10 +352,16 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
     // applied so apply_task_runner_wiring threads it onto
     // TaskRunnerConfig.hook_dispatcher (Tier-1 surface). See
     // workflow/reasoning/C-13-decisions.md (DECISION D3 option 3A).
+    // F-9 / Slice D3 — project_root threaded in so the gate can resolve
+    // the registry_check.py path via SubprocessRegistryChecker::default_at_root.
     wiring.hook_dispatcher =
-        Some(elai_orchestrator::runtime_setup::build_production_hook_dispatcher());
+        Some(elai_orchestrator::runtime_setup::build_production_hook_dispatcher(
+            wiring.ssb.clone(),
+            wiring.vibegate_seed_ok,
+            &project_root,
+        ));
     tracing::info!(
-        "elai run: production InProcessHookDispatcher with RuffPostToolUseRunner installed"
+        "elai run: production InProcessHookDispatcher with RuffPostToolUseRunner + VibeGate SSB + DepWriteTimeGate installed"
     );
 
     let ssb_writer: Arc<elai_orchestrator::Ssb> = wiring.ssb.clone();

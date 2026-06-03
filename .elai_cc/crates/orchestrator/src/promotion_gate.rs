@@ -73,6 +73,12 @@ pub enum PromotionDecisionKind {
     BlockedBelowMargin,
     /// Capacity gate failed (reachable_policy_capacity > k_m).
     BlockedCapacityExceeded,
+    /// F-10 SELF-MOD precondition failed: the proposal would introduce a CWE
+    /// security class absent from the pre-modification baseline (a non-monotone
+    /// security regression). Set by the `promote_after_bench_completed` wrapper
+    /// BEFORE the two-gate margin/capacity checks run; the
+    /// `two_gate_promote` 4-arg signature itself is unchanged.
+    BlockedSecurityRegression,
 }
 
 /// Verdict + reason. `reason` is `None` on Promoted, `Some` on either

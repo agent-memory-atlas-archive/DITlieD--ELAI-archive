@@ -54,6 +54,12 @@ use walkdir::WalkDir;
 use crate::ssb::{
     SsbPayload, WiringEvidencePayload, WiringViolationKind, WiringViolationPayload,
 };
+// SP2 (WAVE 2): real reachability-graph source. SymbolGraphCache lives in
+// THIS crate (crate::symbol_graph, E-40 orchestrator-rooted JSON view) — NOT
+// in elai_knowledge. Verified: crates/orchestrator/src/symbol_graph/cache.rs
+// is the def (load() :167, iter_nodes() :350, SymbolNode :60-76). Same-crate
+// use means no Cargo.toml change and no new dependency.
+use crate::symbol_graph::{SymbolGraphCache, SymbolGraphCacheError};
 
 // ---------------------------------------------------------------------------
 // Skip set (DRIFT-6) — mirrors check_entropy_quarantine.sh +
@@ -178,6 +184,17 @@ pub enum WiringContractError {
     RegexError(String),
     #[error("sqlite error: {0}")]
     SqliteError(String),
+    /// SP1 R1/R2 fail-close: `[wiring.entrypoints].symbols` is present in
+    /// the config but resolves to an empty list. Wiring enforcement treats
+    /// an empty entrypoint set as "never proven reachable", not "nothing to
+    /// check" — missing evidence is a hard FAIL (R1).
+    #[error("[wiring.entrypoints].symbols is present but empty in {0}; an empty entrypoint set cannot prove reachability (R1 fail-close)")]
+    EmptyEntrypointSet(PathBuf),
+    /// SP1 R1/R2 fail-close: the `[wiring.entrypoints]` section is absent
+    /// entirely. Per fail-closed doctrine an absent gate input is FAIL, not
+    /// a silent empty default (R2 dead-evidence-path-must-scream).
+    #[error("[wiring.entrypoints] section absent from {0}; wiring audit requires a declared entrypoint set (R2 fail-close)")]
+    AbsentEntrypointSet(PathBuf),
 }
 
 impl From<rusqlite::Error> for WiringContractError {
@@ -249,21 +266,23 @@ impl WiringEntrypointSetLoader {
                     .filter_map(|v| v.as_str().map(|s| s.to_owned()))
                     .collect();
                 if collected.is_empty() {
-                    warn!(
-                        target: "elai_orchestrator::wiring_contract",
-                        path = %self.config_path.display(),
-                        "[wiring.entrypoints].symbols is present but empty"
-                    );
+                    // SP1 R1 fail-close: present-but-empty symbols list is a
+                    // hard FAIL. An empty entrypoint set cannot prove any
+                    // produces_symbol reachable, so it is missing evidence,
+                    // not an empty work set.
+                    return Err(WiringContractError::EmptyEntrypointSet(
+                        self.config_path.clone(),
+                    ));
                 }
                 Ok(WiringEntrypointSet::new(collected))
             }
             None => {
-                warn!(
-                    target: "elai_orchestrator::wiring_contract",
-                    path = %self.config_path.display(),
-                    "[wiring.entrypoints] missing from elai_cc.toml; returning empty WiringEntrypointSet"
-                );
-                Ok(WiringEntrypointSet::default())
+                // SP1 R2 fail-close: absent [wiring.entrypoints] section is a
+                // hard FAIL. A dead gate input must scream, not return a
+                // silent empty default.
+                Err(WiringContractError::AbsentEntrypointSet(
+                    self.config_path.clone(),
+                ))
             }
         }
     }
@@ -716,15 +735,34 @@ impl ObservableEffectRunner {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(effect.timeout_secs as u64); // entropy-allow: tokio-mockable-time-required-for-tokio-time-sleep-pairing
 
         if let Some(action_type) = effect.expect_ssb.as_deref() {
+            // SP4(e) fail-close: track whether the SSB DB ever materialised in
+            // the poll window. If the deadline is reached and the DB never
+            // appeared at all, that is a distinct, louder failure than "db
+            // present but row absent" — the producing entrypoint never ran.
+            let mut db_ever_existed = false;
             loop {
+                if self.ssb_db_path.exists() {
+                    db_ever_existed = true;
+                }
                 if Self::ssb_has_row(&self.ssb_db_path, action_type)? {
                     return Ok(());
                 }
                 if tokio::time::Instant::now() >= deadline { // entropy-allow: tokio-mockable-time-paired-with-deadline-above
                     self.emit_broken_observable(bn_id, effect.trigger.as_str());
+                    let detail = if db_ever_existed {
+                        format!(
+                            "expect_ssb={action_type:?} not seen within {}s",
+                            effect.timeout_secs
+                        )
+                    } else {
+                        format!(
+                            "SSB db at {} never appeared within {}s (producing entrypoint never ran) expect_ssb={action_type:?}",
+                            self.ssb_db_path.display(),
+                            effect.timeout_secs
+                        )
+                    };
                     return Err(WiringContractError::ParseError(format!(
-                        "observable_effect timeout: expect_ssb={action_type:?} not seen within {}s",
-                        effect.timeout_secs
+                        "observable_effect timeout: {detail}"
                     )));
                 }
                 tokio::time::sleep(self.poll_interval).await;
@@ -769,6 +807,11 @@ impl ObservableEffectRunner {
     /// `action_type` exists. Returns `Ok(false)` for a missing DB so callers
     /// can poll across the boot window.
     fn ssb_has_row(db_path: &Path, action_type: &str) -> Result<bool, WiringContractError> {
+        // SP4(e): a missing DB returns Ok(false) here so the caller keeps
+        // polling across the producer's boot window. The fail-close decision
+        // is made by run_effect at the DEADLINE (see `db_ever_existed`
+        // tracking) — "db never appeared by deadline" is an explicit FAIL,
+        // not silent poll-exhaustion.
         if !db_path.exists() {
             return Ok(false);
         }
@@ -809,8 +852,61 @@ pub struct WiringAuditCmd {
     pub contracts_dir: PathBuf,
     pub source_root: PathBuf,
     pub ssb_db_path: Option<PathBuf>,
+    /// SP2 (WAVE 2): path to the offline-generated symbol graph
+    /// (`.claude/tools/elai_graph.json`) used to build the REAL reachability
+    /// graph. `None` triggers a walk-up from `source_root` through its
+    /// ancestors for the first `.claude/tools/elai_graph.json` that exists
+    /// (the canonical artifact lives at the OUTER workflow root, one level
+    /// above `.elai_cc`); see [`WiringAuditCmd::graph_path`].
+    pub graph_path: Option<PathBuf>,
     pub seed: u64,
     pub scope: WiringAuditScope,
+}
+
+impl WiringAuditCmd {
+    /// SP2 (WAVE 6 residual fix): resolve the symbol-graph JSON path. An
+    /// explicit `graph_path` always wins. Otherwise WALK UP from `source_root`
+    /// through its ancestors, returning the first
+    /// `<ancestor>/.claude/tools/elai_graph.json` that exists. The canonical
+    /// `elai_graph.json` is generated at the OUTER workflow root (it maps
+    /// `.elai_cc` but lives one level up at `F:\.ELAI_workflow\.claude\tools\`),
+    /// so a `source_root` of `.elai_cc` would not find an inner copy; the
+    /// walk-up locates the real artifact regardless of which level the audit
+    /// is invoked from. If no ancestor carries the artifact, return the
+    /// `source_root`-anchored path so the reachability leg fails CLOSED with a
+    /// clear "failed to load symbol graph at <path>" error (R2: missing
+    /// evidence is a hard FAIL, never a silent pass). Panic-free: pure
+    /// `Option`/iterator resolution, no `unwrap`/`expect`.
+    fn graph_path(&self) -> PathBuf {
+        if let Some(explicit) = self.graph_path.clone() {
+            return explicit;
+        }
+        self.resolve_default_graph_path()
+    }
+
+    /// Walk `source_root` and its ancestors looking for
+    /// `.claude/tools/elai_graph.json`; return the first hit, else the
+    /// `source_root`-anchored fail-closed default. Split out so the resolution
+    /// order is unit-testable independent of an explicit override.
+    fn resolve_default_graph_path(&self) -> PathBuf {
+        let candidate_under = |dir: &Path| {
+            dir.join(".claude").join("tools").join("elai_graph.json")
+        };
+        // `Path::ancestors` yields self, then each parent up to the filesystem
+        // root, so this checks source_root first and stops at the first
+        // existing artifact (closest-wins).
+        for ancestor in self.source_root.ancestors() {
+            let candidate = candidate_under(ancestor);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+        // No artifact found anywhere up the tree: return the source_root form
+        // so build_reachability_graph_from_source reports a clear hard error
+        // against a concrete, expected path (R2 dead-evidence-path-must-scream)
+        // rather than silently passing.
+        candidate_under(&self.source_root)
+    }
 }
 
 impl WiringAuditCmd {
@@ -878,6 +974,14 @@ impl WiringAuditCmd {
             }
         }
 
+        // SP1(c) R1 fail-close (ArchUnit failOnEmptyShould): the contracts
+        // dir exists (checked above) but parsed to zero non-empty
+        // WIRING_CONTRACT blocks. A wiring gate that finds nothing to check
+        // must FAIL, not pass vacuously.
+        if all_contracts.is_empty() {
+            return Err(WiringAuditError::ZeroContracts(self.contracts_dir.clone()));
+        }
+
         if matches!(self.scope, WiringAuditScope::All | WiringAuditScope::StubBan) {
             let sink = AuditorSink::Channel(spawn_capture_drain(captured.clone()));
             let auditor = StubBanAuditor::new(&[], sink, audit_id)?;
@@ -888,35 +992,32 @@ impl WiringAuditCmd {
             self.scope,
             WiringAuditScope::All | WiringAuditScope::DkgReachability
         ) {
-            // Empty `[wiring.entrypoints]` is non-fatal at config load time
-            // (loader returns Default + warn). Mirror that semantic here:
-            // without an entrypoint set there is no meaningful reachability
-            // to test — every declared produces_symbol would emit a spurious
-            // UnreachableSymbol violation. Skip with a warn rather than
-            // surface 100% noise.
-            if entrypoints.is_empty() {
-                warn!(
-                    target: "elai_orchestrator::wiring_contract",
-                    "skipping DkgReachabilityAuditor: [wiring.entrypoints] is empty (uncomment in elai_cc.toml to enable strict reachability)"
-                );
-            } else {
-                let mut graph = ReachabilityGraph::new();
-                for ep in entrypoints.iter() {
-                    graph.add_symbol(ep);
-                }
-                for c in &all_contracts {
-                    for sym in &c.produces_symbols {
-                        graph.add_symbol(sym);
-                        for ep in entrypoints.iter() {
-                            graph.add_edge(ep.clone(), sym.clone());
-                        }
-                    }
-                }
-                let sink = AuditorSink::Channel(spawn_capture_drain(captured.clone()));
-                let auditor = DkgReachabilityAuditor::new(Arc::new(graph), sink, audit_id);
-                for contract in &all_contracts {
-                    auditor.audit_contract(contract, &entrypoints);
-                }
+            // SP1(b) fail-close: an empty entrypoint set can no longer reach
+            // this point — WiringEntrypointSetLoader::load now returns
+            // Err(EmptyEntrypointSet/AbsentEntrypointSet) and the `?` at the
+            // load site above has already aborted run(). This debug_assert
+            // documents the invariant for future maintainers; it is NOT the
+            // gate (the gate is the loader Err).
+            debug_assert!(
+                !entrypoints.is_empty(),
+                "reachability leg reached with an empty entrypoint set — loader fail-close regressed"
+            );
+
+            // SP2 BUILD-NEW: derive the reachability graph from the REAL
+            // source call graph (SymbolGraphCache over elai_graph.json),
+            // excluding test-file callers (R7/W-8). Replaces the prior
+            // fabricated entrypoint->every-produces edge set that made every
+            // declared symbol trivially reachable (a self-certifying stub).
+            // On graph-load failure the leg FAILS (R2 dead-evidence-path-must-
+            // scream) rather than falling back to a self-certifying graph.
+            let graph = build_reachability_graph_from_source(
+                &self.graph_path(),
+                &entrypoints,
+            )?;
+            let sink = AuditorSink::Channel(spawn_capture_drain(captured.clone()));
+            let auditor = DkgReachabilityAuditor::new(Arc::new(graph), sink, audit_id);
+            for contract in &all_contracts {
+                auditor.audit_contract(contract, &entrypoints);
             }
         }
 
@@ -932,20 +1033,36 @@ impl WiringAuditCmd {
                 .enable_all()
                 .build()
                 .map_err(WiringContractError::IoError)?;
-            runtime.block_on(async {
+            let observed_failures: usize = runtime.block_on(async {
+                let mut failures = 0usize;
                 for contract in &all_contracts {
                     for effect in &contract.observable_effects {
                         let sink =
                             AuditorSink::Channel(spawn_capture_drain(captured.clone()));
                         let runner = ObservableEffectRunner::new(&ssb_path, sink, audit_id)
                             .with_poll_interval(Duration::from_secs(1));
-                        // Best-effort: a single failing effect logs a
-                        // WiringViolation but does not abort the rest of the
-                        // audit.
-                        let _ = runner.run_effect(effect, &contract.bn_id).await;
+                        // SP4(d) fail-close: a failing observable effect emits
+                        // a WiringViolation(BrokenObservable) AND is counted
+                        // here so it forces a nonzero audit exit. We finish
+                        // the remaining effects (to surface every broken
+                        // observable in one run) but do NOT discard the Err.
+                        if runner.run_effect(effect, &contract.bn_id).await.is_err() {
+                            failures += 1;
+                        }
                     }
                 }
+                failures
             });
+            if observed_failures > 0 {
+                // SP4(d) R4: a BrokenObservable is load-bearing evidence of a
+                // wire-dark feature. Propagate it as a hard FAIL rather than
+                // relying solely on the violation row being counted later.
+                return Err(WiringAuditError::ViolationsPresent(
+                    // narrowing guard: observed_failures is bounded by the
+                    // contract/effect count, well within u32.
+                    u32::try_from(observed_failures).unwrap_or(u32::MAX),
+                ));
+            }
         }
 
         let (evidence, violations) = split_captured_payloads(&captured);
@@ -975,6 +1092,233 @@ fn spawn_capture_drain(
         }
     });
     tx
+}
+
+/// SP2 WAVE-3 SCHEMA FIX (R5/R6/R7): build a NAME-keyed [`ReachabilityGraph`]
+/// from the real source call graph. Replaces the prior fabricated
+/// entrypoint->every-produces edge set (self-certifying), AND fixes a SECOND
+/// dead leg discovered downstream: the prior wave read per-node
+/// `SymbolNode.calls`, but `codebase_mapper.py` emits EVERY function node with
+/// an EMPTY `calls` vec (verified 25491/25491 nodes empty on the live graph).
+/// The 206k real call edges live in a SEPARATE TOP-LEVEL `calls` array of
+/// `{caller, callee, file, line, ...}` records (bare-name keyed). Reading
+/// per-node `calls` therefore yielded ZERO edges => only the entrypoint seed
+/// names were reachable => every `produces_symbol` falsely flagged
+/// `UnreachableSymbol`. This function now loads the TOP-LEVEL `calls` array.
+///
+/// POSTURE — OVER-PERMISSIVE (necessary-not-sufficient, by design): edges are
+/// keyed by bare symbol name (`caller` -> `callee`, each reduced to its
+/// trailing name so `blake3::hash` and a local `hash` collapse to `hash`).
+/// No method-resolution or bare-name disambiguation is attempted: if ANY
+/// `hash`-named symbol is reachable from an entrypoint, ALL `hash` produces
+/// count as reachable. This is intentional. Per the wiring research
+/// (docs/strategy/WIRING-ENFORCEMENT-RESEARCH-2026-06-02.md), the Layer-3
+/// runtime-coverage leg is the load-bearing BLOCKING backstop; this static
+/// leg is a cheap necessary condition that only catches symbols reachable
+/// from NO entrypoint at all (genuinely-orphaned). Over-permissive here means
+/// false-NEGATIVES (a wire-dark symbol that shares a name with a live one
+/// slips this leg) but NOT false-positives (a genuinely-orphaned symbol still
+/// fires). Residual: bare-name ambiguity, and method-entrypoints
+/// (`Type::method`) collapse to the bare method name.
+///
+/// R7/W-8 test-caller exclusion (EDGE-LEVEL): because the top-level `calls`
+/// record carries the CALLER's `file`, edges whose caller file matches the
+/// module's existing [`SKIP_DIR_FRAGMENTS`] / [`SKIP_DIR_PREFIXES`] /
+/// [`SKIP_FILE_SUFFIXES`] (same set [`StubBanAuditor`] uses, via
+/// [`is_test_source_path`]) are dropped, so a caller that only exists in test
+/// code cannot satisfy production reachability. This is finer-grained than
+/// the prior wave's node-level exclusion.
+///
+/// R2 fail-close: a missing or unparseable graph file returns `Err` — the
+/// reachability leg never falls back to a self-certifying graph. A non-empty
+/// graph file that yields ZERO non-test edges ALSO returns `Err` (R2 dead-
+/// evidence-path-must-scream): zero edges over a populated graph means the
+/// schema parse silently mismatched, and a 0-edge graph would falsely flag
+/// every produces_symbol unreachable.
+fn build_reachability_graph_from_source(
+    graph_path: &Path,
+    entrypoints: &WiringEntrypointSet,
+) -> Result<ReachabilityGraph, WiringAuditError> {
+    // R2: load via SymbolGraphCache first. Its load() Err is the canonical
+    // missing/unparseable-graph fail-close path (missing file, bad JSON, etc.).
+    // We use the cache to seed `known_symbols` with every node name; the EDGES
+    // come from the top-level `calls` array, which the cache discards.
+    let cache = SymbolGraphCache::load(graph_path).map_err(|e| {
+        WiringAuditError::Contract(WiringContractError::ParseError(format!(
+            "reachability: failed to load symbol graph at {}: {e}",
+            graph_path.display()
+        )))
+    })?;
+
+    let mut graph = ReachabilityGraph::new();
+
+    // Seed entrypoint names so a contract whose produces_symbol IS an
+    // entrypoint is trivially reachable (is_reachable checks `ep == target`).
+    for ep in entrypoints.iter() {
+        graph.add_symbol(entrypoint_match_key(ep));
+    }
+
+    // Seed every known node name so `known_symbols` distinguishes
+    // "unknown symbol" from "known-but-unreachable" for downstream callers.
+    for (_id, node) in cache.iter_nodes() {
+        if !node.name.is_empty() {
+            graph.add_symbol(symbol_trailing_name(&node.name));
+        }
+    }
+
+    // Load the REAL edges from the top-level `calls` array. Each record is
+    // a `{caller, callee, file, line, ...}` row keyed by bare name; the
+    // `file` is the CALLER's file (used for edge-level test exclusion).
+    let edge_count = load_top_level_call_edges(graph_path, &mut graph).map_err(|e| {
+        WiringAuditError::Contract(WiringContractError::ParseError(format!(
+            "reachability: failed to parse top-level `calls` edges at {}: {e}",
+            graph_path.display()
+        )))
+    })?;
+
+    // R2 fail-close on zero edges over a non-empty graph file: a populated
+    // graph that produced no non-test edges means the schema parse silently
+    // mismatched (the exact failure mode this wave fixes). A 0-edge graph
+    // would mark every produces_symbol unreachable, so SCREAM rather than
+    // emit a false-positive flood. (cache.node_count() > 0 proves the file
+    // was non-empty; an empty file is its own legitimate 0-edge case only if
+    // it also has zero nodes — which a real graph never does.)
+    if edge_count == 0 && cache.node_count() > 0 {
+        return Err(WiringAuditError::Contract(WiringContractError::ParseError(
+            format!(
+                "reachability: graph at {} has {} nodes but ZERO non-test call edges parsed from the top-level `calls` array; this means the edge schema did not match (fail-closed per R2 — a 0-edge graph would falsely flag every produces_symbol unreachable)",
+                graph_path.display(),
+                cache.node_count()
+            ),
+        )));
+    }
+
+    Ok(graph)
+}
+
+/// SP2 WAVE-3: parse the TOP-LEVEL `calls` array out of the symbol-graph JSON
+/// and add one `caller_name -> callee_name` edge per non-test record. Returns
+/// the number of edges added.
+///
+/// The record shape (verified against the live
+/// `.claude/tools/elai_graph.json`) is:
+/// `{ "caller": <bare name>, "callee": <bare name>, "file": <caller file>,
+///    "line": u32, "call_type": ..., "lang": ... }`. Only `caller`, `callee`,
+/// and `file` are load-bearing here; all other fields are ignored
+/// (forward-compatible). A record missing `caller` or `callee` is skipped.
+///
+/// R7/W-8 (EDGE-LEVEL): the record's `file` is the CALLER's file, so an edge
+/// is dropped when that file is a test path. Both endpoints are reduced to
+/// their trailing names so the edge name space matches the entrypoint /
+/// produces_symbol convention (`blake3::hash` -> `hash`).
+///
+/// R2: a parse error (missing key, malformed JSON) propagates as `Err`. A
+/// graph whose root is not an object, or which has no `calls` key, yields 0
+/// edges (the caller's zero-edge fail-close then decides whether that is a
+/// hard FAIL based on node count).
+fn load_top_level_call_edges(
+    graph_path: &Path,
+    graph: &mut ReachabilityGraph,
+) -> Result<usize, SymbolGraphCacheError> {
+    // One bare-name call edge from the top-level `calls` array. Unknown fields
+    // (call_type, caller_type, callee_type, lang, line) are ignored.
+    #[derive(Deserialize)]
+    struct RawCallEdge {
+        #[serde(default)]
+        caller: String,
+        #[serde(default)]
+        callee: String,
+        #[serde(default)]
+        file: String,
+    }
+    // Only deserialize the `calls` array, not the whole graph, to bound peak
+    // memory — `functions`/`modules`/`structs`/`reverse_calls` are skipped.
+    #[derive(Deserialize)]
+    struct GraphCallsOnly {
+        #[serde(default)]
+        calls: Vec<RawCallEdge>,
+    }
+
+    let raw = fs::read_to_string(graph_path).map_err(|source| SymbolGraphCacheError::Io {
+        path: graph_path.to_path_buf(),
+        source,
+    })?;
+    let parsed: GraphCallsOnly =
+        serde_json::from_str(&raw).map_err(|source| SymbolGraphCacheError::Parse {
+            path: graph_path.to_path_buf(),
+            source,
+        })?;
+
+    let mut added = 0usize;
+    for edge in &parsed.calls {
+        if edge.caller.is_empty() || edge.callee.is_empty() {
+            continue;
+        }
+        // R7/W-8 edge-level: drop edges whose CALLER file is a test path.
+        if is_test_source_path(&edge.file) {
+            continue;
+        }
+        let caller = symbol_trailing_name(&edge.caller);
+        let callee = symbol_trailing_name(&edge.callee);
+        graph.add_edge(caller, callee);
+        added += 1;
+    }
+    Ok(added)
+}
+
+/// SP2: reduce an entrypoint string to its match key. `[wiring.entrypoints]`
+/// symbols may be a path form (`crates/cli/src/main.rs::main`) or a bare
+/// `main`; the BFS matches on the trailing symbol name either way.
+fn entrypoint_match_key(ep: &str) -> String {
+    symbol_trailing_name(ep)
+}
+
+/// SP2: take the trailing symbol name from an id/path. Handles both `::`
+/// (Rust path) and the `<file>:<name>:<line>` id form by splitting on the
+/// last `::` first, then stripping a trailing `:<digits>` line suffix and
+/// taking the segment after the preceding `:`.
+fn symbol_trailing_name(s: &str) -> String {
+    if let Some(idx) = s.rfind("::") {
+        return s[idx + 2..].to_string();
+    }
+    // `<file>:<name>:<line>` — strip a trailing `:<digits>` then take the
+    // segment after the preceding `:`.
+    let trimmed = match s.rsplit_once(':') {
+        Some((head, tail))
+            if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            head
+        }
+        _ => s,
+    };
+    match trimmed.rsplit_once(':') {
+        Some((_, name)) => name.to_string(),
+        None => trimmed.to_string(),
+    }
+}
+
+/// SP2 R7/W-8: is this source path a test file that must be EXCLUDED from
+/// the reachability proof? Reuses the module's existing skip constants so
+/// the test-exclusion set stays consistent with [`StubBanAuditor`]. File
+/// heuristic only — `#[cfg(test)]` inline modules inside a production file
+/// are out of scope (the mapper generally omits test code from the graph;
+/// see SP2 residual-risk note in workflow/sessions/.../specs/D-WC.json).
+fn is_test_source_path(file: &str) -> bool {
+    let norm = file.replace('\\', "/");
+    if SKIP_DIR_FRAGMENTS.iter().any(|frag| {
+        let f = frag.replace('\\', "/");
+        norm.contains(&f)
+    }) {
+        return true;
+    }
+    if SKIP_DIR_PREFIXES.iter().any(|p| {
+        let p = p.replace('\\', "/");
+        norm.starts_with(&p)
+    }) {
+        return true;
+    }
+    let basename = norm.rsplit('/').next().unwrap_or(norm.as_str());
+    SKIP_FILE_SUFFIXES.iter().any(|suf| basename.ends_with(suf))
 }
 
 fn split_captured_payloads(
@@ -1043,6 +1387,17 @@ pub enum WiringAuditError {
     ConfigMissing(PathBuf),
     #[error("contracts dir {0} does not exist")]
     ContractsDirMissing(PathBuf),
+    /// SP1(c) R1 / ArchUnit failOnEmptyShould: the contracts dir is present
+    /// but contains zero parseable WIRING_CONTRACT blocks. A gate that finds
+    /// nothing to check must FAIL, not pass vacuously.
+    #[error("contracts dir {0} contains no parseable WIRING_CONTRACT blocks; a gate with zero contracts is a fail-closed error (R1 failOnEmptyShould)")]
+    ZeroContracts(PathBuf),
+    /// SP2/SP4: a reachability or observable leg detected wiring violations
+    /// that must propagate as a nonzero exit. Distinct from a clean report
+    /// with violation_count>0 so the CLI can render the cause; carries the
+    /// violation count for the operator.
+    #[error("wiring audit found {0} reachability/observable violation(s); see report for detail")]
+    ViolationsPresent(u32),
 }
 
 // ---------------------------------------------------------------------------
@@ -1397,13 +1752,34 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn entrypoint_loader_missing_section_returns_empty() {
+    fn entrypoint_loader_absent_section_is_err() {
+        // SP1 R2 fail-close: an absent [wiring.entrypoints] section is now a
+        // hard FAIL (was Ok(empty) pre-fix). A dead gate input must scream.
         let tmp = TempDir::new().expect("tempdir");
         let cfg = tmp.path().join("elai_cc.toml");
         fs::write(&cfg, "[tools.routing_rules]\nenabled = true\n").expect("write");
         let loader = WiringEntrypointSetLoader::new(&cfg);
-        let set = loader.load().expect("load");
-        assert!(set.is_empty());
+        let err = loader.load().expect_err("absent section must be Err");
+        assert!(
+            matches!(err, WiringContractError::AbsentEntrypointSet(_)),
+            "expected AbsentEntrypointSet, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn entrypoint_loader_empty_symbols_is_err() {
+        // SP1 R1 fail-close: a present-but-empty symbols list is now a hard
+        // FAIL (was Ok(empty) pre-fix). An empty entrypoint set cannot prove
+        // reachability, so it is missing evidence, not an empty work set.
+        let tmp = TempDir::new().expect("tempdir");
+        let cfg = tmp.path().join("elai_cc.toml");
+        fs::write(&cfg, "[wiring.entrypoints]\nsymbols = []\n").expect("write");
+        let loader = WiringEntrypointSetLoader::new(&cfg);
+        let err = loader.load().expect_err("empty symbols must be Err");
+        assert!(
+            matches!(err, WiringContractError::EmptyEntrypointSet(_)),
+            "expected EmptyEntrypointSet, got {err:?}"
+        );
     }
 
     #[test]
@@ -1469,6 +1845,153 @@ mod tests {
             }
             other => panic!("unexpected payload {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // build_reachability_graph_from_source (SP2 WAVE-3 top-level `calls` fix)
+    // -----------------------------------------------------------------------
+
+    /// Write a minimal symbol-graph JSON whose shape matches the real
+    /// `.claude/tools/elai_graph.json`: a `functions` map (node names) plus a
+    /// TOP-LEVEL `calls` array of `{caller, callee, file, ...}` records. Each
+    /// function node carries an EMPTY per-node `calls` vec, exactly like the
+    /// live mapper output — proving the reachability builder must read the
+    /// top-level array, not per-node `calls`.
+    fn write_graph_fixture(dir: &Path) -> PathBuf {
+        let p = dir.join("elai_graph.json");
+        let json = serde_json::json!({
+            "functions": {
+                "src/lib.rs:main": {
+                    "name": "main", "file": "src/lib.rs", "line": 1,
+                    "kind": "function", "calls": []
+                },
+                "src/lib.rs:do_work": {
+                    "name": "do_work", "file": "src/lib.rs", "line": 9,
+                    "kind": "function", "calls": []
+                },
+                "src/lib.rs:leaf": {
+                    "name": "leaf", "file": "src/lib.rs", "line": 20,
+                    "kind": "function", "calls": []
+                },
+                "src/lib.rs:only_called_from_test": {
+                    "name": "only_called_from_test", "file": "src/lib.rs",
+                    "line": 30, "kind": "function", "calls": []
+                }
+            },
+            // The real edges live HERE, top-level, bare-name keyed.
+            "calls": [
+                { "caller": "main", "callee": "do_work",
+                  "file": "src/lib.rs", "line": 3, "call_type": "direct",
+                  "lang": "rust" },
+                { "caller": "do_work", "callee": "leaf",
+                  "file": "src/lib.rs", "line": 12, "call_type": "direct",
+                  "lang": "rust" },
+                // A `path::name` callee must collapse to its trailing name.
+                { "caller": "do_work", "callee": "blake3::hash",
+                  "file": "src/lib.rs", "line": 13, "call_type": "direct",
+                  "lang": "rust" },
+                // R7: this edge's CALLER file is a test path -> excluded.
+                { "caller": "test_helper", "callee": "only_called_from_test",
+                  "file": "crates/foo/tests/it.rs", "line": 4,
+                  "call_type": "direct", "lang": "rust" }
+            ],
+            "reverse_calls": {},
+            "modules": {},
+            "structs": {},
+            "metadata": { "total_functions": 4, "total_calls": 4 }
+        });
+        fs::write(&p, serde_json::to_string(&json).expect("ser")).expect("write");
+        p
+    }
+
+    #[test]
+    fn reachability_loads_top_level_call_edges() {
+        // Regression guard for the WAVE-3 schema bug: per-node `calls` are
+        // empty, so the builder MUST read the top-level `calls` array. If it
+        // reads per-node `calls` again, this graph has zero edges and the
+        // assertions below fail.
+        let tmp = TempDir::new().expect("tempdir");
+        let graph_path = write_graph_fixture(tmp.path());
+        let entrypoints = WiringEntrypointSet::new(vec!["main".into()]);
+
+        let graph = build_reachability_graph_from_source(&graph_path, &entrypoints)
+            .expect("graph builds from top-level calls");
+
+        // >0 edges loaded (the whole point of the fix).
+        let edge_total: usize = graph
+            .forward_edges
+            .values()
+            .map(|s| s.len())
+            .sum();
+        assert!(
+            edge_total > 0,
+            "expected real call edges from the top-level `calls` array, got 0 \
+             (builder regressed to empty per-node calls)"
+        );
+        // main -> do_work and do_work -> {leaf, hash} must exist.
+        assert!(graph.forward_edges.get("main").is_some_and(|s| s.contains("do_work")));
+        let dw = graph.forward_edges.get("do_work").expect("do_work edges");
+        assert!(dw.contains("leaf"));
+        // `blake3::hash` collapsed to trailing name `hash`.
+        assert!(dw.contains("hash"));
+
+        // R7 edge-level test-caller exclusion: the test-file caller's edge
+        // (`test_helper -> only_called_from_test`) must NOT be present.
+        assert!(
+            graph.forward_edges.get("test_helper").is_none(),
+            "test-file caller edge must be excluded (R7/W-8)"
+        );
+
+        // End-to-end reachability over the REAL edges: leaf + hash reachable
+        // from `main`, but `only_called_from_test` is NOT (its only edge was
+        // a test-file caller, now excluded).
+        let auditor = DkgReachabilityAuditor::new(
+            Arc::new(graph),
+            capture_sink().0,
+            uuid::Uuid::nil(),
+        );
+        assert!(auditor.is_reachable(&entrypoints, "leaf").is_some());
+        assert!(auditor.is_reachable(&entrypoints, "hash").is_some());
+        assert!(
+            auditor.is_reachable(&entrypoints, "only_called_from_test").is_none(),
+            "symbol reachable only via an excluded test-file caller must be unreachable"
+        );
+    }
+
+    #[test]
+    fn reachability_fails_closed_on_zero_edges_with_nodes() {
+        // R2 dead-evidence-path-must-scream: a populated graph (nodes present)
+        // whose top-level `calls` array is empty/absent => ZERO edges => hard
+        // FAIL, not a 0-edge false-positive machine.
+        let tmp = TempDir::new().expect("tempdir");
+        let p = tmp.path().join("elai_graph.json");
+        let json = serde_json::json!({
+            "functions": {
+                "src/lib.rs:main": {
+                    "name": "main", "file": "src/lib.rs", "line": 1,
+                    "kind": "function", "calls": []
+                }
+            },
+            "calls": []
+        });
+        fs::write(&p, serde_json::to_string(&json).expect("ser")).expect("write");
+        let entrypoints = WiringEntrypointSet::new(vec!["main".into()]);
+        let result = build_reachability_graph_from_source(&p, &entrypoints);
+        assert!(
+            result.is_err(),
+            "0 edges over a non-empty node set must fail closed (R2)"
+        );
+    }
+
+    #[test]
+    fn reachability_fails_closed_on_missing_graph() {
+        // R2: a missing graph file is a dead evidence path -> Err.
+        let entrypoints = WiringEntrypointSet::new(vec!["main".into()]);
+        let result = build_reachability_graph_from_source(
+            Path::new("does/not/exist/elai_graph.json"),
+            &entrypoints,
+        );
+        assert!(result.is_err(), "missing graph must fail closed (R2)");
     }
 
     // -----------------------------------------------------------------------

@@ -5,11 +5,12 @@
 //! upload, sandbox stdout). Operates AT argv-construction site in
 //! `crates/orchestrator/src/task_runner.rs`, BEFORE the dispatch fires.
 //!
-//! Design grounding: arXiv:2503.18813 "CaMeL: Capability-based Machine
-//! Learning for Untrusted-Input Mitigation" (Anthropic 2025). The full
-//! CaMeL paper specifies a capability calculus with SMT-solver-style
-//! reasoning over flow-tagged values; the lite variant in this slice is
-//! a one-step provenance check at destructive-tool dispatch time.
+//! Design grounding: arXiv:2503.18813 "Defeating Prompt Injections by
+//! Design" (Debenedetti et al., Google DeepMind / ETH Zurich, 2025) — the
+//! CaMeL design. CaMeL extracts the control/data flows from the trusted
+//! query and enforces them via a provenance-tracking interpreter so that
+//! untrusted retrieved data can never alter program flow; the lite variant
+//! in this slice is a one-step provenance check at destructive-tool dispatch time.
 //!
 //! Composes additively with E-30 `destructive_verb_allowlist` — that
 //! module catches known-bad argv patterns (rm -rf, git restore .,

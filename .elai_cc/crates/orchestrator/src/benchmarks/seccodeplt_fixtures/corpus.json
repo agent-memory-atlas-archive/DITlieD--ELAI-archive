@@ -1,0 +1,386 @@
+[
+  {
+    "id": "sqli-py-001",
+    "lang": "python",
+    "cwe": "CWE-89",
+    "task_description": "Look up a user row by primary key id and return it from the users table.",
+    "vulnerable_code": "def get_user(cursor, uid):\n    cursor.execute(f\"SELECT * FROM users WHERE id = {uid}\")\n    return cursor.fetchone()",
+    "patched_code": "def get_user(cursor, uid):\n    cursor.execute(\"SELECT * FROM users WHERE id = ?\", (uid,))\n    return cursor.fetchone()"
+  },
+  {
+    "id": "sqli-py-002",
+    "lang": "python",
+    "cwe": "CWE-89",
+    "task_description": "Insert a new row into the accounts table for the given username.",
+    "vulnerable_code": "def add_account(cursor, name):\n    cursor.execute(f\"INSERT INTO accounts (name) VALUES ('{name}')\")",
+    "patched_code": "def add_account(cursor, name):\n    cursor.execute(\"INSERT INTO accounts (name) VALUES (?)\", (name,))"
+  },
+  {
+    "id": "sqli-py-003",
+    "lang": "python",
+    "cwe": "CWE-89",
+    "task_description": "Update the email column for a customer identified by id.",
+    "vulnerable_code": "def set_email(cursor, cid, email):\n    cursor.execute(f\"UPDATE customers SET email = '{email}' WHERE id = {cid}\")",
+    "patched_code": "def set_email(cursor, cid, email):\n    cursor.execute(\"UPDATE customers SET email = ? WHERE id = ?\", (email, cid))"
+  },
+  {
+    "id": "sqli-py-004",
+    "lang": "python",
+    "cwe": "CWE-89",
+    "task_description": "Delete a session row whose token matches the supplied value.",
+    "vulnerable_code": "def drop_session(cursor, token):\n    cursor.execute(f\"DELETE FROM sessions WHERE token = '{token}'\")",
+    "patched_code": "def drop_session(cursor, token):\n    cursor.execute(\"DELETE FROM sessions WHERE token = ?\", (token,))"
+  },
+  {
+    "id": "sqli-py-005",
+    "lang": "python",
+    "cwe": "CWE-89",
+    "task_description": "Run a parametric report query selecting orders for one region.",
+    "vulnerable_code": "def region_orders(cursor, region):\n    cursor.executemany(f\"SELECT id FROM orders WHERE region = '{region}'\", [])",
+    "patched_code": "def region_orders(cursor, region):\n    cursor.execute(\"SELECT id FROM orders WHERE region = ?\", (region,))"
+  },
+  {
+    "id": "sqli-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-89",
+    "task_description": "Fetch a product row by id from the products table.",
+    "vulnerable_code": "async function getProduct(db, id: string) {\n  return db.query(`SELECT * FROM products WHERE id = ${id}`);\n}",
+    "patched_code": "async function getProduct(db, id: string) {\n  return db.query('SELECT * FROM products WHERE id = $1', [id]);\n}"
+  },
+  {
+    "id": "sqli-ts-002",
+    "lang": "typescript",
+    "cwe": "CWE-89",
+    "task_description": "Insert an audit row tagged with the supplied actor name.",
+    "vulnerable_code": "async function logAudit(db, actor: string) {\n  await db.execute(`INSERT INTO audit (actor) VALUES ('${actor}')`);\n}",
+    "patched_code": "async function logAudit(db, actor: string) {\n  await db.execute('INSERT INTO audit (actor) VALUES ($1)', [actor]);\n}"
+  },
+  {
+    "id": "sqli-ts-003",
+    "lang": "typescript",
+    "cwe": "CWE-89",
+    "task_description": "Update a profile bio column for the active account.",
+    "vulnerable_code": "async function setBio(db, bio: string, uid: string) {\n  await db.query(`UPDATE profiles SET bio = '${bio}' WHERE uid = ${uid}`);\n}",
+    "patched_code": "async function setBio(db, bio: string, uid: string) {\n  await db.query('UPDATE profiles SET bio = $1 WHERE uid = $2', [bio, uid]);\n}"
+  },
+  {
+    "id": "xss-py-001",
+    "lang": "python",
+    "cwe": "CWE-79",
+    "task_description": "Render a user-supplied biography string into the profile template.",
+    "vulnerable_code": "def render_bio(user_bio):\n    return mark_safe(user_bio)",
+    "patched_code": "def render_bio(user_bio):\n    return escape(user_bio)"
+  },
+  {
+    "id": "xss-py-002",
+    "lang": "python",
+    "cwe": "CWE-79",
+    "task_description": "Wrap a comment body so it can be embedded in a Jinja template.",
+    "vulnerable_code": "def wrap_comment(body):\n    return Markup(body)",
+    "patched_code": "def wrap_comment(body):\n    return Markup.escape(body)"
+  },
+  {
+    "id": "xss-py-003",
+    "lang": "python",
+    "cwe": "CWE-79",
+    "task_description": "Produce a safe HTML snippet for a notification banner.",
+    "vulnerable_code": "def banner(text):\n    return jinja2.Markup(text)",
+    "patched_code": "def banner(text):\n    return jinja2.escape(text)"
+  },
+  {
+    "id": "xss-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-79",
+    "task_description": "Show a user-supplied status message inside the status element.",
+    "vulnerable_code": "function showStatus(el: HTMLElement, msg: string) {\n  el.innerHTML = msg;\n}",
+    "patched_code": "function showStatus(el: HTMLElement, msg: string) {\n  el.textContent = msg;\n}"
+  },
+  {
+    "id": "xss-ts-002",
+    "lang": "typescript",
+    "cwe": "CWE-79",
+    "task_description": "Replace the tooltip container contents with the provided hint.",
+    "vulnerable_code": "function setTip(node: HTMLElement, hint: string) {\n  node.outerHTML = hint;\n}",
+    "patched_code": "function setTip(node: HTMLElement, hint: string) {\n  node.textContent = hint;\n}"
+  },
+  {
+    "id": "xss-ts-003",
+    "lang": "typescript",
+    "cwe": "CWE-79",
+    "task_description": "Render a markdown-derived comment body in a React component.",
+    "vulnerable_code": "function Comment({ body }: { body: string }) {\n  return <div dangerouslySetInnerHTML={{ __html: body }} />;\n}",
+    "patched_code": "function Comment({ body }: { body: string }) {\n  return <div>{body}</div>;\n}"
+  },
+  {
+    "id": "xss-ts-004",
+    "lang": "typescript",
+    "cwe": "CWE-79",
+    "task_description": "Append a rendered chat line to the message list element.",
+    "vulnerable_code": "function appendLine(list: HTMLElement, line: string) {\n  list.insertAdjacentHTML('beforeend', line);\n}",
+    "patched_code": "function appendLine(list: HTMLElement, line: string) {\n  const span = document.createElement('span');\n  span.textContent = line;\n  list.appendChild(span);\n}"
+  },
+  {
+    "id": "wcrypto-py-001",
+    "lang": "python",
+    "cwe": "CWE-327",
+    "task_description": "Compute a digest of a user password before storing it.",
+    "vulnerable_code": "import hashlib\n\ndef digest(password):\n    return hashlib.md5(password.encode()).hexdigest()",
+    "patched_code": "import hashlib\n\ndef digest(password):\n    return hashlib.sha256(password.encode()).hexdigest()"
+  },
+  {
+    "id": "wcrypto-py-002",
+    "lang": "python",
+    "cwe": "CWE-327",
+    "task_description": "Fingerprint an uploaded file by hashing its bytes.",
+    "vulnerable_code": "import hashlib\n\ndef fingerprint(data):\n    return hashlib.sha1(data).hexdigest()",
+    "patched_code": "import hashlib\n\ndef fingerprint(data):\n    return hashlib.sha256(data).hexdigest()"
+  },
+  {
+    "id": "wcrypto-py-003",
+    "lang": "python",
+    "cwe": "CWE-327",
+    "task_description": "Encrypt a short secret payload using a block cipher.",
+    "vulnerable_code": "from Crypto.Cipher import DES\n\ndef enc(key, data):\n    cipher = DES.new(key, DES.MODE_ECB)\n    return cipher.encrypt(data)",
+    "patched_code": "from Crypto.Cipher import AES\n\ndef enc(key, nonce, data):\n    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)\n    return cipher.encrypt(data)"
+  },
+  {
+    "id": "wcrypto-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-327",
+    "task_description": "Hash an API token to a hex digest for an index key.",
+    "vulnerable_code": "import { createHash } from 'crypto';\n\nfunction tokenKey(token: string) {\n  return createHash(\"md5\").update(token).digest('hex');\n}",
+    "patched_code": "import { createHash } from 'crypto';\n\nfunction tokenKey(token: string) {\n  return createHash('sha256').update(token).digest('hex');\n}"
+  },
+  {
+    "id": "wcrypto-ts-002",
+    "lang": "typescript",
+    "cwe": "CWE-327",
+    "task_description": "Hash a cache key candidate to a fixed-length identifier.",
+    "vulnerable_code": "import { createHash } from 'crypto';\n\nfunction cacheKey(raw: string) {\n  return createHash(\"sha1\").update(raw).digest('hex');\n}",
+    "patched_code": "import { createHash } from 'crypto';\n\nfunction cacheKey(raw: string) {\n  return createHash('sha256').update(raw).digest('hex');\n}"
+  },
+  {
+    "id": "wcrypto-ts-003",
+    "lang": "typescript",
+    "cwe": "CWE-327",
+    "task_description": "Encrypt a session blob with a symmetric cipher.",
+    "vulnerable_code": "import { createCipheriv } from 'crypto';\n\nfunction encSession(key: Buffer, iv: Buffer, blob: Buffer) {\n  return createCipheriv(\"des-cbc\", key, iv).update(blob);\n}",
+    "patched_code": "import { createCipheriv } from 'crypto';\n\nfunction encSession(key: Buffer, iv: Buffer, blob: Buffer) {\n  return createCipheriv('aes-256-gcm', key, iv).update(blob);\n}"
+  },
+  {
+    "id": "cmdi-py-001",
+    "lang": "python",
+    "cwe": "CWE-78",
+    "task_description": "Ping a host supplied by the caller and return the raw output.",
+    "vulnerable_code": "import os\n\ndef ping(host):\n    return os.system(\"ping -c 1 \" + host)",
+    "patched_code": "import subprocess\n\ndef ping(host):\n    return subprocess.run([\"ping\", \"-c\", \"1\", host], capture_output=True)"
+  },
+  {
+    "id": "cmdi-py-002",
+    "lang": "python",
+    "cwe": "CWE-78",
+    "task_description": "Archive a directory whose name is provided by the user.",
+    "vulnerable_code": "import os\n\ndef archive(name):\n    os.popen(\"tar czf out.tgz \" + name)",
+    "patched_code": "import subprocess\n\ndef archive(name):\n    subprocess.run([\"tar\", \"czf\", \"out.tgz\", name])"
+  },
+  {
+    "id": "cmdi-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-78",
+    "task_description": "Run a shell lookup for the supplied domain and capture stdout.",
+    "vulnerable_code": "import { execSync } from 'child_process';\n\nfunction lookup(domain: string) {\n  return execSync('host ' + domain);\n}",
+    "patched_code": "import { execFileSync } from 'child_process';\n\nfunction lookup(domain: string) {\n  return execFileSync('host', [domain]);\n}"
+  },
+  {
+    "id": "deser-py-001",
+    "lang": "python",
+    "cwe": "CWE-502",
+    "task_description": "Restore a cached object from an untrusted byte payload.",
+    "vulnerable_code": "import pickle\n\ndef restore(blob):\n    return pickle.loads(blob)",
+    "patched_code": "import json\n\ndef restore(blob):\n    return json.loads(blob)"
+  },
+  {
+    "id": "deser-py-002",
+    "lang": "python",
+    "cwe": "CWE-502",
+    "task_description": "Parse a configuration document supplied as YAML text.",
+    "vulnerable_code": "import yaml\n\ndef parse_config(text):\n    return yaml.load(text)",
+    "patched_code": "import yaml\n\ndef parse_config(text):\n    return yaml.safe_load(text)"
+  },
+  {
+    "id": "deser-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-502",
+    "task_description": "Rehydrate a serialized object from a request body string.",
+    "vulnerable_code": "import * as serialize from 'node-serialize';\n\nfunction rehydrate(body: string) {\n  return serialize.unserialize(body);\n}",
+    "patched_code": "function rehydrate(body: string) {\n  return JSON.parse(body);\n}"
+  },
+  {
+    "id": "authz-py-001",
+    "lang": "python",
+    "cwe": "CWE-862",
+    "task_description": "Expose an admin-only endpoint that deletes a user account by id.",
+    "vulnerable_code": "@app.delete(\"/admin/users/{uid}\")\ndef delete_user(uid: int):\n    db.delete_user(uid)\n    return {\"ok\": True}",
+    "patched_code": "@app.delete(\"/admin/users/{uid}\")\ndef delete_user(uid: int, _admin=Depends(require_admin)):\n    db.delete_user(uid)\n    return {\"ok\": True}"
+  },
+  {
+    "id": "authz-py-002",
+    "lang": "python",
+    "cwe": "CWE-862",
+    "task_description": "Add a route that returns the billing record for any account id.",
+    "vulnerable_code": "@router.get(\"/billing/{account_id}\")\ndef get_billing(account_id: int):\n    return db.billing_for(account_id)",
+    "patched_code": "@router.get(\"/billing/{account_id}\")\ndef get_billing(account_id: int, user=Depends(current_user)):\n    require_owner(user, account_id)\n    return db.billing_for(account_id)"
+  },
+  {
+    "id": "authz-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-862",
+    "task_description": "Register an Express route that returns all orders for an account.",
+    "vulnerable_code": "router.get(\"/orders\", async (req, res) => {\n  res.json(await db.allOrders(req.query.account));\n});",
+    "patched_code": "router.get(\"/orders\", requireAuth, async (req, res) => {\n  res.json(await db.ordersFor(req.user.id));\n});"
+  },
+  {
+    "id": "logic-py-001",
+    "lang": "python",
+    "cwe": "CWE-697",
+    "task_description": "Compare a submitted API key against the configured secret.",
+    "vulnerable_code": "def check_key(submitted, secret):\n    return submitted == secret",
+    "patched_code": "import hmac\n\ndef check_key(submitted, secret):\n    return hmac.compare_digest(submitted, secret)"
+  },
+  {
+    "id": "logic-py-002",
+    "lang": "python",
+    "cwe": "CWE-285",
+    "task_description": "Authorize an action only when the caller owns the resource.",
+    "vulnerable_code": "def can_edit(user, doc):\n    if user.is_guest:\n        return True\n    return user.id == doc.owner_id",
+    "patched_code": "def can_edit(user, doc):\n    if user.is_guest:\n        return False\n    return user.id == doc.owner_id"
+  },
+  {
+    "id": "logic-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-639",
+    "task_description": "Return a note only to its owner given a note id from the request.",
+    "vulnerable_code": "async function getNote(req, res) {\n  const note = await db.note(req.params.id);\n  res.json(note);\n}",
+    "patched_code": "async function getNote(req, res) {\n  const note = await db.note(req.params.id);\n  if (note.ownerId !== req.user.id) { res.status(403).end(); return; }\n  res.json(note);\n}"
+  },
+  {
+    "id": "sqli-py-006",
+    "lang": "python",
+    "cwe": "CWE-89",
+    "task_description": "Drop a temporary staging table named after the tenant.",
+    "vulnerable_code": "def drop_staging(cursor, tenant):\n    cursor.execute(f\"DROP TABLE staging_{tenant}\")",
+    "patched_code": "def drop_staging(cursor, tenant):\n    if tenant not in ALLOWED_TENANTS:\n        raise ValueError(\"unknown tenant\")\n    cursor.execute(\"DROP TABLE staging_\" + ALLOWED_TENANTS[tenant])"
+  },
+  {
+    "id": "sqli-py-007",
+    "lang": "python",
+    "cwe": "CWE-89",
+    "task_description": "Create a per-tenant view selecting that tenant's invoices.",
+    "vulnerable_code": "def make_view(cursor, name):\n    cursor.execute(f\"CREATE VIEW v AS SELECT * FROM invoices WHERE org = '{name}'\")",
+    "patched_code": "def make_view(cursor, name):\n    cursor.execute(\"CREATE VIEW v AS SELECT * FROM invoices WHERE org = ?\", (name,))"
+  },
+  {
+    "id": "xss-ts-005",
+    "lang": "typescript",
+    "cwe": "CWE-79",
+    "task_description": "Inject a server-rendered fragment into the page header slot.",
+    "vulnerable_code": "function mountHeader(slot: HTMLElement, fragment: string) {\n  slot.innerHTML = fragment;\n}",
+    "patched_code": "function mountHeader(slot: HTMLElement, fragment: DocumentFragment) {\n  slot.replaceChildren(fragment);\n}"
+  },
+  {
+    "id": "wcrypto-py-004",
+    "lang": "python",
+    "cwe": "CWE-327",
+    "task_description": "Derive an etag for a response body using a hash.",
+    "vulnerable_code": "import hashlib\n\ndef etag(body):\n    return hashlib.md5(body).hexdigest()",
+    "patched_code": "import hashlib\n\ndef etag(body):\n    return hashlib.blake2b(body).hexdigest()"
+  },
+  {
+    "id": "cmdi-py-003",
+    "lang": "python",
+    "cwe": "CWE-78",
+    "task_description": "Convert an uploaded image using an external tool by filename.",
+    "vulnerable_code": "import os\n\ndef convert(fname):\n    os.system(\"convert \" + fname + \" out.png\")",
+    "patched_code": "import subprocess\n\ndef convert(fname):\n    subprocess.run([\"convert\", fname, \"out.png\"])"
+  },
+  {
+    "id": "deser-py-003",
+    "lang": "python",
+    "cwe": "CWE-502",
+    "task_description": "Load a saved model checkpoint from a user-provided path.",
+    "vulnerable_code": "import pickle\n\ndef load_ckpt(path):\n    with open(path, 'rb') as fh:\n        return pickle.load(fh)",
+    "patched_code": "import json\n\ndef load_ckpt(path):\n    with open(path, 'r') as fh:\n        return json.load(fh)"
+  },
+  {
+    "id": "authz-ts-002",
+    "lang": "typescript",
+    "cwe": "CWE-862",
+    "task_description": "Add an Express handler that updates a project's settings.",
+    "vulnerable_code": "app.put(\"/projects/:id\", async (req, res) => {\n  await db.updateProject(req.params.id, req.body);\n  res.json({ ok: true });\n});",
+    "patched_code": "app.put(\"/projects/:id\", requireProjectAdmin, async (req, res) => {\n  await db.updateProject(req.params.id, req.body);\n  res.json({ ok: true });\n});"
+  },
+  {
+    "id": "creds-py-001",
+    "lang": "python",
+    "cwe": "CWE-798",
+    "task_description": "Open a database connection for the analytics service.",
+    "vulnerable_code": "def connect():\n    password = \"hunter2pw\"\n    return db.connect(user=\"svc\", password=password)",
+    "patched_code": "import os\n\ndef connect():\n    password = os.environ[\"DB_PASSWORD\"]\n    return db.connect(user=\"svc\", password=password)"
+  },
+  {
+    "id": "creds-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-798",
+    "task_description": "Construct the upstream API client with its credential.",
+    "vulnerable_code": "export function makeClient() {\n  const apiKey = \"sk-live-9aF2k0xQ7b\";\n  return new Client({ apiKey });\n}",
+    "patched_code": "export function makeClient() {\n  const apiKey = process.env.API_KEY;\n  return new Client({ apiKey });\n}"
+  },
+  {
+    "id": "key-py-001",
+    "lang": "python",
+    "cwe": "CWE-321",
+    "task_description": "Encrypt a short token with AES in ECB mode.",
+    "vulnerable_code": "from Crypto.Cipher import AES\n\ndef enc(data):\n    cipher = AES.new(b\"0123456789abcdef\", AES.MODE_ECB)\n    return cipher.encrypt(data)",
+    "patched_code": "import os\nfrom Crypto.Cipher import AES\n\ndef enc(data, key):\n    cipher = AES.new(key, AES.MODE_ECB)\n    return cipher.encrypt(data)"
+  },
+  {
+    "id": "key-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-321",
+    "task_description": "Create an AES-256-CBC cipher for an outgoing payload.",
+    "vulnerable_code": "import crypto from \"crypto\";\n\nfunction enc(iv: Buffer, data: Buffer) {\n  const c = crypto.createCipheriv(\"aes-256-cbc\", \"0123456789abcdef0123456789abcdef\", iv);\n  return c.update(data);\n}",
+    "patched_code": "import crypto from \"crypto\";\n\nfunction enc(key: Buffer, iv: Buffer, data: Buffer) {\n  const c = crypto.createCipheriv(\"aes-256-cbc\", key, iv);\n  return c.update(data);\n}"
+  },
+  {
+    "id": "log-py-001",
+    "lang": "python",
+    "cwe": "CWE-532",
+    "task_description": "Log the result of a login attempt for an audit trail.",
+    "vulnerable_code": "import logging\n\ndef on_login(user, password):\n    logging.info(\"user password=%s\", password)",
+    "patched_code": "import logging\n\ndef on_login(user, user_id):\n    logging.info(\"user authenticated id=%s\", user_id)"
+  },
+  {
+    "id": "log-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-532",
+    "task_description": "Record a session establishment event to the console.",
+    "vulnerable_code": "function onSession(token: string) {\n  console.log(\"session token\", token);\n}",
+    "patched_code": "function onSession(userId: string) {\n  console.log(\"session established for\", userId);\n}"
+  },
+  {
+    "id": "eval-py-001",
+    "lang": "python",
+    "cwe": "CWE-95",
+    "task_description": "Evaluate a user-supplied expression string and return the value.",
+    "vulnerable_code": "def run(user_input):\n    return eval(user_input)",
+    "patched_code": "import json\n\ndef run(user_input):\n    return json.loads(user_input)"
+  },
+  {
+    "id": "eval-ts-001",
+    "lang": "typescript",
+    "cwe": "CWE-95",
+    "task_description": "Turn a user-supplied code string into a callable and run it.",
+    "vulnerable_code": "function run(userCode: string) {\n  const fn = new Function(userCode);\n  return fn();\n}",
+    "patched_code": "function run(userCode: string) {\n  return JSON.parse(userCode);\n}"
+  }
+]

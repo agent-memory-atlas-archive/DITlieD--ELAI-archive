@@ -103,7 +103,7 @@
           onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(opt); } }}
           onmouseenter={() => { focusedIndex = i; }}
         >
-          {opt.label}
+          <span class="select-option__label">{opt.label}</span>
         </div>
       {/each}
     </div>
@@ -138,6 +138,14 @@
   .select-trigger:focus-visible {
     border-color: var(--teal);
     box-shadow: var(--ring);
+  }
+
+  .select-value {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .select-value--placeholder {
@@ -179,6 +187,14 @@
     color: var(--text-primary);
     cursor: pointer;
     transition: background-color var(--dur-fast) var(--ease-std);
+  }
+
+  .select-option__label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .select-option:hover,

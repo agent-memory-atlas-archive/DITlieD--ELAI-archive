@@ -47,7 +47,15 @@ pub mod extractor;
 pub mod fact;
 pub mod hippo_rag;
 pub mod mem0_dispatcher;
+// F-12 Tier-2 — OnnxNliJudge over ort, behind the default-OFF `nli-onnx`
+// feature so the default Tier-1 build compiles WITHOUT ort.
+#[cfg(feature = "nli-onnx")]
+pub mod nli_onnx;
 pub mod notes;
+pub mod quarantine_broadcast;
+// F-12 Tier-1 — semantic contradiction pre-filter (deterministic local NLI
+// judge). Fully offline; no ort in the default build.
+pub mod semantic_contradiction;
 pub mod retrieval;
 pub mod store;
 pub mod tools;
@@ -76,7 +84,16 @@ pub use hippo_rag::{
     retrieve_notes, RetrievedNote, PPR_CONVERGENCE_TOL, PPR_DAMPING, PPR_MAX_ITERATIONS,
 };
 pub use notes::{MemoryNote, NoteStore};
+pub use quarantine_broadcast::{
+    collect_quarantined, QuarantineBroadcastQueue, QuarantineRecord,
+    QUARANTINE_QUEUE_CAPACITY, STALENESS_QUARANTINE_THRESHOLD,
+};
 pub use retrieval::{get_relevant_facts, RetrievalFilter};
+pub use semantic_contradiction::{
+    adjudicate_semantic, collect_cross_key_candidates, pair_fingerprint, ContradictionCandidate,
+    DeterministicNliJudge, NliJudge, NliLabel, NliVerdict, SemanticAction, SemanticConflictOutcome,
+    SEMANTIC_CONTRADICTION_CONFIDENCE_THRESHOLD,
+};
 pub use store::FactStore;
 pub use tools::{
     archival_search_tool_def, core_memory_replace_tool_def, ChatMemoryToolDef,

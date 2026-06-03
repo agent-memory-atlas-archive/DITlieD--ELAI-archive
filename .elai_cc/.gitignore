@@ -85,3 +85,12 @@ data/case_base/
 *.db-shm
 *.db-wal
 *.pid
+# Test/runtime pollution (tests writing relative to CWD instead of a tempdir).
+# Generalizes the orchestrator workflow rule to every crate (F-13 wrote archives
+# under crates/contracts/workflow/sessions/). Also catches the e25 edit-checkpoint
+# test that materialized a literal "C/Users/.../Temp/..." path under the crate dir,
+# the runtime memory store, and a stray select_parent file from the darwin loop.
+crates/*/workflow/
+crates/*/C/Users/
+memory/*.sqlite
+/select_parent

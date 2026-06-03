@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use elai_core::{ClockProvider, LogicalInstant};
+use serde::{Deserialize, Serialize};
 
 use crate::knowledge_ssb_sink::{
     noop_sink, HydeQueryEvent, KnowledgeSsbSink,
@@ -54,6 +55,33 @@ pub const HYDE_PROMPT_PREFIX: &str = "Write a short technical paragraph answerin
 /// recall@5 with/without the gate.
 pub const ELAI_HYDE_NL_ONLY_ENV: &str = "ELAI_HYDE_NL_ONLY";
 
+/// Cold-wiring (s-81344): typed config for the HyDE NL-only gate.
+///
+/// `nl_only` mirrors the [`ELAI_HYDE_NL_ONLY_ENV`] env flag. The [`Default`]
+/// impl reads that env var (env still wins until an explicit config is
+/// threaded through the cli loader), while a deserialized or explicitly
+/// constructed value takes precedence over the env via
+/// [`should_use_hyde_with_config`]. serde derive is available crate-wide
+/// (Cargo.toml workspace `serde` + `derive`); no new dependency added.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HydeConfig {
+    /// When `true` (default), HyDE is gated to NaturalLanguage queries only:
+    /// CodeSymbol / Mixed queries return `false` from
+    /// [`should_use_hyde_with_config`]. When `false`, tier-only routing is
+    /// respected (the pre-gate behaviour). The default value is read from
+    /// [`ELAI_HYDE_NL_ONLY_ENV`].
+    pub nl_only: bool,
+}
+
+impl Default for HydeConfig {
+    fn default() -> Self {
+        Self {
+            nl_only: nl_only_gate_enabled(),
+        }
+    }
+}
+
 /// E-17 SP2 task 5: NL-only gate for HyDE.
 ///
 /// Returns `true` ONLY when:
@@ -67,11 +95,22 @@ pub const ELAI_HYDE_NL_ONLY_ENV: &str = "ELAI_HYDE_NL_ONLY";
 /// `hyde_skipped_code_query` SSB row. The original query still flows
 /// through BM25 + vector search; only the LLM-roundtrip is skipped.
 pub fn should_use_hyde(query: &str) -> bool {
+    should_use_hyde_with_config(query, &HydeConfig::default())
+}
+
+/// Cold-wiring (s-81344): config-aware variant of [`should_use_hyde`].
+///
+/// The NL-only gate is taken from `cfg.nl_only` rather than re-read from the
+/// environment, so a caller holding a resolved [`HydeConfig`] gets explicit
+/// override precedence (config beats env) and avoids a second
+/// `std::env::var` lookup. Behaviour is identical to [`should_use_hyde`] when
+/// `cfg` is [`HydeConfig::default`].
+pub fn should_use_hyde_with_config(query: &str, cfg: &HydeConfig) -> bool {
     let word_count = query.split_whitespace().count();
     if word_count < MIN_WORDS_FOR_HYDE {
         return false;
     }
-    if !nl_only_gate_enabled() {
+    if !cfg.nl_only {
         // Gate disabled -> respect tier-only routing (existing behaviour).
         return true;
     }
@@ -81,12 +120,20 @@ pub fn should_use_hyde(query: &str) -> bool {
 /// Read [`ELAI_HYDE_NL_ONLY_ENV`] and return `true` when the gate is on.
 /// Default (unset / invalid) = `true` (NL-only by default per E-17 task 5).
 fn nl_only_gate_enabled() -> bool {
-    match std::env::var(ELAI_HYDE_NL_ONLY_ENV) {
-        Ok(v) => {
+    parse_nl_only_flag(std::env::var(ELAI_HYDE_NL_ONLY_ENV).ok().as_deref())
+}
+
+/// Pure parser for the [`ELAI_HYDE_NL_ONLY_ENV`] flag value, split out from
+/// the `std::env::var` read so the precedence logic is unit-testable without
+/// mutating process-global environment state. `None` (unset) and any value
+/// other than `0` / `false` / `off` (trimmed, case-insensitive) => `true`.
+fn parse_nl_only_flag(raw: Option<&str>) -> bool {
+    match raw {
+        Some(v) => {
             let t = v.trim();
             !(t == "0" || t.eq_ignore_ascii_case("false") || t.eq_ignore_ascii_case("off"))
         }
-        Err(_) => true,
+        None => true,
     }
 }
 
@@ -488,5 +535,62 @@ mod tests {
         assert!(src.contains("blake3"), "must use blake3 for cache keys");
         assert!(src.contains("HYDE_CACHE_TTL"), "must define cache TTL");
         assert!(src.contains("generate_hypothesis"), "must define generation method");
+    }
+}
+
+#[cfg(test)]
+mod cold_wiring_nl_only_tests {
+    //! Cold-wiring (s-81344) coverage for the HyDE config gate. Inputs mirror
+    //! tests/hyde_code_gate_contract.rs so the `classify()` behaviour exercised
+    //! here is the same as the shipped contract; no env mutation is used (the
+    //! pure parser is tested directly), so these run safely under cargo's
+    //! default per-fn parallelism.
+    use super::*;
+
+    const CODE_Q: &str = "RuntimeAdapter stream_step batch context limit";
+    const NL_Q: &str = "how does the degradation cascade work in the knowledge layer";
+
+    #[test]
+    fn parse_flag_precedence_is_pure() {
+        assert!(parse_nl_only_flag(None)); // unset -> gate on
+        assert!(!parse_nl_only_flag(Some("0")));
+        assert!(!parse_nl_only_flag(Some(" false ")));
+        assert!(!parse_nl_only_flag(Some("OFF")));
+        assert!(parse_nl_only_flag(Some("1"))); // anything else -> gate on
+        assert!(parse_nl_only_flag(Some("yes")));
+    }
+
+    #[test]
+    fn explicit_config_overrides_gate() {
+        // Gate ON (NL-only): a non-NL code query is skipped.
+        assert!(!should_use_hyde_with_config(CODE_Q, &HydeConfig { nl_only: true }));
+        // Gate OFF (explicit config): tier-only routing lets the code query run.
+        assert!(should_use_hyde_with_config(CODE_Q, &HydeConfig { nl_only: false }));
+        // NL query passes regardless of the gate.
+        assert!(should_use_hyde_with_config(NL_Q, &HydeConfig { nl_only: true }));
+    }
+
+    #[test]
+    fn short_query_skipped_regardless_of_config() {
+        assert!(!should_use_hyde_with_config("find main", &HydeConfig { nl_only: false }));
+    }
+
+    #[test]
+    fn default_delegation_matches_should_use_hyde() {
+        // should_use_hyde delegates to the config-aware path with the default
+        // config; under an unset env the default gate is on, so a code query
+        // is skipped and an NL query passes (matches the shipped contract).
+        assert_eq!(should_use_hyde(CODE_Q), should_use_hyde_with_config(CODE_Q, &HydeConfig::default()));
+        assert_eq!(should_use_hyde(NL_Q), should_use_hyde_with_config(NL_Q, &HydeConfig::default()));
+    }
+
+    #[test]
+    fn config_deserializes_via_serde_default() {
+        let off: HydeConfig = serde_json::from_str(r#"{"nl_only": false}"#).unwrap();
+        assert!(!off.nl_only);
+        let on: HydeConfig = serde_json::from_str(r#"{"nl_only": true}"#).unwrap();
+        assert!(on.nl_only);
+        // Empty object resolves the field via #[serde(default)] -> Default impl.
+        let _defaulted: HydeConfig = serde_json::from_str("{}").unwrap();
     }
 }

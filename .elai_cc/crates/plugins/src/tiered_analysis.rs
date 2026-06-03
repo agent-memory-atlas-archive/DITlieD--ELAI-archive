@@ -561,6 +561,7 @@ impl T1Hook {
             file_path,
             fsm_phase: self.fsm_phase,
             metric_values,
+            language_agnostic: false,
         };
 
         let verdicts = self.rule_engine.evaluate(&self.loaded_rules, &ctx)?;

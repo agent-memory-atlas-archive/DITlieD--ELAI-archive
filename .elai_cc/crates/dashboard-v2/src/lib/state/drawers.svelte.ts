@@ -67,6 +67,10 @@ import type {
   RrfComponentWeightsRow,
   // B-3 #11 — RulesDrawer rule_transition feed.
   RuleTransitionRow,
+  // F-8 / Slice A5 — SCF symbolic-conflict feed row.
+  SymbolicConflict,
+  // F-11 — config-DGM admit-loop feed row.
+  DarwinianAdmit,
 } from '../api/types';
 
 const POLL_INTERVAL_MS = 10_000;
@@ -259,10 +263,19 @@ function createReasoning() {
     probed_at: 0,
   });
   let reflectState = $state<ReflectState>({ enabled: false, last_triage: null, last_verdict: null, last_summary: null });
+  // F-8 / Slice A5 — held-pending SCF symbolic-conflict rows (newest-first).
+  // Empty in steady state; rows appear only when a self-mod config variant
+  // contradicts a locked-key invariant. WARN-then-escalate, not rejections.
+  let symbolicConflicts = $state<SymbolicConflict[]>([]);
+
+  // F-11 — config-DGM admit-loop rows. Empty in steady state; rows appear only
+  // after a `darwin-loop` run with ELAI_DARWINIAN_LOOP_ENABLE=1 + feature
+  // darwinian-evolve. Admitted / RejectedByGuard / LoopClosed.
+  let darwinianAdmits = $state<DarwinianAdmit[]>([]);
 
   async function refresh() {
     try {
-      const [budgets, sweep, csqs, gg, mistakes, feas, reflect] = await Promise.all([
+      const [budgets, sweep, csqs, gg, mistakes, feas, reflect, conflicts, admits] = await Promise.all([
         stub.get_grc_budgets(),
         stub.get_grounding_sweep(),
         stub.get_csq_pending(),
@@ -270,6 +283,8 @@ function createReasoning() {
         stub.get_mistake_book(),
         stub.get_feasibility_report(),
         stub.get_reflect_state(),
+        stub.get_symbolic_conflicts(),
+        stub.get_darwinian_admits(),
       ]);
       grcBudgets = budgets;
       groundingSweep = sweep;
@@ -288,6 +303,8 @@ function createReasoning() {
         probed_at: feas.probed_at ?? 0,
       };
       reflectState = reflect;
+      symbolicConflicts = conflicts;
+      darwinianAdmits = admits;
     } catch (err) {
       console.debug('[reasoningData] refresh failed', err);
     }
@@ -303,11 +320,23 @@ function createReasoning() {
     get mistakePreview() { return mistakePreview; },
     get feasibility() { return feasibility; },
     get reflectState() { return reflectState; },
+    // F-8 / Slice A5 — held-pending SCF symbolic-conflict rows.
+    get symbolicConflicts() { return symbolicConflicts; },
+    // F-11 — config-DGM admit-loop rows (Admitted / RejectedByGuard / LoopClosed).
+    get darwinianAdmits() { return darwinianAdmits; },
     unwired: {
       groundingSweep: false, // C-1: get_grounding_sweep reads SSB grounding_sweep_result rows
       csqPending: false,     // C-1: get_csq_pending reads SSB csq_evaluated rows where blocked=true
       feasibility: false,    // B-21 4F: get_feasibility_report decodes real SSB rows
       reflect: false,        // B-39: get_reflect_state wired to Tauri command
+      // F-8 / Slice A5: get_symbolic_conflicts reads SSB
+      // symbolic_conflict_detected rows. Empty = steady state (no conflicts),
+      // not unwired — the SCF detector producer ships in F-8.
+      symbolicConflicts: false,
+      // F-11: get_darwinian_admits reads SSB darwinian_admit rows. Empty =
+      // steady state (loop not run / gated OFF), not unwired — the producer
+      // (darwin-loop CLI) ships in F-11 behind feature + ELAI_DARWINIAN_LOOP_ENABLE.
+      darwinianAdmits: false,
     },
     bootstrap: rc.bootstrap,
     teardown: rc.teardown,

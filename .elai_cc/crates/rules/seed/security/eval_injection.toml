@@ -1,0 +1,30 @@
+# F-2c security ruleset -- Eval/Exec Code Injection (CWE-95)
+# mutable=0: immutable seed rows, lifecycle-immune.
+# Scope: python + typescript production code.
+# GrepPattern-ONLY (F-2c controller decision -- NoOpAst makes Composite AST
+# children wire-dark on the live gate).
+# FP bound: the argument's first non-space char after the opening paren must be
+# an identifier start ([A-Za-z_]), NOT a string-literal quote. So eval("1 + 1")
+# (a constant -- not injection) does NOT fire, while eval(user_input) /
+# new Function(userCode) (a variable / dynamic argument) DOES. Grep cannot fully
+# prove the argument is attacker-controlled; the identifier-vs-literal anchor is
+# the residual-FP-bounding heuristic (documented in F-2c-decisions.md). A
+# concatenation starting with a literal ("a" + x) is a residual false negative.
+
+[[rules]]
+rule_id = "SEC-EVAL-001"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Code injection: Python eval/exec on a non-literal argument (CWE-95)"
+predicate_json = '{"type":"grep_pattern","pattern":"(eval|exec)\\s*\\(\\s*[A-Za-z_]","scope":null,"context_lines":2,"language":"python","file_context":"production"}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "SEC-EVAL-002"
+domain = "security"
+tier = 1
+severity = "BLOCK"
+title = "Code injection: TypeScript eval / new Function on a non-literal argument (CWE-95)"
+predicate_json = '{"type":"grep_pattern","pattern":"(eval\\s*\\(\\s*[A-Za-z_]|new\\s+Function\\s*\\(\\s*[A-Za-z_])","scope":null,"context_lines":2,"language":"typescript","file_context":"production"}'
+phase_mask = 4294967295

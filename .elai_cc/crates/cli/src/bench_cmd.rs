@@ -136,6 +136,16 @@ pub(crate) fn run_bench_tamper(
     crate::bench_tamper::run(scenarios, output, fail_fast, max_wall_ms_per_scenario)
 }
 
+pub(crate) fn run_bench_seccodeplt(json: bool) -> anyhow::Result<()> {
+    // F-2b: SeCodePLT-structured static-gate insecure-rate benchmark. Drives
+    // the REAL evaluate_vibegate over the embedded CWE corpus OFFLINE, writes
+    // a timestamped seccodeplt-<ts>.json report under benchmarks/seccodeplt/,
+    // and emits exactly one SsbActionType::InsecureRateMeasured row (W-2:
+    // always-on bench beacon; no ELAI_*_ENABLE gate). Exits 0 on a clean run,
+    // 1 on infrastructural error.
+    crate::bench_seccodeplt::run(json)
+}
+
 pub(crate) fn run_bench_ablation(
     tile: String,
     fixtures: String,

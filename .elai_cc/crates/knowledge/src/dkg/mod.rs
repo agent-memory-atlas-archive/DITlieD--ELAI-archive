@@ -158,12 +158,67 @@ fn apply_v4_migration(conn: &Connection) -> Result<(), KnowledgeError> {
 pub const EDGE_IMPORTS: &str = "imports";
 pub const EDGE_CONTAINS: &str = "contains";
 pub const EDGE_IMPLEMENTS: &str = "implements";
+/// F-5 / Slice A4: non-destructive marker edge inserted by
+/// [`DkgEngine::apply_staleness_broadcast`] on a quarantined concept's node.
+/// `dkg_edges` has no temporal column, so the bi-temporal "close" is an INSERT
+/// of this self-loop marker edge (Graphiti / Mem0 non-destructive
+/// invalidation), never an UPDATE.
+pub const EDGE_STALENESS_QUARANTINED: &str = "staleness_quarantined";
+
+/// F-5 / Slice A4: `concept_stale` value written by the staleness-quarantine
+/// cascade. Semantics: 0 = explicitly fresh, 1 = default-unknown (the DDL
+/// default + the value the sole node INSERT hardcodes), 2 = quarantined. The
+/// cascade only ever WRITES 2; it never disturbs legacy 1s.
+pub const CONCEPT_STALE_QUARANTINED: i64 = 2;
 
 // Data flow edge type strings (match CHECK constraint in dkg_data_flow)
 pub const FLOW_PARAMETER: &str = "PARAMETER";
 pub const FLOW_RETURN: &str = "RETURN";
 pub const FLOW_ASSIGNMENT: &str = "ASSIGNMENT";
 pub const FLOW_FIELD_ACCESS: &str = "FIELD_ACCESS";
+
+// ---------------------------------------------------------------------------
+// F-5 / Slice A4 — staleness-quarantine cascade (knowledge side)
+// ---------------------------------------------------------------------------
+
+/// F-5 / Slice A4: a knowledge-side view of one memory `QuarantineRecord`.
+///
+/// `crates/knowledge` has no dependency on `crates/memory`, so the CLI bridge
+/// (which depends on both) projects each drained `QuarantineRecord` into this
+/// local view before calling [`DkgEngine::apply_staleness_broadcast`]. Only the
+/// two fields the DKG cascade needs are carried: the `fact_id` (joined against
+/// `dkg_nodes.concept`) and the `staleness_ratio` (carried for SSB / logging).
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuarantineRecordView {
+    /// Quarantined fact's stable id. Matched EXACTLY against
+    /// `dkg_nodes.concept`.
+    pub fact_id: String,
+    /// Decay staleness ratio at quarantine time (carried through for
+    /// observability; not used in the match itself).
+    pub staleness_ratio: f64,
+}
+
+impl QuarantineRecordView {
+    /// Construct a view from its two fields.
+    pub fn new(fact_id: impl Into<String>, staleness_ratio: f64) -> Self {
+        Self {
+            fact_id: fact_id.into(),
+            staleness_ratio,
+        }
+    }
+}
+
+/// F-5 / Slice A4: aggregate result of one
+/// [`DkgEngine::apply_staleness_broadcast`] batch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StalenessApplyStats {
+    /// Total DKG concept rows demoted to `concept_stale = 2` across the batch.
+    pub dependents_demoted: u64,
+    /// Total non-destructive `staleness_quarantined` marker edges inserted
+    /// across the batch (already-present markers are `INSERT OR IGNORE`d and
+    /// not counted).
+    pub marker_edges_inserted: u64,
+}
 
 // ---------------------------------------------------------------------------
 // DkgEngine
@@ -651,6 +706,98 @@ impl DkgEngine {
             Some(r) => Ok(Some(r?)),
             None => Ok(None),
         }
+    }
+
+    /// F-5 staleness-quarantine cascade: write-through demotion of a DKG concept's
+    /// freshness marker. `concept_stale` semantics: 0 = explicitly fresh, 1 = default
+    /// (the DDL default at dkg/mod.rs schema + the value the sole node INSERT hardcodes),
+    /// 2 = quarantined by the staleness cascade. There are ZERO production READ consumers
+    /// of `concept_stale` today, so this mutator is purely write-through; the Phase-1
+    /// contract asserts the UPDATE round-trip (write 2, re-query reads 2). Matching is on
+    /// the `concept` TEXT column (dkg_nodes has no fact_id; fact->concept join is by text).
+    /// Returns the number of rows updated. Idempotent for a given (concept, value).
+    pub fn set_concept_stale(&self, concept: &str, value: i64) -> Result<u64, KnowledgeError> {
+        let rows = self.conn.execute(
+            "UPDATE dkg_nodes SET concept_stale = ?2 WHERE concept = ?1",
+            rusqlite::params![concept, value],
+        )?;
+        u64::try_from(rows).map_err(|e| {
+            KnowledgeError::Graph(format!("set_concept_stale rows_updated overflow: {e}"))
+        })
+    }
+
+    /// F-5 / Slice A4: apply a batch of memory-side staleness-quarantine
+    /// records to the DKG (the knowledge half of the cross-subsystem cascade).
+    ///
+    /// The CLI/orchestrator boundary drains the `QuarantineBroadcastQueue`
+    /// (owned by `crates/memory`) and calls this with one
+    /// [`QuarantineRecordView`] per quarantined fact. `crates/knowledge` has no
+    /// dependency on `crates/memory`, so the caller projects each
+    /// `QuarantineRecord` into the local [`QuarantineRecordView`] view struct at
+    /// the bridge.
+    ///
+    /// Per record this does two non-destructive things:
+    ///   1. Demote every DKG concept whose `concept` TEXT exactly equals the
+    ///      quarantined fact's id to `concept_stale = 2` (the quarantine
+    ///      marker; reuses [`Self::set_concept_stale`]).
+    ///   2. Insert a non-destructive `staleness_quarantined` marker edge for
+    ///      every matched node. `dkg_edges` has NO temporal column, so the
+    ///      bi-temporal "close" is expressed as an INSERT of a marker edge
+    ///      (the Graphiti / Mem0 non-destructive-invalidation pattern) rather
+    ///      than an UPDATE of a `valid_to`. The marker is a self-loop
+    ///      (`source_id == target_id == node.id`, `edge_type =
+    ///      'staleness_quarantined'`); `INSERT OR IGNORE` keeps it idempotent.
+    ///
+    /// Match criterion (documented per F-5-decisions.md unknown #1): EXACT
+    /// equality `dkg_nodes.concept == record.fact_id`. `dkg_nodes` has no
+    /// `fact_id` column, so the only fact->concept join surface is the
+    /// `concept` TEXT column. Exact equality is the conservative choice: a
+    /// substring / LIKE join would over-demote unrelated concepts that merely
+    /// contain the fact id as a fragment.
+    ///
+    /// Returns the aggregate [`StalenessApplyStats`] across the whole batch.
+    pub fn apply_staleness_broadcast(
+        &self,
+        records: &[QuarantineRecordView],
+    ) -> Result<StalenessApplyStats, KnowledgeError> {
+        let mut stats = StalenessApplyStats::default();
+        for record in records {
+            // (1) Demote matching concepts to the quarantine marker value 2.
+            let demoted = self.set_concept_stale(&record.fact_id, CONCEPT_STALE_QUARANTINED)?;
+            stats.dependents_demoted = stats.dependents_demoted.saturating_add(demoted);
+
+            // (2) Insert one non-destructive self-loop marker edge per matched
+            //     node. Collect the matched node ids first (the borrow of the
+            //     prepared statement must end before the edge INSERTs run).
+            let node_ids = {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT id FROM dkg_nodes WHERE concept = ?1")?;
+                let rows = stmt.query_map(rusqlite::params![record.fact_id], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+                let mut ids = Vec::new();
+                for r in rows {
+                    ids.push(r?);
+                }
+                ids
+            };
+            for node_id in node_ids {
+                let inserted = self.conn.execute(
+                    "INSERT OR IGNORE INTO dkg_edges (source_id, target_id, edge_type) \
+                     VALUES (?1, ?1, ?2)",
+                    rusqlite::params![node_id, EDGE_STALENESS_QUARANTINED],
+                )?;
+                let inserted = u64::try_from(inserted).map_err(|e| {
+                    KnowledgeError::Graph(format!(
+                        "apply_staleness_broadcast marker-edge rows overflow: {e}"
+                    ))
+                })?;
+                stats.marker_edges_inserted =
+                    stats.marker_edges_inserted.saturating_add(inserted);
+            }
+        }
+        Ok(stats)
     }
 
     pub fn outbound_edges(&self, node_id: i64) -> Result<Vec<(i64, String)>, KnowledgeError> {

@@ -140,6 +140,23 @@
   // CSQ entries
   const hasCsqs = $derived(d.csqPending.length > 0);
 
+  // F-8 / Slice A5 — held-pending SCF symbolic conflicts.
+  const hasSymbolicConflicts = $derived(d.symbolicConflicts.length > 0);
+
+  // F-11 — config-DGM admit-loop rows (Admitted / RejectedByGuard / LoopClosed).
+  const hasDarwinianAdmits = $derived(d.darwinianAdmits.length > 0);
+
+  // Badge tone per admit kind: loop_closed=teal (success), rejected_by_guard=
+  // warn, admitted=steel (neutral/info). Tones constrained to the Badge
+  // component's set ('teal' | 'steel' | 'warn' | 'fail' | 'ghost').
+  function darwinianAdmitTone(kind: string): 'teal' | 'warn' | 'steel' {
+    switch (kind) {
+      case 'loop_closed': return 'teal';
+      case 'rejected_by_guard': return 'warn';
+      default: return 'steel';
+    }
+  }
+
   // GG signals as ordered tiles
   const ggTiles = $derived([
     { label: 'mean_logprob', value: d.ggSignals.mean_logprob.toFixed(3) },
@@ -268,6 +285,76 @@
       </div>
     {:else}
       <span class="ghost-text">no pending CSQs</span>
+    {/if}
+  </Card>
+
+  <!-- 3b. F-8 / Slice A5 SYMBOLIC CONFLICTS — held-pending self-mod config
+       variants the SCF symbolic detector flagged against an active locked-key
+       invariant (self_mod_safety::LOCKED_KEYS). POLICY is WARN-then-escalate,
+       never hard fail-closed BLOCK — these rows are held-pending variants
+       awaiting human escalation, NOT rejections. Sourced from the independent
+       reasoningData.symbolicConflicts feed (get_symbolic_conflicts, 10s
+       poll). Empty in steady state. -->
+  <Card variant={hasSymbolicConflicts ? 'error' : 'plain'} padding={12}>
+    <div class="section-label">SYMBOLIC CONFLICTS</div>
+    {#if hasSymbolicConflicts}
+      <div class="conflict-list">
+        {#each d.symbolicConflicts as c (c.seq)}
+          <div class="conflict-entry">
+            <div class="conflict-head">
+              <Badge tone="warn" size="xs">HELD-PENDING</Badge>
+              <span class="conflict-kind">{c.kind}</span>
+              <span class="conflict-key">{c.key}</span>
+            </div>
+            <span class="conflict-detail">{c.detail}</span>
+            <div class="conflict-meta">
+              <span class="conflict-mono">{c.candidate_id}</span>
+              <span class="conflict-mono">{c.fsm_substate}</span>
+              <span class="conflict-mono">{fmtTs(c.ts_ms)}</span>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <span class="ghost-text">no symbolic conflicts</span>
+    {/if}
+  </Card>
+
+  <!-- 3b. F-11 DARWINIAN ADMITS — config-DGM admit-loop events. Each row is one
+       candidate routed through the four-guard chain (tripwire blake3 fingerprint
+       -> trap-pattern scorer -> is_security_sensitive -> Two-Gate):
+       Admitted (passed all guards + inserted), RejectedByGuard (a guard fired,
+       guard_rejected_by names it), or LoopClosed (select_parent ran after
+       insert_variant). Wire-dark producer (the darwin-loop CLI, gated by feature
+       darwinian-evolve + ELAI_DARWINIAN_LOOP_ENABLE=1); empty in steady state.
+       Sourced from reasoningData.darwinianAdmits (get_darwinian_admits, 10s
+       poll). -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">DARWINIAN ADMITS</div>
+    {#if hasDarwinianAdmits}
+      <div class="conflict-list">
+        {#each d.darwinianAdmits as a (a.seq)}
+          <div class="conflict-entry">
+            <div class="conflict-head">
+              <Badge tone={darwinianAdmitTone(a.kind)} size="xs">{a.kind}</Badge>
+              <span class="conflict-kind">{a.variant_id}</span>
+              {#if a.guard_rejected_by}
+                <span class="conflict-key">guard: {a.guard_rejected_by}</span>
+              {/if}
+            </div>
+            <span class="conflict-detail">alpha={a.alpha.toFixed(4)}</span>
+            <div class="conflict-meta">
+              <span class="conflict-mono">{a.candidate_blake3}</span>
+              {#if a.parent_id}
+                <span class="conflict-mono">parent: {a.parent_id}</span>
+              {/if}
+              <span class="conflict-mono">{fmtTs(a.ts_ms)}</span>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <span class="ghost-text">no darwinian admits</span>
     {/if}
   </Card>
 
@@ -552,6 +639,62 @@
     gap: 4px;
   }
 
+  /* F-8 / Slice A5 — symbolic conflicts */
+  .conflict-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .conflict-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .conflict-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .conflict-kind {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--warn);
+    font-weight: 600;
+  }
+
+  .conflict-key {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conflict-detail {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+
+  .conflict-meta {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .conflict-mono {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+  }
+
   /* C-22: feasibility CSS moved into FeasibilityPanel.svelte. */
 
   /* Mistake book */
@@ -651,6 +794,7 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-ghost);
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -731,6 +875,7 @@
   .mini-critic-reason {
     color: var(--text-secondary);
     flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

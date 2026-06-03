@@ -268,13 +268,23 @@ fn channel_drain(buf: Arc<Mutex<Vec<SsbPayload>>>) -> tokio::sync::mpsc::Unbound
 // ---------------------------------------------------------------------------
 
 #[test]
-fn c27_entrypoint_loader_missing_section_returns_empty() {
+fn c27_entrypoint_loader_missing_section_returns_err_fail_closed() {
+    // WAVE-1 fail-close (R2): an absent [wiring.entrypoints] section is a hard
+    // FAIL, not a silent empty default. A dead gate input must scream.
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let cfg = tmp.path().join("elai_cc.toml");
     std::fs::write(&cfg, "[tools.routing_rules]\nenabled = true\n").expect("write");
     let loader = WiringEntrypointSetLoader::new(&cfg);
-    let set = loader.load().expect("load must not panic on missing section");
-    assert!(set.is_empty());
+    let err = loader
+        .load()
+        .expect_err("absent [wiring.entrypoints] section must be a fail-closed Err");
+    assert!(
+        matches!(
+            err,
+            elai_orchestrator::WiringContractError::AbsentEntrypointSet(_)
+        ),
+        "expected AbsentEntrypointSet, got {err:?}"
+    );
 }
 
 #[test]

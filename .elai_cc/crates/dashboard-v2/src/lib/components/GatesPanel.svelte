@@ -12,7 +12,6 @@
   Svelte 5 runes: $state / $derived / $effect.
 -->
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
   import type {
     AmbiguityState,
     AmbiguityComponent,
@@ -21,10 +20,32 @@
 
   let ambig: AmbiguityState | null = $state(null);
   let error: string | null = $state(null);
+  let tauriInvoke: (<T>(cmd: string, args?: Record<string, unknown>) => Promise<T>) | null = null;
+
+  async function ensureInvoke(): Promise<typeof tauriInvoke> {
+    if (tauriInvoke !== null) return tauriInvoke;
+    const w = typeof window !== 'undefined' ? (window as unknown as Record<string, unknown>) : {};
+    if (!w.__TAURI_INTERNALS__ && !w.__TAURI__) {
+      return null;
+    }
+    try {
+      const mod = await import('@tauri-apps/api/core');
+      tauriInvoke = mod.invoke;
+    } catch (err) {
+      console.warn('[GatesPanel] @tauri-apps/api/core import failed', err);
+      tauriInvoke = null;
+    }
+    return tauriInvoke;
+  }
 
   async function refresh() {
     try {
-      ambig = await invoke<AmbiguityState>('get_ambiguity_state');
+      const inv = await ensureInvoke();
+      if (!inv) {
+        ambig = null;
+        return;
+      }
+      ambig = await inv<AmbiguityState>('get_ambiguity_state');
       error = null;
     } catch (e) {
       error = String(e);

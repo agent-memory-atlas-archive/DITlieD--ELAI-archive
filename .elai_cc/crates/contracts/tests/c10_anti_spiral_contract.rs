@@ -236,6 +236,12 @@ fn evidence_all_pass() -> AutonomousEvidence {
         step_zero_blocks: true,
         babystep_zero_blocks: true,
         plan_zero_blocks: true,
+        // F-10: AUTO-ADVANCE security-monotonicity vacuous-default true.
+        security_monotonicity: true,
+        // SP5 wiring-fix: off-agent EXECUTING -> AUDITING legs default FALSE;
+        // all-true fixture sets them explicitly (ADR-8).
+        layer3_entrypoint_covered: true,
+        layer4_trace_present: true,
     }
 }
 
@@ -254,6 +260,8 @@ fn base_ctx() -> AutonomousGateContext {
         execution_history: ExecutionHistory::default(),
         attempt_index: 0,
         suggested_prompt_prefix: None,
+        // F-6 (C6a): no candidate learned skill in the base contract fixture.
+        candidate_skill_tier: None,
     }
 }
 

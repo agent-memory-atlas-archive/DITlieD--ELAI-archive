@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use elai_core::{ClockProvider, OsClock};
 
-use crate::deep::{deep_pool_cap, rrf_quality_gate, DEEP_CAP_DEFAULT, RRF_FLOOR_DEFAULT, RRF_K_CONSTANT};
+use crate::deep::{deep_pool_cap, rrf_quality_gate, KnowledgeDeepConfig};
 use crate::error::KnowledgeError;
 use crate::freshness::{self, FreshnessDb};
 use crate::hyde::{should_use_hyde, HydeStage};
@@ -33,7 +33,7 @@ use crate::query_validator::QueryValidator;
 use crate::reranker::CrossEncoderReranker;
 use crate::vector::cache::VectorCache;
 use crate::vector::VectorModule;
-use crate::vector::indexer::VectorIndexer;
+use crate::vector::indexer::{code_vec_gate, CodeVecConfig, VectorIndexer};
 use crate::ReadinessStatus;
 
 #[cfg(feature = "splade")]
@@ -59,16 +59,18 @@ fn blake3_prefix_u64(bytes: &[u8]) -> u64 {
 /// E-17 SP2 task 7: per-ranker RRF weights surfaced on the
 /// `rrf_component_weights` SSB beacon. Named constants per codeRules
 /// baseline (no magic numbers). The defaults follow the plan spec
-/// (`[knowledge.rrf] weights = {bm25 = 1.0, code_vec = 1.0, text_vec = 0.8}`)
-/// and are not yet config-loaded (planned for E-17 ops follow-up).
-const RRF_BM25_WEIGHT: f64 = 1.0;
-const RRF_CODE_VEC_WEIGHT: f64 = 1.0;
-const RRF_TEXT_VEC_WEIGHT: f64 = 0.8;
+/// (`[knowledge.rrf] weights = {bm25 = 1.0, code_vec = 1.0, text_vec = 0.8}`).
+/// Cold-wiring (s-81344): these are now the canonical default source for
+/// [`crate::deep::RrfWeights`] / [`KnowledgeDeepConfig`]; the runtime values
+/// are read from `self.deep_config.weights` (default == these consts).
+pub(crate) const RRF_BM25_WEIGHT: f64 = 1.0;
+pub(crate) const RRF_CODE_VEC_WEIGHT: f64 = 1.0;
+pub(crate) const RRF_TEXT_VEC_WEIGHT: f64 = 0.8;
 /// E-40 Tranche B-2 task 7: 5th-list (symbol_graph_vec) weight.
 /// Plan-mandated 0.9 fixed weight per Task 7 spec. Wire-dark unless
 /// `ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE` is set — see
 /// [`symbol_graph_5th_rrf_enabled_from_env`].
-const RRF_SYMBOL_GRAPH_VEC_WEIGHT: f64 = 0.9;
+pub(crate) const RRF_SYMBOL_GRAPH_VEC_WEIGHT: f64 = 0.9;
 
 /// E-40 Tranche B-2 task 7: env-gate for the 5th-list symbol_graph_vec
 /// RRF input. Default-OFF so the production pipeline continues to
@@ -197,6 +199,17 @@ pub struct QueryPipeline {
     /// adapter is installed. See
     /// `workflow/reasoning/E-40-tranche-B2-decisions.md`.
     symbol_graph_adapter: Option<Arc<dyn crate::symbol_graph_adapter::SymbolGraphAdapter>>,
+    /// Cold-wiring (s-81344): config for the optional code_vector secondary
+    /// index. Default `enabled = true` so the gate reduces to the existing
+    /// `has_code_index()` check until the deferred cli loader splice
+    /// (`ELAI_CODE_VEC`) installs an explicit value via
+    /// [`QueryPipeline::with_code_vec_config`].
+    code_vec_config: CodeVecConfig,
+    /// Cold-wiring (s-81344): DEEP-tier RRF reranker config (pool cap, floor,
+    /// k, per-ranker weights). Default mirrors the shipped constants, so the
+    /// rerank path is byte-for-byte unchanged until
+    /// [`QueryPipeline::with_deep_config`] installs an override.
+    deep_config: KnowledgeDeepConfig,
 }
 
 impl QueryPipeline {
@@ -223,7 +236,26 @@ impl QueryPipeline {
             session_id: DEFAULT_SESSION_ID.to_owned(),
             clock: Arc::new(OsClock),
             symbol_graph_adapter: None,
+            code_vec_config: CodeVecConfig::default(),
+            deep_config: KnowledgeDeepConfig::default(),
         }
+    }
+
+    /// Cold-wiring (s-81344): builder-style installer for the code_vector
+    /// secondary-index config. Production wiring (deferred) at the cli loader
+    /// reads `ELAI_CODE_VEC` and calls this; until then the default
+    /// (`enabled = true`) preserves the existing `has_code_index()` gate.
+    pub fn with_code_vec_config(mut self, config: CodeVecConfig) -> Self {
+        self.code_vec_config = config;
+        self
+    }
+
+    /// Cold-wiring (s-81344): builder-style installer for the DEEP-tier RRF
+    /// reranker config (pool cap / floor / k / weights). The default mirrors
+    /// the shipped constants, so omitting this is a behaviour-preserving no-op.
+    pub fn with_deep_config(mut self, config: KnowledgeDeepConfig) -> Self {
+        self.deep_config = config;
+        self
     }
 
     /// E-40 Tranche B-2: builder-style installer for the optional
@@ -675,7 +707,7 @@ impl QueryPipeline {
         // 3-ranker RRF path confirmed working by query_trace.rs:264-281 test fixture.
         if use_vector {
             if let (Some(vm), Some(indexer)) = (&self.vector_module, &self.vector_indexer) {
-                if indexer.has_code_index() {
+                if code_vec_gate(self.code_vec_config.enabled, indexer.has_code_index()) {
                     let code_vector_start = self.clock.now();
                     let mut code_seen: HashSet<String> = HashSet::new();
                     let mut code_results: Vec<RetrievalResult> = Vec::new();
@@ -994,7 +1026,7 @@ impl QueryPipeline {
             let deep_cap_emit_start = self.clock.now();
             self.ssb_sink.emit_deep_pool_capped(DeepPoolCappedEvent {
                 capped_count: u32::try_from(deep_cap_dropped).unwrap_or(u32::MAX),
-                max_allowed: u32::try_from(DEEP_CAP_DEFAULT).unwrap_or(u32::MAX),
+                max_allowed: u32::try_from(self.deep_config.max_candidates).unwrap_or(u32::MAX),
                 stage_count: u32::try_from(stages.len()).unwrap_or(u32::MAX),
             });
             stages.push(PipelineStage {
@@ -1011,7 +1043,7 @@ impl QueryPipeline {
             let rrf_gate_emit_start = self.clock.now();
             self.ssb_sink.emit_rrf_quality_gate_fired(RrfQualityGateFiredEvent {
                 dropped_count: u32::try_from(rrf_floor_dropped).unwrap_or(u32::MAX),
-                floor: RRF_FLOOR_DEFAULT,
+                floor: self.deep_config.rrf_floor,
                 total_before: u32::try_from(rrf_pre_floor_count).unwrap_or(u32::MAX),
             });
             stages.push(PipelineStage {
@@ -1039,11 +1071,11 @@ impl QueryPipeline {
         let mut symbol_graph_vec_weight: Option<f64> = None;
         for stage in &stages {
             match stage.stage.as_str() {
-                "bm25" => bm25_weight = Some(RRF_BM25_WEIGHT),
-                "code_vector" => code_vec_weight = Some(RRF_CODE_VEC_WEIGHT),
-                "vector" => text_vec_weight = Some(RRF_TEXT_VEC_WEIGHT),
+                "bm25" => bm25_weight = Some(self.deep_config.weights.bm25),
+                "code_vector" => code_vec_weight = Some(self.deep_config.weights.code_vec),
+                "vector" => text_vec_weight = Some(self.deep_config.weights.text_vec),
                 "symbol_graph_vec" => {
-                    symbol_graph_vec_weight = Some(RRF_SYMBOL_GRAPH_VEC_WEIGHT);
+                    symbol_graph_vec_weight = Some(self.deep_config.weights.symbol_graph_vec);
                 }
                 _ => {}
             }
@@ -1192,11 +1224,14 @@ impl QueryPipeline {
     ///
     /// Ordering (HARD):
     ///   1. On DEEP tier: truncate each stage's results to
-    ///      [`DEEP_CAP_DEFAULT`] BEFORE the accumulator.
-    ///   2. Run RRF accumulator with k = [`RRF_K_CONSTANT`] (=60).
+    ///      `self.deep_config.max_candidates` (default
+    ///      [`crate::deep::DEEP_CAP_DEFAULT`]) BEFORE the accumulator.
+    ///   2. Run RRF accumulator with k = `self.deep_config.rrf_k` (default
+    ///      [`crate::deep::RRF_K_CONSTANT`] = 60).
     ///   3. Apply freshness multiplier (post-accumulator).
     ///   4. On DEEP tier: drop candidates whose score is below
-    ///      [`RRF_FLOOR_DEFAULT`] AFTER the multiplier.
+    ///      `self.deep_config.rrf_floor` (default
+    ///      [`crate::deep::RRF_FLOOR_DEFAULT`]) AFTER the multiplier.
     ///   5. Sort by score desc (tie-break: chunk_id asc for determinism).
     ///
     /// Returns `(reranked, deep_cap_dropped, rrf_floor_dropped, pre_floor_count)`
@@ -1209,7 +1244,7 @@ impl QueryPipeline {
     ) -> (Vec<RetrievalResult>, usize, usize, usize) {
         // Step 1: DEEP cap BEFORE the RRF accumulator (E-17 SP2 task 4).
         let deep_cap_dropped: usize = if tier == QueryTier::Deep {
-            deep_pool_cap(stages, DEEP_CAP_DEFAULT)
+            deep_pool_cap(stages, self.deep_config.max_candidates)
         } else {
             0
         };
@@ -1222,7 +1257,7 @@ impl QueryPipeline {
                 // by DEEP_CAP_DEFAULT = 100 on DEEP, by per-stage retrieval
                 // limit otherwise).
                 let rank_f = (rank_idx + 1) as f64;
-                let rrf_score = 1.0 / (RRF_K_CONSTANT + rank_f);
+                let rrf_score = 1.0 / (self.deep_config.rrf_k + rank_f);
                 let entry = scores
                     .entry(result.chunk_id.clone())
                     .or_insert_with(|| (0.0, result.clone()));
@@ -1246,7 +1281,7 @@ impl QueryPipeline {
         // (E-17 SP2 task 4). DEEP tier only.
         let pre_floor_count = scores.len();
         let rrf_floor_dropped: usize = if tier == QueryTier::Deep {
-            rrf_quality_gate(&mut scores, RRF_FLOOR_DEFAULT)
+            rrf_quality_gate(&mut scores, self.deep_config.rrf_floor)
         } else {
             0
         };

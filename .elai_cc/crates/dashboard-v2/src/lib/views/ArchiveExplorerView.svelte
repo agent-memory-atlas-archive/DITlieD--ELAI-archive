@@ -60,25 +60,29 @@
     if (typeof window === 'undefined') return undefined;
     const tauriAvail = !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     if (!tauriAvail) return undefined;
-    try {
-      const mod = await import('@tauri-apps/api/core');
-      return (await mod.invoke<T>(cmd, args)) as T;
-    } catch (e) {
-      console.warn(`[archive-explorer] invoke('${cmd}') failed`, e);
-      return undefined;
-    }
+    // Tauri present: let a real invoke error PROPAGATE so reload() can surface it
+    // on the auto-poll path (it was previously swallowed, masking failure as empty).
+    const mod = await import('@tauri-apps/api/core');
+    return (await mod.invoke<T>(cmd, args)) as T;
   }
 
   async function reload() {
-    const out = await callInvoke<CombinedArchiveView>('get_template_archive_combined', { limit: 100 });
-    if (out === undefined) {
-      combined = { templates: [], recent_tripwires: [], bai_arms: [] };
-      loadError = null;
-    } else {
-      combined = out;
-      loadError = null;
+    try {
+      const out = await callInvoke<CombinedArchiveView>('get_template_archive_combined', { limit: 100 });
+      if (out === undefined) {
+        // No Tauri runtime (browser-dev): benign, render the empty state.
+        combined = { templates: [], recent_tripwires: [], bai_arms: [] };
+        loadError = null;
+      } else {
+        combined = out;
+        loadError = null;
+      }
+    } catch (e) {
+      // Tauri present but the command failed: surface it on the poll path too.
+      loadError = String(e);
+    } finally {
+      loaded = true;
     }
-    loaded = true;
   }
 
   async function reloadWithErrorSurface() {
@@ -333,6 +337,7 @@
   .ae-list th, .ae-list td {
     padding: 0.25rem 0.45rem;
     text-align: left;
+    overflow-wrap: anywhere;
     border-bottom: 1px solid rgba(128, 128, 128, 0.25);
     font-variant-numeric: tabular-nums;
   }
@@ -376,6 +381,8 @@
   }
   .ae-side dd {
     margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   code {
     font-family: 'SF Mono', Menlo, Consolas, monospace;

@@ -964,6 +964,8 @@
     font-size: 12px;
     color: var(--text-secondary);
     line-height: 1.5;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .snap-value--accent { color: var(--teal); }
   .snap-value--warn   { color: var(--warn); }
@@ -1142,6 +1144,7 @@
   .tl-body {
     font-size: 10px;
     color: var(--text-ghost);
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

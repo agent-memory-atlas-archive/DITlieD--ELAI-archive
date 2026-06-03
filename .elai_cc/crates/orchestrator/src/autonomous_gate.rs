@@ -31,6 +31,7 @@ use tokio::sync::RwLock;
 
 use crate::agent_pool::ModelPool;
 use crate::gate::{InteractiveGate, RiskLevel};
+use crate::skill_trust::SkillTrustTier;
 
 // ---------------------------------------------------------------------------
 // Env kill switch
@@ -47,6 +48,34 @@ pub fn autonomous_gate_disabled_via_env() -> bool {
     std::env::var(ELAI_DISABLE_AUTONOMOUS_GATE_ENV)
         .map(|v| !v.is_empty())
         .unwrap_or(false)
+}
+
+/// F-6 (C6a) — kill switch for the learned-skill autonomy barrier. When set to
+/// any non-empty string, [`AutonomousGate::decide`] skips the sub-S4 skill
+/// barrier (step 7.5) entirely, restoring pre-F-6 behaviour. Default-ON
+/// (W-2): the barrier is active unless this var is explicitly set. Mirrors the
+/// [`autonomous_gate_disabled_via_env`] emergency-shutoff pattern.
+pub const ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV: &str =
+    "ELAI_SKILL_AUTONOMY_BARRIER_DISABLE";
+
+/// Returns true iff the learned-skill autonomy barrier is disabled via env.
+/// Cheap: single env read. When true, a sub-S4 candidate skill does NOT force
+/// [`AutonomyDecision::RequestHuman`].
+pub fn skill_autonomy_barrier_disabled() -> bool {
+    std::env::var(ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// F-6 (C6a) — true iff a candidate skill at `tier` is cleared for autonomous
+/// dispatch. Only the apex rung [`SkillTrustTier::S4`] permits autonomy; every
+/// sub-S4 candidate routes to a human via the barrier in
+/// [`AutonomousGate::decide`] step 7.5. Mirrors
+/// [`crate::skill_trust::SkillStore::permits_autonomous`] WITHOUT taking a
+/// store handle — the gate stays decoupled from the [`crate::skill_trust::SkillStore`].
+#[must_use]
+pub fn skill_permits_autonomous(tier: SkillTrustTier) -> bool {
+    tier == SkillTrustTier::S4
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +285,39 @@ pub struct Evidence {
     /// true (see [`Evidence::concept_zero_blocks`]).
     #[serde(default = "default_true_for_per_level_zero_blocks")]
     pub plan_zero_blocks: bool,
+    /// F-10 Check 13 — AUTO-ADVANCE security monotonicity: advancing to the
+    /// next step would NOT introduce a CWE security class that was absent at the
+    /// prior iteration. Vacuous-default `true` for any context that did not run
+    /// the security-monotonicity gate — only
+    /// `task_runner::derive_security_monotonicity_evidence` flips this to a real
+    /// value (set `false` on a regression, which blocks auto-advance and emits a
+    /// `SecurityClassRegressionBlocked` SSB row with `loop_kind=AutoAdvance`).
+    /// Same vacuous-default pattern as `framing_converged` / the B-41 fields, so
+    /// the existing autonomous_gate cold-start contracts pass UNCHANGED.
+    #[serde(default = "default_true_for_security_monotonicity")]
+    pub security_monotonicity: bool,
+    /// SP5 wiring-fix Check 14 — EXECUTING -> AUDITING Layer-3 entrypoint
+    /// coverage: every newly-added function was driven from a REAL entrypoint
+    /// (instrumented-binary hit-count > 0), proven by an in-window
+    /// `wiring_evidence` SSB row whose `entrypoint == LAYER3_LEG`
+    /// ("layer3_coverage") AND zero in-window `wiring_violation` rows whose
+    /// `file == LAYER3_LEG`. Unlike the historical vacuous-default-`true`
+    /// checks, this defaults to `false` (FAIL-CLOSED): a context that did not
+    /// run the Layer-3 coverage runner observes `false` and CANNOT
+    /// auto-advance. Set `true` only by `derive_layer3_entrypoint_covered`.
+    /// Source: wiring-elai-adr.md ADR-2 + wiring-enforcement.md R1/R4.
+    #[serde(default = "default_false_for_layer3_entrypoint_covered")]
+    pub layer3_entrypoint_covered: bool,
+    /// SP5 wiring-fix Check 15 — EXECUTING -> AUDITING Layer-4 off-agent
+    /// trace: a real SSB row landed for the driven entrypoint (an artifact
+    /// the producing agent did not author), proven by an in-window
+    /// `wiring_evidence` SSB row whose `entrypoint == LAYER4_LEG`
+    /// ("layer4_trace"). Defaults to `false` (FAIL-CLOSED) for the same
+    /// reason as `layer3_entrypoint_covered`. Set `true` only by
+    /// `derive_layer4_trace_present` (WAVE 5 emits the row). Source:
+    /// wiring-elai-adr.md ADR-1/ADR-2 + wiring-enforcement.md R1/R4.
+    #[serde(default = "default_false_for_layer4_trace_present")]
+    pub layer4_trace_present: bool,
 }
 
 impl Default for Evidence {
@@ -280,6 +342,16 @@ impl Default for Evidence {
             step_zero_blocks: true,
             babystep_zero_blocks: true,
             plan_zero_blocks: true,
+            // F-10: vacuous-default true. A context that did not run the
+            // security-monotonicity gate observes `true` and is not blocked;
+            // only derive_security_monotonicity_evidence sets a real value.
+            security_monotonicity: true,
+            // SP5 wiring-fix: FAIL-CLOSED defaults. Unlike every check above,
+            // these default FALSE: a context that did not run the Layer-3
+            // coverage runner / observe a Layer-4 trace row must NOT
+            // auto-advance EXECUTING -> AUDITING on a unit-test proxy alone.
+            layer3_entrypoint_covered: false,
+            layer4_trace_present: false,
         }
     }
 }
@@ -288,7 +360,26 @@ fn default_true_for_framing_converged() -> bool {
     true
 }
 
+/// SP5 wiring-fix serde default for [`Evidence::layer3_entrypoint_covered`].
+/// FAIL-CLOSED: a pre-SP5 serialized Evidence snapshot (no field) decodes to
+/// `false`, so an old snapshot cannot auto-advance without a fresh Layer-3
+/// coverage derivation.
+fn default_false_for_layer3_entrypoint_covered() -> bool {
+    false
+}
+
+/// SP5 wiring-fix serde default for [`Evidence::layer4_trace_present`].
+/// FAIL-CLOSED for the same reason as
+/// [`default_false_for_layer3_entrypoint_covered`].
+fn default_false_for_layer4_trace_present() -> bool {
+    false
+}
+
 fn default_true_for_per_level_zero_blocks() -> bool {
+    true
+}
+
+fn default_true_for_security_monotonicity() -> bool {
     true
 }
 
@@ -314,6 +405,15 @@ impl Evidence {
             && self.step_zero_blocks
             && self.babystep_zero_blocks
             && self.plan_zero_blocks
+            // F-10 AUTO-ADVANCE security monotonicity (vacuous-default true).
+            && self.security_monotonicity
+            // SP5 wiring-fix: EXECUTING -> AUDITING off-agent legs
+            // (FAIL-CLOSED default false). A unit-test flip (`test_flipped`)
+            // is necessary-but-not-sufficient; the auto-advance also requires
+            // a Layer-3 entrypoint-coverage hit AND a Layer-4 off-agent SSB
+            // trace row. wiring-enforcement.md R1/R4.
+            && self.layer3_entrypoint_covered
+            && self.layer4_trace_present
     }
 
     /// Human-readable summary for the `GateDecision` SSB payload. Format is
@@ -379,6 +479,18 @@ impl Evidence {
         }
         if !self.plan_zero_blocks {
             v.push("plan_zero_blocks");
+        }
+        // F-10 AUTO-ADVANCE security monotonicity failed-check label.
+        if !self.security_monotonicity {
+            v.push("security_monotonicity");
+        }
+        // SP5 wiring-fix: off-agent EXECUTING -> AUDITING legs. Surfaced so a
+        // FAIL-CLOSED block reports a named reason rather than an empty list.
+        if !self.layer3_entrypoint_covered {
+            v.push("layer3_entrypoint_covered");
+        }
+        if !self.layer4_trace_present {
+            v.push("layer4_trace_present");
         }
         v
     }
@@ -904,6 +1016,16 @@ pub struct GateContext {
     /// into the next baby_step prompt. Defaulted to `None` so existing
     /// contract tests compile unchanged.
     pub suggested_prompt_prefix: Option<&'static str>,
+    /// F-6 (C6a) — pre-computed trust tier of the learned skill the runtime is
+    /// about to dispatch for this step, or `None` when no learned skill is in
+    /// play (the common case — no candidate means no barrier). The task_runner
+    /// caller derives this from the candidate [`crate::skill_trust::LearnedSkill`]
+    /// BEFORE the [`AutonomousGate::decide`] call so the gate stays decoupled
+    /// from the [`crate::skill_trust::SkillStore`]. `decide()` reads it at step
+    /// 7.5: a sub-[`SkillTrustTier::S4`] candidate forces
+    /// [`AutonomyDecision::RequestHuman`] unless the barrier is disabled via
+    /// [`ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV`].
+    pub candidate_skill_tier: Option<SkillTrustTier>,
 }
 
 impl std::fmt::Debug for GateContext {
@@ -925,6 +1047,7 @@ impl std::fmt::Debug for GateContext {
             .field("execution_history_len", &self.execution_history.len())
             .field("attempt_index", &self.attempt_index)
             .field("suggested_prompt_prefix", &self.suggested_prompt_prefix)
+            .field("candidate_skill_tier", &self.candidate_skill_tier)
             .finish()
     }
 }
@@ -1149,6 +1272,26 @@ impl AutonomousGate {
             };
         }
 
+        // 7.5. F-6 (C6a) learned-skill autonomy barrier. When the runtime is
+        // about to dispatch a learned skill, only an apex S4 skill is cleared
+        // for autonomous dispatch — a sub-S4 candidate routes to a human.
+        // `candidate_skill_tier == None` means no learned skill is in play, so
+        // the barrier never fires (the common path). The barrier honours the
+        // default-ON kill switch ELAI_SKILL_AUTONOMY_BARRIER_DISABLE.
+        if let Some(tier) = ctx.candidate_skill_tier {
+            if !skill_permits_autonomous(tier) && !skill_autonomy_barrier_disabled() {
+                return AutonomyDecision::RequestHuman {
+                    reason: format!(
+                        "learned-skill autonomy barrier: candidate skill at tier {} \
+                         is sub-S4, human grant required for autonomous dispatch",
+                        tier.as_str()
+                    ),
+                    risk_level: ctx.risk_level,
+                    evidence: ctx.evidence.clone(),
+                };
+            }
+        }
+
         // 8. Evidence checks.
         if !ctx.evidence.all_passed() {
             return AutonomyDecision::RequestHuman {
@@ -1253,6 +1396,13 @@ mod tests {
             step_zero_blocks: true,
             babystep_zero_blocks: true,
             plan_zero_blocks: true,
+            // F-10: vacuous-default true, matching Evidence::default. The gate
+            // helper is not in a security-monotonicity context, so true = no block.
+            security_monotonicity: true,
+            // SP5 wiring-fix: the off-agent EXECUTING -> AUDITING legs must be
+            // explicitly true for an all-pass fixture (they default FALSE).
+            layer3_entrypoint_covered: true,
+            layer4_trace_present: true,
         }
     }
 
@@ -1275,6 +1425,13 @@ mod tests {
             execution_history: crate::anti_spiral_extended::ExecutionHistory::default(),
             attempt_index: 0,
             suggested_prompt_prefix: None,
+            // F-6 (C6a) — no candidate skill in the base test fixture. The
+            // step-7.5 barrier is exercised by the dedicated tests below that
+            // override this field: skill_barrier_sub_s4_candidate_requests_human,
+            // skill_barrier_apex_s4_candidate_auto_advances,
+            // skill_barrier_none_candidate_passes_step_7_5, and
+            // skill_barrier_kill_switch_overrides_sub_s4.
+            candidate_skill_tier: None,
         }
     }
 
@@ -1390,6 +1547,112 @@ mod tests {
             }
             other => panic!("expected SplitTask, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // F-6 (C6a) — learned-skill autonomy barrier (step 7.5). These are the
+    // dedicated tests the base-fixture comment in `ctx_with` points to: they
+    // are the ONLY tests that set `ctx.candidate_skill_tier = Some(_)` and so
+    // are the only coverage of the step-7.5 RequestHuman branch.
+    // -----------------------------------------------------------------------
+
+    /// RAII env-gate guard for the kill-switch test. Restores the prior value
+    /// on drop. Mirrors the `EnvGuard` precedent in `compaction_ladder.rs`.
+    struct BarrierEnvGuard {
+        prior: Option<String>,
+    }
+
+    impl BarrierEnvGuard {
+        fn set(value: &str) -> Self {
+            let prior = std::env::var(ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV).ok();
+            // SAFETY: env-gate flips in this test module are single-threaded
+            // per-process; matches the codebase EnvGuard precedent.
+            unsafe {
+                std::env::set_var(ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV, value);
+            }
+            Self { prior }
+        }
+    }
+
+    impl Drop for BarrierEnvGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => unsafe {
+                    std::env::set_var(ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV, v);
+                },
+                None => unsafe {
+                    std::env::remove_var(ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV);
+                },
+            }
+        }
+    }
+
+    fn autonomous_gate_for_barrier() -> AutonomousGate {
+        AutonomousGate::new(
+            AutonomousGateConfig {
+                mode: GateMode::Autonomous,
+                ..AutonomousGateConfig::default()
+            },
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn skill_barrier_sub_s4_candidate_requests_human() {
+        // A sub-S4 learned skill in play at an otherwise-auto-advancing step
+        // must route to a human (the F-6 observable_effect).
+        let gate = autonomous_gate_for_barrier();
+        let mut ctx = ctx_with(PipelineLevel::BabyStep, RiskLevel::Low);
+        ctx.candidate_skill_tier = Some(SkillTrustTier::S3);
+        let decision = gate.decide(&ctx).await;
+        match decision {
+            AutonomyDecision::RequestHuman { reason, .. } => {
+                assert!(
+                    reason.contains("learned-skill autonomy barrier"),
+                    "expected the barrier reason, got: {reason}"
+                );
+            }
+            other => panic!("expected RequestHuman from the sub-S4 barrier, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_barrier_apex_s4_candidate_auto_advances() {
+        // An apex S4 (human-granted) skill is cleared for autonomous dispatch:
+        // step 7.5 does not fire, the happy path auto-advances.
+        let gate = autonomous_gate_for_barrier();
+        let mut ctx = ctx_with(PipelineLevel::BabyStep, RiskLevel::Low);
+        ctx.candidate_skill_tier = Some(SkillTrustTier::S4);
+        let decision = gate.decide(&ctx).await;
+        assert_eq!(decision, AutonomyDecision::AutoAdvance);
+    }
+
+    #[tokio::test]
+    async fn skill_barrier_none_candidate_passes_step_7_5() {
+        // `None` = no learned skill in play; the barrier is dormant and the
+        // step auto-advances exactly as it did pre-F-6.
+        let gate = autonomous_gate_for_barrier();
+        let mut ctx = ctx_with(PipelineLevel::BabyStep, RiskLevel::Low);
+        ctx.candidate_skill_tier = None;
+        let decision = gate.decide(&ctx).await;
+        assert_eq!(decision, AutonomyDecision::AutoAdvance);
+    }
+
+    #[tokio::test]
+    async fn skill_barrier_kill_switch_overrides_sub_s4() {
+        // The default-ON barrier is disabled by
+        // ELAI_SKILL_AUTONOMY_BARRIER_DISABLE: a sub-S4 candidate then
+        // auto-advances (pre-F-6 behaviour) instead of routing to a human.
+        let _g = BarrierEnvGuard::set("1");
+        let gate = autonomous_gate_for_barrier();
+        let mut ctx = ctx_with(PipelineLevel::BabyStep, RiskLevel::Low);
+        ctx.candidate_skill_tier = Some(SkillTrustTier::S3);
+        let decision = gate.decide(&ctx).await;
+        assert_eq!(
+            decision,
+            AutonomyDecision::AutoAdvance,
+            "kill switch must disable the sub-S4 barrier"
+        );
     }
 
     #[tokio::test]

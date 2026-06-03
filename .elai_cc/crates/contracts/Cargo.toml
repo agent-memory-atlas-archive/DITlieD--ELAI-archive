@@ -15,6 +15,10 @@ elai-tools = { path = "../tools" }
 elai-plugins = { path = "../plugins", features = ["mcp"] }
 elai-knowledge = { path = "../knowledge", features = ["test-helpers"] }
 elai-reasoning = { path = "../reasoning" }
+# F-12: semantic_contradiction_threshold_contract.rs + no_cloud_judge_contract.rs
+# drive the real elai_memory adjudication path (FactStore + adjudicate_semantic
+# + the NliJudge trait). Path dep only; no new external crate.
+elai-memory = { path = "../memory" }
 elai-orchestrator = { path = "../orchestrator", features = ["sidecar", "test-support"] }
 # E-54: eval-corpus crate. Contract test e54_eval_corpus_ssb_contract.rs
 # asserts the IngestConfig defaults + schema validation + prod-traffic
@@ -46,6 +50,16 @@ tempfile = "3"
 blake3 = { workspace = true }
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# WIRING-FIX-ELAI Phase 3 (SP4): tracing-test for the mandatory-assert rule's
+# self-fixture + any #[traced_test] assertion in Layer-4 contract tests.
+# Anti-slopsquatting verified live (crates.io API 2026-06-02): tracing-test
+# max_stable=newest=0.2.6, v0.2.6 created 2026-02-07, NOT yanked, 29.3M total
+# downloads, repository=https://github.com/dbrgn/tracing-test (canonical dbrgn,
+# no typo-squat fork). KNOWN HAZARD (carried into
+# .claude/rules/tracing-test-assert.md): `logs_contain` returns bool and does
+# NOT auto-fail -- every #[traced_test] body MUST wrap it in assert!/assert_eq!
+# or the test silently passes (fail-open). The auditor rule + checker enforce it.
+tracing-test = "0.2.6"
 rmp-serde = "1.3"
 # B-29 Phase 1 contract test (symbol_graph_b29_phase1_contract): postcard is
 # the canonical encoder for symbol_graph blob columns; workspace dep already
@@ -75,7 +89,11 @@ default = []
 # Batch-ful-d (FUL-D): forward the `mcp` feature to elai-plugins so the
 # gated half of `fuld_mcp_bridge_contract.rs` can reach the HTTP JSON-RPC
 # client. Contract test also compiles without this feature.
-mcp = ["elai-plugins/mcp"]
+# C-47b CLI-arm: also forward to elai-orchestrator/mcp so the structural
+# half of `c47b_case_base_persist_contract.rs` can reach the cfg(mcp)
+# `McpClientDispatch::with_calibration_registry` builder. The source-grep
+# assertion in that suite is feature-independent (reads the .rs text).
+mcp = ["elai-plugins/mcp", "elai-orchestrator/mcp"]
 # A.4-finish: forward the `obscura` feature to elai-orchestrator so the
 # obscura branch of `fetcher_used_ssb_contract.rs` compiles when the
 # headless-browser fetch path is enabled.
@@ -85,3 +103,13 @@ obscura = ["elai-orchestrator/obscura"]
 # `orchestrator::empire::*` types. The test file is `#[cfg(feature = "empire")]`-
 # gated so a default `cargo test -p elai_cc_contracts` run is unaffected.
 empire = ["elai-orchestrator/empire"]
+# F-11: forward the `darwinian-evolve` feature to elai-orchestrator so the
+# darwinian_admit contract tests compile against the REAL feature-gated
+# `orchestrator::darwin_admit_loop` + `trap_tasks` + `promotion_gate` code, not
+# a phantom (gotchas: a contract written against a feature-gated seam WITHOUT
+# the forward compiles against an unrelated path = FALSE COVERAGE). The
+# guard-chain + loop contract tests are `#[cfg(feature = "darwinian-evolve")]`-
+# gated so a default `cargo test -p elai_cc_contracts` run is unaffected; the
+# SSB-roundtrip contract is feature-INDEPENDENT (the action_type + payload live
+# in always-compiled ssb.rs).
+darwinian-evolve = ["elai-orchestrator/darwinian-evolve"]

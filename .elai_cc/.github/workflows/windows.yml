@@ -106,11 +106,11 @@ jobs:
       # `/examples/`, `/.venv/`, `/.venv-staging/`, `/site-packages/`,
       # `/dist-info/`, `/.tox/`, `_test.rs`, `_contract.rs`.
       #
-      # `[ci skip]` opt-out mirrors the existing scripts/check_anti_stale.sh
-      # convention; commit messages containing `[ci skip]` short-circuit
-      # before the binary build.
+      # R3 (wiring-enforcement): the wiring audit is a gate; it must NOT carry
+      # an opt-out. The `[ci skip]` guard was removed so a commit message can no
+      # longer bypass the audit on the Windows leg. The canonical cross-platform
+      # invoker is .github/workflows/wiring-audit.yml (ubuntu-latest).
       - name: Wiring contract audit (C-27 T-0)
-        if: "!contains(github.event.head_commit.message, '[ci skip]')"
         working-directory: .elai_cc
         run: |
           cargo build -p elai-cli --release --locked

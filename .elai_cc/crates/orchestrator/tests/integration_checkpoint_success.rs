@@ -47,6 +47,7 @@ async fn success_emits_finding_with_success_category() {
         criterion_results: Vec::new(),
         failure_reason: None,
         total_duration_ms: 123,
+        output_capture: None,
     };
     emit_integration_checkpoint_for_test(&ssb, DecompositionLevel::Phase, 42, &run).await;
 
@@ -80,6 +81,7 @@ async fn failure_still_emits_failed_category_regression() {
         criterion_results: Vec::new(),
         failure_reason: Some("integration tier blew up".into()),
         total_duration_ms: 99,
+        output_capture: None,
     };
     emit_integration_checkpoint_for_test(&ssb, DecompositionLevel::Step, 7, &run).await;
 
