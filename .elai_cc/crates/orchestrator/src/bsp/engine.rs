@@ -14,6 +14,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use elai_core::ClockProvider;
+use elai_ipc_types::AGENT_HEARTBEAT_TIMEOUT_SECS;
 
 use elai_reasoning::BasicGrcEngine;
 use crate::agent_pool::{AgentHandle, AgentPool, AgentPoolError, AgentRole};
@@ -36,8 +37,12 @@ pub const MAX_SUPERSTEP_ATTEMPTS: u32 = 3;
 /// Maximum total supersteps before safety-valve abort.
 pub const MAX_SUPERSTEPS: u64 = 100;
 
-/// Default straggler timeout in seconds (matches Phase 3C heartbeat timeout).
-pub const DEFAULT_STRAGGLER_TIMEOUT_SECS: u64 = 15;
+/// Default straggler timeout in seconds. phase-3D.const: derived from
+/// `elai_ipc_types::AGENT_HEARTBEAT_TIMEOUT_SECS` (the single source of truth
+/// for "agent is unresponsive") instead of a duplicated literal, so the two
+/// constants cannot drift apart. A straggling superstep participant and a
+/// heartbeat-silent agent are the same failure observed from two layers.
+pub const DEFAULT_STRAGGLER_TIMEOUT_SECS: u64 = AGENT_HEARTBEAT_TIMEOUT_SECS;
 
 // ---------------------------------------------------------------------------
 // BspError
@@ -722,7 +727,60 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     // Straggler: timeout expired. Build placeholder handle
                     // for the death event recorded by the caller.
                     let role = task_meta[idx].2;
-                    let grc_config = crate::agent_pool::default_grc_config(&role);
+                    // H-42: apply depth-scaled GRC budget at the real dispatch site (BabyStep).
+                    // Emit a ReasoningBudgetScaled SSB row via write_payload (the load-bearing
+                    // off-agent artifact per R4/R7). tracing::info is the secondary observable.
+                    // Missing = FAIL (R1). Kill-switch: ELAI_REASONING_BUDGET_SCALE_DISABLE=1.
+                    let base_config = crate::agent_pool::default_grc_config(&role);
+                    let depth = crate::reasoning_budget::estimate_serial_depth(
+                        crate::pipeline_tree_navigator::DecompositionLevel::BabyStep,
+                    );
+                    let grc_config = crate::reasoning_budget::scale_grc_budget(base_config.clone(), depth);
+                    if grc_config.budget.max_calls != base_config.budget.max_calls {
+                        let ceiling = base_config
+                            .budget
+                            .max_calls
+                            .saturating_mul(crate::reasoning_budget::LOCKED_BUDGET_CEILING);
+                        // SSB row — the production off-agent artifact (BLOCK-1 fix).
+                        let budget_payload = crate::ssb::SsbPayload::ReasoningBudgetScaled(
+                            crate::ssb::ReasoningBudgetScaledPayload {
+                                kind: "depth_bound".to_owned(),
+                                role: grc_config.role.clone(),
+                                base_calls: base_config.budget.max_calls,
+                                serial_depth: depth,
+                                scaled_calls: grc_config.budget.max_calls,
+                                ceiling,
+                                seed: 0,
+                            },
+                        );
+                        if let Err(e) = ssb
+                            .write_payload(
+                                &bsp_agent_id_lc,
+                                superstep_i64_lc,
+                                budget_payload,
+                                Vec::new(),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                target: "orchestrator::reasoning_budget",
+                                role = %grc_config.role,
+                                error = %e,
+                                "H-42: ReasoningBudgetScaled SSB write failed at BSP timeout (non-fatal)"
+                            );
+                        }
+                        tracing::info!(
+                            target: "orchestrator::reasoning_budget",
+                            role = %grc_config.role,
+                            base_calls = base_config.budget.max_calls,
+                            serial_depth = depth,
+                            scaled_calls = grc_config.budget.max_calls,
+                            ceiling = ceiling,
+                            kind = "depth_bound",
+                            action_type = "reasoning_budget_scaled",
+                            "H-42: ReasoningBudgetScaled — depth-scaled GRC budget at BSP timeout dispatch"
+                        );
+                    }
                     timed_out.push((node_id.clone(), AgentHandle {
                         agent_id: uuid::Uuid::nil(),
                         role,
@@ -886,17 +944,17 @@ async fn save_superstep_checkpoint(
 
 /// Recover channel state from a BSP checkpoint and SSB history.
 ///
-/// Validates post-checkpoint SSB entries to detect channels that may have
-/// been lost or stale after a crash. Currently performs validation and
-/// logging only — actual state restoration into `channels` is a future-phase
-/// concern. The `channels` parameter establishes the interface contract so
-/// callers wire it in now.
+/// phase-3D.recover_from_checkpoint: rehydrates durable channel values from
+/// the checkpoint into `channels` (via `restore_state`), and uses
+/// post-checkpoint SSB entries to decide which ephemeral channels were
+/// already cleared (and so must stay MISSING).
 ///
 /// Recovery per channel type:
 /// - EphemeralValue: checks SSB Checkpoint entries for ephemeral-clear records.
-///   Channels cleared before checkpoint are expected MISSING.
-/// - Topic: logged as restored from checkpoint state.
-/// - UntrackedValue: not in checkpoint, lost on crash by design. Logged.
+///   Channels cleared before checkpoint stay MISSING; uncleared ephemerals are
+///   restored from checkpoint bytes.
+/// - Topic / LastValue: restored from checkpoint state into the registry.
+/// - UntrackedValue: not in checkpoint, lost on crash by design. Logged only.
 pub fn recover_from_checkpoint(
     checkpoint: &BspCheckpoint,
     channels: &mut InMemoryChannelRegistry,
@@ -937,26 +995,35 @@ pub fn recover_from_checkpoint(
         }
     }
 
-    // Check each channel in the checkpoint state
+    // Check each channel in the checkpoint state and restore durable channel
+    // values back into the live registry. phase-3D.recover_from_checkpoint:
+    // the loop previously logged-only; it now calls
+    // `InMemoryChannelRegistry::restore_state` so a crash resume rehydrates
+    // Topic + LastValue channels (the durable kinds) from the checkpoint.
+    // Ephemeral channels are restored ONLY when they were not cleared before
+    // the checkpoint (a cleared ephemeral is expected MISSING after a crash).
     for (name, state) in &checkpoint.channel_state {
         match state {
             ChannelState::Ephemeral(_) => {
                 if cleared_channels.contains(name) {
-                    // Channel was cleared before checkpoint — MISSING is expected
+                    // Channel was cleared before checkpoint — MISSING is expected;
+                    // do NOT restore it (resuming would resurrect dropped state).
                     tracing::info!(
                         channel = %name,
                         superstep = checkpoint.superstep,
                         "recovery: ephemeral channel was cleared (expected MISSING)"
                     );
                 } else {
+                    channels.restore_state(name, state);
                     tracing::info!(
                         channel = %name,
                         superstep = checkpoint.superstep,
-                        "recovery: ephemeral channel present in checkpoint"
+                        "recovery: ephemeral channel restored from checkpoint"
                     );
                 }
             }
             ChannelState::Topic(_) => {
+                channels.restore_state(name, state);
                 tracing::info!(
                     channel = %name,
                     superstep = checkpoint.superstep,
@@ -964,6 +1031,7 @@ pub fn recover_from_checkpoint(
                 );
             }
             ChannelState::LastValue(_) => {
+                channels.restore_state(name, state);
                 tracing::info!(
                     channel = %name,
                     superstep = checkpoint.superstep,
@@ -1164,6 +1232,59 @@ mod tests {
 
         let keys: Vec<&String> = decoded.channel_state.keys().collect();
         assert_eq!(keys, vec!["a_channel", "m_channel", "z_channel"]);
+    }
+
+    // 2b. phase-3D.recover_from_checkpoint: durable channel values are
+    //     rehydrated into the live registry (not just logged). Proves the
+    //     restore_state fill is real by reading the value back through the
+    //     typed ChannelRegistry::read APIs after recovery.
+    #[tokio::test]
+    async fn recover_from_checkpoint_restores_durable_channel_values() {
+        let ssb = test_ssb().await;
+
+        // Serialize known values the same way the registry's write path does.
+        let lv_bytes = rmp_serde::to_vec_named(&42u32).expect("encode lastvalue");
+        let topic_bytes_a = rmp_serde::to_vec_named(&"first".to_owned()).expect("encode topic a");
+        let topic_bytes_b = rmp_serde::to_vec_named(&"second".to_owned()).expect("encode topic b");
+
+        let mut channel_state = BTreeMap::new();
+        channel_state.insert("lv".to_owned(), ChannelState::LastValue(lv_bytes));
+        channel_state.insert(
+            "topic".to_owned(),
+            ChannelState::Topic(vec![topic_bytes_a, topic_bytes_b]),
+        );
+
+        let checkpoint = BspCheckpoint {
+            superstep: 0,
+            channel_state,
+            node_statuses: BTreeMap::new(),
+            created_at_secs: 1_700_000_000,
+        };
+
+        // Fresh (empty) registry — recovery must populate it from scratch.
+        let mut channels = InMemoryChannelRegistry::new();
+        recover_from_checkpoint(&checkpoint, &mut channels, &ssb, "test-session")
+            .expect("recover_from_checkpoint should succeed");
+
+        // LastValue channel rehydrated.
+        let lv_id: ChannelId<crate::bsp::channels::LastValue<u32>> = ChannelId::new("lv");
+        match channels.read(&lv_id).expect("read lv") {
+            crate::bsp::channels::ChannelValue::Present(v) => assert_eq!(v, 42u32),
+            crate::bsp::channels::ChannelValue::Missing => {
+                panic!("lastvalue channel was not restored")
+            }
+        }
+
+        // Topic channel rehydrated, order preserved.
+        let topic_id: ChannelId<crate::bsp::channels::Topic<String>> = ChannelId::new("topic");
+        match channels.read_topic(&topic_id).expect("read topic") {
+            crate::bsp::channels::ChannelValue::Present(v) => {
+                assert_eq!(v, vec!["first".to_owned(), "second".to_owned()]);
+            }
+            crate::bsp::channels::ChannelValue::Missing => {
+                panic!("topic channel was not restored")
+            }
+        }
     }
 
     // 3. superstep_counter_increments

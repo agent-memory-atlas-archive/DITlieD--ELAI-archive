@@ -166,6 +166,34 @@ impl Provenance {
         }
     }
 
+    /// G-1 (DD4): path-screened file provenance. A file read from a
+    /// committed/tracked in-project source tree (the `project_root` prefix,
+    /// e.g. `.elai_cc/`) is `Trusted` — it is first-party code under version
+    /// control, not attacker-controlled content. Any path OUTSIDE that root
+    /// (absolute external paths, parent-escapes, untracked uploads) is
+    /// `Untrusted`, matching the fail-closed default of [`Self::from_file`].
+    ///
+    /// `project_root` is the canonical workspace prefix the caller already
+    /// resolved (the orchestrator joins reads against its `project_root`, so
+    /// the screen is "did this read resolve under project_root"). A path that
+    /// contains a `..` parent-escape component is treated as `Untrusted`
+    /// regardless of prefix (a relative `.elai_cc/../../etc/passwd` must not
+    /// be laundered into `Trusted`).
+    ///
+    /// Grounding: RTBAS ELAI ingest-site mapping (workflow/papers/rtbas-interface.md)
+    /// — user/first-party source = Trusted; external file-read = Untrusted.
+    pub fn from_file_screened(path: PathBuf, project_root: &std::path::Path) -> Self {
+        let trust = if path_is_trusted_source(&path, project_root) {
+            TrustLevel::Trusted
+        } else {
+            TrustLevel::Untrusted
+        };
+        Self {
+            source: TextSource::File { source_path: path },
+            trust,
+        }
+    }
+
     pub fn from_sandbox(sandbox_id: impl Into<String>) -> Self {
         Self {
             source: TextSource::SandboxOutput { sandbox_id: sandbox_id.into() },
@@ -229,6 +257,27 @@ impl<T> Provenanced<T> {
     pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Provenanced<U> {
         Provenanced { value: f(self.value), provenance: self.provenance }
     }
+}
+
+/// G-1 (DD4): decide whether a file path is trusted first-party source.
+///
+/// Trusted iff the path, after lexical normalization, starts with
+/// `project_root` AND contains no `..` parent-escape component. Pure +
+/// deterministic + allocation-light; performs no filesystem access (so it is
+/// safe to call on the hot dispatch path and in tests without a real tree).
+fn path_is_trusted_source(path: &std::path::Path, project_root: &std::path::Path) -> bool {
+    use std::path::Component;
+    // A parent-escape anywhere disqualifies (defends against
+    // `<root>/../../etc/passwd` being laundered into Trusted).
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return false;
+    }
+    // An empty root means "no trusted tree configured" -> nothing is trusted
+    // (fail-closed): never default an unconfigured screen to Trusted.
+    if project_root.as_os_str().is_empty() {
+        return false;
+    }
+    path.starts_with(project_root)
 }
 
 #[cfg(test)]

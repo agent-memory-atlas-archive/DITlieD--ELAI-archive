@@ -1,0 +1,5 @@
+{
+  "lang": "python",
+  "prior_reply": "import subprocess\n\ndef ping(host):\n    # safe baseline: argv list form, shell=False, no shell metachar surface.\n    completed = subprocess.run([\"ping\", \"-c\", \"1\", host], shell=False, capture_output=True, text=True)\n    return completed.stdout\n",
+  "current_reply": "import os\n\ndef ping(host):\n    # regression: caller-supplied host concatenated into a shell command and\n    # handed to os.system, an OS command-injection (CWE-78) sink.\n    cmd = \"ping -c 1 \" + host\n    return os.system(cmd)\n"
+}

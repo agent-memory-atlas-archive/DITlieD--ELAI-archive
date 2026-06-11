@@ -224,7 +224,11 @@ pub fn audit_clear_for_memorize(
     phase: &crate::phase_kind::PhaseKind,
     adversary_verdict: Option<&crate::adversary::AdversaryVerdict>,
 ) -> Result<(), AdversaryGateError> {
-    if !phase.requires_cross_family_adversary() {
+    // E-6 wiring: route through the public adversary-side predicate
+    // `crate::adversary::adversary_verdict_required` (the canonical entry
+    // mirrored from `PhaseKind::requires_cross_family_adversary`) so the
+    // adversary module has a real production caller from the FSM guard.
+    if !crate::adversary::adversary_verdict_required(phase) {
         return Ok(());
     }
     let verdict = match adversary_verdict {
@@ -427,6 +431,15 @@ pub enum FsmError {
         /// Static remediation hint.
         hint: String,
     },
+    /// E-6: the `AUDITING -> MEMORIZING` transition was refused by the
+    /// cross-family adversary gate ([`audit_clear_for_memorize`]). The
+    /// current PhaseKind requires a cross-family-confirmed AdversaryVerdict
+    /// (code / architecture / security) and none was supplied (or it was
+    /// not cross_family_confirmed). `detail` is the underlying
+    /// [`AdversaryGateError`] message.
+    AdversaryGateBlocked {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for FsmError {
@@ -473,6 +486,12 @@ impl std::fmt::Display for FsmError {
                 write!(
                     f,
                     "PLANNING -> TESTING_FIRST refused: EU AI Act assertion {assertion_label} failed; {hint}; see docs/strategy/ELAI-2026-POSTURE.md"
+                )
+            }
+            FsmError::AdversaryGateBlocked { detail } => {
+                write!(
+                    f,
+                    "AUDITING -> MEMORIZING refused: cross-family adversary gate not cleared: {detail}"
                 )
             }
         }
@@ -628,6 +647,18 @@ struct FsmInner {
     /// [`Fsm::exit_framing_to_planning`] when the critic loop converges and
     /// the tradeoff card is emitted. Persisted via [`PersistedFsmState::substate`].
     substate: Option<FsmSubstate>,
+    /// E-6: phase kind of the work currently being audited, set by the
+    /// orchestrator before an AUDITING -> MEMORIZING transition so the
+    /// transition guard can enforce the cross-family adversary requirement
+    /// via [`audit_clear_for_memorize`]. `None` (the default) means no
+    /// PhaseKind was supplied and the cross-family gate does not fire —
+    /// behaviour-preserving for all legacy callers (DEFAULT-OFF). In-memory
+    /// only; NOT persisted to disk (process-local, like `last_audit_result`).
+    adversary_phase_kind: Option<crate::phase_kind::PhaseKind>,
+    /// E-6: cross-family adversary verdict for the current audit, set
+    /// alongside [`Self::adversary_phase_kind`]. Consumed by the
+    /// AUDITING -> MEMORIZING guard. In-memory only; not persisted.
+    adversary_verdict: Option<crate::adversary::AdversaryVerdict>,
 }
 
 /// E-25 D3: env-gate name controlling whether
@@ -664,6 +695,8 @@ impl Fsm {
                 preload_manager: crate::preload::PreloadManager::new(),
                 last_audit_result: None,
                 substate: None,
+                adversary_phase_kind: None,
+                adversary_verdict: None,
             }),
             workload_emitter: None,
             model_pool: None,
@@ -813,6 +846,10 @@ impl Fsm {
                 // B-40 (TASK-B40-003): restore substate from persisted snapshot.
                 // Older v40-and-earlier snapshots default to None via #[serde(default)].
                 substate: persisted.substate,
+                // E-6: process-local adversary gate inputs; never persisted,
+                // always default None on load (set fresh per audit pass).
+                adversary_phase_kind: None,
+                adversary_verdict: None,
             }),
             workload_emitter: None,
             model_pool: None,
@@ -848,6 +885,31 @@ impl Fsm {
     /// Set the token budget (called by context budget allocator).
     pub async fn set_token_budget(&self, budget: usize) {
         self.inner.lock().await.token_budget = budget;
+    }
+
+    /// E-6: supply the PhaseKind + cross-family AdversaryVerdict that the
+    /// AUDITING -> MEMORIZING transition guard consults
+    /// ([`audit_clear_for_memorize`]). Call this before attempting the
+    /// AUDITING -> MEMORIZING transition for code/architecture/security
+    /// phases. When never called (the default), the cross-family gate does
+    /// not fire and the transition proceeds as before (behaviour-preserving
+    /// for legacy callers). In-memory only — not persisted to disk.
+    pub async fn set_adversary_gate_input(
+        &self,
+        phase: crate::phase_kind::PhaseKind,
+        verdict: Option<crate::adversary::AdversaryVerdict>,
+    ) {
+        let mut guard = self.inner.lock().await;
+        guard.adversary_phase_kind = Some(phase);
+        guard.adversary_verdict = verdict;
+    }
+
+    /// E-6: clear the adversary gate inputs (e.g. after a transition or when
+    /// re-entering AUDITING for a fresh pass). Idempotent.
+    pub async fn clear_adversary_gate_input(&self) {
+        let mut guard = self.inner.lock().await;
+        guard.adversary_phase_kind = None;
+        guard.adversary_verdict = None;
     }
 
     /// Current phase label.
@@ -911,6 +973,22 @@ impl Fsm {
                 let block_count = result.block_count();
                 if block_count > 0 {
                     return Err(FsmError::AuditingBlocked { block_count });
+                }
+            }
+            // E-6: cross-family adversary gate. Only fires when the
+            // orchestrator supplied a PhaseKind via
+            // `set_adversary_gate_input` (default None => no gate, legacy
+            // behaviour preserved). `audit_clear_for_memorize` routes
+            // through `crate::adversary::adversary_verdict_required`, so a
+            // code/architecture/security phase without a cross-family-
+            // confirmed AdversaryVerdict is rejected here.
+            if let Some(ref phase) = guard.adversary_phase_kind {
+                if let Err(gate_err) =
+                    audit_clear_for_memorize(phase, guard.adversary_verdict.as_ref())
+                {
+                    return Err(FsmError::AdversaryGateBlocked {
+                        detail: gate_err.to_string(),
+                    });
                 }
             }
         }
@@ -2131,6 +2209,66 @@ mod tests {
         })
         .await
         .expect("replan in new phase should succeed");
+    }
+
+    // -- E-6: cross-family adversary gate on AUDITING -> MEMORIZING --
+
+    async fn drive_to_auditing(fsm: &Fsm) {
+        fsm.transition(FsmState::Planning, "p", vec![]).await.unwrap();
+        fsm.transition(FsmState::TestingFirst, "p", vec![]).await.unwrap();
+        fsm.transition(FsmState::Executing, "p", vec![]).await.unwrap();
+        fsm.transition(FsmState::Auditing, "p", vec![]).await.unwrap();
+    }
+
+    /// R7 reachability: the production `transition()` AUDITING -> MEMORIZING
+    /// path consults `audit_clear_for_memorize` (which routes through
+    /// `crate::adversary::adversary_verdict_required`). A Code phase with no
+    /// cross-family verdict must be REJECTED by the real transition call.
+    #[tokio::test]
+    async fn transition_auditing_to_memorizing_blocked_for_code_without_verdict() {
+        let fsm = Fsm::new(None, 8000);
+        drive_to_auditing(&fsm).await;
+        // Supply a Code PhaseKind with no AdversaryVerdict — gate must fire.
+        fsm.set_adversary_gate_input(crate::phase_kind::PhaseKind::Code, None)
+            .await;
+        let err = fsm
+            .transition(FsmState::Memorizing, "p", vec![])
+            .await
+            .expect_err("code phase without verdict must be blocked");
+        assert!(
+            matches!(err, FsmError::AdversaryGateBlocked { .. }),
+            "expected AdversaryGateBlocked, got {err:?}"
+        );
+        // FSM must remain in AUDITING (rejection happens before mutation).
+        assert_eq!(fsm.get_state().await, FsmState::Auditing);
+    }
+
+    /// A Code phase WITH a cross_family_confirmed verdict clears the gate and
+    /// the real transition succeeds.
+    #[tokio::test]
+    async fn transition_auditing_to_memorizing_clears_with_confirmed_verdict() {
+        let fsm = Fsm::new(None, 8000);
+        drive_to_auditing(&fsm).await;
+        let verdict = crate::adversary::AdversaryVerdict::robust("c-1", true);
+        fsm.set_adversary_gate_input(crate::phase_kind::PhaseKind::Code, Some(verdict))
+            .await;
+        fsm.transition(FsmState::Memorizing, "p", vec![])
+            .await
+            .expect("code phase with confirmed verdict must clear");
+        assert_eq!(fsm.get_state().await, FsmState::Memorizing);
+    }
+
+    /// Default-OFF: when no PhaseKind is supplied, the gate does not fire and
+    /// AUDITING -> MEMORIZING proceeds (legacy behaviour preserved).
+    #[tokio::test]
+    async fn transition_auditing_to_memorizing_default_off_no_gate() {
+        let fsm = Fsm::new(None, 8000);
+        drive_to_auditing(&fsm).await;
+        // No set_adversary_gate_input call — gate stays dark.
+        fsm.transition(FsmState::Memorizing, "p", vec![])
+            .await
+            .expect("default (no phase kind) must proceed");
+        assert_eq!(fsm.get_state().await, FsmState::Memorizing);
     }
 
     // -- B-2: SSB PhaseTransition emission tests --

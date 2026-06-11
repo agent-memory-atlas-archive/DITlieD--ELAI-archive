@@ -474,4 +474,74 @@ mod tests {
         assert_eq!(p.next_badge, "cloud_billed");
         assert_eq!(p.kind, DiscourseEventKind::RuntimeChoiceBadgeEmitted);
     }
+
+    // E-23 off-agent artifact smoke: exercises the write path that
+    // `get_trust_telemetry` (commands.rs) now performs and reads the row back
+    // from a temp Ssb to prove the emit is not wire-dark.
+    //
+    // This test is intentionally in-crate (not in crates/orchestrator/tests/)
+    // because the tests/ integration harness does not link here due to
+    // pre-existing ort/ndarray rlib conflicts.
+    #[tokio::test]
+    async fn trust_telemetry_aggregated_ssb_emit_round_trip() {
+        use crate::ssb::{Ssb, SsbActionType, SsbConfig, SsbPayload, SsbReader};
+        use elai_core::clock::OsClock;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("tempdir");
+        let cfg = SsbConfig {
+            db_path: dir.path().join("trust_telem_smoke.db"),
+            pool_size: None,
+            project_id: "e23-smoke".into(),
+            session_id: "s-e23-smoke".into(),
+        };
+        let ssb = Ssb::new(cfg, Arc::new(OsClock)).expect("ssb init");
+
+        let report = TrustReport {
+            tasks_per_hour: 1.5,
+            findings_per_task: 0.4,
+            revert_rate: 0.05,
+            ungrounded_count: 1,
+            stagnation_dist: {
+                let mut m = FxHashMap::default();
+                m.insert("spinning".into(), 1u64);
+                m
+            },
+        };
+        let payload = SsbPayload::DeveloperDiscourseEvent(build_aggregated_payload(
+            &report,
+            Some("s-e23-smoke".into()),
+            1_700_000_000_000,
+        ));
+
+        ssb.write_payload("trust-telem-smoke", 0, payload, vec![])
+            .await
+            .expect("write_payload must succeed");
+
+        let rows = ssb
+            .query_by_type(SsbActionType::DeveloperDiscourseEvent)
+            .expect("query_by_type must succeed");
+
+        assert!(!rows.is_empty(), "expected at least one DeveloperDiscourseEvent row");
+        let entry = &rows[0];
+        assert_eq!(entry.action_type, SsbActionType::DeveloperDiscourseEvent);
+
+        let decoded: SsbPayload = rmp_serde::from_slice(&entry.payload)
+            .expect("payload must deserialize");
+        match decoded {
+            SsbPayload::DeveloperDiscourseEvent(p) => {
+                assert_eq!(
+                    p.kind,
+                    DiscourseEventKind::TrustTelemetryAggregated,
+                    "kind must be TrustTelemetryAggregated"
+                );
+                assert!(
+                    (p.tasks_per_hour - 1.5).abs() < f64::EPSILON,
+                    "tasks_per_hour must round-trip"
+                );
+            }
+            other => panic!("expected DeveloperDiscourseEvent, got {:?}", other),
+        }
+    }
 }

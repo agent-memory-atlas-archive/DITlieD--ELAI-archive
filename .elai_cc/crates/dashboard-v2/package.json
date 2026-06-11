@@ -11,6 +11,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit"
   },
   "dependencies": {
+    "@babel/standalone": "7.29.7",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@lucide/svelte": "^1.11.0",
@@ -19,6 +20,10 @@
     "cytoscape": "^3.33.3",
     "cytoscape-dagre": "^3.0.0",
     "cytoscape-fcose": "^2.2.0",
+    "graphology": "0.26.0",
+    "graphology-utils": "2.5.2",
+    "recast": "0.23.11",
+    "sigma": "3.0.3",
     "svelte": "^5",
     "three": "^0.184.0",
     "troika-three-text": "^0.52.4",
@@ -29,6 +34,7 @@
     "@sveltejs/vite-plugin-svelte": "^4.0.4",
     "@tauri-apps/cli": "^2",
     "@types/three": "^0.184.0",
+    "pngjs": "^7.0.0",
     "svelte-check": "^4",
     "typescript": "^5",
     "vite": "^5"

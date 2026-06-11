@@ -44,13 +44,18 @@ use crate::architecture::claude_code_arch::{
 /// reduction + SSB emission path. Set to `1` to enable. Default OFF.
 pub const ELAI_E25_COMPACTION_LADDER_ENABLE_VAR: &str = "ELAI_E25_COMPACTION_LADDER_ENABLE";
 
-/// Returns true iff the D1 compaction-ladder runner is wire-enabled via the
-/// canonical env var.
+/// Returns true unless the D1 compaction-ladder runner is explicitly disabled.
+/// H-6 (W-2): DEFAULT-ON. The E-25 ladder is the long-session overflow manager
+/// (cheapest-first + deterministic); reduction at PreCompact is strictly better than
+/// hard truncation, so it runs unless turned off. `ELAI_E25_COMPACTION_LADDER_ENABLE="0"`
+/// is the KILL-SWITCH; unset / any other value => ON. (default-ON kill-switch, not a
+/// default-OFF graveyard — no wire-dark-allowlist row required.) GD-4: the over-reduction
+/// rate is a Tier-2 measurement; the cheapest tier runs first.
 #[must_use]
 pub fn compaction_ladder_enabled() -> bool {
     std::env::var(ELAI_E25_COMPACTION_LADDER_ENABLE_VAR)
-        .map(|v| v == "1")
-        .unwrap_or(false)
+        .map(|v| v != "0")
+        .unwrap_or(true)
 }
 
 /// Configured compaction-ladder traversal. `tiers` is the in-order list of

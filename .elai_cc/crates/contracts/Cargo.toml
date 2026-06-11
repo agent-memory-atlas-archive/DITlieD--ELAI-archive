@@ -59,7 +59,15 @@ tokio = { workspace = true, features = ["test-util"] }
 # .claude/rules/tracing-test-assert.md): `logs_contain` returns bool and does
 # NOT auto-fail -- every #[traced_test] body MUST wrap it in assert!/assert_eq!
 # or the test silently passes (fail-open). The auditor rule + checker enforce it.
-tracing-test = "0.2.6"
+tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
+# H-38: tracing required by tracing_test::traced_test macro (the macro calls
+# tracing::subscriber and needs tracing in scope at the call site).
+# workspace pin (0.1) — same version used by elai-orchestrator.
+# no-env-filter is required because integration tests are a separate crate from
+# the crate under test (elai-orchestrator); without it, tracing-test only captures
+# logs from the integration test crate itself, not from elai-orchestrator.
+# (tracing-test docs: "integration tests must use no-env-filter to capture logs")
+tracing.workspace = true
 rmp-serde = "1.3"
 # B-29 Phase 1 contract test (symbol_graph_b29_phase1_contract): postcard is
 # the canonical encoder for symbol_graph blob columns; workspace dep already

@@ -24,13 +24,17 @@ use std::sync::LazyLock;
 
 /// Pattern 0: AWS access-key ID. Format is `AKIA` followed by exactly 16
 /// uppercase letters/digits — hardcoded by AWS; no false positives on real code.
-const PAT_AWS_KEY: &str = r"AKIA[0-9A-Z]{16}";
+///
+/// `pub(crate)` so the G-9 write-time redactor (`redaction.rs`) can build a
+/// span-yielding `Regex` from the SAME const string instead of re-declaring the
+/// pattern (GD-1: REUSE F-1's pattern strings, re-implement no detector).
+pub(crate) const PAT_AWS_KEY: &str = r"AKIA[0-9A-Z]{16}";
 
 /// Pattern 1: RSA / EC / DSA / OpenSSH PEM private-key header lines.
-const PAT_PEM_TYPED: &str = r"-----BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE KEY-----";
+pub(crate) const PAT_PEM_TYPED: &str = r"-----BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE KEY-----";
 
 /// Pattern 2: PKCS#8 generic private-key PEM header.
-const PAT_PEM_GENERIC: &str = r"-----BEGIN PRIVATE KEY-----";
+pub(crate) const PAT_PEM_GENERIC: &str = r"-----BEGIN PRIVATE KEY-----";
 
 /// Pattern 3: High-entropy string literal assigned to a secret-named
 /// variable. Anchored to `secret`, `token`, `password`, or `api_key`
@@ -38,7 +42,7 @@ const PAT_PEM_GENERIC: &str = r"-----BEGIN PRIVATE KEY-----";
 /// credential-charset characters. Matches Python, JS/TS, and Rust literal
 /// assignment patterns. Single-quoted strings are excluded to avoid false
 /// positives on SQL fragments.
-const PAT_SECRET_ASSIGN: &str =
+pub(crate) const PAT_SECRET_ASSIGN: &str =
     r#"(?i)(secret|token|password|api_key)\s*=\s*"[A-Za-z0-9+/=_\-]{20,}""#;
 
 // ---------------------------------------------------------------------------

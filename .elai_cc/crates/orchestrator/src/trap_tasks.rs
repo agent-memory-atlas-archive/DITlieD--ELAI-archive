@@ -97,28 +97,27 @@ impl TrapPattern {
     }
 }
 
-/// F-11: scan a LIVE candidate (its `config_blob` bytes + evaluation log) for
-/// reward-hacking trap signatures and return the FIRST matching
-/// [`TrapPattern`], or `None` when the candidate is clean.
+/// H-44 ADVISORY ONLY: keyword-grep first-pass for known trap signatures.
 ///
-/// This is the killer-risk #3 fix: the E-7 darwin-loop CLI scored traps on a
-/// STATIC `TrapPattern` array decoupled from the candidate, which is theatre.
-/// F-11 threads the REAL candidate through this matcher so a candidate that
-/// edits markers / fabricates test logs / captures the verifier is caught
-/// BEFORE admit.
+/// **DOWNGRADED to `KeywordFallback` advisory as of H-44 (SCHEMA_VERSION 222).**
+/// The `darwin_admit_loop` guard chain now routes candidates through
+/// `trap_behavioral::detect_trap_behavior` first (three behavioral detection
+/// legs); this function is called as a cheap advisory AFTER the behavioral
+/// legs and ONLY emits a `KeywordFallback` SSB kind — it is NEVER the sole
+/// blocking signal (VD-2: keyword proxy is gameable by construction, Skalse
+/// 2209.13085). A keyword-free behavioral hack passes this function untouched.
+///
+/// F-11 original intent: scan a LIVE candidate (its `config_blob` bytes +
+/// evaluation log) for reward-hacking trap signatures and return the FIRST
+/// matching [`TrapPattern`], or `None` when the candidate is clean.
 ///
 /// Detection is substring-based over a lossy-UTF-8 lowercase view of the
-/// candidate bytes AND the eval log: each pattern carries a set of signature
-/// phrases (the snake-case wire label PLUS natural-language markers the DGM
-/// Sakana blog + Krakovna spreadsheet document). It is intentionally
-/// CONSERVATIVE (necessary-not-sufficient per the wiring doctrine's
-/// "name-grep is unsound" note): a real adversary may evade it, but a positive
-/// hit is a hard reject. The matcher NEVER returns a false reject on a clean
-/// config (the signatures are reward-hacking-specific, not generic config
-/// vocabulary).
+/// candidate bytes AND the eval log (necessary-not-sufficient per the wiring
+/// doctrine's "name-grep is unsound" note). The behavioral legs in
+/// `trap_behavioral.rs` are the load-bearing backstop; this is the cheap
+/// first-pass advisory.
 ///
-/// Determinism: pure function, no clock/RNG/IO; the same inputs always yield
-/// the same verdict (required for the deterministic offline smoke).
+/// Determinism: pure function, no clock/RNG/IO.
 #[must_use]
 pub fn score_candidate_for_traps(config_blob: &[u8], eval_log: &str) -> Option<TrapPattern> {
     let haystack = format!(

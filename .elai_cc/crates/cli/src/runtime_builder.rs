@@ -283,6 +283,21 @@ pub(crate) fn build_runtime_with_plugin_state(
 
     let backend_config_owned = backend_config.cloned();
 
+    // H-3: activate the focus-tunnel StreamingValidator (early-abort on lazy /
+    // truncation patterns). GATED on ELAI_FOCUS_TUNNEL_EXECUTE — default-OFF until the
+    // over-abort rate is bounded on >=3 live runs (GD-4); registered in
+    // wire-dark-allowlist.toml (R9). Generic default config is telemetry-poor (the
+    // per-BabyStepSpec config is the focus_tunnel EXECUTE-path follow-on).
+    let streaming_validator = if std::env::var("ELAI_FOCUS_TUNNEL_EXECUTE").as_deref() == Ok("1") {
+        Some(Arc::new(std::sync::Mutex::new(
+            elai_orchestrator::focus_tunnel::StreamingValidator::new(
+                elai_orchestrator::focus_tunnel::StreamingValidatorConfig::default(),
+            ),
+        )))
+    } else {
+        None
+    };
+
     let runtime_client = RuntimeClient {
         runtime: tokio_runtime,
         client: client_builder,
@@ -303,7 +318,15 @@ pub(crate) fn build_runtime_with_plugin_state(
         // B-28 WIRING-2 (item G): focus-tunnel StreamingValidator is opt-in;
         // None preserves the legacy fast path. Production wire-up lands
         // when `drive_task` plumbs the validator through.
-        streaming_validator: None,
+        streaming_validator,
+        // H-2: cross-turn cache-prefix hashes, seeded zero (turn 1 is always a
+        // cache MISS by design — bp.valid is false until a second identical turn).
+        last_cache_prefix_hashes: std::sync::Mutex::new([0, 0]),
+        // H-3: SSB handle for the streaming early-abort emitter.
+        streaming_ssb: ssb.clone(),
+        // H-34: per-turn MCP tool-set injector. Cloned from the same mcp_state
+        // that the CliToolExecutor uses so both share the same McpServerManager.
+        mcp_state_for_injector: mcp_state.clone(),
     };
 
     // Load elai_cc.toml from the working directory. Defaults are used when absent.
@@ -370,6 +393,35 @@ pub(crate) fn build_runtime_with_plugin_state(
             Err(e) => eprintln!("[warn] session telemetry disabled: {e}"),
         }
     }
+    // WIRE-DARK[C-47]: the case-based calibration SSB emitter
+    // (`OrchestratorCaseBaseSsbEmitter`, orchestrator/src/lib.rs:1758 ->
+    // tool_calibration_ssb_adapter.rs:37) is NOT attachable from this builder.
+    // Two structural prerequisites are absent, both in files outside this
+    // module's ownership boundary:
+    //   (1) `ElaiRuntimeConfig` (crate::runtime_config) carries no `tool_use`
+    //       field, so the `[tool_use.case_base]` section at elai_cc.toml:1002
+    //       (enabled/lru_cap/hint_suppression/min_total_calls/
+    //       error_rate_threshold) is parsed by nothing. There is no
+    //       `cfg.tool_use.case_base.enabled` to branch on here.
+    //   (2) `build_runtime_with_plugin_state` constructs `ConversationRuntime`
+    //       (the interactive REPL path) and never builds a `DefaultMcpBridge`.
+    //       The bridge that carries the calibration registry is constructed
+    //       per-dispatch inside `McpClientDispatch::dispatch_tool_call`
+    //       (orchestrator/src/dispatch/mcp.rs:308-333, the `with_tool_gate`
+    //       + `with_calibration_registry` chain). That is the real site for the
+    //       `.with_calibration_ssb_emitter(...)` SSB-emitter half, with the
+    //       `OrchestratorCaseBaseSsbEmitter` constructed where
+    //       `McpClientDispatch::new` is called (run_subcommand.rs:260) and
+    //       stored on the dispatch struct. None of those three files are in
+    //       this builder's scope.
+    // Promotion path: add a `tool_use` field to `ElaiRuntimeConfig` (with a
+    // `CaseBaseConfig` carrying the five toml keys), thread the emitter field
+    // through `McpClientDispatch`, and call `.with_calibration_ssb_emitter`
+    // alongside `.with_calibration_registry` in dispatch/mcp.rs. Tracked in
+    // wire-dark-allowlist.toml under owner=C-47 (allowlist row owned by the
+    // allowlist agent in this parallel run). The C-47b registry/persist half is
+    // already wired (run_subcommand.rs:198-279); only the SSB-emitter half is
+    // dark.
     Ok((BuiltRuntime::new(runtime, plugin_registry, mcp_state), ssb))
 }
 
@@ -614,19 +666,106 @@ pub(crate) async fn install_production_agent_pool(
                 elai_providers::AnthropicClient::new("local-dummy").with_base_url(base_url);
             build_agent_pool_rpc_server(client, wiring.ssb.clone())
         };
-    let executor = elai_orchestrator::build_default_baby_step_executor(
-        OsEntropy,
-        agent_bin.clone(),
-        ipc_dir.clone(),
-        gateway,
-        rpc_server,
-    );
+    // E-15: when ELAI_SANDBOX_FIRECRACKER_ENABLE is set (default-OFF), install
+    // the Firecracker hot snapshot-restore pool + the live SSB writer so the
+    // firecracker dispatch path emits its off-agent
+    // `sandbox_backend_selected` / `agent_forked_from_snapshot` rows. The
+    // session dir (parent of the IPC dir) roots the snapshot store. With the
+    // flag unset the plain builder keeps the pool None and the path stays
+    // dead. Registered in wire-dark-allowlist.toml (R9) under E-15.
+    let executor = if elai_orchestrator::runtime_config::sandbox_firecracker_enabled() {
+        let session_dir = ipc_dir
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| ipc_dir.clone());
+        tracing::info!(
+            session_dir = %session_dir.display(),
+            "agent pool: E-15 firecracker sandbox pool ENABLED via ELAI_SANDBOX_FIRECRACKER_ENABLE"
+        );
+        elai_orchestrator::build_default_baby_step_executor_with_sandbox(
+            OsEntropy,
+            agent_bin.clone(),
+            ipc_dir.clone(),
+            gateway,
+            rpc_server,
+            wiring.ssb.clone(),
+            session_dir,
+        )
+    } else {
+        elai_orchestrator::build_default_baby_step_executor(
+            OsEntropy,
+            agent_bin.clone(),
+            ipc_dir.clone(),
+            gateway,
+            rpc_server,
+        )
+    };
     wiring.baby_step_executor = Some(executor);
     tracing::info!(
         agent_bin = %agent_bin.display(),
         "agent pool: production AgentPoolBabyStepExecutor installed"
     );
     Ok(())
+}
+
+/// B-28 WIRING-2 (item E2-DIFF) — build the production `BufferEditor` for the
+/// focus-tunnel DIFF execution branch and assign it onto
+/// [`RuntimeWiring::buffer_editor`]. The only production `BufferEditor` impl is
+/// `InProcessToolDispatcher` (crates/tools/src/dispatcher.rs); `orchestrator`
+/// cannot depend on `tools`, so the CLI is the closest crate that owns both the
+/// concrete dispatcher and the wiring struct. With this slot `Some`,
+/// [`apply_task_runner_wiring`] threads it onto `TaskRunnerConfig::buffer_editor`
+/// and the DIFF branch in `run_diff_step_with_provider` applies parsed hunks
+/// through the real 3-tier matcher instead of falling back to STRUCTURED.
+///
+/// The dispatcher built here is a standalone instance dedicated to hunk
+/// application: its `apply_edits_to_buffer` path uses only `try_edit_tiers` /
+/// `best_line_match` and never touches the `TieredValidator`, so the validator's
+/// integration runner is a `NoOp` (the agent-pool validation tiers are a
+/// separate concern wired in `build_agent_pool_rpc_server`). Decoupling from the
+/// agent-pool path is deliberate: DIFF-mode hunk application must work even when
+/// the agent binary is absent and `install_production_agent_pool` soft-falls back
+/// to the synthetic executor.
+pub(crate) fn install_buffer_editor(wiring: &mut RuntimeWiring) {
+    struct NoOpIntegrationRunner;
+    impl elai_tools::tiered_validation::IntegrationCommandRunner for NoOpIntegrationRunner {
+        fn run_integration<'a>(
+            &'a self,
+            _level: &'a str,
+            _dir: &'a Path,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = elai_tools::tiered_validation::IntegrationRunOutcome,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                elai_tools::tiered_validation::IntegrationRunOutcome {
+                    passed: false,
+                    rules_fired: 0,
+                    stderr_snippet: Some(
+                        "integration tier not used on the buffer-editor DIFF path \
+                         (NoOpIntegrationRunner)"
+                            .to_string(),
+                    ),
+                }
+            })
+        }
+    }
+    let validator = elai_tools::dispatcher::default_validator(
+        Arc::new(NoOpIntegrationRunner),
+        "rust",
+    );
+    let editor: Arc<dyn elai_orchestrator::focus_tunnel::BufferEditor> = Arc::new(
+        elai_tools::dispatcher::InProcessToolDispatcher::new(Arc::new(validator)),
+    );
+    wiring.buffer_editor = Some(editor);
+    tracing::info!(
+        "B-28: production InProcessToolDispatcher buffer_editor installed; \
+         focus-tunnel DIFF branch will apply hunks through the 3-tier matcher"
+    );
 }
 
 /// build the ProductionAgentRpcServer + InProcessToolDispatcher chain shared
@@ -644,6 +783,13 @@ fn build_agent_pool_rpc_server(
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(4096);
+    // G-1 (s-56068 fix B1): retain a handle to the live SSB before it is moved
+    // into the IpcToolDispatcherAdapter below, so the taint-flow gate's
+    // `emit_taint_flow` off-agent artifact (SsbPayload::TaintFlow) can reach a
+    // REAL Ssb via `.with_ssb(...)` on the server builder. Without this clone
+    // the only `ssb` binding is consumed by the adapter and the server's
+    // `self.ssb` stays `None`, leaving the taint_flow row wire-dark.
+    let ssb_for_server = Arc::clone(&ssb);
     let dispatcher: Arc<dyn elai_core::tool_dispatcher::ToolDispatcher> = {
         struct NoOpIntegrationRunner;
         impl elai_tools::tiered_validation::IntegrationCommandRunner for NoOpIntegrationRunner {
@@ -739,7 +885,10 @@ fn build_agent_pool_rpc_server(
     )
     .with_system_prompt(
         elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
-    );
+    )
+    // G-1 (s-56068 fix B1): wire the live SSB so the taint-flow gate can emit
+    // its off-agent SsbPayload::TaintFlow row on a blocked untrusted->sink flow.
+    .with_ssb(ssb_for_server);
     if let Some(adapter) = symbol_graph_adapter {
         server = server.with_symbol_graph_adapter(adapter);
     }

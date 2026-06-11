@@ -327,7 +327,10 @@ fn read_state_lists(
     };
     #[derive(serde::Deserialize)]
     struct TomlManifest {
-        gate: std::collections::HashMap<String, TomlStateEntry>,
+        // BTreeMap (not HashMap) per CLAUDE.md coding standards. Deserialize
+        // target only; values are drained into Vecs by key, never re-serialized
+        // and never iterated in an order-dependent way (behavior-neutral swap).
+        gate: std::collections::BTreeMap<String, TomlStateEntry>,
     }
     #[derive(serde::Deserialize)]
     struct TomlStateEntry {

@@ -177,6 +177,13 @@ pub struct MemoryFact {
     pub evidence_pointers: Vec<String>,
     /// Optional `fact_id` of the row that supersedes this one.
     pub superseded_by: Option<String>,
+    /// H-32 VALIDITY axis — last wall-clock ms when the cited DKG symbol was
+    /// confirmed to still resolve. Distinct from `last_observed_at_ms`
+    /// (RECENCY). `None` on Tier-B (Preference-class) facts; `None` on a
+    /// Tier-A fact that has never been validated (ages from `valid_from_ms`
+    /// for TTL purposes). Updated by `get_relevant_facts` on a valid
+    /// re-check (stamps the TTL-reset). Never deleted.
+    pub last_validated_at_ms: Option<u128>,
     /// C-48 SafeHarbor trust tier. T3 = most pessimistic default (migration assigns T3
     /// to all pre-C-48 rows). Safety-critical queries exclude T2/T3.
     pub trust_tier: TrustTier,
@@ -268,6 +275,7 @@ mod cold_wiring_tests {
             superseded_by: None,
             trust_tier: TrustTier::T0UserDirect,
             provenance: Provenance::user_direct("cli"),
+            last_validated_at_ms: None,
         }
     }
 

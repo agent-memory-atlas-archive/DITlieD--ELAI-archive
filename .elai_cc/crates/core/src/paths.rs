@@ -46,6 +46,13 @@ pub const DKG_DB_FILENAME: &str = "dkg.db";
 /// Filename of the persisted vector index (single JSON file per project).
 pub const VECTORS_FILE_NAME: &str = "vector_index.json";
 
+/// 1C-R2: filename of the dual-vector embedding cache (SQLite) inside the
+/// indexes dir. Sibling of [`VECTORS_FILE_NAME`]; the cache stores
+/// per-content-hash dual vectors so a re-index reuses prior embeddings and
+/// `VectorCache::invalidate_file` can evict exactly the rows a rewritten
+/// file produced.
+pub const VECTOR_CACHE_DB_FILENAME: &str = "vector_cache.db";
+
 /// Subdirectory holding session persistence artifacts.
 pub const SESSIONS_DIR_NAME: &str = "sessions";
 
@@ -154,6 +161,20 @@ pub fn vectors_db_path(project_root: &Path) -> PathBuf {
         .join(ELAI_DATA_DIR_NAME)
         .join(INDEXES_DIR_NAME)
         .join(VECTORS_FILE_NAME)
+}
+
+/// `<project_root>/.elai_cc/indexes/vector_cache.db`
+///
+/// 1C-R2: the dual-vector embedding cache lives in the same indexes
+/// directory as the vector index and DKG/BM25 dbs, so it is discovered and
+/// cleaned alongside them. Derived the same way as [`vectors_db_path`] so
+/// the cache never escapes the project's data dir.
+#[inline]
+pub fn vector_cache_db_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(ELAI_DATA_DIR_NAME)
+        .join(INDEXES_DIR_NAME)
+        .join(VECTOR_CACHE_DB_FILENAME)
 }
 
 /// `<project_root>/.elai_cc/sessions`

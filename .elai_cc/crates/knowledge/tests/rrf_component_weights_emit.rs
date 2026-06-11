@@ -81,6 +81,11 @@ impl KnowledgeSsbSink for RecordingSink {
         _: elai_knowledge::knowledge_ssb_sink::DkgRebuildCompleteEvent,
     ) {
     }
+    fn emit_tree_sitter_grammar_event(
+        &self,
+        _: elai_knowledge::knowledge_ssb_sink::TreeSitterGrammarEvent,
+    ) {
+    }
 }
 
 #[test]

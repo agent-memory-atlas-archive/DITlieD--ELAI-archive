@@ -1,0 +1,58 @@
+(* C-26 — function-signature EBNF grammar.
+ * Constrains executor output to a single well-formed function signature
+ * (no body) for Rust or Python.  This is the executor role's default
+ * Grammar target per default_decoding_for (providers/src/decoding.rs):
+ * the model emits the header the human asked for without hallucinating a
+ * body or prose around it; the body is filled on a follow-up turn.
+ *
+ * Covers:
+ *   Rust   : `fn name(arg: Type, ...) -> RetType`  (optional `pub`, `async`)
+ *   Python : `def name(arg: Type, ...) -> RetType:` (optional `async`)
+ *
+ * Type expressions are kept deliberately permissive (generics, refs,
+ * Option/Result wrappers, dotted paths) so real-world signatures parse;
+ * the grammar enforces SHAPE (keyword, name, paren-balanced param list,
+ * optional return arrow), not a full type system.
+ *
+ * Resolution: caller joins this relative path against the grammars/ dir
+ * before forwarding to the sidecar (same as file_plan.ebnf).
+ *)
+
+function_signature = rust_sig | py_sig ;
+
+(* ---- Rust ---- *)
+rust_sig    = ( "pub" ws1 )? ( "async" ws1 )? "fn" ws1 ident ws
+              "(" ws params? ws ")"
+              ( ws "->" ws type_expr )? ;
+params      = param ( ws "," ws param )* ( ws "," )? ;
+param       = ( "&" ( "mut" ws1 )? )? ident ws ":" ws type_expr
+            | "self" | "&self" | "&mut self" ;
+
+(* ---- Python ---- *)
+py_sig      = ( "async" ws1 )? "def" ws1 ident ws
+              "(" ws py_params? ws ")"
+              ( ws "->" ws type_expr )? ws ":" ;
+py_params   = py_param ( ws "," ws py_param )* ( ws "," )? ;
+py_param    = ident ( ws ":" ws type_expr )? ( ws "=" ws default )? ;
+default     = ident | number | string ;
+
+(* ---- shared type expression (shape-only) ---- *)
+type_expr   = "&" type_expr
+            | type_path generic?
+            | "(" ws ( type_expr ( ws "," ws type_expr )* )? ws ")" ;
+type_path   = ident ( "::" ident )* | ident ( "." ident )* ;
+generic     = "<" ws type_expr ( ws "," ws type_expr )* ws ">" ;
+
+(* ---- lexical ---- *)
+ident       = ( letter | "_" ) ( letter | digit | "_" )* ;
+string      = '"' ( ? any char except '"' ? )* '"' ;
+number      = digit+ ( "." digit+ )? ;
+letter      = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j"
+            | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t"
+            | "u" | "v" | "w" | "x" | "y" | "z"
+            | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J"
+            | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T"
+            | "U" | "V" | "W" | "X" | "Y" | "Z" ;
+digit       = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+ws          = ( " " | "\t" | "\n" | "\r" )* ;
+ws1         = ( " " | "\t" )+ ;

@@ -18,9 +18,12 @@ pub(crate) fn parse_memory_subcommand_args(rest: &[String]) -> Result<CliAction,
         "inspect" | "show" => MemorySubcommandKind::Inspect,
         "insert" | "add" => MemorySubcommandKind::Insert,
         "delete" | "forget" => MemorySubcommandKind::Delete,
+        "pin" => MemorySubcommandKind::Pin,
+        "unpin" => MemorySubcommandKind::Unpin,
+        "provenance" | "prov" => MemorySubcommandKind::Provenance,
         other => {
             return Err(format!(
-                "unknown `memory` sub-command: '{other}' (expected list | inspect | insert | delete)"
+                "unknown `memory` sub-command: '{other}' (expected list | inspect | insert | delete | pin | unpin | provenance)"
             ));
         }
     };

@@ -34,6 +34,7 @@ fn make_fact(
         superseded_by: None,
         trust_tier: TrustTier::T1CodebaseDerived,
         provenance: Provenance::codebase_derived("test"),
+        last_validated_at_ms: None,
     }
 }
 

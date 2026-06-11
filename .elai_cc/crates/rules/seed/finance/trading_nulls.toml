@@ -1,0 +1,78 @@
+# H-22 trading null-test gate -- LOCKED COMPOSITE seed.
+# mutable=0: immutable seed row, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS;
+#   "trading" is detected by ["trading","backtest","signal","pipeline"] path
+#   keywords in rule_engine.rs:206-214).
+# Default-ON; kill-switch: ELAI_TRADING_NULL_GATE_DISABLE env var only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_trading_nulls_rules()
+#
+# Grounding:
+#   - Ojala & Garriga (2010) "Permutation Tests for Studying Classifier
+#     Performance", JMLR 11:1833-1863. The p-value estimator p=(C+1)/(K+1)
+#     (sklearn permutation_test_score, Test-1 label-permutation semantics).
+#     The +1s make p never exactly 0 and conservative (Phipson & Smyth 2010,
+#     PMC6405018). The K-floor ceil(1/alpha)-1 is the resolution bound:
+#     an under-powered null is not evidence of significance.
+#   - Block permutation (preserve return autocorrelation): naive iid shuffle is
+#     anticonservative on time-series (Ojala & Garriga block-permutation note).
+#   - Bonferroni N-correction over the H-17 trial count N: family-wise error
+#     inflates ~ N*alpha; the corrected bar is alpha/N. N from H-17
+#     (trial_ledger::trial_count; TrialCountMissing => Block, TD-1).
+#   - DEFERRED CostMonotoneConcave: the sqrt-law of market impact
+#     (Toth et al. 2011, arXiv:1105.1694) holds at INSTITUTIONAL scale; retail
+#     trades (< ~0.1% ADV) are in the LINEAR regime (Bucci et al. 2019,
+#     arXiv:1811.05230). Not shipped locked this run -- size-gated future relation.
+#   - Metamorphic-testing reference: Segura et al. (2016) "A Survey on
+#     Metamorphic Testing", IEEE TSE 42(9):805-824.
+# See: workflow/reasoning/H-22-decisions.md for the locked alpha discussion.
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding
+# is performed by project_rule_seeder.rs::seed_trading_nulls_rules() which
+# inserts the row directly. The TOML is authoritative for the alpha value; the
+# Rust code implements it as the named constant trading_null_gate::ALPHA. The
+# gate does NOT query this row at decision time (it is documentation + the
+# vibesec blake3 seed-integrity baseline).
+
+[[rules]]
+rule_id = "FIN-NULL-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "Strategy edge must be significant against a block-permutation null (p < alpha/N)"
+description = """
+LOCKED COMPOSITE trading null-test gate (H-22, T-6).
+Blocks strategy promotion unless the observed edge is significant against a
+block-permutation null after the selection correction:
+  1. p = (C+1)/(K+1): permutation p-value, C = #{null_stat >= observed},
+     K = number of block permutations (Ojala & Garriga 2010, sklearn form).
+  2. p < alpha/N: the edge sits in the tail of the null AFTER the Bonferroni
+     correction over N searched trials (N from the H-17 trial ledger). An edge
+     with p >= alpha/N sits inside the null band: it survived the null (it is
+     indistinguishable from a permuted version of itself) => overfit => BLOCK.
+  3. K >= ceil(1/alpha)-1: the K-floor. Below it, the p-value resolution
+     1/(K+1) is coarser than alpha; an under-powered null is not evidence of
+     significance => fail-closed BLOCK.
+  4. N PRESENT: trial_count must not be TrialCountMissing (TD-1 fail-closed).
+  5. Series present + statistic finite: missing/degenerate => BLOCK (R1/R2).
+Block permutation preserves return autocorrelation (iid shuffle is
+anticonservative on time-series). The verdict is DETERMINISTIC under ELAI_SEED
+(no LLM input, TD-3). alpha is the ONLY tunable and is LOCKED (mutable=0,
+lifecycle-immune, TD-2). The relations are mutation-tested by H-27 (TD-4).
+DEFERRED: CostMonotoneConcave (sqrt-law of impact is institutional-scale only;
+retail is the linear regime). Final capital allocation remains human Layer-3
+(TD-5: the null test is necessary, not sufficient).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+# The COMPOSITE predicate wraps one MetricGate child (AND operator).
+# Note: TrialCountMissing, the K-floor, and the Bonferroni alpha/N correction
+# are enforced at the Rust gate level BEFORE the rules engine evaluates the
+# scalar p-value. The MetricGate child operates on the pre-computed p-value
+# that only exists when those guards pass.
+type = "composite"
+operator = "and"
+children = [
+    { type = "metric_gate", metric_name = "permutation_p_value", operator = "lt", threshold = 0.05, source = "trading_null_gate" },
+]

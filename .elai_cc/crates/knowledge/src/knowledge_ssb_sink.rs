@@ -155,6 +155,47 @@ pub struct DkgRebuildCompleteEvent {
     pub node_count: u32,
 }
 
+// ---------------------------------------------------------------------------
+// E-42: tree-sitter grammar health events
+// ---------------------------------------------------------------------------
+
+/// E-42: discriminator for [`TreeSitterGrammarEvent`]. Maps 1:1 onto
+/// `TreeSitterGrammarEventKind` in `elai_orchestrator::ssb` (kept here so the
+/// knowledge crate stays SSB-payload-agnostic while the adapter in the
+/// orchestrator crate does the translation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeSitterGrammarEventKind {
+    /// A grammar's reported ABI version is outside the accepted range
+    /// (`[14, 15]` per the May 2026 maturity table). `language_id`
+    /// carries the offending language; `detail` carries the raw version
+    /// string (e.g. `"version=13"`).
+    AbiProbeMismatch,
+    /// Svelte runes detected + ERROR/MISSING node ratio after parse.
+    /// `detail` carries the ratio as a decimal string (e.g. `"0.12"`).
+    SvelteRunesParseHealth,
+    /// A Tier-B grammar was successfully registered. `language_id` is
+    /// the language id; `detail` is `None`.
+    TierBGrammarLoaded,
+    /// A source file was skipped because its byte count exceeds the
+    /// 2 MiB ceiling guard. `detail` carries the byte count as a string.
+    TreeSitterSkippedLargeFile,
+}
+
+/// E-42: typed event emitted by `DkgEngine::build_graph` when
+/// `ELAI_TREE_SITTER_GRAMMARS_ENABLE=1`. One row per mismatch, per
+/// large-file skip, or per Svelte runes-health classification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeSitterGrammarEvent {
+    /// Which sub-event fired (maps to the SSB 4-arm discriminator).
+    pub kind: TreeSitterGrammarEventKind,
+    /// Grammar language id (e.g. `"kotlin"`). `None` for large-file
+    /// events where the association is with a file, not a grammar.
+    pub language_id: Option<String>,
+    /// Free-form details string (e.g. error ratio, byte count, ABI
+    /// version). `None` when not applicable.
+    pub detail: Option<String>,
+}
+
 /// C-1 knowledge-side SSB sink.
 ///
 /// Implementations forward typed events to the orchestrator's
@@ -193,6 +234,11 @@ pub trait KnowledgeSsbSink: Send + Sync {
     /// (success OR failure). Bracketed with
     /// [`Self::emit_dkg_rebuild_started`].
     fn emit_dkg_rebuild_complete(&self, event: DkgRebuildCompleteEvent);
+    /// E-42: emitted by `DkgEngine::build_graph` for ABI probe mismatches,
+    /// large-file skips, and Svelte runes health rows. Gated on
+    /// `ELAI_TREE_SITTER_GRAMMARS_ENABLE=1` at the call site; the sink
+    /// itself is unconditional.
+    fn emit_tree_sitter_grammar_event(&self, event: TreeSitterGrammarEvent);
 }
 
 /// Default no-op sink used in tests and when SSB is not configured.
@@ -210,6 +256,7 @@ impl KnowledgeSsbSink for NoopKnowledgeSsbSink {
     fn emit_pagerank_run(&self, _event: PagerankRunEvent) {}
     fn emit_dkg_rebuild_started(&self, _event: DkgRebuildStartedEvent) {}
     fn emit_dkg_rebuild_complete(&self, _event: DkgRebuildCompleteEvent) {}
+    fn emit_tree_sitter_grammar_event(&self, _event: TreeSitterGrammarEvent) {}
 }
 
 /// Convenience constructor for the default no-op sink.
@@ -261,6 +308,7 @@ mod tests {
         fn emit_pagerank_run(&self, _event: PagerankRunEvent) {}
         fn emit_dkg_rebuild_started(&self, _event: DkgRebuildStartedEvent) {}
         fn emit_dkg_rebuild_complete(&self, _event: DkgRebuildCompleteEvent) {}
+        fn emit_tree_sitter_grammar_event(&self, _event: TreeSitterGrammarEvent) {}
     }
 
     #[test]

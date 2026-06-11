@@ -1,7 +1,19 @@
 # Phase 4E: Pipeline Factory L2 — metrics
 # Generated: 2026-04-16
+# Reconciled: 2026-06-05 (base-phase-4 wiring fix; mirrors primary copy at
+#   .elai_cc/metrics/phase_4E.toml)
+#
+# STATUS: timings are BLOCKED_MEASUREMENT. The [assembly_time_ms] values and the
+# [targets].assembly_10_phase_actual_ms below are all zero — they were never
+# populated by a real bench run, so the prior `assembly_target_met = true` was a
+# fabricated pass (an actual of 0ms cannot truthfully "meet" a 1000ms target).
+# Per the no-fabrication rule, the met/actual fields are marked status strings
+# instead of asserting a pass we did not measure. To populate: run the phase-4E
+# pipeline-assembly bench (PipelineBuilder over 1/5/10/50/100-phase inputs) and
+# write the measured wall-clock here, then flip *_status to "MEASURED".
 
 [assembly_time_ms]
+# BLOCKED_MEASUREMENT — zero values are placeholders, not measured timings.
 phase_1 = 0
 phase_5 = 0
 phase_10 = 0
@@ -20,7 +32,7 @@ coverage_ratio = 1.20
 
 [targets]
 assembly_10_phase_target_ms = 1000
-assembly_10_phase_actual_ms = 0
-assembly_target_met = true
+assembly_10_phase_actual_ms = 0          # BLOCKED_MEASUREMENT — not yet benched
+assembly_target_status = "BLOCKED_MEASUREMENT"   # was a fabricated `met=true`
 repair_success_target = 0.50
-repair_success_met = true
+repair_success_met = true                # repair corpus IS measured (10 cases)

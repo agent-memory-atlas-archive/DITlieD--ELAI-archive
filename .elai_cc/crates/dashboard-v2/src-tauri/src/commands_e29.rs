@@ -71,11 +71,42 @@ pub struct TranscriptRow {
 }
 
 /// Filter options for [`ssb_transcript`]. All fields are optional.
+///
+/// H-49 cursor extensions: `before_seq` / `after_seq` enable keyset pagination
+/// for virtual-scroll ("load older on scroll-up" pattern). `total_count` requests
+/// the total row count in the response header (client uses this to show progress).
+/// `first_seq` requests the lowest available seq for the session (used by
+/// "Jump to start" to seek all the way back).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptFilter {
     pub action_type_whitelist: Vec<String>,
     pub agent_role: Option<String>,
     pub limit: Option<usize>,
+    /// H-49: return rows with seq < before_seq (page backwards / load older).
+    pub before_seq: Option<i64>,
+    /// H-49: return rows with seq > after_seq (page forwards / load newer).
+    pub after_seq: Option<i64>,
+    /// H-49: if true, include `total_count` in the response metadata.
+    pub total_count: Option<bool>,
+    /// H-49: if true, include `first_seq` in the response metadata.
+    pub first_seq: Option<bool>,
+}
+
+/// Paginated response for [`ssb_transcript`] (H-49 cursor extension).
+///
+/// When the caller provides `before_seq`/`after_seq`, the response carries
+/// cursor fields so the frontend knows whether more pages exist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptPage {
+    pub rows: Vec<TranscriptRow>,
+    /// Total row count for the session (None unless filter.total_count == true).
+    pub total_count: Option<usize>,
+    /// Lowest seq available for the session (None unless filter.first_seq == true).
+    pub first_seq: Option<i64>,
+    /// True when there are older rows before the first row in this page.
+    pub has_older: bool,
+    /// True when there are newer rows after the last row in this page.
+    pub has_newer: bool,
 }
 
 /// Patch struct as it crosses the IPC boundary -- matches
@@ -213,6 +244,142 @@ pub async fn ssb_transcript(
     // first (matches LangChain / Laminar transcript convention).
     out.sort_by_key(|r| r.seq);
     Ok(out)
+}
+
+/// H-49 — paginated transcript fetch (cursor-based, replacing the ENTRY_LIMIT=50 cap).
+///
+/// Supports `before_seq` / `after_seq` for virtual-scroll "load older on
+/// scroll-up" + "Jump to start" patterns. The `total_count` and `first_seq`
+/// response fields let the frontend show pagination progress.
+///
+/// Cross-lang pair: TranscriptDrawer.svelte virtual-scroll + stub.ts.
+#[tauri::command]
+pub async fn ssb_transcript_paged(
+    state: State<'_, AppState>,
+    session_id: String,
+    filter: Option<TranscriptFilter>,
+) -> Result<TranscriptPage, String> {
+    let viewer = match &state.viewer {
+        Some(v) => v.clone(),
+        None => {
+            return Ok(TranscriptPage {
+                rows: Vec::new(),
+                total_count: None,
+                first_seq: None,
+                has_older: false,
+                has_newer: false,
+            })
+        }
+    };
+    let filter = filter.unwrap_or_default();
+    let limit = filter
+        .limit
+        .unwrap_or(TRANSCRIPT_DEFAULT_LIMIT)
+        .min(TRANSCRIPT_MAX_LIMIT);
+
+    let whitelist: Vec<&str> = if filter.action_type_whitelist.is_empty() {
+        vec!["phase_transition", "tool_result", "finding", "claim"]
+    } else {
+        filter
+            .action_type_whitelist
+            .iter()
+            .map(|s| s.as_str())
+            .collect()
+    };
+
+    let content_enabled = otel_trace_content_enabled();
+
+    // Collect all matching rows for this session (sorted by seq ASC).
+    let mut all_rows: Vec<TranscriptRow> = Vec::new();
+    for at in &whitelist {
+        let rows = viewer
+            .recent_rows_of_type(at, TRANSCRIPT_MAX_LIMIT)
+            .map_err(|e| format!("ssb_viewer error: {e}"))?;
+        for row in rows {
+            let row_session = row
+                .payload_json
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if let Some(rs) = &row_session {
+                if !rs.is_empty() && rs != &session_id {
+                    continue;
+                }
+            }
+            let role = match row.action_type.as_str() {
+                "phase_transition" => "system",
+                "tool_result" => "tool",
+                "finding" | "claim" => "assistant",
+                _ => "system",
+            }
+            .to_string();
+            let body = if content_enabled {
+                row.payload_json
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| row.payload_json.to_string())
+            } else {
+                String::new()
+            };
+            all_rows.push(TranscriptRow {
+                seq: row.seq,
+                ts_ms: row.ts,
+                action_type: row.action_type,
+                agent_id: row.agent_id,
+                role,
+                body,
+                redacted: !content_enabled,
+            });
+        }
+    }
+
+    // Sort ascending by seq (oldest first — standard transcript order).
+    all_rows.sort_by_key(|r| r.seq);
+    all_rows.dedup_by_key(|r| r.seq);
+
+    // Compute first_seq before any cursor filtering.
+    let global_first_seq = all_rows.first().map(|r| r.seq);
+    let global_last_seq = all_rows.last().map(|r| r.seq);
+    let total = all_rows.len();
+
+    // Apply cursor filtering.
+    let filtered: Vec<TranscriptRow> = match (filter.before_seq, filter.after_seq) {
+        (Some(before), _) => all_rows
+            .into_iter()
+            .filter(|r| r.seq < before)
+            .collect(),
+        (_, Some(after)) => all_rows
+            .into_iter()
+            .filter(|r| r.seq > after)
+            .collect(),
+        (None, None) => all_rows,
+    };
+
+    // Take the last `limit` rows (most recent in the filtered window).
+    let start = filtered.len().saturating_sub(limit);
+    let page_rows: Vec<TranscriptRow> = filtered[start..].to_vec();
+
+    let page_first_seq = page_rows.first().map(|r| r.seq);
+    let page_last_seq = page_rows.last().map(|r| r.seq);
+
+    // has_older: there are rows older than the first row in this page.
+    let has_older = page_first_seq
+        .zip(global_first_seq)
+        .is_some_and(|(pf, gf)| pf > gf);
+
+    // has_newer: there are rows newer than the last row in this page.
+    let has_newer = page_last_seq
+        .zip(global_last_seq)
+        .is_some_and(|(pl, gl)| pl < gl);
+
+    Ok(TranscriptPage {
+        rows: page_rows,
+        total_count: filter.total_count.and_then(|t| t.then_some(total)),
+        first_seq: filter.first_seq.and_then(|f| f.then(|| global_first_seq).flatten()),
+        has_older,
+        has_newer,
+    })
 }
 
 /// Validate a replay patch against the C-44/D-9 frozen-surface

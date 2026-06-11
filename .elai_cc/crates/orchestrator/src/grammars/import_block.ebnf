@@ -1,0 +1,46 @@
+(* C-26 — import-block EBNF grammar.
+ * Constrains executor / designer output when emitting the leading import
+ * block of a Rust or Python source unit.  Keeps the model's first emitted
+ * lines structurally sound (one import per line, no prose) instead of
+ * drifting into free-form commentary before the first item.
+ *
+ * Covers two ecosystems with a shared line structure:
+ *   Rust   : `use a::b::c;`  /  `use a::{b, c};`  /  `use a::b as c;`
+ *   Python : `import a.b`  /  `from a.b import c, d`  /  `... as e`
+ *
+ * Used by the executor role's DecodingMode::Grammar when the active block
+ * is the import preamble.  Resolution: the caller (orchestrator dispatcher)
+ * joins this relative path against the grammars/ dir before forwarding to
+ * the sidecar, identical to file_plan.ebnf.
+ *)
+
+import_block = import_line ( newline import_line )* newline? ;
+import_line  = rust_use | py_import | py_from ;
+
+(* ---- Rust ---- *)
+rust_use   = "use" ws1 use_path use_tail? ws ";" ;
+use_path   = ident ( "::" ident )* ;
+use_tail   = ws "::" ws use_group
+           | ws1 "as" ws1 ident ;
+use_group  = "{" ws use_item ( ws "," ws use_item )* ws "}" ;
+use_item   = ident ( ws1 "as" ws1 ident )? | "*" ;
+
+(* ---- Python ---- *)
+py_import  = "import" ws1 dotted ( ws1 "as" ws1 ident )? ;
+py_from    = "from" ws1 dotted ws1 "import" ws1 py_names ;
+py_names   = py_name ( ws "," ws py_name )* ;
+py_name    = ident ( ws1 "as" ws1 ident )? | "*" ;
+dotted     = ident ( "." ident )* ;
+
+(* ---- shared lexical ---- *)
+ident      = ( letter | "_" ) ( letter | digit | "_" )* ;
+letter     = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j"
+           | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t"
+           | "u" | "v" | "w" | "x" | "y" | "z"
+           | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J"
+           | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T"
+           | "U" | "V" | "W" | "X" | "Y" | "Z" ;
+digit      = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+ws         = ( " " | "\t" )* ;
+ws1        = ( " " | "\t" )+ ;
+newline    = "\n" | "\r\n" ;

@@ -49,6 +49,7 @@ fn fact(id: &str, key: &str, value: serde_json::Value, t: u128) -> MemoryFact {
         last_observed_at_ms: t,
         evidence_pointers: vec!["sess".into(), "msg".into()],
         superseded_by: None,
+        last_validated_at_ms: None,
         trust_tier: TrustTier::T1CodebaseDerived,
         provenance: Provenance::user_direct("test"),
     }

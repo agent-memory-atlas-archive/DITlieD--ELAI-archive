@@ -1,4 +1,4 @@
-//! Shared State Board (SSB): inter-agent communication via SQLite WAL.
+﻿//! Shared State Board (SSB): inter-agent communication via SQLite WAL.
 //!
 //! Single-writer guarantee via `tokio::mpsc` channel. All writes serialized
 //! through one dedicated task. Reads served from a `deadpool-sqlite` async connection pool.
@@ -2906,7 +2906,126 @@ use crate::mast::MastMode;
 // from the pre-existing E-7 DarwinianGenerationCompleted action_type. TOTAL_-
 // VARIANTS delta: +1 (482 -> 483 in action_type_lock; F-13 already at 483 so
 // this bumps to 484). Session: s-6312. See workflow/reasoning/F-11-decisions.md.
-const SCHEMA_VERSION: i64 = 207;
+// D-5 closure BaiPromotionDecision (SCHEMA_VERSION 208): unified summary row
+// emitted by `bai::emit_bai_round_with_canary` after the per-decision
+// TemplatePromoted / TemplateCandidateRejected row. Carries (template_id,
+// decision, stage, evidence_pass, evidence_total, audit_id) so dashboards
+// can render the promotion verdict without joining across the three-row
+// sequence. action_type_lock.rs TOTAL_VARIANTS 517 -> 518.
+// H-32 (SCHEMA_VERSION 210): FactValidationFailed single flat beacon.
+// Emitted by the H-32 citation-validity gate when a Tier-A fact's DKG
+// citation fails to re-resolve. Carries (fact_id, citation, reason, evidence_blake3).
+// Producer: get_relevant_facts (read side, live_cli tick maintenance side).
+// Wire-dark until a Tier-A DomainKnowledge/Mistake fact with a dkg: pointer
+// is stored and then its cited symbol is renamed/deleted. TOTAL_VARIANTS 520 -> 521.
+// H-33 (SCHEMA_VERSION 211): MemoryGovernanceEvent single flat beacon.
+// Emitted by `elai memory forget|pin|unpin` and the dashboard
+// memory_forget/memory_pin Tauri commands. 3-arm kind discriminator:
+// Forgotten / Pinned / Unpinned. TOTAL_VARIANTS 521 -> 522.
+// H-34 (SCHEMA_VERSION 212): McpToolDeferred -- deferred schema-resolve row per STDIO tool-call.
+// Emitted by mcp_glue::RuntimeMcpState::call_tool on cache-miss when
+// ELAI_MCP_DEFER_SCHEMA_ENABLE=1. Carries server_name, tool_qualified_name,
+// resolve_ns, cache_hit, injected_floor_size. TOTAL_VARIANTS 522 -> 523.
+// H-34 (SCHEMA_VERSION 213): McpSchemaBudgetMeasured -- mcp-schema-budget bench result beacon.
+// Emitted by `elai bench mcp-schema-budget`. Carries suite, baseline_schema_tokens_per_turn,
+// injected_schema_tokens_per_turn, reduction_tokens, deferred_resolves, seed, corpus_blake3.
+// TOTAL_VARIANTS 523 -> 524.
+// H-35 (SCHEMA_VERSION 214): SessionRewound -- /rewind restore beacon.
+// Emitted by `elai rewind <target>` and the `rewind_session` Tauri command. Carries
+// session_id, target_seq, head_seq_before, scope, summarized, replay_session_id,
+// replay_outcome, tail_fingerprint_blake3. TOTAL_VARIANTS 524 -> 525.
+// H-36 (SCHEMA_VERSION 215): AgentNotificationEmitted -- completion/needs-input
+// dev-event beacon. Emitted by `notify_dispatch::NotificationDispatcher::notify`
+// on PhaseComplete (task_runner.rs post-PhaseComplete write) and on
+// AutonomyDecision::RequestHuman (task_runner.rs:1163 fix_and_rerun cap).
+// 2-arm AgentNotificationKind discriminator: Completion | NeedsInput.
+// TOTAL_VARIANTS 525 -> 526.
+// H-37 (SCHEMA_VERSION 216): PlanDecisionEvent -- plan-approval gate decision
+// emitted at PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST by the intercept in
+// task_runner.rs when ELAI_PLAN_APPROVAL_GATE_ENABLE=1. Pattern-2 single-variant
+// 4-arm PlanDecisionKind discriminator: Approve | Redirect | Reject | AutoAdvance.
+// TOTAL_VARIANTS 526 -> 527.
+// H-38 (SCHEMA_VERSION 217): StopConfirmationEvent -- cost-confirmation gate
+// outcome on task/pod stop. Emitted by dispatch_stop when ELAI_STOP_COST_CONFIRM_ENABLE=1
+// (PassedNoFriction) or unconditionally on ConfirmRequired / RejectedHeld.
+// Pattern-2 single-variant 3-arm StopOutcomeKind discriminator:
+// ConfirmedProceed | RejectedHeld | PassedNoFriction. TOTAL_VARIANTS 527 -> 528.
+// H-39 (SCHEMA_VERSION 218): AbstentionScored -- abstention-aware scoring beacon.
+// Emitted by the bench scorer (bench_safedelta/bench_seccodeplt) after computing
+// the AbstentionAggregate over the run's outcome triples. Closes the
+// self-improvement loop misalignment: D-16's RefusalDecision::Abstain fires at
+// inference but darwin_admit_loop's reward was abstention-blind (GAP-1).
+// Pattern-2 single-variant flat beacon. TOTAL_VARIANTS 528 -> 529.
+// H-41 (SCHEMA_VERSION 219): CheckerGapDetected -- emitted at the route_claim
+// call site (agent_pool.rs) when a Factual/Computational claim falls to
+// non-Constructive because no VerifierKind::Deterministic is in
+// OrchContext.available_verifiers. Off-agent backlog artifact (R4-compliant).
+// Classified by Xu arXiv:2401.11817 Table-3 complexity taxonomy.
+// Wire-dark under ELAI_CHECKER_GAP_ENABLE kill-switch (R9).
+// Pattern-2 single-variant flat beacon. TOTAL_VARIANTS 529 -> 530.
+// H-42 (SCHEMA_VERSION 220): ReasoningBudgetScaled -- serial-depth-scaled GRC
+// budget decision beacon. Emitted at agent_pool::spawn + bsp/engine.rs timeout
+// path when scale_grc_budget raises a sub-task's budget above the base.
+// Grounding: Merrill & Sabharwal 2310.07923 (single pass ~TC0); Li et al.
+// 2402.12875 (T steps simulate size-T circuit); Yehudai et al. 2503.01544
+// (~O(n) CoT tokens). Default-ON (kill-switch ELAI_REASONING_BUDGET_SCALE_DISABLE).
+// Pattern-2 single-variant 2-arm ReasoningBudgetScaledKind: DepthBound /
+// AccessBound. TOTAL_VARIANTS 530 -> 531.
+// H-43 (SCHEMA_VERSION 221): FitnessEvaluated -- execution-grounded DGM fitness
+// beacon. Replaces the blake3-of-bytes derived_alpha placeholder (GAP-1) with a
+// measured pass-rate signal (CodeRM arXiv:2501.01054 + CodeT arXiv:2207.10397).
+// Emitted by darwin_admit_loop::run_one_generation per scored candidate under
+// cfg(feature="darwinian-evolve") + ELAI_DARWINIAN_LOOP_ENABLE=1.
+// Pattern-2 single-variant 3-arm FitnessEvaluatedKind:
+// ExecutionPassRate | DualAgreement | FitnessRegression. TOTAL_VARIANTS 531 -> 532.
+// H-44 (SCHEMA_VERSION 222): TrapBehaviorDetected -- behavioral cheat-detector
+// beacon. Replaces the keyword-grep placeholder (GAP-2, trap_tasks.rs:123) with
+// three behavioral detection legs: ImpossibleBench conflict canary (2510.20270),
+// Isomorphic-Perturbation re-verification (2604.15149), CodeHalu execution-
+// classification (2405.00253, composes H-43 ExecutionFitnessHarness). Also carries
+// TrapRecallReport with measured recall over a frozen TRACE-style corpus
+// (2601.20103). Default-ON under darwinian-evolve feature + ELAI_DARWINIAN_LOOP_ENABLE=1.
+// Pattern-2 single-variant 4-arm TrapBehaviorDetectedKind:
+// ImpossiblePassExploit | IsomorphMismatch | ExecutionHallucination | KeywordFallback.
+// TOTAL_VARIANTS 532 -> 533.
+//
+// H-45 (SCHEMA_VERSION 223): PromotionScoreAggregated -- worst-case/variance-penalized
+// aggregate over lineage-diverse promotion verdicts (Coste 2310.02743 WCO+UWO +
+// Eisenstein 2312.09244 + Co-rewarding 2508.00410 + PRMBench 2501.03124 tau calibration).
+// Replaces candidate's own mean fitness as the two_gate_promote margin. Default-ON under
+// darwinian-evolve feature + ELAI_DARWINIAN_LOOP_ENABLE=1.
+// Pattern-2 single-variant 3-arm PromotionScoreAggregatedKind:
+// WorstCaseScored | VariancePenalized | LineageDiverseDisagree.
+// TOTAL_VARIANTS 533 -> 534.
+//
+// H-46 (SCHEMA_VERSION 224): CladeSelected -- HGM clade-metaproductivity parent selection
+// beacon. Emitted from config_archive::select_parent_with_cmp on the REAL loop selection
+// step (darwin_admit_loop::run_one_generation -> select_parent -> CMP key) under
+// cfg(feature="darwinian-evolve") + ELAI_DARWINIAN_LOOP_ENABLE=1.
+// CMP aggregates execution-grounded descendant deltas (H-43; VD-1: NOT byte-hash).
+// ImmediateScoreFallback fires for clade_size==0 leaves (no-lineage cold-start guard).
+// Pattern-2 single-variant 2-arm CladeSelectedKind:
+// CladeMetaproductivity | ImmediateScoreFallback. TOTAL_VARIANTS 534 -> 535.
+//
+// H-47 (SCHEMA_VERSION 225): EvalFirewallEvent -- DGM eval firewall beacon.
+// Composes D-6 date-gate + E-54 template-regen + H-19 Thresholdout budget binding into
+// a single gating step before the fitness scorer in darwin_admit_loop::run_one_generation.
+// Emitted ONCE per generation (aggregate counts). The H-19 budget leg REUSES
+// HoldoutBudgetEvent (GD-1: no second budget variant).
+// Pattern-2 single-variant 3-arm EvalFirewallEventKind:
+// PreUpdateItemRejected | TemplateRegenerated | IndistinguishabilityProbe.
+// Wire-dark under existing darwinian-evolve feature + ELAI_DARWINIAN_LOOP_ENABLE=1.
+// TOTAL_VARIANTS 535 -> 536.
+//
+// H-49 (SCHEMA_VERSION 226): EditHistoryEvent -- reversible LLM edits beacon.
+// Emitted by the default-ON time-travel CAS capture hook in task_runner.rs on
+// every file pre-edit capture, plus redo/branch/jump operations from the CLI.
+// Pattern-2 single-variant 6-arm EditHistoryEventKind:
+// SnapshotCaptured | Deduped | Redo | Branched | Jumped | TooLargeSkipped.
+// Default-ON kill-switch: ELAI_TIMETRAVEL_DISABLE (NOT a default-OFF enable gate;
+// no wire-dark-allowlist row required per R9). Wraps E-25 edit_checkpoints (GD-1).
+// TOTAL_VARIANTS 536 -> 537.
+const SCHEMA_VERSION: i64 = 226;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -3373,6 +3492,12 @@ CREATE TABLE IF NOT EXISTS ssb (
         --                            update (template_id, alpha, beta, n_pulls,
         --                            mean_estimate, was_promoted).
         'bai_arm_updated',
+        -- D-5 closure (SCHEMA_VERSION 208): unified promotion-decision summary.
+        -- bai_promotion_decision  -- one row per emit_bai_round_with_canary
+        --                            decision outcome (template_id, decision,
+        --                            stage, evidence_pass, evidence_total,
+        --                            audit_id).
+        'bai_promotion_decision',
         -- D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
         -- held_out_task_added     -- one row per `held_out::insert_and_emit` Ok
         --                            (task_id, source, content_blake3,
@@ -4636,7 +4761,111 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- DarwinianAdmitKind discriminator (admitted/rejected_by_guard/
         -- loop_closed) is a payload field, not a separate wire tag. Wire-dark
         -- unless ELAI_DARWINIAN_LOOP_ENABLE=1 AND cfg(feature darwinian-evolve).
-        'darwinian_admit'
+        'darwinian_admit',
+        -- D-27.1 (SCHEMA_VERSION 209): DiscoveryRatified + DiscoveryRejected
+        -- discovery-queue reviewer-action beacons. Emitted by the
+        -- `ratify_discovery` / `reject_discovery` Tauri commands in
+        -- commands_d27.rs when a human reviewer acts on a discovery_candidate
+        -- novelty row in the DiscoveryQueueDrawer. Producer entrypoint:
+        -- Tauri IPC (registered in generate_handler! in lib.rs). Reviewer
+        -- identity carried in reviewer_id (non-empty enforced at command
+        -- layer). ReviewStatus enum (Ratified/Rejected/Pending) co-located
+        -- in ssb.rs alongside the payload structs.
+        'discovery_ratified', 'discovery_rejected',
+        -- G-plan (SCHEMA_VERSION 208-224): security + verifiability substrate.
+        'mcp_rug_pull_blocked', 'taint_flow', 'blast_radius_blocked', 'trifecta_quarantined',
+        'run_artifact_emitted', 'review_surface_scored', 'provenance_attestation_emitted',
+        'safety_delta_measured', 'model_drift_suspected', 'secret_redacted',
+        'claim_confidence_scored', 'steering_vector_refresh_triggered',
+        'canvas_op_applied', 'canvas_view_event', 'canvas_activity_event',
+        'batch_lifecycle',
+        -- H-plan verifiability substrate (SCHEMA_VERSION 225+):
+        'deflation_gate_evaluated', 'leakage_blocked', 'lookahead_differential',
+        'trading_null_test', 'rerun_hash_equality', 'sim_real_parity',
+        'result_manifest_verified', 'differential_divergence',
+        'gate_self_validation', 'reward_tampering', 'holdout_budget_event',
+        'drift_interlock', 'trial_registered',
+        'mucoco_inconsistency_detected', 'mucoco_skip_reason',
+        'user_decision_superseded', 'staleness_eval_measured',
+        -- H-32 (SCHEMA_VERSION 210): FactValidationFailed single flat beacon.
+        -- Emitted when a Tier-A DomainKnowledge/Mistake fact DKG citation
+        -- fails to re-resolve before injection. reason is stale or unknown
+        -- (treated as FAIL per R2). evidence_blake3: blake3 16-hex citation key.
+        'fact_validation_failed',
+        -- H-33 (SCHEMA_VERSION 211): MemoryGovernanceEvent single flat beacon.
+        -- Emitted by elai memory forget|pin|unpin and the dashboard
+        -- memory_forget/memory_pin Tauri commands. 3-arm kind discriminator:
+        -- Forgotten/Pinned/Unpinned. actor: cli or dashboard.
+        'memory_governance_event',
+        -- H-34 (SCHEMA_VERSION 212): McpToolDeferred -- deferred MCP schema
+        -- resolve on the live STDIO lane. Emitted on cache-miss when
+        -- ELAI_MCP_DEFER_SCHEMA_ENABLE=1.
+        'mcp_tool_deferred',
+        -- H-34 (SCHEMA_VERSION 213): McpSchemaBudgetMeasured -- mcp-schema-budget
+        -- bench result beacon. Emitted by `elai bench mcp-schema-budget`.
+        'mcp_schema_budget_measured',
+        -- H-35 (SCHEMA_VERSION 214): SessionRewound -- /rewind restore beacon.
+        'session_rewound',
+        -- H-36 (SCHEMA_VERSION 215): AgentNotificationEmitted -- dev-event
+        -- notification beacon (task complete / needs input). Emitted by
+        -- NotificationDispatcher::notify on PhaseComplete and RequestHuman.
+        'agent_notification_emitted',
+        -- H-37 (SCHEMA_VERSION 216): PlanDecisionEvent -- plan-approval gate
+        -- decision at PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST.
+        -- Gated by ELAI_PLAN_APPROVAL_GATE_ENABLE=1.
+        'plan_decision_event',
+        -- H-38 (SCHEMA_VERSION 217): StopConfirmationEvent -- cost-confirmation
+        -- gate outcome on task/pod stop. Emitted by dispatch_stop.
+        -- 3-arm StopOutcomeKind: ConfirmedProceed | RejectedHeld | PassedNoFriction.
+        'stop_confirmation_event',
+        -- H-39 (SCHEMA_VERSION 218): AbstentionScored -- abstention-aware scoring
+        -- bench beacon. Emitted by bench_safedelta/bench_seccodeplt after computing
+        -- the AbstentionAggregate over the run's outcome triples. Flat beacon.
+        'abstention_scored',
+        -- H-41 (SCHEMA_VERSION 219): CheckerGapDetected -- emitted at the
+        -- route_claim call site when a Factual/Computational claim falls to
+        -- non-Constructive because no Deterministic verifier is in context.
+        -- Off-agent backlog artifact. Wire-dark: ELAI_CHECKER_GAP_ENABLE.
+        'checker_gap_detected',
+        -- H-42 (SCHEMA_VERSION 220): ReasoningBudgetScaled -- emitted at
+        -- agent_pool::spawn + bsp/engine.rs timeout path when scale_grc_budget
+        -- raises a sub-task GRC budget above the base. Default-ON; kill-switch
+        -- ELAI_REASONING_BUDGET_SCALE_DISABLE. Depth-not-width guard (RD-4).
+        'reasoning_budget_scaled',
+        -- H-43 (SCHEMA_VERSION 221): FitnessEvaluated -- execution-grounded DGM
+        -- fitness beacon. Replaces blake3-of-bytes derived_alpha (GAP-1). Emitted
+        -- per scored candidate in darwin_admit_loop::run_one_generation under
+        -- the darwinian-evolve feature + ELAI_DARWINIAN_LOOP_ENABLE=1.
+        -- 3-arm Kind: ExecutionPassRate | DualAgreement | FitnessRegression.
+        'fitness_evaluated',
+        -- H-44 (SCHEMA_VERSION 222): TrapBehaviorDetected -- behavioral cheat-detector
+        -- beacon. Replaces keyword-grep (GAP-2) with ImpossibleBench/IsomorphMismatch/
+        -- CodeHalu/KeywordFallback detection legs + frozen TRACE recall measurement.
+        -- 4-arm Kind: ImpossiblePassExploit | IsomorphMismatch | ExecutionHallucination |
+        -- KeywordFallback.
+        'trap_behavior_detected',
+        -- H-45 (SCHEMA_VERSION 223): PromotionScoreAggregated -- worst-case/variance-
+        -- penalized aggregate over lineage-diverse verdicts (Coste 2310.02743 WCO+UWO).
+        -- Replaces candidate mean fitness as the two_gate_promote margin.
+        -- 3-arm Kind: WorstCaseScored | VariancePenalized | LineageDiverseDisagree.
+        'promotion_score_aggregated',
+        -- H-46 (SCHEMA_VERSION 224): CladeSelected -- HGM clade-metaproductivity
+        -- parent selection beacon (HGM 2510.21614). Emitted from
+        -- config_archive::select_parent_with_cmp on the real loop selection step.
+        -- CMP aggregates execution-grounded descendant deltas (H-43; VD-1).
+        -- 2-arm Kind: CladeMetaproductivity | ImmediateScoreFallback.
+        'clade_selected',
+        -- H-47 (SCHEMA_VERSION 225): EvalFirewallEvent -- DGM eval firewall beacon.
+        -- Composes D-6 date-gate + E-54 template-regen + H-19 Thresholdout budget binding.
+        -- Emitted once per generation (aggregate counts) from run_one_generation.
+        -- 3-arm Kind: PreUpdateItemRejected | TemplateRegenerated | IndistinguishabilityProbe.
+        'eval_firewall_event',
+        -- H-49 (SCHEMA_VERSION 226): EditHistoryEvent -- reversible LLM edits beacon.
+        -- Emitted by the default-ON CAS time-travel capture hook (task_runner.rs) on
+        -- every file pre-edit capture and by undo/redo/branch/jump CLI ops.
+        -- 6-arm Kind: SnapshotCaptured | Deduped | Redo | Branched | Jumped | TooLargeSkipped.
+        -- Default-ON kill-switch: ELAI_TIMETRAVEL_DISABLE (no allowlist row per R9).
+        'edit_history_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -5668,6 +5897,15 @@ pub enum SsbActionType {
     /// Carries a [`BaiArmUpdatedPayload`] (template_id, alpha, beta, n_pulls,
     /// mean_estimate, was_promoted).
     BaiArmUpdated,
+    /// D-5 closure (SCHEMA_VERSION 208): one unified summary row per
+    /// [`crate::bai::emit_bai_round_with_canary`] call, emitted after the
+    /// per-decision `TemplatePromoted` / `TemplateCandidateRejected` row.
+    /// Carries a [`BaiPromotionDecisionPayload`] (template_id, decision,
+    /// stage, evidence_pass, evidence_total, audit_id). The `decision` field
+    /// is one of `"promoted"`, `"rejected"`, or `"held"` so the dashboard
+    /// `BaiDrawer` can render the verdict without joining across the three-row
+    /// sequence.
+    BaiPromotionDecision,
     /// D-6 (SCHEMA_VERSION 73): one row per `held_out::insert_and_emit` Ok
     /// return — i.e. a fresh held-out task that passed the 9-gram
     /// contamination filter and was inserted into the store. Producer is
@@ -8412,6 +8650,251 @@ pub enum SsbActionType {
     ///     config-only mutant keeps the loop inside the PAC-safe regime.
     /// See workflow/reasoning/F-11-decisions.md.
     DarwinianAdmit,
+    // G-plan (SCHEMA_VERSION 208-224): security + verifiability substrate.
+    /// G-4: MCP schema rug-pull blocked at http_list_tools gate.
+    McpRugPullBlocked,
+    /// G-1: data-plane taint flow blocked at destructive sink.
+    TaintFlow,
+    /// G-3: blast-radius gate block (FS escape or egress denied).
+    BlastRadiusBlocked,
+    /// G-7: lethal trifecta quarantine at tool-call chokepoint.
+    TrifectaQuarantined,
+    /// G-2: reproducible-run artifact sealed at run end.
+    RunArtifactEmitted,
+    /// G-5: reviewer-cockpit DSR score emitted.
+    ReviewSurfaceScored,
+    /// G-8: signed in-toto provenance attestation emitted.
+    ProvenanceAttestationEmitted,
+    /// G-6: SAFEDELTA gate-ON vs gate-OFF measured.
+    SafetyDeltaMeasured,
+    /// G-10: exogenous behavioral regression suspected.
+    ModelDriftSuspected,
+    /// G-9: write-time secret/PII redaction advisory row.
+    SecretRedacted,
+    /// G-7b: per-change conformal confidence decision.
+    ClaimConfidenceScored,
+    /// G-11: steering-vector refresh triggered on deprecated pattern.
+    SteeringVectorRefreshTriggered,
+    /// H-10 canvas: canvas op applied at dispatcher.
+    CanvasOpApplied,
+    /// H-10 canvas: canvas view event (spawn/ui/checkpoint).
+    CanvasViewEvent,
+    /// H-10 canvas: canvas activity event (reading/editing).
+    CanvasActivityEvent,
+    /// H-1: Anthropic batch API lifecycle row.
+    BatchLifecycle,
+    // H-plan verifiability substrate (SCHEMA_VERSION 225+).
+    /// H-17: Sharpe-ratio deflation gate verdict.
+    DeflationGateEvaluated,
+    /// H-18: data-leakage blocked at split boundary.
+    LeakageBlocked,
+    /// H-19: lookahead differential (future-leak) verdict.
+    LookaheadDifferential,
+    /// H-20: trading-strategy null-hypothesis test verdict.
+    TradingNullTest,
+    /// H-21: rerun hash equality verdict.
+    RerunHashEquality,
+    /// H-22: sim vs real parity verdict.
+    SimRealParity,
+    /// H-23: result manifest verified verdict.
+    ResultManifestVerified,
+    /// H-24: differential divergence between primary and shadow.
+    DifferentialDivergence,
+    /// H-25: gate self-validation mutation score verdict.
+    GateSelfValidation,
+    /// H-26: reward tampering detection verdict.
+    RewardTampering,
+    /// H-27: holdout budget exhaustion or running verdict.
+    HoldoutBudgetEvent,
+    /// H-28: drift interlock running/warning/halted verdict.
+    DriftInterlock,
+    /// H-17: strategy trial count persisted.
+    TrialRegistered,
+    /// C-36 extension: MuCoCo inconsistency detected.
+    MucocoInconsistencyDetected,
+    /// C-36 extension: MuCoCo operator inapplicable skip reason.
+    MucocoSkipReason,
+    /// H-30: user-decision captured or superseded in memory.
+    UserDecisionSuperseded,
+    /// H-17: staleness-eval benchmark result measured.
+    StalenessEvalMeasured,
+    /// D-27.1: discovery-candidate template ratified by a human reviewer.
+    /// Emitted by `ratify_discovery` Tauri command. Carries template_id,
+    /// reviewer_id (non-empty), and ts_ms.
+    DiscoveryRatified,
+    /// D-27.1: discovery-candidate template rejected by a human reviewer.
+    /// Emitted by `reject_discovery` Tauri command. Carries template_id,
+    /// reviewer_id (non-empty), reason, and ts_ms.
+    DiscoveryRejected,
+    /// H-32 (SCHEMA_VERSION 210): Tier-A code-grounded fact citation failed to
+    /// re-resolve against the current DKG before injection. The fact is
+    /// HARD-EXCLUDED. Carries a [`FactValidationFailedPayload`] (fact_id,
+    /// citation, reason: `"stale"` | `"unknown"`, evidence_blake3).
+    FactValidationFailed,
+    /// H-33 (SCHEMA_VERSION 211): memory governance event (forget/pin/unpin).
+    /// Emitted by `elai memory forget|pin|unpin` and the dashboard
+    /// memory_forget/memory_pin Tauri commands.
+    /// 3-arm kind discriminator carried in [`MemoryGovernanceEventPayload`].
+    MemoryGovernanceEvent,
+    /// H-34 (SCHEMA_VERSION 212): deferred MCP schema resolve on the live STDIO
+    /// lane. Emitted by `mcp_glue::RuntimeMcpState::call_tool` on cache-miss when
+    /// `ELAI_MCP_DEFER_SCHEMA_ENABLE=1`. Carries
+    /// [`McpToolDeferredPayload`] (server_name, tool_qualified_name, resolve_ns,
+    /// cache_hit, injected_floor_size).
+    McpToolDeferred,
+    /// H-34 (SCHEMA_VERSION 213): mcp-schema-budget bench result beacon.
+    /// Emitted by `elai bench mcp-schema-budget`. Carries
+    /// [`McpSchemaBudgetMeasuredPayload`].
+    McpSchemaBudgetMeasured,
+    /// H-35 (SCHEMA_VERSION 214): session-rewind restore beacon.
+    /// Emitted once per successful `elai rewind` / `rewind_session` call.
+    /// Payload: [`SessionRewoundPayload`].
+    SessionRewound,
+    /// H-36 (SCHEMA_VERSION 215): dev-event notification beacon (task complete /
+    /// needs input). Emitted by `notify_dispatch::NotificationDispatcher::notify`
+    /// from the task_runner post-PhaseComplete path (Completion kind) and the
+    /// AutonomyDecision::RequestHuman path (NeedsInput kind).
+    /// Payload: [`AgentNotificationEmittedPayload`].
+    AgentNotificationEmitted,
+    /// H-37 (SCHEMA_VERSION 216): plan-approval gate decision at
+    /// PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST. Gated by
+    /// `ELAI_PLAN_APPROVAL_GATE_ENABLE=1`. Pattern-2 single-variant with
+    /// 4-arm [`PlanDecisionKind`] discriminator.
+    /// Payload: [`PlanDecisionPayload`].
+    PlanDecisionEvent,
+    /// H-38 (SCHEMA_VERSION 217): cost-confirmation gate outcome on task/pod
+    /// stop. Emitted by `dispatch_stop` on every confirm-required or
+    /// rejected-held path; on the pass-no-friction path only when
+    /// `ELAI_STOP_COST_CONFIRM_ENABLE=1`. Pattern-2 single-variant with
+    /// 3-arm [`StopOutcomeKind`] discriminator.
+    /// Payload: [`StopConfirmationPayload`].
+    StopConfirmationEvent,
+    /// H-39 (SCHEMA_VERSION 218): abstention-aware scoring bench beacon.
+    /// Emitted once per bench run after computing the [`AbstentionAggregate`]
+    /// over the run's outcome triples. Closes the self-improvement loop
+    /// misalignment: darwin_admit_loop's reward was abstention-blind (GAP-1).
+    /// Flat beacon (Pattern-2 single-variant). Default-ON, kill-switch
+    /// `ELAI_ABSTENTION_SCORE_DISABLE`.
+    /// Payload: [`AbstentionScoredPayload`].
+    AbstentionScored,
+    /// H-41 (SCHEMA_VERSION 219): Factual/Computational claim fell to
+    /// non-Constructive because no constructive (Deterministic) verifier
+    /// matched. Off-agent backlog artifact (R4-compliant): written by the
+    /// route_claim_with_gap wrapper at the live routing call site, not by
+    /// the agent under evaluation. Carries [`CheckerGapDetectedPayload`]
+    /// with {claim_id, claim_type, complexity_taxon, fell_to_mode, ts_ms}.
+    /// Wire-dark under `ELAI_CHECKER_GAP_ENABLE` kill-switch (R9).
+    /// Flat beacon (Pattern-2 single-variant). TOTAL_VARIANTS 529 -> 530.
+    CheckerGapDetected,
+    /// H-42 (SCHEMA_VERSION 220): serial-depth-scaled GRC budget decision beacon.
+    /// Emitted at both dispatch sites (agent_pool::spawn + bsp/engine.rs timeout)
+    /// when `scale_grc_budget` raises a sub-task's budget above the base per-role
+    /// config. Carries [`ReasoningBudgetScaledPayload`] with {kind, role,
+    /// base_calls, serial_depth, scaled_calls, ceiling, seed}.
+    /// Grounding: Merrill & Sabharwal 2310.07923 (single pass ~TC0); Li et al.
+    /// 2402.12875 (T steps simulate size-T circuit); Yehudai et al. 2503.01544
+    /// (~O(n) CoT tokens for compositional reasoning).
+    /// Default-ON, kill-switch `ELAI_REASONING_BUDGET_SCALE_DISABLE`.
+    /// Pattern-2 single-variant 2-arm ReasoningBudgetScaledKind: DepthBound /
+    /// AccessBound. TOTAL_VARIANTS 530 -> 531.
+    ReasoningBudgetScaled,
+    /// H-43 (SCHEMA_VERSION 221): execution-grounded DGM fitness beacon.
+    /// Replaces the blake3-of-bytes `derived_alpha` placeholder (GAP-1) with a
+    /// measured pass-rate signal derived from executing the candidate against a
+    /// FROZEN generated-test set (CodeRM arXiv:2501.01054 + CodeT arXiv:2207.10397).
+    /// Emitted by `darwin_admit_loop::run_one_generation` per scored candidate
+    /// under `cfg(feature="darwinian-evolve")` + `ELAI_DARWINIAN_LOOP_ENABLE=1`.
+    /// Off-agent artifact (R4): written at the scoring call site, NOT by the
+    /// candidate being evaluated. Missing = FAIL (R1).
+    /// Carries [`FitnessEvaluatedPayload`] with {kind, pass_rate, dual_agreement,
+    /// tests_total, fitness, seed, test_set_hash, candidate_blake3}.
+    /// Pattern-2 single-variant 3-arm [`FitnessEvaluatedKind`]:
+    /// ExecutionPassRate | DualAgreement | FitnessRegression.
+    /// Wire-dark under existing `darwinian-evolve` feature + `ELAI_DARWINIAN_LOOP_ENABLE`.
+    /// TOTAL_VARIANTS 531 -> 532.
+    FitnessEvaluated,
+    /// H-44 (SCHEMA_VERSION 222): behavioral cheat-detector beacon.
+    /// Replaces the keyword-grep placeholder (GAP-2, `trap_tasks.rs:score_candidate_for_traps`)
+    /// with three behavioral detection legs: ImpossibleBench conflict canary
+    /// (arXiv:2510.20270), Isomorphic-Perturbation re-verification (arXiv:2604.15149),
+    /// CodeHalu execution-classification (arXiv:2405.00253, composes H-43 harness).
+    /// Also carries TrapRecallReport with measured recall over a frozen TRACE-style
+    /// corpus (arXiv:2601.20103). Keyword-grep is demoted to a cheap advisory
+    /// `KeywordFallback` first-pass only (never the sole blocker — VD-2).
+    /// Off-agent artifact (R4): emitted from the guard chain call site.
+    /// Carries [`TrapBehaviorDetectedPayload`] with {kind, recall, fp_rate, n,
+    /// corpus_hash, candidate_blake3, seed}.
+    /// Pattern-2 single-variant 4-arm [`TrapBehaviorDetectedKind`]:
+    /// ImpossiblePassExploit | IsomorphMismatch | ExecutionHallucination | KeywordFallback.
+    /// Wire-dark under existing `darwinian-evolve` feature + `ELAI_DARWINIAN_LOOP_ENABLE`.
+    /// TOTAL_VARIANTS 532 -> 533.
+    TrapBehaviorDetected,
+    /// H-45 (SCHEMA_VERSION 223): worst-case/variance-penalized aggregate over
+    /// lineage-diverse promotion verdicts.
+    /// Replaces the candidate's own mean fitness as the `two_gate_promote` margin
+    /// (Coste 2310.02743 WCO+UWO; Eisenstein 2312.09244 lineage-diversity;
+    /// Co-rewarding 2508.00410 disagreement block; PRMBench 2501.03124 tau calibration).
+    /// Off-agent artifact (R4): emitted from `darwin_admit_loop::run_one_generation`
+    /// at the promotion gate call site for every scored candidate.
+    /// Carries [`PromotionScoreAggregatedPayload`] with {kind, worst_case, variance,
+    /// mean, disagreement, tau, calibrated_at, seed}.
+    /// Pattern-2 single-variant 3-arm [`PromotionScoreAggregatedKind`]:
+    /// WorstCaseScored | VariancePenalized | LineageDiverseDisagree.
+    /// Wire-dark under existing `darwinian-evolve` feature + `ELAI_DARWINIAN_LOOP_ENABLE`.
+    /// TOTAL_VARIANTS 533 -> 534.
+    PromotionScoreAggregated,
+    /// H-46 (SCHEMA_VERSION 224): HGM clade-metaproductivity parent selection beacon.
+    /// Emitted from `config_archive::select_parent_with_cmp` on the REAL loop
+    /// selection step (`darwin_admit_loop::run_one_generation -> select_parent ->
+    /// CMP key`) under `cfg(feature="darwinian-evolve")` + `ELAI_DARWINIAN_LOOP_ENABLE=1`.
+    /// CMP aggregates execution-grounded descendant fitness deltas (H-43; VD-1:
+    /// NOT byte-hash). `ImmediateScoreFallback` fires for `clade_size == 0` leaves
+    /// (no-lineage cold-start guard). Missing row = FAIL (R1).
+    /// Carries [`CladeSelectedPayload`] with {kind, node_id, cmp, clade_size,
+    /// immediate_score, key_used, seed}.
+    /// Pattern-2 single-variant 2-arm [`CladeSelectedKind`]:
+    /// CladeMetaproductivity | ImmediateScoreFallback.
+    /// Wire-dark under existing `darwinian-evolve` feature + `ELAI_DARWINIAN_LOOP_ENABLE`.
+    /// TOTAL_VARIANTS 534 -> 535.
+    CladeSelected,
+    /// H-47 (SCHEMA_VERSION 225): DGM eval firewall beacon.
+    /// Composes three SHIPPED mechanisms (GD-1 P0 — none re-implemented):
+    ///   - D-6 date-gate (LiveCodeBench 2403.07974): rejects held-out items whose
+    ///     `ingested_ts_ms` precedes the last ConfigVariant.created_at update.
+    ///   - E-54 template-regen (GSM-Symbolic 2410.05229): regenerates a fresh instance
+    ///     for templated tasks so the loop never scores the exact instance twice.
+    ///   - H-19 Thresholdout budget (Dwork 1506.02629): routes every score query
+    ///     through the DP budget; refuses after `Exhausted` (budget leg REUSES
+    ///     `HoldoutBudgetEvent` — GD-1: no second variant).
+    /// Emitted ONCE per generation (aggregate counts) from
+    /// `darwin_admit_loop::run_one_generation` after the per-item firewall loop.
+    /// Off-agent artifact (R4): emitted at the loop eval step, NOT by the candidate.
+    /// Missing row = FAIL (R1).
+    /// Carries [`EvalFirewallPayload`] with {kind, items_scored, items_rejected,
+    /// regen_count, budget_remaining, distinguishability, seed, generation_id}.
+    /// Pattern-2 single-variant 3-arm [`EvalFirewallEventKind`]:
+    /// PreUpdateItemRejected | TemplateRegenerated | IndistinguishabilityProbe.
+    /// Wire-dark under existing `darwinian-evolve` feature + `ELAI_DARWINIAN_LOOP_ENABLE`.
+    /// TOTAL_VARIANTS 535 -> 536.
+    EvalFirewallEvent,
+    /// H-49 (SCHEMA_VERSION 226): reversible LLM edits beacon.
+    ///
+    /// Emitted by the default-ON CAS time-travel capture hook in `task_runner.rs`
+    /// on every file pre-edit capture, and by `elai undo`/`redo`/`jump` CLI ops.
+    ///
+    /// Off-agent artifact (R4): emitted from the orchestrator capture hook or the
+    /// CLI driver — NOT by the agent performing the edit. Missing row = FAIL (R1).
+    ///
+    /// Carries [`EditHistoryEventPayload`] with
+    /// `{kind, node_id, parent_id, paths_n, pre_hash, post_hash, grain}`.
+    ///
+    /// Pattern-2 single-variant 6-arm [`EditHistoryEventKind`]:
+    /// SnapshotCaptured | Deduped | Redo | Branched | Jumped | TooLargeSkipped.
+    ///
+    /// Default-ON kill-switch: `ELAI_TIMETRAVEL_DISABLE` (no wire-dark-allowlist
+    /// row required — this is a kill-switch, not a default-OFF gate; R9).
+    /// TOTAL_VARIANTS 536 -> 537.
+    EditHistoryEvent,
 }
 
 impl SsbActionType {
@@ -8700,6 +9183,8 @@ impl SsbActionType {
             Self::PrmBenchRunCompleted => "prmbench_run_completed",
             // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
             Self::BaiArmUpdated => "bai_arm_updated",
+            // D-5 closure (SCHEMA_VERSION 208): unified promotion-decision summary.
+            Self::BaiPromotionDecision => "bai_promotion_decision",
             // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
             Self::HeldOutTaskAdded => "held_out_task_added",
             Self::HeldOutTaskUsed => "held_out_task_used",
@@ -9189,6 +9674,60 @@ impl SsbActionType {
             // DarwinianAdmitKind discriminator lives on the payload, so the
             // wire tag is a single string (mirrors DarwinianGenerationCompleted).
             Self::DarwinianAdmit => "darwinian_admit",
+            // G-plan variants.
+            Self::McpRugPullBlocked => "mcp_rug_pull_blocked",
+            Self::TaintFlow => "taint_flow",
+            Self::BlastRadiusBlocked => "blast_radius_blocked",
+            Self::TrifectaQuarantined => "trifecta_quarantined",
+            Self::RunArtifactEmitted => "run_artifact_emitted",
+            Self::ReviewSurfaceScored => "review_surface_scored",
+            Self::ProvenanceAttestationEmitted => "provenance_attestation_emitted",
+            Self::SafetyDeltaMeasured => "safety_delta_measured",
+            Self::ModelDriftSuspected => "model_drift_suspected",
+            Self::SecretRedacted => "secret_redacted",
+            Self::ClaimConfidenceScored => "claim_confidence_scored",
+            Self::SteeringVectorRefreshTriggered => "steering_vector_refresh_triggered",
+            Self::CanvasOpApplied => "canvas_op_applied",
+            Self::CanvasViewEvent => "canvas_view_event",
+            Self::CanvasActivityEvent => "canvas_activity_event",
+            Self::BatchLifecycle => "batch_lifecycle",
+            // H-plan verifiability variants.
+            Self::DeflationGateEvaluated => "deflation_gate_evaluated",
+            Self::LeakageBlocked => "leakage_blocked",
+            Self::LookaheadDifferential => "lookahead_differential",
+            Self::TradingNullTest => "trading_null_test",
+            Self::RerunHashEquality => "rerun_hash_equality",
+            Self::SimRealParity => "sim_real_parity",
+            Self::ResultManifestVerified => "result_manifest_verified",
+            Self::DifferentialDivergence => "differential_divergence",
+            Self::GateSelfValidation => "gate_self_validation",
+            Self::RewardTampering => "reward_tampering",
+            Self::HoldoutBudgetEvent => "holdout_budget_event",
+            Self::DriftInterlock => "drift_interlock",
+            Self::TrialRegistered => "trial_registered",
+            Self::MucocoInconsistencyDetected => "mucoco_inconsistency_detected",
+            Self::MucocoSkipReason => "mucoco_skip_reason",
+            Self::UserDecisionSuperseded => "user_decision_superseded",
+            Self::StalenessEvalMeasured => "staleness_eval_measured",
+            Self::DiscoveryRatified => "discovery_ratified",
+            Self::DiscoveryRejected => "discovery_rejected",
+            Self::FactValidationFailed => "fact_validation_failed",
+            Self::MemoryGovernanceEvent => "memory_governance_event",
+            Self::McpToolDeferred => "mcp_tool_deferred",
+            Self::McpSchemaBudgetMeasured => "mcp_schema_budget_measured",
+            Self::SessionRewound => "session_rewound",
+            Self::AgentNotificationEmitted => "agent_notification_emitted",
+            Self::PlanDecisionEvent => "plan_decision_event",
+            Self::StopConfirmationEvent => "stop_confirmation_event",
+            Self::AbstentionScored => "abstention_scored",
+            Self::CheckerGapDetected => "checker_gap_detected",
+            Self::ReasoningBudgetScaled => "reasoning_budget_scaled",
+            Self::FitnessEvaluated => "fitness_evaluated",
+            Self::TrapBehaviorDetected => "trap_behavior_detected",
+            Self::PromotionScoreAggregated => "promotion_score_aggregated",
+            Self::CladeSelected => "clade_selected",
+            Self::EvalFirewallEvent => "eval_firewall_event",
+            Self::EditHistoryEvent => "edit_history_event",
         }
     }
 }
@@ -9493,6 +10032,8 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "prmbench_run_completed"         => Ok(SsbActionType::PrmBenchRunCompleted),
         // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
         "bai_arm_updated"                => Ok(SsbActionType::BaiArmUpdated),
+        // D-5 closure (SCHEMA_VERSION 208): unified promotion-decision summary.
+        "bai_promotion_decision"         => Ok(SsbActionType::BaiPromotionDecision),
         // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
         "held_out_task_added"            => Ok(SsbActionType::HeldOutTaskAdded),
         "held_out_task_used"             => Ok(SsbActionType::HeldOutTaskUsed),
@@ -9871,6 +10412,60 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         // F-11 / Slice A1 (SCHEMA_VERSION 207): DarwinianAdmit config-DGM
         // admit-loop beacon (Pattern-2; Kind on payload).
         "darwinian_admit" => Ok(SsbActionType::DarwinianAdmit),
+        // G-plan variants.
+        "mcp_rug_pull_blocked" => Ok(SsbActionType::McpRugPullBlocked),
+        "taint_flow" => Ok(SsbActionType::TaintFlow),
+        "blast_radius_blocked" => Ok(SsbActionType::BlastRadiusBlocked),
+        "trifecta_quarantined" => Ok(SsbActionType::TrifectaQuarantined),
+        "run_artifact_emitted" => Ok(SsbActionType::RunArtifactEmitted),
+        "review_surface_scored" => Ok(SsbActionType::ReviewSurfaceScored),
+        "provenance_attestation_emitted" => Ok(SsbActionType::ProvenanceAttestationEmitted),
+        "safety_delta_measured" => Ok(SsbActionType::SafetyDeltaMeasured),
+        "model_drift_suspected" => Ok(SsbActionType::ModelDriftSuspected),
+        "secret_redacted" => Ok(SsbActionType::SecretRedacted),
+        "claim_confidence_scored" => Ok(SsbActionType::ClaimConfidenceScored),
+        "steering_vector_refresh_triggered" => Ok(SsbActionType::SteeringVectorRefreshTriggered),
+        "canvas_op_applied" => Ok(SsbActionType::CanvasOpApplied),
+        "canvas_view_event" => Ok(SsbActionType::CanvasViewEvent),
+        "canvas_activity_event" => Ok(SsbActionType::CanvasActivityEvent),
+        "batch_lifecycle" => Ok(SsbActionType::BatchLifecycle),
+        // H-plan verifiability variants.
+        "deflation_gate_evaluated" => Ok(SsbActionType::DeflationGateEvaluated),
+        "leakage_blocked" => Ok(SsbActionType::LeakageBlocked),
+        "lookahead_differential" => Ok(SsbActionType::LookaheadDifferential),
+        "trading_null_test" => Ok(SsbActionType::TradingNullTest),
+        "rerun_hash_equality" => Ok(SsbActionType::RerunHashEquality),
+        "sim_real_parity" => Ok(SsbActionType::SimRealParity),
+        "result_manifest_verified" => Ok(SsbActionType::ResultManifestVerified),
+        "differential_divergence" => Ok(SsbActionType::DifferentialDivergence),
+        "gate_self_validation" => Ok(SsbActionType::GateSelfValidation),
+        "reward_tampering" => Ok(SsbActionType::RewardTampering),
+        "holdout_budget_event" => Ok(SsbActionType::HoldoutBudgetEvent),
+        "drift_interlock" => Ok(SsbActionType::DriftInterlock),
+        "trial_registered" => Ok(SsbActionType::TrialRegistered),
+        "mucoco_inconsistency_detected" => Ok(SsbActionType::MucocoInconsistencyDetected),
+        "mucoco_skip_reason" => Ok(SsbActionType::MucocoSkipReason),
+        "user_decision_superseded" => Ok(SsbActionType::UserDecisionSuperseded),
+        "staleness_eval_measured" => Ok(SsbActionType::StalenessEvalMeasured),
+        "discovery_ratified" => Ok(SsbActionType::DiscoveryRatified),
+        "discovery_rejected" => Ok(SsbActionType::DiscoveryRejected),
+        "fact_validation_failed" => Ok(SsbActionType::FactValidationFailed),
+        "memory_governance_event" => Ok(SsbActionType::MemoryGovernanceEvent),
+        "mcp_tool_deferred" => Ok(SsbActionType::McpToolDeferred),
+        "mcp_schema_budget_measured" => Ok(SsbActionType::McpSchemaBudgetMeasured),
+        "session_rewound" => Ok(SsbActionType::SessionRewound),
+        "agent_notification_emitted" => Ok(SsbActionType::AgentNotificationEmitted),
+        "plan_decision_event" => Ok(SsbActionType::PlanDecisionEvent),
+        "stop_confirmation_event" => Ok(SsbActionType::StopConfirmationEvent),
+        "abstention_scored" => Ok(SsbActionType::AbstentionScored),
+        "checker_gap_detected" => Ok(SsbActionType::CheckerGapDetected),
+        "reasoning_budget_scaled" => Ok(SsbActionType::ReasoningBudgetScaled),
+        "fitness_evaluated" => Ok(SsbActionType::FitnessEvaluated),
+        "trap_behavior_detected" => Ok(SsbActionType::TrapBehaviorDetected),
+        "promotion_score_aggregated" => Ok(SsbActionType::PromotionScoreAggregated),
+        "clade_selected" => Ok(SsbActionType::CladeSelected),
+        "eval_firewall_event" => Ok(SsbActionType::EvalFirewallEvent),
+        "edit_history_event" => Ok(SsbActionType::EditHistoryEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -12669,6 +13264,8 @@ pub enum SsbPayload {
     PrmBenchRunCompleted(PrmBenchRunCompletedPayload),
     // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
     BaiArmUpdated(BaiArmUpdatedPayload),
+    // D-5 closure (SCHEMA_VERSION 208): unified promotion-decision summary.
+    BaiPromotionDecision(BaiPromotionDecisionPayload),
     // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
     HeldOutTaskAdded(HeldOutTaskAddedPayload),
     HeldOutTaskUsed(HeldOutTaskUsedPayload),
@@ -13281,6 +13878,77 @@ pub enum SsbPayload {
     // LoopClosed) carried on the payload. Wire-dark unless
     // ELAI_DARWINIAN_LOOP_ENABLE=1 AND cfg(feature = "darwinian-evolve").
     DarwinianAdmit(DarwinianAdmitPayload),
+    // G-plan (SCHEMA_VERSION 208-224): security + verifiability substrate.
+    McpRugPullBlocked(McpRugPullBlockedPayload),
+    TaintFlow(TaintFlowPayload),
+    BlastRadiusBlocked(BlastRadiusBlockedPayload),
+    TrifectaQuarantined(TrifectaQuarantinedPayload),
+    RunArtifactEmitted(RunArtifactEmittedPayload),
+    ReviewSurfaceScored(ReviewSurfaceScoredPayload),
+    ProvenanceAttestationEmitted(ProvenanceAttestationEmittedPayload),
+    SafetyDeltaMeasured(SafetyDeltaMeasuredPayload),
+    ModelDriftSuspected(ModelDriftSuspectedPayload),
+    SecretRedacted(SecretRedactedPayload),
+    ClaimConfidenceScored(ClaimConfidenceScoredPayload),
+    SteeringVectorRefreshTriggered(SteeringVectorRefreshTriggeredPayload),
+    CanvasOpApplied(CanvasOpPayload),
+    CanvasViewEvent(CanvasViewPayload),
+    CanvasActivityEvent(CanvasActivityPayload),
+    BatchLifecycle(BatchLifecyclePayload),
+    // H-plan verifiability substrate (SCHEMA_VERSION 225+).
+    DeflationGateEvaluated(DeflationGateEvaluatedPayload),
+    LeakageBlocked(LeakageBlockedPayload),
+    LookaheadDifferential(LookaheadDifferentialPayload),
+    TradingNullTest(TradingNullTestPayload),
+    RerunHashEquality(RerunHashEqualityPayload),
+    SimRealParity(SimRealParityPayload),
+    ResultManifestVerified(ResultManifestVerifiedPayload),
+    DifferentialDivergence(DifferentialDivergencePayload),
+    GateSelfValidation(GateSelfValidationPayload),
+    RewardTampering(RewardTamperingPayload),
+    HoldoutBudgetEvent(HoldoutBudgetPayload),
+    DriftInterlock(DriftInterlockPayload),
+    TrialRegistered(TrialRegisteredPayload),
+    MucocoInconsistencyDetected(MucocoInconsistencyDetectedPayload),
+    MucocoSkipReason(MucocoSkipReasonPayload),
+    UserDecisionSuperseded(UserDecisionSupersededPayload),
+    StalenessEvalMeasured(StalenessEvalMeasuredPayload),
+    DiscoveryRatified(DiscoveryRatifiedPayload),
+    DiscoveryRejected(DiscoveryRejectedPayload),
+    /// H-32 (SCHEMA_VERSION 210): Tier-A code-grounded fact citation failed.
+    FactValidationFailed(FactValidationFailedPayload),
+    /// H-33 (SCHEMA_VERSION 211): memory governance event.
+    MemoryGovernanceEvent(MemoryGovernanceEventPayload),
+    /// H-34 (SCHEMA_VERSION 212): deferred MCP schema resolve on the STDIO lane.
+    McpToolDeferred(McpToolDeferredPayload),
+    /// H-34 (SCHEMA_VERSION 213): mcp-schema-budget bench result beacon.
+    McpSchemaBudgetMeasured(McpSchemaBudgetMeasuredPayload),
+    /// H-35 (SCHEMA_VERSION 214): session-rewind restore beacon.
+    SessionRewound(SessionRewoundPayload),
+    /// H-36 (SCHEMA_VERSION 215): dev-event notification beacon.
+    AgentNotificationEmitted(AgentNotificationEmittedPayload),
+    /// H-37 (SCHEMA_VERSION 216): plan-approval gate decision.
+    PlanDecisionEvent(PlanDecisionPayload),
+    /// H-38 (SCHEMA_VERSION 217): cost-confirmation gate outcome on task/pod stop.
+    StopConfirmationEvent(StopConfirmationPayload),
+    /// H-39 (SCHEMA_VERSION 218): abstention-aware scoring bench beacon.
+    AbstentionScored(AbstentionScoredPayload),
+    /// H-41 (SCHEMA_VERSION 219): checker-gap backlog beacon.
+    CheckerGapDetected(CheckerGapDetectedPayload),
+    /// H-42 (SCHEMA_VERSION 220): serial-depth-scaled GRC budget decision beacon.
+    ReasoningBudgetScaled(ReasoningBudgetScaledPayload),
+    /// H-43 (SCHEMA_VERSION 221): execution-grounded DGM fitness beacon.
+    FitnessEvaluated(FitnessEvaluatedPayload),
+    /// H-44 (SCHEMA_VERSION 222): behavioral cheat-detector beacon.
+    TrapBehaviorDetected(TrapBehaviorDetectedPayload),
+    /// H-45 (SCHEMA_VERSION 223): worst-case/variance-penalized aggregate promotion score.
+    PromotionScoreAggregated(PromotionScoreAggregatedPayload),
+    /// H-46 (SCHEMA_VERSION 224): HGM clade-metaproductivity parent selection beacon.
+    CladeSelected(CladeSelectedPayload),
+    /// H-47 (SCHEMA_VERSION 225): DGM eval firewall beacon.
+    EvalFirewallEvent(EvalFirewallPayload),
+    /// H-49 (SCHEMA_VERSION 226): reversible LLM edits beacon.
+    EditHistoryEvent(EditHistoryEventPayload),
 }
 
 impl SsbPayload {
@@ -13571,6 +14239,8 @@ impl SsbPayload {
             Self::PrmBenchRunCompleted(_) => SsbActionType::PrmBenchRunCompleted,
             // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
             Self::BaiArmUpdated(_) => SsbActionType::BaiArmUpdated,
+            // D-5 closure (SCHEMA_VERSION 208): unified promotion-decision summary.
+            Self::BaiPromotionDecision(_) => SsbActionType::BaiPromotionDecision,
             // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
             Self::HeldOutTaskAdded(_) => SsbActionType::HeldOutTaskAdded,
             Self::HeldOutTaskUsed(_) => SsbActionType::HeldOutTaskUsed,
@@ -13963,6 +14633,60 @@ impl SsbPayload {
             Self::SessionArchived(_) => SsbActionType::SessionArchived,
             // F-11 / Slice A1 (SCHEMA_VERSION 207): config-DGM admit-loop beacon.
             Self::DarwinianAdmit(_) => SsbActionType::DarwinianAdmit,
+            // G-plan variants.
+            Self::McpRugPullBlocked(_) => SsbActionType::McpRugPullBlocked,
+            Self::TaintFlow(_) => SsbActionType::TaintFlow,
+            Self::BlastRadiusBlocked(_) => SsbActionType::BlastRadiusBlocked,
+            Self::TrifectaQuarantined(_) => SsbActionType::TrifectaQuarantined,
+            Self::RunArtifactEmitted(_) => SsbActionType::RunArtifactEmitted,
+            Self::ReviewSurfaceScored(_) => SsbActionType::ReviewSurfaceScored,
+            Self::ProvenanceAttestationEmitted(_) => SsbActionType::ProvenanceAttestationEmitted,
+            Self::SafetyDeltaMeasured(_) => SsbActionType::SafetyDeltaMeasured,
+            Self::ModelDriftSuspected(_) => SsbActionType::ModelDriftSuspected,
+            Self::SecretRedacted(_) => SsbActionType::SecretRedacted,
+            Self::ClaimConfidenceScored(_) => SsbActionType::ClaimConfidenceScored,
+            Self::SteeringVectorRefreshTriggered(_) => SsbActionType::SteeringVectorRefreshTriggered,
+            Self::CanvasOpApplied(_) => SsbActionType::CanvasOpApplied,
+            Self::CanvasViewEvent(_) => SsbActionType::CanvasViewEvent,
+            Self::CanvasActivityEvent(_) => SsbActionType::CanvasActivityEvent,
+            Self::BatchLifecycle(_) => SsbActionType::BatchLifecycle,
+            // H-plan verifiability variants.
+            Self::DeflationGateEvaluated(_) => SsbActionType::DeflationGateEvaluated,
+            Self::LeakageBlocked(_) => SsbActionType::LeakageBlocked,
+            Self::LookaheadDifferential(_) => SsbActionType::LookaheadDifferential,
+            Self::TradingNullTest(_) => SsbActionType::TradingNullTest,
+            Self::RerunHashEquality(_) => SsbActionType::RerunHashEquality,
+            Self::SimRealParity(_) => SsbActionType::SimRealParity,
+            Self::ResultManifestVerified(_) => SsbActionType::ResultManifestVerified,
+            Self::DifferentialDivergence(_) => SsbActionType::DifferentialDivergence,
+            Self::GateSelfValidation(_) => SsbActionType::GateSelfValidation,
+            Self::RewardTampering(_) => SsbActionType::RewardTampering,
+            Self::HoldoutBudgetEvent(_) => SsbActionType::HoldoutBudgetEvent,
+            Self::DriftInterlock(_) => SsbActionType::DriftInterlock,
+            Self::TrialRegistered(_) => SsbActionType::TrialRegistered,
+            Self::MucocoInconsistencyDetected(_) => SsbActionType::MucocoInconsistencyDetected,
+            Self::MucocoSkipReason(_) => SsbActionType::MucocoSkipReason,
+            Self::UserDecisionSuperseded(_) => SsbActionType::UserDecisionSuperseded,
+            Self::StalenessEvalMeasured(_) => SsbActionType::StalenessEvalMeasured,
+            Self::DiscoveryRatified(_) => SsbActionType::DiscoveryRatified,
+            Self::DiscoveryRejected(_) => SsbActionType::DiscoveryRejected,
+            Self::FactValidationFailed(_) => SsbActionType::FactValidationFailed,
+            Self::MemoryGovernanceEvent(_) => SsbActionType::MemoryGovernanceEvent,
+            Self::McpToolDeferred(_) => SsbActionType::McpToolDeferred,
+            Self::McpSchemaBudgetMeasured(_) => SsbActionType::McpSchemaBudgetMeasured,
+            Self::SessionRewound(_) => SsbActionType::SessionRewound,
+            Self::AgentNotificationEmitted(_) => SsbActionType::AgentNotificationEmitted,
+            Self::PlanDecisionEvent(_) => SsbActionType::PlanDecisionEvent,
+            Self::StopConfirmationEvent(_) => SsbActionType::StopConfirmationEvent,
+            Self::AbstentionScored(_) => SsbActionType::AbstentionScored,
+            Self::CheckerGapDetected(_) => SsbActionType::CheckerGapDetected,
+            Self::ReasoningBudgetScaled(_) => SsbActionType::ReasoningBudgetScaled,
+            Self::FitnessEvaluated(_) => SsbActionType::FitnessEvaluated,
+            Self::TrapBehaviorDetected(_) => SsbActionType::TrapBehaviorDetected,
+            Self::PromotionScoreAggregated(_) => SsbActionType::PromotionScoreAggregated,
+            Self::CladeSelected(_) => SsbActionType::CladeSelected,
+            Self::EvalFirewallEvent(_) => SsbActionType::EvalFirewallEvent,
+            Self::EditHistoryEvent(_) => SsbActionType::EditHistoryEvent,
         }
     }
 }
@@ -14399,6 +15123,58 @@ impl Ssb {
     /// Session ID this SSB is bound to.
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Return all entries for a session ordered by seq ASC (oldest first).
+    ///
+    /// Used by G-2/G-10 run_subcommand to derive the identity tuple for
+    /// `build_rra` / model-drift detection from the full session stream.
+    pub fn query_session_stream_asc(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SsbEntry>, SsbError> {
+        let sid = session_id.to_owned();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+                 FROM ssb WHERE session_id = ?1 ORDER BY seq ASC",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![sid], row_to_entry)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        })
+    }
+
+    /// Return all `ssb_files` rows for a session grouped by `seq`.
+    ///
+    /// Used by the B-10 context-budget compute_overlap path in `task_runner`
+    /// to build per-seq file-affinity candidates from the REAL ssb_files
+    /// junction table without owning open file handles.
+    ///
+    /// Returns `Ok(HashMap<seq, Vec<file_path>>)`. Returns an empty map on
+    /// any read error (non-fatal; compute_overlap degrades gracefully).
+    pub fn session_files_by_seq(
+        &self,
+        session_id: &str,
+    ) -> Result<std::collections::BTreeMap<i64, Vec<String>>, SsbError> {
+        let session_id = session_id.to_owned();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT ssb.seq, ssb_files.file_path \
+                 FROM ssb_files \
+                 JOIN ssb ON ssb_files.seq = ssb.seq \
+                 WHERE ssb.session_id = ?1 \
+                 ORDER BY ssb.seq",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut map: std::collections::BTreeMap<i64, Vec<String>> = std::collections::BTreeMap::new();
+            for row in rows {
+                let (seq, path) = row?;
+                map.entry(seq).or_default().push(path);
+            }
+            Ok(map)
+        })
     }
 }
 
@@ -18490,6 +19266,38 @@ pub struct BaiArmUpdatedPayload {
     pub was_promoted: bool,
 }
 
+/// D-5 closure (SCHEMA_VERSION 208) — payload for
+/// [`SsbActionType::BaiPromotionDecision`].
+///
+/// Emitted once per [`crate::bai::emit_bai_round_with_canary`] call,
+/// immediately after the `TemplatePromoted` / `TemplateCandidateRejected` row.
+/// Provides a unified, self-contained verdict row so dashboards and analytics
+/// jobs can query the promotion outcome directly without joining across the
+/// three-row sequence (`thompson_sampled` + `bai_arm_updated` + decision row).
+///
+/// `decision` is one of `"promoted"`, `"rejected"`, or `"held"` matching
+/// the [`crate::bai::PromotionDecision`] discriminant. `stage` mirrors the
+/// `stage_label` helper (e.g. `"stage_10"`, `"stage_50"`, `"stage_200"`).
+/// `evidence_pass` and `evidence_total` are the counts from the
+/// [`crate::archive_chain::StagedEvalResult`] fed to the round.
+/// `audit_id` is a fresh [`uuid::Uuid`] formatted as 32-char simple-hex so
+/// external audit tools can correlate this row across logs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BaiPromotionDecisionPayload {
+    /// 32-char simple-hex of the candidate template id.
+    pub template_id: String,
+    /// Outcome: `"promoted"`, `"rejected"`, or `"held"`.
+    pub decision: String,
+    /// Stage label from `stage_label(eval)` (e.g. `"stage_10"`).
+    pub stage: String,
+    /// Number of evidence passes folded into this round.
+    pub evidence_pass: u32,
+    /// Total evidence observations folded into this round.
+    pub evidence_total: u32,
+    /// Fresh uuid (32-char simple-hex) for cross-log correlation.
+    pub audit_id: String,
+}
+
 /// D-6 — payload for [`SsbActionType::HeldOutTaskAdded`].
 ///
 /// Emitted once per `held_out::insert_and_emit` Ok return — a fresh
@@ -20891,9 +21699,15 @@ pub struct AuditMastTaggedPayload {
 /// are aggregated into one `mast_mode_counts` vec on this payload so the
 /// dashboard does not need to merge two SSB rows.
 ///
+/// H-40 extends this payload with `unique_catch_rate`, `decorrelation_score`,
+/// and `insufficient_contribution` fields. All three are `#[serde(default)]`
+/// so existing rows without them deserialize cleanly (RISK-2 mitigation).
+///
 /// Grounding: arXiv:2604.02460 (single-agent beats MAS at iso-budget) +
 /// arXiv:2507.02778 ("Wait" reflection token reduces blind-spot 89.3%) +
-/// arXiv:2502.00674 (Self-MoA, heterogeneous mixing loses 6.6%).
+/// arXiv:2502.00674 (Self-MoA, heterogeneous mixing loses 6.6%) +
+/// arXiv:2506.18203 (Weaver: decorrelated weak verifiers close the
+/// generation-verification gap; the keep/cut metric is unique-catch not lift).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IsoBudgetMeasuredPayload {
     /// Path to the task-fixture TOML used.
@@ -20906,7 +21720,8 @@ pub struct IsoBudgetMeasuredPayload {
     pub single_agent_wait_pass_rate: f64,
     /// `true` iff `full_pipeline_pass_rate - single_agent_wait_pass_rate`
     /// is NOT >= 1 stddev of the fixture's seeds. Surfaced on the
-    /// dashboard so the user sees the architectural cost.
+    /// dashboard so the user sees the architectural cost. Kept for
+    /// backward compatibility; `insufficient_contribution` is the gate.
     pub insufficient_lift: bool,
     /// `true` iff this report is a deterministic stub (host-side scaffold
     /// returned without a live multi-agent run). Always `true` until the
@@ -20914,6 +21729,25 @@ pub struct IsoBudgetMeasuredPayload {
     pub runpod_pending: bool,
     /// Aggregated per-MAST-mode failure counts across both rows.
     pub mast_mode_counts: Vec<MastModeCount>,
+    // --- H-40 decorrelation fields (serde default for backward compat) ---
+    /// H-40: per-role unique-catch rate (string-keyed AgentRole wire tag).
+    /// Fraction of ensemble failures that each role alone got right.
+    /// Default: empty map (stub/pre-H-40 rows).
+    #[serde(default)]
+    pub unique_catch_rate: std::collections::BTreeMap<String, f64>,
+    /// H-40: per-role decorrelation score (string-keyed AgentRole wire tag).
+    /// 1 - mean pairwise error-correlation conditional on ground truth.
+    /// Default: empty map (stub/pre-H-40 rows).
+    #[serde(default)]
+    pub decorrelation_score: std::collections::BTreeMap<String, f64>,
+    /// H-40: per-role prunable predicate. Key is the snake_case AgentRole wire
+    /// tag; value is `true` iff that role is prunable (`low_lift AND
+    /// low_unique_catch_for_THAT_role`). A decorrelated low-lift role has
+    /// `false` and is RETAINED (RD-2). Callers MUST check `runpod_pending`
+    /// before acting. Default: empty map (conservative for pre-H-40 rows and
+    /// stub runs — unknown per-role prunable state).
+    #[serde(default)]
+    pub insufficient_contribution: std::collections::BTreeMap<String, bool>,
 }
 
 /// E-6 — payload for [`SsbActionType::PersonaReanchored`].
@@ -26014,6 +26848,1770 @@ pub struct DarwinianAdmitPayload {
     pub seed: u64,
 }
 
+// ---------------------------------------------------------------------------
+// G-plan payload structs and Kind enums (SCHEMA_VERSION 208-224)
+// ---------------------------------------------------------------------------
+
+/// G-4: MCP rug-pull blocked at http_list_tools gate.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpRugPullBlockedPayload {
+    pub server_url: String,
+    pub schema_blake3_before: String,
+    pub schema_blake3_after: String,
+    pub changed_tools: Vec<String>,
+    pub description_diff_count: u32,
+    pub ingest_origin: String,
+}
+
+/// G-1: taint propagation kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TaintFlowKind {
+    Web,
+    ToolOutput,
+    File,
+    Sandbox,
+}
+
+impl TaintFlowKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Web => "web",
+            Self::ToolOutput => "tool_output",
+            Self::File => "file",
+            Self::Sandbox => "sandbox",
+        }
+    }
+}
+
+/// G-1: data-plane taint flow blocked at destructive sink.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TaintFlowPayload {
+    pub kind: TaintFlowKind,
+    pub origin_blake3: String,
+    pub trust_level: String,
+    pub sink_tool: Option<String>,
+    pub blocked: bool,
+    pub task_id: String,
+}
+
+/// G-3: blast-radius gate block kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BlastRadiusKind {
+    FsEscape,
+    EgressDenied,
+}
+
+impl BlastRadiusKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::FsEscape => "fs_escape",
+            Self::EgressDenied => "egress_denied",
+        }
+    }
+}
+
+impl From<elai_safety::blast_radius::BlastRadiusKind> for BlastRadiusKind {
+    fn from(k: elai_safety::blast_radius::BlastRadiusKind) -> Self {
+        use elai_safety::blast_radius::BlastRadiusKind as SafetyKind;
+        match k {
+            SafetyKind::FsEscape => Self::FsEscape,
+            SafetyKind::EgressDenied => Self::EgressDenied,
+        }
+    }
+}
+
+/// G-3: blast-radius gate block.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BlastRadiusBlockedPayload {
+    pub kind: BlastRadiusKind,
+    pub pre_expansion_command: String,
+    pub post_expansion_command: String,
+    pub target_or_host: String,
+    pub worktree_root_blake3: String,
+    pub trust_label: String,
+    pub ts_ms: i64,
+}
+
+/// G-7: lethal trifecta quarantine.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrifectaQuarantinedPayload {
+    pub task_id: String,
+    pub untrusted_origin_blake3: String,
+    pub sink_tool: String,
+    pub secret_present: bool,
+    pub untrusted_span: bool,
+    pub egress_available: bool,
+    pub quarantined: bool,
+    pub sub_llm_verdict: String,
+}
+
+/// G-2: reproducible-run artifact sealed.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RunArtifactEmittedPayload {
+    pub root_blake3: String,
+    pub guarantee_level: String,
+    pub gate_count: u32,
+    pub seed: u64,
+    pub session_id: String,
+}
+
+/// G-5: reviewer-cockpit DSR score.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewSurfaceScoredPayload {
+    pub session_id: String,
+    pub dsr: f64,
+    pub total_changed_lines: u32,
+    pub attention_lines: u32,
+    pub vouched_hunks: u32,
+    pub unvouched_hunks: u32,
+    pub base_commit: String,
+    pub diff_available: bool,
+    pub diff_unavailable_reason: Option<String>,
+}
+
+/// G-8: signed in-toto provenance attestation emitted.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProvenanceAttestationEmittedPayload {
+    pub session_id: String,
+    pub subject_blake3: String,
+    pub run_artifact_root: String,
+    pub verified_levels: u32,
+    pub all_passed: bool,
+    pub signing_model: String,
+}
+
+/// G-6: SAFEDELTA gate-ON vs gate-OFF measurement.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SafetyDeltaMeasuredPayload {
+    pub suite: String,
+    pub model_id: String,
+    pub safety_delta: f64,
+    pub ci_low: f64,
+    pub ci_high: f64,
+    pub n_tasks: u32,
+    pub seed: u64,
+    pub corpus_blake3: String,
+    pub gate_recall: f64,
+    pub stdout_hash: Option<String>,
+    pub runpod_pending: bool,
+}
+
+/// G-10: drift signal kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DriftSignalKind {
+    FingerprintChanged,
+    CanaryRegressed,
+    MalformedOutputSpike,
+}
+
+impl DriftSignalKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::FingerprintChanged => "fingerprint_changed",
+            Self::CanaryRegressed => "canary_regressed",
+            Self::MalformedOutputSpike => "malformed_output_spike",
+        }
+    }
+}
+
+/// G-10: exogenous behavioral regression suspected.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ModelDriftSuspectedPayload {
+    pub identity_key: String,
+    pub kind: DriftSignalKind,
+    pub signals: Vec<String>,
+    pub per_family_delta: Vec<(String, f64)>,
+    pub affected_template_ids: Vec<String>,
+    pub confirmed_by_fingerprint: bool,
+    pub baseline_captured_at: u64,
+}
+
+/// G-9: write-time secret/PII redaction advisory.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SecretRedactedPayload {
+    pub session_id: String,
+    pub field: String,
+    pub tokens: Vec<String>,
+    pub match_count: u32,
+    pub kind_counts: Vec<(String, u32)>,
+}
+
+/// G-7b: per-change conformal confidence decision.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClaimConfidenceScoredPayload {
+    pub claim_id: String,
+    pub claim_score: f64,
+    pub logprob_component: Option<f64>,
+    pub self_consistency_component: f64,
+    pub exec_agreement_component: f64,
+    pub lane: String,
+    pub tau: f64,
+    pub conformal_verdict: String,
+    pub abstained: bool,
+}
+
+/// G-11: steering-vector refresh triggered.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SteeringVectorRefreshTriggeredPayload {
+    pub pipeline_mode: String,
+    pub rules_db_path: String,
+    pub reason: String,
+}
+
+/// H-10 canvas: canvas op kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CanvasOpKind {
+    NodeCreated,
+    EdgeConnected,
+    /// Node removed from the canvas graph.
+    NodeDeleted,
+    /// Edge removed from the canvas graph.
+    EdgeDeleted,
+    LabelEdited,
+    AnnotationAdded,
+    /// A visual group (cluster) was created around a set of nodes.
+    GroupCreated,
+    NodeForked,
+    LayoutChanged,
+    ScreenshotCaptured,
+}
+
+impl CanvasOpKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NodeCreated => "node_created",
+            Self::EdgeConnected => "edge_connected",
+            Self::NodeDeleted => "node_deleted",
+            Self::EdgeDeleted => "edge_deleted",
+            Self::LabelEdited => "label_edited",
+            Self::AnnotationAdded => "annotation_added",
+            Self::GroupCreated => "group_created",
+            Self::NodeForked => "node_forked",
+            Self::LayoutChanged => "layout_changed",
+            Self::ScreenshotCaptured => "screenshot_captured",
+        }
+    }
+}
+
+/// H-10 canvas: canvas op applied at dispatcher.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CanvasOpPayload {
+    pub kind: CanvasOpKind,
+    pub node_id: String,
+    pub op_data: serde_json::Value,
+    pub mode: String,
+    pub task_id: String,
+    pub session_id: String,
+}
+
+/// H-10 canvas: canvas view event kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CanvasViewKind {
+    ViewSpawned,
+    UiAction,
+    StateCheckpoint,
+}
+
+impl CanvasViewKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ViewSpawned => "view_spawned",
+            Self::UiAction => "ui_action",
+            Self::StateCheckpoint => "state_checkpoint",
+        }
+    }
+}
+
+/// H-10 canvas: canvas view event.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CanvasViewPayload {
+    pub kind: CanvasViewKind,
+    pub view_type: String,
+    pub view_id: String,
+    pub seed_op_ids: Vec<String>,
+    pub node_id: String,
+    pub taint_flagged: bool,
+    pub task_id: String,
+    pub session_id: String,
+}
+
+/// H-10 canvas: canvas activity event kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CanvasActivityKind {
+    Reading,
+    Editing,
+    /// Canvas agent is validating a node or edge (running checks, linting, test assertions).
+    Validating,
+    /// Canvas agent is performing web/doc research for a node.
+    Researching,
+}
+
+impl CanvasActivityKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Reading => "reading",
+            Self::Editing => "editing",
+            Self::Validating => "validating",
+            Self::Researching => "researching",
+        }
+    }
+}
+
+/// H-10 canvas: canvas activity (reading/editing) event.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CanvasActivityPayload {
+    pub kind: CanvasActivityKind,
+    pub target_node_id: String,
+    pub file_path: String,
+    pub symbol_name: Option<String>,
+    pub mode: String,
+    pub label: Option<String>,
+    pub task_id: String,
+}
+
+/// H-1: Anthropic batch API lifecycle kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BatchLifecycleKind {
+    Submitted,
+    Completed,
+    /// Batch expired before all requests resolved (Anthropic API expires batches after 24h).
+    Expired,
+}
+
+impl BatchLifecycleKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Submitted => "submitted",
+            Self::Completed => "completed",
+            Self::Expired => "expired",
+        }
+    }
+
+    /// Alias for [`as_str`]; kept for call-site compat.
+    #[inline]
+    pub fn label(&self) -> &'static str {
+        self.as_str()
+    }
+}
+
+/// H-1: Anthropic batch API lifecycle row.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BatchLifecyclePayload {
+    pub kind: BatchLifecycleKind,
+    pub batch_id: String,
+    pub request_count: u32,
+    pub model: String,
+    pub spend_cents_half: i64,
+    pub task_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// H-plan verifiability substrate payload structs and Kind enums (SCHEMA_VERSION 225+)
+// ---------------------------------------------------------------------------
+
+/// H-17: Sharpe-ratio deflation gate verdict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DeflationGateEvaluatedPayload {
+    pub objective: String,
+    pub data_window: String,
+    pub n_used: u64,
+    pub dsr: f64,
+    pub dsr_pvalue: f64,
+    pub sigma_sr: f64,
+    pub sr_0: f64,
+    pub pbo: f64,
+    pub min_trl: f64,
+    pub verdict: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-18: data-leakage blocked kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LeakageBlockedKind {
+    NoTestSet,
+    PreprocessBeforeSplit,
+    FeatureSelectBeforeSplit,
+    HumanReviewRequired,
+}
+
+impl LeakageBlockedKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::NoTestSet => "no_test_set",
+            Self::PreprocessBeforeSplit => "preprocess_before_split",
+            Self::FeatureSelectBeforeSplit => "feature_select_before_split",
+            Self::HumanReviewRequired => "human_review_required",
+        }
+    }
+}
+
+/// H-18: data-leakage blocked.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LeakageBlockedPayload {
+    pub kind: LeakageBlockedKind,
+    pub kapoor_code: String,
+    pub module_path: String,
+    pub fit_site_file: String,
+    pub fit_site_line: u32,
+    pub fit_site_symbol: String,
+    pub reachability_path: Vec<String>,
+    pub verdict: String,
+    pub suppressed: bool,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-19: lookahead differential kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LookaheadDifferentialKind {
+    Causal,
+    FutureLeak,
+}
+
+impl LookaheadDifferentialKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Causal => "causal",
+            Self::FutureLeak => "future_leak",
+        }
+    }
+}
+
+/// H-19: lookahead differential verdict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LookaheadDifferentialPayload {
+    pub kind: LookaheadDifferentialKind,
+    pub strategy_path: String,
+    pub first_change_column: String,
+    pub first_change_index: u32,
+    pub abs_diff: f64,
+    pub rel_diff: f64,
+    pub tolerance: f64,
+    pub verdict: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-20: trading null-hypothesis test kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TradingNullTestKind {
+    EdgeCollapsedToNull,
+    EdgeSurvivedNull,
+    Unprovable,
+}
+
+impl TradingNullTestKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::EdgeCollapsedToNull => "edge_collapsed_to_null",
+            Self::EdgeSurvivedNull => "edge_survived_null",
+            Self::Unprovable => "unprovable",
+        }
+    }
+}
+
+/// H-20: trading null-hypothesis test verdict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TradingNullTestPayload {
+    pub kind: TradingNullTestKind,
+    pub strategy_path: String,
+    pub statistic: f64,
+    pub p_value: f64,
+    pub null_band_low: f64,
+    pub null_band_high: f64,
+    pub n_trials: u64,
+    pub k_permutations: u64,
+    pub alpha: f64,
+    pub verdict: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-21: rerun hash equality kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RerunHashEqualityKind {
+    Equal,
+    Divergent,
+}
+
+impl RerunHashEqualityKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Equal => "equal",
+            Self::Divergent => "divergent",
+        }
+    }
+}
+
+/// H-21: rerun hash equality verdict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RerunHashEqualityPayload {
+    pub kind: RerunHashEqualityKind,
+    pub strategy_path: String,
+    pub digest_a: String,
+    pub digest_b: String,
+    pub first_divergence_index: u32,
+    pub divergent_metric: String,
+    pub declared_metric_count: u32,
+    pub verdict: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-22: sim vs real parity kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SimRealParityKind {
+    Parity,
+    ReplayGoldenMismatch,
+}
+
+impl SimRealParityKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Parity => "parity",
+            Self::ReplayGoldenMismatch => "replay_golden_mismatch",
+        }
+    }
+}
+
+/// H-22: sim vs real parity verdict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SimRealParityPayload {
+    pub kind: SimRealParityKind,
+    pub strategy_path: String,
+    pub golden_digest: String,
+    pub replay_digest: String,
+    pub first_divergence_index: u32,
+    pub divergent_event: String,
+    pub declared_event_count: u32,
+    pub verdict: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-23: result manifest verified kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ResultManifestVerifiedKind {
+    ReDerived,
+    FabricationDetected,
+}
+
+impl ResultManifestVerifiedKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ReDerived => "re_derived",
+            Self::FabricationDetected => "fabrication_detected",
+        }
+    }
+}
+
+/// H-23: result manifest verified verdict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ResultManifestVerifiedPayload {
+    pub kind: ResultManifestVerifiedKind,
+    pub strategy_path: String,
+    pub run_id: String,
+    pub offending_metric: String,
+    pub declared_result_count: u32,
+    pub manifest_digest: String,
+    pub rederived_digest: String,
+    pub verdict: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-24: differential divergence kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DifferentialDivergenceKind {
+    InvariantHeld,
+    ShadowDiverged,
+    InvariantViolated,
+}
+
+impl DifferentialDivergenceKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::InvariantHeld => "invariant_held",
+            Self::ShadowDiverged => "shadow_diverged",
+            Self::InvariantViolated => "invariant_violated",
+        }
+    }
+}
+
+/// H-24: differential divergence between primary and shadow.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DifferentialDivergencePayload {
+    pub kind: DifferentialDivergenceKind,
+    pub strategy_path: String,
+    pub run_id: String,
+    pub offending_invariant: String,
+    pub declared_trade_count: u32,
+    pub primary_digest: String,
+    pub shadow_digest: String,
+    pub first_divergent_field: String,
+    pub divergence_metric: f64,
+    pub verdict: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-25: gate self-validation kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum GateSelfValidationKind {
+    AllGatesValid,
+    EmptyRegistry,
+    GateFailedToBlock,
+    GateUnreachable,
+    GateOverBlocked,
+}
+
+impl GateSelfValidationKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::AllGatesValid => "all_gates_valid",
+            Self::EmptyRegistry => "empty_registry",
+            Self::GateFailedToBlock => "gate_failed_to_block",
+            Self::GateUnreachable => "gate_unreachable",
+            Self::GateOverBlocked => "gate_over_blocked",
+        }
+    }
+}
+
+/// H-25: gate self-validation mutation score verdict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GateSelfValidationPayload {
+    pub kind: GateSelfValidationKind,
+    pub gates_total: u32,
+    pub gates_killed: u32,
+    pub mutation_score_pct: f64,
+    pub escaped_gate: String,
+    pub escaped_fixture: String,
+    pub run_id: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-26: reward tampering detection kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RewardTamperingKind {
+    NoTampering,
+    EvaluatorModified,
+    ImplausibleRewardDelta,
+}
+
+impl RewardTamperingKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::NoTampering => "no_tampering",
+            Self::EvaluatorModified => "evaluator_modified",
+            Self::ImplausibleRewardDelta => "implausible_reward_delta",
+        }
+    }
+}
+
+/// H-26: reward tampering detection verdict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RewardTamperingPayload {
+    pub kind: RewardTamperingKind,
+    pub harness_blake3: String,
+    pub prior_reward: f64,
+    pub new_reward: f64,
+    pub reward_delta: f64,
+    pub plausible_band: f64,
+    pub run_id: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-27: holdout budget kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HoldoutBudgetKind {
+    Running,
+    Exhausted,
+    QuerySpent,
+    Provisioned,
+}
+
+impl HoldoutBudgetKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Exhausted => "exhausted",
+            Self::QuerySpent => "query_spent",
+            Self::Provisioned => "provisioned",
+        }
+    }
+}
+
+/// H-27: holdout budget exhaustion or running.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HoldoutBudgetPayload {
+    pub kind: HoldoutBudgetKind,
+    pub holdout_id: String,
+    pub objective: String,
+    pub queries_spent: u64,
+    pub budget_total: u64,
+    pub noisy_statistic: Option<f64>,
+    pub data_window: String,
+    pub run_id: String,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// H-28: drift interlock kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DriftInterlockKind {
+    Running,
+    Warning,
+    DriftHalted,
+    HumanUnlocked,
+}
+
+impl DriftInterlockKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Warning => "warning",
+            Self::DriftHalted => "drift_halted",
+            Self::HumanUnlocked => "human_unlocked",
+        }
+    }
+}
+
+/// H-28: drift interlock running/warning/halted.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DriftInterlockPayload {
+    pub kind: DriftInterlockKind,
+    pub strategy_id: String,
+    pub breached_axes: String,
+    pub run_id: String,
+    pub seed: u64,
+    pub evidence_blake3: String,
+}
+
+/// H-17: strategy trial count persisted.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrialRegisteredPayload {
+    pub objective: String,
+    pub data_window: String,
+    pub config_hash: String,
+    pub seed: i64,
+    pub n_after: u64,
+}
+
+/// C-36 extension: MuCoCo inconsistency detected.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MucocoInconsistencyDetectedPayload {
+    pub operator: String,
+    pub language: String,
+    pub source_hash: u64,
+    pub original_output_hash: u64,
+    pub mutated_output_hash: u64,
+    pub divergence: String,
+    pub timestamp_ms: i64,
+}
+
+/// C-36 extension: MuCoCo operator inapplicable skip reason.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MucocoSkipReasonPayload {
+    pub operator: String,
+    pub language: String,
+    pub source_hash: u64,
+    pub skip_reason: String,
+    pub timestamp_ms: i64,
+}
+
+/// SQL CREATE for the strategy_trials auxiliary table used by H-17 TrialLedger.
+pub const CREATE_STRATEGY_TRIALS_TABLE: &str = "\
+CREATE TABLE IF NOT EXISTS strategy_trials (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    objective   TEXT    NOT NULL,
+    data_window TEXT    NOT NULL,
+    config_hash TEXT    NOT NULL,
+    seed        INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL,
+    UNIQUE(objective, data_window, config_hash, seed)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_trials_obj ON strategy_trials(objective, data_window);
+";
+
+/// SQL CREATE for the holdout_budget auxiliary table used by H-19 / H-47.
+///
+/// Schema updated in H-47 to carry the full per-row provenance columns used by
+/// `holdout_budget.rs` (row_id dedup key, kind discriminator, data_window,
+/// seed, created_at_ms, session_id). The old schema only had 5 columns;
+/// `HoldoutBudgetLedger::open` runs idempotent `ALTER TABLE ADD COLUMN`
+/// migrations for existing databases (see `open` in `holdout_budget.rs`).
+pub const CREATE_HOLDOUT_BUDGET_TABLE: &str = "\
+CREATE TABLE IF NOT EXISTS holdout_budget (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    row_id         TEXT    NOT NULL DEFAULT '',
+    kind           TEXT    NOT NULL DEFAULT 'spent',
+    holdout_id     TEXT    NOT NULL,
+    objective      TEXT    NOT NULL,
+    data_window    TEXT    NOT NULL DEFAULT '',
+    budget_total   INTEGER NOT NULL DEFAULT 0,
+    seed           INTEGER NOT NULL DEFAULT 0,
+    created_at_ms  INTEGER NOT NULL DEFAULT 0,
+    session_id     TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_holdout_budget_obj ON holdout_budget(objective);
+CREATE INDEX IF NOT EXISTS idx_holdout_budget_holdout ON holdout_budget(holdout_id, objective, kind);
+";
+
+/// SQL CREATE for the drift_interlock auxiliary table used by H-28.
+pub const CREATE_DRIFT_INTERLOCK_TABLE: &str = "\
+CREATE TABLE IF NOT EXISTS drift_interlock (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id  TEXT    NOT NULL,
+    kind         TEXT    NOT NULL,
+    breached_axes TEXT   NOT NULL,
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_drift_interlock_strat ON drift_interlock(strategy_id);
+";
+
+// ---------------------------------------------------------------------------
+// Additional missing payload types (user-decision, staleness, canvas const)
+// ---------------------------------------------------------------------------
+
+/// H-30: user-decision event kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum UserDecisionEventKind {
+    Captured,
+    Superseded,
+    ProposalSurfaced,
+}
+
+impl UserDecisionEventKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Captured => "captured",
+            Self::Superseded => "superseded",
+            Self::ProposalSurfaced => "proposal_surfaced",
+        }
+    }
+}
+
+/// H-30: user decision captured or superseded.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UserDecisionSupersededPayload {
+    pub kind: UserDecisionEventKind,
+    pub old_fact_id: String,
+    pub new_fact_id: String,
+    pub fact_type: String,
+    pub key: String,
+    pub evidence_blake3: String,
+}
+
+/// H-17 staleness benchmark measured result.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StalenessEvalMeasuredPayload {
+    pub suite: String,
+    pub n_cases: u32,
+    pub sr_rate: f64,
+    pub ipa_rate: f64,
+    pub recognition_application_gap: f64,
+    pub stale_fact_reached_prompt: u64,
+    pub total_retrievals: u64,
+    pub broken_arm: bool,
+    pub instrument_failed: bool,
+    pub seed: u64,
+    pub corpus_blake3: String,
+}
+
+/// D-27.1 — review status for a discovery-candidate template.
+///
+/// Variants:
+///   - `Ratified` — reviewer accepted the candidate for adversarial verification.
+///   - `Rejected`  — reviewer dismissed the candidate (carries a reason string).
+///   - `Pending`   — default state; no reviewer action has been recorded yet.
+///
+/// Serialised as lowercase snake_case via `#[serde(rename_all = "snake_case")]`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Ratified,
+    Rejected,
+    Pending,
+}
+
+/// H-32 payload for [`SsbActionType::FactValidationFailed`].
+///
+/// Emitted by the citation-validity gate when a Tier-A `DomainKnowledge` or
+/// `Mistake` fact carries a DKG symbol citation that no longer resolves against
+/// the current symbol graph. The fact is HARD-EXCLUDED from the injected context
+/// slice; this row is the off-agent artifact (R4 — the agent did not author it).
+///
+/// `reason` is `"stale"` when the symbol was previously resolvable but has since
+/// been renamed or deleted, or `"unknown"` when the citation index was unavailable
+/// (treated as FAIL per R2 — missing evidence is a hard FAIL, not SKIP).
+/// `evidence_blake3` is the blake3 16-hex citation fingerprint (anti-stale: NEVER
+/// sha2/blake2 per CLAUDE.md) of `<name>@<file>:<line>`, or empty string when no
+/// parseable `dkg:` pointer was found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FactValidationFailedPayload {
+    /// `fact_id` of the excluded Tier-A fact.
+    pub fact_id: String,
+    /// The raw `dkg:<name>@<file>:<line>` citation string from `evidence_pointers`,
+    /// or empty when the citation pointer was unparseable.
+    pub citation: String,
+    /// `"stale"` | `"unknown"` (snake_case discriminator; free-form for dashboard
+    /// rendering so future reasons can land without a SCHEMA bump).
+    pub reason: String,
+    /// blake3 16-hex fingerprint of the canonical `<name>@<file>:<line>` string.
+    /// Empty string when no parseable `dkg:` pointer existed on the row.
+    pub evidence_blake3: String,
+}
+
+/// H-33 kind discriminator for [`SsbActionType::MemoryGovernanceEvent`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryGovernanceKind {
+    /// User explicitly deleted/forgot a fact (`elai memory forget` or dashboard).
+    Forgotten,
+    /// User pinned a fact to prevent decay-tick from reducing its trust score.
+    Pinned,
+    /// User unpinned a previously-pinned fact (decay resumes on next tick).
+    Unpinned,
+}
+
+/// H-33 payload for [`SsbActionType::MemoryGovernanceEvent`].
+///
+/// Emitted by `elai memory forget|pin|unpin` and the dashboard
+/// `memory_forget` / `memory_pin` Tauri commands. The payload is the
+/// authoritative off-agent governance beacon (R4) — the fact store
+/// soft-close is the primary mutation; this row lets auditors and the decay
+/// tick observe the governance intent without polling the store.
+///
+/// `actor` is `"cli"` or `"dashboard"` to distinguish the write path.
+/// `session_id` is the ELAI session that emitted the beacon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryGovernanceEventPayload {
+    /// `fact_id` of the governed fact.
+    pub fact_id: String,
+    /// Governance action taken.
+    pub kind: MemoryGovernanceKind,
+    /// `"cli"` | `"dashboard"` — write-path discriminator.
+    pub actor: String,
+    /// ELAI session that emitted the beacon.
+    pub session_id: String,
+    /// Wall-clock ms of emission.
+    pub created_at_ms: u64,
+}
+
+/// H-34 payload for [`SsbActionType::McpToolDeferred`].
+///
+/// Emitted by `mcp_glue::RuntimeMcpState::call_tool` on each cache-miss
+/// (first use of a withheld tool) when `ELAI_MCP_DEFER_SCHEMA_ENABLE=1`.
+/// One row per deferred-schema resolve, NOT per subsequent hit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpToolDeferredPayload {
+    /// MCP server name (e.g. `"local-rag"`).
+    pub server_name: String,
+    /// Fully-qualified tool name (e.g. `"local-rag__mcp_search_context"`).
+    pub tool_qualified_name: String,
+    /// Schema-resolve latency in nanoseconds.
+    pub resolve_ns: u64,
+    /// `true` when the schema was already cached (hit); `false` on first-resolve (miss).
+    pub cache_hit: bool,
+    /// Number of tools in the always-floor injected set at time of this resolve.
+    pub injected_floor_size: u32,
+}
+
+/// H-34 payload for [`SsbActionType::McpSchemaBudgetMeasured`].
+///
+/// Emitted by `elai bench mcp-schema-budget`. All token counts are COMPUTED
+/// from the corpus fixture — no numeric literals in the runner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpSchemaBudgetMeasuredPayload {
+    /// Suite label (e.g. `"mcp_schema_budget"`).
+    pub suite: String,
+    /// Baseline schema tokens per turn (all tools injected eagerly).
+    pub baseline_schema_tokens_per_turn: u64,
+    /// Injected schema tokens per turn after defer-load (floor + selected only).
+    pub injected_schema_tokens_per_turn: u64,
+    /// Reduction in tokens: `baseline - injected` (signed; negative = regression).
+    pub reduction_tokens: i64,
+    /// Number of deferred-schema resolves recorded across the fixture run.
+    pub deferred_resolves: u32,
+    /// Deterministic RNG seed used (`ELAI_SEED`, default 0).
+    pub seed: u64,
+    /// blake3 hex of the canonical corpus bytes (provenance / staleness pin).
+    pub corpus_blake3: String,
+}
+
+/// H-35 payload for [`SsbActionType::SessionRewound`].
+///
+/// Emitted by `elai rewind <target>` (CLI) and the `rewind_session` Tauri command
+/// on each successful rewind. A no-op rewind (target==head) emits NO row.
+/// All fields are intent/outcome only -- message content is NEVER stored here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRewoundPayload {
+    /// Session that was rewound.
+    pub session_id: String,
+    /// SSB seq that was the rewind target (the "go back to here" point).
+    pub target_seq: i64,
+    /// SSB seq that was the head BEFORE the rewind (the "current" point).
+    pub head_seq_before: i64,
+    /// Scope: "conversation" | "code" | "both".
+    pub scope: String,
+    /// Whether the tail past target_seq was summarized via compact_session.
+    pub summarized: bool,
+    /// Replay-session id minted by ssb_resume_from (code-restore path).
+    /// None when scope=="conversation".
+    pub replay_session_id: Option<String>,
+    /// Outcome of the code-restore predicate check:
+    /// "Accepted" | "Refused" | "PredicateUnavailable" | "n/a".
+    pub replay_outcome: String,
+    /// blake3 hex of the (seq, action_type, event_blake3) triple of the
+    /// tail that was moved past. Empty string on no-op (should never reach
+    /// this field since no-op emits no row).
+    pub tail_fingerprint_blake3: String,
+}
+
+/// H-36 discriminator: which trigger fired the notification.
+/// `serde(rename_all = "snake_case")` keeps wire tags stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentNotificationKind {
+    /// The task completed (PhaseComplete write succeeded, anti-fabrication gate
+    /// did NOT halt the run).
+    Completion,
+    /// An autonomous decision escalated to the human (AutonomyDecision::RequestHuman,
+    /// fix_and_rerun cap exhausted).
+    NeedsInput,
+}
+
+/// H-36 payload for [`SsbActionType::AgentNotificationEmitted`].
+///
+/// Written by `notify_dispatch::NotificationDispatcher::notify` once per dispatch
+/// event. Never updated; append-only (one row per fire). Token-injection surface is
+/// ZERO -- notification text is two fixed short strings, never model-generated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentNotificationEmittedPayload {
+    /// Two-arm discriminator: Completion | NeedsInput.
+    pub kind: AgentNotificationKind,
+    /// Bitset: bit 0 = terminal escape attempted, bit 1 = OS notification attempted.
+    /// Both legs are always attempted when applicable (escape when TTY, OS when
+    /// ELAI_NOTIFY_ENABLE=1). 0b01 = escape-only (default, no env gate needed).
+    pub surfaces_attempted: u8,
+    /// Bitset matching `surfaces_attempted`: bit set iff the surface SUCCEEDED.
+    /// OS notification bit clear when the platform binary is absent (fail-graceful,
+    /// not panic); terminal escape bit clear on non-TTY stdout.
+    pub surfaces_succeeded: u8,
+    /// Session ID at the time of dispatch (from the SSB writer's session context).
+    pub session_id: String,
+    /// Unix milliseconds at dispatch time (from ClockProvider).
+    pub ts_ms: u64,
+}
+
+/// H-37 discriminator: outcome of the plan-approval gate.
+/// Pattern-2 single-variant with 4-arm kind discriminator.
+/// `serde(rename_all = "snake_case")` keeps wire tags stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanDecisionKind {
+    /// Human (or LOW-risk auto-advance) approved the plan.
+    Approve,
+    /// Human redirected to a different valid FSM target.
+    Redirect,
+    /// Human (or fail-closed gate) rejected the plan; FSM stays at source.
+    Reject,
+    /// Autonomous mode with gate handle absent: auto-advanced without prompt.
+    AutoAdvance,
+}
+
+impl PlanDecisionKind {
+    /// SQL/wire label for the kind (used in SSB payload serialisation).
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Redirect => "redirect",
+            Self::Reject => "reject",
+            Self::AutoAdvance => "auto_advance",
+        }
+    }
+}
+
+/// H-37 payload for [`SsbActionType::PlanDecisionEvent`].
+///
+/// Emitted once per PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST transition
+/// attempt when `ELAI_PLAN_APPROVAL_GATE_ENABLE=1`. Append-only; one row per
+/// gate invocation. A REJECT row is followed by NO PhaseTransition row (FSM
+/// stays at source). A REDIRECT row carries `target_state` = the redirected
+/// target, not TESTING_FIRST.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanDecisionPayload {
+    /// Outcome: Approve | Redirect | Reject | AutoAdvance.
+    pub decision_kind: PlanDecisionKind,
+    /// The FSM target state attempted (typically "TESTING_FIRST"; "PLANNING" on Redirect).
+    pub target_state: String,
+    /// Risk classification used by the gate (LOW/MEDIUM/HIGH).
+    pub risk_level: String,
+    /// Human-provided reason for Reject or Redirect; None for Approve/AutoAdvance.
+    pub reason: Option<String>,
+    /// FSM phase label at the time of the gate invocation.
+    pub plan_session_id: String,
+}
+
+/// H-38 outcome discriminator for [`StopConfirmationPayload`].
+///
+/// 3-arm discriminator for the Pattern-2 single-variant `StopConfirmationEvent`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StopOutcomeKind {
+    /// The user confirmed; the stop proceeds.
+    ConfirmedProceed,
+    /// The user rejected the prompt (or no gate was installed — fail-closed); stop held.
+    RejectedHeld,
+    /// Cost + unsaved + pod all below thresholds; stop passed with zero friction.
+    /// Emitted only when `ELAI_STOP_COST_CONFIRM_ENABLE=1` (SSB-telemetry-gated).
+    PassedNoFriction,
+}
+
+/// H-38 payload for [`SsbActionType::StopConfirmationEvent`].
+///
+/// Emitted once per `dispatch_stop` call that reaches the cost-gate path.
+/// `ConfirmedProceed` / `RejectedHeld` are emitted unconditionally (the safety
+/// behavior); `PassedNoFriction` only when `ELAI_STOP_COST_CONFIRM_ENABLE=1`.
+/// The `cost_usd` field mirrors what `SsbViewer::cloud_spend_summary` returns for
+/// the current UTC day at stop time — recomputable from the SSB CloudSpend ledger
+/// under any `ELAI_SEED` (off-agent, R4-compliant).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StopConfirmationPayload {
+    /// Gate outcome: ConfirmedProceed | RejectedHeld | PassedNoFriction.
+    pub outcome: StopOutcomeKind,
+    /// Day-spend (USD) at the moment of the stop (from CloudSpend ledger, may be 0.0).
+    pub cost_usd: f64,
+    /// Number of unsaved artifacts in the run at stop time (0 = fully saved).
+    pub unsaved_count: u32,
+    /// Wall-clock milliseconds since UNIX epoch at stop time.
+    pub ts_ms: i64,
+}
+
+// === H-39 (SCHEMA_VERSION 218) -- AbstentionScored substrate
+
+/// H-39 payload for [`SsbActionType::AbstentionScored`].
+///
+/// Emitted ONCE per bench run after computing the [`AbstentionAggregate`]
+/// over the run's outcome triples. Closes the self-improvement loop
+/// misalignment: D-16's `RefusalDecision::Abstain` fires at inference but
+/// darwin_admit_loop's reward was abstention-blind (GAP-1, H-39 plan §Context).
+///
+/// Scoring formula (arXiv:2509.04664 Table 2):
+///   - correct & answered  -> +1.0
+///   - abstained           ->  0.0
+///   - answered & wrong    -> -t/(1-t) = -3.0 at default t=0.75
+///
+/// Off-agent artifact (R4-compliant): the fields are recomputable from the
+/// frozen fixture + ELAI_SEED; the row is written by the bench runner, not
+/// by the agent under test. Flat beacon (no Kind discriminator).
+///
+/// Default-ON, kill-switch `ELAI_ABSTENTION_SCORE_DISABLE` (W-2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AbstentionScoredPayload {
+    /// Benchmark suite label (e.g. "seccodeplt", "safedelta").
+    pub suite: String,
+    /// Mean abstention-aware score over all n items. Range [-penalty, +1.0].
+    pub mean_score: f64,
+    /// Fraction of items that were abstentions. In [0, 1].
+    pub abstention_rate: f64,
+    /// Fraction of items that were confident-wrong (answered but incorrect). In [0, 1].
+    pub confident_wrong_rate: f64,
+    /// Confidence target t used. LOCKED at DEFAULT_CONFIDENCE_TARGET = 0.75.
+    pub t: f64,
+    /// Number of items scored.
+    pub n: u32,
+    /// Deterministic RNG seed used to assemble the run.
+    pub seed: u64,
+    /// blake3 hex-prefix of the corpus blob (provenance; never the full corpus).
+    pub corpus_blake3: String,
+}
+
+// === H-41 (SCHEMA_VERSION 219) -- CheckerGapDetected substrate
+
+/// H-41 payload for [`SsbActionType::CheckerGapDetected`].
+///
+/// Emitted at the `route_claim_with_gap` call site (wrapping
+/// `agent_pool::route_claim`) when a Factual or Computational claim falls to
+/// a non-Constructive grounding mode because no `VerifierKind::Deterministic`
+/// verifier is present in `OrchContext.available_verifiers`.
+///
+/// Off-agent artifact (R4-compliant): written by the routing wrapper, NOT by
+/// the agent whose claim is being graded. The backlog row is verifiable from
+/// the SSB journal independently of the agent. Missing = FAIL (R1).
+///
+/// Wire-dark under `ELAI_CHECKER_GAP_ENABLE` kill-switch (R9).
+/// Flat beacon (no Kind discriminator). TOTAL_VARIANTS 529 -> 530.
+///
+/// Grounding:
+/// - Kambhampati arXiv:2402.08115 — Mode-A coverage is the verification lever.
+/// - Xu arXiv:2401.11817 Table 3 — NP-complete / undecidable = never-LLM-grade.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckerGapDetectedPayload {
+    /// Identifier of the claim that triggered the gap (mirrors `claim_id` in
+    /// the paired `claim_routed` row).
+    pub claim_id: String,
+    /// Claim type label — one of the [`crate::claim::ClaimType`] `as_str()`
+    /// values (`"factual"` or `"computational"` in the gap path).
+    pub claim_type: String,
+    /// Xu Table-3 complexity taxon — one of the
+    /// [`crate::checker_coverage::ComplexityTaxon`] `as_str()` values.
+    pub complexity_taxon: String,
+    /// The grounding mode the claim FELL to (e.g. `"falsifiability_cross_family"`
+    /// or `"conformal_refusal"`). Mirrors the `mode` field in the paired
+    /// `claim_routed` row.
+    pub fell_to_mode: String,
+    /// Wall-clock timestamp (ms since UNIX_EPOCH) from the injected
+    /// `ClockProvider`. Recomputable from ELAI_SEED (GD-2).
+    pub ts_ms: i64,
+}
+
+// === H-42 (SCHEMA_VERSION 220) -- ReasoningBudgetScaled substrate
+
+/// H-42 payload for [`SsbActionType::ReasoningBudgetScaled`].
+///
+/// Emitted at both dispatch sites (agent_pool::spawn and bsp/engine.rs timeout path)
+/// when `reasoning_budget::scale_grc_budget` raises a sub-task's GRC budget above the
+/// base per-role config.
+///
+/// Off-agent artifact (R4-compliant): written at the dispatch call site by the
+/// orchestrator, NOT by the agent whose budget is being scaled. The row is verifiable
+/// from the SSB journal independently of the agent. Missing = FAIL (R1).
+///
+/// Default-ON, kill-switch `ELAI_REASONING_BUDGET_SCALE_DISABLE`.
+/// Pattern-2 single-variant 2-arm ReasoningBudgetScaledKind: DepthBound / AccessBound.
+/// TOTAL_VARIANTS 530 -> 531.
+///
+/// Grounding:
+/// - Merrill & Sabharwal arXiv:2310.07923 — single forward pass is bounded ~TC0;
+///   more context buys ACCESS not DEPTH. Formal basis for the depth-not-width guard.
+/// - Li et al. arXiv:2402.12875 — T serial CoT steps simulate a size-T circuit.
+/// - Yehudai et al. arXiv:2503.01544 — compositional tasks need ~O(n) CoT tokens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningBudgetScaledPayload {
+    /// Dominant failure class for the SSB Kind arm: "depth_bound", "access_bound",
+    /// or "neither".  Derived from [`crate::reasoning_budget::FailureClass::as_ssb_kind_str`].
+    /// On a normal dispatch (no prior failure) this is "neither".
+    pub kind: String,
+    /// Agent role name (e.g. "executor", "auditor"). Mirrors AgentGrcConfig.role.
+    pub role: String,
+    /// Base (un-scaled) max_calls from the per-role AgentGrcConfig before scaling.
+    pub base_calls: u32,
+    /// Serial depth d computed by `estimate_serial_depth(level)`.
+    /// 0 = Concept, 1 = Phase, 2 = Step, 3 = BabyStep.
+    pub serial_depth: u32,
+    /// Scaled max_calls after `scale_grc_budget(base, d)`, clamped to
+    /// `LOCKED_BUDGET_CEILING × base_calls`.
+    pub scaled_calls: u32,
+    /// Effective ceiling = `LOCKED_BUDGET_CEILING × base_calls`. Serialised for
+    /// auditability — verifiers can confirm no row exceeds its own ceiling.
+    pub ceiling: u32,
+    /// ELAI_SEED value at the time of dispatch (GD-2 reproducibility).
+    /// Recomputed identically from (base_calls, serial_depth) under the same seed.
+    pub seed: u64,
+}
+
+// === H-43 (SCHEMA_VERSION 221) -- FitnessEvaluated substrate
+
+/// H-43 Kind discriminator for [`SsbActionType::FitnessEvaluated`].
+///
+/// - `ExecutionPassRate`: primary signal — pass_rate over the frozen test corpus
+///   (CodeRM arXiv:2501.01054). Emitted for candidates that complete evaluation.
+/// - `DualAgreement`: secondary signal — dual-execution output-consensus mass
+///   (CodeT arXiv:2207.10397). Emitted alongside ExecutionPassRate.
+/// - `FitnessRegression`: candidate scored below its parent's fitness. Emitted
+///   when a child's fitness < parent's fitness (two-gate margin < 0). Signals
+///   the loop is not climbing — the promotion gate sees a negative margin.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FitnessEvaluatedKind {
+    /// Primary pass-rate signal (CodeRM); candidate fitness measured by
+    /// execution against the frozen test corpus.
+    ExecutionPassRate,
+    /// Secondary dual-agreement signal (CodeT); output-consensus mass
+    /// across solutions over the same test corpus.
+    DualAgreement,
+    /// Candidate scored below parent — the loop would regress if promoted.
+    FitnessRegression,
+}
+
+impl FitnessEvaluatedKind {
+    /// Stable snake_case wire string for the SSB kind arm.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ExecutionPassRate => "execution_pass_rate",
+            Self::DualAgreement => "dual_agreement",
+            Self::FitnessRegression => "fitness_regression",
+        }
+    }
+}
+
+/// H-43 payload for [`SsbActionType::FitnessEvaluated`].
+///
+/// Emitted once per scored candidate in
+/// `darwin_admit_loop::run_one_generation` under
+/// `cfg(feature = "darwinian-evolve")` and `ELAI_DARWINIAN_LOOP_ENABLE=1`.
+///
+/// Off-agent artifact (R4): written at the scoring call site inside the
+/// orchestrator, NOT by the candidate whose fitness is being measured.
+/// Missing rows = FAIL (R1): absence means the fitness gate never ran.
+///
+/// Wiring:
+/// - `pass_rate`: CodeRM signal — fraction of frozen corpus tests that passed.
+/// - `dual_agreement`: CodeT signal — output-consensus mass.
+/// - `fitness`: weighted composite = 0.7 * pass_rate + 0.3 * dual_agreement.
+///   Weights are LOCKED at compile time (VD-1 / TD-2 freeze); a self-mod
+///   loop cannot tune them toward a gameable signal.
+/// - `test_set_hash`: blake3 of the frozen test corpus bytes (provenance pin,
+///   anti-gaming R8; the corpus is gate-frozen and read-only to the loop).
+/// - `candidate_blake3`: the 16-char hex prefix from `candidate_blake3()`.
+///
+/// GD-2 reproducibility: the `{pass_rate, dual_agreement, fitness}` triple
+/// recomputes byte-identically under the same `seed` and `test_set_hash`.
+/// TOTAL_VARIANTS 531 -> 532.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FitnessEvaluatedPayload {
+    /// Dominant signal arm: `ExecutionPassRate` for normal scoring;
+    /// `DualAgreement` for the agreement leg; `FitnessRegression` when the
+    /// child scored below the parent.
+    pub kind: FitnessEvaluatedKind,
+    /// Fraction of frozen corpus tests the candidate passed (CodeRM signal).
+    /// In [0.0, 1.0]; 0.0 = no tests passed.
+    pub pass_rate: f64,
+    /// Dual-execution output-consensus mass (CodeT signal). In [0.0, 1.0].
+    pub dual_agreement: f64,
+    /// Number of frozen corpus tests evaluated.
+    pub tests_total: u32,
+    /// Weighted composite fitness = W_PASS * pass_rate + W_AGREE * dual_agreement.
+    /// Weights are LOCKED (0.7 / 0.3) per VD-1.
+    pub fitness: f64,
+    /// ELAI_SEED value at the time of evaluation (GD-2 reproducibility).
+    pub seed: u64,
+    /// blake3 hash of the frozen test corpus bytes (anti-gaming provenance pin).
+    /// A zero array indicates a test-only / fixture context.
+    pub test_set_hash: [u8; 32],
+    /// blake3 hex-prefix (16 chars) of the candidate `config_blob`.
+    pub candidate_blake3: String,
+}
+
+// === H-44 (SCHEMA_VERSION 222) -- TrapBehaviorDetected substrate
+
+/// H-44 Kind discriminator for [`SsbActionType::TrapBehaviorDetected`].
+///
+/// - `ImpossiblePassExploit`: the candidate passed a frozen conflict-spec task
+///   where a correct solution CANNOT pass (ImpossibleBench 2510.20270).
+///   Pass-rate on an impossible task == cheat-rate.
+/// - `IsomorphMismatch`: the candidate passed the original task but failed a
+///   logically-isomorphic rewrite (Isomorphic-Perturbation 2604.15149).
+///   Passes original but fails isomorph == gaming the verifier.
+/// - `ExecutionHallucination`: the candidate looks correct but behaves wrongly
+///   at runtime — "looks right, runs wrong" (CodeHalu 2405.00253). Detected
+///   via the execution fitness harness (H-43 compose, GD-1).
+/// - `KeywordFallback`: the keyword-grep advisory triggered (retained as cheap
+///   first-pass). NEVER the sole blocker (VD-2). Emitted only when no
+///   behavioral leg fired and the keyword grep found a match.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrapBehaviorDetectedKind {
+    /// ImpossibleBench conflict canary: candidate passed an impossible task
+    /// (arXiv:2510.20270, Zhong/Raghunathan/Carlini).
+    ImpossiblePassExploit,
+    /// Isomorphic-Perturbation mismatch: passes original, fails isomorphic
+    /// rewrite (arXiv:2604.15149).
+    IsomorphMismatch,
+    /// Execution hallucination: looks right but fails execution (CodeHalu
+    /// arXiv:2405.00253, composes H-43 ExecutionFitnessHarness).
+    ExecutionHallucination,
+    /// Keyword-grep advisory triggered (cheap first-pass only, VD-2).
+    KeywordFallback,
+}
+
+impl TrapBehaviorDetectedKind {
+    /// Stable snake_case wire string for the SSB kind arm.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ImpossiblePassExploit => "impossible_pass_exploit",
+            Self::IsomorphMismatch => "isomorph_mismatch",
+            Self::ExecutionHallucination => "execution_hallucination",
+            Self::KeywordFallback => "keyword_fallback",
+        }
+    }
+}
+
+/// H-44 payload for [`SsbActionType::TrapBehaviorDetected`].
+///
+/// Emitted from `darwin_admit_loop::score_candidate` guard chain step (ii)
+/// under `cfg(feature = "darwinian-evolve")` and `ELAI_DARWINIAN_LOOP_ENABLE=1`.
+///
+/// Off-agent artifact (R4): written at the guard chain call site, NOT by the
+/// candidate whose config is being evaluated. Missing rows = FAIL (R1).
+///
+/// The `recall` / `fp_rate` / `n` fields carry the measured recall of the
+/// behavioral detector over the frozen TRACE-style corpus (VD-2). A detector
+/// with UNMEASURED recall is a FAIL per the wiring contract stub_ban.
+///
+/// `corpus_hash` is the blake3 hash of the frozen corpus bytes (anti-gaming
+/// provenance pin, R8 / TD-2 freeze). NEVER blake2 or sha2.
+///
+/// GD-2 reproducibility: `recall` and `fp_rate` recompute byte-identically
+/// under the same `seed` and `corpus_hash` over the frozen corpus.
+/// TOTAL_VARIANTS 532 -> 533.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrapBehaviorDetectedPayload {
+    /// Which behavioral detection arm fired (or keyword fallback).
+    pub kind: TrapBehaviorDetectedKind,
+    /// Measured recall of the behavioral detector over the frozen TRACE-style
+    /// corpus: fraction of planted hacks the detector caught. In [0.0, 1.0].
+    pub recall: f64,
+    /// Measured false-positive rate over the frozen corpus. In [0.0, 1.0].
+    pub fp_rate: f64,
+    /// Number of corpus pairs the recall was measured over.
+    pub n: usize,
+    /// blake3 hash of the frozen corpus bytes (provenance pin, never blake2/sha2).
+    pub corpus_hash: [u8; 32],
+    /// blake3 hex-prefix (16 chars) of the candidate `config_blob`.
+    pub candidate_blake3: String,
+    /// ELAI_SEED value at the time of evaluation (GD-2 reproducibility).
+    pub seed: u64,
+    /// Whether a behavioral leg (not keyword-only) was the deciding signal.
+    pub behavioral_flag: bool,
+}
+
+// === H-45 (SCHEMA_VERSION 223) -- PromotionScoreAggregated substrate
+
+/// H-45 Kind discriminator for [`SsbActionType::PromotionScoreAggregated`].
+///
+/// - `WorstCaseScored`: the aggregate is dominated by the worst-case (min)
+///   signal; emitted when only one family verdict is available (single-view
+///   + penalty) or the variance contribution is below the kappa threshold.
+/// - `VariancePenalized`: two or more distinct-family verdicts present; the
+///   variance penalty is load-bearing in the aggregate (both WCO + UWO terms
+///   are non-trivial; Coste 2310.02743).
+/// - `LineageDiverseDisagree`: cross-view disagreement exceeded
+///   `DISAGREEMENT_BAND`; promotion is BLOCKED. The payload carries the
+///   spread and band for audit (Co-rewarding 2508.00410 two-views stability).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionScoreAggregatedKind {
+    /// Worst-case signal from a single-family or low-variance aggregate.
+    WorstCaseScored,
+    /// Variance penalty load-bearing; multiple distinct families present.
+    VariancePenalized,
+    /// Cross-view disagreement exceeded the locked band; promotion blocked.
+    LineageDiverseDisagree,
+}
+
+impl PromotionScoreAggregatedKind {
+    /// Stable snake_case wire string for the SSB kind arm.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::WorstCaseScored => "worst_case_scored",
+            Self::VariancePenalized => "variance_penalized",
+            Self::LineageDiverseDisagree => "lineage_diverse_disagree",
+        }
+    }
+}
+
+/// H-45 payload for [`SsbActionType::PromotionScoreAggregated`].
+///
+/// Emitted from `darwin_admit_loop::run_one_generation` at the promotion gate
+/// call site for every scored candidate under `cfg(feature = "darwinian-evolve")`
+/// and `ELAI_DARWINIAN_LOOP_ENABLE=1`.
+///
+/// Off-agent artifact (R4): written at the guard chain call site, NOT by the
+/// candidate whose config is being evaluated. Missing rows = FAIL (R1).
+///
+/// The `worst_case` field is the value that `two_gate_promote_aggregate` compares
+/// to `tau`. A self-mod loop that replaces `worst_case` with `mean` as the margin
+/// signal restores the overoptimization path (VD-3 stub_ban).
+///
+/// `tau` is the PRMBench-calibrated locked constant (arXiv:2501.03124).
+/// `calibrated_at` is the locked date string (TD-2 freeze).
+///
+/// GD-2 reproducibility: `{worst_case, variance, mean, disagreement}` recompute
+/// byte-identically under the same `seed` and verdicts.
+/// TOTAL_VARIANTS 533 -> 534.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromotionScoreAggregatedPayload {
+    /// Which arm of the aggregation fired.
+    pub kind: PromotionScoreAggregatedKind,
+    /// Worst-case / variance-penalized aggregate (WCO + UWO; Coste 2310.02743).
+    /// This is the margin `two_gate_promote_aggregate` compares to `tau`.
+    pub worst_case: f64,
+    /// Sample variance across the lineage verdicts.
+    pub variance: f64,
+    /// Arithmetic mean of the verdicts (NOT the promotion margin — VD-3).
+    pub mean: f64,
+    /// Spread (max − min) across family verdicts; disagreement diagnostic.
+    pub disagreement: f64,
+    /// The `tau` value used in the promotion gate at the time of scoring.
+    /// PRMBench-calibrated + locked (arXiv:2501.03124).
+    pub tau: f64,
+    /// ISO-8601 date string when `tau` was last calibrated against PRMBench.
+    /// LOCKED — a self-mod loop must not update this field.
+    pub calibrated_at: String,
+    /// ELAI_SEED value at the time of evaluation (GD-2 reproducibility).
+    pub seed: u64,
+}
+
+/// H-46 — Kind discriminator for [`SsbActionType::CladeSelected`].
+///
+/// - `CladeMetaproductivity`: CMP override fired; the selected node had
+///   `clade_size >= 1` measured descendants and CMP is the load-bearing signal
+///   (HGM 2510.21614 Metaproductivity-Performance Mismatch).
+/// - `ImmediateScoreFallback`: the selected node has no measured descendants
+///   (`clade_size == 0`); selection fell back to the immediate sigmoid score
+///   (cold-start guard — CMP only overrides once a lineage exists).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CladeSelectedKind {
+    /// CMP aggregate fired; clade_size >= 1; load-bearing signal is the
+    /// aggregated execution-grounded descendant delta.
+    CladeMetaproductivity,
+    /// No measured descendants; fallback to immediate sigmoid score.
+    ImmediateScoreFallback,
+}
+
+impl CladeSelectedKind {
+    /// Stable snake_case wire string for the SSB kind arm.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CladeMetaproductivity => "clade_metaproductivity",
+            Self::ImmediateScoreFallback => "immediate_score_fallback",
+        }
+    }
+}
+
+/// H-46 payload for [`SsbActionType::CladeSelected`].
+///
+/// Emitted from `config_archive::select_parent_with_cmp` on the REAL loop
+/// selection step (`darwin_admit_loop::run_one_generation` -> `select_parent` ->
+/// CMP key) for every parent selection under `cfg(feature = "darwinian-evolve")`
+/// and `ELAI_DARWINIAN_LOOP_ENABLE=1`.
+///
+/// Off-agent artifact (R4): written at the selection call site, NOT by the
+/// candidate being evaluated. Missing rows = FAIL (R1).
+///
+/// VD-1: `cmp` aggregates execution-grounded descendant deltas (H-43 signal),
+/// NEVER byte-hash values. A self-mod loop replacing `cmp` with a byte-hash
+/// restores the GAP-1 noise path — that is the `ImmediateScoreFallback` stub-ban.
+///
+/// GD-2 reproducibility: `{cmp, clade_size, immediate_score}` recompute
+/// byte-identically under the same `seed` and `fitness_deltas`.
+/// TOTAL_VARIANTS 534 -> 535.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CladeSelectedPayload {
+    /// Which arm fired.
+    pub kind: CladeSelectedKind,
+    /// Stable id of the selected parent variant.
+    pub node_id: String,
+    /// Clade-Metaproductivity aggregate (mean execution-grounded delta of
+    /// direct descendants). Equals `immediate_score` on `ImmediateScoreFallback`.
+    pub cmp: f64,
+    /// Count of descendants that contributed a measured delta to `cmp`.
+    /// Zero on `ImmediateScoreFallback`.
+    pub clade_size: usize,
+    /// Sigmoid score of the selected node's own `alpha` (retained for audit).
+    pub immediate_score: f64,
+    /// Snake_case wire string of the selection key used
+    /// (`"clade_metaproductivity"` or `"immediate_score_fallback"`).
+    pub key_used: String,
+    /// ELAI_SEED at the time of selection (GD-2 reproducibility).
+    pub seed: u64,
+}
+
+/// H-47 — Kind discriminator for [`SsbActionType::EvalFirewallEvent`].
+///
+/// - `PreUpdateItemRejected`: a held-out item's date precedes the last config
+///   update (LiveCodeBench 2403.07974 temporal gate); the item is rejected to
+///   prevent scoring on memorized content.
+/// - `TemplateRegenerated`: a templated eval item was regenerated fresh for this
+///   generation (GSM-Symbolic 2410.05229 score-time instance generation).
+/// - `IndistinguishabilityProbe`: the eval-awareness distinguishability measurement
+///   (VD-5 sandbagging risk surface — high distinguishability = model may detect eval).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalFirewallEventKind {
+    /// Held-out item rejected: date precedes the last ConfigVariant.created_at.
+    PreUpdateItemRejected,
+    /// Templated task regenerated fresh via blake3-seeded generation.
+    TemplateRegenerated,
+    /// Eval-awareness probe measurement (Jaccard distinguishability score).
+    IndistinguishabilityProbe,
+}
+
+impl EvalFirewallEventKind {
+    /// Stable snake_case wire string for the SSB kind arm.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PreUpdateItemRejected => "pre_update_item_rejected",
+            Self::TemplateRegenerated => "template_regenerated",
+            Self::IndistinguishabilityProbe => "indistinguishability_probe",
+        }
+    }
+}
+
+/// H-47 payload for [`SsbActionType::EvalFirewallEvent`].
+///
+/// Emitted ONCE per generation from `darwin_admit_loop::run_one_generation`
+/// after the per-item eval firewall pass closes. The `kind` field names the
+/// dominant arm that fired for the generation; all counter fields are aggregates.
+///
+/// Budget queries REUSE `HoldoutBudgetEvent` (GD-1: no second budget variant).
+/// The `budget_remaining` field mirrors the ledger's remaining count from the
+/// last `query_holdout` outcome in this generation.
+///
+/// VD-5 honest residue: `distinguishability` near 0.0 reduces sandbagging risk
+/// but cannot eliminate it — a strong model can detect evals from semantic cues
+/// not captured by n-gram similarity.
+///
+/// GD-2 reproducibility: `{items_rejected, regen_count}` recompute
+/// byte-identically under the same `seed` and `generation_id`.
+/// TOTAL_VARIANTS 535 -> 536.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvalFirewallPayload {
+    /// Which arm fired (the dominant event for this generation).
+    pub kind: EvalFirewallEventKind,
+    /// Count of held-out items that passed the date-gate and were scored.
+    pub items_scored: u32,
+    /// Count of items rejected by the date-gate (PreUpdateItemRejected).
+    pub items_rejected: u32,
+    /// Count of items for which template-regen produced a fresh variant.
+    pub regen_count: u32,
+    /// Remaining Thresholdout budget after this generation (from last query).
+    /// Saturates at `i64::MAX` on no-query generations.
+    pub budget_remaining: i64,
+    /// Jaccard distinguishability score from the indistinguishability probe.
+    /// 0.0 = indistinguishable from workload; 1.0 = fully distinct (VD-5 risk).
+    pub distinguishability: f64,
+    /// ELAI_SEED for this generation (GD-2 reproducibility).
+    pub seed: u64,
+    /// Loop generation counter (0-indexed).
+    pub generation_id: u64,
+}
+
+/// H-49 — Kind discriminator for [`SsbActionType::EditHistoryEvent`].
+///
+/// - `SnapshotCaptured`: a new CAS blob was written for the pre-edit content.
+/// - `Deduped`: the pre-edit content was already in the CAS store; no new blob written.
+/// - `Redo`: HEAD moved forward to a child node (redo operation).
+/// - `Branched`: an edit after an undo created a new sibling child (fork); the prior
+///   redo timeline was preserved (RV-3: never destroy a timeline).
+/// - `Jumped`: HEAD jumped to an arbitrary labeled node (`elai jump`).
+/// - `TooLargeSkipped`: file exceeded the per-blob size cap; content NOT stored
+///   (R1: the event is emitted so the caller knows — never silently pretends captured).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditHistoryEventKind {
+    /// New CAS blob written for the pre-edit bytes.
+    SnapshotCaptured,
+    /// Pre-edit bytes already in CAS store; zero new bytes written.
+    Deduped,
+    /// HEAD moved forward to an existing child (redo).
+    Redo,
+    /// An edit after undo created a new sibling; prior redo timeline preserved.
+    Branched,
+    /// HEAD jumped to an arbitrary labeled node.
+    Jumped,
+    /// File exceeded the per-blob size cap; content skipped (R1 transparency).
+    TooLargeSkipped,
+}
+
+impl EditHistoryEventKind {
+    /// Stable snake_case wire string for the SSB kind arm.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SnapshotCaptured => "snapshot_captured",
+            Self::Deduped => "deduped",
+            Self::Redo => "redo",
+            Self::Branched => "branched",
+            Self::Jumped => "jumped",
+            Self::TooLargeSkipped => "too_large_skipped",
+        }
+    }
+}
+
+/// H-49 payload for [`SsbActionType::EditHistoryEvent`].
+///
+/// Emitted from `task_runner.rs` on every file pre-edit capture (off-agent
+/// artifact, R4) and by `timetravel_cmd.rs` for redo/branch/jump operations.
+///
+/// The `pre_hash` and `post_hash` fields are blake3 hex strings (64 chars).
+/// `grain` is the user-selected granularity ("edit" | "turn" | "babystep").
+/// A no-op operation (HEAD already at target) emits ZERO rows (the smoke
+/// manifest distinguishes no-op from a dead path per the wiring contract).
+///
+/// GD-2 reproducibility: `{node_id, pre_hash, post_hash}` are deterministic
+/// under the same file content and session state.
+/// TOTAL_VARIANTS 536 -> 537.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EditHistoryEventPayload {
+    /// Which arm fired for this event.
+    pub kind: EditHistoryEventKind,
+    /// Undo-tree node id (typically the snap_id of the created/moved-to snapshot).
+    pub node_id: String,
+    /// Parent node id (None for root captures).
+    pub parent_id: Option<String>,
+    /// Number of file paths captured / restored in this operation.
+    pub paths_n: usize,
+    /// blake3 hex hash of the pre-edit content (SnapshotCaptured / Deduped / Redo).
+    pub pre_hash: Option<String>,
+    /// blake3 hex hash of the post-edit content (Redo / Branched / Jumped).
+    pub post_hash: Option<String>,
+    /// User-selected grain: "edit" | "turn" | "babystep".
+    pub grain: String,
+}
+
+/// D-27.1 payload for [`SsbActionType::DiscoveryRatified`].
+///
+/// Emitted by the `ratify_discovery` Tauri command when a human reviewer
+/// marks a `discovery_candidate` novelty-classified template as ratified
+/// for adversarial verification. `reviewer_id` must be non-empty (enforced
+/// at the command layer before this payload is constructed).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DiscoveryRatifiedPayload {
+    /// ID of the template being ratified (mirrors `NoveltyClassifiedPayload.template_id`).
+    pub template_id: String,
+    /// Non-empty human-readable reviewer identifier (e.g. session alias or user handle).
+    pub reviewer_id: String,
+    /// Wall-clock milliseconds since UNIX epoch at the moment the command was invoked.
+    pub ts_ms: i64,
+}
+
+/// D-27.1 payload for [`SsbActionType::DiscoveryRejected`].
+///
+/// Emitted by the `reject_discovery` Tauri command when a human reviewer
+/// dismisses a `discovery_candidate` novelty-classified template. Both
+/// `reviewer_id` and `reason` must be non-empty (enforced at the command
+/// layer before this payload is constructed).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DiscoveryRejectedPayload {
+    /// ID of the template being rejected.
+    pub template_id: String,
+    /// Non-empty human-readable reviewer identifier.
+    pub reviewer_id: String,
+    /// Non-empty human-readable reason for rejection (free-form text, max 512 chars
+    /// by convention — the command layer may truncate before constructing this payload).
+    pub reason: String,
+    /// Wall-clock milliseconds since UNIX epoch at the moment the command was invoked.
+    pub ts_ms: i64,
+}
+
+/// H-10 canvas: number of ops between automatic state checkpoints.
+pub const CANVAS_CHECKPOINT_INTERVAL_OPS: u32 = 20;
+
+/// H-10 canvas: maximum number of ops that may accumulate between checkpoints
+/// before a forced checkpoint is triggered. Must be >= CANVAS_CHECKPOINT_INTERVAL_OPS.
+pub const CANVAS_MAX_DELTA_WITHOUT_CHECKPOINT: u32 = 50;
+
 /// F-10 / Slice A1 (SCHEMA_VERSION 200) -- kill-switch env var name for the
 /// security-monotonicity iteration guard. Default-ON: the guard runs unless
 /// this var is set to a truthy value. There is intentionally NO default-off
@@ -27760,6 +30358,17 @@ mod tests {
                 mean_estimate: 0.818,
                 was_promoted: true,
             }),
+            // D-5 closure (SCHEMA_VERSION 208): unified promotion-decision summary.
+            SsbActionType::BaiPromotionDecision => {
+                SsbPayload::BaiPromotionDecision(BaiPromotionDecisionPayload {
+                    template_id: "11112222333344445555666677778888".into(),
+                    decision: "promoted".into(),
+                    stage: "stage_10".into(),
+                    evidence_pass: 8,
+                    evidence_total: 10,
+                    audit_id: "aabb1122ccdd3344eeff55667788aabb".into(),
+                })
+            }
             // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
             SsbActionType::HeldOutTaskAdded => {
                 SsbPayload::HeldOutTaskAdded(HeldOutTaskAddedPayload {
@@ -31638,6 +34247,15 @@ mod tests {
                 mean_estimate: 0.818,
                 was_promoted: true,
             }),
+            // D-5 closure (SCHEMA_VERSION 208): unified promotion-decision summary.
+            SsbPayload::BaiPromotionDecision(BaiPromotionDecisionPayload {
+                template_id: "11112222333344445555666677778888".into(),
+                decision: "promoted".into(),
+                stage: "stage_10".into(),
+                evidence_pass: 8,
+                evidence_total: 10,
+                audit_id: "aabb1122ccdd3344eeff55667788aabb".into(),
+            }),
             // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
             SsbPayload::HeldOutTaskAdded(HeldOutTaskAddedPayload {
                 task_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
@@ -33000,6 +35618,11 @@ mod tests {
                     mast_mode: "fm_1_3_step_repetition".into(),
                     count: 3,
                 }],
+                // H-40: stub values for the schema-validation fixture.
+                // insufficient_contribution is empty map (unknown per-role state on stub).
+                unique_catch_rate: std::collections::BTreeMap::new(),
+                decorrelation_score: std::collections::BTreeMap::new(),
+                insufficient_contribution: std::collections::BTreeMap::new(),
             }),
             SsbPayload::PersonaReanchored(PersonaReanchoredPayload {
                 agent_role: "executor".into(),
@@ -33648,6 +36271,203 @@ mod tests {
                 },
                 seed: 42,
             }),
+            // G-10 (SCHEMA_VERSION 218): ModelDriftSuspected exogenous regression gate.
+            // One entry covers the variant (flat struct, no pattern-2 sub-enum on the
+            // all_test_payloads side; DriftSignalKind lives on the payload).
+            SsbPayload::ModelDriftSuspected(ModelDriftSuspectedPayload {
+                identity_key: {
+                    let h = blake3::hash(
+                        b"all_test_payloads_model_drift|qwen2.5-coder-7b|local",
+                    );
+                    format!("{:.32}", h.to_hex())
+                },
+                kind: DriftSignalKind::CanaryRegressed,
+                signals: vec!["canary_regressed".into()],
+                per_family_delta: vec![
+                    ("code_fix".into(), -0.25),
+                    ("math_proof".into(), -0.18),
+                ],
+                affected_template_ids: vec![
+                    "domain:code_fix".into(),
+                    "domain:math_proof".into(),
+                ],
+                confirmed_by_fingerprint: false,
+                baseline_captured_at: 1_748_900_000_000,
+            }),
+            // D-27.1 (SCHEMA_VERSION 209): DiscoveryRatified + DiscoveryRejected
+            // discovery-queue reviewer-action beacons. 2 new entries.
+            SsbPayload::DiscoveryRatified(DiscoveryRatifiedPayload {
+                template_id: "tpl-discovery-review-1".into(),
+                reviewer_id: "reviewer-alice".into(),
+                ts_ms: 1_748_900_000_001,
+            }),
+            SsbPayload::DiscoveryRejected(DiscoveryRejectedPayload {
+                template_id: "tpl-discovery-review-2".into(),
+                reviewer_id: "reviewer-bob".into(),
+                reason: "duplicate of existing template tpl-123".into(),
+                ts_ms: 1_748_900_000_002,
+            }),
+            // H-32 (SCHEMA_VERSION 210): FactValidationFailed flat beacon. 1 new entry.
+            SsbPayload::FactValidationFailed(FactValidationFailedPayload {
+                fact_id: "fact-h32-test".into(),
+                citation: "dkg:get_relevant_facts@crates/memory/src/retrieval.rs:46".into(),
+                reason: "stale".into(),
+                evidence_blake3: "a1b2c3d4e5f60718".into(),
+            }),
+            // H-33 (SCHEMA_VERSION 211): MemoryGovernanceEvent flat beacon. 1 new entry.
+            SsbPayload::MemoryGovernanceEvent(MemoryGovernanceEventPayload {
+                fact_id: "fact-h33-test".into(),
+                kind: MemoryGovernanceKind::Forgotten,
+                actor: "cli".into(),
+                session_id: "s-h33-test".into(),
+                created_at_ms: 1_700_000_000_000,
+            }),
+            // H-34 (SCHEMA_VERSION 212): McpToolDeferred flat beacon. 1 new entry.
+            SsbPayload::McpToolDeferred(McpToolDeferredPayload {
+                server_name: "local-rag".into(),
+                tool_qualified_name: "local-rag__mcp_search_context".into(),
+                resolve_ns: 42_000,
+                cache_hit: false,
+                injected_floor_size: 4,
+            }),
+            // H-34 (SCHEMA_VERSION 213): McpSchemaBudgetMeasured flat beacon. 1 new entry.
+            SsbPayload::McpSchemaBudgetMeasured(McpSchemaBudgetMeasuredPayload {
+                suite: "mcp_schema_budget".into(),
+                baseline_schema_tokens_per_turn: 1200,
+                injected_schema_tokens_per_turn: 350,
+                reduction_tokens: 850,
+                deferred_resolves: 3,
+                seed: 0,
+                corpus_blake3: "a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718".into(),
+            }),
+            // H-35 (SCHEMA_VERSION 214): SessionRewound flat beacon. 1 new entry.
+            SsbPayload::SessionRewound(SessionRewoundPayload {
+                session_id: "s-h35-test".into(),
+                target_seq: 10,
+                head_seq_before: 25,
+                scope: "both".into(),
+                summarized: false,
+                replay_session_id: Some("replay-10-a1b2c3d4e5f60718".into()),
+                replay_outcome: "PredicateUnavailable".into(),
+                tail_fingerprint_blake3: "b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f607".into(),
+            }),
+            // H-36 (SCHEMA_VERSION 215): AgentNotificationEmitted single-variant
+            // Pattern-2 2-arm beacon. 1 new entry.
+            SsbPayload::AgentNotificationEmitted(AgentNotificationEmittedPayload {
+                kind: AgentNotificationKind::Completion,
+                surfaces_attempted: 0b01,
+                surfaces_succeeded: 0b01,
+                session_id: "s-h36-test".into(),
+                ts_ms: 1_718_000_000_000,
+            }),
+            // H-37 (SCHEMA_VERSION 216): PlanDecisionEvent Pattern-2 4-arm. 1 new entry.
+            SsbPayload::PlanDecisionEvent(PlanDecisionPayload {
+                decision_kind: PlanDecisionKind::Approve,
+                target_state: "TESTING_FIRST".into(),
+                risk_level: "MEDIUM".into(),
+                reason: None,
+                plan_session_id: "s-h37-test".into(),
+            }),
+            // H-38 (SCHEMA_VERSION 217): StopConfirmationEvent Pattern-2 3-arm. 1 new entry.
+            SsbPayload::StopConfirmationEvent(StopConfirmationPayload {
+                outcome: StopOutcomeKind::ConfirmedProceed,
+                cost_usd: 1.5,
+                unsaved_count: 0,
+                ts_ms: 1_000,
+            }),
+            // H-39 (SCHEMA_VERSION 218): AbstentionScored flat beacon. 1 new entry.
+            SsbPayload::AbstentionScored(AbstentionScoredPayload {
+                suite: "seccodeplt".into(),
+                mean_score: 0.5,
+                abstention_rate: 0.1,
+                confident_wrong_rate: 0.05,
+                t: 0.75,
+                n: 100,
+                seed: 42,
+                corpus_blake3: "abcdef1234567890".into(),
+            }),
+            // H-41 (SCHEMA_VERSION 219): CheckerGapDetected flat beacon. 1 new entry.
+            SsbPayload::CheckerGapDetected(CheckerGapDetectedPayload {
+                claim_id: "test-claim-h41".into(),
+                claim_type: "factual".into(),
+                complexity_taxon: "decidable_no_checker".into(),
+                fell_to_mode: "falsifiability_cross_family".into(),
+                ts_ms: 1_000,
+            }),
+            // H-42 (SCHEMA_VERSION 220): ReasoningBudgetScaled Pattern-2 2-arm. 1 new entry.
+            SsbPayload::ReasoningBudgetScaled(ReasoningBudgetScaledPayload {
+                kind: "depth_bound".into(),
+                role: "executor".into(),
+                base_calls: 8,
+                serial_depth: 3,
+                scaled_calls: 14,
+                ceiling: 24,
+                seed: 42,
+            }),
+            // H-43 (SCHEMA_VERSION 221): FitnessEvaluated Pattern-2 3-arm. 1 new entry.
+            SsbPayload::FitnessEvaluated(FitnessEvaluatedPayload {
+                kind: FitnessEvaluatedKind::ExecutionPassRate,
+                pass_rate: 0.85,
+                dual_agreement: 0.72,
+                tests_total: 10,
+                fitness: 0.811,
+                seed: 42,
+                test_set_hash: [0u8; 32],
+                candidate_blake3: "abcdef0123456789".into(),
+            }),
+            // H-44 (SCHEMA_VERSION 222): TrapBehaviorDetected Pattern-2 4-arm. 1 new entry.
+            SsbPayload::TrapBehaviorDetected(TrapBehaviorDetectedPayload {
+                kind: TrapBehaviorDetectedKind::ImpossiblePassExploit,
+                recall: 0.72,
+                fp_rate: 0.05,
+                n: 20,
+                corpus_hash: [0u8; 32],
+                candidate_blake3: "deadbeef01234567".into(),
+                seed: 42,
+                behavioral_flag: true,
+            }),
+            // H-45 (SCHEMA_VERSION 223): PromotionScoreAggregated Pattern-2 3-arm. 1 new entry.
+            SsbPayload::PromotionScoreAggregated(PromotionScoreAggregatedPayload {
+                kind: PromotionScoreAggregatedKind::WorstCaseScored,
+                worst_case: 0.62,
+                variance: 0.0025,
+                mean: 0.70,
+                disagreement: 0.10,
+                tau: 0.07,
+                calibrated_at: "2026-06-11".into(),
+                seed: 42,
+            }),
+            // H-46 (SCHEMA_VERSION 224): CladeSelected Pattern-2 2-arm. 1 new entry.
+            SsbPayload::CladeSelected(CladeSelectedPayload {
+                kind: CladeSelectedKind::CladeMetaproductivity,
+                node_id: "variant-B".into(),
+                cmp: 0.55,
+                clade_size: 3,
+                immediate_score: 0.41,
+                key_used: "clade_metaproductivity".into(),
+                seed: 42,
+            }),
+            // H-47 (SCHEMA_VERSION 225): EvalFirewallEvent Pattern-2 3-arm. 1 new entry.
+            SsbPayload::EvalFirewallEvent(EvalFirewallPayload {
+                kind: EvalFirewallEventKind::PreUpdateItemRejected,
+                items_scored: 2,
+                items_rejected: 1,
+                regen_count: 1,
+                budget_remaining: 9,
+                distinguishability: 0.15,
+                seed: 42,
+                generation_id: 0,
+            }),
+            // H-49 (SCHEMA_VERSION 226): EditHistoryEvent Pattern-2 6-arm. 1 new entry.
+            SsbPayload::EditHistoryEvent(EditHistoryEventPayload {
+                kind: EditHistoryEventKind::SnapshotCaptured,
+                node_id: "snap-001".into(),
+                parent_id: None,
+                paths_n: 1,
+                pre_hash: Some("abc123def456abc123def456abc123def456abc123def456abc123def456abc1".into()),
+                post_hash: None,
+                grain: "edit".into(),
+            }),
         ]
     }
 
@@ -33659,8 +36479,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            404,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused) + 1 E-7 (DarwinianGenerationCompleted single-variant Pattern-2) + 9 batch2-merge-collision recovery (E-3 RuntimeHandoffSignal + E-26 SglangBackendRegistered + E-26 XgrammarSchemaCompiled + E-26 RuntimeColdStartObserved + E-2 StreamingTimingRecorded + E-2 UxPacingVoteRecorded + E-28 StreamingLlmEngaged + E-28 SdpaBackendPinned + E-28 YarnRopeScalingApplied) + 1 E-8 (PromptOptimizationCompleted single-variant Pattern-2) + 1 E-10 (CriticDecisionEvent single-variant Pattern-2) + 1 E-43 (SkillSystemEvent single-variant Pattern-2) + 1 E-9 (BenchmarkRunObserved single-variant Pattern-2) + 1 E-19 (ReasoningQualityProbe single-variant Pattern-2) + 1 E-55 (RewardLadderEvent single-variant Pattern-2 20th application) + 1 E-11 (SaasPriorArtEvent single-variant Pattern-2 21st application) + 1 E-22 (GithubTrendingEvent single-variant Pattern-2 22nd application) + 1 E-23 (DeveloperDiscourseEvent single-variant Pattern-2 23rd application) + 1 E-25 (ClaudeCodeArchitectureEvent single-variant Pattern-2 24th application) + 1 E-29 (AgenticObservabilityEvent single-variant Pattern-2 25th application) + 1 E-31 (CodingModelLeaderboardEvent single-variant Pattern-2 26th application) + 1 E-38 (AiRoadmapSignalEvent single-variant Pattern-2 27th application) + 1 E-39 (CostTokenEvent single-variant Pattern-2 28th application) + 1 E-50 (SaasArchPatternEvent single-variant Pattern-2 29th application) + 1 B-7 triple (TddVerificationEvent single-variant Pattern-2 46th application) + 2 F-4/B-1 (TestIntegrityEvent single-variant Pattern-2 50th application -- Verified + FabricationBlocked) + 2 F-3p1/C1 (ToolFilterEvent single-variant Pattern-2 51st application -- Committed + UntrustedQuarantined) + 1 F-9/D1 (WriteTimeSlopsquatBlocked flat beacon) + 1 F-10/A1 (SecurityClassRegressionBlocked flat beacon) + 1 F-2b/A1 (InsecureRateMeasured flat beacon) + 3 F-6/A1 (SkillLibraryEvent single-variant Pattern-2 -- Acquired + TrustPromoted + DemotedStale) + 1 F-5/A1 (StalenessQuarantineBroadcast flat beacon) + 1 F-8/A1 (SymbolicConflictDetected flat beacon) + 1 F-7/A1 (TemplateUtilityRanked flat beacon) + 1 F-13/A1 (SessionArchived flat beacon) + 1 F-11/A1 (DarwinianAdmit single-variant Pattern-2 -- Admitted + RejectedByGuard + LoopClosed)",
+            425,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 1 D-5 closure SCHEMA_208 (BaiPromotionDecision) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused) + 1 E-7 (DarwinianGenerationCompleted single-variant Pattern-2) + 9 batch2-merge-collision recovery (E-3 RuntimeHandoffSignal + E-26 SglangBackendRegistered + E-26 XgrammarSchemaCompiled + E-26 RuntimeColdStartObserved + E-2 StreamingTimingRecorded + E-2 UxPacingVoteRecorded + E-28 StreamingLlmEngaged + E-28 SdpaBackendPinned + E-28 YarnRopeScalingApplied) + 1 E-8 (PromptOptimizationCompleted single-variant Pattern-2) + 1 E-10 (CriticDecisionEvent single-variant Pattern-2) + 1 E-43 (SkillSystemEvent single-variant Pattern-2) + 1 E-9 (BenchmarkRunObserved single-variant Pattern-2) + 1 E-19 (ReasoningQualityProbe single-variant Pattern-2) + 1 E-55 (RewardLadderEvent single-variant Pattern-2 20th application) + 1 E-11 (SaasPriorArtEvent single-variant Pattern-2 21st application) + 1 E-22 (GithubTrendingEvent single-variant Pattern-2 22nd application) + 1 E-23 (DeveloperDiscourseEvent single-variant Pattern-2 23rd application) + 1 E-25 (ClaudeCodeArchitectureEvent single-variant Pattern-2 24th application) + 1 E-29 (AgenticObservabilityEvent single-variant Pattern-2 25th application) + 1 E-31 (CodingModelLeaderboardEvent single-variant Pattern-2 26th application) + 1 E-38 (AiRoadmapSignalEvent single-variant Pattern-2 27th application) + 1 E-39 (CostTokenEvent single-variant Pattern-2 28th application) + 1 E-50 (SaasArchPatternEvent single-variant Pattern-2 29th application) + 1 B-7 triple (TddVerificationEvent single-variant Pattern-2 46th application) + 2 F-4/B-1 (TestIntegrityEvent single-variant Pattern-2 50th application -- Verified + FabricationBlocked) + 2 F-3p1/C1 (ToolFilterEvent single-variant Pattern-2 51st application -- Committed + UntrustedQuarantined) + 1 F-9/D1 (WriteTimeSlopsquatBlocked flat beacon) + 1 F-10/A1 (SecurityClassRegressionBlocked flat beacon) + 1 F-2b/A1 (InsecureRateMeasured flat beacon) + 3 F-6/A1 (SkillLibraryEvent single-variant Pattern-2 -- Acquired + TrustPromoted + DemotedStale) + 1 F-5/A1 (StalenessQuarantineBroadcast flat beacon) + 1 F-8/A1 (SymbolicConflictDetected flat beacon) + 1 F-7/A1 (TemplateUtilityRanked flat beacon) + 1 F-13/A1 (SessionArchived flat beacon) + 1 F-11/A1 (DarwinianAdmit single-variant Pattern-2 -- Admitted + RejectedByGuard + LoopClosed) + 1 G-10 (ModelDriftSuspected flat beacon) + 2 D-27.1 (DiscoveryRatified + DiscoveryRejected flat beacons) + 1 H-32 (FactValidationFailed flat beacon) + 1 H-33 (MemoryGovernanceEvent flat beacon) + 2 H-34 (McpToolDeferred + McpSchemaBudgetMeasured flat beacons) + 1 H-35 (SessionRewound flat beacon) + 1 H-36 (AgentNotificationEmitted single-variant Pattern-2 2-arm) + 1 H-37 (PlanDecisionEvent single-variant Pattern-2 4-arm) + 1 H-38 (StopConfirmationEvent single-variant Pattern-2 3-arm) + 1 H-39 (AbstentionScored flat beacon) + 1 H-41 (CheckerGapDetected flat beacon) + 1 H-42 (ReasoningBudgetScaled single-variant Pattern-2 2-arm) + 1 H-43 (FitnessEvaluated single-variant Pattern-2 3-arm) + 1 H-44 (TrapBehaviorDetected single-variant Pattern-2 4-arm) + 1 H-45 (PromotionScoreAggregated single-variant Pattern-2 3-arm) + 1 H-46 (CladeSelected single-variant Pattern-2 2-arm) + 1 H-47 (EvalFirewallEvent single-variant Pattern-2 3-arm) + 1 H-49 (EditHistoryEvent single-variant Pattern-2 6-arm)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

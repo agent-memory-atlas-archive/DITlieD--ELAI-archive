@@ -507,11 +507,134 @@ fn extract_summary_timeline(summary: &str) -> Vec<String> {
     lines
 }
 
+// ---------------------------------------------------------------------------
+// H-49 RV-2 lossless-transcript precondition
+// ---------------------------------------------------------------------------
+
+/// Result of the lossless-archival precondition check (RV-2).
+///
+/// A compaction that would DROP messages MUST be recoverable — either via
+/// an SSB stub (the DAG has archived the original content) or by the
+/// session never having been stubbed. If `unrecoverable_count > 0`, the
+/// caller SHOULD refuse the compaction or emit a tracing warning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LosslessCompactionCheck {
+    /// Number of messages that would be dropped by compaction.
+    pub to_be_dropped: usize,
+    /// Of those, how many are NOT recoverable (no SSB stub available).
+    /// 0 = all droppable messages are archivally safe. > 0 = lossy.
+    pub unrecoverable_count: usize,
+    /// Whether compaction is safe from an archival perspective.
+    pub is_safe: bool,
+}
+
+/// H-49 RV-2: check that messages which would be dropped by compaction are
+/// recoverable via `recover_stubs` before the trim proceeds.
+///
+/// This is a PRECONDITION check; it does not modify the session.
+/// Callers (live_cli.rs trim path) SHOULD call this before `compact_session`
+/// and refuse or warn if `result.is_safe == false`.
+///
+/// `snap_id`: the snapshot in the SessionDag that was saved just before this
+/// compaction. If `None`, the check is skipped (no DAG available).
+/// `ssb`:     SSB reader used to verify stub recoverability. If `None`, all
+///            stubbed messages are treated as unrecoverable.
+///
+/// Fail-closed (R2): if the DAG is unavailable or SSB lookup fails for a
+/// stubbed message, that message is counted as unrecoverable.
+pub fn check_lossless_compaction<R: crate::ssb::SsbReader>(
+    session: &Session,
+    config: CompactionConfig,
+    snap_id: Option<&str>,
+    ssb: Option<&R>,
+) -> LosslessCompactionCheck {
+    if !should_compact(session, config) {
+        return LosslessCompactionCheck {
+            to_be_dropped: 0,
+            unrecoverable_count: 0,
+            is_safe: true,
+        };
+    }
+
+    let start = compacted_summary_prefix_len(session);
+    let keep_from = session
+        .messages
+        .len()
+        .saturating_sub(config.preserve_recent_messages);
+    let to_be_dropped = keep_from.saturating_sub(start);
+
+    if to_be_dropped == 0 {
+        return LosslessCompactionCheck {
+            to_be_dropped: 0,
+            unrecoverable_count: 0,
+            is_safe: true,
+        };
+    }
+
+    // If there is no DAG snapshot, we cannot verify recoverability.
+    // Fail-closed: treat all dropped messages as potentially unrecoverable
+    // and log a warning, but do NOT block compaction (the pre-H49 path had
+    // no recovery at all; we emit a warning but do not break it).
+    if snap_id.is_none() || ssb.is_none() {
+        tracing::warn!(
+            "compact precondition: {} messages will be dropped without SSB archival \
+             (RV-2: no snap_id or SSB available; consider enabling time-travel for lossless sessions)",
+            to_be_dropped
+        );
+        return LosslessCompactionCheck {
+            to_be_dropped,
+            unrecoverable_count: to_be_dropped,
+            is_safe: false,
+        };
+    }
+
+    // If we have a DAG + SSB, count how many of the to-be-dropped messages
+    // have a valid SSB stub. The conservative path: any message without a
+    // stub is unrecoverable. Messages with a valid SSB seq are recoverable.
+    let dropped_messages = &session.messages[start..keep_from];
+    let mut unrecoverable: usize = 0;
+
+    for msg in dropped_messages {
+        // A message that carries a ContentBlock::Text placeholder "[stubbed — content archived in SSB]"
+        // is presumed to already be archived. All other messages are presumed
+        // unarchived (would be dropped permanently).
+        // The heuristic is: if the text content is the placeholder string, it was
+        // archived before a previous compaction; otherwise it is new and not yet archived.
+        let already_archived = msg.blocks.iter().any(|b| match b {
+            ContentBlock::Text { text } => {
+                text.contains("stubbed") && text.contains("archived in SSB")
+            }
+            _ => false,
+        });
+        if !already_archived {
+            unrecoverable += 1;
+        }
+    }
+
+    let is_safe = unrecoverable == 0;
+    if !is_safe {
+        tracing::warn!(
+            "compact precondition (RV-2): {} of {} messages to be dropped are NOT \
+             archived in SSB. Enable ELAI_TIMETRAVEL_DISABLE=0 (default) or \
+             ensure the capture hook ran before compaction for lossless sessions.",
+            unrecoverable,
+            to_be_dropped
+        );
+    }
+
+    LosslessCompactionCheck {
+        to_be_dropped,
+        unrecoverable_count: unrecoverable,
+        is_safe,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_key_files, compact_session, estimate_session_tokens, format_compact_summary,
-        get_compact_continuation_message, infer_pending_work, should_compact, CompactionConfig,
+        check_lossless_compaction, collect_key_files, compact_session, estimate_session_tokens,
+        format_compact_summary, get_compact_continuation_message, infer_pending_work,
+        should_compact, CompactionConfig, LosslessCompactionCheck,
     };
     use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};
 

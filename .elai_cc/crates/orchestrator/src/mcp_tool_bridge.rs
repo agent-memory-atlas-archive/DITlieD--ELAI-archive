@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::mcp::mcp_tool_name;
 use crate::mcp_stdio::McpServerManager;
+use elai_safety::provenance::Provenance;
+use elai_safety::taint_flow::tainted_context;
 use serde::{Deserialize, Serialize};
 
 /// Status of a managed MCP server connection.
@@ -276,11 +278,29 @@ impl McpToolRegistry {
             .cloned()
             .ok_or_else(|| "MCP server manager is not configured".to_string())?;
 
-        Self::spawn_tool_call(
+        let result = Self::spawn_tool_call(
             manager,
             mcp_tool_name(server_name, tool_name),
             (!arguments.is_null()).then(|| arguments.clone()),
-        )
+        )?;
+
+        // G-1 INGEST: an MCP tools/call result is UNTRUSTED external content
+        // (the server is third-party; a rug-pulled / malicious server can plant
+        // a destructive command in the result). Register the STRINGIFIED result
+        // into the taint side-table keyed by its content so a later destructive
+        // sink whose argv derives from this result is gated. Composes with the
+        // E-30 sanitize_result sanitiser (mcp_bridge.rs) — that strips known
+        // line-jump patterns; this tracks the data FLOW for the capability gate.
+        // Default-ON (W-2): no env gate; the kill-switch is at the sink. See
+        // workflow/reasoning/G-1-decisions.md.
+        let stringified = serde_json::to_string(&result).unwrap_or_default();
+        if !stringified.is_empty() {
+            tainted_context().register(
+                &stringified,
+                Provenance::from_tool_output(server_name, tool_name),
+            );
+        }
+        Ok(result)
     }
 
     /// Set auth status for a server.

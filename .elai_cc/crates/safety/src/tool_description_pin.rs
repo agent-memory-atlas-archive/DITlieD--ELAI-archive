@@ -7,8 +7,8 @@
 //! workspace") is caught even if the list-level hash is engineered to
 //! collide via padding.
 //!
-//! Storage: `.elai/mcp/tool_descriptions/<encoded_server>/<tool>.toml`
-//! (sibling layout to E-24 `.elai/mcp/pins/<encoded_server>.toml`).
+//! Storage: `.elai_cc/mcp/tool_descriptions/<encoded_server>/<tool>.toml`
+//! (sibling layout to E-24 `.elai_cc/mcp/pins/<encoded_server>.toml`).
 //!
 //! Anti-stale: blake3 (NEVER sha2/blake2) per CLAUDE.md HARD RULE.
 
@@ -45,7 +45,7 @@ pub enum DescPinStatus {
     },
 }
 
-/// Persisted record at `.elai/mcp/tool_descriptions/<server>/<tool>.toml`.
+/// Persisted record at `.elai_cc/mcp/tool_descriptions/<server>/<tool>.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DescPinRecord {
     pub pinned_hash: String,
@@ -67,7 +67,12 @@ pub enum ToolDescriptionPinError {
     EmptyToolName,
 }
 
-const PIN_DIR: &str = ".elai/mcp/tool_descriptions";
+/// Subpath (under the canonical ELAI data dir) holding the per-tool
+/// description pins. B-1 path-unification: the leading data-dir segment is
+/// `elai_core::paths::ELAI_DATA_DIR_NAME` (`.elai_cc`), NOT a hardcoded
+/// legacy dot-elai literal (stub_ban forbids the legacy data-dir literal in
+/// non-test source).
+const PIN_SUBDIR: &str = "mcp/tool_descriptions";
 
 fn encode_segment(s: &str) -> String {
     s.chars()
@@ -84,7 +89,8 @@ fn pin_path(
         return Err(ToolDescriptionPinError::EmptyToolName);
     }
     let dir = workspace_root
-        .join(PIN_DIR)
+        .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+        .join(PIN_SUBDIR)
         .join(encode_segment(server_url));
     fs::create_dir_all(&dir)?;
     let filename = format!("{}.toml", encode_segment(tool_name));
@@ -115,7 +121,7 @@ pub fn verify_pin(tool: &Tool, expected_hash: &str) -> bool {
 
 /// Pin or verify a single tool's description against the on-disk record.
 ///
-/// First call: writes `.elai/mcp/tool_descriptions/<server>/<tool>.toml`
+/// First call: writes `.elai_cc/mcp/tool_descriptions/<server>/<tool>.toml`
 /// and returns `Pinned`.
 ///
 /// Subsequent calls: reads the record, compares hashes, returns `Verified`

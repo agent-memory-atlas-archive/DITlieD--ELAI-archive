@@ -65,15 +65,35 @@ impl MessageRequest {
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub kind: String,
+    /// H-2: optional cache lifetime. `None` => the 5-min default, serialized as
+    /// NO `ttl` key, so existing ephemeral markers stay byte-identical (HD-2 +
+    /// the MessageRequest wire contract). `Some("1h")` opts into the GA 1-hour
+    /// TTL via `{"type":"ephemeral","ttl":"1h"}` — there is NO beta header (the
+    /// historical 1-hour beta-header gate was removed, not renamed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<String>,
 }
 
 impl CacheControl {
-    /// Construct an ephemeral (5-min TTL) cache marker — the only kind
-    /// Anthropic currently supports.
+    /// Construct an ephemeral (5-min TTL) cache marker. Serializes to
+    /// `{"type":"ephemeral"}` (no `ttl` key) — byte-identical to pre-H-2 markers.
     #[must_use]
     pub fn ephemeral() -> Self {
         Self {
             kind: "ephemeral".to_string(),
+            ttl: None,
+        }
+    }
+
+    /// H-2: construct an ephemeral marker with the GA 1-hour TTL. Serializes to
+    /// `{"type":"ephemeral","ttl":"1h"}`. The 1h write is billed 2x (vs 1.25x
+    /// for 5-min) and breaks even on the SECOND read, so it is worth it only on
+    /// a verified byte-stable prefix (the system/tools head, gated on bp.valid).
+    #[must_use]
+    pub fn ephemeral_1h() -> Self {
+        Self {
+            kind: "ephemeral".to_string(),
+            ttl: Some("1h".to_string()),
         }
     }
 }

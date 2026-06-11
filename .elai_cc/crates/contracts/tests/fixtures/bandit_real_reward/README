@@ -1,0 +1,21 @@
+H-48 bandit real-reward frozen test fixture.
+
+arm G: high execution-grounded reward (worst_case = 0.85 from H-45 aggregate).
+arm B: low execution-grounded reward (worst_case = 0.10 from H-45 aggregate).
+
+The fixture is used by h48_bandit_real_reward_contract.rs to verify:
+  - bandit converges to arm G over sufficient updates (real reward, not bytes)
+  - broken arm (--bandit-reward-from-bytes) converges to arm B (R2 falsifiability)
+  - Successive-Rejects SR identifies arm G as best-arm under a fixed budget
+  - ExIt curriculum seed from partial history propagates to posteriors
+
+Convergence criterion: after N_CONVERGENCE_ROUNDS updates, select_next_arm
+returns arm G index in at least CONVERGENCE_THRESHOLD fraction of draws.
+
+Gate-frozen (R8): this directory is read-only to the running generation loop.
+No candidate can inject into or modify this fixture.
+
+Discount factor for the fixture: FIXTURE_GAMMA = 0.90 (per arXiv:2305.10718
+S5 experiments: less aggressive forgetting on short horizons; the production
+DEFAULT_DISCOUNT_FACTOR = 0.0357 is for multi-generation live loops and
+causes over-forgetting on the compact fixture run).

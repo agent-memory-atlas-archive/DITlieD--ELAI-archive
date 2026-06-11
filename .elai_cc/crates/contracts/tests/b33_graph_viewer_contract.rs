@@ -42,6 +42,9 @@ fn vizdata_json_shape_pinned() {
             // C-24 (DRIFT-7 Path A).
             level: None,
             status: None,
+            // H-10 (HD-5): dead-code fields; None in contract fixture.
+            is_dead_code: None,
+            coverage_count: None,
         }],
         file_edges: vec![],
         symbols: vec![],

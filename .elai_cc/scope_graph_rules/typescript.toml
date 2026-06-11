@@ -1,0 +1,21 @@
+# E-40 Task 2 (Tranche B-3) — TypeScript push/pop scope rules.
+# Design adoption of arXiv:2211.01224 (Stack Graphs); no runtime dep.
+language = "typescript"
+
+# TS resolves block/function locals (Local), module-level + namespace
+# members in the same file (File), sibling modules under a shared directory
+# / path-alias root (Module), names imported via ES `import` / re-exported
+# via `export ... from` (CrossFile), and package roots resolved through
+# tsconfig `paths` / node_modules (Crate). Path aliases (`@/foo`) are
+# resolved structurally by the shared-root check; unresolved aliases fall
+# back to Heuristic for LSP (tsserver) escalation.
+allowed_boundaries = ["local", "file", "module", "cross_file", "crate"]
+
+module_separator = "/"
+
+# `index.ts`/`index.tsx` barrel files mark a module directory; siblings
+# under the same barrel parent are same-module.
+same_module_markers = ["index.ts", "index.tsx"]
+
+# `export { x } from './y'` barrel re-exports are pervasive; follow them.
+follow_reexports = true

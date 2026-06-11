@@ -10,6 +10,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use elai_orchestrator::{
     ConfigLoader, ConfigSource, ProjectContext, Session, ContentBlock, MessageRole,
@@ -18,7 +19,11 @@ use elai_orchestrator::{
 use elai_plugins::{PluginHooks, PluginManager, PluginManagerConfig};
 use elai_rules::rule_engine::{CompiledPredicate, DefaultRuleEngine, Rule, RuleEngine};
 use elai_tools::GlobalToolRegistry;
-use elai_knowledge::{detect_project_profile, populate_tier3, assemble_telescope, DkgEngine};
+use elai_knowledge::{
+    detect_project_profile, populate_tier3, assemble_telescope, assemble_telescope_with_hooks,
+    DkgEngine, PiT1Hook, PiT2Hook, PiT3Hook, ProjectIntelligenceHook,
+};
+use elai_reasoning::build_with_conventions;
 use elai_core::paths::dkg_db_path as core_dkg_db_path;
 use serde::Deserialize;
 use serde_json::json;
@@ -114,8 +119,45 @@ pub(crate) fn build_telescope_block() -> Option<String> {
     };
 
     populate_tier3(&mut profile, &dkg_nodes);
-    let telescope_ctx = assemble_telescope(&profile);
-    let formatted = telescope_ctx.format_for_phase_spec();
+
+    // phase-3L (3L.1 + 3L.2): assemble the telescope through the PI hook path
+    // instead of the legacy hook-free `assemble_telescope`. The three tier
+    // hooks render priority-ordered prompt blocks (T1 CONVENTIONS > T2 IMPORTS
+    // > T3 PROFILE) that `assemble_telescope_with_hooks` sorts + budget-caps.
+    // The legacy `format_for_phase_spec` output is preserved verbatim as the
+    // base so non-hook behaviour is unchanged; the PiT1 CONVENTIONS block is
+    // then injected into the SYSTEM-prompt-bound text via
+    // `build_with_conventions` (idempotent; tagged with CONVENTIONS_BLOCK_HEADER
+    // so the auditor can confirm injection on a real entrypoint), and the
+    // remaining hook blocks are appended.
+    let hooks: [Box<dyn ProjectIntelligenceHook>; 3] = [
+        Box::new(PiT1Hook::new()),
+        Box::new(PiT2Hook::new()),
+        Box::new(PiT3Hook::new()),
+    ];
+    let (telescope_ctx, hook_blocks) = assemble_telescope_with_hooks(&profile, &hooks);
+    let base = telescope_ctx.format_for_phase_spec();
+
+    // Inject the highest-priority CONVENTIONS block (PiT1::render_block) into
+    // the base telescope text. This is the production reach for
+    // `build_with_conventions` / PiT1Hook::render_block per spec 3L.2.
+    let conventions_block = PiT1Hook::new().render_block(&profile);
+    let mut formatted = build_with_conventions(conventions_block.as_deref(), &base);
+
+    // Append the remaining (T2 IMPORTS + T3 PROFILE) hook blocks so their
+    // render output also reaches the SYSTEM prompt. The T1 block is skipped
+    // here because `build_with_conventions` already placed it (and stamped the
+    // CONVENTIONS header that the idempotency guard keys on).
+    for block in &hook_blocks {
+        if block.starts_with(elai_reasoning::CONVENTIONS_BLOCK_HEADER) {
+            continue;
+        }
+        if !formatted.is_empty() && !formatted.ends_with('\n') {
+            formatted.push('\n');
+        }
+        formatted.push_str(block);
+    }
+
     if formatted.is_empty() {
         None
     } else {
@@ -1055,7 +1097,31 @@ pub(crate) fn resolve_export_path(
 // System prompt / plugin helpers
 // ---------------------------------------------------------------------------
 
+/// H-31 (SCHEMA_VERSION 240): the stable marker that opens the user-memory section appended to the
+/// assembled system prompt. The contract/smoke test asserts presence/absence of this tag in the
+/// assembled `Vec<String>` (R4: measure the real assembled prompt, not stdout).
+pub(crate) const MEMORY_SECTION_TAG: &str = "# User decisions (remembered)";
+
+/// Maximum number of user-decisions surfaced into the prompt (one line each; bounded so the slot
+/// cannot crowd out the local ~25-32K window).
+const MEMORY_RETRIEVAL_K: usize = 8;
+
+/// Build the system prompt for an assembling role. H-31 threads `role` so the user-memory section
+/// (the activated `get_relevant_facts` read-path) is appended ONLY for the role allowlist
+/// {AgentRole::Executor} AND `ELAI_USER_MEMORY_ENABLE=1`. For every reviewer/auditor/critic role
+/// the section is structurally ABSENT (the Personalization-Trap firewall, fail-CLOSED).
 pub(crate) fn build_system_prompt(skip_instruction_files: bool) -> Result<Vec<String>, anyhow::Error> {
+    // Default to the Executor role: the live CLI chat turn IS the executor/primary turn.
+    build_system_prompt_for_role(skip_instruction_files, elai_orchestrator::AgentRole::Executor)
+}
+
+/// Role-gated variant of [`build_system_prompt`]. The user-memory section is appended IFF the role
+/// is on the firewall allowlist AND the flag is on. A non-allowlisted role NEVER receives any
+/// user-memory line (the section is not merely truncated; it is never assembled).
+pub(crate) fn build_system_prompt_for_role(
+    skip_instruction_files: bool,
+    role: elai_orchestrator::AgentRole,
+) -> Result<Vec<String>, anyhow::Error> {
     let mut sections = load_system_prompt(
         env::current_dir()?,
         DEFAULT_DATE,
@@ -1068,7 +1134,188 @@ pub(crate) fn build_system_prompt(skip_instruction_files: bool) -> Result<Vec<St
         // that reference loaded config/CLAUDE.md content.
         sections.retain(|s| !s.starts_with("# Claude instructions"));
     }
+    // H-31: append the user-memory section iff the firewall allows this role AND the flag is on.
+    // No SSB available at construction time — callers that have self.ssb should use
+    // assemble_user_memory_section_with_ssb directly when they want SSB emission.
+    if let Some(section) = assemble_user_memory_section(role, None) {
+        sections.push(section);
+    }
     Ok(sections)
+}
+
+/// Assemble the user-memory prompt section for an assembling role, or `None` when the firewall
+/// denies the role, the flag is off, or there are no current user-decisions to surface.
+///
+/// THE FIREWALL (load-bearing): the compile-time allowlist
+/// `elai_orchestrator::user_memory_firewall::agent_role_gets_user_memory` is checked FIRST. A
+/// denied role returns `None` immediately -- `get_relevant_facts` is never even called, so no
+/// user-memory can leak into a reviewer/auditor/critic prompt. The superseded-row hard filter is
+/// structural: `get_relevant_facts` pulls `list_current` (`valid_to_ms IS NULL`), so a superseded
+/// decision is NEVER a candidate and is never narrated `[OUTDATED]`.
+///
+/// B-3 (R4 load-bearing wiring): when `ssb` is `Some`, each Tier-A citation exclusion emits a
+/// real `fact_validation_failed` SSB row (the off-agent artifact). When `ssb` is `None` (e.g. at
+/// construction time before the runtime is built), exclusions are logged only via `tracing::warn`.
+/// The firewall ensures auditor/critic/adversary paths inject ZERO Tier-A and emit nothing.
+pub(crate) fn assemble_user_memory_section(
+    role: elai_orchestrator::AgentRole,
+    ssb: Option<&Arc<elai_orchestrator::ssb::Ssb>>,
+) -> Option<String> {
+    use crate::dkg_citation_validator::DkgCitationValidator;
+    use crate::user_memory_capture::{user_memory_enabled, DEFAULT_USER_ID};
+    use elai_core::clock::{ClockProvider, OsClock};
+    use elai_core::paths::memory_dir_path;
+    use elai_memory::{get_relevant_facts, FactStore, FactType, NullValidator, RetrievalFilter};
+
+    // FIREWALL FIRST: a non-allowlisted role gets ZERO user-memory (structural, fail-closed).
+    // Tier-A facts are also excluded here (same firewall — auditor/critic/adversary get ZERO
+    // user-memory of any tier, per arXiv:2603.00024 Personalization-Trap).
+    if !elai_orchestrator::user_memory_firewall::agent_role_gets_user_memory(role) {
+        return None;
+    }
+    // R9 flag: default-OFF.
+    if !user_memory_enabled() {
+        return None;
+    }
+
+    let project_root = env::current_dir().ok()?;
+    let facts_path = memory_dir_path(&project_root).join("memory_facts.sqlite");
+    if !facts_path.exists() {
+        return None;
+    }
+    let store = FactStore::open(&facts_path).ok()?;
+    let now_ms = OsClock.now_ms();
+
+    let mut lines = vec![MEMORY_SECTION_TAG.to_string()];
+    let mut any_facts = false;
+
+    // --- Tier-B (Preference-class): voice/tool/pattern preferences ---
+    let tier_b_filter = RetrievalFilter {
+        fact_type: Some(FactType::Preference),
+        ..RetrievalFilter::default()
+    };
+    if let Ok((tier_b_facts, _)) =
+        get_relevant_facts(&store, DEFAULT_USER_ID, &tier_b_filter, MEMORY_RETRIEVAL_K, now_ms)
+    {
+        if !tier_b_facts.is_empty() {
+            any_facts = true;
+            lines.push(
+                "Durable work preferences the user asked you to remember. Honour them; do not re-ask."
+                    .to_string(),
+            );
+            for fact in &tier_b_facts {
+                let detail = fact
+                    .value
+                    .get("raw")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| fact.value.get("subject").and_then(serde_json::Value::as_str))
+                    .unwrap_or(&fact.key);
+                lines.push(format!("  - {detail}"));
+            }
+        }
+    }
+
+    // --- Tier-A (DomainKnowledge + Mistake): code-grounded project conventions ---
+    // H-32 validity gate: Stale/Unknown citations are HARD-EXCLUDED; the caller
+    // surfaces a confirmation instead of silently steering the model on a stale premise.
+    // The `fact_validation_failed` SSB rows are emitted by the live_cli tick (maintenance
+    // path) where SSB is available; here we just emit a tracing warning per exclusion.
+    //
+    // One validator per Tier-A retrieval call: `DkgCitationValidator::open` opens a
+    // fresh read-only cache each time (~1-5 ms on SSD). Moving the owned value into
+    // the Box avoids lifetime issues (no shared borrow across loop iterations).
+    for tier_a_type in [FactType::DomainKnowledge, FactType::Mistake] {
+        // B-2 fail-closed: when the DKG index is unavailable, use NullValidator
+        // (returns Unknown for every Tier-A fact) so the gate hard-excludes all
+        // Tier-A facts rather than injecting them unchecked (R2: missing evidence
+        // is FAIL, not SKIP).
+        let citation_validator: Box<dyn elai_memory::CitationValidator> =
+            DkgCitationValidator::open(&project_root)
+                .map(|v| Box::new(v) as Box<dyn elai_memory::CitationValidator>)
+                .unwrap_or_else(|| Box::new(NullValidator));
+        let tier_a_filter = RetrievalFilter {
+            fact_type: Some(tier_a_type),
+            citation_validator: Some(citation_validator),
+            ..RetrievalFilter::default()
+        };
+        if let Ok((tier_a_facts, exclusions)) =
+            get_relevant_facts(&store, DEFAULT_USER_ID, &tier_a_filter, MEMORY_RETRIEVAL_K, now_ms)
+        {
+            // B-3 (R4): emit a fact_validation_failed SSB row per exclusion when the
+            // SSB handle is available. The off-agent artifact is the load-bearing wiring
+            // proof (the rename during a real model-dispatch turn appends the row).
+            // Firewall guarantees only Executor-role calls reach here (auditor/critic/
+            // adversary return None above), so zero Tier-A leaks into reviewer prompts.
+            for excl in &exclusions {
+                tracing::warn!(
+                    target = "memory.citation_validity",
+                    fact_id = %excl.fact_id,
+                    reason = excl.reason,
+                    evidence_blake3 = %excl.evidence_blake3,
+                    "H-32: Tier-A citation {} — excluded from context slice; \
+                     confirmation required before re-use",
+                    excl.reason
+                );
+                if let Some(ssb_ref) = ssb {
+                    // `citation` carries the blake3 fingerprint as the best available
+                    // identifier when the full dkg: URI is not preserved in the exclusion
+                    // struct. The load-bearing field is `evidence_blake3`; `citation` is
+                    // informational (correlates back to the TTL-tick path which carries
+                    // the full URI).
+                    let citation = if excl.evidence_blake3.is_empty() {
+                        format!("fact:{}", excl.fact_id)
+                    } else {
+                        format!("blake3:{}", excl.evidence_blake3)
+                    };
+                    let payload = elai_orchestrator::ssb::SsbPayload::FactValidationFailed(
+                        elai_orchestrator::ssb::FactValidationFailedPayload {
+                            fact_id: excl.fact_id.clone(),
+                            citation,
+                            reason: excl.reason.to_string(),
+                            evidence_blake3: excl.evidence_blake3.clone(),
+                        },
+                    );
+                    let ssb_arc = Arc::clone(ssb_ref);
+                    std::thread::spawn(move || {
+                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            let _ = rt.block_on(ssb_arc.write_payload(
+                                "report_fns.fact_validation_failed",
+                                0,
+                                payload,
+                                Vec::new(),
+                            ));
+                        }
+                    });
+                }
+            }
+            if !tier_a_facts.is_empty() {
+                any_facts = true;
+                let label = if tier_a_type == FactType::Mistake {
+                    "Recurring mistakes/footguns to avoid in this project:"
+                } else {
+                    "Project code conventions (grounded in current code):"
+                };
+                lines.push(label.to_string());
+                for fact in &tier_a_facts {
+                    let detail = fact
+                        .value
+                        .get("raw")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| fact.value.get("subject").and_then(serde_json::Value::as_str))
+                        .unwrap_or(&fact.key);
+                    lines.push(format!("  - {detail}"));
+                }
+            }
+        }
+    }
+
+    if !any_facts {
+        return None;
+    }
+    Some(lines.join("\n"))
 }
 
 /// Load seed rules from data/rules/*.toml, compile predicates via the engine.

@@ -44,6 +44,11 @@ use crate::splade::SpladeExpander;
 /// Named constant per codeRules baseline (no magic strings in code).
 const DEFAULT_SESSION_ID: &str = "unknown";
 
+/// 1E-R1: how many top reset-weighted symbols the CatRAG PPR overlay surfaces
+/// as Stage-3 results. Bounded so the overlay contributes a focused boost list
+/// to RRF rather than the full normalized distribution over every node.
+const CATRAG_OVERLAY_TOP_K: usize = 20;
+
 /// C-38: derive a stable 64-bit prefix of the blake3 hash of `bytes`.
 /// Used for `workspace_root_hash` and `top_node_hash` fields in the
 /// `pagerank_run` SSB row so the dashboard can group rows by workspace
@@ -287,6 +292,19 @@ impl QueryPipeline {
     pub fn with_vector_cache(mut self, cache: Arc<VectorCache>) -> Self {
         self.vector_cache = Some(cache);
         self
+    }
+
+    /// 1C-R2: production accessor for the shared `VectorCache` `Arc`.
+    /// `cli::live_cli::notify_file_changed` clones this out (cheap `Arc`
+    /// bump) before borrowing `vector_indexer` mutably, then passes
+    /// `cache.as_deref()` into [`crate::vector::indexer::VectorIndexer::index_file`]
+    /// so a file-write drives `VectorCache::invalidate_file` + `insert`
+    /// off the real re-index entrypoint. Cloning the `Arc` (rather than
+    /// borrowing the field) keeps the call borrow-disjoint from the
+    /// `&mut vector_indexer` borrow at the same callsite. Returns `None`
+    /// when no cache was installed via [`Self::with_vector_cache`].
+    pub fn vector_cache_arc(&self) -> Option<Arc<VectorCache>> {
+        self.vector_cache.clone()
     }
 
     /// C-1: install the session id surfaced on every
@@ -798,6 +816,13 @@ impl QueryPipeline {
         }
 
         // Stage 2: pagerank (STANDARD + DEEP)
+        //
+        // 1E-R1: `pagerank_scores` carries the per-snapshot-index PageRank ranks
+        // out of Stage 2 so Stage 3 (catrag) can seed the PPR reset vector with
+        // them (CatRag::compute_overlay merges them into the personalization
+        // distribution via config.epsilon). It stays empty on the no-engine /
+        // empty-graph / FAST paths, which compute_overlay tolerates.
+        let mut pagerank_scores: Vec<(usize, f64)> = Vec::new();
         let pagerank_start = self.clock.now();
         let snapshot = if use_vector {
             let (snap, pagerank_results, pagerank_error, top_node_name) = match self.dkg_engine {
@@ -810,6 +835,22 @@ impl QueryPipeline {
                             .ranked_symbols
                             .first()
                             .map(|rs| rs.symbol_name.clone());
+                        // 1E-R1: map each ranked symbol's node_id back to its
+                        // position in `snap.nodes` (the index space
+                        // compute_overlay expects) and carry (idx, rank) pairs.
+                        // FxHashMap (B-15 HashMap-ban-safe; same hasher the
+                        // pagerank module uses for the inverse id_to_idx map).
+                        let id_to_idx: rustc_hash::FxHashMap<i64, usize> = snap
+                            .nodes
+                            .iter()
+                            .enumerate()
+                            .map(|(i, n)| (n.node_id, i))
+                            .collect();
+                        pagerank_scores = repo_map
+                            .ranked_symbols
+                            .iter()
+                            .filter_map(|rs| id_to_idx.get(&rs.node_id).map(|&idx| (idx, rs.rank)))
+                            .collect();
                         let results: Vec<RetrievalResult> = repo_map
                             .ranked_symbols
                             .iter()
@@ -874,16 +915,60 @@ impl QueryPipeline {
         };
 
         // Stage 3: catrag (STANDARD + DEEP)
+        //
+        // 1E-R1: feed the Stage-2 PageRank scores into the CatRAG PPR overlay
+        // (the reset/personalization vector) instead of discarding the overlay.
+        // compute_overlay merges `pagerank_scores` into its symbolic-anchor
+        // distribution and returns a normalized `reset_distribution` over node
+        // indices. We surface the top reset-weighted symbols as this stage's
+        // results so the overlay is observable in the pipeline output (and
+        // feeds the downstream RRF accumulator like every other stage list)
+        // rather than being computed and dropped.
         let catrag_start = self.clock.now();
+        let mut catrag_results: Vec<RetrievalResult> = Vec::new();
+        let mut catrag_error: Option<String> = None;
         if use_vector {
-            let _overlay = self.catrag.compute_overlay(query, &snapshot, &[])?;
+            match self.catrag.compute_overlay(query, &snapshot, &pagerank_scores) {
+                Ok(overlay) => {
+                    // Rank reset-distribution entries by weight (descending) and
+                    // map each node index back to its snapshot symbol info.
+                    let mut reset: Vec<(usize, f64)> = overlay.reset_distribution;
+                    reset.sort_by(|a, b| {
+                        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    catrag_results = reset
+                        .into_iter()
+                        .take(CATRAG_OVERLAY_TOP_K)
+                        .filter_map(|(idx, weight)| {
+                            snapshot.nodes.get(idx).map(|node| RetrievalResult {
+                                chunk_id: format!(
+                                    "{}:{}",
+                                    node.file_path.display(),
+                                    node.symbol_name
+                                ),
+                                snippet: node.signature.clone(),
+                                score: weight,
+                                tool_used: "catrag".to_string(),
+                            })
+                        })
+                        .collect();
+                }
+                Err(e) => {
+                    // CatRAG failure is non-fatal: the overlay is an enrichment,
+                    // not a hard dependency. Record the error on the stage and
+                    // continue with an empty catrag list (RRF treats it as a
+                    // no-op), mirroring the artifact/cosmos stage error posture.
+                    tracing::debug!("catrag compute_overlay error: {e}");
+                    catrag_error = Some(e.to_string());
+                }
+            }
         }
         stages.push(PipelineStage {
             stage: "catrag".to_string(),
-            results: Vec::new(),
+            results: catrag_results,
             latency_ms: self.clock.elapsed_since(catrag_start).as_millis() as u64,
             circuit_breaker_state: None,
-            error: None,
+            error: catrag_error,
         });
 
         // Stage 3b: artifact search (STANDARD + DEEP only, B-35 Phase B Task 8).
@@ -1379,21 +1464,42 @@ impl QueryPipeline {
                 result.rerank_error = Some("model not loaded".to_string());
                 false
             } else {
-                // Probe rerank: even if candidates are below skip_threshold, this
-                // validates that the session can at least be accessed without panic.
-                let candidates = result.canary_candidates.clone();
-                let _ = ce.rerank("fn main()", candidates);
-                // Check breaker state after probe.
-                let breaker_open = ce
-                    .breaker_state()
-                    .map_or(false, |s| s != crate::vector::circuit_breaker::BreakerState::Closed);
-                if breaker_open {
-                    tracing::warn!("canary: reranker circuit breaker open, entering degraded mode");
-                    result.rerank_error = Some("circuit breaker open".to_string());
-                    false
-                } else {
-                    result.rerank_ok = true;
-                    true
+                // 1G-R3: probe rerank under a hard 5s timeout so a blocking ONNX
+                // session.run (corrupt model / EP deadlock) degrades to
+                // BM25-only instead of hanging startup. A bare ce.rerank(...)
+                // here had no timeout and could freeze the readiness check
+                // indefinitely (the startup.rs post-hoc elapsed check never runs
+                // if this call itself never returns).
+                match ce.probe_with_timeout(crate::reranker::READINESS_PROBE_TIMEOUT) {
+                    crate::reranker::ProbeOutcome::TimedOut => {
+                        tracing::warn!(
+                            "canary: reranker readiness probe timed out, entering degraded mode"
+                        );
+                        result.rerank_error = Some("readiness probe timeout".to_string());
+                        false
+                    }
+                    crate::reranker::ProbeOutcome::NotLoaded => {
+                        // Reached only if the session was unloaded between the
+                        // is_loaded() check and here; treat as not-loaded.
+                        result.rerank_error = Some("model not loaded".to_string());
+                        false
+                    }
+                    crate::reranker::ProbeOutcome::Completed => {
+                        // Check breaker state after a probe that returned in time.
+                        let breaker_open = ce.breaker_state().map_or(false, |s| {
+                            s != crate::vector::circuit_breaker::BreakerState::Closed
+                        });
+                        if breaker_open {
+                            tracing::warn!(
+                                "canary: reranker circuit breaker open, entering degraded mode"
+                            );
+                            result.rerank_error = Some("circuit breaker open".to_string());
+                            false
+                        } else {
+                            result.rerank_ok = true;
+                            true
+                        }
+                    }
                 }
             }
         } else {

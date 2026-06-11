@@ -61,6 +61,17 @@
     'security-monotonicity': 'SECURITY MONOTONICITY',
     'staleness-quarantine': 'STALENESS QUARANTINE',
     'template-ranking':     'TEMPLATE RANKING',
+    'session-archive':      'SESSION ARCHIVE',
+    'mcp-rug-pull':         'MCP RUG-PULLS (G-4)',
+    'taint-flow':           'TAINT FLOWS (G-1)',
+    'rra-viewer':           'RUN ARTIFACT (G-2)',
+    'blast-radius':         'BLAST RADIUS (G-3)',
+    'attestation':          'PROVENANCE ATTESTATIONS (G-8)',
+    'redaction':            'SECRET REDACTIONS (G-9)',
+    'confidence':           'CONFIDENCE + QUARANTINE (G-7)',
+    'safe-delta':           'SAFETY DELTA (G-6)',
+    'model-drift':          'MODEL DRIFT (G-10)',
+    'decomposition-entropy': 'DECOMPOSITION ENTROPY (E-46)',
   };
 
   function handleBackdropClick(e: MouseEvent) {

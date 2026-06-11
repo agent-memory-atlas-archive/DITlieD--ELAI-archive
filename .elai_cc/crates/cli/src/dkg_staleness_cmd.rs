@@ -80,7 +80,8 @@ pub fn run_dkg_staleness_tick(workspace: &Path) -> Result<()> {
         .map_err(|e| anyhow!("dkg staleness-tick: open FactStore {}: {e}", facts_path.display()))?;
 
     // (2) Run one decay tick.
-    match elai_memory::decay_tick(&facts, now_ms) {
+    // H-33: pass empty pin set (fail-toward-decay; pin-awareness is CLI-path only).
+    match elai_memory::decay_tick(&facts, &std::collections::HashSet::new(), now_ms) {
         Ok(stats) => {
             eprintln!(
                 "[dkg staleness-tick] decay tick: rows_examined={} rows_updated={} mean_trust={:.3}",

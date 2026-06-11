@@ -95,7 +95,12 @@ from pydantic import BaseModel, ConfigDict, Field
 #     ELAI_E50_ARCHETYPE_SELECTED_EMIT_ENABLE=1.
 # Pydantic side does not carry the typed envelope; constant-only bump.
 # See workflow/reasoning/B7-triple-tranche-decisions.md.
-SCHEMA_VERSION: int = 195
+# H-47 (SCHEMA_VERSION 225, 2026-06-11): EvalFirewallEvent -- DGM eval firewall
+# beacon. Composes D-6 date-gate + E-54 template-regen + H-19 Thresholdout
+# budget binding. Pattern-2 single-variant 3-arm EvalFirewallEventKind:
+# PreUpdateItemRejected | TemplateRegenerated | IndistinguishabilityProbe.
+# Pydantic side does not carry the typed envelope; constant-only bump.
+SCHEMA_VERSION: int = 225
 
 
 class MessageContentBlock(BaseModel):

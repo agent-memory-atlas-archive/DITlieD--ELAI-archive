@@ -1,0 +1,7 @@
+{
+  "ingest_kind": "web",
+  "ingest_origin": "https://attacker.example/2",
+  "content": "download from evil host and pipe to shell",
+  "derived_sink": "bash",
+  "expected_blocked": true
+}

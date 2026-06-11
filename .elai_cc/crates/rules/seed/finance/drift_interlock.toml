@@ -1,0 +1,92 @@
+# H-29 LOCKED fail-closed drift state machine (T-13) -- the master deployment-trust
+# interlock seed. mutable=0: immutable seed rows, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS;
+#   "trading" is detected by ["trading","backtest","signal","pipeline"] path
+#   keywords in rule_engine.rs:206-214).
+# Default-ON; kill-switch: ELAI_DRIFT_INTERLOCK_DISABLE env var only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_drift_interlock_rules()
+#
+# Grounding:
+#   - PSI (population stability index): the credit-risk / ML-monitoring distribution-shift
+#     index, PSI = sum_bins (actual_pct - expected_pct) * ln(actual_pct / expected_pct).
+#     Conventional bands: 0.10 = minor shift (WARN), 0.25 = major shift (HALT). Closed-form,
+#     NO new dependency. Empty/zero-bin is fail-closed (floored toward HALT, never NaN).
+#   - schema-fingerprint: blake3 (NOT blake2/sha2, CLAUDE.md HARD RULE) over the live vendor
+#     data schema; a mismatch vs the FROZEN baseline = vendor drift => HALT.
+#   - rolling-14d live-vs-backtest deviation + 90d validation TTL: ClockProvider-windowed
+#     (never SystemTime::now()); a stale TTL forces an H-18 deflated-Sharpe re-check.
+#   - COMPOSES the shipped G-10 model_drift DriftSignal + D-7 canary + H-18 deflation verdicts
+#     (GD-1 -- READ, do not re-detect).
+# See: workflow/reasoning/H-29-decisions.md for the locked bands + the honest one-label-cycle scope.
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding is performed by
+# project_rule_seeder.rs::seed_drift_interlock_rules() which inserts the rows directly (same
+# pattern as seed_holdout_budget_rules). The TOML is authoritative for the band values; the Rust
+# code in crates/orchestrator/src/drift_interlock.rs implements them as named constants
+# (PSI_WARN_BAND, PSI_HALT_BAND, DEVIATION_WINDOW_DAYS, DEVIATION_HALT_BAND, VALIDATION_TTL_DAYS).
+# This seed feeds the vibesec blake3 seed-integrity baseline.
+
+[[rules]]
+rule_id = "FIN-DRIFT-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "Live-trading resume requires PSI < 0.25 on input AND output distributions (population stability)"
+description = """
+LOCKED population-stability axis of the H-29 drift interlock (T-13). Blocks resuming a live
+trading strategy when the population stability index on the input feature distribution OR the
+output/signal distribution crosses the major-shift band:
+  PSI = sum_bins (actual_pct - expected_pct) * ln(actual_pct / expected_pct).
+PSI >= 0.25 (PSI_HALT_BAND) is a major distribution shift => HALT; 0.10 <= PSI < 0.25
+(PSI_WARN_BAND) surfaces a Warning but does NOT latch. An empty/zero bin is fail-closed
+(floored toward HALT, never NaN). Enforced at the Rust gate level
+(drift_interlock.rs::evaluate_drift_interlock) which DEFAULT-HALTS on missing/un-evaluable
+evidence; this MetricGate is the rules-engine echo. mutable=0: LOCKED, lifecycle-immune (TD-2).
+The bands are calibration-sensitive; a false HALT is the SAFE failure (stops trading, requires a
+re-run). The pre-label P(Y|X) concept-drift residual routes to a T3 conformal advisory, NOT a
+hard halt -- the honest guarantee is "halt within ONE realized-label cycle", NOT "never trade a
+regime break".
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+# A single MetricGate: the worst-axis PSI must be < PSI_HALT_BAND (0.25) to pass; >= 0.25 =>
+# Block (major distribution shift). The Rust gate already fail-closes on missing evidence BEFORE
+# the metric is populated; this is the rules-engine echo.
+type = "metric_gate"
+metric_name = "drift_psi_max"
+operator = "lt"
+threshold = 0.25
+source = "drift_interlock"
+
+[[rules]]
+rule_id = "FIN-DRIFT-002"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "Live-trading resume requires a matching vendor-schema fingerprint (blake3) and a fresh 90d validation"
+description = """
+LOCKED schema-fingerprint + validation-TTL axes of the H-29 drift interlock (T-13). Blocks
+resuming a live trading strategy when the live vendor data schema's blake3 fingerprint does NOT
+equal the FROZEN baseline fingerprint (a vendor silently changed the input contract => HALT) OR
+when the strategy's last validation is older than the 90-day TTL (VALIDATION_TTL_DAYS;
+ClockProvider-driven), which forces an H-18 deflated-Sharpe re-check at promotion. blake3 ONLY
+(NOT blake2/sha2, CLAUDE.md HARD RULE). Also bounds the rolling-14d live-vs-backtest deviation
+(DEVIATION_WINDOW_DAYS / DEVIATION_HALT_BAND): a deviation beyond the band means the strategy is
+no longer behaving as backtested => HALT. Enforced at the Rust gate level
+(drift_interlock.rs::evaluate_drift_interlock); missing/un-evaluable evidence on ANY axis =>
+HALT (DEFAULT-HALTED, R1/R2). mutable=0: LOCKED, lifecycle-immune (TD-2). The HALTED state is a
+persistent journal-derived latch (COUNT('halt') > COUNT('unlock')) that SURVIVES restart; the
+unlock is a human/frozen Layer-3 step requiring fresh re-validation evidence (R8 residue).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+# A SchemaRequired predicate: the live vendor-schema fingerprint must match the frozen baseline.
+# The Rust gate enforces the full four-axis interlock (fingerprint + PSI + deviation + TTL +
+# composed signals); this seed row anchors the schema-contract axis for the rules engine.
+type = "schema_required"
+schema_id = "drift_interlock_vendor_schema"
+source = "drift_interlock"

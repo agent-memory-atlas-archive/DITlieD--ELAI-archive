@@ -35,6 +35,10 @@
     insufficient_lift: boolean;
     runpod_pending: boolean;
     mast_mode_counts: { mast_mode: string; count: number }[];
+    // H-40 decorrelation fields. Optional for backward compat with old rows.
+    unique_catch_rate?: Record<string, number>;
+    decorrelation_score?: Record<string, number>;
+    insufficient_contribution?: Record<string, boolean>;
   };
 
   // 14 MAST modes in canonical declaration order (FM-1.1 -> FM-3.3).
@@ -173,6 +177,9 @@
             <th>Full pipeline</th>
             <th>Single + Wait</th>
             <th>Lift</th>
+            <th title="H-40: fraction of ensemble failures this role alone caught. High = decorrelated, valuable.">Unique catch</th>
+            <th title="H-40: 1 - mean pairwise error-correlation. High = decorrelated from other roles.">Decorrelation</th>
+            <th title="H-40: prunable only when BOTH lift and unique-catch are low (RD-2).">Contribution</th>
             <th>Status</th>
           </tr>
         </thead>
@@ -185,6 +192,33 @@
               <td>{(run.single_agent_wait_pass_rate * 100).toFixed(1)}%</td>
               <td class:insufficient={run.insufficient_lift}>
                 {run.insufficient_lift ? "insufficient" : "sufficient"}
+              </td>
+              <td class="mono">
+                {#if run.unique_catch_rate && Object.keys(run.unique_catch_rate).length > 0}
+                  {Object.entries(run.unique_catch_rate)
+                    .map(([k, v]) => `${k}:${(v * 100).toFixed(0)}%`)
+                    .join(" ")}
+                {:else}
+                  —
+                {/if}
+              </td>
+              <td class="mono">
+                {#if run.decorrelation_score && Object.keys(run.decorrelation_score).length > 0}
+                  {Object.entries(run.decorrelation_score)
+                    .map(([k, v]) => `${k}:${v.toFixed(2)}`)
+                    .join(" ")}
+                {:else}
+                  —
+                {/if}
+              </td>
+              <td class:insufficient={run.insufficient_contribution != null && Object.values(run.insufficient_contribution).some(Boolean)}>
+                {#if run.insufficient_contribution == null || Object.keys(run.insufficient_contribution).length === 0}
+                  —
+                {:else}
+                  {Object.entries(run.insufficient_contribution)
+                    .map(([k, v]) => `${k}:${v ? "prunable" : "retained"}`)
+                    .join(" ")}
+                {/if}
               </td>
               <td>{run.runpod_pending ? "RUNPOD-PENDING" : "live"}</td>
             </tr>

@@ -123,6 +123,28 @@ pub struct VizFile {
     /// DECISION-6 for the deferred status-source rationale.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// H-10 (HD-5): topology-suspected dead-code flag.
+    ///
+    /// `Some(true)` when the file has zero static callers after the
+    /// dynamic-dispatch entrypoints map has been applied.  The canvas
+    /// renderer distinguishes two cases via `coverage_count`:
+    ///   - `coverage_count == Some(0)` -> coverage-CONFIRMED dead
+    ///     (strong visual treatment: amber-ghost + dashed border)
+    ///   - `coverage_count == None`     -> topology-only SUSPECTED dead
+    ///     (lighter treatment: amber-neutral ring)
+    ///
+    /// Additive `Option` — existing consumers that do not inspect this
+    /// field are unaffected; the serde skip-if-None keeps the JSON clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_dead_code: Option<bool>,
+    /// H-10 (HD-5): llvm-cov execution count for this file's functions.
+    ///
+    /// Populated only when wiring-gate Layer-3 entrypoint coverage is
+    /// available. `Some(0)` means every function in the file was never
+    /// called under the smoke run (coverage-confirmed dead). `None` means
+    /// no coverage data is available — falls back to topology-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_count: Option<i64>,
 }
 
 /// One file-level edge in the dashboard graph.

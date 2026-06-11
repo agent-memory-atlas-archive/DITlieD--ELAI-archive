@@ -586,6 +586,19 @@
     activityRibbonEnabled = !activityRibbonEnabled;
   }
 
+  // H-12: canvas-as-default toggle. Bound to workspace.canvasAsDefault via
+  // workspace.setCanvasAsDefault(). When enabled, new sessions open with the
+  // Canvas window as the primary panel. Persisted under CANVAS_DEFAULT_KEY
+  // (separate from STORAGE_KEY — no schema invalidation). This is the UI
+  // consumer that closes the R6 producer-without-consumer gap for the
+  // setCanvasAsDefault() function.
+  let canvasAsDefaultLocal = $state(workspace.canvasAsDefault);
+
+  function toggleCanvasAsDefault() {
+    canvasAsDefaultLocal = !canvasAsDefaultLocal;
+    workspace.setCanvasAsDefault(canvasAsDefaultLocal);
+  }
+
   // ------------------------------------------------------------------
   // Section 5: Inference
   // ------------------------------------------------------------------
@@ -1281,6 +1294,23 @@
         <span class="s-label">Motion</span>
         <div class="s-control">
           <SegmentedControl options={MOTION_OPTIONS} bind:value={accessibilityMotion} />
+        </div>
+      </div>
+
+      <!-- H-12: canvas-as-default toggle. When ON, new sessions open with the
+           Canvas window as the primary panel instead of Activity. Persisted to
+           localStorage under CANVAS_DEFAULT_KEY (separate from workspace key).
+           The orbit tab remains accessible; this only changes the boot default.
+           Promotion path (W-2): graduates to default-ON at H-16 after one release. -->
+      <div class="s-row">
+        <span class="s-label">Canvas as default</span>
+        <div class="s-control">
+          <button
+            class="toggle-pill mono"
+            class:toggle-pill--on={canvasAsDefaultLocal}
+            onclick={toggleCanvasAsDefault}
+            aria-pressed={canvasAsDefaultLocal}
+          >{canvasAsDefaultLocal ? '[ ON ]' : '[ off ]'}</button>
         </div>
       </div>
     </section>

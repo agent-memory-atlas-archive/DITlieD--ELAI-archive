@@ -56,6 +56,19 @@
   //     (separate from D-14 SycophancyFlagStrip; not a rename).
   import EvalCorpusPanel from '$lib/components/EvalCorpusPanel.svelte';
   import SycophancyMatchedPairPanel from '$lib/components/SycophancyMatchedPairPanel.svelte';
+  // E-23 (D-5 mount) — developer-discourse UX-guard surfaces. Both poll
+  // their own Tauri command (get_context_state / get_trust_telemetry) via
+  // the api/stub tryInvoke path; both render a wire-dark / zeroed shape
+  // when ELAI_DEVELOPER_DISCOURSE_ENABLE is off on the orchestrator side.
+  // ContextStatePanel = Anthropic issue #13171 context-loss warning;
+  // TrustTelemetryPanel = baseline productivity / trust roll-up (NOT a
+  // METR arXiv:2507.09089 counter-claim). See workflow/reasoning/E-23-decisions.md.
+  import ContextStatePanel from '$lib/components/ContextStatePanel.svelte';
+  import TrustTelemetryPanel from '$lib/components/TrustTelemetryPanel.svelte';
+  // E-47: LoRA ship-gate read-only status panel. No Enable button;
+  // flip requires editing elai_cc.toml per E-47-flip-runbook.md.
+  // Wire-dark unless ELAI_LORA_SHIP_GATE_ENABLE=1. See E-47-decisions.md.
+  import LoraShipGatePanel from '$lib/components/LoraShipGatePanel.svelte';
   // B-28 follow-up — Focus tunnel surface moved to inline chips on the
   // PlanWindow baby-step detail card. No sibling panel is mounted here.
 
@@ -444,6 +457,39 @@
     aria-label="Matched-pair sycophancy"
   >
     <SycophancyMatchedPairPanel />
+  </section>
+
+  <!-- E-23 (D-5 mount) context-state warning surface. Polls
+       get_context_state every 5s and renders a token_budget_pct badge
+       (green/yellow/red at 70/85), the live FSM state + substate, the
+       runtime_choice_badge (local / cloud-billed), and the
+       prompt_injection_check_status row (not_run until C-42 ships).
+       Addresses the #1 developer-discourse complaint (Anthropic issue
+       #13171 context loss without warning). Wire-dark / zeroed unless
+       ELAI_DEVELOPER_DISCOURSE_ENABLE=1 on the orchestrator side. -->
+  <section class="monitor-section context-state" aria-label="Context state">
+    <ContextStatePanel />
+  </section>
+
+  <!-- E-23 (D-5 mount) trust telemetry surface. Polls get_trust_telemetry
+       every 30s and renders a 5-card baseline roll-up (tasks/hour,
+       findings/task, revert rate, ungrounded claims, stagnation
+       distribution). These are BASELINE numbers per
+       feedback_verify_semantics, NOT a METR (arXiv:2507.09089)
+       counter-claim. Wire-dark / zeroed unless
+       ELAI_DEVELOPER_DISCOURSE_ENABLE=1 on the orchestrator side. -->
+  <section class="monitor-section trust-telemetry" aria-label="Trust telemetry">
+    <TrustTelemetryPanel />
+  </section>
+
+  <!-- E-47: LoRA ship-gate status panel. Read-only; surfaces the current
+       [finetune.lora] config block + calibration probe results when present.
+       Wire-dark unless ELAI_LORA_SHIP_GATE_ENABLE=1 on the orchestrator
+       side; renders the wire_dark envelope (config block only, no rows) when
+       unset. No Enable button -- flip requires editing elai_cc.toml by hand.
+       See workflow/decisions/E-47-flip-runbook.md. -->
+  <section class="monitor-section lora-ship-gate" aria-label="LoRA ship gate">
+    <LoraShipGatePanel />
   </section>
 
   <!-- B-28 follow-up — Focus tunnel signals moved inline onto the PlanWindow

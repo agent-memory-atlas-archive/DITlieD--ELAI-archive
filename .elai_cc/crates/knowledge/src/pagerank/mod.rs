@@ -135,7 +135,15 @@ fn truncate_signature(sig: &str, max_chars: usize) -> String {
     if sig.len() <= max_chars {
         sig.to_string()
     } else {
-        sig[..max_chars].to_string()
+        // Slice on a UTF-8 char boundary: `max_chars` counts characters, and
+        // the byte offset of the nth char (or the full length if the string is
+        // shorter) is the safe cut point. A naive `sig[..max_chars]` byte slice
+        // panics when `max_chars` lands inside a multibyte codepoint.
+        let cut = sig
+            .char_indices()
+            .nth(max_chars)
+            .map_or(sig.len(), |(i, _)| i);
+        sig[..cut].to_string()
     }
 }
 

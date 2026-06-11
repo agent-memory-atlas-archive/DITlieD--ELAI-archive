@@ -47,7 +47,11 @@ pub mod lsp_oracle;
 pub mod pagerank;
 pub mod query;
 pub mod refine_filter;
+// E-40 Task 2 (Tranche B-3): push/pop scope-graph name resolution over the
+// loaded SymbolGraphCache. Design adoption of arXiv:2211.01224 (Stack
+// Graphs); no github/stack-graphs runtime dep (archived 2025-09-09).
 pub mod scip_import;
+pub mod scope_graph;
 
 pub use cache::{SymbolGraphCache, SymbolGraphCacheError, SymbolNode};
 pub use dataflow::DataflowAnalyzer;
@@ -68,6 +72,10 @@ pub use lsp_oracle::{
 pub use pagerank::{personalized_top_k, RankedSymbol};
 pub use query::{find_callees, find_callers, find_defs, find_refs, QueryError, SymbolMatch};
 pub use scip_import::{import_scip_indices, ScipImportError};
+pub use scope_graph::{
+    NameQuery, Resolution, ResolutionConfidence, ScopeBoundary, ScopeGraph, ScopeGraphError,
+    ScopeRules, DEFAULT_SCOPE_RULES_DIR,
+};
 
 // ---------------------------------------------------------------------------
 // E-40 Tranche B-2: `SymbolGraphAdapter` blanket impl + `notify_symbol_graph_event`.
@@ -220,4 +228,144 @@ pub async fn notify_symbol_graph_event(
         ts_ms,
     });
     ssb.write_payload(agent_id, superstep, payload, Vec::new()).await
+}
+
+// ---------------------------------------------------------------------------
+// E-40 Task 2 (Tranche B-3) smoke — off-agent artifact assertion.
+//
+// In-crate #[cfg(test)] per the orchestrator test-link constraint
+// (crates/orchestrator/tests/* do not link against ort/ndarray). One
+// sequential #[tokio::test] that:
+//   1. builds a SymbolGraphCache + ScopeGraph, runs a real scope
+//      resolution (the production code path), then
+//   2. emits ONE scope_graph_resolved SSB row via the production helper
+//      `notify_symbol_graph_event(kind = ScopeGraphResolved)` carrying the
+//      resolution result, then
+//   3. reads the row back from a fresh temp Ssb via the public
+//      SsbReader::query_by_type(SymbolGraphEvent) — the OFF-AGENT artifact
+//      (a sqlite row neither the resolver nor the test author writes by
+//      hand; it is produced by the SSB single-writer task and read through
+//      the public reader trait).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod scope_graph_emit_smoke {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use elai_core::clock::{ClockProvider, OsClock};
+    // NameQuery / ScopeBoundary / ScopeGraph / ScopeRules come in via
+    // `super::*` (the `pub use scope_graph::{...}` re-export above).
+    use crate::ssb::{Ssb, SsbActionType, SsbConfig, SsbPayload, SsbReader, SymbolGraphEventKind};
+
+    fn rust_rules() -> BTreeMap<String, ScopeRules> {
+        let mut m = BTreeMap::new();
+        m.insert(
+            "rust".to_string(),
+            ScopeRules {
+                language: "rust".into(),
+                allowed_boundaries: vec![
+                    ScopeBoundary::Local,
+                    ScopeBoundary::File,
+                    ScopeBoundary::Module,
+                    ScopeBoundary::CrossFile,
+                    ScopeBoundary::Crate,
+                ],
+                module_separator: "/".into(),
+                same_module_markers: vec!["mod.rs".into()],
+                follow_reexports: true,
+            },
+        );
+        m
+    }
+
+    #[tokio::test]
+    async fn scope_graph_resolved_row_lands_in_ssb() {
+        // --- 1. Real resolution through the production scope_graph path. ---
+        let mut cache = SymbolGraphCache::empty_with_capacity(32)
+            .expect("empty cache");
+        cache.index_node(SymbolNode {
+            id: "crates/a/src/x.rs:target:42".into(),
+            name: "target".into(),
+            file: "crates/a/src/x.rs".into(),
+            line: 42,
+            kind: "function".into(),
+            calls: vec![],
+        });
+        let resolutions = {
+            let mut sg = ScopeGraph::with_rules(&mut cache, rust_rules());
+            let q = NameQuery {
+                name: "target".into(),
+                from_file: "crates/a/src/x.rs".into(),
+                language: "rust".into(),
+            };
+            sg.resolve_name(&q).expect("resolve_name")
+        };
+        assert_eq!(resolutions.len(), 1, "exactly one resolution for target");
+        assert_eq!(resolutions[0].boundary, ScopeBoundary::Local);
+
+        // --- 2. Emit ONE scope_graph_resolved row via the production helper. ---
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("ssb.db");
+        let cfg = SsbConfig {
+            db_path,
+            pool_size: None,
+            project_id: "default".to_string(),
+            session_id: "scope-graph-smoke".to_string(),
+        };
+        let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+        let ssb = Ssb::new(cfg, clock).expect("open temp ssb");
+
+        let details = serde_json::json!({
+            "name": "target",
+            "from_file": "crates/a/src/x.rs",
+            "language": "rust",
+            "resolution_count": resolutions.len(),
+            "best_boundary": resolutions[0].boundary.as_str(),
+            "best_confidence": resolutions[0].confidence.as_str(),
+        });
+        let seq = notify_symbol_graph_event(
+            &ssb,
+            "test:scope-graph-smoke",
+            0,
+            SymbolGraphEventKind::ScopeGraphResolved,
+            Some("scope-graph-smoke"),
+            details,
+            1_700_000_000_000,
+        )
+        .await
+        .expect("emit scope_graph_resolved row");
+        assert!(seq >= 1, "SSB assigned a positive sequence");
+
+        // --- 3. Read the OFF-AGENT artifact back via the public reader. ---
+        let rows = ssb
+            .query_by_type(SsbActionType::SymbolGraphEvent)
+            .expect("query_by_type SymbolGraphEvent");
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one SymbolGraphEvent row must be present off-agent"
+        );
+
+        // Decode the payload and assert it is the ScopeGraphResolved kind
+        // carrying the resolution we computed — proving the production emit
+        // path (not a hand-written row) produced the artifact.
+        let payload: SsbPayload =
+            rmp_serde::from_slice(&rows[0].payload).expect("decode payload");
+        match payload {
+            SsbPayload::SymbolGraphEvent(p) => {
+                assert_eq!(
+                    p.kind,
+                    SymbolGraphEventKind::ScopeGraphResolved,
+                    "row must be the ScopeGraphResolved kind"
+                );
+                assert_eq!(
+                    p.details_json.get("best_boundary").and_then(|v| v.as_str()),
+                    Some("local"),
+                    "details_json must carry the resolved boundary"
+                );
+            }
+            other => panic!("expected SymbolGraphEvent, got {other:?}"),
+        }
+    }
 }

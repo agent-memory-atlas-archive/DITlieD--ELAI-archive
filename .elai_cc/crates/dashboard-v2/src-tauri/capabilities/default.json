@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Default capability for ELAI dashboard window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:allow-read-dir",
+    "fs:allow-read-text-file"
+  ]
 }

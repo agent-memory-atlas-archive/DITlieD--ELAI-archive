@@ -1,0 +1,101 @@
+# H-26 financial-invariant seed rules -- LOCKED seed (one row).
+# mutable=0: immutable seed row, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS; "trading" is
+#   detected by ["trading","backtest","signal","pipeline"] path keywords in
+#   rule_engine.rs:206-214; result_manifest.toml:3-5 documents the same).
+# Default-ON; kill-switch only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_financial_invariant_rules()
+#
+# Purpose:
+#   The SEEDED static leg of H-26 (T-10 trust-hardening, the shadow-exec +
+#   financial-invariant metamorphic-relation gate). ONE LOCKED row:
+#     FIN-INVARIANT-001 (AstPattern): a NAKED-FLOAT-== BAN -- execution code may NOT
+#       compare float money / price with a naked `==` / `!=`. A float-`==` on money is
+#       a precision bug (FP round-off makes byte-equality of two computed prices
+#       brittle); a tolerance compare (|a-b| <= band) is required. SCOPED to the
+#       order/signal/pnl execution surface (NOT a blanket ban on every float `==`).
+#   The Rust runtime divergence/identity gate (shadow_exec.rs::diff_shadow_impls) is
+#   the sound EFFECT-prover: it checks the accounting IDENTITIES EXACT in INTEGER
+#   CENTS (`==` on i64 -- the CORRECT regime, NOT a float-`==`) and the option-pricing
+#   / numeric MRs within a LOCKED tolerance band. This AST leg is the
+#   necessary-not-sufficient static leg (R5: a name/operator match is not a proof; the
+#   runtime integer-cents identity check is the load-bearing backstop).
+#
+# REGIME SPLIT (CRITICAL -- the #1 correctness rule, see H-26-decisions.md):
+#   ACCOUNTING IDENTITIES are EXACT and use INTEGER-CENTS `==` (correct). OPTION-
+#   PRICING / NUMERIC MRs are FLOAT and use the LOCKED FpTolerance band. This AST ban
+#   targets the WRONG regime: a naked float `==` / `!=` in execution code (where a
+#   tolerance compare belongs). It is self-consistent with the gate -- the gate never
+#   float-`==`s an accounting identity (that is the bug this ban catches).
+#
+# SCOPING + RESIDUAL (mirror the H-25 result_manifest.toml scope rationale):
+#   The ban is SCOPED to the order/signal/pnl/price execution surface via the
+#   execution_path:<csv> predicate (rule_engine.rs:401 scope_matches; a value like
+#   `execution_path:order,...` is a module-token CONTAINS predicate, NOT a path prefix
+#   -- under the legacy starts_with semantics a scoped rule would fire NEVER /
+#   wire-dark). The tree-sitter-rust 0.24 grammar accepts a `right:(float_literal)`
+#   field on `binary_expression` (a `left:` field is rejected as "Impossible pattern",
+#   verified live 2026-06-05); so the ban catches the DOMINANT naked-float-LITERAL
+#   idiom `pnl == 0.0` / `price != 0.0` (literal on the right). RESIDUAL (documented in
+#   H-26-decisions.md): a left-operand literal (`0.0 == pnl`) and a float-VARIABLE
+#   `==` (`pnl == target` -- no literal node, type unknown to a syntactic query) are
+#   NOT caught by this static leg; the load-bearing backstop is the integer-cents EXACT
+#   regime in diff_shadow_impls, not this AST ban.
+#
+# GROUNDING (DESIGN-INSPIRED-BY for the DEFERRED Tier-2 only):
+#   FPDiff (floating-point differential testing), Daikon (dynamic invariant MINING),
+#   RV-Monitor/MOP (runtime monitoring) inspire the DEFERRED Tier-2 dynamic-mining /
+#   monitoring extensions. H-26 Tier-1 checks a FIXED textbook-correct invariant set;
+#   it does NOT mine or runtime-monitor. The float band REUSES H-21's FpTolerance.
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding is
+# performed by project_rule_seeder.rs::seed_financial_invariant_rules() which inserts
+# the row directly. The tree-sitter-rust query below is authoritative; the Rust
+# runtime gate (shadow_exec.rs::diff_shadow_impls) is the sound backstop.
+
+[[rules]]
+rule_id = "FIN-INVARIANT-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "No naked float == / != on money or price in execution code (use a tolerance compare)"
+description = """
+LOCKED naked-float-equality ban (H-26, T-10 trust-hardening).
+FAILS at TESTING_FIRST on execution code that compares a float money / price quantity
+with a naked `==` / `!=` against a float LITERAL (e.g. `pnl == 0.0`, `price != 0.0`)
+instead of a tolerance compare (`(a-b).abs() <= band`). A float-`==` on money is a
+precision bug: FP round-off / reassociation makes byte-equality of two computed prices
+brittle, so a real value can silently mis-compare. The CORRECT regime for an
+accounting identity is EXACT INTEGER CENTS (`==` on i64), checked by the runtime gate
+shadow_exec.rs::diff_shadow_impls; the CORRECT regime for derived option-pricing /
+numeric values is a tolerance band. This static AST leg catches the WRONG regime (a
+naked float `==`/`!=`). SCOPED to the order/signal/pnl/price/fill execution surface
+(NOT a blanket ban -- a float `==` in non-execution code, e.g. a test assertion or a
+config compare, is out of scope). RESIDUAL (R5, necessary-not-sufficient): the grammar
+catches a float-LITERAL on the right operand only; a left-literal or a float-VARIABLE
+`==` is not caught by this syntactic leg -- the integer-cents EXACT regime in
+diff_shadow_impls is the load-bearing backstop. mutable=0: LOCKED, lifecycle-immune
+(TD-2). Same-env/same-seed scope.
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+type = "ast_pattern"
+language = "rust"
+# query_format "sexp": a tree-sitter s-expression (QueryFormat valid variants are
+# "sexp" | "ast_grep").
+query_format = "sexp"
+# Scope the ban to the order/signal/pnl/price execution surface (NOT a blanket ban --
+# a float == in test/config/non-execution code is legitimate). The scope is a
+# name-based approximation of "reachable from order/price execution"; the runtime
+# integer-cents identity check is the sound backstop (see SCOPING note above +
+# H-26-decisions.md residual).
+scope = "execution_path:order,signal,pnl,price,fill,trade,equity,cash"
+# A tree-sitter-rust query matching a binary_expression with a `==` or `!=` operator
+# and a float_literal as the RIGHT operand (the dominant naked-float-literal idiom
+# `pnl == 0.0` / `price != 0.0`). Verified live (2026-06-05) against tree-sitter-rust
+# 0.24: this fires on `pnl == 0.0` and does NOT fire on `(a-b).abs() < 1e-9`. A `left:`
+# field on binary_expression is rejected by the grammar ("Impossible pattern"), so the
+# left-literal / float-variable forms are RESIDUAL (see description + H-26-decisions).
+query = "[(binary_expression operator: \"==\" right: (float_literal)) (binary_expression operator: \"!=\" right: (float_literal))] @naked_float_eq"

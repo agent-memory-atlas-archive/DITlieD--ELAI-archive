@@ -5,7 +5,13 @@
   import SkeletonList from '$lib/components/SkeletonList.svelte';
   import { researchData } from '$lib/state/drawers.svelte';
   import { plan } from '$lib/state/plan.svelte';
-  import { get_research_node_history } from '$lib/api/stub';
+  import {
+    get_research_node_history,
+    get_research_budget,
+    get_source_tier_distribution,
+    type ResearchBudgetSnapshot,
+    type SourceTierCounts,
+  } from '$lib/api/stub';
   import type { TreeNode } from '$lib/ui/tree-types';
   import type {
     DecompNode,
@@ -163,6 +169,47 @@
   };
 
   // ------------------------------------------------------------------
+  // Section 4 — WEB RESEARCH BUDGET (C-3)
+  // Real consumer of the get_research_budget + get_source_tier_distribution
+  // Tauri commands. Both report known: false until a research_budget_* /
+  // source-tier producer row lands (C-1 scope); until then the section keeps
+  // its honest UnwiredNote rather than rendering fabricated counts. Polls on
+  // the same 5s cadence as the rest of the drawer.
+  // ------------------------------------------------------------------
+  let budget = $state<ResearchBudgetSnapshot>({
+    known: false, admitted: 0, pruned: 0, tokens_used: 0, tokens_max: 0,
+  });
+  let tierCounts = $state<SourceTierCounts>({
+    known: false, t1: 0, t2: 0, t3: 0, t4: 0, t5: 0,
+  });
+  let budgetTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function refreshBudget(): Promise<void> {
+    budget = await get_research_budget();
+    tierCounts = await get_source_tier_distribution();
+  }
+
+  onMount(() => {
+    void refreshBudget();
+    budgetTimer = setInterval(() => void refreshBudget(), 5_000);
+    return () => {
+      if (budgetTimer) {
+        clearInterval(budgetTimer);
+        budgetTimer = null;
+      }
+    };
+  });
+
+  const budgetPct = $derived(
+    budget.tokens_max > 0
+      ? Math.min((budget.tokens_used / budget.tokens_max) * 100, 100)
+      : 0,
+  );
+  const tierTotalC3 = $derived(
+    tierCounts.t1 + tierCounts.t2 + tierCounts.t3 + tierCounts.t4 + tierCounts.t5,
+  );
+
+  // ------------------------------------------------------------------
   // Section 5 — CONVERGENCE THRESHOLDS (phi / psi)
   // ------------------------------------------------------------------
   const phi = $derived(researchRoot.phi ?? 0);
@@ -273,14 +320,36 @@
         {/if}
       </section>
 
-      <!-- ── WEB RESEARCH BUDGET ────────────────────────────── -->
+      <!-- ── WEB RESEARCH BUDGET (C-3) ──────────────────────── -->
       <section class="section">
         <div class="section-heading">WEB RESEARCH BUDGET</div>
-        <UnwiredNote
-          phase="4D.16"
-          feature="tokens used / sources fetched / budget % over last research run"
-          note="ResearchBudgetManager not exposed via Tauri command; backend producer pending"
-        />
+        {#if !budget.known && !tierCounts.known}
+          <UnwiredNote
+            phase="4D.16"
+            feature="tokens used / sources fetched / budget % over last research run"
+            note="get_research_budget returns known:false; research_budget_* producer row pending (C-1)"
+          />
+        {:else}
+          {#if budget.known}
+            <div class="budget-bar-wrap">
+              <div class="budget-bar">
+                <div class="budget-fill" style="width:{budgetPct}%;"></div>
+              </div>
+            </div>
+            <div class="budget-meta">
+              {budget.tokens_used} / {budget.tokens_max} tokens
+              ({budgetPct.toFixed(0)}%) &middot; {budget.admitted} admitted &middot;
+              {budget.pruned} pruned
+            </div>
+          {/if}
+          {#if tierCounts.known}
+            <div class="budget-meta">
+              source tiers &middot; T1 {tierCounts.t1} &middot; T2 {tierCounts.t2}
+              &middot; T3 {tierCounts.t3} &middot; T4 {tierCounts.t4}
+              &middot; T5 {tierCounts.t5} ({tierTotalC3} total)
+            </div>
+          {/if}
+        {/if}
       </section>
 
       <!-- ── CONVERGENCE THRESHOLDS ─────────────────────────── -->

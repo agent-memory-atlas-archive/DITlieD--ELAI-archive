@@ -259,6 +259,8 @@ fn build_minimal_wiring(root: &std::path::Path) -> RuntimeWiring {
         via_mcp: false,
         // C-39: legacy contract fixture -- no Dispatch wired.
         mcp_dispatch: None,
+        // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
+        buffer_editor: None,
         // B-08: legacy contract fixture -- pipeline_grc opt-in elsewhere.
         pipeline_grc: None,
         // F-1 B2: legacy contract fixture -- seed integrity defaults to ok

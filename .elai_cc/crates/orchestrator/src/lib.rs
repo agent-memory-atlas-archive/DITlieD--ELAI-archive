@@ -1,6 +1,11 @@
 pub mod agent_pool;
 pub mod agent_role;
 pub mod agent_role_dispatcher;
+// H-31 (SCHEMA_VERSION 240): the Personalization-Trap firewall -- the compile-time role allowlist
+// gating user-memory injection. ALLOW = {AgentRole::Executor, ConsensusRole::Worker} ONLY; every
+// reviewer/auditor/critic/adversary role gets ZERO user-memory. Consumed by the CLI prompt-
+// assembly path (report_fns::build_system_prompt) and the user_memory_capture producer.
+pub mod user_memory_firewall;
 pub mod agent_template;
 // D-13: adversary role + cross-family heterogeneous-verifier check.
 // Producer side of the adversarial-verification pass; consumed by
@@ -142,10 +147,18 @@ pub mod cloud_mode;
 // workflow/reasoning/E-39-decisions.md.
 pub mod cost;
 pub mod context_budget;
+// G-7: per-change confidence PRODUCER (fuses log-prob + self-consistency +
+// oracle-free test execution-agreement into the real claim_score feeding the
+// SHIPPED D-16 conformal abstention layer).
+pub mod claim_confidence;
+// G-7: lethal-trifecta detection + dual-LLM quarantine (route an untrusted span
+// through a structurally no-tool sub-LLM when secret + untrusted + egress co-occur).
+pub mod quarantine;
 pub mod dispatch;
 pub mod dispatcher;
 pub mod privacy;
 pub mod privacy_redactor;
+pub mod redaction;
 pub mod branch_lock;
 mod compact;
 mod conversation;
@@ -156,6 +169,9 @@ pub mod evidence;
 pub mod focus_tunnel;
 pub mod fsm;
 pub mod gate;
+// H-38 — cost-confirmation gate predicate for TaskStop / pod_stop.
+// Reads the H-9 CloudSpend ledger at dispatch_stop time; pure + sync predicate.
+pub mod stop_cost_gate;
 // C-40 — GitHub PR adapter (gh CLI shell-out). Producer of the four
 // SCHEMA_VERSION 109 SsbActionType::GithubPr* rows. Cross-language
 // pair: dashboard-v2/src-tauri/src/commands_c40.rs +
@@ -167,6 +183,11 @@ pub mod github_pr;
 pub mod idea_framing;
 pub mod hooks;
 pub mod hook_dispatcher;
+// H-36: completion / needs-input dev-event notification dispatcher.
+// Fires terminal escape + optional OS notification + writes agent_notification_emitted SSB row.
+// Mount points: task_runner.rs post-PhaseComplete (Completion) and
+// post-emit_autonomous_decision for RequestHuman (NeedsInput).
+pub mod notify_dispatch;
 // F-1 VibeGate: compound security evaluator + secret regex patterns.
 // vibegate_secrets is a private impl module (regex set); vibegate is the
 // public surface wired into hook_dispatcher::InProcessHookDispatcher.
@@ -229,6 +250,24 @@ mod preload;
 mod prompt;
 pub mod recovery;
 pub mod recovery_recipes;
+// G-2 (SCHEMA_VERSION 210): Reproducible-Run Artifact (RRA) — the G-plan
+// trust-spine keystone. Bundles the SSB action stream + determinism pins +
+// F-gate evidence manifest + blake3 root into a portable .rra; verify_rra
+// re-checks it offline. CONSUMES F-1/F-4/F-9/F-10 verdict hashes (GD-1).
+pub mod rra;
+// G-8 (SCHEMA_VERSION 213): signed in-toto v1 provenance attestation. Re-expresses
+// the G-2 RunArtifact manifest as a custom in-toto Statement + predicate, signs it
+// with a LOCAL blake3-Merkle proof (no new dep), and verifies it OFFLINE
+// (trust-without-re-running, SLSA-VSA). CONSUMES the G-2 manifest (GD-1); extends
+// F-4 off-machine. Article-50 honest posture (E-38, DD6).
+pub mod attestation;
+// G-5 (SCHEMA_VERSION 212): reviewer-cockpit Diff-Surface-to-Review (DSR)
+// scoring engine. Pure function over parsed git-diff hunks + the per-file
+// deterministic signals decoded from the SSB stream. CONSUMES F-4/F-1/F-2a
+// verdicts (re-implements none, GD-1); the DSR recomputes byte-identically from
+// the pinned git-diff + the seq-ASC stream (GD-2). See
+// workflow/reasoning/G-5-decisions.md.
+pub mod review_surface;
 pub mod grounding_client;
 pub mod research_budget;
 pub mod research_pipeline;
@@ -369,6 +408,8 @@ pub mod output_postprocessor;
 pub mod profile_selector;
 pub mod rule_loader;
 pub mod config_archive;
+// H-46: HGM clade-metaproductivity parent-selection key.
+pub mod clade_metaproductivity;
 pub mod evolution_gate;
 pub mod msi;
 pub mod osc;
@@ -538,6 +579,29 @@ pub mod darwinian_bai;
 // run_one_generation. See workflow/reasoning/F-11-decisions.md.
 #[cfg(feature = "darwinian-evolve")]
 pub mod darwin_admit_loop;
+// H-43: execution-grounded DGM fitness scorer. Replaces the blake3-of-bytes
+// derived_alpha placeholder (GAP-1) with a measured pass-rate signal
+// (CodeRM arXiv:2501.01054 + CodeT arXiv:2207.10397).
+// Always compiled (the scorer struct + fn are feature-agnostic; the SSB emit
+// and darwin_admit_loop wiring are feature-gated via darwinian-evolve).
+// See workflow/reasoning/H-43-decisions.md.
+pub mod execution_fitness;
+// H-45: worst-case / variance-penalized promotion scoring over lineage-diverse
+// verdicts (Coste 2310.02743 WCO/UWO + Eisenstein 2312.09244 + Co-rewarding
+// 2508.00410 + PRMBench 2501.03124 tau calibration). Replaces the candidate's
+// own mean fitness as the two_gate_promote margin. Always compiled (pure
+// aggregation logic; darwin_admit_loop wiring is feature-gated).
+// See workflow/reasoning/H-45-decisions.md.
+pub mod promotion_score;
+// H-44: behavioral trap detection + measured recall. Replaces the keyword-grep
+// placeholder (GAP-2, trap_tasks.rs::score_candidate_for_traps) with three
+// behavioral detection legs (ImpossibleBench 2510.20270 / IsomorphMismatch
+// 2604.15149 / CodeHalu 2405.00253) and a frozen TRACE-style recall measurement
+// (2601.20103). Feature-gated via darwinian-evolve (same kill-switch as
+// trap_tasks + darwin_admit_loop) since it composes trap_tasks.
+// See workflow/reasoning/H-44-decisions.md.
+#[cfg(feature = "darwinian-evolve")]
+pub mod trap_behavioral;
 // E-8: self-evolving prompts substrate. The LPO span guard
 // + structured-auditor-feedback exporter + gotchas-injection helper
 // are unconditional (no E-7 surface required); they support the
@@ -557,6 +621,14 @@ pub mod verification_result;
 // task_runner's CLAIM-emit hook. See workflow/reasoning/D-3-decisions.md
 // (DECISION-3) for the citation-substitution rationale.
 pub mod cross_context;
+// D-3 (closure): concrete VerifierAdapter implementations
+// (DeterministicAdapter / IntrinsicAdapter / PpmAdapter) consumed by
+// run_consensus_pass via the task_runner's post-task dispatch_verifiers
+// hook. The model-free DeterministicAdapter is the production default the
+// boot-site build_verifier_adapters wires under ELAI_VERIFIER_ENABLE; the
+// observable smoke drives it with no model. See workflow/reasoning/
+// D-3-decisions.md.
+pub mod verifier_adapters;
 // E-45: host-side cross-language drift detector. Diffs Rust orchestrator
 // boundary structs against the Python sidecar + Tauri TS mirror per the
 // pair registry loaded from `.elai_cc/cross-lang-pairs.toml`. Producer
@@ -643,6 +715,13 @@ pub mod held_out;
 // `canary::emit_canary_run`. Consumed by `agent_pool::recent_canary_status`
 // (read surface for BAI gate + dashboard).
 pub mod canary;
+// G-10 (SCHEMA_VERSION 218): exogenous model-version behavioral-regression gate.
+// Composes D-7 canary.rs (GD-1: re-implements NONE of it) + G-2 RunArtifact
+// identity tuple to detect per-family regression across an identity change.
+// Emits ModelDriftSuspected SSB rows on drift (SURFACE not auto-swap; GD-4).
+// Default-ON; kill-switch ELAI_MODEL_DRIFT_DISABLE only (W-2). See
+// workflow/reasoning/G-10-decisions.md.
+pub mod model_drift;
 // C-27: Testing-trust Tier T(-1) DeterminismConfig + Tier T-0 WiringContract.
 // Surface re-exports below for the CLI driver and contract crate. See
 // workflow/reasoning/C-27-decisions.md.
@@ -692,6 +771,22 @@ pub mod orch_context;
 // Grounding: arxiv:2310.04406 (constructive proof checking), arxiv:2211.12588
 // (PoT), arxiv:2402.01030 (CodeAct).
 pub mod checker_registry;
+// H-41 — live checker-coverage roll-up + Xu Table-3 complexity-taxon classifier.
+// Instruments the shipped D-10/D-11 sound-checker-first preference (GD-1: reuse,
+// not reimplement). Produces: mode_a_coverage roll-up, classify_complexity_taxon,
+// checker_gap_backlog. Emitted SSB beacon: CheckerGapDetected (219/530).
+// See docs/thefinalglance/H-plan/H-41_checker_coverage_gap_instrument.md.
+pub mod checker_coverage;
+// H-42 — serial-depth-scaled GRC reasoning budget + depth-not-width guard.
+// estimate_serial_depth (from DecompositionLevel) + scale_grc_budget (monotone,
+// LOCKED_BUDGET_CEILING bounded) + classify_failure (FailureClass struct with
+// depth_bound + access_bound flags) + ReasoningBudgetScaledEmitter trait +
+// VecReasoningBudgetEmitter (test emitter). scale_and_emit is the combined
+// helper used by both dispatch sites. Default-ON; kill-switch
+// ELAI_REASONING_BUDGET_SCALE_DISABLE. Emitted SSB beacon:
+// ReasoningBudgetScaled (220/531).
+// See docs/thefinalglance/H-plan/H-42_serial_depth_reasoning_budget.md.
+pub mod reasoning_budget;
 // D-12 — OperationalizationCheck baby-step predicate. Co-locates the
 // typed BabyStep + MeasurableProcedure + ExpectedResult value objects
 // with the `is_operationalized` predicate the auditor gates on, and
@@ -716,6 +811,12 @@ pub mod conformal_calibration;
 // Grounding: arXiv:2503.01345 (UniCR honest refusal);
 // docs/specs/guide/real-problem-solving-grounded-2026-05-19.md §4.6.
 pub mod refusal_sla;
+// H-39 — Abstention-aware promotion + eval scoring. Closes the self-improvement
+// loop misalignment: D-16's RefusalDecision::Abstain fires at inference but the
+// reward darwin_admit_loop climbs is abstention-blind. Builds AbstentionAwareScore
+// + AbstentionAggregate, wires into promotion reward + coding_metrics + bench
+// scorers, emits AbstentionScored SSB row. Grounding: arXiv:2509.04664.
+pub mod abstention_score;
 // D-15: Discovery-vs-search labeling — pure `NoveltyClass` predicate over
 // caller-supplied `NoveltyEvidence`, plus the producer surface
 // (`emit_novelty_classified`) and read-side projection
@@ -819,6 +920,32 @@ pub mod tool_calibration_ssb_adapter;
 // workflow/sessions/s-22600/exploration/trancheD-integration.md.
 #[cfg(feature = "mcp")]
 pub mod mcp_authz_ssb_adapter;
+// G-4 (s-56068): orchestrator-side adapter that bridges the plugins-crate
+// `RugPullSsbEmitter` trait (live MCP rug-pull / line-jump re-pin gate) into
+// `Ssb::write_payload`. Mirrors mcp_authz_ssb_adapter; the row is default-ON
+// (kill-switch ELAI_MCP_REPIN_DISABLE only). See workflow/reasoning/G-4-decisions.md.
+#[cfg(feature = "mcp")]
+pub mod mcp_rugpull_ssb_adapter;
+// G-1: data-plane taint propagation SSB emitter. Writes a taint_flow row when
+// an untrusted ingest flows into a destructive sink and the capability gate
+// rejects it. No mcp dependency -- unconditional. See G-1-decisions.md.
+pub mod taint_flow_ssb_adapter;
+// G-3: deterministic runtime blast-radius SSB emitter. Writes a
+// blast_radius_blocked row when a fail-closed gate refuses a post-expansion FS
+// escape (translate_tool_request) or a denied egress host (fetch_and_extract).
+// Default-ON (kill-switch ELAI_BLAST_RADIUS_DISABLE only). See G-3-decisions.md.
+pub mod blast_radius_ssb_adapter;
+// G-7: lethal-trifecta dual-LLM quarantine SSB emitter. Writes a
+// trifecta_quarantined row when the secret-present + untrusted-span + egress
+// legs co-occur at translate_tool_request and the untrusted span is held back.
+// Default-ON (kill-switch ELAI_TRIFECTA_QUARANTINE_DISABLE only). See G-7-decisions.md.
+pub mod trifecta_quarantine_ssb_adapter;
+// G-4: STDIO transport leg of the live MCP rug-pull / re-pin gate. Wires the
+// schema-pin engine into the REAL default-run tool-discovery seam
+// (mcp_stdio::McpServerManager::discover_tools_for_server). Feature-gated on
+// `mcp` because it depends on `elai_plugins::mcp_schema_pin`.
+#[cfg(feature = "mcp")]
+pub mod mcp_rugpull_gate;
 // E-18: orchestrator-side adapter that bridges the plugins-crate
 // `ReliabilityGateSsbEmitter` trait (tool-use reliability gate
 // telemetry) into `Ssb::write_payload`. Same dependency-inversion
@@ -878,6 +1005,15 @@ pub mod ipc_accept;
 // AnthropicClient (sidecar or cloud via ELAI_GROUNDING_BACKEND) and
 // InProcessToolDispatcher.
 pub mod production_agent_rpc;
+// H-13 — Canvas op dispatcher (mode-namespace gating + sanitizeAction) and
+// per-mode constrained grammar infra (CI compile-ceiling + grammar_unavailable
+// fallback). See workflow/reasoning/H-13-decisions.md.
+pub mod canvas_dispatcher;
+pub mod canvas_grammar;
+// H-15 — Canvas UI action types + taint-gated Select handoff.
+// CanvasUiAction enum + the Select gate reusing capability_flow::taint_text
+// + G-1 TaintFlowCtx::lookup_for_argv. See workflow/reasoning/H-15-decisions.md.
+pub mod canvas_ui_action;
 // D-14 — sycophancy probe substrate (Sharma et al. arXiv:2310.13548).
 // Defensive detector: flags suspected sycophancy via inverted-framing
 // challenge per §3.2; does NOT auto-correct (PM does not reliably fix
@@ -896,6 +1032,131 @@ pub mod team_cron_registry;
 // SSB rows only; the producer side is the dashboard-v2 Tauri command.
 pub mod trust_telemetry;
 pub mod worker_boot;
+// H-17 (SCHEMA_VERSION 223): persisted untamperable trial ledger.
+// The selection-bias keystone T-1: a single register_trial() choke-point +
+// append-only strategy_trials table + read API for the H-18 DSR/PBO gate.
+// Default-ON; kill-switch ELAI_TRIAL_LEDGER_DISABLE. See
+// workflow/reasoning/H-17-decisions.md.
+pub mod trial_ledger;
+// H-18 (SCHEMA_VERSION 224): Deflated Sharpe / PBO / MinBTL promotion gate.
+// The #1 net-new trust gate (T-2). Fail-closed on TrialCountMissing (TD-1)
+// and absent PBO (R1/R2). Thresholds LOCKED in mutable=0 rule seed.
+// Default-ON; kill-switch ELAI_DEFLATION_GATE_DISABLE. See
+// workflow/reasoning/H-18-decisions.md.
+pub mod deflation_gate;
+// H-20 (SCHEMA_VERSION 225): leakage static-analysis COMPOSITE gate. Composes
+// the rules-engine GraphReachability over the DKG (fit-site reaches BOTH
+// train+test sink => SoundBlock L1.2/L1.3; no split => L1.1). Sound for only
+// 3 of the 8 Kapoor classes; the residue (L1.4/L2/L3.x) routes to human
+// Layer-3. FAIL-CLOSED on absent/empty DKG. Default-ON. See
+// workflow/reasoning/H-20-decisions.md.
+pub mod leakage_gate;
+// H-21 (SCHEMA_VERSION 226): runtime look-ahead / causality DIFFERENTIAL gate.
+// A PURE perturb-and-diff (full-data vs future-truncated feature column-set);
+// any column that changes under truncation proves a look-ahead leak (FutureLeak
+// -> Block). The un-gameable runtime backstop to the H-20 static leakage
+// COMPOSITE (R5). FAIL-CLOSED on missing/empty truncated run + shape/column-set
+// mismatch. Tier-2 Python feature-runner (re-runs the pipeline twice) DEFERRED
+// (RunPod-pending). See workflow/reasoning/H-21-decisions.md.
+pub mod lookahead_differential;
+// H-22 — trading metamorphic NULL-TEST gate (SCHEMA_VERSION 227). A NEW
+// f64-domain Tier-1 gate: does the edge survive a block-permutation null? A
+// genuine edge sits in the tail (small p = (C+1)/(K+1), Ojala & Garriga 2010)
+// and is significant after Bonferroni N-correction (N from H-17) -> ALLOW; an
+// overfit edge sits inside the null band (p >= alpha/N) -> it survived the null
+// -> BLOCK. FAIL-CLOSED on missing series / under-powered K / TrialCountMissing
+// / NaN. Emits a TradingNullTest SSB row (off-agent artifact). Reuses MrViolated
+// for per-relation MR failures; the Tier-2 Python permutation sidecar is frozen
+// + deferred (cross-lang-skip). See workflow/reasoning/H-22-decisions.md.
+pub mod trading_null_gate;
+// H-23 (SCHEMA_VERSION 228) — same-seed re-run hash-equality METRIC_GATE (the
+// reproducibility centerpiece, T-7). verify_rerun_digest blake3-hashes the
+// DECLARED metric outputs of two same-seed re-runs and asserts byte-equality; a
+// hidden unseeded RNG makes run #2's digest differ -> Divergent Block. PURE
+// re-run-and-diff: REUSES the RRA blake3 16-hex convention + DriftComparator
+// first-divergence (per-metric digests wrapped as ActionTypeSequence). Emits a
+// RerunHashEquality SSB row on every decision (off-agent artifact). FAIL-CLOSED
+// on missing second run / missing seed (NOT silent seed=0, hazard A) /
+// empty-or-trivial declared outputs (hazard B). Same-env/same-seed scope (TD-5);
+// the Tier-2 Python experiment-runner is deferred (cross-lang-skip). See
+// workflow/reasoning/H-23-decisions.md.
+pub mod rerun_equality;
+// H-24 (SCHEMA_VERSION 229) — sim-to-real parity gate (T-8). Part C (PURE Rust):
+// sim_real_parity::verify_replay_golden blake3-EXACT-equality-checks a seeded
+// replay event log against a FROZEN golden event log; any divergent event proves
+// a sim-real divergence -> Block (first named via the reused DriftComparator).
+// Part A (mode-divergent-branch AST ban SCOPED to the order/signal execution path
+// + single-entrypoint SchemaRequired manifest) is SEEDED mutable=0 in
+// crates/rules/seed/repro/sim_real_parity.toml. Part B (numeric live-vs-backtest
+// reconciliation) is DEFERRED Tier-2 (GD-5): structural parity is necessary-not-
+// sufficient. FAIL-CLOSED on missing replay / missing-or-empty golden / event-set
+// mismatch. Same-env/same-seed scope (TD-5); the Tier-2 live feed is deferred
+// (cross-lang-skip). See workflow/reasoning/H-24-decisions.md.
+pub mod sim_real_parity;
+// H-25 (SCHEMA_VERSION 230) — result manifest re-derivation gate. verify_result
+// re-parses each declared empirical NUMBER from its orchestrator-captured output
+// (RESTRICTED parser grammar, NO string-eval) and asserts parsed==declared, then
+// re-hashes the pinned inputs (captured_output/data/env/commit); any mismatch
+// proves a fabricated number -> Block (first result named via the reused
+// DriftComparator). Generalises the F-4 stdout_hash anti-fab leg from test-PASS to
+// empirical-RESULT. Pure Rust; the produced-vs-declared completeness diff is the
+// deferred Tier-2 (cross-lang-skip). See workflow/reasoning/H-25-decisions.md.
+pub mod result_manifest;
+// H-26 (SCHEMA_VERSION 232) — shadow-execution + financial-invariant metamorphic-
+// relation gate. diff_shadow_impls diffs two fixture-supplied result sets within a
+// LOCKED float band AND checks textbook-correct financial invariants: accounting
+// IDENTITIES EXACT in integer cents, option-pricing / numeric MRs within the band.
+// Pure Rust; the two-impl re-execution runner is the deferred Tier-2 (cross-lang-
+// skip). See workflow/reasoning/H-26-decisions.md.
+pub mod shadow_exec;
+// H-27 (SCHEMA_VERSION 235) — gate self-validation, the verify-the-verifiers META
+// gate. validate_gates drives a FROZEN registry of the 8 Track-3 gates (deflation,
+// leakage, lookahead, trading_null, rerun, sim_real, result_manifest, shadow_exec),
+// replays each gate's OWN demo-violated fixture as a planted mutant through its REAL
+// async evaluate_* fn, and asserts a BLOCK-class verdict (kill the mutant). Reuses the
+// mutation_score==100.0 SEMANTICS, NOT the cargo-mutants MutationRunner. Fail-closed on
+// empty registry / surviving mutant / over-block / un-runnable gate. Validates the 8
+// OTHER gates, NEVER itself (no infinite regress). See workflow/reasoning/H-27-decisions.md.
+pub mod gate_self_validation;
+// H-28 (SCHEMA_VERSION 236) — the current-RF reward-tampering gate (Everitt
+// arXiv:1908.04734). check_reward_tampering consumes a fixture triple (frozen-evaluator
+// hash baseline, observed hash, claimed/prior reward + band) and detects reward tampering
+// via two sound Tier-1 legs: a frozen-evaluator blake3 MISMATCH => EvaluatorModified
+// HARD-BLOCK (leg 3a, reuses the ArchiveVerifyResult tripwire semantics; also the
+// fail-closed arm for a missing baseline), and an implausible reward delta with the hash
+// INTACT => ImplausibleRewardDelta FLAG -> human Layer-3 (leg 3b). TD-3 ordering: leg 3a is
+// checked FIRST and short-circuits before 3b (a hash mismatch is dispositive). Tier-1 = the
+// always-compiled `elai reward-check` CLI; the live darwin_admit_loop hook is feature-gated
+// (Tier-2/deferred). See workflow/reasoning/H-28-decisions.md.
+pub mod reward_tampering;
+// H-19 — reusable-holdout query budget (the Thresholdout DP gate; Dwork et al.
+// arXiv:1506.02629). HoldoutBudgetLedger is an append-only budget counter (queries_spent =
+// COUNT of QuerySpent rows; NO agent-facing reset/delete/update/provision method, mirrors the
+// H-17 trial_ledger) over the holdout_budget table on the Ssb WAL. query_holdout runs the
+// EXACT Thresholdout query (T_hat=T+Lap(2*sigma), eta~Lap(4*sigma), xi~Lap(sigma),
+// sigma=tau/(96*ln(4*m/beta)), T=3*tau/4; Laplace ONLY, seeded ChaCha8 GD-2, NO new dep):
+// below-threshold queries answer FREE from the training set, above-threshold queries charge
+// 1 budget unit and release the Laplace-noised holdout statistic. Budget exhausted => REFUSE
+// (fail-closed). provision_fresh_holdout is a FREE FUNCTION (human/frozen path, NOT an agent
+// method) that asserts the new data_window is DISJOINT from the spent window (covert reset-
+// attack guard). Tier-1 = the always-compiled `elai holdout-check` CLI. See
+// workflow/reasoning/H-19-decisions.md.
+pub mod holdout_budget;
+// H-47 (SCHEMA_VERSION 225) — DGM eval firewall: date-gate + template-regen +
+// holdout-budget binding. Composes D-6 held_out, E-54 contamination filter,
+// and H-19 Thresholdout budget into a single pre-score gate for
+// darwin_admit_loop::run_one_generation. Emits EvalFirewallEvent SSB row.
+// See workflow/reasoning/H-47-decisions.md.
+pub mod eval_firewall;
+// H-29 (SCHEMA_VERSION 238) — the LOCKED fail-closed drift state machine (T-13): the master
+// deployment-trust interlock that gates resuming a live trading strategy. Four closed-form
+// drift axes (PSI on inputs+outputs, blake3 schema-fingerprint mismatch, rolling-14d
+// live-vs-backtest deviation, 90d validation TTL) + composed G-10/D-7/H-18 signals; a
+// persistent journal-derived latch (is_halted = COUNT('halt') > COUNT('unlock')) that DEFAULTS
+// to HALTED on missing/un-evaluable evidence and SURVIVES restart; the human unlock is a FREE
+// FUNCTION requiring fresh re-validation evidence (NOT an agent method). Tier-1 = the
+// always-compiled `elai drift-check` CLI. See workflow/reasoning/H-29-decisions.md.
+pub mod drift_interlock;
 // Phase 4J / B-25 — Empire integration (host-side scaffolding only). Gated
 // behind cfg(feature = "empire") so non-empire builds pay zero compile-time
 // or runtime cost (workspace-level `cargo build --no-default-features`
@@ -983,8 +1244,15 @@ pub use gate::{
     default_risk_level, run_interactive_gate, EvidenceSummary, GateDecision, GateResult,
     InteractiveGate, InteractiveGateOutcome, RiskLevel,
 };
-#[cfg(test)]
+// MockInteractiveGate is exported unconditionally (not just #[cfg(test)]) so
+// external contract test crates can construct mock gates without depending on
+// a test-only re-export. The struct is clearly labeled "Mock" and is only used
+// in tests; this does not affect production binaries (dead code elision).
 pub use gate::MockInteractiveGate;
+// H-38 — cost-confirmation gate predicate surface.
+pub use stop_cost_gate::{
+    evaluate_stop, StopCostSnapshot, StopGateVerdict, CONFIRM_COST_FLOOR_USD,
+};
 // Batch 3B (Phase 4G) — AutonomousGate surface.
 pub use autonomous_gate::{
     autonomous_gate_disabled_via_env, AutonomousGate, AutonomousGateConfig, AutonomyDecision,
@@ -1092,13 +1360,14 @@ pub use mcp_lifecycle_hardened::{
     McpLifecycleValidator, McpPhaseResult,
 };
 pub use mcp_stdio::{
-    spawn_mcp_stdio_process, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse,
-    ManagedMcpTool, McpDiscoveryFailure, McpInitializeClientInfo, McpInitializeParams,
-    McpInitializeResult, McpInitializeServerInfo, McpListResourcesParams, McpListResourcesResult,
-    McpListToolsParams, McpListToolsResult, McpReadResourceParams, McpReadResourceResult,
-    McpResource, McpResourceContents, McpServerManager, McpServerManagerError, McpStdioProcess,
-    McpTool, McpToolCallContent, McpToolCallParams, McpToolCallResult, McpToolDiscoveryReport,
-    UnsupportedMcpServer,
+    spawn_mcp_stdio_process, DeferredResolveInfo, JsonRpcError, JsonRpcId, JsonRpcRequest,
+    JsonRpcResponse, ManagedMcpTool, McpDiscoveryFailure, McpInitializeClientInfo,
+    McpInitializeParams, McpInitializeResult, McpInitializeServerInfo, McpListResourcesParams,
+    McpListResourcesResult, McpListToolsParams, McpListToolsResult, McpReadResourceParams,
+    McpReadResourceResult, McpResource, McpResourceContents, McpServerManager,
+    McpServerManagerError, McpStdioProcess, McpTool, McpToolCallContent, McpToolCallParams,
+    McpToolCallResult, McpToolDiscoveryReport, StdioSchemaCache, UnsupportedMcpServer,
+    ALWAYS_AVAILABLE, ELAI_MCP_DEFER_SCHEMA_ENABLE_ENV,
 };
 pub use elai_providers::oauth::{
     clear_oauth_credentials, code_challenge_s256, credentials_path, generate_pkce_pair,
@@ -1210,6 +1479,8 @@ pub use agent_pool::{
     // pure predicate, emits the SSB row, returns an RAII guard).
     recent_claim_routings, route_claim, ClaimRoutedEmitter, ClaimRoutedRow, EmissionGuard,
     VecClaimRoutedEmitter,
+    // H-41: checker-gap emit surface (wrapper + env-wrapper + trait + test emitter).
+    route_claim_with_gap, route_claim_with_gap_env, CheckerGapEmitter, VecCheckerGapEmitter,
     // D-11: constructive-checker dispatch producer surface
     // (`dispatch_constructive_checkers` runs the registry + emits
     // one `checker_result_emitted` SSB row per result).
@@ -1373,6 +1644,14 @@ pub use ssb::{
     // ModeRoutingPanel commands can construct the payload without
     // reaching into `orchestrator::ssb::*` directly.
     ClaimRoutedPayload,
+    // H-41 (SCHEMA_VERSION 219): checker-gap backlog beacon. Re-exported
+    // so the agent_pool gap-emit wrapper + contract crate + dashboard-v2
+    // CheckerCoveragePanel commands can construct the payload directly.
+    CheckerGapDetectedPayload,
+    // H-42 (SCHEMA_VERSION 220): serial-depth-scaled GRC budget decision beacon.
+    // Re-exported so the reasoning_budget module + contract crate + dashboard-v2
+    // ReasoningDrawer commands can construct the payload directly.
+    ReasoningBudgetScaledPayload,
     // D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
     // Re-exported so the agent_pool dispatch producer + dashboard-v2
     // CheckerRegistryPanel commands can construct the payload directly.
@@ -1431,6 +1710,83 @@ pub use ssb::{
     // dashboard-v2 + contract tests can construct the payload without
     // reaching into `orchestrator::ssb::*` directly.
     TemplateUtilityRankedPayload,
+    // G-2 (SCHEMA_VERSION 210): RunArtifactEmitted reproducible-run artifact
+    // beacon. Re-exported so the cli rra_cmd + dashboard-v2 commands_g2.rs +
+    // contract tests can decode rows / construct the SsbActionType arm without
+    // reaching into `orchestrator::ssb::*` directly.
+    RunArtifactEmittedPayload,
+    // G-5 (SCHEMA_VERSION 212): ReviewSurfaceScored reviewer-cockpit DSR score
+    // beacon. Re-exported so the cli review_cmd emit + dashboard-v2
+    // commands_g5.rs + contract tests can decode rows / construct the
+    // SsbActionType arm without reaching into `orchestrator::ssb::*` directly.
+    ReviewSurfaceScoredPayload,
+    // G-8 (SCHEMA_VERSION 213): ProvenanceAttestationEmitted signed in-toto
+    // provenance attestation beacon. Re-exported so the cli run_subcommand emit +
+    // verify_attestation_cmd + dashboard-v2 commands_g8.rs + contract tests can
+    // decode rows / construct the SsbActionType arm without reaching into
+    // `orchestrator::ssb::*` directly.
+    ProvenanceAttestationEmittedPayload,
+    // G-6 (SCHEMA_VERSION 217): SafetyDeltaMeasured gate-ON-vs-OFF SAFEDELTA
+    // flat beacon. Re-exported so the cli bench_safedelta.rs emit + dashboard-v2
+    // commands_g6.rs + g6 contract tests can decode rows / construct the
+    // SsbActionType arm without reaching into `orchestrator::ssb::*` directly.
+    SafetyDeltaMeasuredPayload,
+    // G-10 (SCHEMA_VERSION 218): ModelDriftSuspected exogenous behavioral-regression
+    // beacon. Re-exported so the cli model_drift_cmd emit + run_subcommand + dashboard-v2
+    // commands_g10.rs + g10 contract tests can construct the payload without reaching
+    // into `orchestrator::ssb::*` directly.
+    ModelDriftSuspectedPayload,
+    // H-17 (SCHEMA_VERSION 223): TrialRegistered persisted trial count off-agent
+    // artifact. Re-exported so the h17 contract test + future H-18 promotion gate
+    // can construct the payload without reaching into `orchestrator::ssb::*` directly.
+    TrialRegisteredPayload,
+    // H-37 (SCHEMA_VERSION 216): PlanDecisionEvent plan-approval gate decision.
+    // Re-exported so the h37 contract test + commands_h37.rs dashboard command
+    // can construct the payload without reaching into `orchestrator::ssb::*` directly.
+    PlanDecisionKind, PlanDecisionPayload,
+    // H-38 (SCHEMA_VERSION 217): StopConfirmationEvent cost-confirm gate.
+    // Re-exported so the h38 contract test can construct the payload and assert
+    // round-trip without reaching into `orchestrator::ssb::*` directly.
+    StopConfirmationPayload, StopOutcomeKind,
+    // H-39 (SCHEMA_VERSION 218): AbstentionScored bench beacon.
+    // Re-exported so the h39 contract test can construct the payload directly.
+    AbstentionScoredPayload,
+    // H-45 (SCHEMA_VERSION 223): PromotionScoreAggregated worst-case/variance-penalized
+    // aggregate promotion score. Re-exported so h45 contract test + dashboard can decode.
+    PromotionScoreAggregatedKind, PromotionScoreAggregatedPayload,
+    // H-46 (SCHEMA_VERSION 224): CladeSelected HGM clade-metaproductivity parent
+    // selection beacon. Re-exported so h46 contract test + ssb_viewer clade_selections
+    // + dashboard get_clade_selections can construct/decode without reaching into
+    // `orchestrator::ssb::*` directly.
+    CladeSelectedKind, CladeSelectedPayload,
+};
+// G-5: reviewer-cockpit DSR scoring engine public surface. Re-exported so the
+// cli review_cmd + dashboard-v2 commands_g5.rs + contract tests can score a
+// diff + per-file signal set without reaching into `orchestrator::review_surface`
+// internals.
+pub use review_surface::{
+    build_file_signals, hunk_id_for, score_review_surface, FileSignals, FindingKind, HunkVouch,
+    ReviewFinding, ReviewSurfaceScore, VouchKind,
+};
+// G-2: Reproducible-Run Artifact public surface. Re-exported so the cli
+// rra_cmd / run_subcommand emit + dashboard-v2 commands_g2.rs + contract tests
+// can build / write / verify a .rra without reaching into `orchestrator::rra`
+// internals.
+pub use rra::{
+    build_rra, compute_root, read_rra, verify_artifact, verify_rra, write_rra,
+    GateVerdictHash, GuaranteeLevel, ReplayVerdict, RraError, RraEvent, RunArtifact,
+    RRA_COMPRESSION_DEFERRED, RRA_FORMAT_VERSION, RRA_HEX_PREFIX_LEN,
+};
+// G-8: signed in-toto v1 provenance attestation public surface. Re-exported so
+// the cli verify_attestation_cmd + run_subcommand emit + dashboard-v2 commands_g8.rs
+// + contract tests can build / sign / write / verify an attestation without
+// reaching into `orchestrator::attestation` internals.
+pub use attestation::{
+    build_attestation, read_sidecar, sign_local_merkle, verify_attestation,
+    verify_attestation_against_trailer, write_sidecar, AttestationError, AttestationVerdict,
+    InTotoPredicate, InTotoStatement, InTotoSubject, VerifiedLevel, ARTICLE_50_POSTURE,
+    ELAI_PREDICATE_TYPE, IN_TOTO_STATEMENT_TYPE, SIGNING_MODEL_DEFERRED_COSIGN,
+    SUBJECT_DIGEST_ALG,
 };
 // F-3p1: capability-flow public surface. Re-exported so dashboard-v2 and
 // contract tests can use CommittedToolSet + CapabilityFlowDenial + taint helpers
@@ -1509,6 +1865,17 @@ pub use checker_registry::{
     RegexMatchChecker, ScriptChecker, SympyChecker, TomlCheckerEntry, TomlCheckerManifest,
     Z3DeferredChecker,
 };
+// H-41 — live checker-coverage + complexity-taxon public surface.
+pub use checker_coverage::{
+    checker_gap_backlog, classify_complexity_taxon, mode_a_coverage, CheckerGapBacklogRow,
+    ComplexityTaxon, CoverageReport,
+};
+// H-42 — serial-depth-scaled reasoning budget public surface.
+pub use reasoning_budget::{
+    classify_failure, depth_scaling_disabled_via_env, estimate_serial_depth, scale_and_emit,
+    scale_grc_budget, FailureClass, ReasoningBudgetScaledEmitter, VecReasoningBudgetEmitter,
+    ELAI_REASONING_BUDGET_SCALE_DISABLE_ENV, LOCKED_BUDGET_CEILING,
+};
 // D-12 — OperationalizationCheck baby-step predicate public surface.
 // `is_operationalized` is the predicate the auditor gates on;
 // `dispatch_check_for_baby_step` routes the procedure through the
@@ -1547,6 +1914,11 @@ pub use per_role_runtime::{
 pub use runtime_config::{
     default_fallback_chain, PpmRuntimeConfig, RuntimeConfig as RuntimeBackendConfig,
     RuntimeConfigPolicyView, ELAI_PPM_ENABLE_ENV, ELAI_PPM_ENDPOINT_ENV,
+    // E-46 D-8: planning-decomposition config — re-exported so cli/runtime_config.rs
+    // can embed it in ElaiRuntimeConfig without a direct orchestrator::runtime_config
+    // import (the orchestrator crate is not the CLI's runtime_config, avoid confusion).
+    PlanningConfig, PlanningLedgerConfig, PlanningGoalDriftConfig, PlanningEntropyConfig,
+    PlanningDepthCeilingConfig, PlanningReflectionBufferConfig, PlanningSkillPriorsConfig,
 };
 pub use runtime_orchestrator::{
     CompleteOutcome, RuntimeOrchestrator, RuntimeOrchestratorError, RuntimeOrchestratorEvent,
@@ -1564,6 +1936,8 @@ pub use tool_calibration_ssb_adapter::OrchestratorCaseBaseSsbEmitter;
 // McpAuthzSsbEmitter trait (composed-verdict per-call SSB row).
 #[cfg(feature = "mcp")]
 pub use mcp_authz_ssb_adapter::OrchestratorMcpAuthzSsbEmitter;
+#[cfg(feature = "mcp")]
+pub use mcp_rugpull_ssb_adapter::OrchestratorRugPullSsbEmitter;
 
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
@@ -1600,8 +1974,14 @@ pub use self_mod_layer1a::{
 // SelfModProposal builder + Class A/B routing (4H.4).
 pub use config_archive::{
     exploration_bonus, parent_selection_probabilities, parent_selection_weights,
-    sample_variant, sigmoid_perf_score, ConfigArchive, ConfigArchiveConfig,
-    ConfigArchiveError, DEFAULT_ARCHIVE_CAP_PER_MODE, DGM_ALPHA_0, DGM_LAMBDA,
+    sample_variant, sample_variant_weights, sigmoid_perf_score, ConfigArchive,
+    ConfigArchiveConfig, ConfigArchiveError, DEFAULT_ARCHIVE_CAP_PER_MODE,
+    DGM_ALPHA_0, DGM_LAMBDA,
+};
+// H-46: CMP selection types re-exported for contract tests + dashboard.
+pub use clade_metaproductivity::{
+    clade_metaproductivity, CladeScore, CmpAggregate, SelectionKey,
+    CMP_AGGREGATE, CMP_MIN_CLADE_SIZE,
 };
 pub use self_mod_proposal::{
     route_proposal, ProposalClass, ProposalEngine, ProposalEngineError,
@@ -1740,7 +2120,7 @@ pub use ssb_viewer::{
     ReflectState,
 };
 pub use task_runner::{
-    detect_scaffold_template, emit_integration_checkpoint_for_test,
+    detect_scaffold_template, emit_integration_checkpoint_for_test, run_plan_approval_gate_for_test,
     enforce_file_read_budget_guard, evaluate_post_execution_block_found,
     fix_and_rerun_until_green, is_web_research_task, run_confirmation_gate,
     is_web_scaffold_task, new_dev_server_registry, project_dir_is_web,
@@ -1778,8 +2158,8 @@ pub use rule_loader::load_security_seed_rules_builtin;
 // Contract: `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
 pub use runtime_setup::{
     apply_task_runner_wiring, build_default_baby_step_executor,
-    build_production_hook_dispatcher, build_task_runner_wiring, locate_default_agent_binary,
-    RuntimeWiring,
+    build_default_baby_step_executor_with_sandbox, build_production_hook_dispatcher,
+    build_task_runner_wiring, locate_default_agent_binary, RuntimeWiring,
 };
 // Phase B2 — IPC accept-loop public surface.
 pub use ipc_accept::{

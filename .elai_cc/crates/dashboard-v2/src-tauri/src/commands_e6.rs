@@ -168,6 +168,11 @@ pub async fn get_mast_breakdown(
 }
 
 /// DTO mirror of [`elai_orchestrator::ssb::IsoBudgetMeasuredPayload`].
+///
+/// H-40 adds `unique_catch_rate`, `decorrelation_score`, and
+/// `insufficient_contribution` mirroring the payload extension. The
+/// `#[serde(default)]` attributes ensure old SSB rows without these
+/// fields still deserialize cleanly (RISK-2 mitigation).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IsoBudgetMeasuredDto {
     pub task_fixture: String,
@@ -177,6 +182,15 @@ pub struct IsoBudgetMeasuredDto {
     pub insufficient_lift: bool,
     pub runpod_pending: bool,
     pub mast_mode_counts: Vec<MastModeCountDto>,
+    // H-40 decorrelation fields.
+    #[serde(default)]
+    pub unique_catch_rate: std::collections::BTreeMap<String, f64>,
+    #[serde(default)]
+    pub decorrelation_score: std::collections::BTreeMap<String, f64>,
+    /// Per-role prunable predicate. Key = snake_case AgentRole wire tag;
+    /// value = `true` iff prunable. Empty map on stub/pre-H-40 rows.
+    #[serde(default)]
+    pub insufficient_contribution: std::collections::BTreeMap<String, bool>,
 }
 
 /// Wire-stable mirror of `MastModeCount`.
@@ -268,6 +282,37 @@ pub async fn get_iso_budget_recent(
                 }
             }
         }
+        // H-40: extract unique_catch_rate and decorrelation_score maps.
+        let ucr_map: std::collections::BTreeMap<String, f64> = obj
+            .get("unique_catch_rate")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ds_map: std::collections::BTreeMap<String, f64> = obj
+            .get("decorrelation_score")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Parse per-role insufficient_contribution map; empty map for pre-H-40
+        // rows or stub runs (caller must check runpod_pending before acting).
+        let insuf_contrib: std::collections::BTreeMap<String, bool> = obj
+            .get("insufficient_contribution")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_bool().map(|b| (k.clone(), b)))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         out.push(IsoBudgetMeasuredDto {
             task_fixture,
             budget_tokens,
@@ -276,6 +321,9 @@ pub async fn get_iso_budget_recent(
             insufficient_lift: insuf,
             runpod_pending: runpod,
             mast_mode_counts: counts,
+            unique_catch_rate: ucr_map,
+            decorrelation_score: ds_map,
+            insufficient_contribution: insuf_contrib,
         });
     }
     Ok(out)
@@ -323,6 +371,11 @@ mod tests {
             insufficient_lift: true,
             runpod_pending: true,
             mast_mode_counts: Vec::new(),
+            // H-40 fields with defaults.
+            unique_catch_rate: std::collections::BTreeMap::new(),
+            decorrelation_score: std::collections::BTreeMap::new(),
+            // Empty map = stub/unknown per-role state.
+            insufficient_contribution: std::collections::BTreeMap::new(),
         };
         let s = serde_json::to_string(&d).expect("serialize");
         for key in [
@@ -333,6 +386,9 @@ mod tests {
             "\"insufficient_lift\"",
             "\"runpod_pending\"",
             "\"mast_mode_counts\"",
+            "\"unique_catch_rate\"",
+            "\"decorrelation_score\"",
+            "\"insufficient_contribution\"",
         ] {
             assert!(s.contains(key), "missing key {key} in {s}");
         }

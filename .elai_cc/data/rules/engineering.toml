@@ -113,3 +113,44 @@ severity = "WARN"
 title = "Detect unsafe blocks"
 predicate_json = '{"type":"grep_pattern","pattern":"unsafe\\s*\\{","scope":null,"context_lines":3}'
 phase_mask = 4294967295
+
+# ---------------------------------------------------------------------------
+# 3F.8 post-tool completeness GREP rules (Tier 1, engineering, PostToolUse).
+# Spec docs/specs/guide/steps/phase-3F.txt 3F.8 lines 309-313 names these three
+# EXACTLY; they were absent from both data/rules/*.toml and the rules crate
+# (base-phase-3 3F.crosswalk finding). Source: technical-analysis-v3.txt
+# Concern 3 Mechanism 2, rules.txt section 8.6. These fire on tool RESULT text
+# (web_fetch / file_read output), not on source files, so scope=null (both
+# production+test). They are deterministic <1ms regex checks with no pre-exec
+# I/O. phase_mask = all phases (PostToolUse runs regardless of FSM phase).
+# Spec-name alias: the spec shorthand is "web_fetch with <img>" /
+# "web_fetch with <table>" / "file_read with TODO/FIXME"; the titles below are
+# the canonical long form of those exact three names.
+# ---------------------------------------------------------------------------
+
+[[rules]]
+rule_id = "ENG-013"
+domain = "engineering"
+tier = 1
+severity = "WARN"
+title = "web_fetch with <img> — images present in fetched HTML not extracted"
+predicate_json = '{"type":"grep_pattern","pattern":"<img\\b[^>]*>","scope":null,"context_lines":0}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "ENG-014"
+domain = "engineering"
+tier = 1
+severity = "WARN"
+title = "web_fetch with <table> — tables present in fetched HTML not extracted"
+predicate_json = '{"type":"grep_pattern","pattern":"<table\\b[^>]*>","scope":null,"context_lines":0}'
+phase_mask = 4294967295
+
+[[rules]]
+rule_id = "ENG-015"
+domain = "engineering"
+tier = 1
+severity = "INFO"
+title = "file_read with TODO/FIXME — outstanding TODO/FIXME items in read file"
+predicate_json = '{"type":"grep_pattern","pattern":"\\b(TODO|FIXME)\\b","scope":null,"context_lines":0}'
+phase_mask = 4294967295

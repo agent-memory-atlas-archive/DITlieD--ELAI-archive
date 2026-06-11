@@ -1,0 +1,72 @@
+# H-23 reproducibility env-pin manifest gate -- LOCKED seed.
+# mutable=0: immutable seed row, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS;
+#   "trading" is detected by ["trading","backtest","signal","pipeline"] path
+#   keywords in rule_engine.rs:206-214).
+# Default-ON; kill-switch only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_repro_rules()
+#
+# Purpose:
+#   Forces the experiment to DECLARE a pinned-env manifest so "same env" is
+#   verifiable before the same-seed re-run is asserted. This STRUCTURALLY enforces
+#   hazard A (the seed fail-open): a run that never declared its seed/determinism
+#   env cannot satisfy the manifest schema, so the re-run gate is never reached
+#   with an undeclared seed. The manifest hash is itself recorded in the RRA
+#   evidence bundle (tamper-evident); a lying manifest is caught by the G-8
+#   attestation merkle + H-28 reward-tampering guards.
+#
+# Grounding (PyTorch reproducibility + container pinning, verified 2026-06-05):
+#   - "Same software and hardware" is the precondition for deterministic kernels
+#     (torch.use_deterministic_algorithms docs). Pinning cuda/driver/torch +
+#     image @sha256 + lockfile hash makes "same software" verifiable.
+#   - PYTHONHASHSEED + CUBLAS_WORKSPACE_CONFIG must be DECLARED (not just set
+#     at runtime) so the re-run can reproduce the exact env.
+#   Sources:
+#     https://docs.pytorch.org/docs/stable/notes/randomness.html
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding
+# is performed by project_rule_seeder.rs::seed_repro_rules() which inserts the
+# row directly. The SchemaRequired field list below is authoritative.
+
+[[rules]]
+rule_id = "REPRO-ENV-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "Experiment must declare a pinned-env manifest (lockfile hash, image @sha256, cuda/driver/torch, determinism env)"
+description = """
+LOCKED env-pin manifest gate (H-23, T-7 trust-hardening).
+A SchemaRequired predicate forcing the experiment to declare a pinned-env
+manifest with ALL of:
+  - lockfile_blake3        (the dependency lockfile hash)
+  - image_sha256           (the container image @sha256 digest)
+  - cuda_version / driver_version / torch_version
+  - pythonhashseed         (PYTHONHASHSEED, declared not just set)
+  - cublas_workspace_config (CUBLAS_WORKSPACE_CONFIG=:16:8 or :4096:8)
+  - elai_seed              (the declared ELAI_SEED)
+"Same env" is verifiable from this manifest; a missing manifest => BLOCK. This
+STRUCTURALLY enforces hazard A: a run that never declared its seed/determinism
+env cannot pass the schema, so the re-run hash-equality gate is never reached
+with an undeclared seed (which would otherwise be silently defaulted to 0 by
+DeterminismConfig::from_env). The manifest hash is recorded in the RRA evidence
+bundle (tamper-evident). mutable=0: LOCKED, lifecycle-immune (TD-2). Same-env/
+same-seed scope (TD-5); cross-hardware FP is recorded, never asserted.
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+type = "schema_required"
+output_type = "repro_env_pin_manifest"
+
+[rules.predicate_json.schema]
+required = [
+    "lockfile_blake3",
+    "image_sha256",
+    "cuda_version",
+    "driver_version",
+    "torch_version",
+    "pythonhashseed",
+    "cublas_workspace_config",
+    "elai_seed",
+]

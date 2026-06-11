@@ -458,6 +458,26 @@ impl GrcEngine for BasicGrcEngine {
                         }
                     }
                     if level == GroundingLevel::Uncertain {
+                        // base-phase-2 (2B): DELIBERATE SCOPE — think() WARNS on
+                        // UNCERTAIN grounding; it does NOT auto-resolve here.
+                        // The spec's "UNCERTAIN auto-resolved via
+                        // FILE_CHECK/SOURCE_CHECK" requirement
+                        // (docs/specs/crates/reasoning.txt line 270, surfaced in
+                        // PlanGroundingResult.verify_needed at line 213) is a
+                        // PLAN-level operation and lives in ground_plan(), which
+                        // proactively re-verifies every "training:" claim across a
+                        // whole plan string. think() is the per-step gate where the
+                        // AGENT supplies its own grounding citation in the step;
+                        // its contract is to validate-or-warn what the agent
+                        // asserts, not to silently re-run I/O verification on every
+                        // step (that would change the warn-vs-reject semantics and
+                        // add a filesystem/network round-trip to the hot reasoning
+                        // path). The "should be resolved before acting" warning
+                        // mirrors reasoning.txt line 60 ("UNCERTAIN ... MUST be
+                        // resolved before acting") at step granularity; the actual
+                        // auto-resolution happens in ground_plan() at the PLANNING
+                        // boundary. Keeping the two separate is intentional, not an
+                        // omission.
                         warnings.push(format!(
                             "UNCERTAIN grounding on {:?} step in topic '{}' — should be resolved before acting",
                             step.step_type, topic_key

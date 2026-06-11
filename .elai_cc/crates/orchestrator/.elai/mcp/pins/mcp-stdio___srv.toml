@@ -1,0 +1,7 @@
+pinned_hash = "94e10e7df5c5497e969c97d366f45e108b9fe219c32a2e14e24723e627d1db33"
+pinned_at_ms = 1780633357780
+server_url = "mcp-stdio://srv"
+
+[[pinned_tools]]
+name = "echo"
+description = "Echo tool for srv"

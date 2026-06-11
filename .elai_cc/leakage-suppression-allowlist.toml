@@ -1,0 +1,29 @@
+# leakage-suppression-allowlist.toml - gate-owned (rule R8, frozen via .claude/gate-manifest.txt).
+#
+# H-20: a flagged SOUND leakage block (L1.1/L1.2/L1.3) from the leakage_gate
+# COMPOSITE is downgraded to suppressed ONLY when a matching [[suppression]]
+# row exists here. ABSENCE of a row => the Block STANDS (never silent: a
+# downgrade implies an audited row). A silent `if flagged { Allow }` in the gate
+# would be a P0 stub_ban violation.
+#
+# This file is authored out-of-band; a plan run being evaluated by the gate may
+# NOT edit it (gate_freeze_check.py enforces R8). After a reviewed change,
+# re-lock OUT-OF-BAND:
+#   python .claude/tools/gate_freeze_check.py --lock
+#
+# Schema (EVERY field required; a row missing any field grants NO suppression,
+# mirroring wire-dark-allowlist.toml semantics R8/R9):
+#   [[suppression]]
+#   rule_id     = "FIN-LEAK-001"     # must match the leakage gate rule id
+#   file        = "path/to/file.py"  # exact match against the fit-site file
+#   reason      = "..."              # mandatory free text (why this is safe)
+#   owner       = "name"             # who is accountable
+#   expiry_date = "YYYY-MM-DD"       # hard date; past expiry the block re-stands
+#
+# A row with an empty reason/owner, a non-matching rule_id, or a past expiry
+# does NOT grant suppression. expiry_date is parsed to a unix timestamp by the
+# CLI loader and compared against the wall clock at evaluation time.
+#
+# ---- ACTIVE SUPPRESSIONS ----
+# (none — the gate ships fail-closed: every sound leakage block stands unless a
+# reviewed row is added here out-of-band and the gate is re-locked.)

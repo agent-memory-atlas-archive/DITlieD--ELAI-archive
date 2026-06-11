@@ -1,0 +1,13 @@
+{
+  "suite": "staleness_supersession_fixture",
+  "n_cases": 4,
+  "sr_rate": 0.75,
+  "ipa_rate": 0.0,
+  "recognition_application_gap": 0.75,
+  "stale_fact_reached_prompt": 3,
+  "total_retrievals": 4,
+  "broken_arm": true,
+  "instrument_failed": false,
+  "seed": 0,
+  "corpus_blake3": "4bd3aeb94af36ddc4e66c3ea821b52f5e4e2ed231309b218ca3259b8c65e0a17"
+}

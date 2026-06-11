@@ -1,0 +1,158 @@
+# D-25 Determinism + Archive Tamper-Suite Benchmark CI
+#
+# Drives D-8's verify_archive IN-PROCESS across a 10-scenario JSON-
+# manifest matrix at .elai_cc/benchmarks/tamper/scenarios/. Gates pass
+# iff every scenario's observed outcome matches its expected outcome
+# AND max_wall_ms <= 5000 per scenario (plan objective).
+#
+# The runner is pure-function — no LLM call, no subprocess shell.
+# Scenarios encode the typed TamperOp matrix + the expected
+# ArchiveVerifyError variant per scenario.
+#
+# Skipped automatically when .elai_cc/benchmarks/tamper/scenarios/ is
+# absent or contains fewer than 10 scenario subdirectories (e.g. a
+# branch that has not yet adopted D-25 scenarios).
+#
+# Grounding
+#   Tamper-suite mechanism : ELAI design hypothesis layered on D-8
+#                            (archive_chain.rs::verify_archive).
+#                            arxiv:2507.05619 (T1) integrity-checksum
+#                            recommendation provides motivation only;
+#                            no tamper-suite mechanism in the paper.
+#   Wall budget per scen.  : 5000ms (plan objective).
+#   Scenario count         : 10 (plan ACCEPTANCE A).
+
+name: bench-tamper
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+  BENCH_TAMPER_MAX_WALL_MS: "5000"
+  BENCH_TAMPER_MIN_SCENARIOS: "10"
+
+jobs:
+  tamper-suite-smoke:
+    name: D-25 determinism + archive tamper-suite benchmark
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .elai_cc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .elai_cc/target/
+          key: ${{ runner.os }}-cargo-bench-tamper-${{ hashFiles('.elai_cc/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-tamper-
+
+      - name: Check scenarios presence + count
+        id: scenarios_presence
+        run: |
+          if [ -d benchmarks/tamper/scenarios ]; then
+            count=$(find benchmarks/tamper/scenarios -mindepth 1 -maxdepth 1 -type d \
+                    -not -name '_*' -not -name '.*' | wc -l)
+            min=${BENCH_TAMPER_MIN_SCENARIOS}
+            if [ "$count" -ge "$min" ]; then
+              echo "present=true" >> "$GITHUB_OUTPUT"
+              echo "Tamper scenarios present ($count >= $min); smoke will run."
+            else
+              echo "present=false" >> "$GITHUB_OUTPUT"
+              echo "Tamper scenarios incomplete ($count < $min); skipping smoke."
+            fi
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Tamper scenarios absent (.elai_cc/benchmarks/tamper/scenarios/); skipping smoke."
+          fi
+
+      - name: Runner unit tests (tamper_runner)
+        if: steps.scenarios_presence.outputs.present == 'true'
+        run: cargo test -p elai-orchestrator --lib tamper_runner
+
+      - name: Contract tests (tamper_suite_contract)
+        if: steps.scenarios_presence.outputs.present == 'true'
+        run: cargo test -p elai_cc_contracts --test tamper_suite_contract
+
+      - name: CLI smoke (full 10-scenario matrix)
+        if: steps.scenarios_presence.outputs.present == 'true'
+        run: |
+          cargo run --release -p elai-cli -- bench tamper \
+            --scenarios benchmarks/tamper/scenarios \
+            --output /tmp/tamper-bench-report.json
+          test -f /tmp/tamper-bench-report.json
+
+      - name: Enforce verdict + wall budget
+        if: steps.scenarios_presence.outputs.present == 'true'
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          max_wall_ms = int(os.environ["BENCH_TAMPER_MAX_WALL_MS"])
+          min_scenarios = int(os.environ["BENCH_TAMPER_MIN_SCENARIOS"])
+          with open("/tmp/tamper-bench-report.json", "r", encoding="utf-8") as fh:
+              rep = json.load(fh)
+          total = int(rep.get("total_scenarios", 0))
+          passed = int(rep.get("passed_count", 0))
+          failed = int(rep.get("failed_count", 0))
+          mwm = int(rep.get("max_wall_ms", 0))
+          verdict = rep.get("gating_verdict", "Fail")
+          if isinstance(verdict, str):
+              v_l = verdict.lower()
+          else:
+              v_l = str(verdict).lower()
+          print(f"tamper bench total={total} passed={passed} failed={failed} "
+                f"max_wall_ms={mwm} (budget {max_wall_ms}) verdict={v_l}")
+          fail = False
+          if total < min_scenarios:
+              print(
+                  f"BENCH-TAMPER CI FAIL: total scenarios {total} below "
+                  f"required minimum {min_scenarios}.",
+                  file=sys.stderr,
+              )
+              fail = True
+          if mwm > max_wall_ms:
+              print(
+                  f"BENCH-TAMPER CI FAIL: max_wall_ms {mwm} exceeded budget "
+                  f"{max_wall_ms} — at least one scenario timed out.",
+                  file=sys.stderr,
+              )
+              fail = True
+          if v_l != "pass":
+              print(
+                  f"BENCH-TAMPER CI FAIL: gating_verdict={v_l} (expected pass).",
+                  file=sys.stderr,
+              )
+              fail = True
+          if failed != 0:
+              print(
+                  f"BENCH-TAMPER CI FAIL: {failed} scenarios did not match "
+                  f"expected outcome.",
+                  file=sys.stderr,
+              )
+              fail = True
+          if fail:
+              sys.exit(1)
+          PY
+
+      - name: Upload tamper bench report artifact
+        if: steps.scenarios_presence.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tamper-bench-report
+          path: /tmp/tamper-bench-report.json
+          if-no-files-found: warn

@@ -11,6 +11,9 @@ elai-ipc-types.workspace = true
 elai-orchestrator = { path = "../orchestrator" }
 elai-plugins = { path = "../plugins" }
 elai-providers = { path = "../providers" }
+# G-3: deterministic post-expansion FS blast-radius gate (check_fs_target +
+# expand_fs_token). Pure std::fs/std::net verdict logic; no new external dep.
+elai-safety = { path = "../safety" }
 # Batch 2B: real git2 commits. default-features=false to avoid libgit2-sys
 # pulling OpenSSL + libssh2 native deps on Windows — we only need local
 # staging/committing, no network pushes. Verified via WebSearch on

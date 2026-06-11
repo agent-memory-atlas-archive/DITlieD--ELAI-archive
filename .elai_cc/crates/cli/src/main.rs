@@ -72,11 +72,27 @@ mod wiring_audit;
 // WIRING-FIX-ELAI Phase 2 (SP3): Layer-3 entrypoint-coverage CLI driver.
 mod wiring_coverage_cmd;
 mod archive_verify;
+// D-1: `elai template migrate` — bootstraps the reasoning-template archive.
+mod template_migrate;
 // C-43: `elai freeze status|verify|ratify` — Phase 4H scope-freeze CLI
 // driver. Wraps elai_orchestrator::scope_freeze. ELAI design hypothesis
 // — no paper grounding (see workflow/sessions/s-25120/mistakes.md for
 // the bad-cite analysis of arXiv:2604.21725).
 mod freeze_cmd;
+// G-2: `elai rra show <path>` + `elai replay --verify <path>` — the
+// Reproducible-Run Artifact viewer + offline verifier. Wraps
+// elai_orchestrator::rra. See workflow/reasoning/G-2-decisions.md.
+mod rra_cmd;
+// H-35: `elai rewind <target>` — session-state restore to a prior SSB seq.
+// Composes compact_session + recover_stubs + ssb_resume_from into a user-facing
+// restore affordance; emits one session_rewound SSB beacon per successful rewind.
+mod rewind_cmd;
+// H-49: `elai undo / redo / history / jump` — CAS-backed reversible LLM edits
+// over the undo-tree HEAD. Default-ON; kill-switch ELAI_TIMETRAVEL_DISABLE.
+// Composes E-25 edit_checkpoints (GD-1) + SessionDag HEAD + H-35 SessionRewound.
+mod timetravel_cmd;
+mod review_cmd;
+mod verify_attestation_cmd;
 // C-45: `elai credit attribute|table|export` — CANTANTE contrastive
 // credit-attribution CLI driver. Wraps elai_orchestrator::credit_attribution.
 // Paper-grounded against arXiv:2605.13295 (Zehle 2026, Section 3.2 — K
@@ -198,9 +214,84 @@ mod optimize_cmd;
 // C-40: `elai pr <open|list|status|close>` — GitHub PR adapter CLI.
 // Shells out to gh via the orchestrator's github_pr::GhCliAdapter.
 mod github_pr_cmd;
+// H-33 (SCHEMA_VERSION 211): `elai memory <sub>` canonical dispatcher.
+// Routes list/inspect/insert/delete/pin/unpin/provenance to the FactStore
+// and emits MemoryGovernanceEvent SSB beacons for forget/pin/unpin.
+// Activates the stub that was left by s-31708.
+mod memory_cmd;
 mod pr_review_cmd;
 // D-9: `elai audit-locked-keys ...` — LockedKeysAuditor CLI driver.
 mod audit_locked_keys;
+// H-17 (SCHEMA_VERSION 223): `elai trial-search` — fixture strategy search.
+// W-3 Tier-1 production entrypoint: registers >=3 distinct configs through
+// TrialLedger::register_trial + emits TrialRegistered SSB rows.
+mod trial_search_cmd;
+// H-18 (SCHEMA_VERSION 224): `elai deflation-check` — W-3 Tier-1 production
+// entrypoint for the Deflated Sharpe / PBO / MinBTL promotion gate (T-2).
+// Registers fixture strategy, calls evaluate_deflation, emits
+// DeflationGateEvaluated SSB row (off-agent promotion artifact).
+mod deflation_check_cmd;
+// H-20 (SCHEMA_VERSION 225): `elai leakage-check` — W-1 production entrypoint
+// for the leakage static-analysis COMPOSITE gate. Runs evaluate_leakage over a
+// target module against the live DKG (fail-closed if absent) and emits a
+// LeakageBlocked SSB row (off-agent done-gate artifact).
+mod leakage_check_cmd;
+// H-21 (SCHEMA_VERSION 226): `elai lookahead-check` — W-1 production entrypoint
+// for the runtime look-ahead / causality DIFFERENTIAL gate. Diffs a full-data
+// feature column-set against a future-truncated one; any column that changes
+// under truncation proves a look-ahead leak. Emits a LookaheadDifferential SSB
+// row (off-agent done-gate artifact). The un-gameable runtime backstop to H-20.
+mod lookahead_check_cmd;
+// H-22 — `elai null-test` is the W-1 production entrypoint for the trading
+// metamorphic NULL-TEST gate. Runs the block-permutation null over a returns
+// series (p=(C+1)/(K+1) vs alpha/N) and emits a TradingNullTest SSB row
+// (off-agent done-gate artifact). A genuine edge collapses to null (Allow); an
+// overfit edge survives the null (Block). The f64-time-series complement to H-21.
+mod null_test_cmd;
+// H-26 — `elai shadow-check` is the W-1 production entrypoint for the shadow-exec
+// + financial-invariant metamorphic-relation gate. Diffs two fixture-supplied result
+// sets within a LOCKED float band AND checks textbook-correct financial invariants
+// (accounting IDENTITIES EXACT in integer cents; option-pricing / numeric MRs within
+// the band), emitting a DifferentialDivergence SSB row (off-agent done-gate artifact).
+// A consistent run -> InvariantHeld (Allow, exit 0); a violated identity / beyond-band
+// divergence -> Block (exit 1). The value-correctness complement to H-25.
+mod shadow_check_cmd;
+// H-27 — `elai gate-selfcheck` is the W-1/W-3 production entrypoint for the verify-the-
+// verifiers META gate. validate_gates drives a FROZEN registry of the 8 Track-3 gates,
+// replays each gate's OWN demo-violated fixture as a planted mutant through its REAL
+// async evaluate_* fn, and asserts a BLOCK-class verdict (kill the mutant). All gates
+// killing their mutants -> AllGatesValid (PASS, exit 0); a surviving mutant / over-block
+// / un-runnable gate / empty registry -> a fail-closed Block (exit 1). Emits a
+// GateSelfValidation SSB row (off-agent done-gate artifact).
+mod gate_selfcheck_cmd;
+// H-28 — `elai reward-check` is the W-1/W-3 production entrypoint for the current-RF
+// reward-tampering gate (Everitt arXiv:1908.04734). check_reward_tampering consumes a
+// fixture triple and detects reward tampering via two sound Tier-1 legs: a frozen-evaluator
+// blake3 MISMATCH -> EvaluatorModified HARD-BLOCK (leg 3a, reuses the ArchiveVerifyResult
+// tripwire semantics; also the fail-closed arm for a missing baseline), and an implausible
+// reward delta with the hash INTACT -> ImplausibleRewardDelta FLAG -> human Layer-3 (leg
+// 3b). TD-3: leg 3a is checked FIRST and short-circuits before 3b. Tier-1 = this
+// always-compiled CLI (the live darwin admit hook is feature-gated => Tier-2/deferred).
+// Emits a RewardTampering SSB row (off-agent done-gate artifact).
+mod reward_tamper_cmd;
+// H-19 — `elai holdout-check` is the W-1/W-3 production entrypoint for the reusable-holdout
+// query-budget gate (the Thresholdout DP gate, Dwork et al. arXiv:1506.02629). query_holdout
+// runs the EXACT Thresholdout query over a planted fixture holdout: below-threshold queries
+// answer FREE from the training set, above-threshold queries charge 1 budget unit and release
+// a Laplace-noised holdout statistic; once the budget is spent the OOS query is REFUSED
+// (budget_exhausted, fail-closed). The budget counter is append-only (NO agent reset). Tier-1
+// = this always-compiled CLI (the live OOS-eval choke-point is Tier-2/deferred). Emits
+// HoldoutBudgetEvent SSB rows (off-agent done-gate artifact).
+mod holdout_check_cmd;
+mod drift_check_cmd;
+// H-31: `elai remember "<text>"` + the `/remember` REPL command -- the user-decision capture
+// producer. Activates the wire-dark elai_memory bi-temporal substrate (dispatch_one) into the
+// live path; emits UserDecisionSuperseded SSB rows behind ELAI_USER_MEMORY_ENABLE (R9).
+mod user_memory_capture;
+// H-32: DKG-backed CitationValidator implementation. Concrete impl of the
+// elai_memory::CitationValidator trait using the on-disk SymbolGraphCache;
+// lives in cli to avoid a memory→knowledge crate edge.
+mod dkg_citation_validator;
 // D-19: `elai bench prmbench` — PRMBench adversarial-gaming benchmark
 // driver. Owns its own tokio runtime (sync entry pattern).
 mod bench_prmbench;
@@ -243,6 +334,34 @@ mod bench_tamper;
 // CWE corpus OFFLINE, writes a timestamped seccodeplt-<ts>.json report under
 // benchmarks/seccodeplt/, and emits one InsecureRateMeasured SSB beacon.
 mod bench_seccodeplt;
+// H-30 (SCHEMA_VERSION 239): `elai bench staleness [--json] [--broken-retrieval]`
+// — the staleness / intent-drift INSTRUMENT. Drives the SHIPPED bi-temporal
+// memory substrate (FactStore + audit_conflicts + get_relevant_facts) over a
+// labeled supersession fixture in an ISOLATED in-memory store, writes a
+// timestamped staleness-<ts>.json report under benchmarks/staleness/, and emits
+// one StalenessEvalMeasured SSB beacon. The --broken-retrieval arm is the R2
+// negative control. MEASURES, does not gate.
+mod bench_staleness;
+// G-6 (SCHEMA_VERSION 217): `elai bench safedelta` — gate-ON-vs-gate-OFF
+// SAFEDELTA ablation. DERIVES delta from SHIPPED SecCodePltRunner (GD-1).
+// Writes benchmarks/safedelta/<ts>.json + a signed .rra manifest (G-2 reuse).
+// Emits one SafetyDeltaMeasured SSB beacon. Tier-2 = RUNPOD-PENDING.
+mod bench_safedelta;
+// H-34 (SCHEMA_VERSION 213): `elai bench mcp-schema-budget [--json]` — MCP-schema
+// token-budget MEASURE-FIRST benchmark. Drives the embedded multi-server MCP tool
+// catalog (20 tools: local-rag / pod-lifecycle / notion) OFFLINE, writes a
+// timestamped mcp-schema-budget-<ts>.json report under benchmarks/mcp_schema_budget/,
+// and emits one McpSchemaBudgetMeasured SSB beacon. Default-ON; no ELAI_*_ENABLE gate.
+mod bench_mcp_schema_budget;
+// G-10 (SCHEMA_VERSION 218): `elai model-drift baseline|check|show` — exogenous
+// model-version behavioral-regression gate CLI driver. DISTINCT from `elai drift`
+// (E-45 cross-language SOURCE drift). Composes D-7 canary.rs (GD-1).
+// Default-ON; kill-switch ELAI_MODEL_DRIFT_DISABLE only (W-2). See
+// workflow/reasoning/G-10-decisions.md.
+mod model_drift_cmd;
+// H-41: `elai checker-gaps` — ranked checker-gap backlog read surface.
+// Reads CheckerGapDetected SSB rows; aggregates by claim_type + taxon.
+mod checker_gaps_cmd;
 // D-28: `elai farm-adv-rm <run|verdict>` — adversarial example farming
 // runner CLI surface. See workflow/reasoning/D-28-decisions.md.
 mod farm_adv_rm;
@@ -250,6 +369,9 @@ mod farm_adv_rm;
 mod bench_ablation_cmd;
 mod tier_eval_cmd;
 mod critic_report;
+// E-6: MAST failure-mode report CLI surface (`elai mast report --session`).
+// Reads `audit_mast_tagged` SSB rows read-only; deterministic 14-mode table.
+mod mast_cmd;
 // B-15 tranche J (orchestrate s-22600): per-arm wrapper layer that funnels
 // the eleven bench / eval / critic CliAction dispatch arms through one
 // module. main.rs `fn run` calls bench_cmd::run_<x>(...); the underlying
@@ -288,6 +410,12 @@ mod mcp_client;
 // `authz-policy.toml` and prints status / recent denies / a bounded fuzz
 // summary. Sibling of `mcp_client`. Paper grounding: arXiv:2604.25555.
 mod mcp_authz_cmd;
+// E-24 Task 6: `elai mcp pin [list|show <server>|update <server>]` —
+// operator surface over the schema-hash pin store. Reads the on-disk
+// `.elai/mcp/pins/*.toml` records (written by the bridge re-pin gate on
+// connect) and gates re-approval via `update_pin`. Sibling of
+// `mcp_authz_cmd`. Routed from `commands::render_mcp_report_for`.
+mod mcp_pin_cmd;
 mod tool_executor;
 mod tool_formatting;
 // C-38: DKG lifecycle helper. Replaces the never-fires "if dkg.db
@@ -409,6 +537,40 @@ fn run() -> Result<(), anyhow::Error> {
             );
         }
     }
+    // E-47 SECONDARY FIX (WIRING_CONTRACT reachable_from boot-path gap): on
+    // every invocation, load [finetune.lora] from .elai_cc/elai_cc.toml.
+    // When enabled=true AND confirm_user_understanding=false, print the deferral
+    // warning to stderr before any command dispatch. This is separate from the
+    // `elai lora-gate-check` subcommand -- it fires on EVERY command so the
+    // operator cannot silently run tasks while the gate is misconfigured.
+    // The check is best-effort (missing file = skip silently).
+    {
+        use elai_orchestrator::lora_ship_gate::LORA_SHIP_GATE_DEFERRAL_TOKEN;
+        let config_path = std::path::Path::new(".elai_cc/elai_cc.toml");
+        if let Ok(text) = std::fs::read_to_string(config_path) {
+            if let Ok(root) = toml::from_str::<toml::Value>(&text) {
+                let lora = root.get("finetune").and_then(|f| f.get("lora"));
+                let enabled = lora
+                    .and_then(|l| l.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let confirm = lora
+                    .and_then(|l| l.get("confirm_user_understanding"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if enabled && !confirm {
+                    eprintln!(
+                        "[WARN] DEFERRED_PER_E47_REPORT: [finetune.lora] enabled=true but \
+                         confirm_user_understanding=false. LoRA adapter load is blocked. \
+                         Read arXiv:2405.09673 (5-19pp catastrophic forgetting), then set \
+                         confirm_user_understanding=true in .elai_cc/elai_cc.toml. \
+                         Token: {LORA_SHIP_GATE_DEFERRAL_TOKEN}. \
+                         Flip runbook: workflow/decisions/E-47-flip-runbook.md."
+                    );
+                }
+            }
+        }
+    }
     match parse_args(&args).map_err(|e| anyhow::anyhow!(e))? {
         CliAction::DumpManifests { output_format } => auth::dump_manifests(output_format)?,
         CliAction::BootstrapPlan { output_format } => auth::print_bootstrap_plan(output_format)?,
@@ -466,6 +628,43 @@ fn run() -> Result<(), anyhow::Error> {
         // analysis of arXiv:2604.21725).
         CliAction::Freeze { action, output_format } => {
             freeze_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // G-2 — `elai rra show <path>`. Reproducible-Run Artifact viewer.
+        CliAction::Rra { action, output_format } => {
+            rra_cmd::run_rra(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // G-2 — `elai replay --verify <path>`. Offline .rra verifier; exits
+        // non-zero on Divergence / Tampered so CI can gate on it.
+        CliAction::Replay { action, output_format } => {
+            rra_cmd::run_replay(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // H-35 — `elai rewind <target>`. Session-state restore to a prior SSB seq.
+        // Emits one session_rewound beacon; idempotent on target==head (zero rows).
+        CliAction::Rewind { action, output_format } => {
+            rewind_cmd::run_rewind(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // H-49 — `elai undo / redo / history / jump`. CAS-backed reversible LLM
+        // edits over the undo-tree HEAD. Default-ON; kill-switch ELAI_TIMETRAVEL_DISABLE.
+        // Composes E-25 edit_checkpoints (GD-1) + SessionDag HEAD + H-35 SessionRewound.
+        CliAction::TimeTravel { action, output_format } => {
+            timetravel_cmd::run_timetravel(action, output_format)
+                .map_err(|e| anyhow::anyhow!(e))?
+        }
+        // G-5 — `elai review --cockpit`. Reviewer-cockpit DSR producer: parses
+        // the working-tree git diff against a pinned base, reads the session SSB
+        // vouch stream, computes the DSR, prints the bands, and emits ONE
+        // review_surface_scored row through the live session Arc<Ssb>.
+        CliAction::Review { action, output_format } => {
+            review_cmd::run_review(action, output_format)?
+        }
+        // G-8 — `elai verify-attestation <commit>`. Offline in-toto provenance
+        // attestation verifier: reads the digest-only ELAI-Provenance-Digest
+        // commit trailer + the sidecar attestation.intoto.json, recomputes the
+        // blake3-Merkle root, and confirms it equals both the subject digest and
+        // the trailer (F-gate hashes Merkle-bound). READ-ONLY (no Ssb); exits
+        // non-zero on not-verified; trust-without-re-running (SLSA-VSA).
+        CliAction::VerifyAttestation { commit, output_format } => {
+            verify_attestation_cmd::run(commit, output_format).map_err(|e| anyhow::anyhow!(e))?
         }
         // C-45 — `elai credit attribute|table|export`. CANTANTE
         // contrastive credit-attribution surface; paper-grounded against
@@ -662,7 +861,7 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Dashboard => dashboard::run_dashboard()?,
         // Phase A1a: production caller of `start_task_runner`. Pinned by
         // `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
-        CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb } => {
+        CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb, emit_rra } => {
             // C-17 (DRIFT-D/E): auto-resume + process-wide signal observer
             // for the long-lived `elai run` task_runner scope. Runs BEFORE
             // run_subcommand builds its own tokio runtime so the resume
@@ -679,6 +878,7 @@ fn run() -> Result<(), anyhow::Error> {
                 via_mcp,
                 empire,
                 export_ssb,
+                emit_rra,
             })?
         }
         // E-49 SWE-Bench Pro v5 driver — non-interactive task surface.
@@ -805,6 +1005,14 @@ fn run() -> Result<(), anyhow::Error> {
         } => {
             archive_verify::run(path, json, fail_fast)?;
         }
+        // D-1: `elai template migrate [--source DIR] [--path PATH] [--json]`
+        // Bootstraps the append-only reasoning-template archive (JSONL) from
+        // the built-in canonical seed set + optional source dir, emitting one
+        // ArchiveEntryAdded SSB row per appended Frozen template (off-agent
+        // observable effect). Idempotent on re-run.
+        CliAction::TemplateMigrate { source, path, json } => {
+            template_migrate::run(source, path, json)?;
+        }
         // D-9: `elai audit-locked-keys [--registry PATH] [--staged | --files A,B]
         // [--json] [--fail-fast]` — LockedKeysAuditor driver. Exits 1 on
         // any registry overlap; 0 on clean / empty registry.
@@ -816,6 +1024,166 @@ fn run() -> Result<(), anyhow::Error> {
             fail_fast,
         } => {
             audit_locked_keys::run(registry_path, files, use_staged, json, fail_fast)?;
+        }
+        // H-17 (SCHEMA_VERSION 223): `elai trial-search` — fixture strategy
+        // search. Registers >=3 distinct configs through TrialLedger::register_trial,
+        // emitting >=3 TrialRegistered SSB rows. W-3 Tier-1 production entrypoint
+        // proof for the selection-bias keystone. Handler: trial_search_cmd::run.
+        CliAction::TrialSearch { objective, window, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(trial_search_cmd::run(objective, window, json))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-18 (SCHEMA_VERSION 224): `elai deflation-check` — W-3 Tier-1
+        // production entrypoint for the Deflated Sharpe / PBO / MinBTL gate.
+        // Registers a fixture strategy search, calls evaluate_deflation, and
+        // emits a DeflationGateEvaluated SSB row (off-agent promotion artifact).
+        CliAction::DeflationCheck { sr, t_periods, n_fixture, sharpe_std, pbo, seed, json } => {
+            // Parse String->f64 at dispatch time (CliAction stores f64 as String
+            // because CliAction derives Eq and f64 does not implement Eq).
+            let sr_f64 = sr.as_deref().map(|s| s.parse::<f64>()).transpose()
+                .map_err(|e| anyhow::anyhow!("--sr parse error: {e}"))?;
+            let sharpe_std_f64 = sharpe_std.as_deref().map(|s| s.parse::<f64>()).transpose()
+                .map_err(|e| anyhow::anyhow!("--sharpe-std parse error: {e}"))?;
+            let pbo_f64 = pbo.as_deref().map(|s| s.parse::<f64>()).transpose()
+                .map_err(|e| anyhow::anyhow!("--pbo parse error: {e}"))?;
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(deflation_check_cmd::run(
+                sr_f64, t_periods, n_fixture, sharpe_std_f64, pbo_f64, seed, json,
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-20 (SCHEMA_VERSION 225): `elai leakage-check` — W-1 production
+        // entrypoint for the leakage static-analysis COMPOSITE gate. Runs
+        // evaluate_leakage over a target module against the live DKG
+        // (fail-closed if absent/empty) and emits a LeakageBlocked SSB row.
+        CliAction::LeakageCheck { module, no_split, demo_fit_both, residue_temporal, seed, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(leakage_check_cmd::run(
+                module, no_split, demo_fit_both, residue_temporal, seed, json,
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-21 (SCHEMA_VERSION 226): `elai lookahead-check` — W-1 production
+        // entrypoint for the runtime look-ahead / causality DIFFERENTIAL gate.
+        // Diffs full vs future-truncated feature column-sets and emits a
+        // LookaheadDifferential SSB row (off-agent done-gate artifact).
+        CliAction::LookaheadCheck { demo_future_leak, demo_causal, seed, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(lookahead_check_cmd::run(
+                demo_future_leak, demo_causal, seed, json,
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-22 — `elai null-test` is the W-1 production entrypoint for the
+        // trading metamorphic NULL-TEST gate. Runs the block-permutation null
+        // and emits a TradingNullTest SSB row (off-agent done-gate artifact).
+        CliAction::NullTest { demo_overfit, demo_genuine, seed, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(null_test_cmd::run(
+                demo_overfit, demo_genuine, seed, json,
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-26 — `elai shadow-check` is the W-1 production entrypoint for the
+        // shadow-exec + financial-invariant metamorphic-relation gate. Diffs two
+        // fixture-supplied result sets within a LOCKED float band + checks the
+        // textbook-correct financial invariants, emitting a DifferentialDivergence
+        // SSB row. Exits non-zero on Block so CI gates.
+        CliAction::ShadowCheck { demo_invariant_held, demo_invariant_violated, seed, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(shadow_check_cmd::run(
+                demo_invariant_held, demo_invariant_violated, seed, json,
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-27 — `elai gate-selfcheck` is the W-1/W-3 production entrypoint for the
+        // verify-the-verifiers META gate. Drives the FROZEN registry of the 8 Track-3
+        // gates and emits a GateSelfValidation SSB row. Exits non-zero on a fail-closed
+        // Block (surviving mutant / over-block / un-runnable gate / empty registry).
+        CliAction::GateSelfcheck { demo_all_valid, demo_gate_broken, seed, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(gate_selfcheck_cmd::run(
+                demo_all_valid, demo_gate_broken, seed, json,
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-28 — `elai reward-check` is the W-1/W-3 production entrypoint for the
+        // current-RF reward-tampering gate. Drives check_reward_tampering over a planted
+        // fixture triple and emits a RewardTampering SSB row. Exits non-zero on any
+        // non-PASS verdict (EvaluatorModified HARD-BLOCK / ImplausibleRewardDelta FLAG).
+        CliAction::RewardCheck { demo_clean, demo_tampered, demo_score_jump, seed, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(reward_tamper_cmd::run(
+                demo_clean, demo_tampered, demo_score_jump, seed, json,
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-19 — `elai holdout-check` is the W-1/W-3 production entrypoint for the
+        // reusable-holdout query-budget gate (Thresholdout DP). Provisions a fixture holdout,
+        // drives query_holdout, and emits HoldoutBudgetEvent SSB rows. Exits non-zero when the
+        // final query is REFUSED (Exhausted, budget_exhausted).
+        CliAction::HoldoutCheck { demo_spend, demo_exhausted, seed, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(holdout_check_cmd::run(demo_spend, demo_exhausted, seed, json))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-29 — `elai drift-check` is the W-1/W-3 production entrypoint for the LOCKED
+        // fail-closed drift state machine (T-13, the master deployment-trust interlock).
+        // Plants a clean or drifted fixture deployment, drives evaluate_drift_interlock, and
+        // emits DriftInterlock SSB rows. Exits non-zero when the interlock latches DriftHalted.
+        CliAction::DriftCheck { demo_stable, demo_drift, seed, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(drift_check_cmd::run(demo_stable, demo_drift, seed, json))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // H-31 — `elai remember "<text>"` captures a durable WORK preference into the bi-temporal
+        // user-memory ledger (activating the wire-dark elai_memory substrate via dispatch_one) and
+        // emits a UserDecisionSuperseded SSB row. Gated behind ELAI_USER_MEMORY_ENABLE (R9).
+        CliAction::Remember { text, json } => {
+            let outcome = user_memory_capture::capture_remember(&text)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            user_memory_capture::print_capture_outcome(&outcome, json);
         }
         // B-15 tranche J (orchestrate s-22600): the eleven bench / eval /
         // critic dispatch arms (BenchPrmbench D-19, BenchModeRouting D-21,
@@ -863,11 +1231,45 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::BenchTamper { scenarios, output, fail_fast, max_wall_ms_per_scenario } => {
             bench_cmd::run_bench_tamper(scenarios, output, fail_fast, max_wall_ms_per_scenario)?;
         }
+        // H-34 (SCHEMA_VERSION 213): MCP-schema token-budget MEASURE-FIRST
+        // benchmark. Drives the embedded multi-server MCP tool catalog OFFLINE,
+        // writes a timestamped report, emits one McpSchemaBudgetMeasured SSB
+        // beacon. Default-ON; no ELAI_*_ENABLE gate. Exits 0/1.
+        CliAction::BenchMcpSchemaBudget { json } => {
+            bench_cmd::run_bench_mcp_schema_budget(json)?;
+        }
         // F-2b: SeCodePLT-structured static-gate insecure-rate benchmark.
         // Drives the REAL evaluate_vibegate OFFLINE, writes a timestamped
         // report, emits one InsecureRateMeasured SSB beacon. Exits 0/1.
         CliAction::BenchSeccodeplt { json } => {
             bench_cmd::run_bench_seccodeplt(json)?;
+        }
+        // H-30 (SCHEMA_VERSION 239): staleness / intent-drift INSTRUMENT. Drives
+        // the SHIPPED bi-temporal memory substrate over a labeled supersession
+        // fixture in an ISOLATED in-memory store, writes a timestamped report,
+        // emits one StalenessEvalMeasured SSB beacon. --broken-retrieval runs the
+        // R2 negative control (stale_fact_reached_prompt > 0). Exits 0/1.
+        CliAction::BenchStaleness { json, broken_retrieval } => {
+            bench_cmd::run_bench_staleness(json, broken_retrieval)?;
+        }
+        // G-6 (SCHEMA_VERSION 217): gate-ON-vs-gate-OFF SAFEDELTA ablation.
+        // Derives the delta from the SHIPPED SecCodePltRunner (GD-1, no F-2
+        // re-implement). Writes timestamped JSON + signed .rra manifest.
+        // Emits ONE SafetyDeltaMeasured SSB beacon. Exits 0/1.
+        CliAction::BenchSafedelta { suites, seed, json } => {
+            bench_cmd::run_bench_safedelta(suites, seed, json)?;
+        }
+        // G-10 (SCHEMA_VERSION 218): `elai model-drift baseline|check|show`.
+        // Exogenous model-version behavioral-regression gate. DISTINCT from
+        // `elai drift` (E-45 cross-language SOURCE drift). Composes D-7
+        // canary.rs (GD-1). Default-ON; ELAI_MODEL_DRIFT_DISABLE kill-switch only.
+        CliAction::ModelDrift { action, output_format } => {
+            model_drift_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?;
+        }
+        // H-41: `elai checker-gaps [--limit N] [--json]` — ranked backlog of
+        // Factual/Computational claim-classes that fell to non-Constructive.
+        CliAction::CheckerGaps { limit, json } => {
+            checker_gaps_cmd::run(limit, json)?;
         }
         // D-28: `elai farm-adv-rm <run|verdict>` — adversarial example
         // farming runner. Drives AdvRmFarmer (orchestrator-side) and
@@ -894,6 +1296,13 @@ fn run() -> Result<(), anyhow::Error> {
         }
         CliAction::CriticReport { output } => {
             bench_cmd::run_critic_report(output)?;
+        }
+        // E-6: `elai mast report [--session <id>] [--limit N] [--json]` --
+        // deterministic MAST failure-mode report read from audit_mast_tagged
+        // SSB rows (read-only). Producer is per_level_audit_dispatch
+        // record_verdict (wire-dark unless ELAI_FAILURE_TRACKER_ENABLE=1).
+        CliAction::Mast { session, limit, json } => {
+            mast_cmd::run(session, limit, json)?;
         }
         // E-47: `elai lora-gate-check [--config PATH] [--json]` -- ship-gate
         // dispatcher for the LoRA fine-tuning subsystem. Wire-dark unless
@@ -954,16 +1363,32 @@ fn run() -> Result<(), anyhow::Error> {
         } => {
             ppm_health::run(endpoint, timeout_secs, json)?;
         }
-        // E-5 session-2: `elai memory <sub>` — heuristic memory inspector.
-        // Concurrent session 3 (s-31708) owns the canonical dispatcher; this
-        // arm surfaces a typed error so the workspace builds while session 3
-        // lands the real handler. NOT a silent stub — the user gets a clear
-        // diagnostic and exit code 1.
-        CliAction::Memory { sub, .. } => {
-            return Err(anyhow::anyhow!(
-                "elai memory {sub:?}: handler is being wired in session s-31708; \
-                 not yet routed at the main.rs dispatch site"
-            ));
+        // H-33 (SCHEMA_VERSION 211): `elai memory <sub>` — now fully routed.
+        // Activates the stub left by s-31708. Handler in memory_cmd.rs.
+        CliAction::Memory {
+            sub,
+            project_root,
+            user_id,
+            scope,
+            fact_type,
+            fact_id,
+            key,
+            value_json,
+            limit,
+            json,
+        } => {
+            memory_cmd::run_memory_subcommand(
+                sub,
+                &project_root,
+                &user_id,
+                scope.as_deref(),
+                fact_type.as_deref(),
+                fact_id.as_deref(),
+                key.as_deref(),
+                value_json.as_deref(),
+                limit,
+                json,
+            )?;
         }
         // C-40: `elai pr <open|list|status|close> [args...]` — GitHub
         // PR adapter CLI surface. Owns its own current-thread tokio

@@ -29,6 +29,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::promotion_score::PromotionScore;
 use crate::template_archive::{ArchiveEntry, BehaviourDescriptor, MapElitesArchive};
 
 /// Default capacity cap K_m (UNCONFIRMED for ELAI; arXiv:2510.04399 does
@@ -36,10 +37,25 @@ use crate::template_archive::{ArchiveEntry, BehaviourDescriptor, MapElitesArchiv
 /// config-knob in PromotionConfig, NOT as a load-bearing constant.
 pub const DEFAULT_K_M: u32 = 50;
 
-/// Default margin tau (UNCONFIRMED; carries forward bai.rs
-/// DEFAULT_POSTERIOR_MARGIN = 0.05 until the held-out canary calibration
-/// yields a paper-grounded value).
-pub const DEFAULT_TAU: f64 = 0.05;
+/// Default margin tau — PRMBench-calibrated (arXiv:2501.03124).
+///
+/// PRMBench (ssmisya/PRMBench, 6216 math problems) found that the best PRM
+/// scores only 68.0 on accept/reject labelled problems, and that PRMs
+/// systematically OVER-ACCEPT. To counteract over-acceptance a tau in the
+/// range 0.05–0.10 is the defensible operating point at the 70th-percentile
+/// precision/recall knee (Harvey-Liu t>3.0 analog — see
+/// workflow/reasoning/H-45-decisions.md §prmbench-tau).
+///
+/// Set to 0.07 (calibrated_at: 2026-06-11) — one step above the legacy
+/// 0.05 default to reflect PRMBench's measured over-acceptance rate. This is
+/// a LOCKED constant; a self-mod loop that lowers tau restores easy promotion
+/// (VD-3). Re-calibrate when the evaluation lane's model changes.
+pub const DEFAULT_TAU: f64 = 0.07;
+
+/// Calibration date for `DEFAULT_TAU`.
+/// Set when the tau value was last grounded against PRMBench evidence
+/// (arXiv:2501.03124). Used in the `PromotionScoreAggregated` SSB row.
+pub const TAU_CALIBRATED_AT: &str = "2026-06-11";
 
 /// PromotionConfig — operator-tunable knobs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -142,6 +158,70 @@ pub fn two_gate_promote(
             reason: Some(format!(
                 "capacity {} exceeds k_m {}",
                 capacity, cfg.k_m
+            )),
+        });
+    }
+    Ok(PromotionDecision {
+        kind: PromotionDecisionKind::Promoted,
+        reason: None,
+    })
+}
+
+/// H-45: Run the Two-Gate guardrail using an **aggregate worst-case score**
+/// as the promotion margin, not the candidate's own fitness.
+///
+/// This is the H-45 extension of [`two_gate_promote`] (GD-1: EXTEND the
+/// score consumed, do NOT rewrite the tau/k_m gate logic). The margin gate
+/// now compares `aggregate.worst_case` to `cfg.tau` instead of the raw
+/// candidate fitness.
+///
+/// # Why worst-case instead of mean
+///
+/// Scoring on the candidate's own MEAN fitness is exactly the overoptimization
+/// regime (Gao 2210.10760 KL law). Coste 2310.02743 (ICLR 2024) shows that
+/// WCO/UWO (worst-case / variance-penalized) "practically eliminates
+/// overoptimization, +70% BoN". This function wires that fix.
+///
+/// Live emission of `SsbActionType::PromotionScoreAggregated` happens at the
+/// caller (`darwin_admit_loop`); this function is pure logic + no I/O.
+pub fn two_gate_promote_aggregate(
+    aggregate: &PromotionScore,
+    descriptor: &BehaviourDescriptor,
+    archive: &MapElitesArchive,
+    cfg: &PromotionConfig,
+) -> Result<PromotionDecision, GateError> {
+    if !cfg.tau.is_finite() {
+        return Err(GateError::NonFiniteConfig("tau"));
+    }
+    // H-45: margin uses aggregate.worst_case, NOT candidate.fitness directly.
+    // The incumbent is still read from the archive for consistency with the
+    // existing Two-Gate semantics (an archive-cell incumbent is the baseline).
+    let incumbent_fitness = archive
+        .best_in_cell(descriptor)
+        .map(|e| e.fitness)
+        .unwrap_or(0.0);
+    let margin = aggregate.worst_case - incumbent_fitness;
+    if margin < cfg.tau {
+        return Ok(PromotionDecision {
+            kind: PromotionDecisionKind::BlockedBelowMargin,
+            reason: Some(format!(
+                "worst_case margin {margin:.4} below tau {tau:.4} \
+                 (worst_case={worst:.4}, mean={mean:.4}, var={var:.4})",
+                worst = aggregate.worst_case,
+                mean = aggregate.mean,
+                var = aggregate.variance,
+                tau = cfg.tau,
+            )),
+        });
+    }
+    // Capacity gate (unchanged from two_gate_promote — GD-1 compose).
+    let capacity = archive.occupied_cells() as u32;
+    if capacity > cfg.k_m {
+        return Ok(PromotionDecision {
+            kind: PromotionDecisionKind::BlockedCapacityExceeded,
+            reason: Some(format!(
+                "capacity {capacity} exceeds k_m {}",
+                cfg.k_m
             )),
         });
     }

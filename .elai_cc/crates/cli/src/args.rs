@@ -219,6 +219,12 @@ pub(crate) enum CliAction {
         /// given path at process exit. Consumed by the CI parity script
         /// to compare in-process vs via-mcp dispatch sequences.
         export_ssb: Option<PathBuf>,
+        /// G-2 -- `--emit-rra [<path>]`. When set, force-pins the
+        /// Reproducible-Run Artifact (`.rra`) output path. The RRA is sealed
+        /// by default at run end (kill-switch `ELAI_RRA_DISABLE`); this flag
+        /// lets the operator pin a custom output path. `None` => default
+        /// `<sessions>/<sid>/run.rra`.
+        emit_rra: Option<PathBuf>,
     },
     /// --remote-sidecar: SSH-boot the GPU box sidecar, start the local tunnel,
     /// health-poll until ready, then launch the V2 dashboard with
@@ -388,6 +394,17 @@ pub(crate) enum CliAction {
         json: bool,
         fail_fast: bool,
     },
+    /// D-1: `elai template migrate [--source DIR] [--path PATH] [--json]`.
+    /// Bootstraps the append-only reasoning-template archive
+    /// (`<cwd>/archive/reasoning-templates.jsonl`) from the built-in canonical
+    /// seed set (+ optional `--source DIR` files), writing one Frozen
+    /// ArchiveEntry per pattern and emitting one ArchiveEntryAdded SSB row per
+    /// appended entry. Idempotent: re-running on unchanged input appends zero.
+    TemplateMigrate {
+        source: Option<String>,
+        path: Option<String>,
+        json: bool,
+    },
     /// D-9: `elai audit-locked-keys [--registry PATH] [--staged | --files A,B]
     /// [--json] [--fail-fast]` — run LockedKeysAuditor against the staged
     /// diff (or an explicit file list) and exit non-zero on any violation.
@@ -412,6 +429,69 @@ pub(crate) enum CliAction {
     /// for the bad-cite analysis of arXiv:2604.21725.
     Freeze {
         action: FreezeAction,
+        output_format: CliOutputFormat,
+    },
+    /// G-2: `elai rra show <path>` — render a Reproducible-Run Artifact
+    /// (`.rra`) summary (seed + determinism pins + model pin + honest
+    /// guarantee level + per-gate verdict manifest + blake3 root). Driver at
+    /// crates/cli/src/rra_cmd.rs. Read-only; never re-executes the run.
+    Rra {
+        action: RraAction,
+        output_format: CliOutputFormat,
+    },
+    /// G-2: `elai replay --verify <path>` — verify a `.rra` offline.
+    /// Recomputes the blake3 root (tamper check) + re-derives every event
+    /// content hash (divergence check) and prints the [`ReplayVerdict`]
+    /// (Verified / Divergence@event / Tampered). Driver at
+    /// crates/cli/src/rra_cmd.rs. Read-only; honest verify-divergence scope
+    /// (GD-5) — it does NOT bit-identically replay token streams.
+    Replay {
+        action: ReplayAction,
+        output_format: CliOutputFormat,
+    },
+    /// H-35: `elai rewind <target> [--scope conversation|code|both] [--summarize]`
+    /// — restore session state to a prior SSB seq. Drives compact_session
+    /// (conversation trim), recover_stubs (stub rehydrate), ssb_resume_from
+    /// (code restore, fail-closed). Emits one `session_rewound` SSB beacon per
+    /// successful rewind. Idempotence guard: target==head emits NO row.
+    /// Driver at crates/cli/src/rewind_cmd.rs. DEFAULT-ON;
+    /// kill-switch ELAI_REWIND_DISABLE.
+    Rewind {
+        action: RewindAction,
+        output_format: CliOutputFormat,
+    },
+    /// H-49: `elai undo / redo / history / jump` — CAS-backed reversible LLM
+    /// edits. undo/redo/jump walk the undo-tree HEAD over the SessionDag.
+    /// Default-ON; kill-switch ELAI_TIMETRAVEL_DISABLE.
+    /// Driver at crates/cli/src/timetravel_cmd.rs.
+    TimeTravel {
+        action: TimeTravelAction,
+        output_format: CliOutputFormat,
+    },
+    /// G-5: `elai review --cockpit [--session <id>] [--base <ref>] [--json]` —
+    /// the reviewer-cockpit Diff-Surface-to-Review (DSR) producer. Parses the
+    /// working-tree git diff against a deterministically pinned base, reads the
+    /// session's SSB vouch stream, computes the DSR (un-vouched changed lines /
+    /// total changed lines), prints the vouched/un-vouched bands + the headline
+    /// DSR, and emits ONE `review_surface_scored` row through the live session
+    /// `Arc<Ssb>`. Driver at crates/cli/src/review_cmd.rs. Default-ON; the only
+    /// opt-out is the kill-switch `ELAI_REVIEW_COCKPIT_DISABLE`.
+    Review {
+        action: ReviewAction,
+        output_format: CliOutputFormat,
+    },
+    /// G-8: `elai verify-attestation <commit>` — re-verify a signed in-toto v1
+    /// provenance attestation OFFLINE, without re-running ELAI (trust-without-
+    /// re-running, SLSA-VSA). Reads the digest-only `ELAI-Provenance-Digest`
+    /// commit trailer + the sidecar `attestation.intoto.json`, recomputes the
+    /// blake3-Merkle root over the predicate, and confirms it equals both the
+    /// subject digest and the trailer (the F-gate verdict hashes are
+    /// Merkle-bound). Driver at crates/cli/src/verify_attestation_cmd.rs.
+    /// READ-ONLY (opens no Ssb); exits non-zero on not-verified so CI can gate;
+    /// a git-absent / missing-trailer / missing-sidecar condition is an explicit
+    /// error, never a fabricated "verified".
+    VerifyAttestation {
+        commit: String,
         output_format: CliOutputFormat,
     },
     /// C-45: `elai credit <attribute|table|export>` — contrastive
@@ -773,6 +853,20 @@ pub(crate) enum CliAction {
         fail_fast: Option<String>,
         max_wall_ms_per_scenario: Option<String>,
     },
+    /// H-34 (SCHEMA_VERSION 213): `elai bench mcp-schema-budget [--json]`.
+    /// MCP-schema token-budget MEASURE-FIRST benchmark. Drives the embedded
+    /// multi-server MCP tool catalog (20 tools: local-rag / pod-lifecycle /
+    /// notion) OFFLINE and computes baseline_schema_tokens_per_turn (all tools
+    /// eager) vs. injected_schema_tokens_per_turn (floor-only defer-load minimum).
+    /// Both token counts are COMPUTED from the corpus, never literals.
+    /// Writes a timestamped mcp-schema-budget-<unix_ms>.json report under
+    /// `<cwd>/benchmarks/mcp_schema_budget/` and emits exactly one
+    /// `SsbActionType::McpSchemaBudgetMeasured` beacon (default-ON; no
+    /// `ELAI_*_ENABLE` gate). `--json` prints the full report to stdout.
+    /// Exits 0 on a clean run, 1 on error.
+    BenchMcpSchemaBudget {
+        json: bool,
+    },
     /// F-2b: `elai bench seccodeplt [--json]`. Drives the REAL ELAI static
     /// write-gate (`vibegate::evaluate_vibegate`) over a SeCodePLT-structured
     /// CWE corpus OFFLINE (no model, no sandbox) and computes a before/after
@@ -784,6 +878,67 @@ pub(crate) enum CliAction {
     /// run, 1 on infrastructural error. Owns its own tokio runtime
     /// (`Ssb::new` constructed inside `block_on` per the F-2b playbook).
     BenchSeccodeplt {
+        json: bool,
+    },
+    /// H-30 (SCHEMA_VERSION 239): `elai bench staleness [--json]
+    /// [--broken-retrieval]`. The staleness / intent-drift INSTRUMENT. Drives
+    /// the SHIPPED bi-temporal memory substrate (FactStore + audit_conflicts +
+    /// get_relevant_facts, REUSE GD-1) over a labeled supersession fixture in an
+    /// ISOLATED in-memory store and computes two grounded STALE
+    /// (arXiv:2605.06527) rates: SR (recognition: the stale row was closed) and
+    /// IPA (application: retrieval served the fresh value, never the stale one),
+    /// invariant SR >= IPA. Writes a timestamped `staleness-<unix_ms>.json`
+    /// report under `<cwd>/benchmarks/staleness/` and emits exactly one
+    /// `SsbActionType::StalenessEvalMeasured` beacon (default-ON; no
+    /// `ELAI_*_ENABLE` gate). `--broken-retrieval` runs the negative control (a
+    /// retriever that reads include-closed rows) so `stale_fact_reached_prompt >
+    /// 0` -- R2: the instrument screams. With `--json` the full report JSON is
+    /// also printed. Exits 0 on a clean run, 1 on infrastructural error. Owns
+    /// its own tokio runtime (`Ssb::new` inside `block_on`).
+    BenchStaleness {
+        json: bool,
+        broken_retrieval: bool,
+    },
+    /// G-6 (SCHEMA_VERSION 217): `elai bench safedelta [--suites <csv>]
+    /// [--seed <u64>] [--json]`. Runs the gate-ON-vs-gate-OFF SAFEDELTA
+    /// ablation over the embedded SeCodePLT corpus under the pinned seed.
+    /// DERIVES the delta from the SHIPPED SecCodePltRunner::run (GD-1);
+    /// re-implements NO part of F-2. Emits ONE SafetyDeltaMeasured SSB beacon
+    /// + writes a timestamped JSON manifest under benchmarks/safedelta/ + a
+    /// signed replayable .rra manifest via G-2 rra.rs (blake3-only root).
+    /// Tier-1 = static-gate only; Tier-2 live dynamic exploit-exec arm is
+    /// RUNPOD-PENDING (BaxBench-392 arXiv:2502.11844, SUSVIBES-200 arXiv:2512.03262).
+    BenchSafedelta {
+        /// Comma-separated suite list (e.g. `seccodeplt`). Tier-1 only supports
+        /// `seccodeplt`; additional suites require a live RunPod endpoint.
+        suites: Vec<String>,
+        /// Deterministic RNG seed (mirrors ELAI_SEED; default 0).
+        seed: u64,
+        /// Print the full report JSON to stdout.
+        json: bool,
+    },
+    /// G-10 (SCHEMA_VERSION 218): `elai model-drift baseline|check|show
+    /// [--project-root PATH] [--json]` — exogenous model-version behavioral-
+    /// regression gate CLI. DISTINCT from `elai drift` (E-45 cross-language
+    /// SOURCE drift). Default-ON; kill-switch ELAI_MODEL_DRIFT_DISABLE only (W-2).
+    /// Composes D-7 canary.rs (GD-1: re-implements NONE). See
+    /// workflow/reasoning/G-10-decisions.md.
+    ModelDrift {
+        action: ModelDriftAction,
+        output_format: CliOutputFormat,
+    },
+    /// H-41 (SCHEMA_VERSION 219): `elai checker-gaps [--limit N] [--json]` —
+    /// aggregate `checker_gap_detected` SSB rows into a ranked backlog of
+    /// claim-class x complexity-taxon pairs that fell to a non-Constructive
+    /// grounding mode for lack of a Deterministic verifier. Uses the Xu
+    /// arXiv:2401.11817 Table-3 taxonomy to flag NP-complete / undecidable
+    /// taxa as HIGH-priority (never-LLM-grade, RD-3). Production read surface
+    /// over the off-agent `CheckerGapDetected` beacon. Requires
+    /// ELAI_CHECKER_GAP_ENABLE=1 on the writer side.
+    CheckerGaps {
+        /// Maximum backlog rows to return (default 50).
+        limit: Option<usize>,
+        /// Print as JSON instead of a human-readable table.
         json: bool,
     },
     /// E-17 SP6: `elai bench rag --tier <STANDARD|DEEP> --top-k <N>
@@ -983,6 +1138,11 @@ pub(crate) enum CliAction {
     },
     TierEval { suites: Vec<String>, budget: u32 },
     CriticReport { output: Option<String> },
+    /// E-6: `elai mast report [--session <id>] [--limit N] [--json]` --
+    /// deterministic MAST failure-mode report read from `audit_mast_tagged`
+    /// SSB rows (read-only). `session` is an operator run label echoed in
+    /// the header; `limit` caps the scan window. See mast_cmd.rs.
+    Mast { session: Option<String>, limit: Option<usize>, json: bool },
     /// E-47: `elai lora-gate-check [--config PATH] [--json]` -- ship-gate
     /// dispatcher for the LoRA fine-tuning subsystem. Reads the
     /// `[finetune.lora]` block from `.elai_cc/elai_cc.toml`, evaluates
@@ -1052,6 +1212,272 @@ pub(crate) enum CliAction {
         /// When false (default), use `SubprocessRegistryChecker` (the real
         /// live registry probe).
         offline: bool,
+    },
+    /// H-17 (SCHEMA_VERSION 223): `elai trial-search [--objective OBJECTIVE]
+    /// [--window WINDOW] [--json]` — fixture strategy-search subcommand.
+    ///
+    /// Runs a small in-process fixture search loop that registers >=3 DISTINCT
+    /// strategy configurations through `TrialLedger::register_trial`, producing
+    /// >=3 `TrialRegistered` SSB rows and a monotone trial count N. This is the
+    /// W-3 Tier-1 production entrypoint proof for H-17. The live autonomous
+    /// trading-search integration (Tier-2, H-18) is a separate gated step.
+    ///
+    /// Default objective: "sharpe_1y". Default window: current year start..end.
+    /// Default-ON; no env override required. Kill-switch: ELAI_TRIAL_LEDGER_DISABLE.
+    ///
+    /// Handler: `crate::trial_search_cmd::run_trial_search`.
+    TrialSearch {
+        /// Search objective key (e.g. "sharpe_1y"). Canonicalized before hashing.
+        objective: Option<String>,
+        /// Data window string "start_ms..end_ms" for the evaluation period.
+        window: Option<String>,
+        /// Print trial count + config hashes as JSON to stdout.
+        json: bool,
+    },
+    /// H-18 — `elai deflation-check [--sr <f64>] [--t <u64>] [--n <u64>]
+    ///   [--sharpe-std <f64>] [--pbo <f64>] [--seed <u64>] [--json]`
+    ///
+    /// W-3 production entrypoint for the Deflated Sharpe / PBO / MinBTL
+    /// promotion gate (T-2, the #1 net-new trust gate). Registers a fixture
+    /// strategy via trial-search, then calls evaluate_deflation and emits a
+    /// DeflationGateEvaluated SSB row. The live trading-strategy promote hook
+    /// is Tier-2 (registered stub, DEFERRED).
+    ///
+    /// Default scenario: a high-raw-Sharpe but high-N strategy that FAILS
+    /// DSR deflation (demonstrates the gate blocks overfitted strategies).
+    ///
+    /// Handler: `crate::deflation_check_cmd::run`.
+    ///
+    /// Note: f64 fields carried as Option<String> because CliAction derives Eq
+    /// and f64 does not implement Eq. Parsed to f64 in the handler.
+    DeflationCheck {
+        /// Per-period SR of the candidate strategy. Default: 0.10.
+        sr: Option<String>,
+        /// Number of return periods T. Default: 252 (one year daily).
+        t_periods: Option<u64>,
+        /// Number of trial strategies tested N (overrides ledger count for
+        /// the fixture scenario; the ledger will have this many registered
+        /// configs). Default: 50.
+        n_fixture: Option<u64>,
+        /// Cross-sectional std of SR across N trials. Default: 0.05.
+        sharpe_std: Option<String>,
+        /// PBO scalar from Tier-2 sidecar [0,1]. None = absent -> Block.
+        pbo: Option<String>,
+        /// Evaluation seed for GD-2 reproducibility. Default: 42.
+        seed: Option<u64>,
+        /// Print JSON summary instead of human text.
+        json: bool,
+    },
+
+    /// H-20 — `elai leakage-check [--module <path>] [--no-split]
+    ///   [--demo-fit-reaches-both] [--residue-temporal] [--seed <u64>] [--json]`
+    ///
+    /// W-1 production entrypoint for the leakage static-analysis COMPOSITE gate
+    /// (T-3 trust-hardening). Runs evaluate_leakage over a target module against
+    /// the live DKG (fail-closed Block if the DKG is absent/empty) and emits a
+    /// LeakageBlocked SSB row (off-agent done-gate artifact). Sound for the
+    /// Kapoor L1.1/L1.2/L1.3 classes only; the residue routes to human review.
+    ///
+    /// Handler: `crate::leakage_check_cmd::run`.
+    LeakageCheck {
+        /// Module path under analysis. Default: "pipeline.py".
+        module: Option<String>,
+        /// Omit the declared split boundary -> forces the L1.1 (no test set) block.
+        no_split: bool,
+        /// Drive the deterministic in-memory DemoLeakyDkg (fit reaches both
+        /// sinks) so the sound-block path is exercisable without a built graph.
+        demo_fit_both: bool,
+        /// Set a heuristic L3.1 temporal residue flag -> routes to human review.
+        residue_temporal: bool,
+        /// Evaluation seed for GD-2 reproducibility. Default: 42.
+        seed: Option<u64>,
+        /// Print JSON summary instead of human text.
+        json: bool,
+    },
+
+    /// H-21 — `elai lookahead-check (--demo-future-leak | --demo-causal)
+    ///   [--seed <u64>] [--json]`
+    ///
+    /// W-1 production entrypoint for the runtime look-ahead / causality
+    /// DIFFERENTIAL gate (T-3 trust-hardening; the un-gameable runtime backstop
+    /// to the H-20 static leakage COMPOSITE). Diffs a full-data feature
+    /// column-set against a future-truncated one; any column that changes under
+    /// truncation proves a look-ahead leak (FutureLeak -> Block). Emits a
+    /// LookaheadDifferential SSB row (off-agent done-gate artifact).
+    ///
+    /// Handler: `crate::lookahead_check_cmd::run`.
+    LookaheadCheck {
+        /// Drive the iloc[t+1] fixture whose leak column diverges under
+        /// truncation -> BLOCK (FutureLeak).
+        demo_future_leak: bool,
+        /// Drive the backward-looking fixture that diffs to zero -> ALLOW (Causal).
+        demo_causal: bool,
+        /// Evaluation seed for GD-2 reproducibility. Default: 42.
+        seed: Option<u64>,
+        /// Print JSON summary instead of human text.
+        json: bool,
+    },
+
+    /// H-22 — `elai null-test (--demo-overfit | --demo-genuine)
+    ///   [--seed <u64>] [--json]`
+    ///
+    /// W-1 production entrypoint for the trading metamorphic NULL-TEST gate (T-6
+    /// trust-hardening). Asks whether a strategy's edge survives a block-
+    /// permutation null: a genuine edge sits in the tail (p=(C+1)/(K+1) <
+    /// alpha/N, Bonferroni over N from H-17) -> ALLOW; an overfit edge sits
+    /// inside the null band (p >= alpha/N) -> it survived the null -> BLOCK.
+    /// Emits a TradingNullTest SSB row (off-agent done-gate artifact).
+    ///
+    /// Handler: `crate::null_test_cmd::run`.
+    NullTest {
+        /// Drive the flat/noise fixture whose edge survives the null -> BLOCK
+        /// (EdgeSurvivedNull).
+        demo_overfit: bool,
+        /// Drive the trending fixture whose edge is significant vs the null ->
+        /// ALLOW (EdgeCollapsedToNull).
+        demo_genuine: bool,
+        /// Evaluation seed for GD-2 reproducibility. Default: 42.
+        seed: Option<u64>,
+        /// Print JSON summary instead of human text.
+        json: bool,
+    },
+    /// H-26 — `elai shadow-check (--demo-invariant-held | --demo-invariant-violated)
+    ///   [--seed <u64>] [--json]`
+    ///
+    /// W-1 production entrypoint for the shadow-exec + financial-invariant
+    /// metamorphic-relation gate (T-10 trust-hardening). Diffs two fixture-supplied
+    /// result sets within a LOCKED float band AND checks textbook-correct financial
+    /// invariants: accounting IDENTITIES EXACT in integer cents (share conservation,
+    /// cash+position*price==equity, PnL additivity), and option-pricing / numeric MRs
+    /// (PutCallParity European-only, NumericStability) within the band. A held run ->
+    /// InvariantHeld (PASS, exit 0); a violated identity / beyond-band divergence ->
+    /// ShadowDiverged / InvariantViolated (BLOCK, exit 1). Emits a
+    /// DifferentialDivergence SSB row (off-agent done-gate artifact).
+    ///
+    /// Handler: `crate::shadow_check_cmd::run`.
+    ShadowCheck {
+        /// Drive the consistent fixture whose invariants all hold -> InvariantHeld
+        /// (PASS, exit 0).
+        demo_invariant_held: bool,
+        /// Drive the fixture whose PnL-additivity / share-conservation identity is
+        /// violated (integer cents) -> InvariantViolated (BLOCK, exit 1).
+        demo_invariant_violated: bool,
+        /// Evaluation seed for GD-2 reproducibility. Default: 42.
+        seed: Option<u64>,
+        /// Print JSON summary instead of human text.
+        json: bool,
+    },
+    /// H-27 — `elai gate-selfcheck (--demo-all-valid | --demo-gate-broken) [--seed
+    ///   <u64>] [--json]`
+    ///
+    /// W-1/W-3 production entrypoint for the verify-the-verifiers META gate (TD-4).
+    /// Drives a FROZEN registry of the 8 Track-3 gates, replays each gate's OWN demo-
+    /// violated fixture as a planted mutant through its REAL async evaluate_* fn, and
+    /// asserts a BLOCK-class verdict (kill the mutant). All gates killing their mutants
+    /// -> AllGatesValid (PASS, exit 0); a gate that fails to block its violation, an
+    /// over-block, an un-runnable gate, or an empty registry -> a fail-closed Block
+    /// (exit 1). Emits a GateSelfValidation SSB row (off-agent done-gate artifact).
+    ///
+    /// Handler: `crate::gate_selfcheck_cmd::run`.
+    GateSelfcheck {
+        /// Drive all 8 gates; expects every mutant killed -> AllGatesValid (PASS,
+        /// exit 0).
+        demo_all_valid: bool,
+        /// Inject a synthetic WEAKENED gate whose violation fixture is not blocked ->
+        /// GateFailedToBlock (BLOCK, exit 1), naming the broken gate.
+        demo_gate_broken: bool,
+        /// Evaluation seed for GD-2 reproducibility. Default: 42.
+        seed: Option<u64>,
+        /// Print JSON summary instead of human text.
+        json: bool,
+    },
+    /// H-28 — `elai reward-check (--demo-clean | --demo-tampered | --demo-score-jump)
+    ///   [--seed <u64>] [--json]`
+    ///
+    /// W-1/W-3 production entrypoint for the current-RF reward-tampering gate (Everitt
+    /// arXiv:1908.04734). Drives check_reward_tampering over a planted fixture triple (a
+    /// frozen-evaluator hash baseline, an observed hash, a claimed/prior reward + the
+    /// locked plausibility band) and detects reward tampering via two sound legs: a
+    /// frozen-evaluator blake3 MISMATCH -> EvaluatorModified HARD-BLOCK (leg 3a, reuses the
+    /// ArchiveVerifyResult tripwire; also the fail-closed arm for a missing baseline), and
+    /// an implausible reward delta with the hash INTACT -> ImplausibleRewardDelta FLAG ->
+    /// human Layer-3 (leg 3b). TD-3: leg 3a is checked FIRST and short-circuits before 3b.
+    /// NoTampering -> PASS (exit 0); any non-PASS verdict -> exit 1. Emits a RewardTampering
+    /// SSB row (off-agent done-gate artifact).
+    ///
+    /// Handler: `crate::reward_tamper_cmd::run`.
+    RewardCheck {
+        /// Matching evaluator hash + in-band reward; expects NoTampering (PASS, exit 0).
+        demo_clean: bool,
+        /// Mismatching evaluator hash (the agent edited its own evaluator); expects
+        /// EvaluatorModified (HARD-BLOCK, exit 1).
+        demo_tampered: bool,
+        /// Intact hash + an implausible reward jump beyond the locked band; expects
+        /// ImplausibleRewardDelta (FLAG -> human Layer-3, exit 1).
+        demo_score_jump: bool,
+        /// Evaluation seed for GD-2 reproducibility. Default: 42.
+        seed: Option<u64>,
+        /// Print JSON summary instead of human text.
+        json: bool,
+    },
+    /// H-19 — `elai holdout-check` runs the reusable-holdout query-budget gate (the
+    /// Thresholdout DP gate, Dwork et al. arXiv:1506.02629) over a planted fixture holdout
+    /// and emits HoldoutBudgetEvent SSB rows (the off-agent done-gate artifact). --demo-spend
+    /// runs one above-threshold OOS query that charges 1 budget unit (QuerySpent, exit 0);
+    /// --demo-exhausted provisions B=1, spends it, then runs one more query that is REFUSED
+    /// (Exhausted, budget_exhausted, exit 1). Tier-1 = this always-compiled CLI (the live
+    /// OOS-eval choke-point is Tier-2/deferred).
+    ///
+    /// Handler: `crate::holdout_check_cmd::run`.
+    HoldoutCheck {
+        /// Provision + one above-threshold OOS query; expects QuerySpent (charges budget,
+        /// exit 0).
+        demo_spend: bool,
+        /// Provision B=1, spend it, then one more query; expects Exhausted (budget_exhausted,
+        /// REFUSE, exit 1).
+        demo_exhausted: bool,
+        /// Evaluation seed for GD-2 reproducibility. Default: 42.
+        seed: Option<u64>,
+        /// Print JSON summary instead of human text.
+        json: bool,
+    },
+    /// H-29 — `elai drift-check` runs the LOCKED fail-closed drift state machine (T-13, the
+    /// master deployment-trust interlock) over a planted fixture strategy and emits
+    /// DriftInterlock SSB rows (the off-agent done-gate artifact). --demo-stable plants a clean
+    /// deployment (no drift across all four axes => Running, exit 0); --demo-drift plants a
+    /// vendor-schema change + an output-PSI breach + a 14d-deviation breach (ANY axis breach
+    /// latches DriftHalted, exit 1). The four axes are PSI on inputs+outputs, a blake3
+    /// vendor-schema fingerprint, a rolling-14d live-vs-backtest deviation, and a 90d validation
+    /// TTL; it composes the shipped G-10/D-7/H-18 signals (GD-1). The HALTED state is a
+    /// persistent journal-derived latch that SURVIVES restart; the unlock is a human/frozen FREE
+    /// function requiring fresh re-validation evidence. Tier-1 = this always-compiled CLI (the
+    /// live-trading resume FSM edge is Tier-2/deferred — no such transition exists yet).
+    ///
+    /// Handler: `crate::drift_check_cmd::run`.
+    DriftCheck {
+        /// Plant a clean deployment; expects Running (no drift on any axis, exit 0).
+        demo_stable: bool,
+        /// Plant a schema change + PSI/deviation breach; expects DriftHalted (latched, exit 1).
+        demo_drift: bool,
+        /// Evaluation seed for GD-2 reproducibility. Default: 42.
+        seed: Option<u64>,
+        /// Print JSON summary instead of human text.
+        json: bool,
+    },
+    /// H-31 — `elai remember "<text>"` captures a durable WORK preference into the bi-temporal
+    /// user-memory ledger (activating the wire-dark elai_memory substrate). The text runs through
+    /// the secret/PII reject FIRST (a credential is REJECTED, never stored), is folded into the
+    /// FactStore via `dispatch_one` (ADD on a new key, UPDATE-via-supersede on a contradicting
+    /// statement -- newest-wins soft-close, DELETE never issued), and emits a UserDecisionSuperseded
+    /// SSB row (the off-agent done-gate artifact). Gated behind ELAI_USER_MEMORY_ENABLE (R9,
+    /// default-OFF); a no-op when the flag is unset.
+    ///
+    /// Handler: `crate::user_memory_capture::capture_remember`.
+    Remember {
+        /// The preference text to remember (e.g. "prefer tracing over the log crate").
+        text: String,
+        /// Print JSON summary instead of human text.
+        json: bool,
     },
 }
 
@@ -1142,6 +1568,18 @@ pub(crate) enum SymbolGraphAction {
     /// emits a `ScipRefreshCompleted` SSB row (gated on
     /// `ELAI_SCIP_REFRESH_EMIT_ENABLE`, default-OFF).
     Refresh { scip_dir: String, project_root: String },
+    /// E-40 Task 2 (Tranche B-3) — `elai scip resolve --symbol NAME
+    /// --language <rust|python|typescript|go> [--from-file PATH]
+    /// [--rules-dir DIR]`. Production caller for
+    /// `symbol_graph::scope_graph::ScopeGraph::resolve_name` — the push/pop
+    /// scope-graph name resolver. Emits one `scope_graph_resolved` SSB row
+    /// (gated on `ELAI_SCOPE_GRAPH_EMIT_ENABLE`, default-OFF).
+    Resolve {
+        symbol: String,
+        language: String,
+        from_file: String,
+        rules_dir: String,
+    },
 }
 
 /// E-37 — `elai safety <sub>` sub-verb. Prompt-injection defense
@@ -1240,6 +1678,12 @@ pub(crate) enum MemorySubcommandKind {
     Insert,
     /// `elai memory delete --fact-id <id>` — soft-close (sets valid_to_ms).
     Delete,
+    /// `elai memory pin --fact-id <id>` — emit Pinned governance beacon (H-33).
+    Pin,
+    /// `elai memory unpin --fact-id <id>` — emit Unpinned governance beacon (H-33).
+    Unpin,
+    /// `elai memory provenance [--task <hint>] [--json]` — eligible-to-fire set (H-33).
+    Provenance,
 }
 
 /// C-43 — `elai freeze <sub>` sub-verb. Bundled with the parent
@@ -1258,6 +1702,208 @@ pub(crate) enum FreezeAction {
     /// covering the default Phase 4H frozen set and emits a
     /// ScopeFreezeRatified SSB row.
     Ratify { ratifier: String },
+}
+
+/// G-10 (SCHEMA_VERSION 218) — `elai model-drift <sub>` sub-verb.
+/// DISTINCT from `elai drift` (E-45 cross-language SOURCE drift). Use the
+/// full subcommand string "model-drift" to avoid clobbering the E-45 `drift`
+/// arm (args.rs drift arm / drift_cmd.rs). See workflow/reasoning/G-10-decisions.md.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModelDriftAction {
+    /// `elai model-drift baseline [--project-root PATH] [--json]`
+    /// Score the canary fixture set under the current identity and write the
+    /// per-family baseline scores to benchmarks/model_drift/<identity_key>.json.
+    Baseline { project_root: PathBuf, json: bool },
+    /// `elai model-drift check [--project-root PATH] [--json]`
+    /// Read the last-good baseline, re-run the canary, emit ModelDriftSuspected
+    /// on regression, exit non-zero on drift.
+    Check { project_root: PathBuf, json: bool },
+    /// `elai model-drift show [--project-root PATH] [--json]`
+    /// Display the latest baseline file.
+    Show { project_root: PathBuf, json: bool },
+}
+
+/// G-2 — `elai rra <sub>` sub-verb. Bundled with the parent `Rra` variant so
+/// the dispatcher can match a single arm (mirrors `FreezeAction`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RraAction {
+    /// `elai rra show <path>` — render the `.rra` summary.
+    Show { path: PathBuf },
+}
+
+/// G-2 — `elai replay <sub>` sub-verb. The top-level `replay` verb is new; it
+/// does NOT collide with the existing `replay-spill` / `fixture-replay`
+/// sub-actions (those are distinct subcommand words).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReplayAction {
+    /// `elai replay --verify <path>` — verify a `.rra` offline.
+    Verify { path: PathBuf },
+    /// H-23 — `elai replay --verify --metric-digest <demo>` — same-seed re-run
+    /// hash-equality METRIC_GATE. ADDITIVE to the offline `.rra` verifier above;
+    /// it does NOT regress the `Verify { path }` arm. Drives
+    /// `rerun_equality::verify_rerun_digest` over two fixture-supplied
+    /// declared-metric-output digest lists and emits a `RerunHashEquality` SSB
+    /// row (the off-agent artifact). `demo` selects the deterministic Tier-1
+    /// fixture (`deterministic` => Equal twice; `nondeterministic` => a hidden
+    /// unseeded RNG => Divergent). The live double-run of a real experiment is
+    /// the deferred Tier-2 path.
+    VerifyRerun { demo: RerunDemoMode },
+    /// H-24 — `elai replay --verify --golden <demo>` — sim-to-real parity gate
+    /// (Part C). ADDITIVE to the offline `.rra` verifier + the H-23 re-run gate;
+    /// it does NOT regress either arm. Drives
+    /// `sim_real_parity::verify_replay_golden` over a seeded replay event log and
+    /// a FROZEN golden event log and emits a `SimRealParity` SSB row (the off-
+    /// agent artifact). `demo` selects the deterministic Tier-1 fixture
+    /// (`parity` => replay==golden => Parity PASS; `gap` => a divergent event log
+    /// => ReplayGoldenMismatch BLOCK). The live paper-trade reconciliation
+    /// (numeric Part B) is the deferred Tier-2 path (GD-5).
+    VerifyGolden { demo: GoldenDemoMode },
+    /// H-25 — `elai replay --verify --result-manifest <demo>` — result manifest
+    /// re-derivation gate. ADDITIVE to the offline `.rra` verifier + the H-23
+    /// re-run gate + the H-24 parity gate; it does NOT regress any of them. Drives
+    /// `result_manifest::verify_result` over a fixture manifest + a set of
+    /// orchestrator-captured outputs and emits a `ResultManifestVerified` SSB row
+    /// (the off-agent artifact). `demo` selects the deterministic Tier-1 fixture
+    /// (`complete` => every declared number re-derives => ReDerived PASS;
+    /// `tampered` => a hand-edited value that does not re-parse =>
+    /// FabricationDetected BLOCK; `incomplete` => an empty/trivial manifest =>
+    /// FabricationDetected BLOCK, anti-sandbagging). The produced-vs-declared
+    /// completeness diff is the deferred Tier-2 path.
+    VerifyResultManifest { demo: ResultManifestDemoMode },
+}
+
+/// H-35 — rewind scope: which parts of the session state to restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RewindScope {
+    /// Trim the message stream past target_seq; rehydrate stubs.
+    Conversation,
+    /// Code restore only via ssb_resume_from (fail-closed predicate).
+    Code,
+    /// Both: conversation trim THEN code restore (default).
+    Both,
+}
+
+/// H-35 — parsed rewind action from `elai rewind <target> [flags]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RewindAction {
+    /// Raw target string: an integer SSB seq, "turn:<n>", or "checkpoint:<label>".
+    pub(crate) target: String,
+    pub(crate) scope: RewindScope,
+    pub(crate) summarize: bool,
+    /// Override the active session_id (defaults to the env/config session).
+    pub(crate) session_id: Option<String>,
+    /// Dry-run: print what would be done without writing any SSB row.
+    pub(crate) dry_run: bool,
+}
+
+/// H-49 — Scope selector for `elai undo / redo / jump`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) enum TimeTravelScope {
+    /// Restore file content only (code restore).
+    Code,
+    /// Restore conversation context only.
+    Conversation,
+    /// Restore both files and conversation (default).
+    #[default]
+    Both,
+}
+
+/// H-49 — Grain selector for `elai undo / redo / jump`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) enum TimeTravelGrainArg {
+    /// Single tool-call granularity.
+    Edit,
+    /// User-assistant turn granularity (default).
+    #[default]
+    Turn,
+    /// Baby-step boundary granularity.
+    BabyStep,
+}
+
+/// H-49 — Dispatched action from the `elai undo/redo/history/jump` sub-commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TimeTravelAction {
+    Undo {
+        grain: TimeTravelGrainArg,
+        scope: TimeTravelScope,
+        steps: u32,
+        dry_run: bool,
+        session_id: Option<String>,
+    },
+    Redo {
+        grain: TimeTravelGrainArg,
+        scope: TimeTravelScope,
+        dry_run: bool,
+        session_id: Option<String>,
+    },
+    History {
+        format: String,
+        session_id: Option<String>,
+    },
+    Jump {
+        target: String,
+        grain: TimeTravelGrainArg,
+        scope: TimeTravelScope,
+        dry_run: bool,
+        session_id: Option<String>,
+    },
+}
+
+/// H-23 — Tier-1 fixture selector for `elai replay --verify --metric-digest`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RerunDemoMode {
+    /// A clean seeded experiment: both re-runs hash identical declared outputs
+    /// (Equal twice).
+    Deterministic,
+    /// A hidden unseeded RNG: run #2's declared-output digest differs
+    /// (Divergent, the first divergent metric named).
+    Nondeterministic,
+}
+
+/// H-24 — Tier-1 fixture selector for `elai replay --verify --golden`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GoldenDemoMode {
+    /// A clean single-entrypoint strategy: the seeded replay reproduces the frozen
+    /// golden event log byte-for-byte (Parity PASS).
+    Parity,
+    /// A sim-real divergence: the replay's fill event differs from the golden (a
+    /// different fill model in backtest) => ReplayGoldenMismatch BLOCK, first
+    /// divergent event named.
+    Gap,
+}
+
+/// H-25 — Tier-1 fixture selector for `elai replay --verify --result-manifest`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResultManifestDemoMode {
+    /// A clean manifest: every declared empirical number re-parses from its
+    /// orchestrator-captured output to its declared value AND re-hashes to its
+    /// declared provenance (ReDerived PASS).
+    Complete,
+    /// A hand-edited number: the declared value does not re-parse from the captured
+    /// output (FabricationDetected BLOCK, the offending result named).
+    Tampered,
+    /// An empty/trivial manifest: a reported number with a 0/empty manifest is the
+    /// anti-fabrication signature (FabricationDetected BLOCK, anti-sandbagging).
+    Incomplete,
+}
+
+/// G-5 — `elai review <sub>` sub-verb. Bundled with the parent `Review` variant
+/// so the dispatcher can match a single arm (mirrors `RraAction`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReviewAction {
+    /// `elai review --cockpit [--session <id>] [--base <ref>]` — compute + print
+    /// the reviewer-cockpit DSR and emit a `review_surface_scored` row.
+    ///
+    /// * `session` — the session whose SSB vouch stream is read + whose `ssb.db`
+    ///   the row is written to. `None` resolves to the canonical session id the
+    ///   driver derives from the project root (mirrors `dep-check`).
+    /// * `base` — the git ref to diff the working tree against. `None` defaults
+    ///   to `HEAD`. The driver resolves it to a concrete commit SHA via
+    ///   `git rev-parse` and records that SHA in the row (deterministic pin).
+    Cockpit {
+        session: Option<String>,
+        base: Option<String>,
+    },
 }
 
 /// E-39 -- `elai cloud override-cap` sub-verbs. The override-cap
@@ -2033,6 +2679,41 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // arXiv:2605.13295 (Zehle 2026); see
         // workflow/papers/cantante-credit-attribution.md.
         "credit" => parse_credit_subcommand_args(&rest[1..], output_format),
+        // G-10 (SCHEMA_VERSION 218) — `elai model-drift baseline|check|show`.
+        // Exogenous model-version behavioral-regression gate; handler at
+        // crates/cli/src/model_drift_cmd.rs. DISTINCT from `elai drift`
+        // (E-45 cross-language SOURCE drift). Default-ON (W-2); kill-switch
+        // ELAI_MODEL_DRIFT_DISABLE only. See workflow/reasoning/G-10-decisions.md.
+        "model-drift" => parse_model_drift_subcommand_args(&rest[1..], output_format),
+        // H-41 (SCHEMA_VERSION 219) — `elai checker-gaps [--limit N] [--json]`.
+        // Ranked backlog of claim-class x complexity-taxon gaps (Xu Table-3).
+        // Read surface over CheckerGapDetected SSB rows. See H-41 plan.
+        "checker-gaps" | "checker_gaps" => parse_checker_gaps_args(&rest[1..]),
+        // G-2 — `elai rra show <path>`. Reproducible-Run Artifact viewer;
+        // handler at crates/cli/src/rra_cmd.rs.
+        "rra" => parse_rra_subcommand_args(&rest[1..], output_format),
+        // G-2 — `elai replay --verify <path>`. Offline .rra verifier;
+        // handler at crates/cli/src/rra_cmd.rs. Top-level `replay` is new and
+        // distinct from the replay-spill / fixture-replay sub-actions.
+        "replay" => parse_replay_subcommand_args(&rest[1..], output_format),
+        // H-35 — `elai rewind <target> [--scope ...] [--summarize]`. Session
+        // state restore to a prior SSB seq. Handler at crates/cli/src/rewind_cmd.rs.
+        // Distinct from the OLD CheckpointSub::Rewind sub-verb under `checkpoint`.
+        "rewind" => parse_rewind_subcommand_args(&rest[1..], output_format),
+        // H-49 — `elai undo / redo / history / jump`. CAS-backed reversible LLM
+        // edits over the undo-tree HEAD. Default-ON; kill-switch ELAI_TIMETRAVEL_DISABLE.
+        // Handler at crates/cli/src/timetravel_cmd.rs.
+        "undo" => parse_timetravel_undo_args(&rest[1..], output_format),
+        "redo" => parse_timetravel_redo_args(&rest[1..], output_format),
+        "history" | "timeline" => parse_timetravel_history_args(&rest[1..], output_format),
+        "jump" => parse_timetravel_jump_args(&rest[1..], output_format),
+        // G-5 — `elai review --cockpit [--session <id>] [--base <ref>]`. The
+        // reviewer-cockpit DSR producer; handler at crates/cli/src/review_cmd.rs.
+        "review" => parse_review_subcommand_args(&rest[1..], output_format),
+        // G-8 — `elai verify-attestation <commit>`. Offline in-toto provenance
+        // attestation verifier; handler at crates/cli/src/verify_attestation_cmd.rs.
+        // READ-ONLY; trust-without-re-running (SLSA-VSA).
+        "verify-attestation" => parse_verify_attestation_subcommand_args(&rest[1..], output_format),
         // E-43 -- `elai skills-mgmt <list|eval|publish>`. Agent skill systems
         // surface; handler at crates/cli/src/skills_cmd.rs. ABSORBs the
         // E-22 SKILL.md export shim. Paper-grounded against
@@ -2207,6 +2888,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "darwin-loop" | "darwin_loop" => crate::args_critic::parse_darwin_loop_args(&rest[1..]),
         "tier-eval" | "tier_eval" => crate::args_critic::parse_tier_eval_args(&rest[1..]),
         "critic-report" | "critic_report" => crate::args_critic::parse_critic_report_args(&rest[1..]),
+        // E-6: MAST failure-mode report. `elai mast report [--session <id>]
+        // [--limit N] [--json]` reads audit_mast_tagged SSB rows read-only.
+        "mast" => crate::args_critic::parse_mast_args(&rest[1..]),
         // E-47: LoRA ship-gate dispatcher. Reads [finetune.lora] from
         // elai_cc.toml + evaluates triple-AND gate + prints outcome +
         // emits SSB row when ELAI_LORA_SHIP_GATE_ENABLE=1.
@@ -2299,6 +2983,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // this is a top-level `elai archive verify` invocation, not a
         // REPL slash command).
         "archive" => parse_archive_subcommand_args(&rest[1..]),
+        // D-1: `elai template migrate [--source DIR] [--path PATH] [--json]`
+        // Bootstraps the reasoning-template archive (JSONL) + emits one
+        // ArchiveEntryAdded SSB row per appended template. Top-level subcommand
+        // mirroring `archive verify` (operator / CI surface, not a slash
+        // command). Sub-verb is `migrate`; the parser errors on unknown verbs.
+        "template" => parse_template_subcommand_args(&rest[1..]),
         // C-40: `elai pr <open|list|status|close> [args...]` — GitHub PR
         // adapter CLI surface. Sub-action validation lives in the
         // handler (mirrors `Mcp` / `Runtime` string-typed pattern).
@@ -2308,6 +2998,51 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // minimal; `pr` continues to dispatch the C-40 open/list/status/
         // close surface untouched.
         "pr-review" => crate::args_pr::parse_pr_review_subcommand_args(&rest[1..]),
+        // H-17 — `elai trial-search` is the W-3 Tier-1 fixture entrypoint that
+        // proves register_trial fires from a real CLI subcommand (not test-only).
+        "trial-search" => parse_trial_search_args(&rest[1..]),
+        // H-18 — `elai deflation-check` is the W-3 Tier-1 production entrypoint
+        // for the Deflated Sharpe / PBO / MinBTL promotion gate. Registers a
+        // fixture strategy, calls evaluate_deflation, emits DeflationGateEvaluated.
+        "deflation-check" => parse_deflation_check_args(&rest[1..]),
+        // H-20 — `elai leakage-check` is the W-1 production entrypoint for the
+        // leakage static-analysis COMPOSITE gate. Runs evaluate_leakage over a
+        // target module, emits a LeakageBlocked SSB row (off-agent artifact).
+        "leakage-check" => parse_leakage_check_args(&rest[1..]),
+        // H-21 — `elai lookahead-check` is the W-1 production entrypoint for the
+        // runtime look-ahead / causality DIFFERENTIAL gate. Diffs full vs
+        // future-truncated column-sets, emits a LookaheadDifferential SSB row.
+        "lookahead-check" => parse_lookahead_check_args(&rest[1..]),
+        // H-22 — `elai null-test` is the W-1 production entrypoint for the
+        // trading metamorphic NULL-TEST gate (does the edge survive a
+        // block-permutation null?). Emits a TradingNullTest SSB row.
+        "null-test" => parse_null_test_args(&rest[1..]),
+        // H-26 — `elai shadow-check` is the W-1 production entrypoint for the
+        // shadow-exec + financial-invariant metamorphic-relation gate (does a
+        // financial computation hold its textbook-correct invariants AND agree with a
+        // shadow re-implementation within a LOCKED band?). Emits a
+        // DifferentialDivergence SSB row.
+        "shadow-check" => parse_shadow_check_args(&rest[1..]),
+        // H-27 — `elai gate-selfcheck` is the W-1/W-3 production entrypoint for the
+        // verify-the-verifiers META gate (do the 8 OTHER Track-3 gates each KILL their
+        // own planted-violation fixture?). Emits a GateSelfValidation SSB row.
+        "gate-selfcheck" => parse_gate_selfcheck_args(&rest[1..]),
+        // H-28 — `elai reward-check` is the W-1/W-3 production entrypoint for the
+        // current-RF reward-tampering gate (does a self-mod edit its own evaluator
+        // (hash mismatch) or jump the reward implausibly with the hash intact?). Emits
+        // a RewardTampering SSB row.
+        "reward-check" => parse_reward_check_args(&rest[1..]),
+        "holdout-check" => parse_holdout_check_args(&rest[1..]),
+        // H-29 — `elai drift-check` is the W-1/W-3 production entrypoint for the LOCKED
+        // fail-closed drift state machine (T-13, the master deployment-trust interlock). Plants
+        // a clean OR drifted fixture deployment and emits a DriftInterlock SSB row; latches
+        // DriftHalted (exit 1) on any axis breach. Naming: NOT `drift` (E-45 source drift) NOR
+        // `model-drift` (G-10) — a new compound verb.
+        "drift-check" => parse_drift_check_args(&rest[1..]),
+        // H-31 — `elai remember "<text>"` captures a durable WORK preference into the bi-temporal
+        // user-memory ledger and emits a UserDecisionSuperseded SSB row (the off-agent done-gate
+        // artifact). Gated behind ELAI_USER_MEMORY_ENABLE (R9, default-OFF).
+        "remember" => parse_remember_args(&rest[1..]),
         // D-9 — `elai audit-locked-keys` is a top-level subcommand, not a
         // slash command (CI + pre-commit hook want a simple argv shape).
         "audit-locked-keys" => parse_audit_locked_keys_args(&rest[1..]),
@@ -2366,6 +3101,10 @@ pub fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
     let mut via_mcp: bool = false;
     let mut empire: bool = false;
     let mut export_ssb: Option<PathBuf> = None;
+    // G-2: --emit-rra is a flag that may optionally take a path. A bare
+    // `--emit-rra` enables the default-path seal (and is harmless since the
+    // RRA is default-ON); `--emit-rra <path>` / `--emit-rra=<path>` pins a path.
+    let mut emit_rra: Option<PathBuf> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -2450,6 +3189,23 @@ pub fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
                 export_ssb = Some(PathBuf::from(&flag[13..]));
                 i += 1;
             }
+            // G-2: --emit-rra [<path>] — flag with an OPTIONAL path. A following
+            // token that does not look like a flag is consumed as the path.
+            "--emit-rra" => {
+                match rest.get(i + 1) {
+                    Some(next) if !next.starts_with("--") => {
+                        emit_rra = Some(PathBuf::from(next));
+                        i += 2;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+            flag if flag.starts_with("--emit-rra=") => {
+                emit_rra = Some(PathBuf::from(&flag[11..]));
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `run` argument: {other}"));
             }
@@ -2460,7 +3216,7 @@ pub fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
         None => std::env::current_dir()
             .map_err(|e| format!("`run` cannot determine cwd for --project-root default: {e}"))?,
     };
-    Ok(CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb })
+    Ok(CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb, emit_rra })
 }
 
 /// E-49 SWE-Bench Pro v5 driver — parse `elai task <problem_statement>
@@ -2860,6 +3616,59 @@ pub(crate) fn parse_archive_subcommand_args(rest: &[String]) -> Result<CliAction
     })
 }
 
+/// D-1 — parse `elai template migrate [--source DIR] [--path PATH] [--json]`.
+///
+/// Only one sub-verb is supported (`migrate`); the parser errors on unknown
+/// sub-verbs so a typo does not silently fall through to the fallback Prompt
+/// action. Mirrors `parse_archive_subcommand_args` (local parser, top-level
+/// subcommand, no slash-command grammar).
+pub(crate) fn parse_template_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    if sub != "migrate" {
+        return Err(format!(
+            "unknown `template` sub-command: '{sub}' (expected 'migrate')"
+        ));
+    }
+    let mut source: Option<String> = None;
+    let mut path: Option<String> = None;
+    let mut json = false;
+    let mut i = 1;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--source" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --source".to_string())?;
+                source = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--source=") => {
+                source = Some(flag["--source=".len()..].to_string());
+                i += 1;
+            }
+            "--path" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --path".to_string())?;
+                path = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--path=") => {
+                path = Some(flag["--path=".len()..].to_string());
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `template migrate` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::TemplateMigrate { source, path, json })
+}
+
 /// F-7 / Slice A4 — parse `elai template-ranking <action> [--json]`.
 ///
 /// `action` is the optional lower-cased subcommand (`list` | `help` | absent =>
@@ -3021,6 +3830,552 @@ pub(crate) fn parse_audit_locked_keys_args(rest: &[String]) -> Result<CliAction,
         json,
         fail_fast,
     })
+}
+
+/// H-17 — parse `elai trial-search [--objective OBJ] [--window WIN] [--json]`.
+///
+/// The W-3 Tier-1 fixture entrypoint for the persisted trial ledger. Registers
+/// >=3 distinct strategy configurations through `TrialLedger::register_trial`
+/// and prints the resulting trial count N. Default-ON; no env override needed.
+pub(crate) fn parse_trial_search_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut objective: Option<String> = None;
+    let mut window: Option<String> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--objective" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --objective".to_string())?;
+                objective = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--objective=") => {
+                objective = Some(flag["--objective=".len()..].to_string());
+                i += 1;
+            }
+            "--window" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --window".to_string())?;
+                window = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--window=") => {
+                window = Some(flag["--window=".len()..].to_string());
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `trial-search` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::TrialSearch { objective, window, json })
+}
+
+/// H-18 — parse `elai deflation-check [--sr <f64>] [--t <u64>] [--n <u64>]
+/// [--sharpe-std <f64>] [--pbo <f64>] [--seed <u64>] [--json]`.
+///
+/// f64 fields stored as Option<String> (CliAction derives Eq; f64 does not).
+/// Parsed to f64 in the handler. Values validated at parse time.
+pub(crate) fn parse_deflation_check_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut sr: Option<String> = None;
+    let mut t_periods: Option<u64> = None;
+    let mut n_fixture: Option<u64> = None;
+    let mut sharpe_std: Option<String> = None;
+    let mut pbo: Option<String> = None;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--sr" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --sr".to_string())?;
+                v.parse::<f64>().map_err(|_| format!("invalid f64 for --sr: {v}"))?;
+                sr = Some(v.clone());
+                i += 2;
+            }
+            "--t" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --t".to_string())?;
+                t_periods = Some(v.parse().map_err(|_| format!("invalid u64 for --t: {v}"))?);
+                i += 2;
+            }
+            "--n" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --n".to_string())?;
+                n_fixture = Some(v.parse().map_err(|_| format!("invalid u64 for --n: {v}"))?);
+                i += 2;
+            }
+            "--sharpe-std" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --sharpe-std".to_string())?;
+                v.parse::<f64>().map_err(|_| format!("invalid f64 for --sharpe-std: {v}"))?;
+                sharpe_std = Some(v.clone());
+                i += 2;
+            }
+            "--pbo" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --pbo".to_string())?;
+                v.parse::<f64>().map_err(|_| format!("invalid f64 for --pbo: {v}"))?;
+                pbo = Some(v.clone());
+                i += 2;
+            }
+            "--seed" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(v.parse().map_err(|_| format!("invalid u64 for --seed: {v}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `deflation-check` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::DeflationCheck { sr, t_periods, n_fixture, sharpe_std, pbo, seed, json })
+}
+
+/// H-20 — parse `elai leakage-check [--module <path>] [--no-split]
+/// [--demo-fit-reaches-both] [--residue-temporal] [--seed <u64>] [--json]`.
+pub(crate) fn parse_leakage_check_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut module: Option<String> = None;
+    let mut no_split = false;
+    let mut demo_fit_both = false;
+    let mut residue_temporal = false;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--module" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --module".to_string())?;
+                module = Some(v.clone());
+                i += 2;
+            }
+            "--no-split" => {
+                no_split = true;
+                i += 1;
+            }
+            "--demo-fit-reaches-both" => {
+                demo_fit_both = true;
+                i += 1;
+            }
+            "--residue-temporal" => {
+                residue_temporal = true;
+                i += 1;
+            }
+            "--seed" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(v.parse().map_err(|_| format!("invalid u64 for --seed: {v}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `leakage-check` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::LeakageCheck {
+        module,
+        no_split,
+        demo_fit_both,
+        residue_temporal,
+        seed,
+        json,
+    })
+}
+
+/// H-21 — parse `elai lookahead-check (--demo-future-leak | --demo-causal)
+/// [--seed <u64>] [--json]`.
+pub(crate) fn parse_lookahead_check_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut demo_future_leak = false;
+    let mut demo_causal = false;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--demo-future-leak" => {
+                demo_future_leak = true;
+                i += 1;
+            }
+            "--demo-causal" => {
+                demo_causal = true;
+                i += 1;
+            }
+            "--seed" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(v.parse().map_err(|_| format!("invalid u64 for --seed: {v}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `lookahead-check` argument: {other}"));
+            }
+        }
+    }
+    if demo_future_leak && demo_causal {
+        return Err(
+            "--demo-future-leak and --demo-causal are mutually exclusive".to_string(),
+        );
+    }
+    if !demo_future_leak && !demo_causal {
+        return Err(
+            "lookahead-check requires one of --demo-future-leak or --demo-causal".to_string(),
+        );
+    }
+    Ok(CliAction::LookaheadCheck {
+        demo_future_leak,
+        demo_causal,
+        seed,
+        json,
+    })
+}
+
+/// H-22 — parse `elai null-test (--demo-overfit | --demo-genuine)
+/// [--seed <u64>] [--json]`.
+pub(crate) fn parse_null_test_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut demo_overfit = false;
+    let mut demo_genuine = false;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--demo-overfit" => {
+                demo_overfit = true;
+                i += 1;
+            }
+            "--demo-genuine" => {
+                demo_genuine = true;
+                i += 1;
+            }
+            "--seed" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(v.parse().map_err(|_| format!("invalid u64 for --seed: {v}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `null-test` argument: {other}"));
+            }
+        }
+    }
+    if demo_overfit && demo_genuine {
+        return Err("--demo-overfit and --demo-genuine are mutually exclusive".to_string());
+    }
+    if !demo_overfit && !demo_genuine {
+        return Err("null-test requires one of --demo-overfit or --demo-genuine".to_string());
+    }
+    Ok(CliAction::NullTest {
+        demo_overfit,
+        demo_genuine,
+        seed,
+        json,
+    })
+}
+
+/// H-26 — parse `elai shadow-check (--demo-invariant-held | --demo-invariant-violated)
+/// [--seed <u64>] [--json]`.
+pub(crate) fn parse_shadow_check_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut demo_invariant_held = false;
+    let mut demo_invariant_violated = false;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--demo-invariant-held" => {
+                demo_invariant_held = true;
+                i += 1;
+            }
+            "--demo-invariant-violated" => {
+                demo_invariant_violated = true;
+                i += 1;
+            }
+            "--seed" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(v.parse().map_err(|_| format!("invalid u64 for --seed: {v}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `shadow-check` argument: {other}"));
+            }
+        }
+    }
+    if demo_invariant_held && demo_invariant_violated {
+        return Err(
+            "--demo-invariant-held and --demo-invariant-violated are mutually exclusive".to_string(),
+        );
+    }
+    if !demo_invariant_held && !demo_invariant_violated {
+        return Err(
+            "shadow-check requires one of --demo-invariant-held or --demo-invariant-violated"
+                .to_string(),
+        );
+    }
+    Ok(CliAction::ShadowCheck {
+        demo_invariant_held,
+        demo_invariant_violated,
+        seed,
+        json,
+    })
+}
+
+/// H-27 — parse `elai gate-selfcheck (--demo-all-valid | --demo-gate-broken)
+/// [--seed <u64>] [--json]`.
+pub(crate) fn parse_gate_selfcheck_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut demo_all_valid = false;
+    let mut demo_gate_broken = false;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--demo-all-valid" => {
+                demo_all_valid = true;
+                i += 1;
+            }
+            "--demo-gate-broken" => {
+                demo_gate_broken = true;
+                i += 1;
+            }
+            "--seed" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(v.parse().map_err(|_| format!("invalid u64 for --seed: {v}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `gate-selfcheck` argument: {other}"));
+            }
+        }
+    }
+    if demo_all_valid && demo_gate_broken {
+        return Err(
+            "--demo-all-valid and --demo-gate-broken are mutually exclusive".to_string(),
+        );
+    }
+    if !demo_all_valid && !demo_gate_broken {
+        return Err(
+            "gate-selfcheck requires one of --demo-all-valid or --demo-gate-broken".to_string(),
+        );
+    }
+    Ok(CliAction::GateSelfcheck {
+        demo_all_valid,
+        demo_gate_broken,
+        seed,
+        json,
+    })
+}
+
+/// H-28 — parse `elai reward-check (--demo-clean | --demo-tampered | --demo-score-jump)
+/// [--seed <u64>] [--json]`.
+pub(crate) fn parse_reward_check_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut demo_clean = false;
+    let mut demo_tampered = false;
+    let mut demo_score_jump = false;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--demo-clean" => {
+                demo_clean = true;
+                i += 1;
+            }
+            "--demo-tampered" => {
+                demo_tampered = true;
+                i += 1;
+            }
+            "--demo-score-jump" => {
+                demo_score_jump = true;
+                i += 1;
+            }
+            "--seed" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(v.parse().map_err(|_| format!("invalid u64 for --seed: {v}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `reward-check` argument: {other}"));
+            }
+        }
+    }
+    let selected = u8::from(demo_clean) + u8::from(demo_tampered) + u8::from(demo_score_jump);
+    if selected > 1 {
+        return Err(
+            "--demo-clean, --demo-tampered, and --demo-score-jump are mutually exclusive"
+                .to_string(),
+        );
+    }
+    if selected == 0 {
+        return Err(
+            "reward-check requires one of --demo-clean, --demo-tampered, or --demo-score-jump"
+                .to_string(),
+        );
+    }
+    Ok(CliAction::RewardCheck {
+        demo_clean,
+        demo_tampered,
+        demo_score_jump,
+        seed,
+        json,
+    })
+}
+
+/// H-19 — parse `elai holdout-check (--demo-spend | --demo-exhausted) [--seed <u64>] [--json]`.
+pub(crate) fn parse_holdout_check_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut demo_spend = false;
+    let mut demo_exhausted = false;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--demo-spend" => {
+                demo_spend = true;
+                i += 1;
+            }
+            "--demo-exhausted" => {
+                demo_exhausted = true;
+                i += 1;
+            }
+            "--seed" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(v.parse().map_err(|_| format!("invalid u64 for --seed: {v}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `holdout-check` argument: {other}"));
+            }
+        }
+    }
+    let selected = u8::from(demo_spend) + u8::from(demo_exhausted);
+    if selected > 1 {
+        return Err("--demo-spend and --demo-exhausted are mutually exclusive".to_string());
+    }
+    if selected == 0 {
+        return Err(
+            "holdout-check requires one of --demo-spend or --demo-exhausted".to_string(),
+        );
+    }
+    Ok(CliAction::HoldoutCheck {
+        demo_spend,
+        demo_exhausted,
+        seed,
+        json,
+    })
+}
+
+/// H-29 — parse `elai drift-check (--demo-stable | --demo-drift) [--seed <u64>] [--json]`.
+pub(crate) fn parse_drift_check_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut demo_stable = false;
+    let mut demo_drift = false;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--demo-stable" => {
+                demo_stable = true;
+                i += 1;
+            }
+            "--demo-drift" => {
+                demo_drift = true;
+                i += 1;
+            }
+            "--seed" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(v.parse().map_err(|_| format!("invalid u64 for --seed: {v}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `drift-check` argument: {other}"));
+            }
+        }
+    }
+    let selected = u8::from(demo_stable) + u8::from(demo_drift);
+    if selected > 1 {
+        return Err("--demo-stable and --demo-drift are mutually exclusive".to_string());
+    }
+    if selected == 0 {
+        return Err("drift-check requires one of --demo-stable or --demo-drift".to_string());
+    }
+    Ok(CliAction::DriftCheck {
+        demo_stable,
+        demo_drift,
+        seed,
+        json,
+    })
+}
+
+/// H-31 — parse `elai remember "<text>" [--json]`. The text is the positional remainder (all
+/// non-flag tokens joined with a space); `--json` selects machine output. An empty text is an error.
+pub(crate) fn parse_remember_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut json = false;
+    let mut text_parts: Vec<String> = Vec::new();
+    for arg in rest {
+        match arg.as_str() {
+            "--json" => json = true,
+            other => text_parts.push(other.to_string()),
+        }
+    }
+    let text = text_parts.join(" ").trim().to_string();
+    if text.is_empty() {
+        return Err("remember requires non-empty text: `elai remember \"<text>\"`".to_string());
+    }
+    Ok(CliAction::Remember { text, json })
 }
 
 // B-15 Tranche O.2 (orchestrate s-22600): the eight `parse_bench_*_args`
@@ -3377,6 +4732,350 @@ pub(crate) fn parse_freeze_subcommand_args(
             "unknown `freeze` sub-action `{other}`; expected one of: status, verify, ratify"
         )),
     }
+}
+
+/// G-10 (SCHEMA_VERSION 218) — parse `elai model-drift <sub>`. Grammar:
+///   `elai model-drift baseline [--project-root PATH] [--json]`
+///   `elai model-drift check [--project-root PATH] [--json]`
+///   `elai model-drift show [--project-root PATH] [--json]`
+///
+/// DISTINCT from `elai drift` (E-45 cross-language SOURCE drift checker).
+pub(crate) fn parse_model_drift_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .map(String::as_str)
+        .ok_or_else(|| {
+            "missing `model-drift` sub-action; expected: baseline|check|show".to_string()
+        })?;
+
+    let args = &rest[1..];
+    let mut project_root = PathBuf::from(".");
+    let mut json = matches!(output_format, CliOutputFormat::Json);
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--project-root" => {
+                let value = args.get(i + 1).ok_or_else(|| {
+                    "missing value for `--project-root`".to_string()
+                })?;
+                project_root = PathBuf::from(value);
+                i += 2;
+            }
+            flag if flag.starts_with("--project-root=") => {
+                project_root = PathBuf::from(&flag[15..]);
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `model-drift {sub}` argument: {other}"
+                ));
+            }
+        }
+    }
+
+    let action = match sub {
+        "baseline" => ModelDriftAction::Baseline { project_root, json },
+        "check" => ModelDriftAction::Check { project_root, json },
+        "show" => ModelDriftAction::Show { project_root, json },
+        other => {
+            return Err(format!(
+                "unknown `model-drift` sub-action `{other}`; expected: baseline|check|show"
+            ));
+        }
+    };
+
+    Ok(CliAction::ModelDrift {
+        action,
+        output_format,
+    })
+}
+
+/// G-2 — parse `elai rra <sub>`. Grammar:
+///   `elai rra show <path>`
+pub(crate) fn parse_rra_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .ok_or_else(|| "missing `rra` sub-action; expected: show <path>".to_string())?
+        .as_str();
+    match sub {
+        "show" => {
+            let path = rest
+                .get(1)
+                .ok_or_else(|| "`rra show` requires a <path> argument".to_string())?;
+            if rest.len() > 2 {
+                return Err(format!("unexpected argument after `rra show <path>`: {}", rest[2]));
+            }
+            Ok(CliAction::Rra {
+                action: RraAction::Show {
+                    path: PathBuf::from(path),
+                },
+                output_format,
+            })
+        }
+        other => Err(format!(
+            "unknown `rra` sub-action `{other}`; expected: show <path>"
+        )),
+    }
+}
+
+/// G-2 — parse `elai replay <sub>`. Grammar:
+///   `elai replay --verify <path>`
+pub(crate) fn parse_replay_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut verify_path: Option<PathBuf> = None;
+    let mut verify_flag = false;
+    let mut metric_digest: Option<String> = None;
+    let mut golden: Option<String> = None;
+    let mut result_manifest: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            // H-23: `--verify` may stand alone (paired with `--metric-digest`)
+            // OR take a `.rra` path value. Peek the next token: if it is another
+            // flag (or absent), this is the bare metric-digest form.
+            "--verify" => {
+                verify_flag = true;
+                match rest.get(i + 1) {
+                    Some(next) if !next.starts_with("--") => {
+                        verify_path = Some(PathBuf::from(next));
+                        i += 2;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+            flag if flag.starts_with("--verify=") => {
+                verify_flag = true;
+                verify_path = Some(PathBuf::from(&flag[9..]));
+                i += 1;
+            }
+            // H-23: same-seed re-run hash-equality METRIC_GATE (additive).
+            "--metric-digest" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for `--metric-digest` (deterministic | nondeterministic)".to_string())?;
+                metric_digest = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--metric-digest=") => {
+                metric_digest = Some(flag["--metric-digest=".len()..].to_string());
+                i += 1;
+            }
+            // H-24: sim-to-real parity gate path (additive; sibling to
+            // `--metric-digest`). Does NOT regress the offline `.rra` verifier
+            // or the H-23 re-run gate.
+            "--golden" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for `--golden` (parity | gap)".to_string())?;
+                golden = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--golden=") => {
+                golden = Some(flag["--golden=".len()..].to_string());
+                i += 1;
+            }
+            // H-25: result manifest re-derivation gate path (additive; sibling to
+            // `--metric-digest` / `--golden`). Does NOT regress the offline `.rra`
+            // verifier or the H-23/H-24 gates.
+            "--result-manifest" => {
+                let value = rest.get(i + 1).ok_or_else(|| {
+                    "missing value for `--result-manifest` (complete | tampered | incomplete)"
+                        .to_string()
+                })?;
+                result_manifest = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--result-manifest=") => {
+                result_manifest = Some(flag["--result-manifest=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `replay` argument: {other}"));
+            }
+        }
+    }
+
+    // H-23: the metric-digest re-run gate path (additive). Requires `--verify`
+    // to be present (the WIRING_CONTRACT pins `replay --verify --metric-digest`).
+    if let Some(mode_raw) = metric_digest {
+        if !verify_flag {
+            return Err(
+                "`--metric-digest` requires `--verify` (use `replay --verify --metric-digest <mode>`)"
+                    .to_string(),
+            );
+        }
+        let demo = match mode_raw.as_str() {
+            "deterministic" | "demo-deterministic" => RerunDemoMode::Deterministic,
+            "nondeterministic" | "demo-nondeterministic" => RerunDemoMode::Nondeterministic,
+            other => {
+                return Err(format!(
+                    "unknown `--metric-digest` mode `{other}` (expected `deterministic` or `nondeterministic`)"
+                ));
+            }
+        };
+        return Ok(CliAction::Replay {
+            action: ReplayAction::VerifyRerun { demo },
+            output_format,
+        });
+    }
+
+    // H-24: the sim-to-real parity gate path (additive). Requires `--verify` to
+    // be present (the WIRING_CONTRACT pins `replay --verify --golden`).
+    if let Some(mode_raw) = golden {
+        if !verify_flag {
+            return Err(
+                "`--golden` requires `--verify` (use `replay --verify --golden <mode>`)"
+                    .to_string(),
+            );
+        }
+        let demo = match mode_raw.as_str() {
+            "parity" | "demo-parity" => GoldenDemoMode::Parity,
+            "gap" | "demo-gap" => GoldenDemoMode::Gap,
+            other => {
+                return Err(format!(
+                    "unknown `--golden` mode `{other}` (expected `parity` or `gap`)"
+                ));
+            }
+        };
+        return Ok(CliAction::Replay {
+            action: ReplayAction::VerifyGolden { demo },
+            output_format,
+        });
+    }
+
+    // H-25: the result manifest re-derivation gate path (additive). Requires
+    // `--verify` to be present (the WIRING_CONTRACT pins
+    // `replay --verify --result-manifest`).
+    if let Some(mode_raw) = result_manifest {
+        if !verify_flag {
+            return Err(
+                "`--result-manifest` requires `--verify` (use `replay --verify --result-manifest <mode>`)"
+                    .to_string(),
+            );
+        }
+        let demo = match mode_raw.as_str() {
+            "complete" | "demo-complete" => ResultManifestDemoMode::Complete,
+            "tampered" | "demo-tampered" => ResultManifestDemoMode::Tampered,
+            "incomplete" | "demo-incomplete" => ResultManifestDemoMode::Incomplete,
+            other => {
+                return Err(format!(
+                    "unknown `--result-manifest` mode `{other}` (expected `complete`, `tampered`, or `incomplete`)"
+                ));
+            }
+        };
+        return Ok(CliAction::Replay {
+            action: ReplayAction::VerifyResultManifest { demo },
+            output_format,
+        });
+    }
+
+    let path = verify_path.ok_or_else(|| {
+        "`replay` requires `--verify <path>` (the .rra to verify), or `--verify --metric-digest <mode>` (H-23 re-run hash-equality), or `--verify --golden <mode>` (H-24 sim-to-real parity), or `--verify --result-manifest <mode>` (H-25 result manifest re-derivation)".to_string()
+    })?;
+    Ok(CliAction::Replay {
+        action: ReplayAction::Verify { path },
+        output_format,
+    })
+}
+
+/// G-5 — parse `elai review <sub>`. Grammar:
+///   `elai review --cockpit [--session <id>] [--base <ref>]`
+///
+/// `--cockpit` is mandatory (it is the only sub-action today; a future
+/// `--summary` / `--export` lands as a sibling flag). `--session` / `--base`
+/// are optional. Unknown flags are a hard error (fail-closed parse).
+pub(crate) fn parse_review_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut cockpit = false;
+    let mut session: Option<String> = None;
+    let mut base: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--cockpit" => {
+                cockpit = true;
+                i += 1;
+            }
+            "--session" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for `--session`".to_string())?;
+                session = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--session=") => {
+                session = Some(flag["--session=".len()..].to_string());
+                i += 1;
+            }
+            "--base" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for `--base`".to_string())?;
+                base = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--base=") => {
+                base = Some(flag["--base=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `review` argument: {other}"));
+            }
+        }
+    }
+    if !cockpit {
+        return Err(
+            "`review` requires `--cockpit` (the reviewer-cockpit DSR producer)".to_string(),
+        );
+    }
+    Ok(CliAction::Review {
+        action: ReviewAction::Cockpit { session, base },
+        output_format,
+    })
+}
+
+/// G-8 — parse `elai verify-attestation <commit>`. Grammar:
+///   `elai verify-attestation <commit>`  (positional commit-ish: SHA / ref / HEAD)
+///
+/// The commit is a single positional argument (mirrors `rra show <path>`). A
+/// missing commit is a hard error; an unexpected extra argument is a hard error
+/// (fail-closed parse).
+pub(crate) fn parse_verify_attestation_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let commit = rest
+        .first()
+        .ok_or_else(|| {
+            "`verify-attestation` requires a <commit> argument (SHA / ref / HEAD)".to_string()
+        })?
+        .clone();
+    if rest.len() > 1 {
+        return Err(format!(
+            "unexpected argument after `verify-attestation <commit>`: {}",
+            rest[1]
+        ));
+    }
+    Ok(CliAction::VerifyAttestation {
+        commit,
+        output_format,
+    })
 }
 
 /// C-45 — parse `elai credit <sub>` arguments. Three sub-actions:
@@ -4170,7 +5869,7 @@ pub(crate) fn parse_scip_subcommand_args(
     let sub = rest
         .first()
         .ok_or_else(|| {
-            "missing `scip` sub-action; expected one of: query, defs, refs, callers, callees, pagerank, status, import, lsp-probe, refresh"
+            "missing `scip` sub-action; expected one of: query, defs, refs, callers, callees, pagerank, status, import, lsp-probe, refresh, resolve"
                 .to_string()
         })?
         .as_str();
@@ -4458,9 +6157,85 @@ pub(crate) fn parse_scip_subcommand_args(
                 output_format,
             })
         }
+        "resolve" => {
+            // `elai scip resolve --symbol NAME --language SLUG
+            //  [--from-file PATH] [--rules-dir DIR]`
+            // Mirrors the `lsp-probe` flag-walking pattern.
+            let mut symbol: Option<String> = None;
+            let mut language: Option<String> = None;
+            let mut from_file: String = String::new();
+            let mut rules_dir: String = String::new();
+            let mut i = 0;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--symbol" => {
+                        symbol = Some(
+                            args.get(i + 1)
+                                .ok_or_else(|| "missing value for `--symbol`".to_string())?
+                                .clone(),
+                        );
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--symbol=") => {
+                        symbol = Some(flag["--symbol=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--language" => {
+                        language = Some(
+                            args.get(i + 1)
+                                .ok_or_else(|| "missing value for `--language`".to_string())?
+                                .clone(),
+                        );
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--language=") => {
+                        language = Some(flag["--language=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--from-file" => {
+                        from_file = args
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--from-file`".to_string())?
+                            .clone();
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--from-file=") => {
+                        from_file = flag["--from-file=".len()..].to_string();
+                        i += 1;
+                    }
+                    "--rules-dir" => {
+                        rules_dir = args
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--rules-dir`".to_string())?
+                            .clone();
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--rules-dir=") => {
+                        rules_dir = flag["--rules-dir=".len()..].to_string();
+                        i += 1;
+                    }
+                    other => return Err(format!("unknown `scip resolve` argument: {other}")),
+                }
+            }
+            let symbol = symbol.ok_or_else(|| {
+                "`scip resolve` requires --symbol <NAME>".to_string()
+            })?;
+            let language = language.ok_or_else(|| {
+                "`scip resolve` requires --language <rust|python|typescript|go>".to_string()
+            })?;
+            Ok(CliAction::SymbolGraph {
+                action: SymbolGraphAction::Resolve {
+                    symbol,
+                    language,
+                    from_file,
+                    rules_dir,
+                },
+                output_format,
+            })
+        }
         other => Err(format!(
             "unknown `scip` sub-action `{other}`; \
-             expected one of: query, defs, refs, callers, callees, pagerank, status, import, lsp-probe, refresh"
+             expected one of: query, defs, refs, callers, callees, pagerank, status, import, lsp-probe, refresh, resolve"
         )),
     }
 }
@@ -6580,3 +8355,372 @@ pub(crate) fn parse_durability_subcommand_args(
     }
 }
 
+/// H-35 — Parse `elai rewind <target> [--scope conversation|code|both]
+/// [--summarize] [--session-id <id>] [--dry-run]`.
+///
+/// `<target>` is a positional: an integer SSB seq, "turn:<n>", or
+/// "checkpoint:<label>". All flags are optional.
+pub(crate) fn parse_rewind_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut target: Option<String> = None;
+    let mut scope = RewindScope::Both;
+    let mut summarize = false;
+    let mut session_id: Option<String> = None;
+    let mut dry_run = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--scope" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for `--scope` (conversation|code|both)".to_string())?;
+                scope = parse_rewind_scope(value)?;
+                i += 2;
+            }
+            flag if flag.starts_with("--scope=") => {
+                scope = parse_rewind_scope(&flag["--scope=".len()..])?;
+                i += 1;
+            }
+            "--summarize" => {
+                summarize = true;
+                i += 1;
+            }
+            "--session-id" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for `--session-id`".to_string())?;
+                session_id = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--session-id=") => {
+                session_id = Some(flag["--session-id=".len()..].to_string());
+                i += 1;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            flag if flag.starts_with("--") => {
+                return Err(format!("unknown `rewind` flag: {flag}"));
+            }
+            positional => {
+                if target.is_some() {
+                    return Err(format!(
+                        "unexpected extra positional argument to `rewind`: `{positional}` \
+                         (target already set to `{}`)",
+                        target.as_deref().unwrap_or("")
+                    ));
+                }
+                target = Some(positional.to_string());
+                i += 1;
+            }
+        }
+    }
+    let target = target.ok_or_else(|| {
+        "`rewind` requires a target: an SSB seq (integer), `turn:<n>`, or `checkpoint:<label>`"
+            .to_string()
+    })?;
+    Ok(CliAction::Rewind {
+        action: RewindAction {
+            target,
+            scope,
+            summarize,
+            session_id,
+            dry_run,
+        },
+        output_format,
+    })
+}
+
+/// H-35 — Parse the `--scope` value for `elai rewind`.
+fn parse_rewind_scope(raw: &str) -> Result<RewindScope, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "conversation" => Ok(RewindScope::Conversation),
+        "code" => Ok(RewindScope::Code),
+        "both" => Ok(RewindScope::Both),
+        other => Err(format!(
+            "unknown `--scope` value `{other}` (expected `conversation`, `code`, or `both`)"
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// H-41 — `elai checker-gaps` parser
+// ---------------------------------------------------------------------------
+
+/// H-41: parse `elai checker-gaps [--limit N] [--json]`.
+pub(crate) fn parse_checker_gaps_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut limit: Option<usize> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--limit" => {
+                i += 1;
+                let n = rest
+                    .get(i)
+                    .ok_or("--limit requires a value")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("--limit: {e}"))?;
+                limit = Some(n);
+            }
+            "--json" => {
+                json = true;
+            }
+            other => return Err(format!("checker-gaps: unknown flag `{other}`")),
+        }
+        i += 1;
+    }
+    Ok(CliAction::CheckerGaps { limit, json })
+}
+
+// ---------------------------------------------------------------------------
+// H-49 — time-travel parsers
+// ---------------------------------------------------------------------------
+
+fn parse_tt_grain(s: &str) -> Result<TimeTravelGrainArg, String> {
+    match s {
+        "edit" => Ok(TimeTravelGrainArg::Edit),
+        "turn" => Ok(TimeTravelGrainArg::Turn),
+        "babystep" | "baby_step" | "baby-step" => Ok(TimeTravelGrainArg::BabyStep),
+        other => Err(format!(
+            "unknown grain `{other}`; expected edit|turn|babystep"
+        )),
+    }
+}
+
+fn parse_tt_scope(s: &str) -> Result<TimeTravelScope, String> {
+    match s {
+        "code" => Ok(TimeTravelScope::Code),
+        "conversation" => Ok(TimeTravelScope::Conversation),
+        "both" => Ok(TimeTravelScope::Both),
+        other => Err(format!(
+            "unknown scope `{other}`; expected code|conversation|both"
+        )),
+    }
+}
+
+fn parse_tt_session_flag(
+    rest: &[String],
+    i: &mut usize,
+    flag: &str,
+) -> Result<String, String> {
+    let val = rest
+        .get(*i + 1)
+        .ok_or_else(|| format!("missing value for `{flag}`"))?
+        .clone();
+    *i += 2;
+    Ok(val)
+}
+
+/// H-49: parse `elai undo [--grain ...] [--scope ...] [--steps N] [--dry-run]
+///         [--session-id <id>]`.
+pub(crate) fn parse_timetravel_undo_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut grain = TimeTravelGrainArg::Turn;
+    let mut scope = TimeTravelScope::Both;
+    let mut steps: u32 = 1;
+    let mut dry_run = false;
+    let mut session_id: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--grain" => {
+                grain = parse_tt_grain(rest.get(i + 1).ok_or("--grain needs a value")?)?;
+                i += 2;
+            }
+            f if f.starts_with("--grain=") => {
+                grain = parse_tt_grain(&f["--grain=".len()..])?;
+                i += 1;
+            }
+            "--scope" => {
+                scope = parse_tt_scope(rest.get(i + 1).ok_or("--scope needs a value")?)?;
+                i += 2;
+            }
+            f if f.starts_with("--scope=") => {
+                scope = parse_tt_scope(&f["--scope=".len()..])?;
+                i += 1;
+            }
+            "--steps" => {
+                steps = rest
+                    .get(i + 1)
+                    .ok_or("--steps needs a value")?
+                    .parse::<u32>()
+                    .map_err(|e| format!("--steps: {e}"))?;
+                i += 2;
+            }
+            f if f.starts_with("--steps=") => {
+                steps = f["--steps=".len()..]
+                    .parse::<u32>()
+                    .map_err(|e| format!("--steps: {e}"))?;
+                i += 1;
+            }
+            "--dry-run" => { dry_run = true; i += 1; }
+            "--session-id" => {
+                session_id = Some(parse_tt_session_flag(rest, &mut i, "--session-id")?);
+            }
+            f if f.starts_with("--session-id=") => {
+                session_id = Some(f["--session-id=".len()..].to_owned());
+                i += 1;
+            }
+            f if f.starts_with("--") => {
+                return Err(format!("unknown `undo` flag: {f}"));
+            }
+            _ => { i += 1; } // ignore unknown positionals
+        }
+    }
+    Ok(CliAction::TimeTravel {
+        action: TimeTravelAction::Undo { grain, scope, steps, dry_run, session_id },
+        output_format,
+    })
+}
+
+/// H-49: parse `elai redo [--grain ...] [--scope ...] [--dry-run] [--session-id <id>]`.
+pub(crate) fn parse_timetravel_redo_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut grain = TimeTravelGrainArg::Turn;
+    let mut scope = TimeTravelScope::Both;
+    let mut dry_run = false;
+    let mut session_id: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--grain" => {
+                grain = parse_tt_grain(rest.get(i + 1).ok_or("--grain needs a value")?)?;
+                i += 2;
+            }
+            f if f.starts_with("--grain=") => {
+                grain = parse_tt_grain(&f["--grain=".len()..])?;
+                i += 1;
+            }
+            "--scope" => {
+                scope = parse_tt_scope(rest.get(i + 1).ok_or("--scope needs a value")?)?;
+                i += 2;
+            }
+            f if f.starts_with("--scope=") => {
+                scope = parse_tt_scope(&f["--scope=".len()..])?;
+                i += 1;
+            }
+            "--dry-run" => { dry_run = true; i += 1; }
+            "--session-id" => {
+                session_id = Some(parse_tt_session_flag(rest, &mut i, "--session-id")?);
+            }
+            f if f.starts_with("--session-id=") => {
+                session_id = Some(f["--session-id=".len()..].to_owned());
+                i += 1;
+            }
+            f if f.starts_with("--") => {
+                return Err(format!("unknown `redo` flag: {f}"));
+            }
+            _ => { i += 1; }
+        }
+    }
+    Ok(CliAction::TimeTravel {
+        action: TimeTravelAction::Redo { grain, scope, dry_run, session_id },
+        output_format,
+    })
+}
+
+/// H-49: parse `elai history [--format tree|list] [--session-id <id>]`.
+pub(crate) fn parse_timetravel_history_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut format = "list".to_owned();
+    let mut session_id: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--format" => {
+                format = rest.get(i + 1).ok_or("--format needs a value")?.clone();
+                i += 2;
+            }
+            f if f.starts_with("--format=") => {
+                format = f["--format=".len()..].to_owned();
+                i += 1;
+            }
+            "--session-id" => {
+                session_id = Some(parse_tt_session_flag(rest, &mut i, "--session-id")?);
+            }
+            f if f.starts_with("--session-id=") => {
+                session_id = Some(f["--session-id=".len()..].to_owned());
+                i += 1;
+            }
+            f if f.starts_with("--") => {
+                return Err(format!("unknown `history` flag: {f}"));
+            }
+            _ => { i += 1; }
+        }
+    }
+    Ok(CliAction::TimeTravel {
+        action: TimeTravelAction::History { format, session_id },
+        output_format,
+    })
+}
+
+/// H-49: parse `elai jump <target> [--grain ...] [--scope ...] [--dry-run]
+///         [--session-id <id>]`.
+pub(crate) fn parse_timetravel_jump_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut target: Option<String> = None;
+    let mut grain = TimeTravelGrainArg::Turn;
+    let mut scope = TimeTravelScope::Both;
+    let mut dry_run = false;
+    let mut session_id: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--grain" => {
+                grain = parse_tt_grain(rest.get(i + 1).ok_or("--grain needs a value")?)?;
+                i += 2;
+            }
+            f if f.starts_with("--grain=") => {
+                grain = parse_tt_grain(&f["--grain=".len()..])?;
+                i += 1;
+            }
+            "--scope" => {
+                scope = parse_tt_scope(rest.get(i + 1).ok_or("--scope needs a value")?)?;
+                i += 2;
+            }
+            f if f.starts_with("--scope=") => {
+                scope = parse_tt_scope(&f["--scope=".len()..])?;
+                i += 1;
+            }
+            "--dry-run" => { dry_run = true; i += 1; }
+            "--session-id" => {
+                session_id = Some(parse_tt_session_flag(rest, &mut i, "--session-id")?);
+            }
+            f if f.starts_with("--session-id=") => {
+                session_id = Some(f["--session-id=".len()..].to_owned());
+                i += 1;
+            }
+            f if f.starts_with("--") => {
+                return Err(format!("unknown `jump` flag: {f}"));
+            }
+            positional => {
+                if target.is_some() {
+                    return Err(format!(
+                        "`jump` only accepts one target argument; got extra: `{positional}`"
+                    ));
+                }
+                target = Some(positional.to_owned());
+                i += 1;
+            }
+        }
+    }
+    let target = target.ok_or_else(|| {
+        "`jump` requires a target: a snap_id, `turn:<n>`, or node label".to_owned()
+    })?;
+    Ok(CliAction::TimeTravel {
+        action: TimeTravelAction::Jump { target, grain, scope, dry_run, session_id },
+        output_format,
+    })
+}

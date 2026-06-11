@@ -34,6 +34,9 @@ use elai_orchestrator::MutationConfig;
 // single structs shared between the loader, the PLANNING -> TESTING_FIRST
 // gate, and the auditor Step 7 hook.
 use elai_orchestrator::{IntentConfig, MetamorphicConfig};
+// E-46 D-8: planning-decomposition substrate config; defined in
+// orchestrator::runtime_config and re-exported from orchestrator::lib.
+use elai_orchestrator::PlanningConfig;
 use elai_tools::action_classifier::ActionPolicy;
 use elai_tools::routing_rules::RoutingConfig;
 use serde::{Deserialize, Serialize};
@@ -405,6 +408,13 @@ pub struct ElaiRuntimeConfig {
     /// thresholds + windows. See [`TripwireConfigToml`]. Consumed via
     /// [`ElaiRuntimeConfig::tripwire_config`].
     pub tripwire: TripwireConfigToml,
+    /// `[planning.*]` sections (E-46 D-8) — per-operator overrides for the
+    /// planning-decomposition substrate constants. Absent stanzas fall back
+    /// to the in-module defaults via `PlanningConfig::default()`. Passed to
+    /// `TaskRunnerConfig::planning_config` at `run_subcommand` boot time so
+    /// the orchestrator reads operator-supplied thresholds instead of
+    /// compile-time constants.
+    pub planning: PlanningConfig,
 }
 
 impl ElaiRuntimeConfig {

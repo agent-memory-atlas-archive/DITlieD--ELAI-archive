@@ -39,10 +39,15 @@
 //!                                   (default 2).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use elai_core::paths::sessions_dir_path;
+use elai_core::OsClock;
 use elai_orchestrator::benchmarks::canary_runner::{
-    BenchError, CanaryBenchmark, CanaryBenchmarkReport,
+    BenchError, CanaryBenchmark, CanaryBenchmarkReport, BENCH_RUNNER_NAME,
 };
+use elai_orchestrator::ssb::CanaryBenchRunCompletedPayload;
+use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -68,6 +73,15 @@ pub enum BenchCanaryError {
     /// JSON serialisation failure when rendering the report.
     #[error("canary bench could not serialise report: {source_msg}")]
     Serialise { source_msg: String },
+    /// Could not create the directory holding the canonical session `ssb.db`.
+    #[error("canary bench could not create ssb.db dir {path}: {source_msg}")]
+    SsbDir { path: String, source_msg: String },
+    /// Opening the SSB single-writer failed.
+    #[error("canary bench could not open SSB writer: {source_msg}")]
+    SsbOpen { source_msg: String },
+    /// Writing the CanaryBenchRunCompleted row failed.
+    #[error("canary bench could not write SSB row: {source_msg}")]
+    SsbWrite { source_msg: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -100,14 +114,21 @@ pub(crate) fn run(
         .build()
         .map_err(anyhow::Error::from)?;
 
+    // Benchmark + SSB emit run inside the SAME runtime: `Ssb::new` spawns a
+    // single-writer task that panics without a live reactor (CLAUDE.md F-2b
+    // playbook + bench_seccodeplt precedent). One `CanaryBenchRunCompleted` row
+    // per run (D-24 single end-of-run row), pass or fail.
+    let ssb_root = project_root.clone();
     let outcome = rt.block_on(async move {
-        run_async(
+        let report = run_async(
             fixtures_path,
             harmful_floor,
             helpful_ceiling,
             neutral_ceiling,
         )
-        .await
+        .await?;
+        emit_run_completed(&ssb_root, &report).await?;
+        Ok::<CanaryBenchmarkReport, BenchCanaryError>(report)
     });
 
     match outcome {
@@ -123,6 +144,61 @@ pub(crate) fn run(
             std::process::exit(1);
         }
     }
+}
+
+/// Open the canonical session `ssb.db` and emit exactly ONE
+/// `CanaryBenchRunCompleted` row built from the REAL run metrics, awaited
+/// (durable). Mirrors `bench_seccodeplt::emit_insecure_rate_measured`: the
+/// `Ssb::new` single-writer task MUST be constructed inside a live runtime, so
+/// this is called from within the caller's `rt.block_on`.
+async fn emit_run_completed(
+    project_root: &std::path::Path,
+    report: &CanaryBenchmarkReport,
+) -> Result<(), BenchCanaryError> {
+    let db_path = sessions_dir_path(project_root).join("ssb.db");
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| BenchCanaryError::SsbDir {
+            path: parent.display().to_string(),
+            source_msg: e.to_string(),
+        })?;
+    }
+
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: "cli-bench-canary".to_string(),
+    };
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+
+    let payload = CanaryBenchRunCompletedPayload {
+        true_block: report.true_block,
+        false_block: report.false_block,
+        true_pass: report.true_pass,
+        false_pass: report.false_pass,
+        harmful_blocked: report.harmful_blocked,
+        helpful_blocked: report.helpful_blocked,
+        neutral_blocked: report.neutral_blocked,
+        total_fixtures: report.total_fixtures,
+        verdict: report.verdict.as_str().to_string(),
+        fixture_blake3: report.fixture_blake3.clone(),
+        runner_name: BENCH_RUNNER_NAME.to_string(),
+    };
+
+    let ssb = Ssb::new(cfg, clock).map_err(|e| BenchCanaryError::SsbOpen {
+        source_msg: e.to_string(),
+    })?;
+    ssb.write_payload(
+        "cli:bench-canary",
+        0,
+        SsbPayload::CanaryBenchRunCompleted(payload),
+        Vec::new(),
+    )
+    .await
+    .map_err(|e| BenchCanaryError::SsbWrite {
+        source_msg: e.to_string(),
+    })?;
+    Ok(())
 }
 
 /// Parse an optional u32 argument; exits 1 on parse failure with a

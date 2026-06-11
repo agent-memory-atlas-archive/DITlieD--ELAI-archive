@@ -637,6 +637,109 @@ pub async fn dispatch_mucoco_mutation(
     Ok(result)
 }
 
+// ---------------------------------------------------------------------------
+// C-36 — SSB producer helpers for the MuCoCo mutation-consistency catalog.
+//
+// These keep `dispatch_mucoco_mutation` SSB-agnostic (so unit tests need no
+// writer) while giving the auditor / mucoco-runner wiring a single call to
+// emit the off-agent artifact. WIRE-DARK[C-36]: the per-operator semantic-
+// consistency detector that decides inconsistency-vs-skip runs in the GPU-
+// deferred python sidecar (/mucoco/mutate); these helpers are the Rust emit
+// surface, fired by the producer once the sidecar pilot lands.
+// ---------------------------------------------------------------------------
+
+/// Blake3-derived stable 64-bit hash of a MuCoCo source/output string. Used
+/// as the correlation key in the C-36 SSB payloads. blake3 per CLAUDE.md
+/// anti-stale rule (never blake2/sha2 for non-RFC uses).
+#[must_use]
+pub fn mucoco_blob_hash(blob: &str) -> u64 {
+    let digest = blake3::hash(blob.as_bytes());
+    let bytes = digest.as_bytes();
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
+}
+
+/// Emit a [`crate::ssb::SsbActionType::MucocoInconsistencyDetected`] row — the
+/// MuCoCo SIGNAL that a semantic-preserving mutation produced divergent
+/// output. Never panics; SSB write failures are logged and swallowed (the
+/// consistency probe must not break the audit hot path). WIRE-DARK[C-36].
+pub async fn emit_mucoco_inconsistency(
+    ssb: &crate::ssb::Ssb,
+    agent_id: &str,
+    superstep: i64,
+    operator: MucocoOperator,
+    language: &str,
+    original_source: &str,
+    original_output: &str,
+    mutated_output: &str,
+    divergence: &str,
+) {
+    debug_assert!(
+        !divergence.is_empty(),
+        "emit_mucoco_inconsistency divergence MUST be non-empty (stub_ban)"
+    );
+    let divergence = if divergence.is_empty() {
+        "<unspecified divergence>"
+    } else {
+        divergence
+    };
+    let payload = crate::ssb::SsbPayload::MucocoInconsistencyDetected(
+        crate::ssb::MucocoInconsistencyDetectedPayload {
+            operator: operator.as_str().to_owned(),
+            language: language.to_owned(),
+            source_hash: mucoco_blob_hash(original_source),
+            original_output_hash: mucoco_blob_hash(original_output),
+            mutated_output_hash: mucoco_blob_hash(mutated_output),
+            divergence: divergence.to_owned(),
+            timestamp_ms: i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX),
+        },
+    );
+    if let Err(e) = ssb.write_payload(agent_id, superstep, payload, Vec::new()).await {
+        tracing::warn!(
+            error = %e,
+            operator = operator.as_str(),
+            "ssb write_payload failed for mucoco_inconsistency_detected"
+        );
+    }
+}
+
+/// Emit a [`crate::ssb::SsbActionType::MucocoSkipReason`] row — the operator
+/// was inapplicable to the source. Never panics. WIRE-DARK[C-36].
+pub async fn emit_mucoco_skip(
+    ssb: &crate::ssb::Ssb,
+    agent_id: &str,
+    superstep: i64,
+    operator: MucocoOperator,
+    language: &str,
+    source: &str,
+    skip_reason: &str,
+) {
+    debug_assert!(
+        !skip_reason.is_empty(),
+        "emit_mucoco_skip skip_reason MUST be non-empty (stub_ban / paper S3.p3.1)"
+    );
+    let skip_reason = if skip_reason.is_empty() {
+        "<unspecified skip reason>"
+    } else {
+        skip_reason
+    };
+    let payload = crate::ssb::SsbPayload::MucocoSkipReason(crate::ssb::MucocoSkipReasonPayload {
+        operator: operator.as_str().to_owned(),
+        language: language.to_owned(),
+        source_hash: mucoco_blob_hash(source),
+        skip_reason: skip_reason.to_owned(),
+        timestamp_ms: i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX),
+    });
+    if let Err(e) = ssb.write_payload(agent_id, superstep, payload, Vec::new()).await {
+        tracing::warn!(
+            error = %e,
+            operator = operator.as_str(),
+            "ssb write_payload failed for mucoco_skip_reason"
+        );
+    }
+}
+
 #[cfg(test)]
 mod mucoco_tests {
     use super::*;

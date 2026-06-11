@@ -770,6 +770,9 @@ pub(crate) fn run_resume_command(
         | SlashCommand::Measure { .. }
         | SlashCommand::Pipeline { .. }
         | SlashCommand::WiringAudit { .. }
+        // H-31: /remember capture requires the LIVE FactStore (the live REPL path), not a static
+        // resumed transcript -- unsupported when replaying a saved session.
+        | SlashCommand::Remember { .. }
         | SlashCommand::Mucoco { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
     }
 }

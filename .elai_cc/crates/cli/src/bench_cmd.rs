@@ -146,6 +146,40 @@ pub(crate) fn run_bench_seccodeplt(json: bool) -> anyhow::Result<()> {
     crate::bench_seccodeplt::run(json)
 }
 
+pub(crate) fn run_bench_staleness(json: bool, broken_retrieval: bool) -> anyhow::Result<()> {
+    // H-30 (SCHEMA_VERSION 239): staleness / intent-drift INSTRUMENT. Drives the
+    // SHIPPED bi-temporal memory substrate (FactStore + audit_conflicts +
+    // get_relevant_facts) over a labeled supersession fixture in an ISOLATED
+    // in-memory store, writes a timestamped staleness-<ts>.json report under
+    // benchmarks/staleness/, and emits exactly one
+    // SsbActionType::StalenessEvalMeasured row (default-ON; no ELAI_*_ENABLE
+    // gate). --broken-retrieval runs the R2 negative control. Exits 0 on a clean
+    // run, 1 on infrastructural error.
+    crate::bench_staleness::run(json, broken_retrieval)
+}
+
+pub(crate) fn run_bench_mcp_schema_budget(json: bool) -> anyhow::Result<()> {
+    // H-34: MCP-schema token-budget MEASURE-FIRST benchmark. Drives the embedded
+    // multi-server MCP tool catalog OFFLINE, writes a timestamped
+    // mcp-schema-budget-<ts>.json report under benchmarks/mcp_schema_budget/,
+    // and emits exactly one SsbActionType::McpSchemaBudgetMeasured beacon
+    // (default-ON; no ELAI_*_ENABLE gate). Exits 0 on a clean run, 1 on error.
+    crate::bench_mcp_schema_budget::run(json)
+}
+
+pub(crate) fn run_bench_safedelta(
+    suites: Vec<String>,
+    seed: u64,
+    json: bool,
+) -> anyhow::Result<()> {
+    // G-6 (SCHEMA_VERSION 217): gate-ON-vs-gate-OFF SAFEDELTA ablation.
+    // DERIVES delta from SHIPPED SecCodePltRunner (GD-1); re-implements no F-2.
+    // Writes benchmarks/safedelta/<ts>.json + a signed .rra manifest.
+    // Emits exactly one SsbActionType::SafetyDeltaMeasured row.
+    // Tier-1 = embedded seccodeplt corpus; Tier-2 = RunPod-gated.
+    crate::bench_safedelta::run(suites, seed, json)
+}
+
 pub(crate) fn run_bench_ablation(
     tile: String,
     fixtures: String,

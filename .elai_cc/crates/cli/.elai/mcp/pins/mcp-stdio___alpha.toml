@@ -1,0 +1,7 @@
+pinned_hash = "d2fffddfc546782a9270bbc0d6bb3fde1343a6d9a8905116954bc4912b8e0608"
+pinned_at_ms = 1780636600098
+server_url = "mcp-stdio://alpha"
+
+[[pinned_tools]]
+name = "echo"
+description = "Echo from MCP fixture"

@@ -390,6 +390,34 @@ const CLOUD_JSON_SYSTEM_PROMPT: &str =
     "Output ONLY a single valid JSON object that matches the schema in the user message. \
      Do not wrap in markdown code fences. Do not include any prose before or after the JSON.";
 
+// H-5 — Anthropic Message Batches non-interactive lane. Bounded poll: the fixture
+// endpoint returns `ended` immediately; a live batch that has not ended within the cap
+// returns RequestFailed (the deferred 24h retrieval design is Tier-2, RunPod-pending).
+const BATCH_POLL_MAX: u32 = 3;
+const BATCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// H-5 — env flag that activates a LIVE non-interactive batch lane. Default-off; the
+/// live Anthropic batch call + a production non-interactive caller (GEPA / bench) are
+/// Tier-2 / RunPod-pending. Registered in wire-dark-allowlist.toml (R9). See
+/// workflow/reasoning/H-5-decisions.md.
+pub const ELAI_BATCH_LANE_ENABLE_ENV: &str = "ELAI_BATCH_LANE_ENABLE";
+
+/// HD-1 helper: round a USD cost to whole cents (saturating, non-negative). Used to
+/// express the MEASURED 50%-off batch spend as a journal-recomputable integer.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn usd_to_cents(usd: f64) -> i64 {
+    let cents = (usd * 100.0).round();
+    if cents.is_finite() && cents >= 0.0 {
+        cents.min(i64::MAX as f64) as i64
+    } else {
+        0
+    }
+}
+
 #[derive(Clone)]
 pub struct CloudGroundingClient {
     client: elai_providers::AnthropicClient,
@@ -939,6 +967,33 @@ impl CloudGroundingClient {
                     "cloud_grounding: CloudSpend SSB write failed (non-fatal)"
                 );
             }
+
+            // H-1: activate the wire-dark prompt-cache hit-rate monitor
+            // (cache_check::measure_cache_hit_rate — pre-H-1 it had zero
+            // production callers). The per-call cache-read fraction
+            // (cache_read / (cache_read + fresh input)) lands as a
+            // CriticDecisionEvent{PromptCacheHitRate} row, recomputable from the
+            // journal (GD-2). Default-ON: no ELAI_CRITIC_OF_DESIGN_ENABLE gate
+            // (W-2) — it fires whenever the SSB writer is attached, alongside the
+            // CloudSpend row above. Non-fatal: a monitor write must never break a
+            // live completion.
+            let cache_snapshot = crate::cache_check::CacheCheckSnapshot {
+                hits: u64::from(usage.cache_read_input_tokens),
+                misses: u64::from(usage.input_tokens),
+            };
+            if let Err(e) = crate::cache_check::measure_cache_hit_rate(
+                ssb,
+                "cloud_grounding_client",
+                0,
+                cache_snapshot,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "cloud_grounding: prompt-cache hit-rate monitor write failed (non-fatal)"
+                );
+            }
         }
 
         Ok(response)
@@ -1014,6 +1069,158 @@ impl GroundingClient for CloudGroundingClient {
             }
         })?;
         Self::extract_text(&response.content)
+    }
+}
+
+impl CloudGroundingClient {
+    /// H-5 — true when a LIVE non-interactive batch lane is activated
+    /// (`ELAI_BATCH_LANE_ENABLE`). Default-off: the live Anthropic batch call + a
+    /// production non-interactive caller (GEPA / bench) are Tier-2 / RunPod-pending
+    /// (registered in wire-dark-allowlist.toml R9). A future autonomous lane gates its
+    /// choice of [`Self::ground_batch`] vs sequential `ground()` on this.
+    #[must_use]
+    pub fn batch_lane_enabled() -> bool {
+        std::env::var(ELAI_BATCH_LANE_ENABLE_ENV)
+            .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+    }
+
+    /// H-5 — batch the non-interactive grounding lane through the Anthropic Message
+    /// Batches API (50% price). Submits all `prompts` as ONE batch, bounded-polls to
+    /// completion, maps results back by `custom_id` (results return OUT OF ORDER), and
+    /// emits `batch_lifecycle` SSB rows (Submitted on submit; Completed on retrieve,
+    /// carrying the HD-1 MEASURED 50% spend). Returns reports in `prompts` order.
+    ///
+    /// AUTONOMOUS / deferrable lane ONLY — never for a human-waited grounding (the
+    /// interactive `ground()` stays synchronous). See [`Self::batch_lane_enabled`] +
+    /// workflow/reasoning/H-5-decisions.md (the live call + production caller are Tier-2).
+    pub async fn ground_batch(
+        &self,
+        prompts: &[String],
+        level: ResearchLevel,
+    ) -> Result<Vec<ResearchReport>, GroundingError> {
+        if prompts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let batch = self.client.batch_client();
+        let items: Vec<elai_providers::BatchItem> = prompts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| elai_providers::BatchItem {
+                custom_id: format!("g{i}"),
+                request: self.build_request(&level.render(p), Some(CLOUD_JSON_SYSTEM_PROMPT)),
+            })
+            .collect();
+        let request_count = u32::try_from(items.len()).unwrap_or(u32::MAX);
+
+        let batch_id = batch.create(&items).await.map_err(|e| {
+            GroundingError::RequestFailed {
+                reason: format!("batch create: {e}"),
+            }
+        })?;
+        self.emit_batch_lifecycle(
+            crate::ssb::BatchLifecycleKind::Submitted,
+            &batch_id.0,
+            request_count,
+            0,
+        )
+        .await;
+
+        // Bounded poll — NEVER blocks unbounded. The fixture endpoint returns `ended`
+        // immediately; a live batch still in-flight after the cap surfaces a clear
+        // error (the deferred 24h retrieval design is Tier-2 / RunPod-pending).
+        let mut status = batch.poll(&batch_id).await.map_err(|e| GroundingError::RequestFailed {
+            reason: format!("batch poll: {e}"),
+        })?;
+        let mut polls = 0u32;
+        while !status.is_ended() && polls < BATCH_POLL_MAX {
+            tokio::time::sleep(BATCH_POLL_INTERVAL).await;
+            status = batch.poll(&batch_id).await.map_err(|e| GroundingError::RequestFailed {
+                reason: format!("batch poll: {e}"),
+            })?;
+            polls += 1;
+        }
+        if !status.is_ended() {
+            return Err(GroundingError::RequestFailed {
+                reason: format!(
+                    "batch {} not ended within poll cap (deferred 24h retrieval is Tier-2)",
+                    batch_id.0
+                ),
+            });
+        }
+
+        let results = batch.retrieve(&batch_id).await.map_err(|e| {
+            GroundingError::RequestFailed {
+                reason: format!("batch retrieve: {e}"),
+            }
+        })?;
+        // Map by custom_id (NOT position) back to prompt order; sum the synchronous USD
+        // cost from the response usage so the 50% saving is MEASURED (HD-1), not assumed.
+        let mut by_id: std::collections::HashMap<String, elai_providers::BatchResultItem> =
+            results.into_iter().map(|r| (r.custom_id.clone(), r)).collect();
+        let mut reports = Vec::with_capacity(prompts.len());
+        let mut sync_usd = 0.0_f64;
+        for i in 0..prompts.len() {
+            let key = format!("g{i}");
+            let item = by_id.remove(&key).ok_or_else(|| GroundingError::RequestFailed {
+                reason: format!("batch result missing custom_id {key}"),
+            })?;
+            match item.outcome {
+                elai_providers::BatchResultOutcome::Succeeded(resp) => {
+                    sync_usd += resp.usage.estimated_cost_usd(&resp.model).total_cost_usd();
+                    let text = Self::extract_text(&resp.content)?;
+                    let stripped = Self::strip_markdown_fences(&text);
+                    reports.push(parse_research_report_json(stripped)?);
+                }
+                other => {
+                    return Err(GroundingError::RequestFailed {
+                        reason: format!("batch item {key} non-success: {other:?}"),
+                    });
+                }
+            }
+        }
+        // HD-1: spend_cents_half == half the synchronous cost the same requests would
+        // have billed — recomputable from the journal under a pinned seed (GD-2).
+        let spend_cents_half = elai_providers::half_price_cents(usd_to_cents(sync_usd));
+        self.emit_batch_lifecycle(
+            crate::ssb::BatchLifecycleKind::Completed,
+            &batch_id.0,
+            request_count,
+            spend_cents_half,
+        )
+        .await;
+        Ok(reports)
+    }
+
+    /// Emit one `batch_lifecycle` SSB row (best-effort; a telemetry write never breaks
+    /// the lane). No-op when no SSB writer is attached.
+    async fn emit_batch_lifecycle(
+        &self,
+        kind: crate::ssb::BatchLifecycleKind,
+        batch_id: &str,
+        request_count: u32,
+        spend_cents_half: i64,
+    ) {
+        if let Some(ssb) = self.ssb_writer.as_ref() {
+            let payload =
+                crate::ssb::SsbPayload::BatchLifecycle(crate::ssb::BatchLifecyclePayload {
+                    kind,
+                    batch_id: batch_id.to_owned(),
+                    request_count,
+                    model: self.model.clone(),
+                    spend_cents_half,
+                    task_id: self.task_id.clone(),
+                });
+            if let Err(e) = ssb
+                .write_payload("cloud_grounding_batch", 0, payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "cloud_grounding_batch: batch_lifecycle SSB write failed (non-fatal)"
+                );
+            }
+        }
     }
 }
 

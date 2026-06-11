@@ -37,6 +37,14 @@ pub struct IndexVersionSchema {
     pub vector_dimensions: VectorDimensions,
     pub bm25_format: String,
     pub created_at: i64,
+    /// 1I-R4: the startup canary reference embedding, persisted inside
+    /// `index_version.toml` per spec (previously a separate
+    /// `canary_reference_vec.json` file). `None`/absent until the first
+    /// successful startup persists it. `skip_serializing_if` keeps the field
+    /// out of the file until it has a value, and `default` lets existing
+    /// version files (written before this field existed) still parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canary_reference_vec: Option<Vec<f32>>,
 }
 
 /// Top-level TOML wrapper (the file has `[index]` as the only table).
@@ -163,8 +171,44 @@ pub fn current_version(created_at: i64) -> IndexVersionFile {
             },
             bm25_format: bm25_format_string(),
             created_at,
+            // 1I-R4: no reference embedding yet; the first successful startup
+            // persists it via `startup::save_reference_vec`.
+            canary_reference_vec: None,
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// 1I-R4: canary reference vector accessors (lives inside index_version.toml)
+// ---------------------------------------------------------------------------
+
+/// Read the persisted startup-canary reference embedding from the
+/// `index_version.toml` at `path`. Returns `None` if the file is absent, has no
+/// reference field yet, or fails to parse (treated as "no reference").
+pub fn read_canary_reference_vec(path: &Path) -> Option<Vec<f32>> {
+    match read(path) {
+        Ok(Some(file)) => file.index.canary_reference_vec,
+        _ => None,
+    }
+}
+
+/// Persist `vec` as the startup-canary reference embedding inside the
+/// `index_version.toml` at `path`, preserving the rest of the version schema.
+///
+/// If the file does not exist yet, a fresh `current_version(created_at)` is
+/// written with the reference attached (so the canary reference and the version
+/// metadata always live in the same file, per the 1I-R4 spec alignment).
+pub fn write_canary_reference_vec(
+    path: &Path,
+    vec: &[f32],
+    created_at: i64,
+) -> Result<(), IndexVersionError> {
+    let mut file = match read(path)? {
+        Some(f) => f,
+        None => current_version(created_at),
+    };
+    file.index.canary_reference_vec = Some(vec.to_vec());
+    write(path, &file)
 }
 
 /// Read `index_version.toml` from `path`. Returns `None` if the file does not

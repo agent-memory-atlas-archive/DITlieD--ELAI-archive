@@ -1,0 +1,76 @@
+# H-20 leakage static-analysis COMPOSITE gate -- LOCKED seed.
+# mutable=0: immutable seed row, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS;
+#   "trading" is detected by ["trading","backtest","signal","pipeline"] path
+#   keywords in rule_engine.rs:206-214).
+# Default-ON; kill-switch: ELAI_LEAKAGE_GATE_DISABLE env var only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_leakage_rules()
+#
+# Grounding:
+#   - Kapoor & Narayanan (2023) "Leakage and the Reproducibility Crisis in
+#     ML-based Science", Patterns (Cell Press) 4(9); arXiv:2207.07048. Defines
+#     the canonical 8-class leakage taxonomy that scopes this gate.
+#   - SOUND static boundary = L1.1 (no test set), L1.2 (preprocessing before
+#     split), L1.3 (feature-selection before split) ONLY. The other 5 classes
+#     (L1.4 duplicates, L2 illegitimate features, L3.1 temporal, L3.2
+#     nonindependence, L3.3 sampling bias) are NOT statically decidable and are
+#     routed to human Layer-3 review (NEVER claimed as a sound static block).
+#   - The COMPOSITE composes the SHIPPED rules-engine GraphReachability
+#     predicate (predicate.rs:144) over the DKG: a fit-site reaching BOTH a
+#     train sink AND a test sink (must_not_exist=true negative reachability) is
+#     the L1.2/L1.3 violation; absence of a declared split is L1.1.
+# See: workflow/reasoning/H-20-decisions.md.
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding
+# is performed by project_rule_seeder.rs::seed_leakage_rules() which inserts
+# the row directly (same pattern as seed_deflation_rules). The TOML is
+# authoritative for the predicate shape; the Rust gate (leakage_gate.rs)
+# implements the fail-closed evaluation + the soundness routing.
+#
+# FAIL-CLOSED: with must_not_exist=true, an EMPTY DKG reads as "no path ->
+# ALLOW" = fail-open. The Rust gate treats an absent/empty/unavailable DKG as a
+# hard Block (reason=dkg_unavailable), NEVER inheriting the permissive fallback
+# (R1/R2: missing evidence = FAIL).
+
+[[rules]]
+rule_id = "FIN-LEAK-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "ML-pipeline data-leakage: no fit-site may reach both a train and a test sink before split"
+description = """
+LOCKED COMPOSITE leakage gate (H-20, T-3 trust-hardening).
+Blocks strategy/pipeline promotion when ANY statically-SOUND leakage class fires:
+  L1.1 (no test set): no train/test split boundary declared.
+  L1.2 (preprocessing before split): a fit/fit_transform site reaches BOTH a
+       train sink AND a test sink across the declared split boundary.
+  L1.3 (feature-selection before split): a feature-selector fit reaches both sinks.
+Sound for these 3 of the 8 Kapoor classes ONLY. The residue (L1.4 duplicates,
+L2 illegitimate features, L3.1 temporal, L3.2 nonindependence, L3.3 sampling
+bias) is NOT statically decidable and routes to human Layer-3 review -- it is
+NEVER emitted as a sound static block. Recall is bounded even for the sound
+classes (Yang et al. ~67.8%); the H-21 runtime differential is the un-gameable
+backstop. FAIL-CLOSED on absent/empty DKG (dkg_unavailable Block, R1/R2).
+Suppression requires a REGISTERED row in leakage-suppression-allowlist.toml
+(never silent). mutable=0: LOCKED, lifecycle-immune (TD-2).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+# COMPOSITE(AND) over a GraphReachability child (fit-site -> train|test sink,
+# must_not_exist=true negative reachability) plus the SchemaRequired split
+# declaration leg. The AstPattern missing-.shift(1) child is a HEURISTIC
+# temporal (L3.1) FLAG that routes to human review -- it is NOT part of the
+# sound BLOCK composite (encoded in the Rust gate's HumanReviewRequired arm).
+#
+# NOTE: the fit-site reaches-both-sinks property is enforced as TWO positive
+# reachability queries in the Rust gate (fit->train AND fit->test, both
+# non-empty => block). The single must_not_exist child below documents the
+# canonical "no fit-site may reach both sinks" invariant for the rules engine.
+type = "composite"
+operator = "and"
+children = [
+    { type = "graph_reachability", source_pattern = "fit", sink_pattern = "test", must_not_exist = true, max_depth = 8, edge_types = ["data_flow", "PARAMETER", "RETURN", "ASSIGNMENT", "FIELD_ACCESS"] },
+    { type = "schema_required", output_type = "train_test_split_boundary" },
+]

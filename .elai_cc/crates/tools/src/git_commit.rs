@@ -5,6 +5,20 @@ use serde::{Deserialize, Serialize};
 /// Maximum number of files that can be staged in a single commit.
 const MAX_FILES_PER_COMMIT: usize = 50;
 
+/// G-8 -- the digest-only provenance trailer key appended to a commit message
+/// when the run sealed an in-toto attestation. It carries ONLY the blake3-Merkle
+/// subject digest (the value `elai verify-attestation` recomputes + compares),
+/// never any AI-attribution content. It is an ALLOWED trailer: its key does NOT
+/// match the strip-filter's banned substrings (co-authored-by / generated-with /
+/// noreply@anthropic), so it survives `format_commit_message`'s filter
+/// (commit-cadence.md bans Co-Authored-By, NOT this provenance line).
+const PROVENANCE_TRAILER_KEY: &str = "ELAI-Provenance-Digest";
+
+/// G-8 -- the sidecar file name `emit_attestation` writes per session under
+/// `<project>/.elai_cc/sessions/<sid>/`. The trailer reader picks the
+/// most-recently-modified one (the run that just sealed an attestation).
+const ATTESTATION_SIDECAR_NAME: &str = "attestation.intoto.json";
+
 /// Patterns in file paths that indicate sensitive files.
 const SENSITIVE_PATTERNS: &[&str] = &[
     ".env",
@@ -225,7 +239,51 @@ fn format_commit_message(
         })
         .collect();
 
-    Ok(filtered.join("\n").trim().to_string())
+    let mut out = filtered.join("\n").trim().to_string();
+
+    // G-8: append the digest-only provenance trailer (the git-binding leg, DD4c)
+    // AFTER the strip-filter, so it is appended to the cleaned message and the
+    // filter can never drop it. The trailer is added ONLY when the run sealed an
+    // attestation sidecar (best-effort: a missing sidecar simply omits the
+    // trailer — the SSB row + sidecar are the PRIMARY emit, the trailer is the
+    // optional git-binding when a commit is made). The digest is recomputed +
+    // compared offline by `elai verify-attestation`.
+    if let Some(digest) = recent_attestation_digest() {
+        out.push_str(&format!("\n\n{PROVENANCE_TRAILER_KEY}: {digest}"));
+    }
+
+    Ok(out)
+}
+
+/// G-8 -- read the blake3-Merkle subject digest from the most-recently-modified
+/// in-toto attestation sidecar under `<cwd>/.elai_cc/sessions/*/`. Returns `None`
+/// when no sidecar exists (no run sealed an attestation), when the directory is
+/// unreadable, or when the newest sidecar cannot be parsed — the trailer is then
+/// simply omitted (the SSB row + sidecar are the PRIMARY emit). This keeps
+/// `git_commit` DECOUPLED from the run path (DD4c seam): it reads the run's
+/// just-written attestation digest rather than recomputing it at commit time.
+fn recent_attestation_digest() -> Option<String> {
+    let sessions_dir = std::path::Path::new(elai_core::paths::ELAI_DATA_DIR_NAME).join("sessions");
+    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(&sessions_dir).ok()?.flatten() {
+        let sidecar = entry.path().join(ATTESTATION_SIDECAR_NAME);
+        let Ok(meta) = std::fs::metadata(&sidecar) else {
+            continue;
+        };
+        let Ok(mtime) = meta.modified() else {
+            continue;
+        };
+        let replace = match &newest {
+            Some((best, _)) => mtime > *best,
+            None => true,
+        };
+        if replace {
+            newest = Some((mtime, sidecar));
+        }
+    }
+    let (_, path) = newest?;
+    let statement = elai_orchestrator::attestation::read_sidecar(&path).ok()?;
+    statement.subject_digest().map(str::to_owned)
 }
 
 /// Create the commit.

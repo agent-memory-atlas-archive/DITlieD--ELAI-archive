@@ -256,6 +256,7 @@ impl McpClientDispatch {
             tracing::warn!(error = %e, "cli_mcp_dispatch: ssb emit failed");
         }
     }
+
 }
 
 impl Dispatch for McpClientDispatch {

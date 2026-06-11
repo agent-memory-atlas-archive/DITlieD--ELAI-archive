@@ -110,6 +110,12 @@ ignore = "0.4"
 # Windows via windows-sys (already a workspace transitive). See
 # workflow/reasoning/B-31-decisions.md DECISION-11 + DECISION-13.
 fd-lock = "4"
+# H-49 (SCHEMA_VERSION 226): CAS object store for reversible LLM edits.
+# zstd 0.13.3 is already in Cargo.lock as a transitive dep (via tantivy);
+# declaring it directly gives the timetravel module an explicit import.
+# Anti-slopsquatting verified (crates.io 2026-06-11): crate name "zstd",
+# version 0.13.3, maintained, not yanked. See workflow/reasoning/H-49-decisions.md.
+zstd = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -166,6 +172,15 @@ elai-orchestrator = { path = ".", features = ["test-support"] }
 
 [features]
 default = []
+# G-8 — cosign-keyless / Sigstore-Rekor transparency upgrade for the in-toto
+# provenance attestation (attestation.rs). MARKER-ONLY today (NO dep added): the
+# default signing path is a LOCAL blake3-Merkle proof requiring zero new deps
+# (CLAUDE.md no-new-deps, DD1). This feature declares the gate so the
+# `#[cfg(feature = "cosign-attest")]` arm in attestation.rs is recognized; the
+# keyless signer body + its anti-slopsquat-verified dep (sigstore-rs /
+# ed25519-dalek) land here ONLY after explicit confirmation. The crate MUST
+# cargo-check-green WITHOUT this feature. See workflow/reasoning/G-8-decisions.md.
+cosign-attest = []
 # Exposes ipc_accept::test_support::ScriptedAgentRpcServer for use in contract
 # tests outside the orchestrator crate. The module is always available to
 # orchestrator's own integration tests (tests/) because cfg(test) is set there.
@@ -225,6 +240,26 @@ phase_4h_freeze_violated = []
 # anti-slopsquatting `cargo info` verification rule -- blake3 placeholder
 # used in archive_crypto.rs scaffold.
 darwinian-evolve = []
+
+# 3B.bench — SSB single-writer insert throughput micro-benchmark. harness=false
+# + std::time::Instant (orchestrator D2 / DRIFT-2: no criterion dep, mirrors the
+# C-19 plugins bench). Grounds the 50K/sec claim ONLY once actually run; the
+# number stays BLOCKED_MEASUREMENT until executed on a named host. Run:
+#   cargo bench -p elai-orchestrator --bench ssb_throughput
+[[bench]]
+name = "ssb_throughput"
+harness = false
+
+# E-44 — AgentCheckpoint serialization format benchmark: msgpack vs postcard.
+# Measures payload SIZE (bytes) and per-iteration LATENCY (ns) for
+# rmp_serde::to_vec_named vs postcard::to_allocvec over AgentCheckpointData.
+# harness=false + std::time::Instant, no criterion (D2/DRIFT-2 decision).
+# Run:
+#   cargo bench -p elai-orchestrator --bench checkpoint_format
+# Auditor writes measured numbers to workflow/audits/E-44-checkpoint-format-bench-2026-05-19.md.
+[[bench]]
+name = "checkpoint_format"
+harness = false
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

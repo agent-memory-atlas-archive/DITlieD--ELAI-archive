@@ -16,6 +16,18 @@ use crate::critic_stats::{paired_bootstrap_p, seed_from_run_id};
 use crate::iso_budget_harness::{self, IsoBudgetError, IsoBudgetReport};
 use crate::ssb::{CriticDecisionEventPayload, CriticTilePhase, Ssb, SsbError, SsbPayload};
 
+/// Decision emitted after reading the per-role `insufficient_contribution` map.
+/// Used by the role-deletion gate: retain roles whose entry is `false`.
+/// Wire-dark until `ELAI_CRITIC_OF_DESIGN_ENABLE=1`; callers MUST also
+/// check `report.runpod_pending` before acting on these entries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FsmAblationRoleDecision {
+    /// Snake_case AgentRole wire tag.
+    pub role: String,
+    /// `true` = prunable (low lift AND low unique-catch); `false` = retain.
+    pub prunable: bool,
+}
+
 /// FSM profile selector (config struct, not an FsmSubstate variant).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsmProfile {
@@ -43,13 +55,18 @@ pub enum FsmAblationError {
 
 /// Run the FSM-state ablation: invokes the iso-budget harness, then
 /// emits a CriticDecisionEvent SSB row with paired-bootstrap p.
+///
+/// Reads `report.insufficient_contribution` (H-40 per-role prunable map) and
+/// returns role decisions alongside the report. Callers MUST check
+/// `report.runpod_pending` before acting on `role_decisions`; the stub path
+/// yields an empty map so decisions will also be empty (no false positives).
 pub async fn run_fsm_ablation(
     ssb: &Arc<Ssb>,
     agent_id: &str,
     superstep: i64,
     task_fixture: &str,
     budget_tokens: u32,
-) -> Result<IsoBudgetReport, FsmAblationError> {
+) -> Result<(IsoBudgetReport, Vec<FsmAblationRoleDecision>), FsmAblationError> {
     let report = iso_budget_harness::run_ablation(
         ssb, agent_id, superstep, task_fixture, budget_tokens,
     )
@@ -78,7 +95,17 @@ pub async fn run_fsm_ablation(
         ts_ms: now_ms(),
     });
     ssb.write_payload(agent_id, superstep, payload, Vec::new()).await?;
-    Ok(report)
+
+    // H-40: read per-role insufficient_contribution to build the role-deletion
+    // gate decision list. Empty when runpod_pending=true (stub path) so callers
+    // see no decisions to act on until live outcomes are present.
+    let role_decisions: Vec<FsmAblationRoleDecision> = report
+        .insufficient_contribution
+        .iter()
+        .map(|(role, &prunable)| FsmAblationRoleDecision { role: role.clone(), prunable })
+        .collect();
+
+    Ok((report, role_decisions))
 }
 
 fn build_run_id_prefix(agent_id: &str, superstep: i64) -> [u8; 8] {

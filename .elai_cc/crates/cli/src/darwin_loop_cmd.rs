@@ -37,10 +37,24 @@
 //! the orchestrator core; the candidate fingerprint uses blake3 ONLY (per the
 //! CLAUDE.md HARD RULE; the orchestrator core computes it).
 
+/// Env var: millisecond Unix timestamp of the model training cutoff for the eval firewall
+/// date-gate (H-47 BLOCK-1 fix). When unset, defaults to `ELAI_MODEL_CUTOFF_DATE_MS_DEFAULT`
+/// (a conservative past date meaning all tasks are treated as post-cutoff unless the operator
+/// sets a real value). Set to the actual model knowledge cutoff before a live run.
+#[cfg(feature = "darwinian-evolve")]
+const ELAI_MODEL_CUTOFF_DATE_MS_ENV: &str = "ELAI_MODEL_CUTOFF_DATE_MS";
+
+/// Default model cutoff: 2024-01-01 00:00:00 UTC in milliseconds.
+/// Conservative default: most held-out tasks are ingested AFTER this date so the
+/// date-gate does not suppress them unless `ELAI_MODEL_CUTOFF_DATE_MS` is set to
+/// the real model cutoff. Operators running a live eval firewall MUST set the env var.
+#[cfg(feature = "darwinian-evolve")]
+const ELAI_MODEL_CUTOFF_DATE_MS_DEFAULT: i64 = 1_704_067_200_000; // 2024-01-01 UTC
+
 #[cfg(feature = "darwinian-evolve")]
 use elai_orchestrator::darwin_admit_loop::{
-    loop_enabled_via_env, run_one_generation, MutantCandidate, DEFAULT_SUITE_NAME,
-    ELAI_DARWINIAN_LOOP_MUTANTS_JSON_ENV,
+    loop_enabled_via_env, run_one_generation, EvalFirewallContext, MutantCandidate,
+    DEFAULT_SUITE_NAME, ELAI_DARWINIAN_LOOP_MUTANTS_JSON_ENV,
 };
 
 /// E-7/F-11 dispatch shim. Accepts the raw `gamma` String from args, parses it
@@ -115,6 +129,22 @@ pub(crate) fn darwinian_admit(
     let archive_path = sessions.join("self_mod.db");
     let ssb_path = sessions.join("ssb.db");
 
+    // H-47 BLOCK-1 fix: read model cutoff date from env (documented default = 2024-01-01).
+    let cutoff_date_ms: i64 = std::env::var(ELAI_MODEL_CUTOFF_DATE_MS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(ELAI_MODEL_CUTOFF_DATE_MS_DEFAULT);
+    let model_id = std::env::var("ELAI_MODEL_ID").unwrap_or_else(|_| "elai-local".to_string());
+
+    // Open the HeldOutStore and HoldoutBudgetLedger for the eval firewall. Both open
+    // from the sessions dir (same db file as ssb). Opened BEFORE the tokio runtime so
+    // errors surface before the async block.
+    let held_out_store = elai_orchestrator::held_out::HeldOutStore::open(&ssb_path)
+        .map_err(|e| anyhow::anyhow!("held_out store open failed: {e}"))?;
+    let budget_ledger =
+        elai_orchestrator::holdout_budget::HoldoutBudgetLedger::open(&ssb_path, "cli-darwin-loop")
+            .map_err(|e| anyhow::anyhow!("holdout_budget ledger open failed: {e}"))?;
+
     let candidates = load_candidates(mutants, seed)?;
     let candidate_count = candidates.len();
 
@@ -135,24 +165,49 @@ pub(crate) fn darwinian_admit(
         };
         let clock: std::sync::Arc<dyn elai_core::clock::ClockProvider> =
             std::sync::Arc::new(elai_core::OsClock);
-        let ssb = elai_orchestrator::Ssb::new(ssb_cfg, clock)
-            .map_err(|e| anyhow::anyhow!("ssb open failed: {e}"))?;
+        let ssb = std::sync::Arc::new(
+            elai_orchestrator::Ssb::new(ssb_cfg, clock.clone())
+                .map_err(|e| anyhow::anyhow!("ssb open failed: {e}"))?,
+        );
+
+        let cutoff = elai_orchestrator::held_out::ModelTrainingCutoff {
+            model_id,
+            date_ms: cutoff_date_ms,
+        };
 
         let promotion_cfg = elai_orchestrator::promotion_gate::PromotionConfig::default();
         let mut rng = elai_core::SeededRng::new(seed);
         // F-11 ships ONE generation; --generations is honored as a loop count
         // but the Tier-1 scope + acceptance is the single closed generation.
         let mut last = None;
-        for _ in 0..generations.max(1) {
+        let gen_count = generations.max(1);
+        for gen_idx in 0..gen_count {
+            // H-47 BLOCK-1: construct a REAL EvalFirewallContext on the production CLI path
+            // so eval_firewall legs (date-gate + template-regen + holdout-budget) actually run.
+            let fw_ctx = EvalFirewallContext {
+                held_out_store: &held_out_store,
+                budget_ledger: &budget_ledger,
+                clock: &clock,
+                ssb_arc: &ssb,
+                cutoff: &cutoff,
+                holdout_id: "darwin-loop-default",
+                objective: "fitness",
+                data_window: "0..9999999999999",
+                budget_seed: seed, // WARN-1 fix: derived from CLI --seed, not a literal
+                generation_id: gen_idx as u64,
+                workload_ngrams: &[], // empty ok per EvalFirewallContext doc
+                ignore_dates: false,  // MUST be false in production (WARN-4)
+            };
             let s = run_one_generation(
                 &archive,
-                &ssb,
+                &*ssb,
                 &candidates,
                 elai_orchestrator::self_mod_layer1a::PipelineMode::Surgical,
                 seed,
                 DEFAULT_SUITE_NAME,
                 &promotion_cfg,
                 &mut rng,
+                Some(&fw_ctx), // H-47 BLOCK-1: wired — eval_firewall now fires on the live path
             )
             .await
             .map_err(|e| anyhow::anyhow!("darwin-loop generation failed: {e}"))?;
@@ -163,12 +218,14 @@ pub(crate) fn darwinian_admit(
 
     println!(
         "darwin-loop COMPLETE generations={generations} mutants={} seed={seed} traps={traps} \
-         gamma={gamma:.6} admitted={} rejected={} loop_closed={} suite_floor={:?}",
+         gamma={gamma:.6} admitted={} rejected={} loop_closed={} suite_floor={:?} \
+         bandit_selected_arm={:?}",
         candidate_count,
         summary.admitted,
         summary.rejected,
         summary.loop_closed,
         summary.suite_floor,
+        summary.bandit_selected_arm,
     );
     Ok(())
 }

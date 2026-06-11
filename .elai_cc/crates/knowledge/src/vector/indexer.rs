@@ -194,6 +194,33 @@ impl VectorIndexer {
         // Remove old chunks for this file before re-indexing.
         self.remove_file(path);
 
+        // 1C-R2: evict this file's stale cached dual-vectors before re-indexing.
+        // `index_file` is the production re-index entrypoint (driven from
+        // live_cli::notify_file_changed on every file write), so this is the
+        // file-write -> cache-eviction wiring: a rewritten file's old content
+        // hashes can no longer serve stale embeddings to the next query.
+        if let Some(c) = cache {
+            let path_str = path.to_string_lossy();
+            match c.invalidate_file(&path_str) {
+                Ok(n) if n > 0 => {
+                    tracing::debug!(
+                        target: "knowledge::vector::indexer",
+                        path = %path.display(),
+                        evicted = n,
+                        "vector cache: evicted stale entries on re-index"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        target: "knowledge::vector::indexer",
+                        path = %path.display(),
+                        "vector cache invalidate_file failed (non-fatal): {e}"
+                    );
+                }
+            }
+        }
+
         for chunk in &chunks {
             let key = chunk_key(&chunk.path, chunk.line_start, chunk.line_end);
             // B-32 D4 / GAP-1: provider-boundary defensive cap. Dispatch is
@@ -254,7 +281,11 @@ impl VectorIndexer {
                                                 .unwrap_or_default()
                                                 .as_secs();
                                             let now = i64::try_from(now_secs).unwrap_or(i64::MAX);
-                                            let _ = c.insert(&content_hash, &dual, now);
+                                            // 1C-R2: record the source file so a
+                                            // later file-write can evict exactly
+                                            // this row via invalidate_file.
+                                            let chunk_path = chunk.path.to_string_lossy();
+                                            let _ = c.insert(&content_hash, &chunk_path, &dual, now);
                                         }
                                     }
                                     Some(code_vec)

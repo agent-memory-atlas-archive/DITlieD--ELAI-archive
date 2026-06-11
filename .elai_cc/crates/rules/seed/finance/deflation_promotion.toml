@@ -1,0 +1,57 @@
+# H-18 deflation promotion gate -- LOCKED COMPOSITE seed.
+# mutable=0: immutable seed row, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS;
+#   "trading" is detected by ["trading","backtest","signal","pipeline"] path
+#   keywords in rule_engine.rs:206-214).
+# Default-ON; kill-switch: ELAI_DEFLATION_GATE_DISABLE env var only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_deflation_rules()
+#
+# Grounding:
+#   - Bailey & Lopez de Prado (2014) "The Deflated Sharpe Ratio" JPM 40(5):94-107
+#     SSRN 2460551. DSR >= 0.95 is the ELAI strategy-level default.
+#   - Harvey, Liu & Zhu (2016) RFS 29(1):5-68 NBER w20592. t>3.0 corresponds
+#     to DSR >= 0.9987 (strict factor-discovery threshold, NOT used here as default).
+#   - Bailey, Borwein, Lopez de Prado, Zhu (2015) SSRN 2326253. PBO < 0.5.
+# See: workflow/reasoning/H-18-decisions.md for the locked threshold discussion.
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding
+# is performed by project_rule_seeder.rs::seed_deflation_rules() which inserts
+# the row directly (same pattern as the security rules in vibesec_seed.rs).
+# The TOML is authoritative for the threshold values; the Rust code implements
+# them as named constants (DSR_THRESHOLD, PBO_THRESHOLD, MINBTL_CONFIDENCE).
+
+[[rules]]
+rule_id = "FIN-DEFL-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "Strategy promotion requires DSR >= 0.95, PBO < 0.5, and MinTRL satisfied"
+description = """
+LOCKED COMPOSITE promotion gate (H-18, T-2, #1 net-new trust gate).
+Blocks strategy promotion unless ALL of:
+  1. DSR >= 0.95: Deflated Sharpe Ratio corrects for selection bias (N trials),
+     non-normality (skew + excess kurtosis), and sample length.
+  2. PBO < 0.5: Probability of Backtest Overfitting (CSCV, S=16 partitions)
+     must be below 0.5 (less than half of IS-best selections underperform OOS).
+  3. T >= MinTRL: actual track record >= minimum track record length.
+  4. N PRESENT: trial_count must not be TrialCountMissing (TD-1 fail-closed).
+  5. PBO PRESENT: sidecar PBO must be supplied (R1/R2 missing-evidence = BLOCK).
+The verdict is DETERMINISTIC (no LLM input, TD-3). Thresholds are LOCKED
+(mutable=0, lifecycle-immune). Final capital allocation remains human Layer-3
+(TD-5, GD-5 honest residue -- DSR is necessary not sufficient).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+# The COMPOSITE predicate wraps three MetricGate children (AND operator).
+# Note: TrialCountMissing and absent-PBO are enforced at the Rust gate level
+# BEFORE the rules engine evaluates the metric values. The MetricGate children
+# operate on the pre-computed scalars that only exist when those guards pass.
+type = "composite"
+operator = "and"
+children = [
+    { type = "metric_gate", metric_name = "dsr", operator = "gte", threshold = 0.95, source = "deflation_gate" },
+    { type = "metric_gate", metric_name = "pbo", operator = "lt",  threshold = 0.5,  source = "deflation_gate" },
+    { type = "metric_gate", metric_name = "t_periods", operator = "gte", threshold = 1.0, source = "deflation_gate" },
+]

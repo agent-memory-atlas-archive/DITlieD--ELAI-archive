@@ -1,0 +1,162 @@
+[
+  {
+    "server_name": "local-rag",
+    "tool_name": "mcp_search_context",
+    "qualified_name": "local-rag__mcp_search_context",
+    "description": "Search the local RAG knowledge base for relevant context given a query string.",
+    "schema_tokens": 120,
+    "floor": true
+  },
+  {
+    "server_name": "local-rag",
+    "tool_name": "mcp_memorize",
+    "qualified_name": "local-rag__mcp_memorize",
+    "description": "Store a new memory or fact in the local RAG knowledge base under a named topic.",
+    "schema_tokens": 110,
+    "floor": true
+  },
+  {
+    "server_name": "local-rag",
+    "tool_name": "mcp_list_topics",
+    "qualified_name": "local-rag__mcp_list_topics",
+    "description": "List all topics currently stored in the local RAG knowledge base.",
+    "schema_tokens": 80,
+    "floor": false
+  },
+  {
+    "server_name": "local-rag",
+    "tool_name": "mcp_forget",
+    "qualified_name": "local-rag__mcp_forget",
+    "description": "Remove a stored memory or topic from the local RAG knowledge base.",
+    "schema_tokens": 95,
+    "floor": false
+  },
+  {
+    "server_name": "local-rag",
+    "tool_name": "mcp_ingest_file",
+    "qualified_name": "local-rag__mcp_ingest_file",
+    "description": "Ingest the contents of a local file into the RAG knowledge base for future retrieval.",
+    "schema_tokens": 130,
+    "floor": false
+  },
+  {
+    "server_name": "local-rag",
+    "tool_name": "mcp_log_change",
+    "qualified_name": "local-rag__mcp_log_change",
+    "description": "Record a structured change-log entry in the RAG knowledge base for auditability.",
+    "schema_tokens": 105,
+    "floor": false
+  },
+  {
+    "server_name": "local-rag",
+    "tool_name": "mcp_think",
+    "qualified_name": "local-rag__mcp_think",
+    "description": "Emit a grounded reasoning step with budget tracking into the RAG knowledge base.",
+    "schema_tokens": 145,
+    "floor": false
+  },
+  {
+    "server_name": "local-rag",
+    "tool_name": "mcp_update_context",
+    "qualified_name": "local-rag__mcp_update_context",
+    "description": "Update the active context document in the RAG store with new session observations.",
+    "schema_tokens": 115,
+    "floor": false
+  },
+  {
+    "server_name": "pod-lifecycle",
+    "tool_name": "pod_list",
+    "qualified_name": "pod-lifecycle__pod_list",
+    "description": "List all active and pending RunPod pods associated with the current project.",
+    "schema_tokens": 90,
+    "floor": true
+  },
+  {
+    "server_name": "pod-lifecycle",
+    "tool_name": "pod_get_state",
+    "qualified_name": "pod-lifecycle__pod_get_state",
+    "description": "Retrieve the current lifecycle state of a specific RunPod pod by its identifier.",
+    "schema_tokens": 100,
+    "floor": true
+  },
+  {
+    "server_name": "pod-lifecycle",
+    "tool_name": "pod_create",
+    "qualified_name": "pod-lifecycle__pod_create",
+    "description": "Create a new RunPod GPU pod with specified hardware tier and container image.",
+    "schema_tokens": 200,
+    "floor": false
+  },
+  {
+    "server_name": "pod-lifecycle",
+    "tool_name": "pod_stop",
+    "qualified_name": "pod-lifecycle__pod_stop",
+    "description": "Stop a running RunPod pod and release its GPU allocation.",
+    "schema_tokens": 95,
+    "floor": false
+  },
+  {
+    "server_name": "pod-lifecycle",
+    "tool_name": "pod_terminate",
+    "qualified_name": "pod-lifecycle__pod_terminate",
+    "description": "Permanently terminate and delete a RunPod pod and all associated resources.",
+    "schema_tokens": 95,
+    "floor": false
+  },
+  {
+    "server_name": "pod-lifecycle",
+    "tool_name": "pod_cost_status",
+    "qualified_name": "pod-lifecycle__pod_cost_status",
+    "description": "Query current cost accrual and billing status for all active RunPod pods.",
+    "schema_tokens": 110,
+    "floor": false
+  },
+  {
+    "server_name": "notion",
+    "tool_name": "notion-search",
+    "qualified_name": "notion__notion-search",
+    "description": "Search across Notion workspace pages, databases, and blocks by keyword or filter.",
+    "schema_tokens": 185,
+    "floor": false
+  },
+  {
+    "server_name": "notion",
+    "tool_name": "notion-fetch",
+    "qualified_name": "notion__notion-fetch",
+    "description": "Fetch the full content and metadata of a specific Notion page or database entry by ID.",
+    "schema_tokens": 160,
+    "floor": false
+  },
+  {
+    "server_name": "notion",
+    "tool_name": "notion-create-pages",
+    "qualified_name": "notion__notion-create-pages",
+    "description": "Create one or more new Notion pages inside a specified parent page or database.",
+    "schema_tokens": 240,
+    "floor": false
+  },
+  {
+    "server_name": "notion",
+    "tool_name": "notion-update-page",
+    "qualified_name": "notion__notion-update-page",
+    "description": "Update the properties and content blocks of an existing Notion page.",
+    "schema_tokens": 230,
+    "floor": false
+  },
+  {
+    "server_name": "notion",
+    "tool_name": "notion-get-users",
+    "qualified_name": "notion__notion-get-users",
+    "description": "Retrieve the list of users and their roles in the current Notion workspace.",
+    "schema_tokens": 110,
+    "floor": false
+  },
+  {
+    "server_name": "notion",
+    "tool_name": "notion-query-database-view",
+    "qualified_name": "notion__notion-query-database-view",
+    "description": "Query rows from a Notion database view with optional filter and sort expressions.",
+    "schema_tokens": 275,
+    "floor": false
+  }
+]

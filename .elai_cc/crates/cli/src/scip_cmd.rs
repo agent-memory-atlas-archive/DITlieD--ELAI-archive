@@ -20,11 +20,12 @@ use std::sync::Arc;
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::symbol_graph::{
-    self, oracle_lookup, oracle_lookup_with_mode, personalized_top_k, LspMode, OracleKind,
-    SymbolGraphCache,
+    self, notify_symbol_graph_event, oracle_lookup, oracle_lookup_with_mode, personalized_top_k,
+    LspMode, NameQuery, OracleKind, Resolution, ScopeGraph, SymbolGraphCache,
+    DEFAULT_SCOPE_RULES_DIR,
 };
 use elai_orchestrator::{default_ssb_path_for_base, Ssb, SsbConfig};
-use elai_orchestrator::ssb::{ScipRefreshCompletedPayload, SsbPayload};
+use elai_orchestrator::ssb::{ScipRefreshCompletedPayload, SsbPayload, SymbolGraphEventKind};
 use serde::Serialize;
 
 use crate::args::{CliOutputFormat, SymbolGraphAction};
@@ -32,6 +33,14 @@ use crate::args::{CliOutputFormat, SymbolGraphAction};
 /// Environment variable that gates SSB emission for `scip refresh`.
 /// Default-OFF (wire-dark): truthy check only (`"1"`, `"true"`, `"yes"`).
 const ELAI_SCIP_REFRESH_EMIT_ENABLE: &str = "ELAI_SCIP_REFRESH_EMIT_ENABLE";
+
+/// E-40 Task 2 (Tranche B-3) — gates SSB emission for `scip resolve`.
+/// Default-OFF (wire-dark by design). The `scope_graph_resolved` row is
+/// emitted only when this is truthy. R9 NOTE: the wire-dark-allowlist.toml
+/// row for this flag is a gate-frozen, out-of-band addition (the executing
+/// run may not edit the R8-frozen allowlist); the row + its smoke entry are
+/// registered by the gate owner. See StructuredOutput deferred_slice.
+const ELAI_SCOPE_GRAPH_EMIT_ENABLE: &str = "ELAI_SCOPE_GRAPH_EMIT_ENABLE";
 
 /// Python script name for SCIP regeneration relative to project root.
 const CODEBASE_MAPPER_PY: &str = ".claude/tools/codebase_mapper.py";
@@ -61,6 +70,12 @@ pub(crate) fn run(
         SymbolGraphAction::Refresh { scip_dir, project_root } => {
             run_refresh(&scip_dir, &project_root, output_format)
         }
+        SymbolGraphAction::Resolve {
+            symbol,
+            language,
+            from_file,
+            rules_dir,
+        } => run_resolve(&symbol, &language, &from_file, &rules_dir, output_format),
     }
 }
 
@@ -253,6 +268,151 @@ fn run_lsp_probe(
         invoked: answer.invoked,
     };
     emit(&report, output_format)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ResolveReport {
+    pub symbol: String,
+    pub language: String,
+    pub from_file: String,
+    pub rules_dir: String,
+    pub resolution_count: usize,
+    pub resolutions: Vec<Resolution>,
+    pub graph_path: String,
+    pub node_count: usize,
+    pub ssb_emitted: bool,
+}
+
+/// E-40 Task 2 (Tranche B-3) — `elai scip resolve` — production caller for
+/// `symbol_graph::scope_graph::ScopeGraph::resolve_name`.
+///
+/// Loads the JSON symbol graph + per-language push/pop scope rules from
+/// `rules_dir` (default `.elai_cc/scope_graph_rules/`), resolves `symbol`
+/// as referenced from `from_file` under the `language` rule set, prints the
+/// ranked resolutions, and emits ONE `scope_graph_resolved` SSB row when
+/// `ELAI_SCOPE_GRAPH_EMIT_ENABLE` is truthy (default-OFF). SSB failure is
+/// best-effort (logged to stderr; does not change the exit code).
+fn run_resolve(
+    symbol: &str,
+    language: &str,
+    from_file: &str,
+    rules_dir: &str,
+    output_format: CliOutputFormat,
+) -> Result<(), String> {
+    if symbol.is_empty() {
+        return Err("scip resolve: --symbol must be non-empty".to_string());
+    }
+    // Validate the language slug up-front for a clean error before any IO.
+    if OracleKind::from_slug(language).is_none() {
+        return Err(format!(
+            "scip resolve: unsupported language '{language}' (rust|python|typescript|go)"
+        ));
+    }
+    let rules_path = if rules_dir.is_empty() {
+        PathBuf::from(DEFAULT_SCOPE_RULES_DIR)
+    } else {
+        PathBuf::from(rules_dir)
+    };
+    let graph = graph_path();
+    let mut cache = SymbolGraphCache::load(&graph).map_err(|e| format!("{e}"))?;
+    let node_count = cache.node_count();
+
+    let resolutions = {
+        let mut sg = ScopeGraph::load_from_dir(&mut cache, &rules_path)
+            .map_err(|e| format!("scip resolve: {e}"))?;
+        let query = NameQuery {
+            name: symbol.to_string(),
+            from_file: from_file.to_string(),
+            language: language.to_string(),
+        };
+        sg.resolve_name(&query).map_err(|e| format!("scip resolve: {e}"))?
+    };
+
+    // Emit the off-agent artifact (gated, default-OFF).
+    let ssb_emitted = if is_env_truthy(ELAI_SCOPE_GRAPH_EMIT_ENABLE) {
+        let best_boundary = resolutions
+            .first()
+            .map(|r| r.boundary.as_str())
+            .unwrap_or("none");
+        let best_confidence = resolutions
+            .first()
+            .map(|r| r.confidence.as_str())
+            .unwrap_or("none");
+        let details = serde_json::json!({
+            "name": symbol,
+            "from_file": from_file,
+            "language": language,
+            "resolution_count": resolutions.len(),
+            "best_boundary": best_boundary,
+            "best_confidence": best_confidence,
+        });
+        match emit_scope_graph_ssb(symbol, details) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("warning: scip resolve: failed to emit scope_graph_resolved SSB row: {e}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    let report = ResolveReport {
+        symbol: symbol.to_string(),
+        language: language.to_string(),
+        from_file: from_file.to_string(),
+        rules_dir: rules_path.to_string_lossy().into_owned(),
+        resolution_count: resolutions.len(),
+        resolutions,
+        graph_path: graph.to_string_lossy().into_owned(),
+        node_count,
+        ssb_emitted,
+    };
+    emit(&report, output_format)
+}
+
+/// Emit one `scope_graph_resolved` SSB row via the production
+/// `notify_symbol_graph_event` helper. Uses the per-call current-thread
+/// tokio runtime + `Ssb::new` pattern (mirrors `emit_scip_refresh_ssb`).
+fn emit_scope_graph_ssb(symbol: &str, details: serde_json::Value) -> Result<(), String> {
+    let project_root = std::env::current_dir()
+        .map_err(|e| format!("scip resolve: cannot determine cwd: {e}"))?;
+    let db_path = default_ssb_path_for_base(&project_root);
+    let parent = db_path
+        .parent()
+        .ok_or_else(|| "scip resolve: ssb.db has no parent directory".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("scip resolve: creating ssb sessions dir: {e}"))?;
+
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: "cli-scip-resolve".to_string(),
+    };
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    let ts_ms = i64::try_from(OsClock.now_ms().min(u128::from(u64::MAX))).unwrap_or(i64::MAX);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("scip resolve: tokio runtime build failed: {e}"))?;
+    let label = format!("cli:scip-resolve:{symbol}");
+    rt.block_on(async move {
+        let ssb = Ssb::new(cfg, clock)
+            .map_err(|e| format!("scip resolve: opening SSB writer: {e}"))?;
+        notify_symbol_graph_event(
+            &ssb,
+            &label,
+            0,
+            SymbolGraphEventKind::ScopeGraphResolved,
+            Some("cli-scip-resolve"),
+            details,
+            ts_ms,
+        )
+        .await
+        .map_err(|e| format!("scip resolve: writing scope_graph_resolved row: {e}"))?;
+        Ok(())
+    })
 }
 
 /// `elai scip refresh` — invoke `codebase_mapper.py` to regenerate SCIP

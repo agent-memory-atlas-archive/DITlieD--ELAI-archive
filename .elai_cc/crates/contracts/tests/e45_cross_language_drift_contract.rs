@@ -291,9 +291,39 @@ fn e45_f7_action_type_lock_total_variants_updated() {
     );
     let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
     assert!(
-        body.contains("TOTAL_VARIANTS: usize = 482"),
-        "TOTAL_VARIANTS must match the live action_type_lock.rs value (482); file: {}",
+        body.contains("TOTAL_VARIANTS: usize = 537"),
+        "TOTAL_VARIANTS must match the live action_type_lock.rs value (537); file: {}",
         lock_rs.display()
+    );
+    // H-24: the sim-to-real parity variant must appear in ALL_VARIANTS.
+    assert!(
+        body.contains("SsbActionType::SimRealParity"),
+        "ALL_VARIANTS must include SimRealParity (H-24 sim-to-real parity gate)"
+    );
+    // H-25: the result manifest re-derivation variant must appear in ALL_VARIANTS.
+    assert!(
+        body.contains("SsbActionType::ResultManifestVerified"),
+        "ALL_VARIANTS must include ResultManifestVerified (H-25 result manifest re-derivation gate)"
+    );
+    // H-26: the shadow-exec + financial-invariant MR gate variant must appear.
+    assert!(
+        body.contains("SsbActionType::DifferentialDivergence"),
+        "ALL_VARIANTS must include DifferentialDivergence (H-26 shadow-exec + financial-invariant MR gate)"
+    );
+    // H-27: the verify-the-verifiers gate-self-validation META gate variant must appear.
+    assert!(
+        body.contains("SsbActionType::GateSelfValidation"),
+        "ALL_VARIANTS must include GateSelfValidation (H-27 gate self-validation META gate)"
+    );
+    // H-28: the current-RF reward-tampering gate variant must appear.
+    assert!(
+        body.contains("SsbActionType::RewardTampering"),
+        "ALL_VARIANTS must include RewardTampering (H-28 current-RF reward-tampering gate)"
+    );
+    // H-19: the reusable-holdout query-budget (Thresholdout DP) gate variant must appear.
+    assert!(
+        body.contains("SsbActionType::HoldoutBudgetEvent"),
+        "ALL_VARIANTS must include HoldoutBudgetEvent (H-19 reusable-holdout Thresholdout DP query budget)"
     );
     // The 3 E-45 variants must appear in ALL_VARIANTS.
     assert!(

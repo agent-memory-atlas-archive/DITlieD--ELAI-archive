@@ -1,0 +1,7 @@
+{
+  "ingest_kind": "file",
+  "ingest_origin": ".elai_cc/crates/x/src/lib.rs",
+  "content": "test: cover the retry path",
+  "derived_sink": "git_commit",
+  "expected_blocked": false
+}

@@ -13,11 +13,15 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
+use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::lora_ship_gate::{
-    check_lora_ship_gate, LoraShipGateConfig, LoraShipGateOutcome,
-    LORA_SHIP_GATE_DEFERRAL_TOKEN,
+    check_lora_ship_gate, lora_ship_gate_enabled_from_env, notify_lora_ship_gate,
+    LoraShipGateConfig, LoraShipGateOutcome, LORA_SHIP_GATE_DEFERRAL_TOKEN,
 };
+use elai_orchestrator::{Ssb, SsbConfig};
 
 const DEFAULT_CONFIG_PATH: &str = ".elai_cc/elai_cc.toml";
 
@@ -105,6 +109,68 @@ pub fn run(config: Option<String>, json: bool) -> Result<(), anyhow::Error> {
     // surfaces CalibrationMissing if the operator overrode the
     // deferral token without supplying baseline data.
     let outcome = check_lora_ship_gate(&cfg, None);
+
+    // PRIMARY FIX (R6/observable_effect): emit SSB row when
+    // ELAI_LORA_SHIP_GATE_ENABLE=1. Pattern mirrors archive_verify::run --
+    // build a current-thread tokio runtime, open an Ssb against the project
+    // sessions/ssb.db, delegate to notify_lora_ship_gate (which re-checks the
+    // env gate inside). Best-effort: a writer failure must not mask the outcome.
+    if lora_ship_gate_enabled_from_env() {
+        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let db_path = sessions_dir_path(&project_root).join("ssb.db");
+        let rt_result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        match rt_result {
+            Err(e) => {
+                eprintln!("lora-gate-check: warning: failed to build tokio runtime for SSB emit: {e}");
+            }
+            Ok(rt) => {
+                let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+                let ssb_result = rt.block_on(async {
+                    let parent = db_path.parent().ok_or_else(|| {
+                        anyhow::anyhow!("ssb.db has no parent dir; cannot prepare path")
+                    })?;
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| anyhow::anyhow!("creating ssb sessions dir: {e}"))?;
+                    let ssb_cfg = SsbConfig {
+                        db_path: db_path.clone(),
+                        pool_size: None,
+                        project_id: "default".to_string(),
+                        session_id: "lora-gate-check-cli".to_string(),
+                    };
+                    Ssb::new(ssb_cfg, clock)
+                        .map_err(|e| anyhow::anyhow!("opening SSB writer: {e}"))
+                });
+                match ssb_result {
+                    Err(e) => {
+                        eprintln!("lora-gate-check: warning: failed to open SSB writer for emit: {e}");
+                    }
+                    Ok(ssb) => {
+                        let details = serde_json::json!({
+                            "enabled": cfg.enabled,
+                            "ship_gate_token": cfg.ship_gate_token,
+                            "confirm_user_understanding": cfg.confirm_user_understanding,
+                        });
+                        let ts_ms = i64::try_from(elai_core::clock::OsClock.now_ms())
+                            .unwrap_or(i64::MAX);
+                        let emit_result = rt.block_on(notify_lora_ship_gate(
+                            &ssb,
+                            "lora-gate-check-cli",
+                            0,
+                            None,
+                            outcome,
+                            details,
+                            ts_ms,
+                        ));
+                        if let Err(e) = emit_result {
+                            eprintln!("lora-gate-check: warning: failed to emit LoraShipGateEvent SSB row: {e}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     if json {
         let payload = serde_json::json!({

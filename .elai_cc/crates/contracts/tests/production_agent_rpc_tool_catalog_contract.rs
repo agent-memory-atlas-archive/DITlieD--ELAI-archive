@@ -39,11 +39,14 @@ use elai_core::tool_dispatcher::{
     ValidateRequest, ValidationTierResult,
 };
 use elai_ipc_types::{
+    TOOL_CANVAS_ANNOTATE, TOOL_CANVAS_CONNECT, TOOL_CANVAS_CREATE_NODE, TOOL_CANVAS_FORK,
+    TOOL_CANVAS_RENDER_DIAGRAM, TOOL_CANVAS_SCREENSHOT, TOOL_CANVAS_SPAWN_VIEW,
+    TOOL_CANVAS_UPDATE_NODE,
     TOOL_CLASSIFY, TOOL_COMPILE_CHECK, TOOL_DKG_CALLERS, TOOL_DKG_DATA_FLOW, TOOL_DKG_DEPENDENTS,
     TOOL_DKG_SUBGRAPH, TOOL_EDIT, TOOL_ENTRY_POINTS, TOOL_FILE_READ, TOOL_GIT_BRANCH,
     TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_INDEX_ARTIFACTS, TOOL_LIST_ARTIFACTS, TOOL_REMOVE_ARTIFACTS,
-    TOOL_SEARCH_ARTIFACTS, TOOL_SYMBOL_CONTEXT, TOOL_SYMBOL_FLOW, TOOL_SYMBOL_IMPACT,
-    TOOL_SYMBOL_LIST, TOOL_VALIDATE,
+    TOOL_SEARCH_ARTIFACTS, TOOL_SYMBOL_CONTEXT, TOOL_SYMBOL_DATAFLOW_IMPACT, TOOL_SYMBOL_DSL_QUERY,
+    TOOL_SYMBOL_FLOW, TOOL_SYMBOL_IMPACT, TOOL_SYMBOL_LIST, TOOL_VALIDATE,
 };
 use elai_orchestrator::ipc_accept::AgentRpcServer;
 use elai_orchestrator::ProductionAgentRpcServer;
@@ -277,9 +280,10 @@ async fn contract_handle_infer_request_publishes_ten_tool_catalog() {
 
     assert_eq!(
         tools.len(),
-        14,
-        "C-30 catalog must publish exactly 14 tools (R3 6-tool baseline + 4 symbol_* + \
-         4 dkg_*); got {} -- names={:?}",
+        24,
+        "H-15 catalog must publish exactly 24 tools \
+         (R3 6-tool baseline + 4 symbol_* + 4 dkg_* + 2 E-40 DSL + 7 H-13 canvas_* + 1 H-15 canvas_spawn_view); \
+         got {} -- names={:?}",
         tools.len(),
         names,
     );
@@ -302,13 +306,26 @@ async fn contract_handle_infer_request_publishes_ten_tool_catalog() {
         TOOL_DKG_DEPENDENTS,
         TOOL_DKG_DATA_FLOW,
         TOOL_DKG_SUBGRAPH,
+        // E-40 Tranche B-2: SymbolGraph DSL + dataflow tools.
+        TOOL_SYMBOL_DSL_QUERY,
+        TOOL_SYMBOL_DATAFLOW_IMPACT,
+        // H-13: canvas op tools (model drives the canvas).
+        TOOL_CANVAS_CREATE_NODE,
+        TOOL_CANVAS_CONNECT,
+        TOOL_CANVAS_UPDATE_NODE,
+        TOOL_CANVAS_ANNOTATE,
+        TOOL_CANVAS_FORK,
+        TOOL_CANVAS_RENDER_DIAGRAM,
+        TOOL_CANVAS_SCREENSHOT,
+        // H-15: spawn_view reply-channel tool.
+        TOOL_CANVAS_SPAWN_VIEW,
     ]
     .into_iter()
     .collect();
     let actual: std::collections::BTreeSet<&str> = names.iter().copied().collect();
     assert_eq!(
         actual, expected,
-        "catalog names must equal the 14-constant set (no extras, no missing)",
+        "catalog names must equal the 24-constant set (no extras, no missing)",
     );
 }
 
@@ -414,12 +431,14 @@ async fn contract_catalog_excludes_unimplemented_and_deferred_tools() {
              or no JSON->postcard mapping yet); got: {names:?}",
         );
     }
-    // Deferred surfaces (artifact-store + entry_points — their dispatcher arms
-    // exist but no matching `convert_json_input_to_postcard` mapping yet).
+    // Excluded surfaces. The artifact-store tools still lack a
+    // `convert_json_input_to_postcard` mapping. B-34: entry_points now HAS a
+    // JSON->postcard mapping (the `TOOL_ENTRY_POINTS` convert arm) and a real
+    // dispatcher arm, but it is intentionally still absent from the published
+    // catalog because `build_tool_catalog` has no entry for it (the catalog is
+    // a hand-authored allowlist, not auto-derived from the convert mapping).
     // C-24 (DRIFT-15): the 4 symbol_* tools that USED to live here are now
-    // expected to be present (see CONTRACT 1 set-equality assertion). Only
-    // the artifact-store / entry-points group remains in this forbidden set
-    // until a follow-up patch wires the JSON->postcard bridge for them too.
+    // expected to be present (see CONTRACT 1 set-equality assertion).
     for deferred in [
         TOOL_ENTRY_POINTS,
         TOOL_LIST_ARTIFACTS,

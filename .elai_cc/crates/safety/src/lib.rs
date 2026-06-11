@@ -31,6 +31,15 @@ pub mod prompt_armor;
 pub mod capability_gate;
 pub mod tool_description_pin;
 pub mod injection_classifier;
+// G-1: data-plane taint propagation (content-keyed side-table + dependency-
+// screened join over the provenance labels above). Lights up the wire-dark
+// capability_gate at the destructive sink.
+pub mod taint_flow;
+// G-3: deterministic runtime blast-radius gates. Pure, fail-closed verdict
+// functions (post-expansion FS containment + host-side egress IP-pin) the
+// orchestrator wires at run_bash / translate_tool_request / fetch_and_extract.
+// Cross-platform Tier-1 (std::fs + std::net); no orchestrator dependency.
+pub mod blast_radius;
 
 pub use destructive_verb_allowlist::{check_argv, AllowlistVerdict, argv_blake3};
 pub use trust_dialog::{ensure_session_trust, mint_trust_token, TrustToken, TrustDialogError};
@@ -40,5 +49,10 @@ pub use provenance::{Provenance, Provenanced, TextSource, TrustLevel};
 pub use spotlight::{wrap_spotlight, extract_spotlight, SpotlightedSpan, SpotlightError};
 pub use prompt_armor::{classify_injection, classify_with_regex, ClassifierVerdict, InjectionClassifier, HeuristicClassifier, PromptArmorError};
 pub use capability_gate::{allow_tool_with_origin, CapabilityVerdict, CapabilityGateError, is_destructive_tool};
+pub use taint_flow::{join_screened, seed_from_verdict, tainted_context, TaintedContext};
+pub use blast_radius::{
+    check_egress_host, check_fs_target, expand_fs_token, resolve_host_std, worktree_root_blake3,
+    BlastRadiusKind, BlastRadiusVerdict, ExpandedToken,
+};
 pub use tool_description_pin::{pin_or_verify_tool, pin_tool_description, update_pin_tool, verify_pin, DescPinStatus, DescPinRecord, Tool, ToolDescriptionPinError};
 pub use injection_classifier::{InjectionClassifierRole, INJECTION_CLASSIFIER_ROLE_LABEL};

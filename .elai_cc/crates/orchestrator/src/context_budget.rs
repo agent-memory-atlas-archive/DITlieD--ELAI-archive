@@ -7,7 +7,15 @@ use crate::ssb::{
     SsbPayload,
 };
 
-pub const SLOT_COUNT: usize = 8;
+// H-31 (SCHEMA_VERSION 240): bumped 8 -> 9 for the new `ContextSlot::Memory` slot -- the
+// user-preference bi-temporal ledger retrieval-into-prompt slot. Memory = 8 is APPENDED after
+// OutputReserve = 7 (not inserted before it) so every existing slot ordinal stays stable -- the
+// `repr(u8)` ordinal contract that every `slot as usize` index relies on, and the
+// `OutputReserve as u8 == 7` assert, are preserved. The slot is bounded to a small token target
+// (k <= 8 user-decisions, one line each) and is populated ONLY for the role allowlist
+// {AgentRole::Executor} AND ELAI_USER_MEMORY_ENABLE=1 (the Personalization-Trap firewall lives in
+// `crate::user_memory_firewall`).
+pub const SLOT_COUNT: usize = 9;
 pub const CACHE_BREAKPOINT_COUNT: usize = 2;
 
 // Floor constants — minimum token allocations for critical slots.
@@ -26,6 +34,9 @@ pub const MICRO_SLOT_CODE_CONTEXT: usize = 1200;
 pub const MICRO_SLOT_SSB_ENTRIES: usize = 200;
 pub const MICRO_SLOT_GRC_HISTORY: usize = 100;
 pub const MICRO_SLOT_OUTPUT_RESERVE: usize = 750;
+// H-31: user-memory slot is RETRIEVAL-ON-DEMAND, never an always-injected block. Bounded small
+// (k <= 8 user-decisions, one line each) so it cannot crowd out the local ~25-32K window.
+pub const MICRO_SLOT_MEMORY: usize = 300;
 
 pub const LARGE_SLOT_SYSTEM_PROMPT: usize = 330;
 pub const LARGE_SLOT_RULES: usize = 500;
@@ -35,6 +46,8 @@ pub const LARGE_SLOT_CODE_CONTEXT: usize = 6000;
 pub const LARGE_SLOT_SSB_ENTRIES: usize = 1500;
 pub const LARGE_SLOT_GRC_HISTORY: usize = 1000;
 pub const LARGE_SLOT_OUTPUT_RESERVE: usize = 4000;
+// H-31: user-memory slot target on larger tiers (still small; one line per surfaced decision).
+pub const LARGE_SLOT_MEMORY: usize = 500;
 
 /// Fixed Slot 3 (PhaseSpec/Telescope) target across all model tiers.
 /// Updated in A-46 to accommodate telescope content (~550-1050 tokens).
@@ -1072,6 +1085,11 @@ pub enum ContextSlot {
     SsbEntries = 5,
     GrcHistory = 6,
     OutputReserve = 7,
+    /// H-31 (SCHEMA_VERSION 240): the user-preference bi-temporal ledger retrieval-into-prompt
+    /// slot. APPENDED (= 8) after OutputReserve so existing ordinals are stable. Populated ONLY for
+    /// the role allowlist {AgentRole::Executor} AND ELAI_USER_MEMORY_ENABLE=1 (the
+    /// Personalization-Trap firewall, `crate::user_memory_firewall`); forced EMPTY otherwise.
+    Memory = 8,
 }
 
 #[repr(u8)]
@@ -1182,6 +1200,14 @@ impl ContextBudget {
                 },
                 SlotAllocation {
                     slot: ContextSlot::OutputReserve,
+                    allocated_tokens: 0,
+                    floor_tokens: 0,
+                    actual_tokens: 0,
+                    source_truncated: false,
+                },
+                // H-31: the user-memory slot (appended last; ordinal 8).
+                SlotAllocation {
+                    slot: ContextSlot::Memory,
                     allocated_tokens: 0,
                     floor_tokens: 0,
                     actual_tokens: 0,
@@ -1984,6 +2010,13 @@ impl ContextBudget {
                     entry_limit: None,
                     conclusion_only: false,
                 },
+                // H-31: user-memory slot -- small, one-line-per-decision, k <= 8.
+                ContextSlot::Memory => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_MEMORY,
+                    skip_content: false,
+                    entry_limit: Some(8),
+                    conclusion_only: false,
+                },
             },
             // Small, Medium, Large, Cloud all use LARGE_SLOT_* assembly targets.
             // Spec section 9 defines only MICRO and LARGE tiers for assembly.
@@ -2036,6 +2069,13 @@ impl ContextBudget {
                         max_tokens: LARGE_SLOT_OUTPUT_RESERVE,
                         skip_content: false,
                         entry_limit: None,
+                        conclusion_only: false,
+                    },
+                    // H-31: user-memory slot -- small, one-line-per-decision, k <= 8.
+                    ContextSlot::Memory => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_MEMORY,
+                        skip_content: false,
+                        entry_limit: Some(8),
                         conclusion_only: false,
                     },
                 }
@@ -2482,6 +2522,8 @@ mod tests {
         assert_eq!(ContextSlot::SsbEntries as u8, 5);
         assert_eq!(ContextSlot::GrcHistory as u8, 6);
         assert_eq!(ContextSlot::OutputReserve as u8, 7);
+        // H-31: the user-memory slot is APPENDED last; OutputReserve's ordinal is unchanged.
+        assert_eq!(ContextSlot::Memory as u8, 8);
     }
 
     #[test]
@@ -2626,6 +2668,7 @@ mod tests {
             b"ssb_entries",
             b"grc_history",
             b"output_reserve",
+            b"user_memory",
         ]
     }
 
@@ -2653,6 +2696,7 @@ mod tests {
             b"ssb_entries",
             b"grc_history",
             b"output_reserve",
+            b"user_memory",
         ];
         budget.update_breakpoints(&contents_b);
         assert!(!budget.cache_breakpoints[0].valid, "BP0 must be invalid when slot 1 changes");
@@ -2672,6 +2716,7 @@ mod tests {
             b"ssb_entries_changed",
             b"grc_history",
             b"output_reserve",
+            b"user_memory",
         ];
         budget.update_breakpoints(&contents_b);
         assert!(budget.cache_breakpoints[1].valid, "BP1 must be valid when only slot 5 changes");
@@ -2704,6 +2749,7 @@ mod tests {
             b"ssb_entries",
             b"grc_history",
             b"output_reserve",
+            b"user_memory",
         ];
         budget.update_breakpoints(&contents_b);
         assert!(budget.cache_breakpoints[0].valid, "BP0 must stay valid (slot 3 is outside 0..=2)");

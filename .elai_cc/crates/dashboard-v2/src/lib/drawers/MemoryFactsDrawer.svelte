@@ -1,14 +1,8 @@
 <script lang="ts">
   // E-5 — User modeling + long-term memory drawer.
-  //
-  // Read-only surface that lists currently-valid `memory_facts` rows
-  // grouped by fact_type, with trust_score + the per-fact-type
-  // retrieval-threshold marker so the user can see at-a-glance which
-  // rows would actually be retrieved for the next prompt assembly.
-  //
-  // Mutation surface (forget / promote / contradiction adjudicate)
-  // reserved for a follow-up E-5 vertical slice (per the executor
-  // brief).
+  // H-33 (SCHEMA_VERSION 211): adds forget/pin affordances + superseded-row
+  // history toggle. The "show history" toggle switches to
+  // get_memory_facts_with_history which returns both current and superseded rows.
 
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
@@ -39,8 +33,14 @@
     facts: MemoryFactDto[];
   };
 
-  // F-12 — semantic-contradiction pair shape (mirrors
-  // commands_e5::SemanticContradictionDto over the IPC boundary).
+  // H-33: history response shape (includes superseded rows).
+  type MemoryFactsHistoryResponse = {
+    store_path: string;
+    facts: MemoryFactDto[];
+    history_facts: MemoryFactDto[];
+  };
+
+  // F-12 — semantic-contradiction pair shape.
   type SemanticContradictionDto = {
     fact_id_a: string;
     fact_id_b: string;
@@ -57,11 +57,16 @@
   let storePath = $state<string>('');
   let storeJustCreated = $state(false);
   let facts = $state<MemoryFactDto[]>([]);
+  let historyFacts = $state<MemoryFactDto[]>([]);
   let loaded = $state(false);
   let loadError = $state<string | null>(null);
   let scopeFilter = $state<string>('all');
   let typeFilter = $state<string>('all');
   let pollInterval: ReturnType<typeof setInterval> | null = null;
+  // H-33: show-history toggle (false = current only; true = include superseded).
+  let showHistory = $state(false);
+  // H-33: per-row pending-action state (prevents double-clicks).
+  let pendingAction = $state<Record<string, boolean>>({});
 
   // F-12 — semantic-contradiction section state.
   let semanticPairs = $state<SemanticContradictionDto[]>([]);
@@ -80,15 +85,29 @@
 
   async function reload() {
     try {
-      const res = await invoke<MemoryFactsResponse>('get_memory_facts', {
-        userId: null,
-        scope: scopeFilter === 'all' ? null : scopeFilter,
-        factType: typeFilter === 'all' ? null : typeFilter,
-        limit: 200,
-      });
-      storePath = res.store_path;
-      storeJustCreated = res.store_just_created;
-      facts = res.facts;
+      if (showHistory) {
+        const res = await invoke<MemoryFactsHistoryResponse>('get_memory_facts_with_history', {
+          userId: null,
+          scope: scopeFilter === 'all' ? null : scopeFilter,
+          factType: typeFilter === 'all' ? null : typeFilter,
+          limit: 200,
+        });
+        storePath = res.store_path;
+        storeJustCreated = false;
+        facts = res.facts;
+        historyFacts = res.history_facts;
+      } else {
+        const res = await invoke<MemoryFactsResponse>('get_memory_facts', {
+          userId: null,
+          scope: scopeFilter === 'all' ? null : scopeFilter,
+          factType: typeFilter === 'all' ? null : typeFilter,
+          limit: 200,
+        });
+        storePath = res.store_path;
+        storeJustCreated = res.store_just_created;
+        facts = res.facts;
+        historyFacts = [];
+      }
       loadError = null;
     } catch (e) {
       loadError = String(e);
@@ -98,9 +117,7 @@
     await reloadSemanticContradictions();
   }
 
-  // F-12 — load the semantic-contradiction pairs (SSB viewer feed). Failures
-  // are swallowed (the section renders an empty state) so a viewer error
-  // never blocks the facts table above.
+  // F-12 — semantic-contradiction pairs.
   async function reloadSemanticContradictions() {
     try {
       const res = await invoke<SemanticContradictionsResponse>(
@@ -115,10 +132,40 @@
     }
   }
 
+  // H-33: forget a fact (soft-close + Forgotten beacon).
+  async function forgetFact(factId: string) {
+    if (pendingAction[factId]) return;
+    pendingAction = { ...pendingAction, [factId]: true };
+    try {
+      await invoke('memory_forget', { factId });
+      await reload();
+    } catch (e) {
+      loadError = `forget failed: ${String(e)}`;
+    } finally {
+      const { [factId]: _removed, ...rest } = pendingAction;
+      pendingAction = rest;
+    }
+  }
+
+  // H-33: pin or unpin a fact.
+  async function pinFact(factId: string, pin: boolean) {
+    if (pendingAction[factId]) return;
+    pendingAction = { ...pendingAction, [factId]: true };
+    try {
+      await invoke('memory_pin', { factId, pinned: pin });
+      await reload();
+    } catch (e) {
+      loadError = `pin failed: ${String(e)}`;
+    } finally {
+      const { [factId]: _removed, ...rest } = pendingAction;
+      pendingAction = rest;
+    }
+  }
+
   $effect(() => {
-    // Refire on filter changes.
     void scopeFilter;
     void typeFilter;
+    void showHistory;
     reload();
   });
 
@@ -172,7 +219,6 @@
       list.push(r);
       buckets.set(r.fact_type, list);
     }
-    // Preserve canonical ordering from FACT_TYPES, then any leftover types.
     const out: Array<{ type: string; rows: MemoryFactDto[] }> = [];
     for (const t of FACT_TYPES) {
       const xs = buckets.get(t);
@@ -206,6 +252,16 @@
           {/each}
         </select>
       </label>
+      <!-- H-33: show-history toggle -->
+      <button
+        class="refresh-btn"
+        class:active={showHistory}
+        type="button"
+        onclick={() => { showHistory = !showHistory; }}
+        title="Toggle superseded / history rows"
+      >
+        {showHistory ? 'hide history' : 'show history'}
+      </button>
       <button class="refresh-btn" type="button" onclick={reload}>refresh</button>
     </div>
   </div>
@@ -221,12 +277,13 @@
     <div class="muted-small">loading…</div>
   {:else if loadError}
     <div class="muted-small error">load failed: {loadError}</div>
-  {:else if facts.length === 0}
+  {:else if facts.length === 0 && historyFacts.length === 0}
     <div class="muted-small">
       No facts yet. The Mem0-style extractor populates this drawer once a
       preference / opinion / expertise signal is detected in a chat turn.
     </div>
   {:else}
+    <!-- Active facts -->
     {#each groupedByType(facts) as group}
       <div class="group">
         <div class="group-head">
@@ -234,11 +291,28 @@
           <span class="count-pill">{group.rows.length}</span>
         </div>
         <div class="rows">
-          {#each group.rows as f}
+          {#each group.rows as f (f.fact_id)}
             <div class="row band-{bandFor(f)}">
               <div class="row-head">
                 <span class="key mono">{f.key}</span>
-                <span class="scope-pill {f.scope}">{f.scope}</span>
+                <div class="row-actions">
+                  <span class="scope-pill {f.scope}">{f.scope}</span>
+                  <!-- H-33: per-row governance buttons -->
+                  <button
+                    class="action-btn pin-btn"
+                    type="button"
+                    title="Pin this fact (decay skip)"
+                    disabled={!!pendingAction[f.fact_id]}
+                    onclick={() => pinFact(f.fact_id, true)}
+                  >📌</button>
+                  <button
+                    class="action-btn forget-btn"
+                    type="button"
+                    title="Forget this fact (soft-close)"
+                    disabled={!!pendingAction[f.fact_id]}
+                    onclick={() => forgetFact(f.fact_id)}
+                  >✕</button>
+                </div>
               </div>
               <div class="value">{summarizeValue(f.value)}</div>
               <div class="row-meta">
@@ -258,11 +332,34 @@
         </div>
       </div>
     {/each}
+
+    <!-- H-33: superseded / history rows (visible only when showHistory=true) -->
+    {#if showHistory && historyFacts.length > 0}
+      <div class="group history-group">
+        <div class="group-head">
+          <span class="type-tag history-tag">SUPERSEDED (H-33)</span>
+          <span class="count-pill">{historyFacts.length}</span>
+        </div>
+        <div class="rows">
+          {#each historyFacts as f (f.fact_id)}
+            <div class="row row-superseded band-below">
+              <div class="row-head">
+                <span class="key mono muted">{f.key}</span>
+                <span class="superseded-tag">[SUPERSEDED{f.superseded_by ? ` → ${f.superseded_by.slice(0, 8)}` : ''}]</span>
+              </div>
+              <div class="value muted">{summarizeValue(f.value)}</div>
+              <div class="row-meta">
+                <span>trust {f.trust_score.toFixed(2)}</span>
+                <span>ingested {humanizeRelative(f.ingested_at_ms)}</span>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
   {/if}
 
-  <!-- F-12 — Semantic Contradictions (cross-key, deterministic-NLI second
-       pass). Each row is a memory_conflict_detected SSB beacon with
-       conflict_kind="semantic_contradiction". -->
+  <!-- F-12 — Semantic Contradictions -->
   <div class="group semantic">
     <div class="group-head">
       <span class="type-tag">SEMANTIC CONTRADICTIONS (F-12)</span>
@@ -273,8 +370,7 @@
     {:else if semanticPairs.length === 0}
       <div class="muted-small">
         No semantic contradictions detected. The deterministic-NLI second pass
-        flags cross-key contradictions (e.g. prefers_db=postgres vs
-        migrated_off=postgres) during the memory tick.
+        flags cross-key contradictions during the memory tick.
       </div>
     {:else}
       <div class="rows">
@@ -363,6 +459,9 @@
     letter-spacing: 0.08em;
     color: var(--accent, #6dafe2);
   }
+  .history-tag {
+    color: var(--fg-muted, #888);
+  }
   .count-pill {
     padding: 0 6px;
     border: 1px solid var(--border, #333);
@@ -389,14 +488,55 @@
   .row.band-below {
     border-left-color: var(--danger, #e26d6d);
   }
+  .row-superseded {
+    opacity: 0.55;
+  }
   .row-head {
     display: flex;
     justify-content: space-between;
     align-items: center;
     font-size: 12px;
   }
+  /* H-33: row-actions wraps scope-pill + action buttons */
+  .row-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .action-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 11px;
+    line-height: 1;
+    opacity: 0.5;
+    transition: opacity 0.15s;
+  }
+  .action-btn:hover:not(:disabled) {
+    opacity: 1;
+  }
+  .action-btn:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
+  }
+  .forget-btn {
+    color: var(--danger, #e26d6d);
+    font-weight: bold;
+  }
+  .pin-btn {
+    color: var(--accent, #6dafe2);
+  }
+  .superseded-tag {
+    font-size: 10px;
+    color: var(--warn, #e2c66d);
+    font-family: var(--font-mono);
+  }
   .key {
     color: var(--fg, #ddd);
+  }
+  .muted {
+    color: var(--fg-muted, #888);
   }
   .scope-pill {
     font-size: 10px;
@@ -440,5 +580,9 @@
   }
   .refresh-btn:hover {
     background: var(--bg-elevated, #161616);
+  }
+  .refresh-btn.active {
+    border-color: var(--accent, #6dafe2);
+    color: var(--accent, #6dafe2);
   }
 </style>

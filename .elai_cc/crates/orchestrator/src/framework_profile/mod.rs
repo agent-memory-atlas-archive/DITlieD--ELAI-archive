@@ -43,7 +43,10 @@ pub mod adapter;
 pub mod profile;
 pub mod registry;
 
-pub use adapter::{FrameworkAdapter, FrameworkAdapterError};
+pub use adapter::{
+    server_entry_seed_for, FrameworkAdapter, FrameworkAdapterError, GenericFrameworkAdapter,
+    SERVER_ENTRY_SEEDS,
+};
 pub use profile::{
     framework_for_project_class, FrameworkProfile, FrameworkProfileError, SecurityCheckId,
     PROJECT_CLASS_TO_FRAMEWORK,

@@ -228,6 +228,14 @@ pub struct HeldOutTask {
     /// hash) so the BAI evaluator can re-feed it to the verifier without
     /// a second store lookup.
     pub body: String,
+    /// H-47: Optional stable template identifier. When `Some`, the task was
+    /// generated from a named template and `eval_firewall::regenerate_instance`
+    /// may produce a fresh variant per generation (GSM-Symbolic 2410.05229
+    /// score-time regeneration). `None` means the body is authoritative and
+    /// no template-regen applies. The field is backwards-compatible (`serde`
+    /// default = `None`), so existing serialized tasks deserialize unchanged.
+    #[serde(default)]
+    pub template_id: Option<String>,
 }
 
 impl HeldOutTask {
@@ -524,6 +532,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> Result<HeldOutTask, rusqlite::Error> 
         eligibility_window_ms,
         ngram_signature: ngram_signature_from_bytes(&sig_bytes),
         body,
+        template_id: None,
     })
 }
 
@@ -746,6 +755,7 @@ pub fn build_task(
         eligibility_window_ms,
         ngram_signature,
         body: normalize_text(&body),
+        template_id: None,
     }
 }
 

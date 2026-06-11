@@ -1407,6 +1407,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-plugin-fs",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1575,6 +1576,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "windows-sys 0.59.0",
+ "zstd",
 ]
 
 [[package]]
@@ -1694,6 +1696,7 @@ dependencies = [
  "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
+ "elai-safety",
  "git2",
  "postcard",
  "regex",
@@ -1785,6 +1788,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
+ "tracing",
  "tracing-test",
  "uuid",
 ]

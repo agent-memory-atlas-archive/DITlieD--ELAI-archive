@@ -1,0 +1,7 @@
+pinned_hash = "4fc8103a9b19966737e82578cb998197df0da3807aebfeba946cba5313e11555"
+pinned_at_ms = 1780633357558
+server_url = "mcp-stdio://alpha"
+
+[[pinned_tools]]
+name = "echo"
+description = "Echo tool for alpha"

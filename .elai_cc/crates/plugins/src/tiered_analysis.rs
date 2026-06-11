@@ -8,7 +8,7 @@
 //! No LLM in the validation hot path. All findings written to SSB as 'finding' entries.
 
 use blake3;
-use elai_rules::predicate::VerdictResult;
+use elai_rules::predicate::{EscalationTarget, VerdictResult};
 use elai_rules::rule_engine::{EvaluationContext, FsmPhaseBit, RuleEngine};
 use rustc_hash::FxHashMap;
 use std::path::Path;
@@ -424,6 +424,17 @@ pub enum HookVerdict {
     Allow,
     Warn { message: String, pattern_hash: String },
     Block { message: String, pattern_hash: String },
+    /// A rule predicate resolved to `VerdictResult::Escalate`: the hook is
+    /// not confident enough to Allow or Block on its own and the decision
+    /// must be routed to `target` (auditor / human / a named next-tier rule).
+    /// Previously this outcome was silently folded down to `Allow`, losing
+    /// the escalation signal; carrying `target` through preserves it. See
+    /// `elai_rules::predicate::EscalationTarget`.
+    Escalate {
+        target: EscalationTarget,
+        message: String,
+        pattern_hash: String,
+    },
 }
 
 impl HookVerdict {
@@ -437,11 +448,17 @@ impl HookVerdict {
         matches!(self, Self::Warn { .. })
     }
 
+    /// Returns true if this verdict escalates the decision to another target.
+    pub fn is_escalate(&self) -> bool {
+        matches!(self, Self::Escalate { .. })
+    }
+
     /// Converts to a generic error message for agents (sanitization).
     pub fn to_agent_error(&self) -> String {
         match self {
             Self::Block { .. } => "Tool call rejected by policy".to_string(),
             Self::Warn { .. } => "Tool call warning issued".to_string(),
+            Self::Escalate { .. } => "Tool call escalated for review".to_string(),
             Self::Allow => String::new(),
         }
     }
@@ -566,21 +583,35 @@ impl T1Hook {
 
         let verdicts = self.rule_engine.evaluate(&self.loaded_rules, &ctx)?;
 
-        // Find the most severe verdict from rules (BLOCK > WARN > ALLOW)
+        // Find the most severe verdict from rules (BLOCK > ESCALATE > WARN > ALLOW).
+        // VerdictResult::Escalate carries an EscalationTarget that must be
+        // preserved through to HookVerdict::Escalate; folding it down to Allow
+        // (the previous behaviour) silently dropped the escalation signal.
         let mut final_verdict = verdicts
             .into_iter()
             .fold(HookVerdict::Allow, |acc, verdict| {
-                match (acc.clone(), verdict.result) {
-                    (HookVerdict::Block { .. }, _) => acc,
-                    (_, VerdictResult::Block) => HookVerdict::Block {
+                // A hard BLOCK already accumulated wins outright; nothing
+                // downgrades it (checked by-ref so `acc` is not moved here).
+                if acc.is_block() {
+                    return acc;
+                }
+                match verdict.result {
+                    VerdictResult::Block => HookVerdict::Block {
                         message: "Rule violation detected".to_string(),
                         pattern_hash: Self::hash_pattern(&verdict.rule_id, &verdict.evidence),
                     },
-                    (_, VerdictResult::Warn) => HookVerdict::Warn {
+                    VerdictResult::Escalate(target) => HookVerdict::Escalate {
+                        target,
                         message: verdict.evidence.clone(),
                         pattern_hash: Self::hash_pattern(&verdict.rule_id, &verdict.evidence),
                     },
-                    _ => acc,
+                    // An Escalate already chosen outranks a later Warn/Allow.
+                    VerdictResult::Warn if acc.is_escalate() => acc,
+                    VerdictResult::Warn => HookVerdict::Warn {
+                        message: verdict.evidence.clone(),
+                        pattern_hash: Self::hash_pattern(&verdict.rule_id, &verdict.evidence),
+                    },
+                    VerdictResult::Allow => acc,
                 }
             });
 
@@ -711,10 +742,13 @@ impl T1Hook {
     }
 
     /// Merge two verdicts, keeping the most severe.
+    /// Severity order: Block > Escalate > Warn > Allow.
     fn merge_verdicts(a: HookVerdict, b: HookVerdict) -> HookVerdict {
         match (&a, &b) {
             (HookVerdict::Block { .. }, _) => a,
             (_, HookVerdict::Block { .. }) => b,
+            (HookVerdict::Escalate { .. }, _) => a,
+            (_, HookVerdict::Escalate { .. }) => b,
             (HookVerdict::Warn { .. }, _) => a,
             (_, HookVerdict::Warn { .. }) => b,
             _ => a,
@@ -2209,12 +2243,20 @@ impl TieredAnalysis {
             None
         };
 
-        // Final verdict: BLOCK takes precedence
+        // Final verdict severity order: BLOCK > ESCALATE > WARN > ALLOW.
+        // Escalate ranks above Warn so a tier that asks for human/auditor
+        // review is not silently downgraded to a warning or dropped to Allow.
         let final_verdict = if t1_verdict.is_block() {
             t1_verdict.clone()
         } else if let Some(ref v @ HookVerdict::Block { .. }) = t2_verdict {
             v.clone()
         } else if let Some(ref v @ HookVerdict::Block { .. }) = t3_verdict {
+            v.clone()
+        } else if t1_verdict.is_escalate() {
+            t1_verdict.clone()
+        } else if let Some(ref v @ HookVerdict::Escalate { .. }) = t2_verdict {
+            v.clone()
+        } else if let Some(ref v @ HookVerdict::Escalate { .. }) = t3_verdict {
             v.clone()
         } else if t1_verdict.is_warn() {
             t1_verdict.clone()

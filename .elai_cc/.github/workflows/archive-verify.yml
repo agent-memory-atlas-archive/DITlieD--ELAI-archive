@@ -1,0 +1,89 @@
+# D-8 Archive Verify CI (.elai_cc-scoped copy)
+#
+# Runs `elai archive verify --fail-fast` against the JSONL ArchiveChain on
+# every push and pull_request. Surfaces lobotomy attacks (hash mismatches,
+# broken parent links, duplicate hashes, malformed JSONL) at PR time so
+# tampered chains never land on main.
+#
+# This is the .elai_cc-internal copy of the root archive-verify.yml. It is
+# scoped to the .elai_cc cargo workspace: all paths are relative to .elai_cc
+# (the working-directory default), so the same file is correct whether the
+# repo is checked out with .elai_cc as a subdirectory or on its own.
+#
+# Grounding: arxiv:2507.05619 (T1) cryptographic-checksum recommendation +
+# DGM §5 archive practice are supporting documentation; the workflow
+# itself is ELAI-specific tooling (no paper specifies it).
+#
+# Scope:
+#   - cargo build --release --bin elai -p elai-cli (cli crate only)
+#   - elai archive verify --path archive/reasoning-templates.jsonl
+#     --fail-fast (skipped if the archive file is absent so PRs that don't
+#     touch the archive aren't blocked by a missing fixture; an absent
+#     archive is itself a clean exit 0 per verify_empty_archive_is_clean).
+#
+# Runner: ubuntu-latest (matches modern GHA defaults). Cross-platform
+# smoke is covered by the orchestrator's existing windows.yml when needed.
+
+name: archive-verify
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: .elai_cc
+
+jobs:
+  archive-verify:
+    name: D-8 archive verify
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .elai_cc/target/
+          key: ${{ runner.os }}-cargo-archive-verify-${{ hashFiles('.elai_cc/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-archive-verify-
+
+      - name: Check archive presence
+        id: archive_presence
+        run: |
+          if [ -f archive/reasoning-templates.jsonl ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "Archive present; verify will run."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Archive file absent (.elai_cc/archive/reasoning-templates.jsonl); skipping verify."
+          fi
+
+      - name: Build elai CLI
+        if: steps.archive_presence.outputs.present == 'true'
+        run: cargo build --release --bin elai -p elai-cli
+
+      - name: Verify archive chain integrity
+        if: steps.archive_presence.outputs.present == 'true'
+        run: |
+          ./target/release/elai archive verify \
+            --path archive/reasoning-templates.jsonl \
+            --fail-fast
+        # Exit 0 = clean chain (no tampers, no broken parents, no
+        # duplicate hashes, no malformed JSONL).
+        # Exit 1 = at least one ArchiveVerifyError detected; CI fails.

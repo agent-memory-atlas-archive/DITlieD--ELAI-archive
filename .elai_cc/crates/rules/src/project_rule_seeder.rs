@@ -32,6 +32,47 @@ const SEEDED_TIER: u8 = 2;
 const SEEDED_SOURCE: &str = "SEED";
 
 /// Initial status: SHADOW (logged but not blocking until promoted).
+///
+/// # 3F.shadow DECISION (SHADOW-not-ACTIVE seed behavior)
+///
+/// Every rule this seeder inserts -- convention-derived (`seed_rules`) AND the
+/// immutable security/finance gates (`seed_security_rules`, `seed_deflation_
+/// rules`, ...) -- enters at status=SHADOW, NOT status=ACTIVE. This is a
+/// deliberate trust decision, not an oversight:
+///
+///   * A SHADOW rule is OBSERVED but does NOT block. It accrues counterfactual
+///     evidence (true/false positives) over real evaluations; only after
+///     `AUTO_PROMOTE_SUCCESSES` (5) true positives WITH a non-None
+///     counterfactual_causal_rate does `check_and_promote_seeded_rules`
+///     transition it to ACTIVE (the enforcing state). 3 false positives
+///     auto-retire it. Auto-derived rules are MEDIUM trust (source=SEED) and
+///     must EARN enforcement; shipping them ACTIVE would let a noisy regex
+///     block real work on day one.
+///
+///   * SECURITY/FINANCE seeds also ship SHADOW. They are mutable=0 (lifecycle-
+///     immune: cannot be auto-retired or overridden), but they still start
+///     SHADOW so a fresh project's first runs surface false positives before
+///     the CWE/deflation gates begin hard-blocking. Their LOCKED thresholds are
+///     enforced by dedicated Rust gates (deflation_gate / leakage_gate /
+///     trading_null_gate) that evaluate their constants in-code and do NOT read
+///     this rules.db row at decision time (the seed row is documentation +
+///     the vibesec blake3 seed-integrity baseline), so the SHADOW status of the
+///     ROW does not weaken those gates.
+///
+/// # 3J.WIRE.RULES SECURITY FINDING (no evaluation-bypass gap)
+///
+/// SHADOW does NOT create a "should-block-but-doesn't" bypass. The SOLE
+/// production query that feeds the rule engine is
+/// `lifecycle::fetch_all_active_rules`, whose SQL is
+/// `... FROM rules WHERE status = 'ACTIVE' ...`. SHADOW rows are NEVER loaded
+/// into the evaluation set, so a SHADOW rule is never in a position to block AND
+/// is never EXPECTED to block -- there is no path where a SHADOW rule "should
+/// have blocked but was silently skipped." The in-memory
+/// `RuleEngine::get_active_rules` filters only by phase_mask + domain (it
+/// assumes the caller already status-filtered via fetch_all_active_rules), so
+/// the status gate lives at the DB boundary, fail-closed by construction.
+/// VERDICT: NO GAP. (Verified base-phase-3 PART 2: rule_engine.rs:283 doc-SQL,
+/// lifecycle.rs:317-341 production query, project_rule_seeder.rs status=SHADOW.)
 const SEEDED_STATUS: &str = "SHADOW";
 
 // ---------------------------------------------------------------------------
@@ -441,6 +482,1017 @@ impl ProjectRuleSeeder {
             "security rule seeding complete"
         );
         Ok(inserted)
+    }
+
+    // -----------------------------------------------------------------------
+    // Finance / deflation seed rules (H-18) — mutable=0, lifecycle-immune
+    // -----------------------------------------------------------------------
+
+    /// Seed the H-18 deflation promotion gate rule into the rules DB with `mutable=0`.
+    ///
+    /// This is the LOCKED COMPOSITE gate (FIN-DEFL-001) that blocks strategy
+    /// promotion unless DSR >= 0.95 AND PBO < 0.5 AND MinTRL satisfied. The
+    /// `mutable=0` flag makes the row lifecycle-immune (cannot be auto-retired
+    /// or mutated by the self-mod loop — TD-2).
+    ///
+    /// # DOMAIN NOTE
+    /// Uses domain="trading" (NOT "finance") because "finance" is not in
+    /// DOMAIN_KEYWORDS (rule_engine.rs:206-214). "trading" is detected by
+    /// path keywords ["trading","backtest","signal","pipeline"]. The rule
+    /// also fires unconditionally for any promotion check regardless of
+    /// domain because `evaluate_deflation` calls it directly.
+    ///
+    /// # Canonical thresholds (LOCKED, from crates/rules/seed/finance/deflation_promotion.toml)
+    ///   - DSR_THRESHOLD >= 0.95 (ELAI default, conservative vs Harvey-Liu t>3.0 = DSR>=0.9987)
+    ///   - PBO_THRESHOLD <  0.50 (Bailey, Borwein, Lopez de Prado, Zhu 2015)
+    ///
+    /// Idempotent: rows whose `rule_id` already exists are silently skipped.
+    /// Returns the count of newly inserted rows (0 if already present).
+    pub fn seed_deflation_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        const RULE_ID: &str = "FIN-DEFL-001";
+        const DOMAIN: &str = "trading";
+        const TIER: u8 = 1;
+        const SEVERITY: &str = "BLOCK";
+        const TITLE: &str =
+            "Strategy promotion requires DSR >= 0.95, PBO < 0.5, and MinTRL satisfied";
+        const DESCRIPTION: &str = concat!(
+            "LOCKED COMPOSITE promotion gate (H-18, T-2). ",
+            "DSR >= 0.95 (Deflated Sharpe, selection-bias corrected, Bailey & Lopez de Prado 2014). ",
+            "PBO < 0.5 (Prob of Backtest Overfitting, CSCV, Bailey et al. 2015). ",
+            "T >= MinTRL (minimum track record length). ",
+            "Fail-closed on TrialCountMissing (TD-1) + absent PBO (R1/R2). ",
+            "mutable=0: LOCKED, lifecycle-immune (TD-2). ",
+            "See crates/rules/seed/finance/deflation_promotion.toml."
+        );
+        // Predicate JSON: COMPOSITE(AND) wrapping three MetricGate children.
+        // TrialCountMissing + absent-PBO are enforced at the Rust gate level
+        // before the metric values are populated, so they are not representable
+        // as MetricGate children (they are enum-level, not scalar).
+        const PREDICATE_JSON: &str = concat!(
+            r#"{"type":"composite","operator":"and","children":["#,
+            r#"{"type":"metric_gate","metric_name":"dsr","operator":"gte","threshold":0.95,"source":"deflation_gate"},"#,
+            r#"{"type":"metric_gate","metric_name":"pbo","operator":"lt","threshold":0.5,"source":"deflation_gate"},"#,
+            r#"{"type":"metric_gate","metric_name":"t_periods","operator":"gte","threshold":1.0,"source":"deflation_gate"}"#,
+            r#"]}"#,
+        );
+
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+            rusqlite::params![RULE_ID],
+            |row| row.get(0),
+        )?;
+        if exists {
+            debug!(rule_id = RULE_ID, "deflation seed rule already exists, skipping");
+            return Ok(0);
+        }
+
+        conn.execute(
+            "INSERT INTO rules \
+             (rule_id, domain, tier, status, title, description, predicate, \
+              phase_mask, severity, mutable, created_at, source) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'SEED')",
+            rusqlite::params![
+                RULE_ID,
+                DOMAIN,
+                TIER,
+                SEEDED_STATUS,
+                TITLE,
+                DESCRIPTION,
+                PREDICATE_JSON,
+                u32::MAX, // all phases
+                SEVERITY,
+                now,
+            ],
+        )?;
+
+        debug!(rule_id = RULE_ID, "inserted LOCKED deflation promotion seed rule (mutable=0)");
+        Ok(1)
+    }
+
+    /// Seed the H-19 reusable-holdout query-budget rule into the rules DB with `mutable=0`.
+    ///
+    /// This is the LOCKED Thresholdout DP gate (FIN-HOLDOUT-001) that blocks an out-of-sample
+    /// holdout query once the Thresholdout budget is spent: `budget_remaining > 0` must hold.
+    /// `budget_remaining = HOLDOUT_BUDGET_TOTAL - queries_spent`, where `queries_spent` is the
+    /// append-only COUNT of above-threshold (budget-consuming) queries. Once exhausted the OOS
+    /// query is REFUSED (budget_exhausted) — the holdout cannot be refreshed in-place. The
+    /// `mutable=0` flag makes the row lifecycle-immune (TD-2).
+    ///
+    /// # DOMAIN NOTE
+    /// Uses domain="trading" (NOT "finance") for the same reason as
+    /// [`Self::seed_deflation_rules`]: "finance" is not in DOMAIN_KEYWORDS
+    /// (rule_engine.rs:206-214); "trading" matches the
+    /// ["trading","backtest","signal","pipeline"] path keywords.
+    ///
+    /// # Enforcement boundary
+    /// The actual exhaustion refusal is enforced at the Rust gate level
+    /// (crates/orchestrator/src/holdout_budget.rs::query_holdout) BEFORE the rules engine; the
+    /// MetricGate here is the rules-engine echo + the vibesec blake3 seed-integrity baseline.
+    /// The LOCKED Thresholdout parameters (Theorem 25, arXiv:1506.02629) are implemented as
+    /// named Rust constants (HOLDOUT_BUDGET_TOTAL, HOLDOUT_TAU, T_FRACTION_OF_TAU, the noise
+    /// multipliers, SIGMA_DENOMINATOR_CONSTANT). See
+    /// crates/rules/seed/finance/holdout_budget.toml.
+    ///
+    /// Idempotent: rows whose `rule_id` already exists are silently skipped.
+    /// Returns the count of newly inserted rows (0 if already present).
+    pub fn seed_holdout_budget_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        const RULE_ID: &str = "FIN-HOLDOUT-001";
+        const DOMAIN: &str = "trading";
+        const TIER: u8 = 1;
+        const SEVERITY: &str = "BLOCK";
+        const TITLE: &str =
+            "OOS holdout query requires budget_remaining > 0 (Thresholdout exhaustion)";
+        const DESCRIPTION: &str = concat!(
+            "LOCKED reusable-holdout query-budget gate (H-19, TB-1 deployment-trust half). ",
+            "budget_remaining = HOLDOUT_BUDGET_TOTAL - queries_spent must be > 0; once the ",
+            "Thresholdout budget B is spent the OOS query is REFUSED (budget_exhausted) -- the ",
+            "honest exhaustion limit, the holdout cannot be refreshed in-place. ",
+            "Thresholdout DP, Dwork et al. NIPS 2015 (arXiv:1506.02629), Theorem 25: ",
+            "sigma=tau/(96*ln(4*m/beta)), T=3*tau/4, Laplace noise scales 2*sigma/4*sigma/sigma. ",
+            "Enforced at the Rust gate level (holdout_budget.rs::query_holdout) BEFORE the rules ",
+            "engine. mutable=0: LOCKED, lifecycle-immune (TD-2). Fresh-holdout provisioning is a ",
+            "human/frozen Layer-3 step (R8 residue). ",
+            "See crates/rules/seed/finance/holdout_budget.toml."
+        );
+        // A single MetricGate: budget_remaining must be > 0 to pass; <= 0 => Block
+        // (budget_exhausted). The Rust gate fail-closes on BudgetMissing/exhausted BEFORE the
+        // metric is populated; this is the rules-engine echo.
+        const PREDICATE_JSON: &str = concat!(
+            r#"{"type":"metric_gate","metric_name":"budget_remaining","operator":"gt","#,
+            r#""threshold":0.0,"source":"holdout_budget"}"#,
+        );
+
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+            rusqlite::params![RULE_ID],
+            |row| row.get(0),
+        )?;
+        if exists {
+            debug!(rule_id = RULE_ID, "holdout budget seed rule already exists, skipping");
+            return Ok(0);
+        }
+
+        conn.execute(
+            "INSERT INTO rules \
+             (rule_id, domain, tier, status, title, description, predicate, \
+              phase_mask, severity, mutable, created_at, source) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'SEED')",
+            rusqlite::params![
+                RULE_ID,
+                DOMAIN,
+                TIER,
+                SEEDED_STATUS,
+                TITLE,
+                DESCRIPTION,
+                PREDICATE_JSON,
+                u32::MAX, // all phases
+                SEVERITY,
+                now,
+            ],
+        )?;
+
+        debug!(rule_id = RULE_ID, "inserted LOCKED holdout budget seed rule (mutable=0)");
+        Ok(1)
+    }
+
+    /// Seed the H-29 drift-interlock rules into the rules DB with `mutable=0`.
+    ///
+    /// These are the LOCKED rows for the master deployment-trust interlock (FIN-DRIFT-001 +
+    /// FIN-DRIFT-002, the T-13 drift state machine). FIN-DRIFT-001 is the population-stability
+    /// axis (PSI on inputs+outputs must be `< PSI_HALT_BAND = 0.25` to resume); FIN-DRIFT-002 is
+    /// the schema-fingerprint axis (the live vendor schema's blake3 must match the FROZEN
+    /// baseline). The full four-axis interlock (PSI + schema-fingerprint + rolling-14d deviation
+    /// + 90d TTL + composed G-10/D-7/H-18 signals) is enforced by the Rust gate
+    /// (`drift_interlock.rs::evaluate_drift_interlock`), which DEFAULT-HALTS on missing /
+    /// un-evaluable evidence; these seed rows are the rules-engine echo + the vibesec blake3
+    /// seed-integrity baseline. The `mutable=0` flag makes the rows lifecycle-immune (cannot be
+    /// auto-retired or mutated -- TD-2).
+    ///
+    /// # DOMAIN NOTE
+    /// Uses domain="trading" (NOT "finance") for the same reason as
+    /// [`Self::seed_deflation_rules`]: "finance" is not in DOMAIN_KEYWORDS
+    /// (rule_engine.rs:206-214); "trading" matches the
+    /// ["trading","backtest","signal","pipeline"] path keywords.
+    ///
+    /// Idempotent: rows whose `rule_id` already exists are silently skipped.
+    /// Returns the count of newly inserted rows (0 if all already present).
+    pub fn seed_drift_interlock_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        const DOMAIN: &str = "trading";
+        const TIER: u8 = 1;
+        const SEVERITY: &str = "BLOCK";
+
+        // FIN-DRIFT-001: the population-stability (PSI) axis.
+        const PSI_RULE_ID: &str = "FIN-DRIFT-001";
+        const PSI_TITLE: &str = concat!(
+            "Live-trading resume requires PSI < 0.25 on input AND output distributions ",
+            "(population stability)"
+        );
+        const PSI_DESCRIPTION: &str = concat!(
+            "LOCKED population-stability axis of the H-29 drift interlock (T-13). ",
+            "PSI = sum_bins (actual_pct - expected_pct) * ln(actual_pct/expected_pct); ",
+            "PSI >= 0.25 (PSI_HALT_BAND) is a major shift => HALT, 0.10 <= PSI < 0.25 is a ",
+            "Warning (not latched), an empty/zero bin is fail-closed (floored toward HALT, never ",
+            "NaN). Enforced at the Rust gate level (drift_interlock.rs::evaluate_drift_interlock), ",
+            "which DEFAULT-HALTS on missing/un-evaluable evidence (R1/R2). mutable=0: LOCKED, ",
+            "lifecycle-immune (TD-2). A false HALT is the SAFE failure; the pre-label P(Y|X) ",
+            "concept-drift residual routes to a T3 conformal advisory (halt within ONE ",
+            "realized-label cycle, NOT never trade a regime break). ",
+            "See crates/rules/seed/finance/drift_interlock.toml."
+        );
+        const PSI_PREDICATE_JSON: &str = concat!(
+            r#"{"type":"metric_gate","metric_name":"drift_psi_max","operator":"lt","#,
+            r#""threshold":0.25,"source":"drift_interlock"}"#,
+        );
+
+        // FIN-DRIFT-002: the schema-fingerprint + TTL/deviation axes.
+        const SCHEMA_RULE_ID: &str = "FIN-DRIFT-002";
+        const SCHEMA_TITLE: &str = concat!(
+            "Live-trading resume requires a matching vendor-schema fingerprint (blake3) and a ",
+            "fresh 90d validation"
+        );
+        const SCHEMA_DESCRIPTION: &str = concat!(
+            "LOCKED schema-fingerprint + validation-TTL + rolling-14d-deviation axes of the H-29 ",
+            "drift interlock (T-13). The live vendor schema's blake3 fingerprint must equal the ",
+            "FROZEN baseline (a mismatch = vendor drift => HALT; blake3 ONLY); the last ",
+            "validation must be newer than the 90d TTL (VALIDATION_TTL_DAYS, ClockProvider) which ",
+            "forces an H-18 deflated-Sharpe re-check; the rolling-14d live-vs-backtest deviation ",
+            "must stay within DEVIATION_HALT_BAND. Enforced at the Rust gate level ",
+            "(drift_interlock.rs::evaluate_drift_interlock); missing/un-evaluable evidence on ANY ",
+            "axis => HALT (DEFAULT-HALTED, R1/R2). The HALTED state is a persistent ",
+            "journal-derived latch (COUNT('halt') > COUNT('unlock')) that SURVIVES restart; the ",
+            "unlock is a human/frozen Layer-3 step requiring fresh re-validation evidence (R8 ",
+            "residue). mutable=0: LOCKED, lifecycle-immune (TD-2). ",
+            "See crates/rules/seed/finance/drift_interlock.toml."
+        );
+        const SCHEMA_PREDICATE_JSON: &str = concat!(
+            r#"{"type":"schema_required","schema_id":"drift_interlock_vendor_schema","#,
+            r#""source":"drift_interlock"}"#,
+        );
+
+        let mut inserted = 0usize;
+        for (rule_id, title, description, predicate_json) in [
+            (PSI_RULE_ID, PSI_TITLE, PSI_DESCRIPTION, PSI_PREDICATE_JSON),
+            (
+                SCHEMA_RULE_ID,
+                SCHEMA_TITLE,
+                SCHEMA_DESCRIPTION,
+                SCHEMA_PREDICATE_JSON,
+            ),
+        ] {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+                rusqlite::params![rule_id],
+                |row| row.get(0),
+            )?;
+            if exists {
+                debug!(rule_id, "drift interlock seed rule already exists, skipping");
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO rules \
+                 (rule_id, domain, tier, status, title, description, predicate, \
+                  phase_mask, severity, mutable, created_at, source) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'SEED')",
+                rusqlite::params![
+                    rule_id,
+                    DOMAIN,
+                    TIER,
+                    SEEDED_STATUS,
+                    title,
+                    description,
+                    predicate_json,
+                    u32::MAX, // all phases
+                    SEVERITY,
+                    now,
+                ],
+            )?;
+            debug!(rule_id, "inserted LOCKED drift interlock seed rule (mutable=0)");
+            inserted += 1;
+        }
+        Ok(inserted)
+    }
+
+    /// Seed the H-20 leakage static-analysis COMPOSITE rule into the rules DB
+    /// with `mutable=0`.
+    ///
+    /// This is the LOCKED COMPOSITE gate (FIN-LEAK-001) that blocks ML-pipeline
+    /// / backtest promotion when a statically-SOUND data-leakage class fires
+    /// (L1.1 no test set, L1.2 preprocessing-before-split, L1.3
+    /// feature-selection-before-split). The `mutable=0` flag makes the row
+    /// lifecycle-immune (cannot be auto-retired or mutated — TD-2).
+    ///
+    /// # DOMAIN NOTE
+    /// Uses domain="trading" (NOT "finance") for the same reason as
+    /// [`Self::seed_deflation_rules`]: "finance" is not in DOMAIN_KEYWORDS
+    /// (rule_engine.rs:206-214); "trading" matches the
+    /// ["trading","backtest","signal","pipeline"] path keywords. The rule also
+    /// fires unconditionally for any leakage check because
+    /// `leakage_gate::evaluate_leakage` evaluates the COMPOSITE directly.
+    ///
+    /// # Soundness boundary (Kapoor & Narayanan 2207.07048)
+    /// Sound for only 3 of the 8 Kapoor classes. The residue (L1.4/L2/L3.x) is
+    /// routed to human Layer-3 by the gate's `HumanReviewRequired` arm, NEVER
+    /// emitted as a sound block. See crates/rules/seed/finance/leakage.toml.
+    ///
+    /// Idempotent: rows whose `rule_id` already exists are silently skipped.
+    /// Returns the count of newly inserted rows (0 if already present).
+    pub fn seed_leakage_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        const RULE_ID: &str = "FIN-LEAK-001";
+        const DOMAIN: &str = "trading";
+        const TIER: u8 = 1;
+        const SEVERITY: &str = "BLOCK";
+        const TITLE: &str = concat!(
+            "ML-pipeline data-leakage: no fit-site may reach both a train and a ",
+            "test sink before split"
+        );
+        const DESCRIPTION: &str = concat!(
+            "LOCKED COMPOSITE leakage gate (H-20, T-3). ",
+            "Sound static block for L1.1 (no test set), L1.2 (preprocessing ",
+            "before split), L1.3 (feature-selection before split) only. ",
+            "Composes GraphReachability over the DKG: a fit-site reaching BOTH a ",
+            "train sink AND a test sink is the L1.2/L1.3 violation. ",
+            "Residue (L1.4/L2/L3.x) routes to human Layer-3 (never a sound block). ",
+            "FAIL-CLOSED on absent/empty DKG (R1/R2). mutable=0: LOCKED, ",
+            "lifecycle-immune (TD-2). Suppression requires a REGISTERED allowlist ",
+            "row (never silent). See crates/rules/seed/finance/leakage.toml + ",
+            "workflow/papers/kapoor-narayanan-leakage-taxonomy-interface.md."
+        );
+        // Predicate JSON: COMPOSITE(AND) wrapping a GraphReachability child
+        // (fit-site -> test sink, must_not_exist=true negative reachability) +
+        // a SchemaRequired split-boundary leg. The fit-reaches-BOTH-sinks
+        // property is enforced as two positive reachability queries in the Rust
+        // gate (leakage_gate::evaluate_leakage); this JSON documents the
+        // canonical invariant for the rules engine. The missing-.shift(1)
+        // AstPattern is a HEURISTIC residue flag (NOT in the sound composite).
+        const PREDICATE_JSON: &str = concat!(
+            r#"{"type":"composite","operator":"and","children":["#,
+            r#"{"type":"graph_reachability","source_pattern":"fit","sink_pattern":"test","#,
+            r#""must_not_exist":true,"max_depth":8,"#,
+            r#""edge_types":["data_flow","PARAMETER","RETURN","ASSIGNMENT","FIELD_ACCESS"]},"#,
+            r#"{"type":"schema_required","schema":{},"output_type":"train_test_split_boundary"}"#,
+            r#"]}"#,
+        );
+
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+            rusqlite::params![RULE_ID],
+            |row| row.get(0),
+        )?;
+        if exists {
+            debug!(rule_id = RULE_ID, "leakage seed rule already exists, skipping");
+            return Ok(0);
+        }
+
+        conn.execute(
+            "INSERT INTO rules \
+             (rule_id, domain, tier, status, title, description, predicate, \
+              phase_mask, severity, mutable, created_at, source) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'SEED')",
+            rusqlite::params![
+                RULE_ID,
+                DOMAIN,
+                TIER,
+                SEEDED_STATUS,
+                TITLE,
+                DESCRIPTION,
+                PREDICATE_JSON,
+                u32::MAX, // all phases
+                SEVERITY,
+                now,
+            ],
+        )?;
+
+        debug!(rule_id = RULE_ID, "inserted LOCKED leakage COMPOSITE seed rule (mutable=0)");
+        Ok(1)
+    }
+
+    /// Seed the H-22 trading null-test COMPOSITE rule into the rules DB with
+    /// `mutable=0`.
+    ///
+    /// This is the LOCKED COMPOSITE gate (FIN-NULL-001) that documents the
+    /// permutation-null significance bar for strategy promotion: a genuine edge
+    /// must be significant against a block-permutation null after the Bonferroni
+    /// selection correction (`p < alpha / N`, N from the H-17 trial ledger). The
+    /// `mutable=0` flag makes the row lifecycle-immune (cannot be auto-retired or
+    /// mutated — TD-2).
+    ///
+    /// # DOMAIN NOTE
+    /// Uses domain="trading" (NOT "finance") for the same reason as
+    /// [`Self::seed_deflation_rules`]: "finance" is not in DOMAIN_KEYWORDS
+    /// (rule_engine.rs:206-214); "trading" matches the
+    /// ["trading","backtest","signal","pipeline"] path keywords.
+    ///
+    /// # Seed-as-documentation+integrity-baseline (NOT a runtime predicate read)
+    /// Like the H-18/H-20 sibling gates, the trading null-test gate
+    /// (`trading_null_gate::evaluate_trading_null`) evaluates its LOCKED `ALPHA`
+    /// + `K_MIN_PERMUTATIONS` as named Rust constants in-code; it does NOT query
+    /// this rules.db row at decision time. This seed row exists for (a) canonical
+    /// documentation of the locked alpha and (b) the vibesec blake3 seed-integrity
+    /// baseline (a tampered seed fails the integrity check closed). The
+    /// `metric_gate` child documents the canonical invariant
+    /// (`p_value lt alpha`); the Bonferroni `alpha / N` correction + the K-floor
+    /// fail-closed guard are enforced in the Rust gate.
+    ///
+    /// Idempotent: rows whose `rule_id` already exists are silently skipped.
+    /// Returns the count of newly inserted rows (0 if already present).
+    pub fn seed_trading_nulls_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        const RULE_ID: &str = "FIN-NULL-001";
+        const DOMAIN: &str = "trading";
+        const TIER: u8 = 1;
+        const SEVERITY: &str = "BLOCK";
+        const TITLE: &str =
+            "Strategy edge must be significant against a block-permutation null (p < alpha/N)";
+        const DESCRIPTION: &str = concat!(
+            "LOCKED COMPOSITE trading null-test gate (H-22, T-6). ",
+            "A genuine edge sits in the tail of a block-permutation null ",
+            "(p = (C+1)/(K+1) < alpha/N, Bonferroni over N trials from H-17); ",
+            "an overfit edge sits inside the null band (p >= alpha/N) and is ",
+            "indistinguishable from a permuted version of itself => it survived ",
+            "the null => BLOCK (Ojala & Garriga 2010 JMLR 11:1833-1863). ",
+            "Block permutation preserves return autocorrelation (iid shuffle is ",
+            "anticonservative on time-series). FAIL-CLOSED on missing series, ",
+            "under-powered K (K < ceil(1/alpha)-1), TrialCountMissing (TD-1), or ",
+            "a NaN statistic (R1/R2). alpha is the ONLY tunable and is LOCKED ",
+            "(mutable=0, lifecycle-immune, TD-2). CostMonotoneConcave is DEFERRED ",
+            "(sqrt-law of impact holds at institutional scale only; retail is in ",
+            "the linear regime, Bucci et al. 2019). ",
+            "See crates/rules/seed/finance/trading_nulls.toml."
+        );
+        // Predicate JSON: COMPOSITE(AND) wrapping one MetricGate child. The
+        // permutation p-value must be below alpha. TrialCountMissing, the K-floor,
+        // and the Bonferroni alpha/N correction are enforced at the Rust gate
+        // level (trading_null_gate::evaluate_trading_null) before the scalar
+        // p-value exists, so they are not representable as MetricGate children
+        // (they are enum-/guard-level, not scalar).
+        const PREDICATE_JSON: &str = concat!(
+            r#"{"type":"composite","operator":"and","children":["#,
+            r#"{"type":"metric_gate","metric_name":"permutation_p_value","operator":"lt","threshold":0.05,"source":"trading_null_gate"}"#,
+            r#"]}"#,
+        );
+
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+            rusqlite::params![RULE_ID],
+            |row| row.get(0),
+        )?;
+        if exists {
+            debug!(rule_id = RULE_ID, "trading null-test seed rule already exists, skipping");
+            return Ok(0);
+        }
+
+        conn.execute(
+            "INSERT INTO rules \
+             (rule_id, domain, tier, status, title, description, predicate, \
+              phase_mask, severity, mutable, created_at, source) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'SEED')",
+            rusqlite::params![
+                RULE_ID,
+                DOMAIN,
+                TIER,
+                SEEDED_STATUS,
+                TITLE,
+                DESCRIPTION,
+                PREDICATE_JSON,
+                u32::MAX, // all phases
+                SEVERITY,
+                now,
+            ],
+        )?;
+
+        debug!(rule_id = RULE_ID, "inserted LOCKED trading null-test COMPOSITE seed rule (mutable=0)");
+        Ok(1)
+    }
+
+    /// Seed the H-23 reproducibility sub-gates into the rules DB with
+    /// `mutable=0` (two LOCKED rows):
+    ///   * `REPRO-SEED-001` — an `AstPattern` seed-coverage rule asserting the
+    ///     Python experiment seeds its RNG (no unseeded `np.random` / `torch` /
+    ///     `random` call, no `DataLoader(shuffle=True)` without a seeded
+    ///     generator). The CHEAP per-edit early-catch for the CAUSE of
+    ///     non-reproducibility, before the expensive re-run.
+    ///   * `REPRO-ENV-001` — a `SchemaRequired` env-pin manifest rule forcing the
+    ///     experiment to declare a pinned-env manifest (lockfile hash, image
+    ///     `@sha256`, cuda/driver/torch versions + the determinism env vars
+    ///     PYTHONHASHSEED / CUBLAS_WORKSPACE_CONFIG). "Same env" is verifiable
+    ///     from this; missing => BLOCK. This STRUCTURALLY enforces hazard A (a
+    ///     run that never declared its seed/determinism env cannot pass).
+    ///
+    /// Both rows are `mutable=0` (lifecycle-immune, TD-2) and feed the vibesec
+    /// blake3 seed-integrity baseline (a tampered seed fails the integrity check
+    /// closed). The re-run hash-equality DECISION itself is pure Rust
+    /// (`rerun_equality::verify_rerun_digest`) and does NOT query these rows at
+    /// decision time; these rows are the static CAUSE-catchers + the env-pin
+    /// precondition. Domain="trading" (NOT "finance", same reason as the sibling
+    /// gates). Idempotent: rows whose `rule_id` already exists are skipped.
+    /// Returns the count of newly inserted rows.
+    pub fn seed_repro_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        const DOMAIN: &str = "trading";
+        const TIER: u8 = 1;
+        const SEVERITY: &str = "BLOCK";
+
+        // -- Sub-gate 1: seed-coverage AST pattern (REPRO-SEED-001). ----------
+        const SEED_RULE_ID: &str = "REPRO-SEED-001";
+        const SEED_TITLE: &str =
+            "Experiment RNG must be seeded (no unseeded np.random/torch/random / DataLoader shuffle)";
+        const SEED_DESCRIPTION: &str = concat!(
+            "LOCKED seed-coverage AST gate (H-23, T-7). FAILS on any unseeded ",
+            "np.random / torch.* / random call or DataLoader(shuffle=True) without ",
+            "a seeded generator, and on a missing determinism env var ",
+            "(PYTHONHASHSEED, CUBLAS_WORKSPACE_CONFIG, torch.use_deterministic_",
+            "algorithms). This is the CHEAP per-edit early-catch for the CAUSE of ",
+            "non-reproducibility (caught statically before the expensive same-seed ",
+            "re-run). The EFFECT-prover is the runtime gate ",
+            "rerun_equality::verify_rerun_digest. mutable=0: LOCKED, lifecycle-",
+            "immune (TD-2). Grounding: PyTorch reproducibility docs ",
+            "(CUBLAS_WORKSPACE_CONFIG=:16:8 + torch.use_deterministic_algorithms",
+            "(True) + manual_seed/numpy.random.seed/random.seed, verified ",
+            "2026-06-05). See crates/rules/seed/repro/seed_coverage.toml."
+        );
+        // AstPattern: a tree-sitter python query flagging an np.random / torch
+        // random call whose enclosing scope has no preceding seed call. The
+        // canonical query is documented in the toml; the Rust gate (the runtime
+        // re-run) is the sound backstop (this static leg is necessary-not-
+        // sufficient, R5).
+        const SEED_PREDICATE_JSON: &str = concat!(
+            r#"{"type":"ast_pattern","language":"python","#,
+            r#""query":"(call function: (attribute object: (identifier) @mod attribute: (identifier) @fn) (#match? @mod \"^(np|numpy|torch|random)$\") (#match? @fn \"^(rand|randn|random|shuffle|permutation|randint|manual_seed)$\")) @rng_call","#,
+            r#""query_format":"tree_sitter","scope":null}"#,
+        );
+
+        // -- Sub-gate 2: env-pin manifest SchemaRequired (REPRO-ENV-001). -----
+        const ENV_RULE_ID: &str = "REPRO-ENV-001";
+        const ENV_TITLE: &str =
+            "Experiment must declare a pinned-env manifest (lockfile hash, image @sha256, cuda/driver/torch, determinism env)";
+        const ENV_DESCRIPTION: &str = concat!(
+            "LOCKED env-pin manifest gate (H-23, T-7). A SchemaRequired predicate ",
+            "forcing the experiment to declare a pinned-env manifest: lockfile ",
+            "hash, container image @sha256, cuda/driver/torch versions, and the ",
+            "determinism env vars (PYTHONHASHSEED, CUBLAS_WORKSPACE_CONFIG, ",
+            "ELAI_SEED). 'Same env' is verifiable from this manifest; a missing ",
+            "manifest => BLOCK. This STRUCTURALLY enforces hazard A: a run that ",
+            "never declared its seed/determinism env cannot pass the manifest ",
+            "schema, so the re-run gate is never reached with an undeclared seed. ",
+            "The manifest hash is itself recorded in the RRA evidence bundle ",
+            "(tamper-evident). mutable=0: LOCKED, lifecycle-immune (TD-2). ",
+            "See crates/rules/seed/repro/env_pin_manifest.toml."
+        );
+        // SchemaRequired: the output must carry an env-pin manifest object with
+        // the required keys. The schema documents the required fields; the
+        // rules-engine SchemaRequired predicate enforces presence.
+        const ENV_PREDICATE_JSON: &str = concat!(
+            r#"{"type":"schema_required","schema":{"required":["#,
+            r#""lockfile_blake3","image_sha256","cuda_version","driver_version",""#,
+            r#"torch_version","pythonhashseed","cublas_workspace_config","elai_seed"]},"#,
+            r#""output_type":"repro_env_pin_manifest"}"#,
+        );
+
+        let mut inserted = 0usize;
+        for (rule_id, title, description, predicate_json) in [
+            (SEED_RULE_ID, SEED_TITLE, SEED_DESCRIPTION, SEED_PREDICATE_JSON),
+            (ENV_RULE_ID, ENV_TITLE, ENV_DESCRIPTION, ENV_PREDICATE_JSON),
+        ] {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+                rusqlite::params![rule_id],
+                |row| row.get(0),
+            )?;
+            if exists {
+                debug!(rule_id, "repro seed rule already exists, skipping");
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO rules \
+                 (rule_id, domain, tier, status, title, description, predicate, \
+                  phase_mask, severity, mutable, created_at, source) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'SEED')",
+                rusqlite::params![
+                    rule_id,
+                    DOMAIN,
+                    TIER,
+                    SEEDED_STATUS,
+                    title,
+                    description,
+                    predicate_json,
+                    u32::MAX, // all phases
+                    SEVERITY,
+                    now,
+                ],
+            )?;
+            debug!(rule_id, "inserted LOCKED H-23 repro seed rule (mutable=0)");
+            inserted += 1;
+        }
+
+        Ok(inserted)
+    }
+
+    /// Seed the H-24 sim-to-real parity Part-A sub-gates into the rules DB with
+    /// `mutable=0` (two LOCKED rows):
+    ///   * `FIN-SIMREAL-001` — an `AstPattern` mode-divergent-branch ban. FAILS at
+    ///     TESTING_FIRST on a branch on backtest-vs-live mode
+    ///     (`if self.LiveMode:` / `if backtest:` / `if live:`) found INSIDE the
+    ///     order/signal execution path. SCOPED (the `scope` field narrows it to
+    ///     the execution-path call-graph) — LiveMode is LEGITIMATE for
+    ///     notifications/logging per LEAN, so a blanket ban is wrong.
+    ///   * `FIN-SIMREAL-002` — a `SchemaRequired` single-entrypoint manifest rule
+    ///     forcing the strategy to declare ONE shared execution entrypoint + its
+    ///     swappable adapters (data source, fill model, clock). Missing => BLOCK.
+    ///
+    /// Both rows are `mutable=0` (lifecycle-immune, TD-2) and feed the vibesec
+    /// blake3 seed-integrity baseline (a tampered seed fails the integrity check
+    /// closed). The replay==golden DECISION itself is pure Rust
+    /// (`sim_real_parity::verify_replay_golden`) and does NOT query these rows at
+    /// decision time; these rows are the static STRUCTURAL CAUSE-catchers (R5
+    /// necessary-not-sufficient) + the single-entrypoint precondition. Domain=
+    /// "trading" (NOT "finance", same reason as the sibling gates). Idempotent:
+    /// rows whose `rule_id` already exists are skipped. Returns the count of newly
+    /// inserted rows. See crates/rules/seed/repro/sim_real_parity.toml.
+    pub fn seed_sim_real_parity_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        const DOMAIN: &str = "trading";
+        const TIER: u8 = 1;
+        const SEVERITY: &str = "BLOCK";
+
+        // -- Sub-gate 1: mode-divergent-branch AST ban (FIN-SIMREAL-001). -----
+        const AST_RULE_ID: &str = "FIN-SIMREAL-001";
+        const AST_TITLE: &str =
+            "No mode-divergent branch (if LiveMode / if backtest / if live) on the order/signal execution path";
+        const AST_DESCRIPTION: &str = concat!(
+            "LOCKED mode-divergent-branch AST ban (H-24, T-8). FAILS on a branch ",
+            "on backtest-vs-live mode (if self.LiveMode / if backtest / if live / ",
+            "if mode==\"live\") found INSIDE the order-emission / signal / OnData ",
+            "execution path: a mode-branch guarding execution/signal/order logic ",
+            "makes the backtest run a DIFFERENT code path than live, voiding the ",
+            "parity guarantee (the classic sim-real divergence). SCOPED to the ",
+            "execution-path modules/methods -- LiveMode is LEGITIMATE for ",
+            "notifications/logging/runtime-stats per LEAN, so a blanket ban would ",
+            "false-positive-block every legitimate conditional. The EFFECT-prover ",
+            "is the runtime gate sim_real_parity::verify_replay_golden (blake3 ",
+            "EXACT-equality of a seeded replay vs a frozen golden event log). This ",
+            "static AST leg is necessary-not-sufficient (R5); the runtime replay ",
+            "is the load-bearing backstop. mutable=0: LOCKED, lifecycle-immune ",
+            "(TD-2). Grounding: LEAN live-vs-backtest reconciliation, verified ",
+            "2026-06-05. See crates/rules/seed/repro/sim_real_parity.toml."
+        );
+        // AstPattern: a tree-sitter python query flagging an if/elif whose
+        // condition tests a backtest-vs-live mode flag, SCOPED (the `scope` field)
+        // to the order/signal execution path so legitimate notification/logging
+        // LiveMode branches are not false-blocked. The canonical query + scope are
+        // documented in the toml; the Rust runtime replay==golden gate is the
+        // sound backstop (this static leg is necessary-not-sufficient, R5).
+        const AST_PREDICATE_JSON: &str = concat!(
+            r#"{"type":"ast_pattern","language":"python","#,
+            r#""query":"(if_statement condition: [(attribute attribute: (identifier) @flag (#match? @flag \"^(LiveMode|AlgorithmMode)$\")) (comparison_operator (attribute attribute: (identifier) @flag2 (#match? @flag2 \"^(LiveMode|AlgorithmMode)$\"))) (identifier) @mode (#match? @mode \"^(live|backtest|mode)$\") (comparison_operator (identifier) @mode2 (#match? @mode2 \"^(live|backtest|mode)$\"))]) @mode_branch","#,
+            r#""query_format":"sexp","#,
+            r#""scope":"execution_path:order,signal,fill,execution,strategy,on_data,ondata,initialize"}"#,
+        );
+
+        // -- Sub-gate 2: single-entrypoint manifest SchemaRequired (002). -----
+        const ENTRYPOINT_RULE_ID: &str = "FIN-SIMREAL-002";
+        const ENTRYPOINT_TITLE: &str =
+            "Strategy must declare a single shared execution entrypoint + swappable adapters (data source, fill model, clock)";
+        const ENTRYPOINT_DESCRIPTION: &str = concat!(
+            "LOCKED single-entrypoint manifest gate (H-24, T-8). A SchemaRequired ",
+            "predicate forcing the strategy to declare ONE shared execution ",
+            "entrypoint + its swappable adapters (data source, fill model, clock), ",
+            "so the live and backtest paths differ ONLY in the engine-injected ",
+            "adapter, never in the strategy logic (the LEAN adapter-swap pattern: ",
+            "one IAlgorithm with Initialize()+OnData(); the engine swaps ",
+            "IBrokerage/ISynchronizer). The manifest must declare entrypoint, ",
+            "init_entrypoint, data_source_adapter, fill_model_adapter, and ",
+            "clock_adapter. A missing manifest => BLOCK: without a declared single ",
+            "entrypoint the engine cannot guarantee live and backtest run the same ",
+            "code path. mutable=0: LOCKED, lifecycle-immune (TD-2). See ",
+            "crates/rules/seed/repro/sim_real_parity.toml."
+        );
+        // SchemaRequired: the output must carry a single-entrypoint manifest with
+        // the required keys. The schema documents the required fields; the
+        // rules-engine SchemaRequired predicate enforces presence.
+        const ENTRYPOINT_PREDICATE_JSON: &str = concat!(
+            r#"{"type":"schema_required","schema":{"required":["#,
+            r#""entrypoint","init_entrypoint","data_source_adapter",""#,
+            r#"fill_model_adapter","clock_adapter"]},"#,
+            r#""output_type":"sim_real_entrypoint_manifest"}"#,
+        );
+
+        let mut inserted = 0usize;
+        for (rule_id, title, description, predicate_json) in [
+            (AST_RULE_ID, AST_TITLE, AST_DESCRIPTION, AST_PREDICATE_JSON),
+            (
+                ENTRYPOINT_RULE_ID,
+                ENTRYPOINT_TITLE,
+                ENTRYPOINT_DESCRIPTION,
+                ENTRYPOINT_PREDICATE_JSON,
+            ),
+        ] {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+                rusqlite::params![rule_id],
+                |row| row.get(0),
+            )?;
+            if exists {
+                debug!(rule_id, "sim-real parity seed rule already exists, skipping");
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO rules \
+                 (rule_id, domain, tier, status, title, description, predicate, \
+                  phase_mask, severity, mutable, created_at, source) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'SEED')",
+                rusqlite::params![
+                    rule_id,
+                    DOMAIN,
+                    TIER,
+                    SEEDED_STATUS,
+                    title,
+                    description,
+                    predicate_json,
+                    u32::MAX, // all phases
+                    SEVERITY,
+                    now,
+                ],
+            )?;
+            debug!(rule_id, "inserted LOCKED H-24 sim-real parity seed rule (mutable=0)");
+            inserted += 1;
+        }
+
+        Ok(inserted)
+    }
+
+    /// Seed the LOCKED H-25 result-manifest re-derivation Part-A sub-gates into the
+    /// project rules.db (FIN-RESMANIFEST-001 SchemaRequired manifest-shape +
+    /// FIN-RESMANIFEST-002 monkeypatch AstPattern SCOPED to the result-emitting
+    /// surface, both mutable=0). These are the STATIC legs of the H-25 anti-
+    /// fabrication gate; the re-parse/re-hash DECISION itself is pure Rust
+    /// (`result_manifest::verify_result`) and does NOT query these rows at decision
+    /// time -- they are the structural manifest-shape precondition + the monkeypatch
+    /// CAUSE-catcher (R5 necessary-not-sufficient). Domain="trading" (NOT "finance",
+    /// same reason as the sibling gates). Idempotent: rows whose `rule_id` already
+    /// exists are skipped. Returns the count of newly inserted rows. See
+    /// crates/rules/seed/repro/result_manifest.toml.
+    pub fn seed_result_manifest_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        const DOMAIN: &str = "trading";
+        const TIER: u8 = 1;
+        const SEVERITY: &str = "BLOCK";
+
+        // -- Sub-gate 1: result-manifest SchemaRequired (FIN-RESMANIFEST-001). ---
+        const SCHEMA_RULE_ID: &str = "FIN-RESMANIFEST-001";
+        const SCHEMA_TITLE: &str =
+            "Every reported empirical number must carry a result manifest binding it to its provenance";
+        const SCHEMA_DESCRIPTION: &str = concat!(
+            "LOCKED result-manifest SchemaRequired gate (H-25, T-9). A reported ",
+            "empirical NUMBER (Sharpe / P&L / plot-derived stat) MUST carry a result ",
+            "manifest declaring its provenance; a missing manifest (or required ",
+            "field) => BLOCK. The anti-fabrication signature -- a reported number ",
+            "with no manifest is the F-4 None-hash analog. The runtime re-derivation ",
+            "gate (result_manifest::verify_result) RE-PARSES the number from the ",
+            "orchestrator-captured output and RE-HASHES the pinned inputs; this ",
+            "SchemaRequired leg is the structural precondition. Required: ",
+            "metric_name, value, captured_output_blake3, parser_expr, data_hash, ",
+            "code_commit, env_lock_hash, run_id, elai_seed, n_trials. DSR/PBO/N are ",
+            "BOUND from H-17/H-18, never recomputed (GD-1). mutable=0: LOCKED, ",
+            "lifecycle-immune (TD-2). See crates/rules/seed/repro/result_manifest.toml."
+        );
+        const SCHEMA_PREDICATE_JSON: &str = concat!(
+            r#"{"type":"schema_required","schema":{"required":["#,
+            r#""metric_name","value","captured_output_blake3","parser_expr","#,
+            r#""data_hash","code_commit","env_lock_hash","run_id","elai_seed",""#,
+            r#"n_trials"]},"output_type":"result_manifest"}"#,
+        );
+
+        // -- Sub-gate 2: monkeypatch-ban AST (FIN-RESMANIFEST-002). -----------
+        const AST_RULE_ID: &str = "FIN-RESMANIFEST-002";
+        const AST_TITLE: &str =
+            "No monkeypatching / redefining a result-emitting function to fake a number";
+        const AST_DESCRIPTION: &str = concat!(
+            "LOCKED monkeypatch-ban AST gate (H-25, T-9). FAILS on strategy code ",
+            "that monkeypatches / redefines / rebinds a RESULT-EMITTING function ",
+            "(setattr(obj,\"compute_sharpe\",...), a module-level assignment ",
+            "rebinding compute_sharpe / report_pnl / emit_metric / record_result) so ",
+            "the run reports a FABRICATED number while the frozen metric/backtest ",
+            "harness is bypassed. The harness is gate-manifest-frozen (TD-2); a ",
+            "monkeypatch voids the re-derivation guarantee by construction. SCOPED to ",
+            "the result/metric/report execution surface -- legitimate dynamic wiring ",
+            "/ DI in non-result modules is out of scope, so a blanket ban would ",
+            "false-block. The EFFECT-prover is the runtime gate ",
+            "result_manifest::verify_result (blake3 re-parse + re-hash of an ",
+            "orchestrator-captured output). This static AST leg is ",
+            "necessary-not-sufficient (R5); the runtime re-parse is the load-bearing ",
+            "backstop. mutable=0: LOCKED, lifecycle-immune (TD-2). See ",
+            "crates/rules/seed/repro/result_manifest.toml."
+        );
+        const AST_PREDICATE_JSON: &str = concat!(
+            r#"{"type":"ast_pattern","language":"python","#,
+            r#""query":"[(call function: (identifier) @f (#eq? @f \"setattr\") arguments: (argument_list (_) (string) @attr (#match? @attr \"(compute_sharpe|report_pnl|emit_metric|record_result|compute_metric)\"))) (assignment left: (identifier) @lhs (#match? @lhs \"^(compute_sharpe|report_pnl|emit_metric|record_result|compute_metric)$\") right: [(lambda) (identifier) (attribute)])] @monkeypatch","#,
+            r#""query_format":"sexp","#,
+            r#""scope":"execution_path:result,metric,report,sharpe,pnl,emit_metric,record_result"}"#,
+        );
+
+        let mut inserted = 0usize;
+        for (rule_id, title, description, predicate_json) in [
+            (
+                SCHEMA_RULE_ID,
+                SCHEMA_TITLE,
+                SCHEMA_DESCRIPTION,
+                SCHEMA_PREDICATE_JSON,
+            ),
+            (AST_RULE_ID, AST_TITLE, AST_DESCRIPTION, AST_PREDICATE_JSON),
+        ] {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+                rusqlite::params![rule_id],
+                |row| row.get(0),
+            )?;
+            if exists {
+                debug!(rule_id, "result-manifest seed rule already exists, skipping");
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO rules \
+                 (rule_id, domain, tier, status, title, description, predicate, \
+                  phase_mask, severity, mutable, created_at, source) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'SEED')",
+                rusqlite::params![
+                    rule_id,
+                    DOMAIN,
+                    TIER,
+                    SEEDED_STATUS,
+                    title,
+                    description,
+                    predicate_json,
+                    u32::MAX, // all phases
+                    SEVERITY,
+                    now,
+                ],
+            )?;
+            debug!(rule_id, "inserted LOCKED H-25 result-manifest seed rule (mutable=0)");
+            inserted += 1;
+        }
+
+        Ok(inserted)
+    }
+
+    /// H-26 (T-10) -- seed the LOCKED financial-invariant naked-float-`==` ban
+    /// (FIN-INVARIANT-001 AstPattern, mutable=0, domain="trading"). One row.
+    ///
+    /// The DECISION leg (the accounting-identity EXACT integer-cents checks + the
+    /// option-pricing / numeric MR tolerance checks + the primary-vs-shadow
+    /// divergence) is PURE Rust in shadow_exec::diff_shadow_impls; this seed row is
+    /// the STATIC necessary-not-sufficient leg (R5) banning a naked float `==`/`!=`
+    /// on money/price in execution code (the WRONG regime -- a tolerance compare
+    /// belongs there). SCOPED to the order/signal/pnl/price execution surface via the
+    /// execution_path:<csv> CONTAINS predicate (NOT a blanket ban). Idempotent
+    /// (skips if the rule already exists). See
+    /// crates/rules/seed/finance/financial_invariants.toml +
+    /// workflow/reasoning/H-26-decisions.md.
+    pub fn seed_financial_invariant_rules(
+        conn: &Connection,
+        clock: &impl ClockProvider,
+    ) -> Result<usize, RulesDbError> {
+        let now = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        const DOMAIN: &str = "trading";
+        const TIER: u8 = 1;
+        const SEVERITY: &str = "BLOCK";
+
+        // -- Naked-float-`==` ban AstPattern (FIN-INVARIANT-001). -------------
+        const RULE_ID: &str = "FIN-INVARIANT-001";
+        const TITLE: &str =
+            "No naked float == / != on money or price in execution code (use a tolerance compare)";
+        const DESCRIPTION: &str = concat!(
+            "LOCKED naked-float-equality ban (H-26, T-10). FAILS on execution code ",
+            "that compares a float money/price quantity with a naked `==`/`!=` against ",
+            "a float LITERAL (pnl == 0.0, price != 0.0) instead of a tolerance compare. ",
+            "A float-== on money is a precision bug: FP round-off makes byte-equality ",
+            "of two computed prices brittle. The CORRECT regime for an accounting ",
+            "identity is EXACT INTEGER CENTS (== on i64), checked by ",
+            "shadow_exec::diff_shadow_impls; the CORRECT regime for derived ",
+            "option-pricing / numeric values is a tolerance band. This static AST leg ",
+            "catches the WRONG regime (a naked float ==/!=). SCOPED to the ",
+            "order/signal/pnl/price/fill execution surface (NOT a blanket ban). ",
+            "RESIDUAL (R5, necessary-not-sufficient): the grammar catches a ",
+            "float-LITERAL on the RIGHT operand only; a left-literal or a ",
+            "float-VARIABLE == is not caught -- the integer-cents EXACT regime in ",
+            "diff_shadow_impls is the load-bearing backstop. mutable=0: LOCKED, ",
+            "lifecycle-immune (TD-2). See ",
+            "crates/rules/seed/finance/financial_invariants.toml."
+        );
+        // A tree-sitter-rust query matching a binary_expression with a `==` or `!=`
+        // operator and a float_literal RIGHT operand (the dominant naked-float-literal
+        // idiom). Verified live (2026-06-05) against tree-sitter-rust 0.24: fires on
+        // `pnl == 0.0`, does NOT fire on `(a-b).abs() < 1e-9`. The `left:` field is
+        // rejected by the grammar, so left-literal / float-variable forms are residual.
+        const PREDICATE_JSON: &str = concat!(
+            r#"{"type":"ast_pattern","language":"rust","#,
+            r#""query":"[(binary_expression operator: \"==\" right: (float_literal)) "#,
+            r#"(binary_expression operator: \"!=\" right: (float_literal))] @naked_float_eq","#,
+            r#""query_format":"sexp","#,
+            r#""scope":"execution_path:order,signal,pnl,price,fill,trade,equity,cash"}"#,
+        );
+
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM rules WHERE rule_id = ?1",
+            rusqlite::params![RULE_ID],
+            |row| row.get(0),
+        )?;
+        if exists {
+            debug!(rule_id = RULE_ID, "financial-invariant seed rule already exists, skipping");
+            return Ok(0);
+        }
+        conn.execute(
+            "INSERT INTO rules \
+             (rule_id, domain, tier, status, title, description, predicate, \
+              phase_mask, severity, mutable, created_at, source) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'SEED')",
+            rusqlite::params![
+                RULE_ID,
+                DOMAIN,
+                TIER,
+                SEEDED_STATUS,
+                TITLE,
+                DESCRIPTION,
+                PREDICATE_JSON,
+                u32::MAX, // all phases
+                SEVERITY,
+                now,
+            ],
+        )?;
+        debug!(rule_id = RULE_ID, "inserted LOCKED H-26 financial-invariant seed rule (mutable=0)");
+        Ok(1)
     }
 }
 

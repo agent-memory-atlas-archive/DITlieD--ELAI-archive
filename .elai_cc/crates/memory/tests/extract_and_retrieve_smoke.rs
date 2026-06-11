@@ -52,12 +52,13 @@ fn extract_then_persist_then_retrieve_with_decay() {
         superseded_by: None,
         trust_tier: TrustTier::T1CodebaseDerived,
         provenance: Provenance::codebase_derived("test"),
+        last_validated_at_ms: None,
     };
     store.insert(&fact).expect("insert");
 
     // 3. Decay tick advances by 30 days.
     let t_now = t0 + 86_400_000 * 30;
-    let stats = decay_tick(&store, t_now).expect("decay");
+    let stats = decay_tick(&store, &std::collections::HashSet::new(), t_now).expect("decay");
     assert_eq!(stats.rows_examined, 1);
     assert_eq!(stats.rows_updated, 1);
 
@@ -68,8 +69,9 @@ fn extract_then_persist_then_retrieve_with_decay() {
         fact_type: Some(FactType::Preference),
         trust_override: None,
         safety_critical: false,
+        citation_validator: None,
     };
-    let hits = get_relevant_facts(&store, "default", &filter, 4, t_now + 1)
+    let (hits, _) = get_relevant_facts(&store, "default", &filter, 4, t_now + 1)
         .expect("retrieve");
     assert_eq!(hits.len(), 1, "retrieval must surface the persisted fact");
     let hit = &hits[0];
@@ -106,6 +108,7 @@ fn empty_evidence_rejected_at_insert() {
         superseded_by: None,
         trust_tier: TrustTier::T1CodebaseDerived,
         provenance: Provenance::codebase_derived("test"),
+        last_validated_at_ms: None,
     };
     let res = store.insert(&bad);
     assert!(res.is_err(), "empty evidence_pointers must be rejected");
@@ -135,6 +138,7 @@ fn project_scope_filter_isolates_projects() {
             superseded_by: None,
             trust_tier: TrustTier::T1CodebaseDerived,
             provenance: Provenance::codebase_derived("test"),
+            last_validated_at_ms: None,
         };
         store.insert(&f).expect("insert");
     }
@@ -144,8 +148,9 @@ fn project_scope_filter_isolates_projects() {
         fact_type: None,
         trust_override: None,
         safety_critical: false,
+        citation_validator: None,
     };
-    let hits = get_relevant_facts(&store, "default", &filter, 10, t0 + 100).expect("retrieve");
+    let (hits, _) = get_relevant_facts(&store, "default", &filter, 10, t0 + 100).expect("retrieve");
     assert_eq!(hits.len(), 1, "project filter must isolate proj-a row");
     assert_eq!(hits[0].project_id.as_deref(), Some("proj-a"));
 }

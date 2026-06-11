@@ -49,7 +49,7 @@ type              = "experiment"
 owner             = "maintainer"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "E-43"
-smoke_test        = "crates/orchestrator/tests/skill_system_event_on_path.rs::skill_loaded_emits_skill_system_event"
+smoke_test        = "crates/orchestrator/src/skill_telemetry.rs::skill_system_event_emitted_with_enable_flag"
 
 [[flag]]
 name              = "ELAI_ROUTE_DECISION_SSB_ENABLE"
@@ -58,6 +58,21 @@ owner             = "maintainer"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "E-31"
 smoke_test        = "crates/orchestrator/tests/route_decision_ssb_on_path.rs::cloud_route_chosen_emits_route_decision_event"
+
+# H-5 — Anthropic Message Batches non-interactive lane. The transport
+# (AnthropicBatchClient) + telemetry (batch_lifecycle SSB) + producer
+# (CloudGroundingClient::ground_batch) are BUILT and fixture-exercised; the LIVE
+# Anthropic batch POST + a production non-interactive caller (GEPA / bench) are
+# Tier-2 / RunPod-pending, because no current live lane tolerates the 24h batch
+# window (cosmos research is SearXNG web-search, not Anthropic; interactive research
+# needs results now). See workflow/reasoning/H-5-decisions.md.
+[[flag]]
+name              = "ELAI_BATCH_LANE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "H-5"
+smoke_test        = "crates/contracts/tests/h5_batch_lifecycle_contract.rs::batch_lifecycle_row_writes_to_ssb_runtime_check"
 
 # WIRE-DARK loop-trigger stub introduced this build (WIRING-FIX-ELAI WAVE 4).
 # This is NOT an ELAI_*_ENABLE env flag; it is a registered code stub carrying the
@@ -109,6 +124,1305 @@ owner             = "maintainer"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "F-11"
 smoke_test        = "crates/cli/tests/darwin_loop_observable_smoke.rs::darwin_loop_one_generation_emits_admit_rows"
+
+# ---- H-PLAN (session s-66424) ----
+# H-3: focus-tunnel EXECUTE gate — gates the StreamingValidator early-abort AND the
+# DIFF/FIM emission branch. PRE-EXISTING unregistered default-OFF flag that H-3 relies
+# on; registered here (R9). Default-OFF until the over-abort + diff-parse-fallback rates
+# are bounded on >=3 live runs (GD-4); H-3's promotion then flips it on. NOTE: added by an
+# executing run — trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`); a sanctioned flag registration.
+[[flag]]
+name              = "ELAI_FOCUS_TUNNEL_EXECUTE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "H-3"
+smoke_test        = "crates/contracts/tests/focus_tunnel_wiring_contract.rs::streaming_validator_terminates_on_lazy_pattern"
+
+# H-31: user-preference bi-temporal ledger. Gates the wire-dark crates/memory substrate into the
+# LIVE `/remember` capture (dispatch_one) + retrieval-into-prompt (get_relevant_facts ->
+# ContextSlot::Memory) path. Default-OFF because it is a NEW prompt-injection surface touching the
+# executor turn AND a correctness firewall (the Personalization-Trap exclusion -- auditor/critic/
+# adversary roles get ZERO user-memory). The ON path: set ELAI_USER_MEMORY_ENABLE=1, run
+# `elai remember "<text>"`, assert a user_decision_superseded SSB row lands + the fact is surfaced
+# into an Executor-role prompt and NOT an Auditor-role prompt. NOTE: added by an executing run --
+# trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`); a sanctioned flag registration.
+[[flag]]
+name              = "ELAI_USER_MEMORY_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "H-31"
+smoke_test        = "crates/cli/src/user_memory_capture.rs::tests::live_producer_contradiction_supersedes_with_soft_close_invariant"
+
+# ---- G-PLAN WAVE 2 (session s-56068) ----
+# G-9: file-granular retention purge of EXPIRED per-session transcript (.jsonl/.json)
+# files + the F-13 forensic archive *.sqlite copies. This is a DESTRUCTIVE,
+# irreversible file-deletion op with no persistent active-session registry, so the
+# R9 default-off is the JUSTIFIED kill_switch posture (not a graveyard): the purge is
+# OFF by default, runs in-process at run-start so it self-excludes the live session,
+# cross-checks a live index-lock holder, and keeps any file inside the clock-skew
+# grace window or with a future/zero/unparsable mtime. It NEVER touches the shared
+# ssb.db. promotion_plan_id points at the G-9 follow-up that flips it on after the
+# delete-safety is bounded on >=3 live runs. NOTE: added by an executing run — trips
+# gate_freeze_check.py until re-locked out-of-band (`gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_RETENTION_PURGE_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "G-9-followup"
+smoke_test        = "crates/orchestrator/tests/g9_redaction_ttl_contract.rs::purge_deletes_expired_keeps_active_and_grace"
+
+# ---- BASE-PHASE-1 RECONCILIATION (session s-plan-audit-2026-06-04, base-phase-1) ----
+# 1C-R1: ELAI_CODE_VEC gates the secondary GraphCodeBERT code-space index that
+# joins BM25 + text_vector as the 3rd (and, with E-40, alongside the 4th/5th)
+# RRF ranker list. Read default-OFF in crates/cli/src/knowledge_stack.rs
+# (code_vec_enabled = env ELAI_CODE_VEC == "1") and in crates/knowledge/src/
+# vector/indexer.rs (has_code_index). Producer (B-4) wired the query path; this
+# row closes the R9 hole so the 3-ranker path counts as wired. smoke_test asserts
+# the code_vec lane contributes to the fused score (the behavioural ON-path
+# property). A true Layer-3 binary-coverage smoke that drives `elai bench-rag`
+# with ELAI_CODE_VEC=1 against a corpus is RUNPOD-PENDING (the corpus run is the
+# blocked 1C-R3 item); the bench harness benches/external/swe_bench_pro_elai_
+# workflow_v5.py already sets ELAI_CODE_VEC=1 on its env. NOTE: added by an
+# executing run — trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_CODE_VEC"
+type              = "experiment"
+owner             = "phase-1C/B-4"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-16"
+smoke_test        = "crates/contracts/tests/rrf_4list_fusion_contract.rs::rrf_score_4_weighted_sums_all_lists"
+
+# 1E-R2: ELAI_ARAG_POPULATE_FROM_DKG gates seeding the A-RAG orchestrator's
+# tool/convention layer from the live DKG (vs the regex-fallback path). Read
+# default-OFF in crates/cli/src/knowledge_stack.rs (arag_populate_enabled = env
+# ELAI_ARAG_POPULATE_FROM_DKG == "1"). smoke_test asserts the DKG-populate path
+# is callable and side-effecting (the tier2 seeder contract drives
+# populate_tier2_conventions; the None-DKG arm proves the fallback, the
+# open-rules-db arm proves rows are written). A true Layer-3 smoke driving the
+# full populate-from-DKG ON path end-to-end is RUNPOD-PENDING (1E-R3 re-measure).
+# NOTE: added by an executing run — trips gate_freeze_check.py until re-locked
+# out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_ARAG_POPULATE_FROM_DKG"
+type              = "experiment"
+owner             = "phase-1E/C-8"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-16"
+smoke_test        = "crates/contracts/tests/pi_tier2_seeder_contract.rs::contract_seed_rules_inserts_into_open_rules_db"
+
+# 1C-R4 DECISION: BruteForceIndex is the PERMANENT production default vector
+# index (crates/knowledge/src/vector/indexer.rs constructs BruteForceIndex
+# unconditionally). It is a pure-Rust cosine scan, O(n*d) per query, and the
+# code comment at hnsw_index.rs:142-143 documents it as suitable for project-
+# scale corpora (hundreds to low thousands of vectors) -- the ELAI target. No
+# measured number (1C-R3 is BLOCKED_MEASUREMENT) shows brute-force is a
+# bottleneck, so promoting HNSW now would be ungrounded.
+#
+# `usearch-hnsw` (cargo feature, default-OFF; pulls the native usearch 2.25.2
+# C++ dep) is the OPT-IN large-corpus escape hatch. It is wire-dark BY DESIGN
+# today: UsearchIndex is cfg-gated and has ZERO production callers -- the
+# indexer still uses BruteForceIndex even with the feature ON, so enabling it
+# changes nothing. The promotion step (the work B-16 must do to flip it on) is
+# to make indexer.rs select UsearchIndex when the feature is compiled AND a
+# corpus-scale benchmark (the blocked 1C-R3 measurement) proves brute-force is
+# too slow at the live corpus size. Until that swap + measurement exist, this
+# stays an experiment with the existing cfg-gated round-trip as its ON-path
+# smoke. NOTE: added by an executing run -- trips gate_freeze_check.py until
+# re-locked out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "usearch-hnsw"
+type              = "experiment"
+owner             = "phase-1C/B-16"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-16"
+smoke_test        = "crates/knowledge/src/vector/hnsw_index.rs::tests::test_hnsw_index_persistence_roundtrip"
+
+# ---- BASE-PHASE-3 RECONCILIATION (session base-phase-3 PART 2, 3J.9) ----
+# 3J.9: the plugins-crate `DefaultMcpBridge` (mcp_bridge.rs) in-process stdio
+# MCP host is UNIMPLEMENTED. Its `McpBridge::connect` stdio path used to FAKE a
+# successful connection (returned Ok with transport=Stdio without spawning a
+# process or doing a handshake) -- a dangerous fake-success. That fake is now
+# REMOVED: connect() returns an honest ProtocolError on the stdio path
+# (mcp_bridge.rs::connect), and the supported transport is HTTP JSON-RPC
+# (http_connect/http_list_tools/http_call_tool). The REAL stdio transport
+# already exists in the ORCHESTRATOR crate (mcp_stdio.rs: spawn_mcp_stdio_process
+# + McpServerManager::discover_tools_for_server, real tokio::process::Command);
+# this row registers the in-process plugins-side stdio host as the wire-dark
+# experiment whose promotion makes `DefaultMcpBridge` delegate to that real
+# orchestrator stdio path instead of returning the not-implemented error. This
+# is NOT a runtime env flag in code today -- it is a named promotion gate; the
+# smoke_test points at the EXISTING real-stdio ON-path proof (process spawn +
+# IO round-trip). NOTE: added by a reconciliation run -- trips
+# gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_MCP_STDIO_TRANSPORT"
+type              = "experiment"
+owner             = "phase-3J"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "3J-stdio-followup"
+smoke_test        = "crates/orchestrator/src/mcp_stdio.rs::tests::spawns_stdio_process_and_round_trips_io"
+
+# 3H.msgpack_blob: the session-DAG snapshot BLOB columns findings/code_changes/
+# tests_written. The SERIALIZATION is REAL and wired -- session_dag.rs:309-341
+# encode_blob/decode_blob (msgpack via rmp_serde, JSON-legacy fallback) and
+# save_snapshot (session_dag.rs:553) already round-trip whatever the Snapshot
+# carries (proven by session_dag.rs tests). What is `None` is the SOURCE DATA at
+# the only production save site, the live REPL (live_cli.rs:1474-1476): the live
+# chat loop has no structured findings/code-changes/tests-written to populate --
+# those are AGENT-produced artifacts (the executor/auditor FSM produces them),
+# and the live REPL is not running that agent FSM. Threading real data in here
+# would mean fabricating a data source (same anti-pattern as the 3D.apply_writes
+# deferral in base-phase-3 PART 1), so this is a REGISTERED deferral, not a wire.
+# Promotion = the agent-integration save path (the executor/auditor snapshot
+# writer) populates the three Snapshot fields via encode_blob; the smoke_test
+# below already proves the storage round-trip end-to-end (write a snapshot whose
+# code_changes is Some(_), read it back via decode_blob). NOTE: added by a
+# reconciliation run -- trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_SESSION_DAG_SNAPSHOT_BLOBS"
+type              = "experiment"
+owner             = "phase-3H"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "3H-agent-snapshot-followup"
+smoke_test        = "crates/orchestrator/src/session_dag.rs::tests::merge_branch_conflict_detection"
+
+# ---- BASE-PHASE-4 RECONCILIATION (session s-plan-audit-2026-06-04, base-phase-4) ----
+# 4A SANDBOX: ELAI_SANDBOX_ENABLE overrides the AgentPoolConfig sandbox default
+# (crates/orchestrator/src/agent_pool.rs::sandbox_default_enabled). The platform
+# default is cfg!(target_os="windows") (Windows AppContainer ON, Linux/macOS OFF
+# until B-18B wires clone3+seccomp through launch_agent_process). The flag is the
+# opt-in Linux path: when UNSET the platform default holds (so the
+# default_enable_sandbox_matches_platform contract is unchanged), when set truthy
+# it forces ON. Default-OFF on Linux is the JUSTIFIED posture (the isolation
+# runtime is not ready there), NOT a graveyard -- promotion_plan_id=B-18B flips
+# the platform default once clone3+seccomp lands. smoke_test drives the
+# enable_sandbox=true ON path (per-agent AppContainer profile id). An env-driven
+# Layer-3 smoke that sets ELAI_SANDBOX_ENABLE=1 is the B-18B follow-up. NOTE:
+# added by a reconciliation run -- trips gate_freeze_check.py until re-locked
+# out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_SANDBOX_ENABLE"
+type              = "experiment"
+owner             = "phase-4A/B-18B"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-18B"
+smoke_test        = "crates/orchestrator/tests/agent_isolation.rs::test_4a_isolation_appcontainer_profile_id_per_agent"
+
+# 4F FEASIBILITY: ELAI_DISABLE_FEASIBILITY_PROBE short-circuits the
+# PLANNING/FEASIBILITY_PROBE probe() (crates/orchestrator/src/feasibility_probe.rs
+# ::feasibility_probe_disabled_via_env, consumed in task_runner.rs:1286 + :1453).
+# This is a kill_switch (ops escape hatch to skip the probe on a host where the
+# system-probe is flaky), default-OFF = probe runs (the safe default). It is a
+# DISABLE switch, so default-OFF is the correct terminal posture for a kill_switch
+# (not an experiment that must promote-to-ON). smoke_test sets the var to "1" and
+# asserts probe() returns Feasible with skip_reason="disabled_via_env". NOTE:
+# added by a reconciliation run -- trips gate_freeze_check.py until re-locked
+# out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_DISABLE_FEASIBILITY_PROBE"
+type              = "kill_switch"
+owner             = "phase-4F/C-22"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "C-22"
+smoke_test        = "crates/contracts/tests/feasibility_probe_contract.rs::contract_env_kill_switch_short_circuits_probe"
+
+# 4J EMPIRE: the `empire` cargo feature (crates/orchestrator/Cargo.toml:220
+# empire = [], forwarded by crates/contracts/Cargo.toml:105) gates the C-34 Empire
+# integration surface (orchestrator::empire::* types: FactoryLineTransport,
+# BrainManifest, ElaiNeuron, the 5 Empire SSB variants). The host-side scaffolding
+# is BUILT + contract-tested under --features empire; the 47 live-integration
+# bodies stay EMPIRE-PENDING (Empire codebase access gated) and are routed to C-34.
+# kill_switch posture: the feature is OFF until Empire deployment, owner=maintainer,
+# promotion via C-34-activation. smoke_test is an empire-gated contract test that
+# runs only under `cargo test -p elai-contracts --features empire`. NOTE: added by
+# a reconciliation run -- trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "empire"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "C-34-activation"
+smoke_test        = "crates/contracts/tests/c34_empire_integration_contract.rs::c34_contract_empire_toml_section_default_shape"
+
+# ---- B-PLAN R9 RECONCILIATION (session s-plan-audit-2026-06-04, B-plan FINISH) ----
+# Registers the default-OFF flags surfaced by the B-plan completion audit
+# (B-plan-FINISH.md "R9 ALLOWLIST GAPS"). Each row carries all six required
+# fields; smoke_test names a real EXISTING test that drives the gated capability's
+# ON-path behavior (grep-confirmed by exact fn name). Where the env/feature-gated
+# Layer-3 binary-coverage smoke does not yet exist, the comment states which leg
+# is RUNPOD-PENDING and cites the closest behavioral contract as the standing
+# ON-path proof (same posture as the ELAI_CODE_VEC / usearch-hnsw rows above).
+# NOTE: this whole block was added by a reconciliation run -- it trips
+# gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+
+# B-8: ELAI_DISABLE_PIPELINE_GRC short-circuits the PipelineGrc seed/bypass
+# (crates/orchestrator/src/grc.rs::pipeline_grc_disabled_via_env, consumed at
+# agent_pool.rs:585). kill_switch posture: default-OFF = GRC runs (the safe
+# default); set truthy disables. It is a DISABLE switch so default-OFF is the
+# correct terminal kill_switch posture (not an experiment that must promote-ON).
+# smoke_test sets the var and asserts the bypass helper short-circuits.
+[[flag]]
+name              = "ELAI_DISABLE_PIPELINE_GRC"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-8"
+smoke_test        = "crates/orchestrator/tests/safety_gate_integration.rs::kill_switch_env_var_disables_pipeline_grc"
+
+# B-14: VITE_ELAI_FRAME_PACER_ENABLE gates the secondary frame-paced token
+# renderer (crates/dashboard-v2/src/lib/streaming/frame_pacer.ts, read in
+# state/commands.svelte.ts:36). Default-OFF; the raw (non-paced) streaming path
+# is fully wired and unaffected, so this is an enhancement experiment that must
+# promote-or-die. smoke_test drives the FramePacer drain behavior the flag turns
+# on (the producer the gate enables). RUNPOD-PENDING: a Vitest that flips
+# VITE_ELAI_FRAME_PACER_ENABLE=1 and asserts the env-gate branch in
+# commands.svelte.ts selects the paced path is the promotion follow-up.
+[[flag]]
+name              = "VITE_ELAI_FRAME_PACER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-14"
+smoke_test        = "crates/dashboard-v2/tests/streaming/frame_pacer.test.ts::FramePacer drains at the target cps within +/-10%"
+
+# B-22: ELAI_DISABLE_AUTONOMOUS_GATE kill-switch forces the AutonomousGate to
+# RequestHuman (crates/orchestrator/src/autonomous_gate.rs:44
+# ELAI_DISABLE_AUTONOMOUS_GATE_ENV). kill_switch posture: default-OFF = gate
+# decides normally; set truthy reverts to human-in-the-loop. smoke_test sets the
+# var and asserts the gate returns RequestHuman.
+[[flag]]
+name              = "ELAI_DISABLE_AUTONOMOUS_GATE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-22"
+smoke_test        = "crates/contracts/tests/autonomous_gate_contract.rs::contract_kill_switch_requests_human"
+
+# B-22: ELAI_GATE_MODE is the pre-launch env override for the gate mode
+# (interactive | autonomous), read into GateMode::from_cli_args and threaded
+# into RuntimeWiring.gate_mode (crates/cli/src/run_subcommand.rs:98, referenced
+# in repl_command.rs:759). kill_switch posture: it is an ops override that selects
+# the production gate posture before the runner boots; default (unset) keeps the
+# interactive gate. smoke_test drives GateMode::from_cli_args mapping (the ON-path
+# that installs the autonomous gate when the override selects it).
+[[flag]]
+name              = "ELAI_GATE_MODE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-22"
+smoke_test        = "crates/contracts/tests/c9_autonomous_infra_contract.rs::c9_contract_gate_mode_from_cli_args"
+
+# B-28: ELAI_ENABLE_DEP_INSTALL gates the focus-tunnel dependency installer
+# (crates/orchestrator/src/task_runner.rs:4286; default-OFF logs the attempt as
+# success=false stderr="dep_install_disabled"). experiment posture: it must
+# promote-or-die once the installer is bounded on live runs. smoke_test drives the
+# DepInstallExecutor apply ON-path (the executor the env flag enables). RUNPOD-
+# PENDING: a Layer-3 smoke that sets ELAI_ENABLE_DEP_INSTALL=1 in drive_task and
+# asserts a real install attempt is the promotion follow-up.
+[[flag]]
+name              = "ELAI_ENABLE_DEP_INSTALL"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-28"
+smoke_test        = "crates/contracts/tests/focus_tunnel_e6_contract.rs::apply_only_invokes_executor_for_auto_approved"
+
+# B-31: ELAI_DISABLE_INDEXING kill-switch disables the IndexingService
+# (crates/orchestrator/src/indexing_service.rs::indexing_disabled_via_env).
+# kill_switch posture: default-OFF = indexing runs; set truthy disables. smoke_test
+# sets the var "1"/"0" and asserts the disable helper is observable.
+[[flag]]
+name              = "ELAI_DISABLE_INDEXING"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-31"
+smoke_test        = "crates/contracts/tests/task_runner_indexing_service_contract.rs::indexing_disabled_via_env_flag_is_observable"
+
+# B-36: ELAI_DASHBOARD_OFFLINE is surfaced by get_feature_flags
+# (crates/dashboard-v2/src-tauri/src/commands.rs:1030) so stub.ts can
+# short-circuit Tauri invocation when set. experiment posture: an offline-render
+# convenience that must promote-or-die. RUNPOD-PENDING (honest gap): NO test
+# currently drives get_feature_flags or asserts the dashboard_offline=true branch
+# -- get_feature_flags takes a Tauri-managed AppState that cannot be built outside
+# the runtime (same constraint documented in dashboard_v2_D1_contract.rs). The
+# closest EXISTING behavioral proof of the dashboard offline shape is the D1
+# sidecar offline-shape round-trip; the promotion follow-up is a MockRuntime test
+# that sets ELAI_DASHBOARD_OFFLINE=1 and asserts get_feature_flags returns
+# dashboard_offline=true. Cited test exists; it locks the offline JSON shape, not
+# the env read.
+[[flag]]
+name              = "ELAI_DASHBOARD_OFFLINE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-36"
+smoke_test        = "crates/dashboard-v2/src-tauri/tests/dashboard_v2_D1_contract.rs::d1_offline_shape_round_trips"
+
+# B-40: ELAI_IDEA_FRAMING_ENABLE gates the Idea-Framer/critic-loop framing pass
+# in drive_task (crates/orchestrator/src/task_runner.rs:5757; default-OFF skips
+# framing and proceeds to concepts). experiment posture: a G/H plan flips it on by
+# default once the critic loop is validated. smoke_test drives the framing ON-path
+# and asserts all 5 idea-framing SSB action_types (incl idea_framing_started) land.
+# RUNPOD-PENDING: a Layer-3 smoke driving cli::run_turn with
+# ELAI_IDEA_FRAMING_ENABLE=1 end-to-end is the promotion follow-up.
+[[flag]]
+name              = "ELAI_IDEA_FRAMING_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-40"
+smoke_test        = "crates/contracts/tests/idea_framing_contract.rs::contract_frame_idea_emits_all_5_ssb_action_types"
+
+# B-3: the `autonomous-mode` cargo feature (crates/dashboard-v2/src-tauri/
+# Cargo.toml:75) gates the AutoAdvanceStats Tauri command surface; the default
+# build emits a cfg(not(feature="autonomous-mode")) zeroed stub
+# (commands.rs:1008) until the B-22 producer is surfaced in the panel.
+# experiment posture: expiry tracks B-22 landing the real autonomous-mode
+# producer; promotion via B-22. smoke_test drives the autonomous-gate ON-path
+# behavior the feature exposes (the producer the dashboard surface renders).
+# RUNPOD-PENDING: a `cargo test -p elai-dashboard-v2 --features autonomous-mode`
+# leg that exercises the real get_auto_advance_stats arm is the promotion follow-up.
+[[flag]]
+name              = "autonomous-mode"
+type              = "experiment"
+owner             = "B-3"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-22"
+smoke_test        = "crates/contracts/tests/autonomous_gate_contract.rs::contract_kill_switch_requests_human"
+
+# B-3: the `self-modification` cargo feature (crates/dashboard-v2/src-tauri/
+# Cargo.toml:80) gates the ProposalsPanel / Layer-1A proposal Tauri commands;
+# the default build emits cfg(not(feature="self-modification")) stubs
+# (commands.rs:1148/1166) until the B-23 producer lands. experiment posture:
+# expiry tracks B-23 landing; promotion via B-23. smoke_test drives the Layer-1A
+# apply ON-path behavior the feature exposes (the proposal producer the dashboard
+# surface renders). RUNPOD-PENDING: a `--features self-modification` leg over the
+# real get_pending_proposals arm is the promotion follow-up.
+[[flag]]
+name              = "self-modification"
+type              = "experiment"
+owner             = "B-3"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-23"
+smoke_test        = "crates/contracts/tests/layer1a_contract.rs::contract_apply_proposal_writes_row"
+
+# B-19: ELAI_HOOKS_DISABLED is the global hook-dispatcher kill-switch
+# (crates/orchestrator/src/hook_dispatcher.rs:63 ELAI_HOOKS_DISABLED_ENV; the
+# panel env_active flag at commands_f9.rs:144 reflects it). kill_switch posture:
+# default-OFF = hooks fire; set truthy disables the dispatcher. smoke_test sets the
+# var and asserts the dispatcher returns empty findings (disabled).
+[[flag]]
+name              = "ELAI_HOOKS_DISABLED"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-19"
+smoke_test        = "crates/contracts/tests/hook_dispatcher_contract.rs::contract_env_var_disables_dispatcher"
+
+# B-41: navigator_spawn deferral. The per-level audit dispatch + 5 task_runner
+# call sites (run_per_level_audit_hook) are WIRED, but the pipeline_tree_navigator
+# DepthFirstNavigator tier-completion insertion points (after Designer/Decomposer
+# spawns) are DEFERRED -- those agents are not yet spawned via AgentPool from the
+# navigator (B-41 decisions doc + memory note). This is NOT a runtime env flag; it
+# is a named promotion gate for the deferred navigator-side wiring. experiment
+# posture: promotion = wiring the 5 navigator insertion points to
+# run_per_level_audit_hook. smoke_test drives the per-level audit respawn->recover
+# ON-path that the navigator insertion points will trigger (the dispatch behavior
+# already proven via the task_runner call sites). RUNPOD-PENDING: a navigator-
+# driven Layer-3 smoke once Designer/Decomposer spawn from the tree navigator.
+[[flag]]
+name              = "navigator_spawn"
+type              = "experiment"
+owner             = "B-41"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-41-navigator-followup"
+smoke_test        = "crates/contracts/tests/per_level_audit_contract.rs::contract_observable_effect_full_sequence_respawn_then_recover"
+
+# B-23: ELAI_LAYER1A_AUTO_APPLY gates whether Layer-1A self-mod proposals
+# auto-apply vs queue for human (crates/orchestrator/src/self_mod_layer1a.rs
+# ::layer1a_auto_apply_via_env). experiment posture: an autonomous-apply opt-in
+# that must promote-or-die once the apply-safety streak is bounded; promotion via
+# B-23. smoke_test asserts the auto-apply env helper is observable (set/unset).
+[[flag]]
+name              = "ELAI_LAYER1A_AUTO_APPLY"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "B-23"
+smoke_test        = "crates/contracts/tests/layer1a_contract.rs::contract_auto_apply_env_observed"
+
+# ============================================================================
+# WAVE-A C/D/E wire-dark flag registration (session s-wave-a, 2026-06-05).
+# Each row registers a verified default-OFF flag with a real gate-read +
+# ON-path smoke (R9). The two E-6 flags (ELAI_ALLOW_CLOUD_ADVERSARY,
+# ELAI_FAILURE_TRACKER_ENABLE) were DEFERRED this wave: no real std::env::var
+# gate-read fn exists for either in any crate (only ssb.rs doc comments), so
+# there is no live default-OFF gate to register per R9. ELAI_CONFORMAL_REFUSAL_
+# ENABLE is a SINGLE row serving BOTH D-22 and G-7 (shared flag; DEDUP). NOTE:
+# added by an executing run -- trips gate_freeze_check.py until re-locked
+# out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+# ----------------------------------------------------------------------------
+
+# C-49: iterative experience distillation. Gate const at experience/mod.rs:63;
+# gate-read task_runner.rs:8606; ON-path post-execute distill hook task_runner.rs:8432.
+[[flag]]
+name              = "ELAI_EXPERIENCE_DISTILL_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "C-49"
+smoke_test        = "crates/contracts/tests/c49_iterative_distillation_contract.rs::distill_hook_emits_prompt_policy_distillation_run_when_enabled"
+
+# C-42b: MCP authz event emission kill-switch. Const ssb.rs:26871; gate-read
+# early-return mcp_authz_ssb_adapter.rs:115; emit ON-path follows.
+[[flag]]
+name              = "ELAI_C42_MCP_AUTHZ_EMIT_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "C-42b"
+smoke_test        = "crates/contracts/tests/c42b_mcp_authz_emit_contract.rs::mcp_authz_event_row_emitted_when_emit_enabled"
+
+# C-41-5C: application-skills workflow. Gate-read task_runner.rs:5930; ON-path
+# top_k_skills + SkillTriggered emit task_runner.rs:5934.
+[[flag]]
+name              = "ELAI_APPLICATION_SKILLS_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "C-41-5C"
+smoke_test        = "crates/contracts/tests/c41_skills_driven_workflow_contract.rs::skill_triggered_row_emitted_when_application_skills_enabled"
+
+# C-45: Cantante credit attribution. [agent.credit_attribution].enabled mirrored
+# routing/policy.rs:101-105 (default OFF asserted :166); current_credit_weights
+# consumed on the routing prod path.
+[[flag]]
+name              = "agent.credit_attribution.enabled"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "C-45"
+smoke_test        = "crates/contracts/tests/c45_cantante_credit_attribution_contract.rs::credit_attribution_run_row_emitted_when_enabled"
+
+# C-47: case-based tool calibration. [tool_use.case_base] enabled=false
+# (elai_cc.toml:1025); ToolCalibrationRegistry gate at plugins
+# tool_calibration/registry.rs. Prod SSB emit (OrchestratorCaseBaseSsbEmitter)
+# is WAVE-B wire (NoopCaseBaseEmitter installed today); flag+config gate exist.
+[[flag]]
+name              = "tool_use.case_base.enabled"
+type              = "experiment"
+owner             = "C-47"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "C-47"
+smoke_test        = "crates/contracts/tests/c47_case_based_calibration_contract.rs::tool_calibration_event_row_emitted_when_case_base_enabled"
+
+# C-40: GitHub PR adapter. [github] enabled=false (elai_cc.toml:1457; when false
+# every call returns disabled error); gh-CLI adapter + `elai pr` CLI wired.
+[[flag]]
+name              = "github.enabled"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "C-40"
+smoke_test        = "crates/contracts/tests/c40_github_pr_adapter_contract.rs::github_pr_opened_row_emitted_when_github_enabled"
+
+# C-44: composer2 runtime backend. [runtime.composer2] block (elai_cc.toml:869-873,
+# default absent=disabled); gate read/written by runtime_cmd.rs:154-256 + dashboard
+# commands.rs:210; BackendCostAccrued emit at providers runtime/mod.rs.
+[[flag]]
+name              = "runtime.composer2.enabled"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "C-44"
+smoke_test        = "crates/contracts/tests/c44_composer2_backend_contract.rs::backend_cost_accrued_row_emitted_after_composer2_invoke"
+
+# D-3: parallel-process-monitor verifier consensus. Const runtime_config.rs:32;
+# is_enabled() :271; producer emit_ppm_score agent_pool.rs:1688. Live dispatch
+# (verifier_adapters None at task_runner.rs:3596) is WAVE-B wire.
+[[flag]]
+name              = "ELAI_PPM_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-3"
+smoke_test        = "crates/orchestrator/tests/verifier_consensus_smoke.rs"
+
+# D-5: best-arm-identification round. Const runtime_config.rs:396; is_enabled()
+# :574; outer gate for dispatch_bai_round. bai_runtime None at task_runner.rs:3603
+# (WAVE-B wire).
+[[flag]]
+name              = "ELAI_BAI_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-5"
+smoke_test        = "crates/contracts/tests/bai_contract.rs"
+
+# D-29: hierarchical BAI mode selector (non-boolean string flat|hierarchical).
+# Const runtime_config.rs:405; BaiMode::from_env() parse :427; inner gate, default flat.
+[[flag]]
+name              = "ELAI_BAI_MODE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-29"
+smoke_test        = "crates/contracts/tests/hierarchical_bai_contract.rs"
+
+# D-12: checker registry. Const runtime_config.rs:1022; is_enabled() :1037.
+# checker_runtime None at task_runner.rs:3617 (WAVE-B wire).
+[[flag]]
+name              = "ELAI_CHECKER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-12"
+smoke_test        = "crates/contracts/tests/checker_registry_contract.rs"
+
+# H-41: checker-gap instrument. route_claim_with_gap wrapper; emits CheckerGapDetected.
+# Off by default so existing callers are unaffected. Promote via H-41 once
+# task_runner.rs switches to route_claim_with_gap.
+[[flag]]
+name              = "ELAI_CHECKER_GAP_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "H-41"
+smoke_test        = "crates/contracts/tests/h41_checker_coverage_contract.rs"
+
+# D-12-followup: operationalization gate. Const runtime_config.rs:1131; is_enabled() :1146.
+[[flag]]
+name              = "ELAI_OPERATIONALIZATION_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-12-followup"
+smoke_test        = "crates/contracts/tests/operationalization_contract.rs"
+
+# D-14: adversary gate. Const runtime_config.rs:1258; is_enabled() :1356.
+# adversary_runtime None at task_runner.rs:3637 (WAVE-B wire).
+[[flag]]
+name              = "ELAI_ADVERSARY_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-14"
+smoke_test        = "crates/orchestrator/tests/adversary_integration.rs"
+
+# D-23: sycophancy probe. ELAI_SYCOPHANCY_PROBE_ENABLE_ENV const (runtime_config)
+# + SycophancyRuntimeConfig gate; integration test asserts opt-in default-off.
+[[flag]]
+name              = "ELAI_SYCOPHANCY_PROBE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-23"
+smoke_test        = "crates/orchestrator/tests/sycophancy_integration.rs"
+
+# D-15-followup: novelty label. Const runtime_config.rs:1856; is_enabled() :1955.
+# novelty_runtime None at task_runner.rs:3656 (WAVE-B wire).
+[[flag]]
+name              = "ELAI_NOVELTY_LABEL_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-15-followup"
+smoke_test        = "crates/orchestrator/tests/novelty_integration.rs"
+
+# D-22 + G-7 (SHARED FLAG, single row): conformal refusal. Const runtime_config.rs:2151;
+# is_enabled() :2251. ALSO G-7 per-claim hook task_runner.rs:11715 gate -> :11797
+# compute_claim_score -> :11843 emit_claim_confidence_scored. DEDUP: one row serves both.
+[[flag]]
+name              = "ELAI_CONFORMAL_REFUSAL_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-22"
+smoke_test        = "crates/orchestrator/tests/conformal_integration.rs"
+
+# D-27: refusal SLA tick. Const task_runner.rs:13621; gate-read :13641.
+[[flag]]
+name              = "ELAI_REFUSAL_SLA_TICK_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-27"
+smoke_test        = "crates/orchestrator/tests/refusal_sla_integration.rs"
+
+# D-18-promotion: observable-effect emit gate. Const runtime_config.rs:2428; is_enabled() :2522.
+[[flag]]
+name              = "ELAI_OBSERVABLE_EFFECT_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-18-promotion"
+smoke_test        = "crates/orchestrator/tests/observable_effect_smoke.rs"
+
+# D-18-promotion: observable-effect real-effect executor. Const observable_effect.rs:549;
+# gate-read :569; ON-path executor :371/:585.
+[[flag]]
+name              = "ELAI_OBSERVABLE_EFFECT_EXECUTOR_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-18-promotion"
+smoke_test        = "crates/orchestrator/tests/observable_effect_smoke.rs"
+
+# D-18-promotion: observable-effect legacy emit path. Gate-read task_runner.rs:11981;
+# ON-path legacy emit :12142.
+[[flag]]
+name              = "ELAI_OBSERVABLE_EFFECT_SMOKE_LEGACY_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-18-promotion"
+smoke_test        = "crates/orchestrator/tests/observable_effect_smoke.rs"
+
+# D-30 prod-wire (s-b644): calibration bootstrap warm-start. Const runtime_config.rs:452;
+# parse gate :477; warm_start_tau calibration_bootstrap.rs:346 now dispatched from the
+# production drive_task startup hook task_runner.rs::maybe_warm_start_calibration_once
+# (reachable from start_task_runner, the dashboard/CLI TaskSubmitted consumer). The ON
+# path is exercised by the observable smoke below; default-OFF stays a no-op.
+[[flag]]
+name              = "ELAI_CALIBRATION_BOOTSTRAP_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-30-followup"
+smoke_test        = "crates/orchestrator/tests/calibration_bootstrap_observable_smoke.rs"
+
+# E-3: runtime handoff compress. Const ssb.rs:26485. ACTIVATED (s-e3-exec
+# 2026-06-06): compress_handoff_payload (handoff_payload.rs:100) now has a real
+# production caller -- RuntimeOrchestrator::compress_handoff_for_dispatch, invoked
+# from the pub dispatch method try_complete (runtime_orchestrator.rs) which the
+# dashboard constructs WITH an Ssb handle (dashboard-v2/src-tauri/src/state.rs
+# RuntimeOrchestrator::new(..).with_ssb(..)). The ON path emits a
+# handoff_payload_compressed off-agent SSB row and is exercised by the in-crate
+# smoke below. The original WAVE-A deferral named
+# crates/orchestrator/tests/handoff_payload_on_path.rs, but crates/orchestrator/tests/*
+# integration tests do not LINK in this env (ort/ndarray rlib-format failure), so the
+# smoke lives as an in-crate #[cfg(test)] test instead (no vapor path -> R1 satisfied).
+[[flag]]
+name              = "ELAI_E3_RUNTIME_HANDOFF_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-3"
+smoke_test        = "crates/orchestrator/src/runtime_orchestrator.rs::try_complete_emits_handoff_payload_compressed_row_off_agent"
+
+# E-4: chat UX critique. Const ssb.rs:25174; chat_ux module exists. Producer hooks
+# (ChatUxCritiqueEvent emit, commands_e4.rs) are net-new -- WAVE-B/BUILD heavy.
+# DEFERRED (WAVE-A fixer, s-wave-a 2026-06-05): the named smoke_test
+# crates/contracts/tests/e4_chat_ux_critique_contract.rs does NOT exist and the producer
+# hooks are net-new (WAVE-B/BUILD), so the row would point at a vapor path (R1 fail-open).
+# Deferred out of the allowlist until WAVE-B ships the producer + the contract file.
+# [[flag]]
+# name              = "ELAI_CHAT_UX_CRITIQUE_ENABLE"
+# type              = "experiment"
+# owner             = "maintainer"
+# expiry_date       = "2026-09-01"
+# promotion_plan_id = "E-4"
+# smoke_test        = "crates/contracts/tests/e4_chat_ux_critique_contract.rs"
+
+# E-8: prompt optimizer (Python). Gate ssb.rs:23224 + lib.rs:636 (=1 AND cfg
+# darwinian-evolve). Python optimizer at python/elai_optimizer; RUNPOD/GPU pending.
+# DEFERRED (WAVE-A fixer, s-wave-a 2026-06-05): the named smoke_test
+# python/elai_optimizer/tests/test_optimizer_admit_lifecycle.py does NOT exist and the
+# optimizer ON-path is RUNPOD/GPU-pending, so the row would point at a vapor path
+# (R1 fail-open). Deferred until the Python smoke + a runnable ON-path land.
+# [[flag]]
+# name              = "ELAI_PROMPT_OPTIMIZER_ENABLE"
+# type              = "experiment"
+# owner             = "maintainer"
+# expiry_date       = "2026-09-01"
+# promotion_plan_id = "E-8"
+# smoke_test        = "python/elai_optimizer/tests/test_optimizer_admit_lifecycle.py"
+
+# E-9: eval benchmark runners. Const eval_cmd.rs:49 ENV_GATE; 11 Python bench runs
+# RUNPOD-pending.
+[[flag]]
+name              = "ELAI_EVAL_BENCHMARK_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-9"
+smoke_test        = "crates/cli/src/eval_cmd.rs::tests::eval_cmd_flag_on_path"
+
+# E-11: SaaS prior-art recommender. Const architecture/mod.rs:84.
+# recommend_archetype has zero prod callers; package_verifier/edit_format absent -- WAVE-B/BUILD.
+# DEFERRED (WAVE-A fixer, s-wave-a 2026-06-05): the named smoke_test
+# crates/contracts/tests/e11_saas_prior_art_contract.rs does NOT exist and recommend_archetype
+# has zero prod callers (package_verifier/edit_format absent -- WAVE-B/BUILD), so the row
+# would point at a vapor path (R1 fail-open). Deferred until WAVE-B wires the ON-path + file.
+# [[flag]]
+# name              = "ELAI_SAAS_PRIOR_ART_ENABLE"
+# type              = "experiment"
+# owner             = "maintainer"
+# expiry_date       = "2026-09-01"
+# promotion_plan_id = "E-11"
+# smoke_test        = "crates/contracts/tests/e11_saas_prior_art_contract.rs"
+
+# E-16: VLM image validation anti-sycophancy. Const media_validator/sycophancy.rs:49
+# + ssb.rs:25268; e16 contract references it.
+[[flag]]
+name              = "ELAI_VLM_IMAGE_VALIDATION_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-16"
+smoke_test        = "crates/contracts/tests/e16_media_validator_anti_sycophancy_contract.rs"
+
+# E-17: cAST chunker. Const bm25.rs:843. GPU recall measurement pending; the
+# chunker ON-path smoke (4-lang chunk emission + Recall@5 sanity) ships today.
+[[flag]]
+name              = "ELAI_CAST_CHUNKER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-17"
+smoke_test        = "crates/knowledge/tests/cast_chunker_recall_smoke.rs::recall_at_5_sanity_chunk_contains_gold_anchor"
+
+# E-19: reasoning quality probe umbrella. Const reasoning/mod.rs:25; umbrella_enabled().
+[[flag]]
+name              = "ELAI_REASONING_QUALITY_PROBE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-19"
+smoke_test        = "crates/contracts/tests/e19_reasoning_quality_probe_on_path.rs::umbrella_gate_on_when_enabled"
+
+# E-20: local/cloud hybrid routing. Const cost/cloud_route.rs:82 + ssb.rs:25394;
+# local_cloud_routing_enabled(). HybridEscalationGate prod caller is WAVE-B wire.
+[[flag]]
+name              = "ELAI_LOCAL_CLOUD_ROUTING_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-20"
+smoke_test        = "crates/contracts/tests/e20_hybrid_escalation_on_path.rs::local_cloud_routing_gate_on_when_enabled"
+
+# E-20: privacy BLOCK scan. Const privacy/mod.rs:36; privacy_block_enabled() +
+# scan_prompt_for_secrets ON-path.
+[[flag]]
+name              = "ELAI_PRIVACY_BLOCK_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-20"
+smoke_test        = "crates/contracts/tests/e20_privacy_block_on_path.rs::scanner_blocks_on_aws_access_key_shape"
+
+# E-21: peer systems (critic rerank / SBFL). Const peer_systems/mod.rs:40 + ssb.rs:25485;
+# peer_systems_emit_enabled() + CriticRerank::pick_argmax ON-path.
+[[flag]]
+name              = "ELAI_PEER_SYSTEMS_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-21"
+smoke_test        = "crates/contracts/tests/e21_peer_systems_on_path.rs::critic_rerank_picks_argmax_candidate"
+
+# E-22: GitHub trending. Const ssb.rs:24026; gate-reads skills_cmd.rs:416 +
+# sandbox/mod.rs:204.
+[[flag]]
+name              = "ELAI_GITHUB_TRENDING_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-22"
+smoke_test        = "crates/contracts/tests/e22_github_trending_ssb_contract.rs"
+
+# E-22: lazy MCP schema. Const mcp_bridge.rs:86; lazy_mcp_schema_enabled() (mcp feature).
+[[flag]]
+name              = "ELAI_LAZY_MCP_SCHEMA_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-22"
+smoke_test        = "crates/contracts/tests/e22_lazy_mcp_schema_on_path.rs::lazy_mcp_schema_gate_on_when_enabled"
+
+# E-23: developer discourse. Const ssb.rs:24125; trust_telemetry_aggregation.rs:33
+# drives it ON for the context_state_warning path.
+[[flag]]
+name              = "ELAI_DEVELOPER_DISCOURSE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-23"
+smoke_test        = "crates/orchestrator/tests/trust_telemetry_aggregation.rs"
+
+# E-25: compaction ladder. Gate-read commands_e25.rs:130; e25_tranche_b4_contract
+# imports ELAI_E25_COMPACTION_LADDER_ENABLE_VAR + run_compaction_ladder.
+[[flag]]
+name              = "ELAI_E25_COMPACTION_LADDER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-25"
+smoke_test        = "crates/contracts/tests/e25_tranche_b4_contract.rs"
+
+# E-25: skill templating. e25_tranche_b4_contract.rs:24 imports ELAI_E25_SKILL_TEMPLATING_ENABLE_VAR.
+[[flag]]
+name              = "ELAI_E25_SKILL_TEMPLATING_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-25"
+smoke_test        = "crates/contracts/tests/e25_tranche_b4_contract.rs"
+
+# E-25: opus-plan overlay. e25_tranche_b4_contract.rs:27 imports opus_plan_overlay_enabled
+# + ELAI_E25_OPUSPLAN_OVERLAY_ENABLE_VAR.
+[[flag]]
+name              = "ELAI_E25_OPUSPLAN_OVERLAY_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-25"
+smoke_test        = "crates/contracts/tests/e25_tranche_b4_contract.rs"
+
+# E-25: session-fork emit. Const cli/handoff.rs:63; gate-read :78; dashboard
+# commands.rs:3613.
+# DEFERRED (WAVE-A fixer, s-wave-a 2026-06-05): the named smoke_test
+# crates/cli/tests/session_fork_emit_on_path.rs does NOT exist, so the row points at a
+# vapor path (R1 fail-open). A gate-read exists (handoff.rs:78) but no ON-path smoke file
+# was authored this wave. Deferred until the session_fork_emit_on_path.rs smoke ships.
+# [[flag]]
+# name              = "ELAI_E25_SESSION_FORK_EMIT_ENABLE"
+# type              = "experiment"
+# owner             = "maintainer"
+# expiry_date       = "2026-09-01"
+# promotion_plan_id = "E-25"
+# smoke_test        = "crates/cli/tests/session_fork_emit_on_path.rs"
+
+# E-25: edit checkpoints. Gate args.rs:1106 + checkpoint_cmd.rs:79 for SSB emit
+# (snapshot_pre_edit).
+# DEFERRED (WAVE-A fixer, s-wave-a 2026-06-05): the named smoke_test
+# crates/cli/tests/edit_checkpoints_on_path.rs does NOT exist, so the row points at a
+# vapor path (R1 fail-open). A gate-read exists (checkpoint_cmd.rs:79) but no ON-path
+# smoke file was authored this wave. Deferred until the edit_checkpoints_on_path.rs smoke ships.
+# [[flag]]
+# name              = "ELAI_E25_EDIT_CHECKPOINTS_ENABLE"
+# type              = "experiment"
+# owner             = "maintainer"
+# expiry_date       = "2026-09-01"
+# promotion_plan_id = "E-25"
+# smoke_test        = "crates/cli/tests/edit_checkpoints_on_path.rs"
+
+# E-25: LLM prompt handler. Const hook_prompt.rs:54; prompt_handler_enabled() :152.
+[[flag]]
+name              = "ELAI_E25_PROMPT_HANDLER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-25"
+smoke_test        = "crates/contracts/tests/e25_prompt_handler_on_path.rs::prompt_handler_gate_on_when_enabled"
+
+# E-25: approval-fatigue guard. Gate runtime_builder.rs:362; e25_guards_contract.rs:130
+# asserts default OFF.
+[[flag]]
+name              = "ELAI_E25_APPROVAL_FATIGUE_GUARD_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-25"
+smoke_test        = "crates/contracts/tests/e25_guards_contract.rs::approval_fatigue_env_gate_is_off_by_default"
+
+# E-25: bash-complexity guard. e25_guards_contract.rs:171 asserts default OFF.
+[[flag]]
+name              = "ELAI_E25_BASH_COMPLEXITY_GUARD_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-25"
+smoke_test        = "crates/contracts/tests/e25_guards_contract.rs::bash_complexity_env_gate_is_off_by_default"
+
+# E-25: sandbox-template guard. Const sandbox_template_guard.rs:34;
+# sandbox_template_guard_enabled() :66.
+[[flag]]
+name              = "ELAI_E25_SANDBOX_TEMPLATE_GUARD_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-25"
+smoke_test        = "crates/contracts/tests/e25_sandbox_template_guard_on_path.rs::sandbox_template_guard_gate_on_when_enabled"
+
+# E-27: sidecar quant backend (Python, value-enum nf4|awq|fp16). Gate
+# python/elai_inference/server.py:2026 os.getenv. Python-only flag.
+# DEFERRED (WAVE-A fixer, s-wave-a 2026-06-05): the named smoke_test
+# python/elai_inference/tests/test_quant_backend_awq.py does NOT exist (awq backend ON-path
+# is RUNPOD/GPU-pending), so the row points at a vapor path (R1 fail-open). Deferred until
+# the Python awq smoke + a runnable ON-path land.
+# [[flag]]
+# name              = "ELAI_QUANT_BACKEND"
+# type              = "experiment"
+# owner             = "maintainer"
+# expiry_date       = "2026-09-01"
+# promotion_plan_id = "E-27"
+# smoke_test        = "python/elai_inference/tests/test_quant_backend_awq.py"
+
+# E-44: saga gate. fn e44_saga_enabled() task_runner.rs:13462 reads env :13463;
+# ON-path saga_gate_on :13447/:13804.
+[[flag]]
+name              = "ELAI_E44_SAGA_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-44"
+smoke_test        = "crates/orchestrator/tests/e44_saga_contract.rs"
+
+# E-44: durability observability. Const durability/observability.rs:39; gate-read :52;
+# e44_saga_contract.rs:45 drives it ON.
+[[flag]]
+name              = "ELAI_DURABILITY_OBSERVABILITY_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-44"
+smoke_test        = "crates/orchestrator/tests/e44_saga_contract.rs"
+
+# E-42: tree-sitter grammars health. Const tree_sitter_health/mod.rs:58; gate-read :69
+# (DkgEngine tree_sitter_health).
+[[flag]]
+name              = "ELAI_TREE_SITTER_GRAMMARS_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-42"
+smoke_test        = "crates/knowledge/src/tree_sitter_health/mod.rs::tests"
+
+# E-40: 5th-list symbol-graph RRF. Const pipeline.rs:83; symbol_graph_5th_rrf_enabled_from_env()
+# :87; 5th RRF list gated pipeline.rs:1043.
+[[flag]]
+name              = "ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-40"
+smoke_test        = "crates/contracts/tests/e40_symbol_graph_5th_rrf_on_path.rs::symbol_graph_5th_rrf_gate_on_when_enabled"
+
+# E-40: scope-graph SSB emit gate. Const scip_cmd.rs:43; guards emit_scope_graph_ssb() in run_resolve().
+# ON-path smoke: scope_graph_emit_smoke::scope_graph_resolved_row_lands_in_ssb (in-crate #[tokio::test])
+# drives ScopeGraph::resolve_name -> notify_symbol_graph_event -> reads SSB row back off-agent.
+[[flag]]
+name              = "ELAI_SCOPE_GRAPH_EMIT_ENABLE"
+type              = "kill_switch"
+owner             = "E-40"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "E-40"
+smoke_test        = "crates/orchestrator/src/symbol_graph/mod.rs::scope_graph_emit_smoke::scope_graph_resolved_row_lands_in_ssb"
+
+# E-46: planning decomposition. Const planning_decomposition/mod.rs:83; is_enabled() :92.
+[[flag]]
+name              = "ELAI_PLANNING_DECOMPOSITION_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-46"
+smoke_test        = "crates/contracts/tests/e46_planning_decomposition_on_path.rs::planning_decomposition_gate_on_when_enabled"
+
+# E-48: web research orchestrator. Const research/web_orchestrator/mod.rs:120;
+# is_enabled() :130. Live client wiring RUNPOD-pending.
+[[flag]]
+name              = "ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-48"
+smoke_test        = "crates/contracts/tests/e48_web_orchestrator_on_path.rs::web_orchestrator_gate_on_when_enabled"
+
+# E-54: eval corpus embeddings (Python). Gate python/elai_inference/embeddings.py:36
+# _ENV_GATE + :56 (lazy load deferred until ==1). Python-only flag.
+# DEFERRED (WAVE-A fixer, s-wave-a 2026-06-05): the named smoke_test
+# python/elai_inference/tests/test_eval_corpus_embeddings.py does NOT exist (embeddings
+# lazy-load ON-path is RUNPOD/GPU-pending), so the row points at a vapor path (R1
+# fail-open). Deferred until the Python embeddings smoke + a runnable ON-path land.
+# [[flag]]
+# name              = "ELAI_EVAL_CORPUS_EMBEDDINGS"
+# type              = "experiment"
+# owner             = "maintainer"
+# expiry_date       = "2026-09-01"
+# promotion_plan_id = "E-54"
+# smoke_test        = "python/elai_inference/tests/test_eval_corpus_embeddings.py"
+
+# E-55: agentic RL. Gate args_skills.rs:285 + args.rs:1094 (rl_train, recipe).
+# GepaEvolver/RlaifJudge not called by rl_train_cmd -- WAVE-B wire; RUNPOD-pending.
+# DEFERRED (WAVE-A fixer, s-wave-a 2026-06-05): the named smoke_test
+# crates/cli/tests/rl_train_on_path.rs does NOT exist and GepaEvolver/RlaifJudge are not
+# called by rl_train_cmd (WAVE-B wire, RUNPOD-pending), so the row points at a vapor path
+# (R1 fail-open). Deferred until WAVE-B wires the ON-path + the smoke file.
+# [[flag]]
+# name              = "ELAI_AGENTIC_RL_ENABLE"
+# type              = "experiment"
+# owner             = "maintainer"
+# expiry_date       = "2026-09-01"
+# promotion_plan_id = "E-55"
+# smoke_test        = "crates/cli/tests/rl_train_on_path.rs"
+
+# E-52-followon: LSP diagnostic probe. Const diagnostic_probe.rs:56;
+# lsp_diagnostic_probe_enabled_from_env() :111 (default OFF, ==1).
+[[flag]]
+name              = "ELAI_LSP_DIAGNOSTIC_PROBE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-52-followon"
+smoke_test        = "crates/contracts/tests/e52_lsp_diagnostic_probe_on_path.rs::diagnostic_probe_gate_on_when_enabled"
+
+# E-50: SaaS arch patterns. Const saas_patterns.rs:61; ssb_emission_enabled() :67.
+# configure_agents prod caller is WAVE-B wire.
+[[flag]]
+name              = "ELAI_SAAS_ARCH_PATTERNS_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-50"
+smoke_test        = "crates/contracts/tests/e50_saas_patterns_on_path.rs::saas_patterns_gate_on_when_enabled"
+
+# ---- E-12 PRODUCTION FULLSTACK CODEGEN WIRING (session s-e12-exec, 2026-06-06) ----
+# E-12: framework-profile selection beacon. ACTIVATED: get_framework_profile
+# (framework_profile/registry.rs:237) now has a real non-test production caller --
+# task_runner::maybe_emit_framework_profile_once, invoked unconditionally from
+# drive_task at runner startup (the dashboard/CLI TaskSubmitted consumer). Default-OFF
+# because resolving + emitting a FrameworkProfileSelected row is a new observable
+# producer on the executor turn; the ON path emits one off-agent FrameworkProfileSelected
+# SSB row per runner. The named integration test path does NOT link in this env
+# (ort/ndarray rlib-format failure), so the smoke lives as an in-crate #[cfg(test)] test
+# (no vapor path -> R1 satisfied). NOTE: added by an executing run -- trips
+# gate_freeze_check.py until re-locked out-of-band (`gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_FRAMEWORK_PROFILE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-12"
+smoke_test        = "crates/orchestrator/src/task_runner.rs::tests::e12_framework_profile_and_production_checklist_emit_when_enabled"
+
+# E-12: production-grade checklist runner. ACTIVATED: production_checklist::run_all
+# (production_checklist/mod.rs:231) + the AuditorMode::ProductionGrade dispatch path now
+# have a real non-test production caller -- task_runner::maybe_run_production_checklist_once,
+# invoked unconditionally from drive_task at runner startup. Default-OFF because running
+# 15 external CLIs per task is heavy (the runners return ToolchainMissing when a CLI is
+# absent, which still produces an observable verdict); the ON path emits one off-agent
+# PerLevelAuditVerdict SSB row with mode="production_grade" + per-check findings_count.
+# Live invocation against representative apps with the CLIs installed is RUNPOD-PENDING
+# per workflow/reasoning/E-12-tier-b-decisions.md; the ToolchainMissing baseline is the
+# standing ON-path proof. Same env-link constraint as the E-3 row -> in-crate smoke.
+# NOTE: added by an executing run -- trips gate_freeze_check.py until re-locked out-of-band.
+[[flag]]
+name              = "ELAI_PRODUCTION_CHECKLIST_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-12"
+smoke_test        = "crates/orchestrator/src/task_runner.rs::tests::e12_framework_profile_and_production_checklist_emit_when_enabled"
+
+# E-2: ELAI_STREAMING_TIMING_ENABLE gates the StreamingTimingRecorded SSB emit
+# at chat stream-end. Producer = crates/dashboard-v2/src-tauri/src/commands.rs
+# (emit_streaming_timing, called from the 5 stream-end sites inside the
+# start_chat_stream #[tauri::command] task). Default-OFF; the raw streaming path
+# is unaffected when the gate is off, so this is observation-only telemetry that
+# must promote-or-die. smoke_test flips the gate ON, drives emit_streaming_timing
+# against a temp Ssb, and asserts exactly one decoded StreamingTimingRecorded row
+# (and zero rows with the gate OFF) — the off-agent artifact per wiring R4/R7.
+[[flag]]
+name              = "ELAI_STREAMING_TIMING_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-2"
+smoke_test        = "crates/dashboard-v2/src-tauri/src/commands.rs::streaming_timing_emit_tests::emit_writes_one_streaming_timing_row_when_gate_on"
+
+# E-39: ELAI_COST_TOKEN_ECONOMICS_ENABLE gates the cost+token-economics substrate
+# (cost_router / velocity_cap / automix_gate / cloud_abort / free_tier_guard,
+# crates/orchestrator/src/cost/). Gate const at cost/mod.rs:65
+# (cost_token_economics_enabled()). ACTIVATED (s-e39-exec 2026-06-06): the
+# difficulty-estimator + budget-aware cost_router now has a real production caller
+# — run_cost_router_preclassify, invoked from drive_task's cloud-dispatch branch
+# (task_runner.rs, gated by the const) before the CloudGroundingClient dispatch,
+# reachable from the elai run/task CLI -> start_task_runner -> run_task_runner ->
+# handle_task_entry -> drive_task chain (R7 non-test entrypoint). The ON path emits
+# a CostRouterDecision CostTokenEvent off-agent SSB row exercised by the in-crate
+# smoke below. experiment posture: a follow-up flips it on by default once the
+# velocity/abort enforcement legs (currently decision-fns awaiting the off-limits
+# live spend-ledger thread-through) are wired to the dispatch loop. The integration
+# test dir does not LINK in this env (ort/ndarray rlib), so the smoke lives in-crate
+# (E-3 precedent above; no vapor path -> R1 satisfied). NOTE: added by an executing
+# run — trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_COST_TOKEN_ECONOMICS_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-39"
+smoke_test        = "crates/orchestrator/src/task_runner.rs::tests::cost_router_preclassify_emits_cost_router_decision_row_off_agent"
+
+[[flag]]
+name              = "ELAI_SANDBOX_FIRECRACKER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-15"
+smoke_test        = "crates/orchestrator/src/task_runner.rs::tests::e15_firecracker_dispatch_emits_backend_selected_and_writer_absent_silent"
+
+# E-47: LoRA fine-tuning ship-gate SSB emit. The gate layer is BUILT and
+# contract-tested (check_lora_ship_gate + LoraShipGateEventPhase serde +
+# lora_ship_gate_enabled_from_env + the 6 contract tests in
+# crates/contracts/tests/e47_lora_ship_gate_contract.rs). The producer-side
+# LoRA training stack (Unsloth + QLoRA-NF4 + PiSSA + DoRA on RTX 3090) is
+# RUNPOD-PENDING until E-47.1; no .py files are created under
+# python/elai_finetune/ in this E-N (CI lint refuses until E-47.1). Default-OFF
+# because the elai lora-gate-check CLI emits SSB rows only when the operator
+# opts in, ensuring the wire-dark posture matches the deferral token in
+# elai_cc.toml. smoke_test drives lora_ship_gate_enabled_from_env() and asserts
+# the env gate is OFF by default (the observable ON-path in the env-gate contract).
+# NOTE: added by an executing run -- trips gate_freeze_check.py until re-locked
+# out-of-band (`python .claude/tools/gate_freeze_check.py --lock`); a sanctioned
+# flag registration.
+[[flag]]
+name              = "ELAI_LORA_SHIP_GATE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "E-47.1"
+smoke_test        = "crates/contracts/tests/e47_lora_ship_gate_contract.rs::test_lora_ship_gate_env_gate_default_off"
+
+# D-3 prod-wire: multi-verifier consensus. ELAI_VERIFIER_ENABLE gates
+# build_verifier_adapters + dispatch_verifiers in task_runner. Without it
+# verifier_consensus_pass/fail SSB rows stay dark. The ON path is exercised by
+# the verifier_consensus_smoke integration test (3 mock adapters, KofN 2/3 rule,
+# off-agent SSB row). NOTE: added by hygiene-sweep 2026-06-07 (R9 backfill).
+[[flag]]
+name              = "ELAI_VERIFIER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-3"
+smoke_test        = "crates/orchestrator/tests/verifier_consensus_smoke.rs"
+
+# D-4 prod-wire: tripwire monitor. ELAI_TRIPWIRE_ENABLE gates
+# build_tripwire_monitor + dispatch_tripwires in task_runner. Without it
+# TripwireFired SSB rows stay dark and auto_revert never fires. The ON path is
+# exercised by the tripwire_observable_smoke integration test (synthetic
+# IntrinsicSignals outlier, TripwireFired row, ArchiveEntry -> Retired).
+# NOTE: added by hygiene-sweep 2026-06-07 (R9 backfill).
+[[flag]]
+name              = "ELAI_TRIPWIRE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-4"
+smoke_test        = "crates/orchestrator/tests/tripwire_observable_smoke.rs"
+
+# D-6 prod-wire: held-out task sampler. ELAI_HELD_OUT_ENABLE gates
+# maybe_sample_held_out_once in drive_task, the held-out dispatch through the
+# production start_task_runner path. Without it HeldOutTaskUsed SSB rows stay
+# dark. The ON path is exercised by the held_out_sample_observable_smoke
+# integration test (aged task in tempdir SQLite, real drive_task dispatch,
+# HeldOutTaskUsed row assert). NOTE: added by hygiene-sweep 2026-06-07 (R9 backfill).
+[[flag]]
+name              = "ELAI_HELD_OUT_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "D-6"
+smoke_test        = "crates/orchestrator/tests/held_out_sample_observable_smoke.rs"
+
+# H-32: ELAI_FACT_VALIDATION_KILL is a default-ON kill-switch for the
+# citation-validity TTL expiry maintenance pass (dkg_lifecycle.rs::fact_validation_killed(),
+# consumed live_cli.rs:2139). Setting truthy DISABLES the pass; default (unset) = pass runs
+# and emits fact_validation_failed SSB rows for expired Tier-A facts. kill_switch posture:
+# the safe default is ON (pass runs); the kill-switch is the ops escape hatch. smoke_test
+# drives the ON path: the TTL maintenance pass runs with the env unset and a Tier-A fact
+# aged past 28 days, asserts a fact_validation_failed SSB row lands (the off-agent artifact).
+# NOTE: added by H-32 fixer — trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_FACT_VALIDATION_KILL"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-07"
+promotion_plan_id = "H-32"
+smoke_test        = "crates/contracts/tests/h32_citation_validity_contract.rs::real_fact_validation_failed_row_lands_and_round_trips"
+
+[[flag]]
+name              = "ELAI_MEMORY_PIN_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-07"
+promotion_plan_id = "H-33"
+smoke_test        = "crates/contracts/tests/h33_memory_governance_contract.rs::pin_filter_decay_skips_pinned_row"
+notes             = "Gates decay-tick pin-filter in live_cli.rs; pin/unpin beacon writes are unconditional. Fail-toward-decay: empty HashSet passed when flag absent."
+
+[[flag]]
+name              = "ELAI_MCP_DEFER_SCHEMA_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-07"
+promotion_plan_id = "H-34"
+smoke_test        = "crates/contracts/tests/h34_mcp_defer_contract.rs::h34_f4_withheld_tool_resolve_returns_cached_schema"
+notes             = "Gates MCP schema defer-loading on the live STDIO lane. When ON: only ALWAYS_AVAILABLE floor tools are injected with full schemas; non-floor tools are withheld in StdioSchemaCache and resolved on first use in call_tool with McpToolDeferred SSB row. Default-OFF (R9). Fail-toward-eager: when absent, all tools are injected eagerly (existing behavior)."
+
+[[flag]]
+name              = "ELAI_NOTIFY_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-07"
+promotion_plan_id = "H-36"
+smoke_test        = "crates/contracts/tests/h36_notification_contract.rs::h36_f4_notify_enable_env_gate_controls_os_dispatch"
+notes             = "Gates the OS-notification process spawn (notify-send / osascript / powershell Add-Type). Terminal escape (OSC 9 + BEL) and agent_notification_emitted SSB row fire UNCONDITIONALLY regardless of this gate. kill_switch posture: CI must not pop toasts; set ELAI_NOTIFY_ENABLE=1 in developer env to enable focus-independent OS notifications. Fail-toward-escape-only: absent = no OS notification spawn, BEL still fires, SSB row still writes."
+
+[[flag]]
+name              = "ELAI_PLAN_APPROVAL_GATE_ENABLE"
+type              = "kill_switch"
+owner             = "H-37"
+expiry_date       = "2026-12-07"
+promotion_plan_id = "H-37"
+smoke_test        = "crates/contracts/tests/h37_plan_approval_gate_contract.rs::h37_f1_plan_decision_event_row_emitted_when_gate_enabled"
+notes             = "Gates the plan-approval intercept at PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST. Default-OFF kill-switch: set ELAI_PLAN_APPROVAL_GATE_ENABLE=1 to enable human Approve/Redirect/Reject before execution. In autonomous/non-interactive mode auto-advances (PlanDecisionKind::AutoAdvance, no prompt). Wired in task_runner.rs::drive_task after grounding sweep. SSB row plan_decision_event is emitted on every gate invocation regardless of outcome."
+
+# H-38: cost-confirmation gate on TaskStop / pod_stop.
+# The Y/N confirm safety behavior (ConfirmRequired + RejectedHeld paths) is ON
+# unconditionally. This flag only gates the SSB telemetry beacon for the
+# PassedNoFriction path (zero-friction stops). Default-OFF per R9; experiment
+# posture: must promote or die within 180d of ship date (2026-12-07 rounded to
+# end-of-2026 H-plan window). Smoke test asserts the ConfirmRequired -> Block
+# path emits a stop_confirmation_event row in SSB (the load-bearing off-agent
+# artifact per R4/R7). Added by H-38 executing run.
+[[flag]]
+name              = "ELAI_STOP_COST_CONFIRM_ENABLE"
+type              = "experiment"
+owner             = "H-38"
+expiry_date       = "2026-12-07"
+promotion_plan_id = "H-38-promote"
+smoke_test        = "crates/contracts/tests/h38_stop_cost_confirm_contract.rs::stop_confirmation_event_row_emitted_when_billable_stop_configured"
+
+[[flag]]
+name              = "ELAI_REASONING_BUDGET_SCALE_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-05"
+promotion_plan_id = "H-42"
+smoke_test        = "crates/contracts/tests/h42_serial_depth_budget_contract.rs::kill_switch_env_var_equalizes_budget_at_babystep_depth"
+
+[[flag]]
+name              = "ELAI_ABSTENTION_SCORE_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2027-06-08"
+promotion_plan_id = "H-39"
+smoke_test        = "crates/contracts/tests/h39_abstention_score_contract.rs::h39_f3_abstaining_variant_ranks_above_confident_wrong"
 
 # ---- CANDIDATES TO TRIAGE ----
 # Known existing default-OFF flags (grounded from CLAUDE.md). Each is wire-dark today.

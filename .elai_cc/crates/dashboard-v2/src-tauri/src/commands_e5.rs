@@ -1,22 +1,24 @@
 //! E-5 — MemoryFacts Tauri command surface.
 //!
-//! Two read-only commands feed the `MemoryFactsDrawer.svelte` panel:
+//! Read-only commands feed the `MemoryFactsDrawer.svelte` panel:
 //!
-//! - [`get_memory_facts`] — paginated listing of currently-valid rows for
-//!   the active user (+ optional `scope` / `fact_type` filter).
-//! - [`get_trust_score`] — fetch a single row's persisted trust score
-//!   for the drawer's "decay heat-map" hover-card.
+//! - [`get_memory_facts`] — paginated listing of currently-valid rows.
+//! - [`get_trust_score`] — single row trust score for hover-card.
+//! - [`get_semantic_contradictions`] — F-12 semantic contradiction pairs.
 //!
-//! Per the executor brief, this is an ADDITIVE surface: a separate module
-//! registered in `lib.rs::run` alongside the existing `commands::*`
-//! handlers. No mutation commands ship in this slice (the Mem0
-//! ADD/UPDATE/DELETE/NOOP dispatcher lives in the orchestrator's
-//! follow-up vertical slice).
+//! H-33 (SCHEMA_VERSION 211) adds three mutation commands:
+//! - [`memory_forget`] — soft-close + MemoryGovernanceEvent::Forgotten beacon.
+//! - [`memory_pin`] — MemoryGovernanceEvent::Pinned or ::Unpinned beacon.
+//! - [`get_memory_facts_with_history`] — list_current + recently-superseded rows.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use elai_core::paths::memory_facts_db_path;
 use elai_memory::{FactStore, FactType, Scope};
+use elai_orchestrator::ssb::{
+    MemoryGovernanceEventPayload, MemoryGovernanceKind, SsbPayload,
+};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -289,5 +291,207 @@ pub async fn get_semantic_contradictions(
     Ok(SemanticContradictionsResponse {
         viewer_attached: true,
         pairs,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// H-33 (SCHEMA_VERSION 211): governance mutation commands + history surface.
+// ---------------------------------------------------------------------------
+
+const H33_ACTOR: &str = "dashboard";
+const H33_SESSION_ID: &str = "dashboard:memory-governance";
+
+/// Response for [`memory_forget`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgetResponse {
+    pub fact_id: String,
+    pub soft_closed_at_ms: u64,
+    /// SSB row sequence, or -1 when SSB writer was unavailable.
+    pub ssb_seq: i64,
+}
+
+/// Response for [`memory_pin`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PinResponse {
+    pub fact_id: String,
+    pub pinned: bool,
+    /// SSB row sequence, or -1 when SSB writer was unavailable.
+    pub ssb_seq: i64,
+}
+
+/// Response for [`get_memory_facts_with_history`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryFactsHistoryResponse {
+    pub store_path: String,
+    /// Currently-valid facts.
+    pub facts: Vec<MemoryFactDto>,
+    /// Recently-superseded rows (superseded_by IS NOT NULL among active set).
+    pub history_facts: Vec<MemoryFactDto>,
+}
+
+/// One governance event (DTO for the frontend history view).
+/// H-33: used by future `get_governance_history` command (currently unused directly).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct MemoryGovernanceDto {
+    pub fact_id: String,
+    /// "forgotten" | "pinned" | "unpinned"
+    pub kind: String,
+    pub actor: String,
+    pub ts_ms: u64,
+}
+
+/// H-33: soft-close a fact and emit `MemoryGovernanceEvent::Forgotten` beacon.
+///
+/// The FactStore soft_close succeeds independently of SSB availability — the
+/// mutation is authoritative. SSB unavailability produces a warning in the
+/// response (`ssb_seq == -1`) but is NOT an error.
+#[tauri::command]
+pub async fn memory_forget(
+    state: State<'_, AppState>,
+    fact_id: String,
+) -> Result<ForgetResponse, String> {
+    use elai_core::clock::OsClock;
+    use elai_core::clock::ClockProvider;
+
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    let now_ms = clock.now_ms() as u64;
+
+    let path = resolve_store_path(&state);
+    let mut store = FactStore::open(&path).map_err(|e| e.to_string())?;
+    store
+        .soft_close(&fact_id, now_ms as u128)
+        .map_err(|e| format!("soft_close failed: {e}"))?;
+
+    let ssb_seq = match &state.writer {
+        None => -1,
+        Some(ssb) => {
+            let payload = SsbPayload::MemoryGovernanceEvent(MemoryGovernanceEventPayload {
+                fact_id: fact_id.clone(),
+                kind: MemoryGovernanceKind::Forgotten,
+                actor: H33_ACTOR.to_owned(),
+                session_id: H33_SESSION_ID.to_owned(),
+                created_at_ms: now_ms,
+            });
+            match ssb
+                .write_payload(H33_ACTOR, 0, payload, vec![])
+                .await
+            {
+                Ok(seq) => seq,
+                Err(e) => {
+                    tracing::warn!(error = %e, fact_id, "memory_forget: SSB beacon failed");
+                    -1
+                }
+            }
+        }
+    };
+
+    Ok(ForgetResponse {
+        fact_id,
+        soft_closed_at_ms: now_ms,
+        ssb_seq,
+    })
+}
+
+/// H-33: emit a pin or unpin `MemoryGovernanceEvent` beacon for a fact.
+///
+/// `pinned = true` emits `Pinned`; `pinned = false` emits `Unpinned`.
+/// This does NOT modify the FactStore schema (no `pinned` column exists —
+/// the pin state is derived from the SSB beacon stream by `build_pin_set_from_ssb`
+/// in the decay path).
+#[tauri::command]
+pub async fn memory_pin(
+    state: State<'_, AppState>,
+    fact_id: String,
+    pinned: bool,
+) -> Result<PinResponse, String> {
+    use elai_core::clock::OsClock;
+    use elai_core::clock::ClockProvider;
+
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    let now_ms = clock.now_ms() as u64;
+
+    let kind = if pinned {
+        MemoryGovernanceKind::Pinned
+    } else {
+        MemoryGovernanceKind::Unpinned
+    };
+
+    let ssb_seq = match &state.writer {
+        None => -1,
+        Some(ssb) => {
+            let payload = SsbPayload::MemoryGovernanceEvent(MemoryGovernanceEventPayload {
+                fact_id: fact_id.clone(),
+                kind,
+                actor: H33_ACTOR.to_owned(),
+                session_id: H33_SESSION_ID.to_owned(),
+                created_at_ms: now_ms,
+            });
+            match ssb
+                .write_payload(H33_ACTOR, 0, payload, vec![])
+                .await
+            {
+                Ok(seq) => seq,
+                Err(e) => {
+                    tracing::warn!(error = %e, fact_id, "memory_pin: SSB beacon failed");
+                    -1
+                }
+            }
+        }
+    };
+
+    Ok(PinResponse {
+        fact_id,
+        pinned,
+        ssb_seq,
+    })
+}
+
+/// H-33: list currently-valid facts PLUS recently-superseded rows for the
+/// active user. History facts are those with `superseded_by IS NOT NULL`
+/// among the active set (soft-close means valid_to_ms is set so they do
+/// not appear in list_current; the superseded_by chain is surfaced here
+/// for the "show history" drawer toggle).
+#[tauri::command]
+pub async fn get_memory_facts_with_history(
+    state: State<'_, AppState>,
+    user_id: Option<String>,
+    scope: Option<String>,
+    fact_type: Option<String>,
+    limit: Option<usize>,
+) -> Result<MemoryFactsHistoryResponse, String> {
+    let user = user_id.unwrap_or_else(|| "default".to_owned());
+    let scope = parse_optional_scope(scope)?;
+    let fact_type = parse_optional_fact_type(fact_type)?;
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT).max(1);
+
+    let (store, path, _) = open_store(&state)?;
+    // list_including_closed returns ALL rows (valid + closed) for the user.
+    // Post-filter by scope if provided (list_including_closed has no scope param).
+    let all_rows = store
+        .list_including_closed(&user, fact_type, limit)
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<_> = if let Some(ref s) = scope {
+        all_rows.into_iter().filter(|r| &r.scope == s).collect()
+    } else {
+        all_rows
+    };
+
+    // Split: closed/superseded rows (valid_to_ms IS NOT NULL) vs current.
+    let mut facts: Vec<MemoryFactDto> = Vec::new();
+    let mut history_facts: Vec<MemoryFactDto> = Vec::new();
+    for row in rows {
+        let dto = MemoryFactDto::from(row.clone());
+        if row.valid_to_ms.is_some() {
+            history_facts.push(dto);
+        } else {
+            facts.push(dto);
+        }
+    }
+
+    Ok(MemoryFactsHistoryResponse {
+        store_path: path.to_string_lossy().into_owned(),
+        facts,
+        history_facts,
     })
 }

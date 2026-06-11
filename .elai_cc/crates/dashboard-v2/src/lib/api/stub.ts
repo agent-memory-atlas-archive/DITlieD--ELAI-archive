@@ -95,6 +95,8 @@ import type {
   SymbolicConflict,
   // F-11 — config-DGM admit-loop feed row.
   DarwinianAdmit,
+  // H-46 — CMP parent-selection feed row.
+  CladeSelection,
   // F-12 — semantic-contradiction feed.
   SemanticContradictionsResponse,
   // F-13 / Slice A5 — session-archive feed row.
@@ -132,6 +134,11 @@ import type {
   RrfQualityGateRow,
   HydeSkippedCodeQueryRow,
   RrfComponentWeightsRow,
+  // B-4 — HyDE hypothesis-preview row for the QueryTrace inspector.
+  HydeQueryRow,
+  // B-5 — full CSQ verdict log row + per-role GRC config row.
+  CsqLogRow,
+  GrcConfigRow,
   // B-3 — feature-flag + query-tier + rule-transition surfaces.
   FeatureFlags,
   QueryTierStats,
@@ -641,6 +648,18 @@ export async function get_darwinian_admits(): Promise<DarwinianAdmit[]> {
   return [];
 }
 
+// H-46 — CMP parent-selection feed. Browser-only dev returns an empty array
+// (steady state is no rows; clade_selected rows only appear after a `darwin-loop`
+// run with ELAI_DARWINIAN_LOOP_ENABLE=1 + feature darwinian-evolve). Live path
+// reads the `get_clade_selections` Tauri command newest-first.
+export async function get_clade_selections(): Promise<CladeSelection[]> {
+  logStub('get_clade_selections');
+  const live = await tryInvoke<CladeSelection[]>('get_clade_selections');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
 // F-13 / Slice A5 — session-archive feed. Browser-only dev returns an empty
 // array (steady state is no rows: archives only appear when a stale-version SSB
 // is opened with the wire-dark ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE gate set). Live
@@ -719,6 +738,17 @@ export async function get_query_trace_recent(n: number): Promise<QueryTrace[]> {
   if (live) return live;
   await delay();
   return QUERY_TRACES.slice(0, n);
+}
+
+// B-4: HyDE hypothesis-preview feed for the QueryTrace inspector. Falls
+// back to [] in browser-only mode (no Tauri runtime) — "no HyDE rows yet"
+// is a legitimate steady state, not a mock-worthy scenario.
+export async function get_hyde_query_recent(n: number): Promise<HydeQueryRow[]> {
+  logStub('get_hyde_query_recent', { n });
+  const live = await tryInvoke<HydeQueryRow[]>('get_hyde_query_recent', { n });
+  if (live) return live;
+  await delay();
+  return [];
 }
 
 // ------------------------------------------------------------------
@@ -917,6 +947,97 @@ export async function get_csq_pending(): Promise<CsqEntry[]> {
   if (live) return live;
   await delay();
   return CSQ_PENDING;
+}
+
+// B-5: full CSQ verdict log (every csq_evaluated row, not just blocked
+// ones). The CsqBlockCard filters this for Critical-without-guard rows.
+// Falls back to [] in browser-only mode — "no CSQ verdicts yet" is a
+// legitimate steady state.
+export async function get_csq_log(): Promise<CsqLogRow[]> {
+  logStub('get_csq_log');
+  const live = await tryInvoke<CsqLogRow[]>('get_csq_log');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+// B-5: per-role GRC budget config table (compile-time default_grc_config).
+// Falls back to [] in browser-only mode (no Tauri runtime); the
+// ReasoningDrawer GRC-config table renders an empty-state note in that case.
+export async function get_agent_grc_config(): Promise<GrcConfigRow[]> {
+  logStub('get_agent_grc_config');
+  const live = await tryInvoke<GrcConfigRow[]>('get_agent_grc_config');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+// C-3: research budget snapshot (admitted / pruned / token usage of the
+// most recent research run). Backed by the get_research_budget Tauri
+// command -> SsbViewer::research_budget_snapshot. `known: false` until a
+// research_budget_* SSB row type lands (C-1 producer scope); the
+// ResearchDrawer renders its honest "no data yet" note in that case.
+export interface ResearchBudgetSnapshot {
+  known: boolean;
+  admitted: number;
+  pruned: number;
+  tokens_used: number;
+  tokens_max: number;
+}
+
+export async function get_research_budget(): Promise<ResearchBudgetSnapshot> {
+  logStub('get_research_budget');
+  const live = await tryInvoke<ResearchBudgetSnapshot>('get_research_budget');
+  if (live) return live;
+  await delay();
+  return { known: false, admitted: 0, pruned: 0, tokens_used: 0, tokens_max: 0 };
+}
+
+// C-3: source-tier distribution (T1..T5 counts of the last research run).
+// Backed by get_source_tier_distribution -> SsbViewer::source_tier_distribution.
+// Flat t1..t5 shape (distinct from the per-row SourceTierDistribution[]
+// used by get_source_quality_tiers). `known: false` until a producer lands.
+export interface SourceTierCounts {
+  known: boolean;
+  t1: number;
+  t2: number;
+  t3: number;
+  t4: number;
+  t5: number;
+}
+
+export async function get_source_tier_distribution(): Promise<SourceTierCounts> {
+  logStub('get_source_tier_distribution');
+  const live = await tryInvoke<SourceTierCounts>('get_source_tier_distribution');
+  if (live) return live;
+  await delay();
+  return { known: false, t1: 0, t2: 0, t3: 0, t4: 0, t5: 0 };
+}
+
+// C-3: raw feasibility-report log (every feasibility_report SSB row, distinct
+// from get_feasibility_report which returns the v2 PASS/FAIL summary). Falls
+// back to [] in browser-only mode; "no feasibility probes yet" is a legit
+// steady state.
+export interface FeasibilityLogRow {
+  task_id: string;
+  seq: number;
+  ts_ms: number;
+  verdict: string;
+  score: number;
+  skip_reason: string | null;
+  novel_step_count: number;
+  escalations_count: number;
+  vram_margin_pct: number;
+  ram_margin_pct: number;
+  disk_margin_pct: number;
+}
+
+export async function get_feasibility_log(): Promise<FeasibilityLogRow[]> {
+  logStub('get_feasibility_log');
+  const live = await tryInvoke<FeasibilityLogRow[]>('get_feasibility_log');
+  if (live) return live;
+  await delay();
+  return [];
 }
 
 export async function get_gg_signals(): Promise<GgSignals> {
@@ -3896,4 +4017,646 @@ export async function recent_compaction_events(
   if (live) return live;
   await delay(50, 120);
   return [];
+}
+
+// ------------------------------------------------------------------
+// H-11 (SCHEMA_VERSION 220) — scoped filesystem surface + canvas
+// activity overlay read path.
+//
+// Five exports mirror the Tauri commands declared in
+// `dashboard-v2/src-tauri/src/commands_h11.rs`. ALL paths are
+// canonicalized + scope-checked server-side; the client must NOT
+// attempt to enforce the scope.
+//
+// cross-lang-pair: dashboard/tauri/api
+// ------------------------------------------------------------------
+
+/** A single filesystem entry returned by read_dir. */
+export interface FsEntry {
+  name: string;
+  path: string;
+  kind: 'file' | 'dir';
+  size: number | null;
+}
+
+/** A recent canvas activity event returned by get_canvas_activity. */
+export interface CanvasActivityEventDto {
+  kind: 'reading' | 'editing' | 'validating' | 'researching';
+  target_node_id: string;
+  file_path: string;
+  symbol_name: string | null;
+  mode: string;
+  label: string | null;
+  task_id: string;
+  ts: number;
+}
+
+/**
+ * H-11: list directory entries within the project root.
+ * `root` is the absolute project root path.
+ * `relPath` is relative to root ("" or "." for the root itself).
+ * Returns dirs first (alphabetical), then files (alphabetical).
+ */
+export async function read_dir(root: string, relPath: string): Promise<FsEntry[]> {
+  logStub('read_dir', { root, relPath });
+  const live = await tryInvoke<FsEntry[]>('read_dir', { root, relPath });
+  if (live) return live;
+  await delay(50, 120);
+  return [];
+}
+
+/**
+ * H-11: read a text file scoped to project root.
+ * `path` must be an absolute path within a registered root.
+ * Binary files should not be read this way.
+ */
+export async function read_file(path: string): Promise<string> {
+  logStub('read_file', { path });
+  const live = await tryInvoke<string>('read_file', { path });
+  if (live !== null && live !== undefined) return live;
+  await delay(50, 120);
+  return '';
+}
+
+/**
+ * H-11: open a path in the system default editor (non-blocking).
+ * Scoped to project_root.
+ */
+export async function open_in_editor(path: string): Promise<void> {
+  logStub('open_in_editor', { path });
+  await tryInvoke<void>('open_in_editor', { path });
+}
+
+/**
+ * H-11: register an additional project root (multi-root workspace support).
+ * Does not persist across restarts in Tier-1 scope.
+ */
+export async function mount_root(path: string): Promise<void> {
+  logStub('mount_root', { path });
+  await tryInvoke<void>('mount_root', { path });
+}
+
+/**
+ * H-11: return the N most recent canvas_activity_event SSB rows for the
+ * canvasActivity.svelte.ts overlay subscriber.
+ * `limit` defaults to 20, capped at 100 server-side.
+ */
+export async function get_canvas_activity(limit?: number): Promise<CanvasActivityEventDto[]> {
+  logStub('get_canvas_activity', { limit });
+  const live = await tryInvoke<CanvasActivityEventDto[]>('get_canvas_activity', {
+    limit: limit ?? 20,
+  });
+  if (live) return live;
+  await delay(50, 120);
+  return [];
+}
+
+// ---------------------------------------------------------------------------
+// H-13: canvas op stream + screenshot
+// ---------------------------------------------------------------------------
+
+/** H-13: a recent canvas op event returned by get_canvas_ops.
+ *  Mirrors Rust CanvasOpDto (commands_h13.rs) + CanvasOpPayload in types.ts.
+ *  Cross-lang pair: commands_h13.rs::CanvasOpDto.
+ */
+export interface CanvasOpDto {
+  /** Op kind wire label (e.g. "node_created", "edge_connected"). */
+  kind: string;
+  /** Primary node id affected (empty for edge/annotation ops). */
+  node_id: string;
+  /** Flexible per-op JSON payload. */
+  op_data: Record<string, unknown>;
+  /** Canvas mode at emission time. */
+  mode: string;
+  /** Canonical task id. */
+  task_id: string;
+  /** Session id for correlation. */
+  session_id: string;
+  /** SSB row timestamp (unix ms). */
+  ts: number;
+}
+
+/**
+ * H-13: return the N most recent canvas_op_applied SSB rows for the
+ * CanvasPanel.svelte op-application loop.
+ * `limit` defaults to 20, capped at 100 server-side.
+ */
+export async function get_canvas_ops(limit?: number): Promise<CanvasOpDto[]> {
+  logStub('get_canvas_ops', { limit });
+  const live = await tryInvoke<CanvasOpDto[]>('get_canvas_ops', {
+    limit: limit ?? 20,
+  });
+  if (live) return live;
+  await delay(50, 120);
+  return [];
+}
+
+/**
+ * H-13: trigger a canvas screenshot capture.
+ * Tier-2 stub: Tauri-native capture is not available in tauri 2.11.
+ * CanvasPanel.svelte should use canvas.toDataURL() as the client-side fallback.
+ * Returns null when the Tauri command is not available (expected in Tier-1).
+ */
+export async function capture_canvas_screenshot(
+  mode?: string,
+  taskId?: string,
+): Promise<Uint8Array | null> {
+  logStub('capture_canvas_screenshot', { mode, taskId });
+  // Tier-2 stub: the Tauri command always returns Err in this release.
+  // Return null so CanvasPanel falls through to canvas.toDataURL().
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// H-15: canvas view reply channel + taint-gated Select
+// ---------------------------------------------------------------------------
+
+/** H-15: a recent canvas view event returned by get_canvas_views.
+ *  Mirrors Rust CanvasViewEventDto (commands_h15.rs) + CanvasViewPayload in ssb.rs.
+ *  Cross-lang pair: commands_h15.rs::CanvasViewEventDto.
+ *  DRAIN SEPARATION: canvas_view_event rows only (never mixed with canvas_op_applied).
+ */
+export interface CanvasViewEventDto {
+  /** View event kind wire label ("view_spawned", "ui_action", "state_checkpoint"). */
+  kind: string;
+  /** Renderer view_type key (populated for view_spawned; empty for others). */
+  view_type: string;
+  /** Stable view instance identifier for per-tab filtering and reconstruction. */
+  view_id: string;
+  /** Seed op ids (view_spawned only; empty for ui_action / state_checkpoint). */
+  seed_op_ids: string[];
+  /** Selected node id (ui_action only; empty otherwise). */
+  node_id: string;
+  /** True if the G-1 taint gate flagged this node's content at Select handoff. */
+  taint_flagged: boolean;
+  /** Canonical task id. */
+  task_id: string;
+  /** Session id for correlation. */
+  session_id: string;
+  /** SSB row sequence number — the monotonic rebuild key for snapshot/delta reconstruction. */
+  seq: number;
+  /** SSB row timestamp (unix ms). */
+  ts: number;
+}
+
+/** H-15: response from canvas_select_node — node content + provenance verdict. */
+export interface CanvasSelectNodeResponse {
+  /** The selected node id. */
+  node_id: string;
+  /** The node content. Check taint_flagged and allowed before passing to the model. */
+  content: string;
+  /** True if the G-1 taint gate flagged this content (provenance flag required). */
+  taint_flagged: boolean;
+  /** Taint source label if flagged (empty if clean). */
+  taint_source: string;
+  /** False if the gate BLOCKED the handoff (TrustLevel::Untrusted). */
+  allowed: boolean;
+  /** Human-readable block reason (empty if allowed=true). */
+  block_reason: string;
+}
+
+/**
+ * H-15: return the N most recent canvas_view_event SSB rows for the
+ * canvasViewState.svelte.ts snapshot/delta reconstruction loop.
+ * `limit` defaults to 20, capped at 100 server-side.
+ * DRAIN SEPARATION: polls canvas_view_event ONLY (never canvas_op_applied).
+ */
+export async function get_canvas_views(limit?: number): Promise<CanvasViewEventDto[]> {
+  logStub('get_canvas_views', { limit });
+  const live = await tryInvoke<CanvasViewEventDto[]>('get_canvas_views', {
+    limit: limit ?? 20,
+  });
+  if (live) return live;
+  await delay(50, 120);
+  return [];
+}
+
+/**
+ * H-15: inbound CanvasUiAction::Select — taint-gated node content handoff.
+ * Runs G-1 taint gate; emits canvas_view_event(UiAction) SSB row.
+ * Check response.allowed before passing content to the model.
+ * A tainted node's content MUST NOT silently re-enter the prompt (CANVAS §19).
+ */
+export async function canvas_select_node(
+  nodeId: string,
+  content: string,
+  taskId?: string,
+): Promise<CanvasSelectNodeResponse | null> {
+  logStub('canvas_select_node', { nodeId, taskId });
+  const live = await tryInvoke<CanvasSelectNodeResponse>('canvas_select_node', {
+    node_id: nodeId,
+    content,
+    task_id: taskId,
+  });
+  return live ?? null;
+}
+
+/**
+ * H-15: emit a StateCheckpoint canvas_view_event row for per-tab snapshot/delta.
+ * Called every CANVAS_CHECKPOINT_INTERVAL_OPS view events or on tab focus-gained.
+ * Returns the SSB seq of the emitted row (0 if SSB not available).
+ */
+export async function emit_canvas_checkpoint(
+  viewId: string,
+  taskId?: string,
+): Promise<number> {
+  logStub('emit_canvas_checkpoint', { viewId, taskId });
+  const live = await tryInvoke<number>('emit_canvas_checkpoint', {
+    view_id: viewId,
+    task_id: taskId,
+  });
+  return live ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// H-14: design mode opaque-id resolution + recast writeback + dev-preview proxy
+// ---------------------------------------------------------------------------
+
+/** H-14: server-side location entry for an opaque element id.
+ *  Mirrors Rust OidResolveResponse (commands_h14.rs) and OidMapEntry (data_oid_tagger.rs).
+ *  Cross-lang pair: commands_h14.rs::OidResolveResponse.
+ */
+export interface DesignOidEntry {
+  /** The opaque id that was resolved. */
+  oid: string;
+  /** Canonical file path. */
+  file: string;
+  /** Source range [start_line, start_col, end_line, end_col] (1-based). */
+  range: [number, number, number, number];
+  /** Scope qualifier (hierarchical JSX path, e.g. "App > Header > nav > a"). */
+  scope: string;
+}
+
+/** H-14: proxy status returned by start_dev_proxy / stop_dev_proxy.
+ *  Mirrors Rust ProxyStatus (dev_preview_proxy.rs).
+ *  Cross-lang pair: commands_h14.rs + dev_preview_proxy.rs::ProxyStatus.
+ */
+export interface DesignProxyStatus {
+  running: boolean;
+  listen_port: number;
+  target_url: string;
+  /** Tier-2 deferred: whether the painted-preview done-gate was verified. */
+  paint_verified: boolean | null;
+}
+
+/** H-14: result of applying a recast attribute patch.
+ *  Mirrors Rust PatchResult (recast_writeback.rs).
+ *  Cross-lang pair: commands_h14.rs + recast_writeback.rs::PatchResult.
+ */
+export interface RecastPatchResult {
+  applied: boolean;
+  file: string;
+  /** blake3 hex of the written file content (integrity check). */
+  content_hash: string;
+  bytes_written: number;
+  tier_used: string;
+}
+
+/**
+ * H-14: resolve an opaque data-oid to its source location {file, range, scope}.
+ *
+ * The server-side OidMap is populated at build time by the data-oid tagger.
+ * Returns null when the Tauri runtime is not available (Tier-1 fallback).
+ *
+ * Cross-lang pair: commands_h14.rs::resolve_oid.
+ */
+export async function resolve_oid(oid: string): Promise<DesignOidEntry | null> {
+  logStub('resolve_oid', { oid });
+  const live = await tryInvoke<DesignOidEntry>('resolve_oid', { oid });
+  return live ?? null;
+}
+
+/**
+ * H-14: apply a deterministic style/text recast patch to a source file.
+ *
+ * kind='deterministic': applies the patch via format-preserving recast writeback.
+ *   No model call. Token references only (not raw hex/px — CANVAS §8).
+ * kind='structural': DEFERRED (stub-7, GD-5 gate). Returns null in Tier-1.
+ *
+ * Cross-lang pair: commands_h14.rs::apply_recast_patch.
+ */
+export async function apply_recast_patch(
+  oid: string,
+  attrName: string,
+  newValue: string,
+  kind: 'deterministic' | 'structural' = 'deterministic',
+): Promise<RecastPatchResult | null> {
+  logStub('apply_recast_patch', { oid, attrName, kind });
+  const live = await tryInvoke<RecastPatchResult>('apply_recast_patch', {
+    request: { oid, attr_name: attrName, new_value: newValue, kind },
+  });
+  return live ?? null;
+}
+
+/**
+ * H-14: start the design-preview proxy for a target dev server URL.
+ *
+ * Tier-1: returns a ProxyStatus with running=false (stub-8; live TCP listener deferred).
+ * Tier-2: the live proxy will return running=true when the painted-preview passes.
+ *
+ * Cross-lang pair: commands_h14.rs::start_dev_proxy.
+ */
+export async function start_dev_proxy(
+  targetUrl: string,
+  listenPort?: number,
+): Promise<DesignProxyStatus | null> {
+  logStub('start_dev_proxy', { targetUrl, listenPort });
+  const live = await tryInvoke<DesignProxyStatus>('start_dev_proxy', {
+    target_url: targetUrl,
+    listen_port: listenPort,
+  });
+  return live ?? null;
+}
+
+/**
+ * H-14: stop the design-preview proxy.
+ *
+ * Tier-1: no-op that returns a confirmation string (stub-8; live TCP listener deferred).
+ *
+ * Cross-lang pair: commands_h14.rs::stop_dev_proxy.
+ */
+export async function stop_dev_proxy(): Promise<string | null> {
+  logStub('stop_dev_proxy', {});
+  const live = await tryInvoke<string>('stop_dev_proxy', {});
+  return live ?? null;
+}
+
+/** Response shape from the rewind_session Tauri command. */
+export interface RewindSessionResponse {
+  beacon_seq: number;
+  scope: string;
+  summarized: boolean;
+  replay_session_id: string | null;
+  replay_outcome: string;
+  no_op: boolean;
+  disabled: boolean;
+}
+
+/** H-36: one row from the agent_notification_emitted SSB journal.
+ *  Matches the `AgentNotificationRow` Rust DTO in commands_h36.rs. */
+export interface AgentNotificationRow {
+  /** SSB sequence number -- monotonically increasing, use as a cursor. */
+  id: number;
+  /** "completion" | "needs_input" */
+  kind: 'completion' | 'needs_input';
+  /** Bitset: bit 0 = terminal escape attempted, bit 1 = OS notification attempted. */
+  surfaces_attempted: number;
+  /** Bitset: which surfaces succeeded. */
+  surfaces_succeeded: number;
+  /** Session ID at dispatch time. */
+  session_id: string;
+  /** Unix ms at dispatch time. */
+  ts_ms: number;
+}
+
+/**
+ * H-36: poll recent agent_notification_emitted SSB rows.
+ *
+ * Returns up to `limit` (default 20, max 100) rows ordered by seq ascending.
+ * Returns an empty array when the SSB is unavailable or has no rows yet --
+ * the frontend treats this as "no notifications yet" (no error, no toast).
+ *
+ * Cross-lang pair: commands_h36.rs::get_recent_notifications.
+ */
+export async function get_recent_notifications(
+  limit?: number,
+): Promise<AgentNotificationRow[]> {
+  logStub('get_recent_notifications', { limit });
+  const live = await tryInvoke<AgentNotificationRow[]>('get_recent_notifications', { limit });
+  return live ?? [];
+}
+
+/** H-37: one row from the plan_decision_event SSB journal.
+ *  Matches the `PlanDecisionRow` Rust DTO in commands_h37.rs. */
+export interface PlanDecisionRow {
+  /** SSB sequence number -- monotonically increasing, use as a cursor. */
+  id: number;
+  /** "approve" | "redirect" | "reject" | "auto_advance" */
+  decision_kind: 'approve' | 'redirect' | 'reject' | 'auto_advance';
+  /** FSM target state attempted (e.g. "TESTING_FIRST"; "PLANNING" on Redirect). */
+  target_state: string;
+  /** Risk classification: "LOW" | "MEDIUM" | "HIGH". */
+  risk_level: string;
+  /** Human reason for Reject/Redirect; null for Approve/AutoAdvance. */
+  reason: string | null;
+  /** FSM phase label at the time of the gate invocation. */
+  plan_session_id: string;
+}
+
+/**
+ * H-37: poll plan_decision_event SSB rows for a session.
+ *
+ * Returns up to `limit` (default 20, max 100) rows ordered by seq ascending.
+ * Returns an empty array when the SSB is unavailable or has no rows yet.
+ * The gate is wire-dark unless ELAI_PLAN_APPROVAL_GATE_ENABLE=1 on the
+ * orchestrator side.
+ *
+ * Cross-lang pair: commands_h37.rs::get_plan_approval_decisions.
+ */
+export async function get_plan_approval_decisions(
+  sessionId?: string,
+  limit?: number,
+): Promise<PlanDecisionRow[]> {
+  logStub('get_plan_approval_decisions', { sessionId, limit });
+  const live = await tryInvoke<PlanDecisionRow[]>('get_plan_approval_decisions', {
+    sessionId,
+    limit,
+  });
+  return live ?? [];
+}
+
+/**
+ * H-35: rewind session state to a prior SSB journal point.
+ *
+ * Emits one `session_rewound` SSB beacon per successful rewind.
+ * A no-op rewind (target_seq == head) emits no row and sets no_op=true.
+ * Kill-switch: ELAI_REWIND_DISABLE suppresses all rewinds.
+ *
+ * Cross-lang pair: commands_h35.rs::rewind_session.
+ */
+export async function rewind_session(
+  sessionId: string,
+  targetSeq: number,
+  scope: string = 'both',
+  summarize: boolean = false,
+): Promise<RewindSessionResponse | null> {
+  logStub('rewind_session', { sessionId, targetSeq, scope, summarize });
+  const live = await tryInvoke<RewindSessionResponse>('rewind_session', {
+    session_id: sessionId,
+    target_seq: targetSeq,
+    scope,
+    summarize,
+  });
+  return live ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// H-49: time-travel undo / redo / history / jump + restore-files-only
+// ---------------------------------------------------------------------------
+
+/** Response shape from H-49 time-travel Tauri commands. */
+export interface TimeTravelResponse {
+  disabled: boolean;
+  no_op: boolean;
+  beacon_seq: number;
+  head: string | null;
+  summary: string;
+  divergence_detected: boolean;
+}
+
+/** One node in the H-49 undo-tree (returned by timetravel_history). */
+export interface TimeTravelNode {
+  snap_id: string;
+  parent_id: string | null;
+  is_head: boolean;
+  /** Number of children. > 1 = branch point. */
+  children_count: number;
+  tag: string | null;
+  created_at_ms: number;
+  manifest_hash: string | null;
+}
+
+/** Request shape for timetravel_jump. */
+export interface TimeTravelJumpRequest {
+  session_id: string;
+  target: string;
+  grain?: string;
+  scope?: string;
+  dry_run?: boolean;
+}
+
+/**
+ * H-49 — undo the most recent LLM file edit(s).
+ *
+ * Restores files to the pre-edit state at the requested grain.
+ * Returns null when the SSB writer is unavailable.
+ *
+ * Cross-lang pair: commands_h49.rs::timetravel_undo.
+ */
+export async function timetravel_undo(
+  sessionId: string,
+  scope: string = 'code',
+): Promise<TimeTravelResponse | null> {
+  logStub('timetravel_undo', { sessionId, scope });
+  const live = await tryInvoke<TimeTravelResponse>('timetravel_undo', {
+    session_id: sessionId,
+    scope,
+  });
+  return live ?? null;
+}
+
+/**
+ * H-49 — redo the previously undone LLM edit.
+ *
+ * Cross-lang pair: commands_h49.rs::timetravel_redo.
+ */
+export async function timetravel_redo(
+  sessionId: string,
+  scope: string = 'code',
+): Promise<TimeTravelResponse | null> {
+  logStub('timetravel_redo', { sessionId, scope });
+  const live = await tryInvoke<TimeTravelResponse>('timetravel_redo', {
+    session_id: sessionId,
+    scope,
+  });
+  return live ?? null;
+}
+
+/**
+ * H-49 — jump HEAD to a specific snapshot node.
+ *
+ * Cross-lang pair: commands_h49.rs::timetravel_jump.
+ */
+export async function timetravel_jump(
+  request: TimeTravelJumpRequest,
+): Promise<TimeTravelResponse | null> {
+  logStub('timetravel_jump', request);
+  const live = await tryInvoke<TimeTravelResponse>('timetravel_jump', {
+    request,
+  });
+  return live ?? null;
+}
+
+/**
+ * H-49 — return the undo-tree nodes for the given session.
+ *
+ * Used by BranchTree.svelte to render the timeline.
+ *
+ * Cross-lang pair: commands_h49.rs::timetravel_history.
+ */
+export async function timetravel_history(
+  sessionId: string,
+): Promise<TimeTravelNode[]> {
+  logStub('timetravel_history', { sessionId });
+  const live = await tryInvoke<TimeTravelNode[]>('timetravel_history', {
+    session_id: sessionId,
+  });
+  return live ?? [];
+}
+
+/**
+ * H-49 — restore files to the state at a snapshot WITHOUT moving HEAD.
+ *
+ * Matches Cline's "Restore Files Only" affordance.
+ *
+ * Cross-lang pair: commands_h49.rs::timetravel_restore_files_only.
+ */
+export async function timetravel_restore_files_only(
+  sessionId: string,
+  target: string,
+): Promise<TimeTravelResponse | null> {
+  logStub('timetravel_restore_files_only', { sessionId, target });
+  const live = await tryInvoke<TimeTravelResponse>('timetravel_restore_files_only', {
+    session_id: sessionId,
+    target,
+  });
+  return live ?? null;
+}
+
+/** H-49 paged transcript page shape. */
+export interface TranscriptPage {
+  rows: TranscriptRow[];
+  total_count: number | null;
+  first_seq: number | null;
+  has_older: boolean;
+  has_newer: boolean;
+}
+
+/** H-49 transcript row (matches commands_e29.rs TranscriptRow). */
+export interface TranscriptRow {
+  seq: number;
+  ts_ms: number;
+  action_type: string;
+  agent_id: string;
+  role: string;
+  body: string;
+  redacted: boolean;
+}
+
+/** H-49 transcript filter with cursor pagination fields. */
+export interface TranscriptFilter {
+  action_type_whitelist?: string[];
+  agent_role?: string;
+  limit?: number;
+  before_seq?: number;
+  after_seq?: number;
+  total_count?: boolean;
+  first_seq?: boolean;
+}
+
+/**
+ * H-49 — paginated transcript fetch (cursor-based, replaces ENTRY_LIMIT=50).
+ *
+ * Cross-lang pair: commands_e29.rs::ssb_transcript_paged.
+ */
+export async function ssb_transcript_paged(
+  sessionId: string,
+  filter?: TranscriptFilter,
+): Promise<TranscriptPage> {
+  logStub('ssb_transcript_paged', { sessionId, filter });
+  const live = await tryInvoke<TranscriptPage>('ssb_transcript_paged', {
+    session_id: sessionId,
+    filter,
+  });
+  return live ?? { rows: [], total_count: null, first_seq: null, has_older: false, has_newer: false };
 }

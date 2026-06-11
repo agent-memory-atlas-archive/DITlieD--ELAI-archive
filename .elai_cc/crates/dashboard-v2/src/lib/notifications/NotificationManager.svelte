@@ -23,6 +23,9 @@
   let lastFsmState: FsmState | null = null;
   let lastInterventionCount = 0;
   let pref: NotifPref = 'deferred';
+  // H-36: track the highest agent_notification_emitted row id seen so we only
+  // fire once per new needs_input row (cursor-based deduplication).
+  let lastSeenNotificationId = -1;
 
   function loadPref(): NotifPref {
     try {
@@ -111,11 +114,26 @@
 
       lastFsmState = currentState;
 
-      // Intervention pending: active_agents length or FSM state indicator
-      // SystemStatus does not expose pending_interventions directly (B-36 gap).
-      // Use agent count change as a proxy: if executor + auditor both active, likely executing.
-      // Real intervention signal deferred until B-36 wires SSB pending_proposals.
-      // No-op here; consent banner is rendered by the parent component instead.
+      // H-36: poll agent_notification_emitted SSB rows for needs_input events.
+      // Replaces the B-36 no-op by reading the real SSB signal instead of
+      // inferring from agent count or pending_proposals plumbing.
+      // cursor-based: only fire on rows with id > lastSeenNotificationId.
+      const notifications = await stub.get_recent_notifications(20);
+      for (const row of notifications) {
+        if (row.id > lastSeenNotificationId) {
+          lastSeenNotificationId = row.id;
+          if (row.kind === 'needs_input') {
+            const ok = await ensurePermission();
+            if (ok) {
+              fire(
+                'ELAI — Needs Input',
+                'Run blocked — human decision required',
+                'warn',
+              );
+            }
+          }
+        }
+      }
 
     } catch {
       // sidecar offline — silent no-op

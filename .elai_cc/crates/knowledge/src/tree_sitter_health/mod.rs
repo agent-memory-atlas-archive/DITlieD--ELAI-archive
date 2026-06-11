@@ -75,6 +75,16 @@ pub fn is_enabled() -> bool {
     }
 }
 
+/// E-42 in-crate smoke test module.
+///
+/// The `ssb_smoke` sub-module contains the sequential `#[tokio::test]` that
+/// drives `DkgEngine::build_graph` against fixture files and asserts the
+/// off-agent `TreeSitterGrammarEvent` rows are emitted via the recording sink.
+/// Kept inside `tree_sitter_health` rather than `contracts/tests/` because the
+/// integration test harness there does not link the knowledge crate's rlibs.
+#[cfg(test)]
+pub(crate) mod ssb_smoke;
+
 #[cfg(test)]
 mod tests {
     use super::*;

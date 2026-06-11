@@ -20,6 +20,7 @@ use regex::Regex;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -107,6 +108,73 @@ pub struct NoopLazySchemaSavingsEmitter;
 impl LazySchemaSavingsEmitter for NoopLazySchemaSavingsEmitter {
     fn emit(&self, _pre_bytes: u64, _post_bytes: u64, _tool_count: u32) -> Result<(), String> {
         Ok(())
+    }
+}
+
+/// G-4: SSB emitter trait for the `mcp_rug_pull_blocked` row. Same
+/// dependency-inversion pattern as the C-35 [`ToolGateSsbEmitter`] / E-22
+/// [`LazySchemaSavingsEmitter`] (defined in `plugins` so the
+/// `orchestrator -> plugins` dependency stays acyclic). The orchestrator +
+/// dashboard-v2 bootstrap wire a real implementor (an `Ssb` writer) via
+/// [`DefaultMcpBridge::with_rug_pull_ssb_emitter`]; default construction
+/// uses [`NoopRugPullSsbEmitter`] so plugins tests + the fuzz harness run
+/// without an orchestrator. The bridge calls `emit` from inside
+/// `http_list_tools` ONLY when the schema-pin gate is armed (a
+/// `pin_workspace_root` is installed AND `ELAI_MCP_REPIN_DISABLE` is unset)
+/// AND the re-fetch tripped a [`crate::mcp_schema_pin::RugPullVerdict::Changed`].
+pub trait RugPullSsbEmitter: Send + Sync {
+    /// Emit one `mcp_rug_pull_blocked` row. `server_url` is the MCP server
+    /// whose re-fetched tool list no longer matches the pin; `before` /
+    /// `after` are the blake3 schema hashes that bracket the change;
+    /// `changed_tools` names every tool whose description/presence changed
+    /// (the line-jump signal); `description_diff_count` is `changed_tools.len()`
+    /// pre-projected for the dashboard; `ingest_origin` is the production
+    /// entrypoint that re-fetched (e.g. `"http_list_tools"`).
+    fn emit(
+        &self,
+        server_url: &str,
+        schema_blake3_before: &str,
+        schema_blake3_after: &str,
+        changed_tools: &[String],
+        description_diff_count: u32,
+        ingest_origin: &str,
+    ) -> Result<(), String>;
+}
+
+/// Default no-op emitter -- returns Ok(()) without touching anything.
+pub struct NoopRugPullSsbEmitter;
+
+impl RugPullSsbEmitter for NoopRugPullSsbEmitter {
+    fn emit(
+        &self,
+        _server_url: &str,
+        _schema_blake3_before: &str,
+        _schema_blake3_after: &str,
+        _changed_tools: &[String],
+        _description_diff_count: u32,
+        _ingest_origin: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// G-4: kill-switch env var. The live re-pin gate is DEFAULT-ON; the only
+/// way to disable it is to set this to `1` / `true` (case-insensitive).
+/// There is intentionally NO enable flag -- a security gate that ships
+/// default-off is wire-dark by design (wire-enforcement R9).
+pub const ELAI_MCP_REPIN_DISABLE_ENV: &str = "ELAI_MCP_REPIN_DISABLE";
+
+/// G-4: read the re-pin kill-switch. Returns true (gate DISABLED) only when
+/// the env var is `1` / `true` (case-insensitive). Unset / any other value
+/// leaves the gate ENABLED (default-on).
+#[must_use]
+pub fn mcp_repin_disabled() -> bool {
+    match std::env::var(ELAI_MCP_REPIN_DISABLE_ENV) {
+        Ok(v) => {
+            let lo = v.trim().to_ascii_lowercase();
+            lo == "1" || lo == "true"
+        }
+        Err(_) => false,
     }
 }
 
@@ -443,6 +511,24 @@ pub struct DefaultMcpBridge {
     /// `compose_with_tool_gate` path. See
     /// workflow/reasoning/D-trancheD-decisions.md D7.
     mcp_authz_ssb_emitter: Option<Arc<dyn McpAuthzSsbEmitter>>,
+    /// G-4: workspace root for the MCP schema-pin store
+    /// (`.elai/mcp/pins/{url}.toml`). `None` = the live re-pin gate is NOT
+    /// armed (back-compat: existing construction paths keep their SSB row
+    /// counts unchanged). The orchestrator + dashboard-v2 bootstrap install
+    /// the real workspace root via [`Self::with_schema_pin`], which arms the
+    /// gate inside `http_list_tools`.
+    pin_workspace_root: Option<PathBuf>,
+    /// G-4: read at construction from `ELAI_MCP_REPIN_DISABLE`. The re-pin
+    /// gate is DEFAULT-ON; this kill-switch (and ONLY this) disables it.
+    /// When true, `http_list_tools` skips the pin/re-verify entirely even if
+    /// `pin_workspace_root` is `Some`.
+    repin_disabled_by_env: bool,
+    /// G-4: SSB emitter for the `mcp_rug_pull_blocked` row. Default is
+    /// [`NoopRugPullSsbEmitter`]; the orchestrator + dashboard-v2 bootstrap
+    /// wire a real implementor via [`Self::with_rug_pull_ssb_emitter`]. The
+    /// bridge calls it from inside `http_list_tools` when a reconnect
+    /// re-fetch trips a rug-pull on a previously-pinned server.
+    rug_pull_ssb_emitter: Arc<dyn RugPullSsbEmitter>,
 }
 
 impl Default for DefaultMcpBridge {
@@ -471,6 +557,9 @@ impl Default for DefaultMcpBridge {
             lazy_schema_enabled_by_env: lazy_mcp_schema_enabled(),
             llm_guard_config: None,
             mcp_authz_ssb_emitter: None,
+            pin_workspace_root: None,
+            repin_disabled_by_env: mcp_repin_disabled(),
+            rug_pull_ssb_emitter: Arc::new(NoopRugPullSsbEmitter),
         }
     }
 }
@@ -513,6 +602,9 @@ impl DefaultMcpBridge {
             lazy_schema_enabled_by_env: lazy_mcp_schema_enabled(),
             llm_guard_config: None,
             mcp_authz_ssb_emitter: None,
+            pin_workspace_root: None,
+            repin_disabled_by_env: mcp_repin_disabled(),
+            rug_pull_ssb_emitter: Arc::new(NoopRugPullSsbEmitter),
         }
     }
 
@@ -549,6 +641,35 @@ impl DefaultMcpBridge {
     #[must_use]
     pub fn lazy_schema_enabled(&self) -> bool {
         self.lazy_schema_enabled_by_env
+    }
+
+    /// G-4: arm the live MCP schema-pin / re-pin gate by installing the
+    /// workspace root where pins are stored (`.elai/mcp/pins/`). With this
+    /// set (and `ELAI_MCP_REPIN_DISABLE` unset), `http_list_tools` pins the
+    /// tool list on first connect and re-verifies it on every subsequent
+    /// reconnect re-fetch -- blocking fail-closed on a rug-pull. Default is
+    /// `None` (gate not armed) so existing construction paths are unchanged.
+    /// Returns `self` for builder chaining.
+    pub fn with_schema_pin(mut self, workspace_root: PathBuf) -> Self {
+        self.pin_workspace_root = Some(workspace_root);
+        self
+    }
+
+    /// G-4: install the SSB emitter for the `mcp_rug_pull_blocked` row.
+    /// Default is [`NoopRugPullSsbEmitter`]. Emission only fires when the
+    /// pin gate is armed (`with_schema_pin`) AND a reconnect re-fetch trips
+    /// a rug-pull. Returns `self` for builder chaining.
+    pub fn with_rug_pull_ssb_emitter(mut self, emitter: Arc<dyn RugPullSsbEmitter>) -> Self {
+        self.rug_pull_ssb_emitter = emitter;
+        self
+    }
+
+    /// G-4 accessor -- returns true when the live re-pin gate is armed (a
+    /// workspace root is installed AND the kill-switch is NOT set). Used by
+    /// the dashboard `get_mcp_security_status` command and the contract test.
+    #[must_use]
+    pub fn schema_pin_armed(&self) -> bool {
+        self.pin_workspace_root.is_some() && !self.repin_disabled_by_env
     }
 
     /// C-42 (session 2): install a role-based authorization policy. The
@@ -1307,13 +1428,29 @@ pub struct AssembledPrompt {
 #[cfg(feature = "mcp")]
 impl McpBridge for DefaultMcpBridge {
     async fn connect(&self, server_url: &str) -> Result<McpConnection, McpError> {
-        // Placeholder implementation - actual connection logic would go here
-        // For now, we simulate a successful connection
-        Ok(McpConnection {
-            server_url: server_url.to_string(),
-            transport: McpTransport::Stdio, // Default to stdio
-            connected_at: elai_core::OsClock.now(),
-        })
+        // 3J.9 (FAKE-SUCCESS REMOVED): the stdio transport is NOT implemented.
+        // This path previously fabricated `McpConnection { transport: Stdio }`
+        // and returned Ok(_) -- a fake success: every downstream caller
+        // (McpConnectionManager::connect_with_retry, mcp_lifecycle.rs:144) then
+        // recorded the server as "connected" and started a heartbeat against a
+        // process that was never spawned and a handshake that never happened.
+        // That is dangerous -- a tool-dispatch path can believe it is talking
+        // to a live MCP server when it is talking to nothing. It now returns an
+        // honest ProtocolError instead of pretending; connect_with_retry treats
+        // it like any real connection failure (retry/backoff, then propagate the
+        // Err), so no caller is broken. The ONLY supported transport today is
+        // HTTP JSON-RPC via `http_connect` / `http_list_tools` / `http_call_tool`
+        // (dashboard wiring targets `http://localhost:8200`; see
+        // DEFAULT_MCP_SERVER_URL). A real in-process stdio MCP host is a
+        // registered wire-dark experiment: wire-dark-allowlist.toml flag
+        // `ELAI_MCP_STDIO_TRANSPORT`, promotion_plan_id = 3J-stdio-followup.
+        let _ = server_url;
+        Err(McpError::ProtocolError(
+            "stdio MCP transport is not implemented; use the HTTP JSON-RPC \
+             transport (http_connect / http_list_tools / http_call_tool). See \
+             wire-dark-allowlist.toml flag ELAI_MCP_STDIO_TRANSPORT."
+                .to_owned(),
+        ))
     }
 
     async fn list_tools(&self, _conn: &McpConnection) -> Result<Vec<McpToolSpec>, McpError> {
@@ -1474,6 +1611,17 @@ impl DefaultMcpBridge {
             }
         }
         let mut out = Vec::with_capacity(arr.len());
+        // G-4: capture the FULL ToolDef (incl. input_schema) BEFORE the
+        // input_schema field is dropped from the summary projection, so the
+        // schema-pin gate hashes the complete tool shape (a rug-pull that
+        // only mutates input_schema -- not the description -- is still
+        // caught). Built unconditionally only when the pin gate is armed.
+        let arm_pin = self.schema_pin_armed();
+        let mut full_tools: Vec<crate::mcp_schema_pin::ToolDef> = if arm_pin {
+            Vec::with_capacity(arr.len())
+        } else {
+            Vec::new()
+        };
         for t in arr {
             let name = t
                 .get("name")
@@ -1488,7 +1636,36 @@ impl DefaultMcpBridge {
             if name.is_empty() {
                 continue;
             }
+            if arm_pin {
+                // The MCP 2024-11-05 wire field is `inputSchema`; fall back to
+                // a null schema when absent so the hash is still well-defined.
+                let input_schema = t
+                    .get("inputSchema")
+                    .or_else(|| t.get("input_schema"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                full_tools.push(crate::mcp_schema_pin::ToolDef {
+                    name: name.clone(),
+                    description: description.clone(),
+                    input_schema,
+                });
+            }
             out.push(McpToolSummary { name, description });
+        }
+        // G-4: live MCP rug-pull / line-jump re-pin gate. Runs ONLY when
+        // armed (a pin workspace root is installed AND ELAI_MCP_REPIN_DISABLE
+        // is unset). First connect pins the tool list (DD3 -- the
+        // first-connect pin must actually be written in production so the
+        // re-verify has something to compare against). Every subsequent
+        // reconnect re-fetch re-verifies; a rug-pull (Changed) emits the
+        // mcp_rug_pull_blocked SSB row and BLOCKS the catalog refresh
+        // fail-closed (the model gets no tools from a rug-pulled server)
+        // until operator re-approval (update_pin). The pin is NEVER
+        // auto-updated on Changed.
+        if arm_pin {
+            if let Some(root) = self.pin_workspace_root.as_ref() {
+                self.run_schema_pin_gate(root, url, &full_tools)?;
+            }
         }
         // E-22: emit savings row when env gate set.
         if self.lazy_schema_enabled_by_env {
@@ -1510,6 +1687,89 @@ impl DefaultMcpBridge {
             }
         }
         Ok(out)
+    }
+
+    /// G-4: run the live MCP schema-pin / re-pin gate against a freshly
+    /// re-fetched tool list. On first connect (no prior pin) this writes the
+    /// pin (DD3). On a subsequent re-fetch it re-verifies; a rug-pull
+    /// (`RugPullVerdict::Changed`) emits the `mcp_rug_pull_blocked` SSB row
+    /// and returns `Err(McpError::SanitizationFailed)` so the catalog refresh
+    /// is BLOCKED fail-closed. The pin is NEVER auto-updated on `Changed`.
+    ///
+    /// Synchronous (no `.await`): the pin store is local-disk + blake3, both
+    /// fast; this keeps the gate inside the existing `http_list_tools` async
+    /// fn without spawning. Returns `Ok(())` on Pinned / Verified / Unchanged.
+    fn run_schema_pin_gate(
+        &self,
+        workspace_root: &std::path::Path,
+        url: &str,
+        full_tools: &[crate::mcp_schema_pin::ToolDef],
+    ) -> Result<(), McpError> {
+        use crate::mcp_schema_pin::{
+            pin_or_verify, read_pin, reverify_on_list_changed, RugPullVerdict,
+        };
+
+        let prior = match read_pin(workspace_root, url) {
+            Ok(p) => p,
+            Err(e) => {
+                // A pin-store read error is treated as non-fatal for the
+                // catalog fetch (the store may be first-run / unwritable);
+                // we warn and let the list through rather than hard-fail an
+                // unrelated I/O problem. The block path is reserved for a
+                // genuine, proven rug-pull (hash mismatch against a pin we
+                // successfully read).
+                tracing::warn!(server_url = %url, error = %e, "G-4: pin read failed; skipping re-pin gate this fetch");
+                return Ok(());
+            }
+        };
+
+        match prior {
+            None => {
+                // First connect: pin the tool list so a later re-fetch has a
+                // baseline to compare against (DD3 -- kill the wire-dark).
+                match pin_or_verify(workspace_root, url, full_tools) {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        tracing::warn!(server_url = %url, error = %e, "G-4: first-connect pin write failed (continuing)");
+                        Ok(())
+                    }
+                }
+            }
+            Some(record) => match reverify_on_list_changed(full_tools, &record) {
+                RugPullVerdict::Unchanged => Ok(()),
+                RugPullVerdict::Changed {
+                    description_diffs,
+                    schema_blake3_before,
+                    schema_blake3_after,
+                } => {
+                    let changed_tools: Vec<String> =
+                        description_diffs.iter().map(|d| d.tool_name.clone()).collect();
+                    let description_diff_count = u32::try_from(description_diffs.len())
+                        .unwrap_or(u32::MAX);
+                    // Emit the off-agent SSB row (the load-bearing wiring
+                    // proof). Non-fatal on emit failure -- the BLOCK below is
+                    // the security-critical action and must happen regardless.
+                    if let Err(e) = self.rug_pull_ssb_emitter.emit(
+                        url,
+                        &schema_blake3_before,
+                        &schema_blake3_after,
+                        &changed_tools,
+                        description_diff_count,
+                        "http_list_tools",
+                    ) {
+                        tracing::warn!(server_url = %url, error = %e, "G-4: rug_pull SSB emit failed (continuing to block)");
+                    }
+                    // BLOCK fail-closed: refuse the catalog refresh from a
+                    // server that rug-pulled its schema. Stays blocked until
+                    // the operator re-approves via update_pin.
+                    Err(McpError::SanitizationFailed(format!(
+                        "MCP server '{url}' rug-pulled its tool schema after approval \
+                         ({description_diff_count} description/tool change(s): {changed_tools:?}); \
+                         blocked until operator re-approval"
+                    )))
+                }
+            },
+        }
     }
 
     /// Call a tool on the MCP server. Rejects deny-listed names BEFORE any

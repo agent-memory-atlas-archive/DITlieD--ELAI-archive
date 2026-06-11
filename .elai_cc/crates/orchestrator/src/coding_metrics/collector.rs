@@ -6,6 +6,10 @@
 // caller boundary (CLI `elai metrics capture` or auditor hook) so we
 // don't take a dependency on the SSB writer from this module.
 //
+// H-39 extension: `record_abstention_sample` + `abstention_aware_score_snapshot`
+// expose the abstention-aware score alongside pass_at_k (no breaking change;
+// pass_at_k stays). Reads the RefusalDecision from conformal_calibration (GD-1).
+//
 // Anti-Lazy compliance:
 //   * No unwrap()/expect() outside test code.
 //   * No silent default for missing cost data — None stays None.
@@ -17,6 +21,10 @@ use std::time::UNIX_EPOCH;
 use elai_core::clock::{ClockProvider, OsClock};
 use thiserror::Error;
 
+use crate::abstention_score::{
+    AbstentionAggregate, OutcomeTriple, DEFAULT_CONFIDENCE_TARGET,
+};
+use crate::conformal_calibration::RefusalDecision;
 use super::types::CodingMetric;
 
 /// Default refine-rate when the collector has zero observations. Matches
@@ -44,6 +52,8 @@ pub struct MetricsCollector {
     refine_total: u32,
     /// Cost samples in cents. None until at least one sample observed.
     cost_samples_cents: Option<Vec<u32>>,
+    /// H-39 abstention-aware aggregate (sibling to pass_at_k, not a replacement).
+    abstention_agg: AbstentionAggregate,
 }
 
 impl MetricsCollector {
@@ -89,6 +99,41 @@ impl MetricsCollector {
         self.cost_samples_cents
             .get_or_insert_with(Vec::new)
             .push(cents);
+    }
+
+    /// H-39 — Record one abstention-aware outcome sample.
+    ///
+    /// `refusal` is the [`RefusalDecision`] produced by D-16's
+    /// `decide()` / `dispatch_conformal_refusal()` for this item —
+    /// NOT re-derived (GD-1). `pass` is the eval harness pass/fail
+    /// verdict; it is ignored when `refusal == Abstain`.
+    ///
+    /// Uses the LOCKED [`DEFAULT_CONFIDENCE_TARGET`]; the loop cannot
+    /// tune it.
+    pub fn record_abstention_sample(
+        &mut self,
+        refusal: RefusalDecision,
+        pass: bool,
+    ) {
+        let outcome = OutcomeTriple::new(refusal, pass);
+        self.abstention_agg.record(outcome, DEFAULT_CONFIDENCE_TARGET);
+    }
+
+    /// H-39 — Return the current abstention-aware score aggregate.
+    ///
+    /// `mean_score` is the primary reward signal H-39 feeds into the
+    /// promotion loop. Returns a default (empty) aggregate when no
+    /// abstention samples have been recorded yet.
+    #[must_use]
+    pub fn abstention_aggregate(&self) -> &AbstentionAggregate {
+        &self.abstention_agg
+    }
+
+    /// H-39 — Mean abstention-aware score over all recorded items.
+    /// Convenience wrapper over `abstention_aggregate().mean_score()`.
+    #[must_use]
+    pub fn abstention_aware_score(&self) -> f64 {
+        self.abstention_agg.mean_score()
     }
 
     /// Emit a `CodingMetric` snapshot for `session_id` using the current

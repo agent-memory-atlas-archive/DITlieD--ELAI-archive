@@ -21,10 +21,11 @@
 
 use rustc_hash::FxHashMap;
 use std::ffi::OsString;
+use std::path::Path;
 use std::sync::Arc;
 
 use thiserror::Error;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_plugins::post_tool_use::{
@@ -32,12 +33,24 @@ use elai_plugins::post_tool_use::{
 };
 use elai_plugins::tiered_analysis::{HookVerdict, TieredAnalysis, TieredAnalysisError};
 
+use crate::gate::InteractiveGate;
 use crate::shortcoder_hook::{ShortCoderHook, ShortCoderOutcome};
 use crate::ssb::{
-    HookEventPayload, HookLatencyViolationPayload, ShortCoderCompressionPayload, Ssb, SsbPayload,
-    TieredAnalysisPayload,
+    HookEventPayload, HookLatencyViolationPayload, ShortCoderCompressionPayload, Ssb,
+    SsbPayload, StopConfirmationPayload, StopOutcomeKind, TieredAnalysisPayload,
 };
+use crate::ssb_viewer::SsbViewer;
+use crate::stop_cost_gate::{evaluate_stop, StopCostSnapshot, StopGateVerdict};
 use crate::vibesec::dep_writetime_gate::DepWriteTimeGate;
+
+/// H-38: env var that gates SSB telemetry for the cost-confirm gate on the
+/// pass-no-friction path. When set to `"1"`, a `stop_confirmation_event` row
+/// with `outcome=PassedNoFriction` is emitted for low-cost fully-saved stops.
+/// On the ConfirmRequired / RejectedHeld paths the row is emitted unconditionally
+/// (the safety behavior is always on). Default-OFF per R9.
+///
+/// Registered in wire-dark-allowlist.toml (H-38 experiment row).
+pub const ELAI_STOP_COST_CONFIRM_ENABLE: &str = "ELAI_STOP_COST_CONFIRM_ENABLE";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -176,10 +189,18 @@ impl HookTier {
 /// carries richer payloads (`pattern_hash`, etc.) which stay inside the
 /// original [`HookVerdict`]; this enum is the shape emitted on SSB so the
 /// dashboard can filter on it without re-implementing pattern hashing.
+///
+/// Severity order mirrors the producer-side merge in
+/// `elai_plugins::tiered_analysis::T1Hook::merge_verdicts`: Block > Escalate >
+/// Warn > Allow. `Escalate` is NOT a clean outcome — the hook is not confident
+/// enough to Allow or Block on its own and the decision is routed to a higher
+/// tier (auditor / human / a named next-tier rule); it surfaces as a finding
+/// between Warn and Block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HookVerdictKind {
     Allow,
     Warn,
+    Escalate,
     Block,
 }
 
@@ -189,6 +210,7 @@ impl HookVerdictKind {
         match self {
             Self::Allow => "Allow",
             Self::Warn => "Warn",
+            Self::Escalate => "escalate",
             Self::Block => "Block",
         }
     }
@@ -198,6 +220,7 @@ impl HookVerdictKind {
         match v {
             HookVerdict::Allow => Self::Allow,
             HookVerdict::Warn { .. } => Self::Warn,
+            HookVerdict::Escalate { .. } => Self::Escalate,
             HookVerdict::Block { .. } => Self::Block,
         }
     }
@@ -210,6 +233,14 @@ impl HookVerdictKind {
     #[must_use]
     pub fn is_warn(self) -> bool {
         matches!(self, Self::Warn)
+    }
+
+    /// True when this verdict escalated the decision to a higher tier.
+    /// Distinct from `is_warn`/`is_block`: an escalation is unresolved, not
+    /// advisory (Warn) and not a hard reject (Block).
+    #[must_use]
+    pub fn is_escalate(self) -> bool {
+        matches!(self, Self::Escalate)
     }
 }
 
@@ -303,6 +334,16 @@ pub struct HookInvocation<'a> {
     /// preserves backward-compat for the per-task PreCompact firing site
     /// in `task_runner.rs` which has no token telemetry.
     pub pre_compact_token_state: Option<(u32, u32)>,
+    /// H-38: number of unsaved / pending-write artifacts in the current run.
+    /// Default 0 (no unsaved work). Plumbed from the run's pending-write set
+    /// count at the task_runner stop-call site. `0` means fully saved.
+    pub unsaved_artifact_count: usize,
+    /// H-38: whether a billable pod is currently running.
+    /// Default `false`. The ELAI Rust layer cannot query pod state directly
+    /// (pod lifecycle is a harness MCP concern); this field exists so harness
+    /// callers can pass `true` once wired. Set via
+    /// `HookInvocation::with_pod_billable`.
+    pub pod_billable: bool,
 }
 
 impl<'a> HookInvocation<'a> {
@@ -317,7 +358,23 @@ impl<'a> HookInvocation<'a> {
             step_id: step_id.into(),
             fsm_state: String::new(),
             pre_compact_token_state: None,
+            unsaved_artifact_count: 0,
+            pod_billable: false,
         }
+    }
+
+    /// H-38: builder-style setter for unsaved artifact count.
+    #[must_use]
+    pub fn with_unsaved_artifact_count(mut self, count: usize) -> Self {
+        self.unsaved_artifact_count = count;
+        self
+    }
+
+    /// H-38: builder-style setter for pod billable flag.
+    #[must_use]
+    pub fn with_pod_billable(mut self, billable: bool) -> Self {
+        self.pod_billable = billable;
+        self
     }
 
     /// Helper for the baby-step `PreToolUse` call.
@@ -335,6 +392,8 @@ impl<'a> HookInvocation<'a> {
             step_id: step_id.into(),
             fsm_state: String::new(),
             pre_compact_token_state: None,
+            unsaved_artifact_count: 0,
+            pod_billable: false,
         }
     }
 
@@ -354,6 +413,8 @@ impl<'a> HookInvocation<'a> {
             step_id: step_id.into(),
             fsm_state: String::new(),
             pre_compact_token_state: None,
+            unsaved_artifact_count: 0,
+            pod_billable: false,
         }
     }
 
@@ -511,6 +572,18 @@ pub struct InProcessHookDispatcher {
     /// file_path)` and extends findings with any Block/Warn verdicts.
     /// `None` preserves pre-F-9 behaviour (gate absent, no registry probe).
     dep_writetime_gate: Option<Arc<DepWriteTimeGate>>,
+    /// H-38: optional interactive gate for the stop cost-confirm prompt.
+    /// When `Some` AND `evaluate_stop` returns `ConfirmRequired`, the
+    /// dispatcher calls `gate.present_gate(...)` and surfaces cost-so-far.
+    /// When `None` (headless / test contexts without a gate), the default is
+    /// HOLD (fail-closed: no human to answer = do not silently destroy spend).
+    stop_confirm_gate: Option<Arc<dyn InteractiveGate>>,
+    /// H-38: optional `(SSB writer, db_path)` for reading the H-9 CloudSpend
+    /// ledger via `SsbViewer::cloud_spend_summary` and for emitting the
+    /// `StopConfirmationEvent` row. `None` = spend assumed $0.00 (degrade
+    /// gracefully — a missing ledger is not an error, just means no cloud
+    /// spend recorded yet). Pattern mirrors `vibegate_ssb` at :520.
+    stop_cost_ssb: Option<(Arc<Ssb>, String)>,
 }
 
 impl InProcessHookDispatcher {
@@ -542,6 +615,8 @@ impl InProcessHookDispatcher {
             vibegate_ssb: None,
             vibegate_seed_ok: true,
             dep_writetime_gate: None,
+            stop_confirm_gate: None,
+            stop_cost_ssb: None,
         }
     }
 
@@ -614,6 +689,38 @@ impl InProcessHookDispatcher {
     #[must_use]
     pub fn with_dep_writetime_gate(mut self, gate: Arc<DepWriteTimeGate>) -> Self {
         self.dep_writetime_gate = Some(gate);
+        self
+    }
+
+    /// H-38: install the interactive stop-cost confirmation gate.
+    ///
+    /// When installed and `evaluate_stop` returns `ConfirmRequired`, the
+    /// dispatcher calls `gate.present_gate(...)` before proceeding.
+    /// `GateDecision::Reject` returns a `HookFinding::Block` holding the stop.
+    /// Without this gate, a `ConfirmRequired` verdict defaults to HOLD
+    /// (fail-closed: headless context must not silently destroy spend/work).
+    /// Production callers pass the `CliInteractiveGate` installed at
+    /// `run_subcommand.rs:120`; contract tests pass a `MockInteractiveGate`.
+    #[must_use]
+    pub fn with_stop_confirm_gate(mut self, gate: Arc<dyn InteractiveGate>) -> Self {
+        self.stop_confirm_gate = Some(gate);
+        self
+    }
+
+    /// H-38: install the SSB writer + db-path used to read the H-9 CloudSpend
+    /// ledger and emit `StopConfirmationEvent` rows from `dispatch_stop`.
+    ///
+    /// `writer` is the live `Ssb` instance; `db_path` is the path to the
+    /// SQLite file (same DB) opened read-only via `SsbViewer`.  Pattern mirrors
+    /// `with_vibegate_ssb` at line ~593.  Without this, `dispatch_stop` treats
+    /// `day_usd` as `0.0` (no-cloud-spend degrade) and emits no SSB beacon.
+    #[must_use]
+    pub fn with_stop_cost_ssb(
+        mut self,
+        writer: Arc<Ssb>,
+        db_path: impl Into<String>,
+    ) -> Self {
+        self.stop_cost_ssb = Some((writer, db_path.into()));
         self
     }
 
@@ -809,6 +916,34 @@ impl InProcessHookDispatcher {
             }
         }
     }
+
+    /// H-38: helper to emit a `StopConfirmationEvent` SSB row.
+    ///
+    /// Best-effort; logs warn on failure but never propagates the error to
+    /// the caller (non-fatal, consistent with the vibegate_ssb pattern).
+    async fn emit_stop_confirmation_ssb(
+        &self,
+        payload: StopConfirmationPayload,
+        step_id: &str,
+    ) {
+        if let Some((ref writer, _)) = self.stop_cost_ssb {
+            if let Err(e) = writer
+                .write_payload(
+                    step_id,
+                    0,
+                    SsbPayload::StopConfirmationEvent(payload),
+                    Vec::new(),
+                )
+                .await
+            {
+                warn!(
+                    error = %e,
+                    step_id,
+                    "stop_cost_gate: SSB write failed (non-fatal)"
+                );
+            }
+        }
+    }
 }
 
 /// Convert a `RuffOutcome` into zero or more `HookFinding` rows the dispatcher
@@ -903,6 +1038,20 @@ fn push_finding(out: &mut Vec<HookFinding>, tier: HookTier, verdict: &HookVerdic
             Some(pattern_hash.clone()),
             extract_category(message).unwrap_or_else(|| HOOK_EVENT_CATEGORY.to_string()),
             message.clone(),
+        ),
+        // Escalate sits between Warn and Block (see HookVerdictKind doc). It
+        // surfaces a finding like Warn/Block; the escalation `target` is folded
+        // into the message so the routing destination survives onto the
+        // HookFinding. Unlike Block it is NOT sanitized below — an escalation
+        // must carry its reason to the auditor/human it routes to.
+        HookVerdict::Escalate {
+            target,
+            message,
+            pattern_hash,
+        } => (
+            Some(pattern_hash.clone()),
+            extract_category(message).unwrap_or_else(|| HOOK_EVENT_CATEGORY.to_string()),
+            format!("escalate -> {target:?}: {message}"),
         ),
     };
     // Batch 2A: Block messages at the IPC surface are sanitized so the
@@ -1171,7 +1320,145 @@ impl HookDispatcher for InProcessHookDispatcher {
                     fix_template: None,
                 }]);
             }
-            self.analyze(&invocation)
+
+            // H-38: cost-confirmation gate.
+            // Read day_usd from the H-9 CloudSpend ledger (degrade to 0.0 on
+            // viewer-open failure per context package -- a missing ledger just
+            // means no cloud spend was recorded, so the cost-floor predicate
+            // passes silently, which is correct behavior).
+            let now_ms = i64::try_from(self.clock.now_ms()).unwrap_or(i64::MAX);
+            let day_usd = if let Some((_, ref db_path)) = self.stop_cost_ssb {
+                SsbViewer::open(Path::new(db_path))
+                    .and_then(|v| v.cloud_spend_summary(now_ms))
+                    .map(|s| s.day_usd)
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+
+            let snapshot = StopCostSnapshot {
+                day_usd,
+                unsaved_artifacts: invocation.unsaved_artifact_count,
+                pod_billable: invocation.pod_billable,
+            };
+            let verdict = evaluate_stop(snapshot);
+
+            let stop_cost_confirm_enable = std::env::var(ELAI_STOP_COST_CONFIRM_ENABLE)
+                .map(|v| v == "1")
+                .unwrap_or(false);
+
+            let ts_ms = now_ms;
+
+            let mut extra_findings = Vec::new();
+
+            match &verdict {
+                StopGateVerdict::Pass => {
+                    // Zero friction: only emit the SSB beacon when telemetry is ON.
+                    if stop_cost_confirm_enable {
+                        info!(
+                            rule = "stop_cost_confirm",
+                            day_usd,
+                            "stop_cost_gate: PassedNoFriction — stop proceeds without confirmation"
+                        );
+                        self.emit_stop_confirmation_ssb(
+                            StopConfirmationPayload {
+                                outcome: StopOutcomeKind::PassedNoFriction,
+                                cost_usd: day_usd,
+                                unsaved_count: u32::try_from(invocation.unsaved_artifact_count)
+                                    .unwrap_or(u32::MAX),
+                                ts_ms,
+                            },
+                            &invocation.step_id,
+                        )
+                        .await;
+                    }
+                }
+                StopGateVerdict::ConfirmRequired { cost_usd, unsaved_count, reason } => {
+                    info!(
+                        rule = "stop_cost_confirm",
+                        cost_usd,
+                        unsaved_count,
+                        reason = reason.as_str(),
+                        "stop_cost_gate: ConfirmRequired — presenting gate or holding (fail-closed)"
+                    );
+                    // Determine gate decision: present if a gate is installed,
+                    // otherwise default to HOLD (fail-closed for headless context).
+                    let gate_decision = if let Some(ref gate) = self.stop_confirm_gate {
+                        use crate::gate::{EvidenceSummary, RiskLevel};
+                        // Build a minimal EvidenceSummary for the confirm prompt.
+                        let summary = EvidenceSummary {
+                            source: crate::fsm::FsmState::Idle,
+                            target: crate::fsm::FsmState::Idle,
+                            phase_label: format!(
+                                "stop_cost_confirm: ${cost_usd:.4} spent today, {unsaved_count} unsaved artifact(s) — {reason}"
+                            ),
+                            gate_results: Vec::new(),
+                            all_gates_passed: false,
+                        };
+                        gate.present_gate(&summary, RiskLevel::High)
+                    } else {
+                        // No gate installed: fail-closed (headless context).
+                        crate::gate::GateDecision::Reject
+                    };
+
+                    match gate_decision {
+                        crate::gate::GateDecision::Approve => {
+                            // User confirmed: stop proceeds; emit beacon unconditionally.
+                            self.emit_stop_confirmation_ssb(
+                                StopConfirmationPayload {
+                                    outcome: StopOutcomeKind::ConfirmedProceed,
+                                    cost_usd: *cost_usd,
+                                    unsaved_count: u32::try_from(*unsaved_count)
+                                        .unwrap_or(u32::MAX),
+                                    ts_ms,
+                                },
+                                &invocation.step_id,
+                            )
+                            .await;
+                        }
+                        _ => {
+                            // Rejected or any other non-Approve decision: hold stop.
+                            // Rule-id "stop_cost_confirm_required" is in the message text
+                            // so tracing-test logs_contain("stop_cost_confirm_required")
+                            // succeeds (T-1: fields alone are not captured as message text).
+                            info!(
+                                cost_usd,
+                                unsaved_count,
+                                "stop_cost_gate: stop_cost_confirm_required — RejectedHeld, stop blocked pending confirm"
+                            );
+                            // Emit beacon unconditionally on the blocked path.
+                            self.emit_stop_confirmation_ssb(
+                                StopConfirmationPayload {
+                                    outcome: StopOutcomeKind::RejectedHeld,
+                                    cost_usd: *cost_usd,
+                                    unsaved_count: u32::try_from(*unsaved_count)
+                                        .unwrap_or(u32::MAX),
+                                    ts_ms,
+                                },
+                                &invocation.step_id,
+                            )
+                            .await;
+                            extra_findings.push(HookFinding {
+                                tier: HookTier::Composite,
+                                verdict: HookVerdictKind::Block,
+                                rule_id: Some("stop_cost_confirm_required".to_string()),
+                                category: "stop_hook".to_string(),
+                                message: format!(
+                                    "stop blocked: ${cost_usd:.4} day-spend / {unsaved_count} unsaved — confirm required"
+                                ),
+                                fix_template: None,
+                            });
+                            return Ok(extra_findings);
+                        }
+                    }
+                }
+            }
+
+            // B-19 T1 analysis pass (runs regardless of cost-gate result unless
+            // we returned early above due to a RejectedHeld block).
+            let mut findings = self.analyze(&invocation)?;
+            findings.extend(extra_findings);
+            Ok(findings)
         })
     }
 
@@ -1644,6 +1931,18 @@ impl IpcHookAsyncAdapter {
                 rule_id: Some(pattern_hash),
                 category: HOOK_EVENT_CATEGORY.to_string(),
                 message,
+                fix_template: None,
+            }],
+            // Escalate surfaces a finding between Warn and Block (see the
+            // HookVerdictKind severity-order doc). The routing `target` is
+            // folded into the message so it is not dropped on this boundary,
+            // mirroring InProcessHookDispatcher::push_finding.
+            PluginVerdict::Escalate { target, message, pattern_hash } => vec![HookFinding {
+                tier: HookTier::Composite,
+                verdict: HookVerdictKind::Escalate,
+                rule_id: Some(pattern_hash),
+                category: HOOK_EVENT_CATEGORY.to_string(),
+                message: format!("escalate -> {target:?}: {message}"),
                 fix_template: None,
             }],
         }

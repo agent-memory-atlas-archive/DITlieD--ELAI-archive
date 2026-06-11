@@ -100,6 +100,24 @@ pub enum RerankerError {
     CircuitBreakerOpen,
 }
 
+/// 1G-R3: hard ceiling for the startup readiness probe. If the ONNX
+/// `session.run` blocks (corrupt model, EP deadlock), the probe is abandoned
+/// after this duration and the pipeline degrades to BM25-only rather than
+/// hanging startup. Matches the 5s canary budget in `knowledge::startup`.
+pub const READINESS_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 1G-R3: outcome of [`CrossEncoderReranker::probe_with_timeout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// The probe inference completed within the timeout.
+    Completed,
+    /// The probe did not return within `READINESS_PROBE_TIMEOUT` (treated as a
+    /// hung session -> degrade, do not block startup).
+    TimedOut,
+    /// The reranker has no loaded session/tokenizer to probe.
+    NotLoaded,
+}
+
 // ---------------------------------------------------------------------------
 // SSB degradation events (canonical definition in crate::degradation).
 // C-1: production callers must inject a real SsbNotifier via
@@ -229,9 +247,22 @@ impl RerankerConfig {
 
 // ---------------------------------------------------------------------------
 // Batch request type (for mpsc channel)
+//
+// 1G-R4 RETIRED (test-only, superseded): the async batch-channel rerank path
+// (RerankerRequest + rerank_via_channel + run_batch_worker) has NO production
+// caller. The sole production rerank site is the SYNCHRONOUS
+// `CrossEncoderReranker::rerank` at pipeline.rs:1181, and the production
+// constructor `with_ssb` deliberately drops the channel receiver (`_request_rx`)
+// so the channel is never drained in production. Concurrency is already bounded
+// by the `Semaphore` in `rerank` (the "6th concurrent request overflows ->
+// unranked" spec behaviour). These items are kept compiled ONLY for the
+// existing async tests and are NOT to be presented as a live path. Physical
+// deletion is deferred pending explicit user confirmation (CLAUDE.md
+// "No removal without explicit user confirmation"); until then they are
+// retired-in-place and excluded from any "wired" claim.
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)] // Used in async batch path (rerank_via_channel + run_batch_worker)
+#[allow(dead_code)] // 1G-R4 RETIRED: async batch path is test-only (see note above); prod uses sync rerank()
 pub(crate) struct RerankerRequest {
     pub query: String,
     pub candidates: Vec<RetrievalResult>,
@@ -251,6 +282,13 @@ pub struct CrossEncoderReranker {
     request_tx: mpsc::Sender<RerankerRequest>,
     circuit_breaker: std::sync::Mutex<EmbeddingCircuitBreaker>,
     fallback_breaker: std::sync::Mutex<EmbeddingCircuitBreaker>,
+    /// 1G-R2: last-observed state of the L-12 breaker, so a transition INTO
+    /// Closed (from Open/HalfOpen) can fire exactly one recovery SSB event.
+    /// Without this, `emit_recovery_if_needed` could not distinguish a genuine
+    /// recovery from a steady Closed->Closed and emitted nothing.
+    prev_l12_state: std::sync::Mutex<BreakerState>,
+    /// 1G-R2: last-observed state of the L-6 fallback breaker (same role).
+    prev_l6_state: std::sync::Mutex<BreakerState>,
     #[allow(dead_code)] // Used in tests and future startup canary (1G.5)
     clock: Arc<dyn ClockProvider>,
     ssb_notifier: Arc<dyn SsbNotifier>,
@@ -283,6 +321,8 @@ impl CrossEncoderReranker {
             request_tx,
             circuit_breaker: std::sync::Mutex::new(circuit_breaker),
             fallback_breaker: std::sync::Mutex::new(fallback_breaker),
+            prev_l12_state: std::sync::Mutex::new(BreakerState::Closed),
+            prev_l6_state: std::sync::Mutex::new(BreakerState::Closed),
             clock,
             ssb_notifier,
         }
@@ -464,10 +504,23 @@ impl CrossEncoderReranker {
             }
         };
 
+        // 1I-R3: resolve the on-disk model path backing each session so a
+        // HALF_OPEN probe can rebuild a fresh session from it (see
+        // try_rerank_with_breaker). L-12 prefers the quantized file when present
+        // (matching `load`); L-6 uses the fallback path (or the L-12 model as a
+        // last resort when no fallback path is configured).
+        let l12_model_path: &Path = self
+            .config
+            .quantized_model_path
+            .as_deref()
+            .filter(|p| p.exists())
+            .unwrap_or(&self.config.model_path);
+
         // Try L-12 via circuit breaker.
         match self.try_rerank_with_breaker(
             &self.circuit_breaker,
             &self.session,
+            l12_model_path,
             query,
             &candidates,
         ) {
@@ -477,14 +530,26 @@ impl CrossEncoderReranker {
             }
             Err(_) => {
                 self.emit_degradation("l12_open", "L-12 circuit breaker open or inference failed");
+                // 1G-R2: record the (now non-Closed) L-12 breaker state so the
+                // next successful rerank detects the recovery up-transition.
+                self.note_breaker_state(&self.circuit_breaker, "l12");
             }
         }
 
         // L-12 failed — try L-6 fallback if configured.
         if self.fallback_session.is_some() {
+            // 1I-R3: resolve the L-6 model path for HALF_OPEN fresh-session
+            // rebuilds; fall back to the L-12 model path if no fallback path is
+            // configured (the fallback session is loaded, so a path exists).
+            let l6_model_path: &Path = self
+                .config
+                .fallback_model_path
+                .as_deref()
+                .unwrap_or(l12_model_path);
             match self.try_rerank_with_breaker(
                 &self.fallback_breaker,
                 &self.fallback_session,
+                l6_model_path,
                 query,
                 &candidates,
             ) {
@@ -497,6 +562,9 @@ impl CrossEncoderReranker {
                         "l6_open",
                         "L-6 fallback circuit breaker open or inference failed",
                     );
+                    // 1G-R2: record the non-Closed L-6 breaker state so a later
+                    // successful fallback rerank detects the recovery.
+                    self.note_breaker_state(&self.fallback_breaker, "l6");
                 }
             }
         }
@@ -506,11 +574,59 @@ impl CrossEncoderReranker {
         Ok(candidates)
     }
 
+    /// 1G-R3: run a single-pair canary inference on a detached thread, bounded
+    /// by [`READINESS_PROBE_TIMEOUT`]. Returns [`ProbeOutcome::TimedOut`] if the
+    /// ONNX `session.run` blocks past the budget so startup degrades to
+    /// BM25-only instead of hanging.
+    ///
+    /// The probe thread owns CLONED `Arc` handles to the session + tokenizer, so
+    /// if it hangs it can be abandoned without a dangling borrow (a leaked
+    /// thread on a corrupt session is the lesser evil versus a frozen startup).
+    /// `ProbeOutcome::Completed` only asserts the inference returned (Ok or Err)
+    /// within budget; the caller still inspects breaker state for an open
+    /// circuit. `NotLoaded` means there is no session/tokenizer to probe.
+    pub fn probe_with_timeout(&self, timeout: std::time::Duration) -> ProbeOutcome {
+        let (session, tokenizer) = match (self.session.as_ref(), self.tokenizer.as_ref()) {
+            (Some(s), Some(t)) => (s.clone(), t.clone()),
+            _ => return ProbeOutcome::NotLoaded,
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            // A trivial query/document pair; the result is irrelevant — we only
+            // need to know whether session.run returns within the budget.
+            let pairs: [(&str, &str); 1] = [("fn main()", "fn main() {}")];
+            let _ = Self::score_pairs_raw(&session, tokenizer.as_ref(), &pairs);
+            // Send may fail if the receiver already timed out and dropped; that
+            // is the abandoned-probe case and is intentionally ignored.
+            let _ = tx.send(());
+        });
+
+        match rx.recv_timeout(timeout) {
+            Ok(()) => ProbeOutcome::Completed,
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = timeout.as_secs(),
+                    "reranker readiness probe timed out; ONNX session.run did not return — degrading"
+                );
+                ProbeOutcome::TimedOut
+            }
+        }
+    }
+
     /// Try reranking through a circuit breaker. Returns Ok(ranked) or Err on breaker open/failure.
+    ///
+    /// 1I-R3: `model_path` is the on-disk ONNX file backing `session_opt`
+    /// (resolved L-12 or L-6 path). When the breaker is in HALF_OPEN, the probe
+    /// inference runs against a FRESHLY rebuilt session loaded from this path,
+    /// so a corrupt in-memory session (the likely cause of the original trip)
+    /// cannot doom the recovery probe. A rebuild failure is non-fatal: the probe
+    /// falls through to the existing session and the breaker records the result.
     fn try_rerank_with_breaker(
         &self,
         breaker: &std::sync::Mutex<EmbeddingCircuitBreaker>,
         session_opt: &Option<Arc<std::sync::Mutex<Session>>>,
+        model_path: &Path,
         query: &str,
         candidates: &[RetrievalResult],
     ) -> Result<Vec<RetrievalResult>, RerankerError> {
@@ -528,6 +644,14 @@ impl CrossEncoderReranker {
             .lock()
             .map_err(|e| RerankerError::Inference(format!("breaker lock poisoned: {e}")))?;
 
+        // 1I-R3: perform the Open->HalfOpen transition deterministically, then
+        // if this call is a HALF_OPEN recovery probe, swap in a fresh session
+        // built from disk before the probe inference runs.
+        cb.sync_state();
+        if cb.state() == BreakerState::HalfOpen {
+            self.rebuild_session_for_probe(session_arc, model_path);
+        }
+
         let result = cb.call(|| {
             Self::score_pairs(session_arc, tokenizer, query, candidates)
         }, FailureKind::Transient);
@@ -543,6 +667,48 @@ impl CrossEncoderReranker {
         }
     }
 
+    /// 1I-R3: rebuild a fresh ONNX session from `model_path` and swap it into
+    /// `session_arc` in place. Called on a HALF_OPEN recovery probe so the probe
+    /// does not reuse a session that may have been corrupted by the failure that
+    /// tripped the breaker. Non-fatal: on rebuild failure the existing session
+    /// is left untouched and a warning is logged (the probe then runs against
+    /// the old session, and the breaker still records pass/fail honestly).
+    fn rebuild_session_for_probe(
+        &self,
+        session_arc: &Arc<std::sync::Mutex<Session>>,
+        model_path: &Path,
+    ) {
+        let fresh = match Self::build_session(
+            model_path,
+            self.config.intra_op_threads,
+            self.config.graph_optimization_level,
+            self.config.enable_deterministic_compute,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    model_path = %model_path.display(),
+                    "1I-R3: fresh-session rebuild for HALF_OPEN probe failed (non-fatal): {e}"
+                );
+                return;
+            }
+        };
+        match session_arc.lock() {
+            Ok(mut guard) => {
+                *guard = fresh;
+                tracing::debug!(
+                    model_path = %model_path.display(),
+                    "1I-R3: rebuilt fresh ONNX session for HALF_OPEN recovery probe"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "1I-R3: session mutex poisoned; cannot install fresh probe session"
+                );
+            }
+        }
+    }
+
     /// Emit SSB degradation event. Non-fatal if SSB write fails.
     fn emit_degradation(&self, detail_key: &str, detail_msg: &str) {
         self.ssb_notifier.emit(DegradationEvent {
@@ -552,28 +718,88 @@ impl CrossEncoderReranker {
         });
     }
 
-    /// Emit SSB recovery event if breaker just transitioned back to Closed.
+    /// Emit an SSB recovery event when the given breaker transitions back INTO
+    /// Closed from a non-Closed (Open / HalfOpen) state.
+    ///
+    /// 1G-R2: previously a confirmed no-op because no previous-state was tracked,
+    /// so a genuine recovery was indistinguishable from a steady Closed->Closed.
+    /// We now compare the breaker's current state against the last-observed
+    /// state for this tier (`prev_l12_state` / `prev_l6_state`), emit exactly
+    /// one `knowledge_degradation` recovery row on the up-transition, and record
+    /// the new state so the next call sees it. Any state change (including
+    /// Open->HalfOpen) updates the tracker so the eventual Closed transition is
+    /// detected correctly.
     fn emit_recovery_if_needed(
         &self,
         breaker: &std::sync::Mutex<EmbeddingCircuitBreaker>,
         model_tier: &str,
     ) {
-        if let Ok(cb) = breaker.lock() {
-            if cb.state() == BreakerState::Closed {
-                // Only emit on transitions, but since we don't track previous state
-                // we emit conservatively. The SSB consumer deduplicates.
-                // Not emitting here for Closed->Closed to avoid noise.
-                // Recovery is tracked by the breaker's record_success() call.
-                let _ = model_tier; // Available for future per-model recovery events.
-            }
+        let current = match breaker.lock() {
+            Ok(cb) => cb.state(),
+            Err(_) => return, // poisoned breaker: skip, do not emit a false recovery
+        };
+
+        let prev_slot = match model_tier {
+            "l6" => &self.prev_l6_state,
+            _ => &self.prev_l12_state,
+        };
+        let mut prev = match prev_slot.lock() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+
+        if current == *prev {
+            return; // no transition since last observation
+        }
+
+        // Recovery = transition INTO Closed from Open/HalfOpen.
+        if current == BreakerState::Closed && *prev != BreakerState::Closed {
+            self.ssb_notifier.emit(DegradationEvent {
+                action_type: "knowledge_degradation",
+                stage: "rerank_recovery",
+                detail: format!(
+                    "{model_tier}: breaker recovered ({prev:?} -> CLOSED), reranking restored"
+                ),
+            });
+        }
+
+        *prev = current;
+    }
+
+    /// 1G-R2: snapshot a breaker's current state into its previous-state
+    /// tracker WITHOUT emitting. Called on the degradation (failure) path so the
+    /// non-Closed state is recorded; the subsequent successful rerank then sees
+    /// the Open/HalfOpen -> Closed transition in `emit_recovery_if_needed`.
+    fn note_breaker_state(
+        &self,
+        breaker: &std::sync::Mutex<EmbeddingCircuitBreaker>,
+        model_tier: &str,
+    ) {
+        let current = match breaker.lock() {
+            Ok(cb) => cb.state(),
+            Err(_) => return,
+        };
+        let prev_slot = match model_tier {
+            "l6" => &self.prev_l6_state,
+            _ => &self.prev_l12_state,
+        };
+        if let Ok(mut prev) = prev_slot.lock() {
+            *prev = current;
         }
     }
 
     /// Async rerank entry point via bounded mpsc channel.
     ///
+    /// 1G-R4 RETIRED (test-only): no production caller. The production rerank
+    /// path is the synchronous [`Self::rerank`] (pipeline.rs:1181); `with_ssb`
+    /// drops the channel receiver so this would always hit a closed channel in
+    /// production. Retained for the existing async tests only — do not wire to
+    /// production. See the RETIRED note above `RerankerRequest`.
+    ///
     /// Sends request to the batch worker channel. If channel is full (>max_queue_depth
     /// pending), returns candidates unranked immediately (not an error).
     /// Spec: "6th concurrent request overflows: returns unranked results immediately"
+    #[allow(dead_code)] // 1G-R4 RETIRED: test-only async path (see RerankerRequest note)
     pub async fn rerank_via_channel(
         &self,
         query: String,
@@ -605,8 +831,11 @@ impl CrossEncoderReranker {
     /// merges candidate sets into a single batch, runs one inference, and splits
     /// results back to callers via their oneshot channels.
     ///
-    /// Must be spawned as a tokio task. Runs until the channel sender is dropped.
-    #[allow(dead_code)] // Spawned by pipeline orchestrator for async batch path
+    /// 1G-R4 RETIRED (test-only): never spawned in production. `with_ssb` drops
+    /// the channel receiver, so no production task drives this loop; the live
+    /// rerank path is the synchronous [`Self::rerank`]. Retained for the async
+    /// tests only. See the RETIRED note above `RerankerRequest`.
+    #[allow(dead_code)] // 1G-R4 RETIRED: test-only batch worker (no production spawn)
     pub(crate) async fn run_batch_worker(
         session: Arc<std::sync::Mutex<Session>>,
         tokenizer: Arc<tokenizers::Tokenizer>,
@@ -838,6 +1067,8 @@ impl CrossEncoderReranker {
             request_tx,
             circuit_breaker: std::sync::Mutex::new(circuit_breaker),
             fallback_breaker: std::sync::Mutex::new(fallback_breaker),
+            prev_l12_state: std::sync::Mutex::new(BreakerState::Closed),
+            prev_l6_state: std::sync::Mutex::new(BreakerState::Closed),
             clock,
             ssb_notifier,
         };

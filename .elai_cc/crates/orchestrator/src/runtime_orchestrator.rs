@@ -28,20 +28,22 @@ use std::sync::Arc;
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_ipc_types::AgentRole;
 use elai_providers::runtime::{
-    create_runtime, runtime_event_sink, CompletionConfig, CompletionResponse, Message,
-    RuntimeAdapter, RuntimeAdapterError, RuntimeBackend, RuntimeEvent, RuntimeHealth,
+    backend_name_hash, cost_model_for, create_runtime, role_name_hash, runtime_event_sink,
+    CompletionConfig, CompletionResponse, Message, RuntimeAdapter, RuntimeAdapterError,
+    RuntimeBackend, RuntimeEvent, RuntimeHealth,
 };
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use crate::handoff_payload::compress_handoff_payload;
 use crate::role_predict::{predict_next_role, tier_allows_prewarm, VramTier};
 use crate::role_prompt::{
     build_role_prompt, default_voice_toml_path, load_voice_anchor_from_toml, VoiceAnchor,
 };
 use crate::runtime_config::RuntimeConfig;
 use crate::ssb::{
-    RuntimeHandoffEventKind, RuntimeHandoffEventPayload, Ssb, SsbPayload,
+    BackendCostAccruedPayload, RuntimeHandoffEventKind, RuntimeHandoffEventPayload, Ssb, SsbPayload,
     ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV,
 };
 
@@ -252,6 +254,20 @@ impl RuntimeOrchestrator {
         // optional Ssb handle attached via `with_ssb`.
         let config = self.wrap_system_with_role_prompt(role, config).await;
 
+        // E-3 sub-phase 4B: compress the rolling chat history BEFORE the
+        // fallback chain so every backend in the chain (and any later
+        // cloud->local handoff) sees one constant-size payload. Wire-dark
+        // unless ELAI_E3_RUNTIME_HANDOFF_ENABLE=1; on env-off the helper
+        // returns the messages untouched (no behaviour change). On env-on
+        // it runs the deterministic `compress_handoff_payload` heuristic
+        // and, when the payload actually shrank, replaces `messages` with
+        // the compressed list AND emits an
+        // E3RuntimeHandoffEvent::HandoffPayloadCompressed row through the
+        // optional Ssb handle attached via `with_ssb`. This is the sole
+        // PRODUCTION caller of `compress_handoff_payload` (previously the
+        // function had only `#[cfg(test)]` callers — R6/R7 wire-dark).
+        let messages = self.compress_handoff_for_dispatch(role, messages).await;
+
         let mut events: Vec<RuntimeOrchestratorEvent> = Vec::new();
         let mut tried: Vec<RuntimeBackend> = Vec::new();
         let mut last_reason = String::new();
@@ -312,6 +328,41 @@ impl RuntimeOrchestrator {
                     // the caller. Gated by ELAI_E3_RUNTIME_HANDOFF_ENABLE
                     // + tier check inside `predict_and_warm_next_role`.
                     self.predict_and_warm_next_role(role).await;
+                    // C-44 — emit the BackendCostAccrued off-agent artifact after
+                    // a successful PAID-backend invocation. `cost_model_for`
+                    // returns None for local/free backends (Sidecar, Mlx, ...),
+                    // so no row is written for zero-marginal-cost calls; the
+                    // Composer 2 (and future paid clouds) path computes
+                    // est_cost_micros from the provider-reported token usage via
+                    // the source-grounded BackendCostModel (arXiv:2603.24477
+                    // grounds Composer 2 identity; pricing is from cursor.com/docs
+                    // per cost.rs). This is the sole production emit site for the
+                    // BackendCostAccrued variant (previously declared but never
+                    // emitted from a real invoke — wire-dark).
+                    if let (Some(ssb), Some(model)) =
+                        (self.ssb.as_ref(), cost_model_for(backend))
+                    {
+                        let (tokens_in, tokens_out) = response.usage;
+                        let est_cost_micros = model.estimate_micros(tokens_in, tokens_out);
+                        let payload = SsbPayload::BackendCostAccrued(BackendCostAccruedPayload {
+                            backend_name_hash: backend_name_hash(backend),
+                            role_name_hash: role_name_hash(role),
+                            tokens_in,
+                            tokens_out,
+                            est_cost_micros,
+                            ts_ms: u64::try_from(now_ms()).unwrap_or(0),
+                        });
+                        if let Err(e) = ssb
+                            .write_payload("runtime_orchestrator", 0, payload, Vec::new())
+                            .await
+                        {
+                            warn!(
+                                target = "runtime_orchestrator",
+                                error = %e,
+                                "ssb write_payload failed for backend_cost_accrued"
+                            );
+                        }
+                    }
                     return Ok(CompleteOutcome {
                         response,
                         used_backend: backend,
@@ -694,6 +745,92 @@ impl RuntimeOrchestrator {
             }
         }
     }
+
+    /// E-3 sub-phase 4B: compress the inbound rolling chat history to a
+    /// constant-size budget before it is handed to the fallback chain
+    /// (and, transitively, across a cloud<->local PerRoleRuntime swap).
+    ///
+    /// This is the production wiring of
+    /// [`crate::handoff_payload::compress_handoff_payload`]: until now the
+    /// compressor had only `#[cfg(test)]` callers, leaving it a
+    /// producer-without-consumer (R6) / no-non-test-reachability (R7)
+    /// wire-dark deliverable per the E-3 plan-status punch list.
+    ///
+    /// Behaviour matrix:
+    ///   * `ELAI_E3_RUNTIME_HANDOFF_ENABLE` not set / falsy: returns
+    ///     `messages` unchanged (wire-dark default; the compressor is not
+    ///     invoked at all, so there is zero behaviour change vs pre-E-3).
+    ///   * `ELAI_E3_RUNTIME_HANDOFF_ENABLE=1` and the payload already fits
+    ///     the budget: `compress_handoff_payload` returns the messages
+    ///     verbatim, `compressed_tokens == original_tokens`, NO SSB row is
+    ///     emitted, and the original `messages` are returned (the cheap
+    ///     pass-through path — emitting a "compressed 1x" row would be
+    ///     noise).
+    ///   * `ELAI_E3_RUNTIME_HANDOFF_ENABLE=1` and the payload was actually
+    ///     trimmed (`compressed_tokens < original_tokens`): emits a
+    ///     `E3RuntimeHandoffEvent::HandoffPayloadCompressed` row carrying
+    ///     `{original_tokens, compressed_tokens, ratio}` through the
+    ///     optional `Ssb` handle, and returns the COMPRESSED message list
+    ///     so the downstream `adapter.complete` sees the smaller payload.
+    ///
+    /// Fail-soft: an SSB write error is logged at `warn` and never blocks
+    /// the dispatch (mirrors the preamble / pre-warm emission paths).
+    async fn compress_handoff_for_dispatch(
+        &self,
+        role: AgentRole,
+        messages: Vec<Message>,
+    ) -> Vec<Message> {
+        if !is_e3_runtime_handoff_enabled() {
+            return messages;
+        }
+        let target_tokens = handoff_target_tokens();
+        let compressed = compress_handoff_payload(&messages, target_tokens);
+
+        // Cheap path: nothing was trimmed. Return the original messages and
+        // emit no row — the compressor is a pass-through under budget.
+        if compressed.compressed_tokens >= compressed.original_tokens {
+            return messages;
+        }
+
+        // Real compression happened. Log + (optionally) emit the off-agent
+        // SSB row, then hand the compressed payload downstream.
+        info!(
+            target = "runtime_orchestrator",
+            e3_runtime_handoff_event = "handoff_payload_compressed",
+            ?role,
+            original_tokens = compressed.original_tokens,
+            compressed_tokens = compressed.compressed_tokens,
+            target_tokens,
+            ratio = compressed.ratio,
+            "compress_handoff_payload trimmed rolling chat history for dispatch"
+        );
+        if let Some(ssb) = self.ssb.as_ref() {
+            let payload = SsbPayload::E3RuntimeHandoffEvent(RuntimeHandoffEventPayload {
+                kind: RuntimeHandoffEventKind::HandoffPayloadCompressed,
+                role: Some(agent_role_to_snake(role)),
+                backend: None,
+                session_id: Some(ssb.session_id().to_owned()),
+                details_json: serde_json::json!({
+                    "original_tokens": compressed.original_tokens,
+                    "compressed_tokens": compressed.compressed_tokens,
+                    "ratio": compressed.ratio,
+                    "target_tokens": target_tokens,
+                }),
+                ts_ms: now_ms(),
+            });
+            if let Err(e) = ssb
+                .write_payload("runtime_orchestrator", 0, payload, Vec::new())
+                .await
+            {
+                warn!(
+                    target = "runtime_orchestrator",
+                    error = %e,
+                    "ssb write_payload failed for handoff_payload_compressed"
+                );
+            }
+        }
+        compressed.messages
+    }
 }
 
 /// Current wall-clock millis since UNIX_EPOCH. Used by the E-3 SSB
@@ -701,6 +838,27 @@ impl RuntimeOrchestrator {
 /// emission rather than the SSB writer's commit time.
 fn now_ms() -> i64 {
     i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
+}
+
+/// Token budget the handoff payload is compressed down to before a
+/// dispatch. Reads `ELAI_LOCAL_MAX_CONTEXT` (the documented hard ceiling
+/// for the local sidecar window per CLAUDE.md) so the compressed payload
+/// is sized for the SMALLEST receiver in the PerRoleRuntime mix (the
+/// local Qwen). Falls back to a conservative 25_000-token default that
+/// matches the CLAUDE.md "use 25000-28000 in production for headroom"
+/// guidance. A parse failure or zero value also falls back to the
+/// default so a malformed env never collapses the budget to 0 (which
+/// `compress_handoff_payload` would treat as "elide all history").
+const HANDOFF_DEFAULT_TARGET_TOKENS: usize = 25_000;
+
+fn handoff_target_tokens() -> usize {
+    match std::env::var("ELAI_LOCAL_MAX_CONTEXT") {
+        Ok(v) => match v.trim().parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => HANDOFF_DEFAULT_TARGET_TOKENS,
+        },
+        Err(_) => HANDOFF_DEFAULT_TARGET_TOKENS,
+    }
 }
 
 /// Resolve the env-gate truthiness for E-3 runtime handoff. Accepts
@@ -925,5 +1083,127 @@ mod tests {
         orch.set_config(RuntimeConfig::default()).await;
         let cache = orch.adapters.read().await;
         assert!(cache.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // E-3 sub-phase 4B — compress_handoff_payload production-wiring smoke.
+    //
+    // Off-agent artifact proof: drive the REAL production dispatch method
+    // `try_complete` (NOT the pure `compress_handoff_payload` fn directly)
+    // with an oversized rolling history under ELAI_E3_RUNTIME_HANDOFF_ENABLE=1,
+    // then read the `handoff_payload_compressed` SSB row back out of a temp
+    // Ssb via `SsbReader::query_by_type`. The row is written by the
+    // orchestrator's own emit path (the agent does NOT author it), so it is
+    // a genuine off-agent artifact per wiring-enforcement R4.
+    //
+    // R7 reachability: `try_complete` is a `pub` method on a
+    // `RuntimeOrchestrator` that production constructs WITH an Ssb handle
+    // (dashboard-v2/src-tauri/src/state.rs `RuntimeOrchestrator::new(...).
+    // with_ssb(..)`); this smoke exercises that exact construction shape.
+    //
+    // SINGLE sequential #[tokio::test]: ELAI_E3_RUNTIME_HANDOFF_ENABLE is a
+    // process-global env var that would race a parallel test split, so this
+    // is the only test in this module that sets it, and it restores it on
+    // exit.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn try_complete_emits_handoff_payload_compressed_row_off_agent() {
+        use crate::ssb::{Ssb, SsbActionType, SsbConfig, SsbPayload, SsbReader};
+        use elai_providers::runtime::MessageRole;
+
+        // --- env: enable the gate + pin a small budget so compression
+        //     definitely fires on the oversized fixture. ---
+        let prev_enable = std::env::var(ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV).ok();
+        let prev_ctx = std::env::var("ELAI_LOCAL_MAX_CONTEXT").ok();
+        std::env::set_var(ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV, "1");
+        // 200-token budget — the fixture is far larger so the heuristic
+        // must trim it.
+        std::env::set_var("ELAI_LOCAL_MAX_CONTEXT", "200");
+
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let ssb = Arc::new(
+            Ssb::new(
+                SsbConfig {
+                    db_path: dir.path().join("e3_handoff_smoke.db"),
+                    pool_size: Some(2),
+                    project_id: "test-project".into(),
+                    session_id: "s-e3-4b-smoke".into(),
+                },
+                Arc::new(OsClock),
+            )
+            .expect("ssb init"),
+        );
+
+        // Construct the orchestrator the SAME way production does: a real
+        // config + an attached Ssb writer.
+        let mut cfg = RuntimeConfig::default();
+        cfg.per_role.set(AgentRole::Executor, RuntimeBackend::Ollama);
+        cfg.fallback_chain = vec![RuntimeBackend::Ollama];
+        let orch = RuntimeOrchestrator::new(cfg).with_ssb(Arc::clone(&ssb));
+
+        // Oversized rolling history: 40 fat head messages + a short tail.
+        let mut messages: Vec<Message> = Vec::new();
+        for i in 0..40 {
+            messages.push(Message {
+                role: MessageRole::User,
+                content: "a".repeat(2_000 + i),
+            });
+        }
+        for i in 0..4 {
+            messages.push(Message {
+                role: MessageRole::Assistant,
+                content: format!("tail-{i}"),
+            });
+        }
+
+        // Drive the REAL production dispatch path. The Ollama stub fails on
+        // `complete`, so `try_complete` returns AllBackendsFailed — but the
+        // compression + SSB emission run BEFORE the fallback loop, so the
+        // off-agent row is written regardless of dispatch outcome.
+        let _ = orch
+            .try_complete(AgentRole::Executor, messages, CompletionConfig::default())
+            .await;
+
+        // --- read the off-agent artifact back ---
+        let rows = ssb
+            .query_by_type(SsbActionType::E3RuntimeHandoffEvent)
+            .expect("query_by_type");
+        let mut found_compressed = false;
+        for entry in &rows {
+            if let Ok(SsbPayload::E3RuntimeHandoffEvent(p)) =
+                rmp_serde::from_slice::<SsbPayload>(&entry.payload)
+            {
+                if p.kind == RuntimeHandoffEventKind::HandoffPayloadCompressed {
+                    found_compressed = true;
+                    let orig = p.details_json["original_tokens"].as_u64().unwrap_or(0);
+                    let comp = p.details_json["compressed_tokens"].as_u64().unwrap_or(u64::MAX);
+                    let ratio = p.details_json["ratio"].as_f64().unwrap_or(0.0);
+                    assert!(
+                        comp < orig,
+                        "compressed_tokens ({comp}) must be < original_tokens ({orig})"
+                    );
+                    assert!(ratio > 1.0, "ratio ({ratio}) must be > 1.0 after a real trim");
+                    assert_eq!(
+                        p.role.as_deref(),
+                        Some("executor"),
+                        "row must carry the dispatch role"
+                    );
+                }
+            }
+        }
+        assert!(
+            found_compressed,
+            "expected a handoff_payload_compressed off-agent SSB row, found none in {} e3 rows",
+            rows.len()
+        );
+
+        // --- restore env so peer tests are unaffected ---
+        match prev_enable {
+            Some(v) => std::env::set_var(ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV, v),
+            None => std::env::remove_var(ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV),
+        }
+        match prev_ctx {
+            Some(v) => std::env::set_var("ELAI_LOCAL_MAX_CONTEXT", v),
+            None => std::env::remove_var("ELAI_LOCAL_MAX_CONTEXT"),
+        }
     }
 }

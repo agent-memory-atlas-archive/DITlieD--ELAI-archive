@@ -521,7 +521,7 @@ mod tests {
         let cached_code = vec![0.5f32; CODE_VEC_DIM];
         let cached_text = vec![0.5f32; TEXT_VEC_DIM];
         let cached_dv = DualVector::new(cached_code, cached_text).unwrap();
-        cache.insert(&hash, &cached_dv, 1700000000).unwrap();
+        cache.insert(&hash, "src/cached.rs", &cached_dv, 1700000000).unwrap();
 
         // Lookup cache — if hit, skip embed
         let cache_hit = cache.lookup(&hash).unwrap().is_some();

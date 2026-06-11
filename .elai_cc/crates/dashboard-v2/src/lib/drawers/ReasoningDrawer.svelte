@@ -6,6 +6,16 @@
   import FeasibilityPanel from '$lib/components/FeasibilityPanel.svelte';
   import ArchiveVerifyGauge from '$lib/components/ArchiveVerifyGauge.svelte';
   import TripwireStatusStrip from '$lib/components/TripwireStatusStrip.svelte';
+  // B-5: red intervention card for unguarded Critical CSQ verdicts.
+  import CsqBlockCard from '$lib/components/CsqBlockCard.svelte';
+  // B-5: per-role GRC config table (get_agent_grc_config consumer).
+  // C-3: raw feasibility-report log consumer (get_feasibility_log).
+  import {
+    get_agent_grc_config,
+    get_feasibility_log,
+    type FeasibilityLogRow,
+  } from '../api/stub';
+  import type { GrcConfigRow } from '../api/types';
 
   // B-39D: live REFLECT pipeline timeline. Subscribes to the singleton
   // `reflect-progress` Tauri event emitted by TauriEventSink. Each stage
@@ -122,6 +132,56 @@
 
   const d = reasoningData;
 
+  // B-5: per-role GRC config table. Sourced from get_agent_grc_config
+  // (compile-time default_grc_config table, NOT SSB). Collapsible so it
+  // does not crowd the live budget bars above. Loaded once on mount —
+  // the config is static for the process lifetime.
+  let grcConfig = $state<GrcConfigRow[]>([]);
+  let showGrcConfig = $state(false);
+
+  onMount(() => {
+    void (async () => {
+      try {
+        grcConfig = await get_agent_grc_config();
+      } catch (err) {
+        console.debug('[ReasoningDrawer] get_agent_grc_config failed', err);
+      }
+    })();
+  });
+
+  // C-3: raw feasibility-report log (every feasibility_report SSB row, not
+  // just the v2 PASS/FAIL summary the FeasibilityPanel renders). Polled on a
+  // 5s cadence; falls back to [] in browser-dev mode. Bounded by the backend
+  // FEASIBILITY_LOG_QUERY_LIMIT (20 rows).
+  let feasibilityLog = $state<FeasibilityLogRow[]>([]);
+  let showFeasibilityLog = $state(false);
+  let feasLogTimer: ReturnType<typeof setInterval> | null = null;
+
+  onMount(() => {
+    async function refreshFeasLog(): Promise<void> {
+      try {
+        feasibilityLog = await get_feasibility_log();
+      } catch (err) {
+        console.debug('[ReasoningDrawer] get_feasibility_log failed', err);
+      }
+    }
+    void refreshFeasLog();
+    feasLogTimer = setInterval(() => void refreshFeasLog(), 5_000);
+    return () => {
+      if (feasLogTimer) {
+        clearInterval(feasLogTimer);
+        feasLogTimer = null;
+      }
+    };
+  });
+
+  function feasVerdictTone(v: string): 'teal' | 'warn' | 'fail' {
+    const lv = v.toLowerCase();
+    if (lv === 'pass' || lv === 'feasible') return 'teal';
+    if (lv === 'fail' || lv === 'infeasible' || lv === 'blocked') return 'fail';
+    return 'warn';
+  }
+
   function callsPct(used: number, total: number): number {
     return total > 0 ? Math.round((used / total) * 100) : 0;
   }
@@ -146,6 +206,16 @@
   // F-11 — config-DGM admit-loop rows (Admitted / RejectedByGuard / LoopClosed).
   const hasDarwinianAdmits = $derived(d.darwinianAdmits.length > 0);
 
+  // H-43 — execution-grounded DGM fitness rows (FitnessEvaluated per candidate).
+  // Wire-dark: same gate as darwinianAdmits (darwinian-evolve + ELAI_DARWINIAN_LOOP_ENABLE=1).
+  const hasFitnessRows = $derived(
+    Array.isArray((d as any).fitnessEvaluated) && (d as any).fitnessEvaluated.length > 0
+  );
+
+  // H-46 — CMP parent-selection rows (CladeSelected per selection event).
+  // Wire-dark: same gate as darwinianAdmits (darwinian-evolve + ELAI_DARWINIAN_LOOP_ENABLE=1).
+  const hasCladeSelections = $derived(d.cladeSelections.length > 0);
+
   // Badge tone per admit kind: loop_closed=teal (success), rejected_by_guard=
   // warn, admitted=steel (neutral/info). Tones constrained to the Badge
   // component's set ('teal' | 'steel' | 'warn' | 'fail' | 'ghost').
@@ -155,6 +225,22 @@
       case 'rejected_by_guard': return 'warn';
       default: return 'steel';
     }
+  }
+
+  // H-43: Badge tone per fitness kind: fitness_regression=warn (candidate regressed),
+  // execution_pass_rate=teal (causal signal), dual_agreement=steel (agreement mass).
+  function fitnessTone(kind: string): 'teal' | 'warn' | 'steel' {
+    switch (kind) {
+      case 'fitness_regression': return 'warn';
+      case 'execution_pass_rate': return 'teal';
+      default: return 'steel';
+    }
+  }
+
+  // H-46: Badge tone per clade selection key:
+  // clade_metaproductivity=teal (CMP override), immediate_score_fallback=steel (no lineage yet).
+  function cladeSelectionTone(kind: string): 'teal' | 'steel' {
+    return kind === 'clade_metaproductivity' ? 'teal' : 'steel';
   }
 
   // GG signals as ordered tiles
@@ -196,6 +282,11 @@
   <ArchiveVerifyGauge />
   <TripwireStatusStrip />
 
+  <!-- B-5: CSQ BLOCK intervention card. Self-renders (returns nothing when
+       no unguarded Critical CSQ verdict is active). Mounted at the top so a
+       block is the most prominent thing in the drawer when it fires. -->
+  <CsqBlockCard />
+
   <!-- 1. GRC BUDGETS PER ROLE -->
   <Card variant="plain" padding={12}>
     <div class="section-label">GRC BUDGETS PER ROLE</div>
@@ -218,6 +309,44 @@
           <span class="grc-stat">{b.calls_used}/{b.total_calls} calls · {b.chars_used}/{b.total_chars} chars</span>
         </div>
       {/each}
+    </div>
+
+    <!-- B-5: per-role GRC CONFIG table (get_agent_grc_config). Collapsible.
+         Distinct from the live budget bars above: this is the configured
+         per-role max_calls / max_chars / GRC topic key, read once from the
+         compile-time default_grc_config table. -->
+    <div class="grc-config">
+      <button
+        class="grc-config-toggle"
+        type="button"
+        onclick={() => { showGrcConfig = !showGrcConfig; }}
+        aria-expanded={showGrcConfig}
+      >
+        <span class="grc-config-caret">{showGrcConfig ? '▾' : '▸'}</span>
+        PER-ROLE GRC CONFIG ({grcConfig.length})
+      </button>
+      {#if showGrcConfig}
+        {#if grcConfig.length === 0}
+          <span class="ghost-text">no GRC config (browser-dev mode — get_agent_grc_config returns [] without a Tauri runtime)</span>
+        {:else}
+          <div class="grc-config-table">
+            <div class="grc-config-header">
+              <span>role</span>
+              <span>max calls</span>
+              <span>max chars</span>
+              <span>topic</span>
+            </div>
+            {#each grcConfig as c (c.role)}
+              <div class="grc-config-row">
+                <span class="grc-config-role">{c.role}</span>
+                <span class="grc-config-cell">{c.max_calls}</span>
+                <span class="grc-config-cell">{c.max_chars}</span>
+                <span class="grc-config-topic mono">{c.topic_prefix}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {/if}
     </div>
   </Card>
 
@@ -358,10 +487,102 @@
     {/if}
   </Card>
 
+  <!-- H-43: DGM FITNESS (execution-grounded pass-rate per candidate).
+       Wire-dark: same gate as DARWINIAN ADMITS (darwinian-evolve +
+       ELAI_DARWINIAN_LOOP_ENABLE=1). A fitness_regression badge means the
+       candidate scored below its parent — it lost promotion. -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">DGM FITNESS</div>
+    {#if hasFitnessRows}
+      <div class="conflict-list">
+        {#each (d as any).fitnessEvaluated as f (f.seq)}
+          <div class="conflict-entry">
+            <div class="conflict-head">
+              <Badge tone={fitnessTone(f.kind)} size="xs">{f.kind}</Badge>
+              <span class="conflict-kind">{f.candidate_blake3}</span>
+            </div>
+            <span class="conflict-detail">
+              fitness={f.fitness.toFixed(4)} pass={f.pass_rate.toFixed(3)} agree={f.dual_agreement.toFixed(3)}
+            </span>
+            <div class="conflict-meta">
+              <span class="conflict-mono">tests={f.tests_total}</span>
+              <span class="conflict-mono">{fmtTs(f.ts_ms)}</span>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <span class="ghost-text">no fitness rows (wire-dark: darwinian-evolve + ELAI_DARWINIAN_LOOP_ENABLE=1)</span>
+    {/if}
+  </Card>
+
+  <!-- H-46: CMP PARENT SELECTION (clade-metaproductivity key per selection event).
+       Wire-dark: same gate as DARWINIAN ADMITS (darwinian-evolve +
+       ELAI_DARWINIAN_LOOP_ENABLE=1); empty in steady state.
+       Sourced from reasoningData.cladeSelections (get_clade_selections, 10s poll).
+       Shows node_id, cmp vs immediate_score, clade_size, and key badge. -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">CMP SELECTION</div>
+    {#if hasCladeSelections}
+      <div class="conflict-list">
+        {#each d.cladeSelections as c (c.seq)}
+          <div class="conflict-row">
+            <div class="conflict-head">
+              <Badge tone={cladeSelectionTone(c.kind)} size="xs">{c.key_used}</Badge>
+              <span class="conflict-kind">{c.node_id}</span>
+            </div>
+            <span class="conflict-detail">
+              cmp={c.cmp.toFixed(4)} imm={c.immediate_score.toFixed(4)} clade={c.clade_size}
+            </span>
+            <div class="conflict-meta">
+              <span class="conflict-mono">{fmtTs(c.ts_ms)}</span>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <span class="ghost-text">no clade selections (wire-dark: darwinian-evolve + ELAI_DARWINIAN_LOOP_ENABLE=1)</span>
+    {/if}
+  </Card>
+
   <!-- 4. INLINE FEASIBILITY (C-22: rendered via FeasibilityPanel component) -->
   <Card variant="plain" padding={12}>
     <div class="section-label">INLINE FEASIBILITY</div>
     <FeasibilityPanel report={d.feasibility} />
+
+    <!-- C-3: raw feasibility-report log (get_feasibility_log consumer).
+         Collapsible so it does not crowd the summary panel above. -->
+    <button
+      type="button"
+      class="feas-log-toggle"
+      onclick={() => (showFeasibilityLog = !showFeasibilityLog)}
+      aria-expanded={showFeasibilityLog}
+    >
+      {showFeasibilityLog ? '▾' : '▸'} feasibility log ({feasibilityLog.length})
+    </button>
+    {#if showFeasibilityLog}
+      {#if feasibilityLog.length === 0}
+        <span class="ghost-text">no feasibility probes recorded yet</span>
+      {:else}
+        <ul class="feas-log-rows" data-testid="feasibility-log">
+          {#each feasibilityLog as row (row.seq)}
+            <li class="feas-log-row">
+              <Badge tone={feasVerdictTone(row.verdict)} size="xs">{row.verdict}</Badge>
+              <span class="feas-log-id">#{row.task_id}</span>
+              <span class="feas-log-margins">
+                vram {row.vram_margin_pct.toFixed(0)}% · ram {row.ram_margin_pct.toFixed(0)}% · disk {row.disk_margin_pct.toFixed(0)}%
+              </span>
+              {#if row.novel_step_count > 0}
+                <span class="feas-log-novel">{row.novel_step_count} novel</span>
+              {/if}
+              {#if row.escalations_count > 0}
+                <span class="feas-log-esc">{row.escalations_count} esc</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
   </Card>
 
   <!-- 5. MISTAKE BOOK -->
@@ -559,6 +780,75 @@
     color: var(--text-ghost);
     white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  /* B-5: per-role GRC config collapsible table. */
+  .grc-config {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border-subtle);
+  }
+  .grc-config-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 2px 0;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    text-align: left;
+  }
+  .grc-config-toggle:hover {
+    color: var(--text-primary);
+  }
+  .grc-config-toggle:focus-visible {
+    box-shadow: var(--ring);
+  }
+  .grc-config-caret {
+    color: var(--text-ghost);
+  }
+  .grc-config-table {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .grc-config-header,
+  .grc-config-row {
+    display: grid;
+    grid-template-columns: 1.4fr 0.8fr 0.8fr 1.4fr;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .grc-config-header {
+    color: var(--text-secondary);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .grc-config-role {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .grc-config-cell {
+    color: var(--text-secondary);
+  }
+  .grc-config-topic {
+    color: var(--text-ghost);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mono {
+    font-family: var(--font-mono);
   }
 
   /* Grounding sweep */
@@ -767,6 +1057,42 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-ghost);
+  }
+
+  /* C-3 feasibility log */
+  .feas-log-toggle {
+    margin-top: var(--s-2);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    letter-spacing: 0.04em;
+  }
+  .feas-log-toggle:hover {
+    color: var(--text-primary);
+  }
+  .feas-log-rows {
+    list-style: none;
+    padding: 0;
+    margin: var(--s-2) 0 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .feas-log-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    flex-wrap: wrap;
+  }
+  .feas-log-id {
+    color: var(--text-secondary);
   }
 
   /* REFLECT */

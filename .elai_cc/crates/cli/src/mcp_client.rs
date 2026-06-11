@@ -17,7 +17,35 @@ impl CliMcpClient {
 impl CliMcpClient {
     pub fn list_tools(&self) -> Result<Vec<String>, String> {
         use elai_plugins::mcp_bridge::{DefaultMcpBridge, McpToolSummary};
-        let bridge = DefaultMcpBridge::default();
+        // G-4: arm the HTTP-transport leg of the live MCP schema-pin / re-pin
+        // gate. With the workspace root installed (and ELAI_MCP_REPIN_DISABLE
+        // unset), http_list_tools pins the tool list on first connect and
+        // re-verifies on every reconnect re-fetch -- blocking fail-closed on a
+        // rug-pull / line-jump.
+        //
+        // WIRE-DARK[G-4-followup] SCOPE NOTE (honest scope, GD-5): this
+        // CliMcpClient::list_tools method currently has ZERO non-test callers
+        // (the live `--via-mcp` run lists tools through the STDIO transport via
+        // McpServerManager::discover_tools_best_effort, which is gated by
+        // crate::mcp_rugpull_gate, NOT through this HTTP bridge). It exists for
+        // the future co-process MCP-server tier (C-39 "CO-PROCESS-PENDING-
+        // FOLLOWUP"); when that tier lands, install the Ssb-bound
+        // OrchestratorRugPullSsbEmitter via
+        // DefaultMcpBridge::with_rug_pull_ssb_emitter here so this HTTP leg also
+        // emits the off-agent mcp_rug_pull_blocked row. The load-bearing G-4
+        // wiring on the REAL default path is the stdio gate; this is a dormant
+        // secondary surface, not a regression introduced by removing the prior
+        // synthetic dispatch-side bolt-on.
+        let bridge = match std::env::current_dir() {
+            Ok(root) => DefaultMcpBridge::default().with_schema_pin(root),
+            Err(e) => {
+                // No cwd resolvable: fall back to the un-armed bridge rather
+                // than fail the whole list (the gate degrades to off, not to a
+                // hard error on an unrelated I/O problem).
+                tracing::warn!(error = %e, "G-4: cannot resolve workspace root from cwd; re-pin gate not armed for this list_tools");
+                DefaultMcpBridge::default()
+            }
+        };
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

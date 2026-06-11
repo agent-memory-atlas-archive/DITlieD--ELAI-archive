@@ -57,6 +57,9 @@ use std::sync::Arc;
 
 use elai_ipc_types::{CodeActAction as IpcCodeActAction, ToolId, CODEACT_MAX_LINES};
 
+use elai_safety::provenance::Provenance;
+use elai_safety::taint_flow::tainted_context;
+
 use crate::ssb::{CodeactActionExecutedPayload, SsbActionType, SsbPayload};
 use crate::Ssb;
 
@@ -233,6 +236,21 @@ pub async fn execute_code_act(
             },
         }
     };
+
+    // G-1 INGEST: sandbox subprocess stdout is UNTRUSTED external content
+    // (an attacker who controls a fetched script or an injected tool can plant
+    // a destructive command in the captured stdout). Register the excerpt into
+    // the taint side-table keyed by its content so a later destructive sink
+    // whose argv derives from sandbox output is gated. Default-ON (W-2): no env
+    // gate guards the register; the kill-switch is at the sink. The sandbox id
+    // is derived from the action hash (stable per action) so the SSB origin is
+    // attributable. See workflow/reasoning/G-1-decisions.md.
+    if let CodeActOutcome::Executed { stdout_excerpt, .. } = &outcome {
+        if !stdout_excerpt.is_empty() {
+            let sandbox_id = format!("codeact-{:016x}", action_hash_of(action));
+            tainted_context().register(stdout_excerpt, Provenance::from_sandbox(sandbox_id));
+        }
+    }
 
     if let Some(ssb_writer) = ssb {
         let duration_ms = match &outcome {

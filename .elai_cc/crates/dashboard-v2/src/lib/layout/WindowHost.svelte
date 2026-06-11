@@ -19,6 +19,11 @@
   import GithubWindow from '../windows/GithubWindow.svelte';
   // E-40: orchestrator-rooted symbol-graph operator window.
   import SymbolGraphWindow from '../windows/SymbolGraphWindow.svelte';
+  // G-5: reviewer-cockpit Diff-Surface-to-Review (DSR) window.
+  import CockpitWindow from '../windows/CockpitWindow.svelte';
+  // H-10: sigma/WebGL codebase canvas — code graph + dead-code islands +
+  // PageRank hub overlay + semantic zoom + LOD.
+  import CanvasWindow from '../windows/CanvasWindow.svelte';
   import FallbackWindow from './FallbackWindow.svelte';
   // E-33: persistent activity ribbon + per-window mode footer.
   import ActivityRibbon from '../components/ActivityRibbon.svelte';
@@ -66,6 +71,8 @@
     explore: 'explore',
     github: 'github',
     symbol_graph: 'symbol-graph',
+    cockpit: 'cockpit',
+    canvas: 'canvas',
   };
   let scope = $derived(SCOPE_LABEL[type] ?? String(type));
 </script>
@@ -99,6 +106,10 @@
       <GithubWindow />
     {:else if type === 'symbol_graph'}
       <SymbolGraphWindow />
+    {:else if type === 'cockpit'}
+      <CockpitWindow />
+    {:else if type === 'canvas'}
+      <CanvasWindow />
     {:else}
       <FallbackWindow {type} />
     {/if}

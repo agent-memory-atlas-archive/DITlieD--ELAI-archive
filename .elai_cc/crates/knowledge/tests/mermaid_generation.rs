@@ -44,6 +44,9 @@ fn fixture(files: Vec<(&str, &str)>, edges: Vec<(&str, &str, bool)>) -> VizData 
                 // are gated by graphMode === "decomposition".
                 level: None,
                 status: None,
+                // H-10: dead-code fields; None in test fixtures.
+                is_dead_code: None,
+                coverage_count: None,
             })
             .collect(),
         file_edges: edges

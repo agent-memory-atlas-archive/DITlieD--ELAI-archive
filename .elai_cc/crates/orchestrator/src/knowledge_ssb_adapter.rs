@@ -17,14 +17,16 @@ use std::sync::Arc;
 use elai_knowledge::knowledge_ssb_sink::{
     DeepPoolCappedEvent, DkgRebuildCompleteEvent, DkgRebuildStartedEvent, HydeQueryEvent,
     HydeSkippedCodeQueryEvent, KnowledgeSsbSink, PagerankRunEvent, QueryTraceEvent,
-    RrfComponentWeightsEvent, RrfQualityGateFiredEvent, VectorCacheHitRateEvent,
+    RrfComponentWeightsEvent, RrfQualityGateFiredEvent, TreeSitterGrammarEvent,
+    TreeSitterGrammarEventKind, VectorCacheHitRateEvent,
 };
 use tracing::warn;
 
 use crate::ssb::{
     DeepPoolCappedPayload, DkgRebuildCompletePayload, DkgRebuildStartedPayload, HydeQueryPayload,
     HydeSkippedCodeQueryPayload, PagerankRunPayload, QueryTracePayload, RrfComponentWeightsPayload,
-    RrfQualityGateFiredPayload, Ssb, SsbPayload, VectorCacheHitRatePayload,
+    RrfQualityGateFiredPayload, Ssb, SsbPayload, TreeSitterGrammarEventKind as SsbTsKind,
+    TreeSitterGrammarEventPayload, VectorCacheHitRatePayload,
 };
 use crate::task_runner::{RUNNER_AGENT_ID, RUNNER_SUPERSTEP};
 
@@ -165,6 +167,42 @@ impl KnowledgeSsbSink for OrchestratorKnowledgeSsbSink {
             success: event.success,
             duration_ms: event.duration_ms,
             node_count: event.node_count,
+        });
+        self.dispatch_payload(payload);
+    }
+
+    fn emit_tree_sitter_grammar_event(&self, event: TreeSitterGrammarEvent) {
+        // Map knowledge-side kind enum to orchestrator-side SSB kind enum.
+        let ssb_kind = match event.kind {
+            TreeSitterGrammarEventKind::AbiProbeMismatch => SsbTsKind::AbiProbeMismatch,
+            TreeSitterGrammarEventKind::SvelteRunesParseHealth => {
+                SsbTsKind::SvelteRunesParseHealth
+            }
+            TreeSitterGrammarEventKind::TierBGrammarLoaded => SsbTsKind::TierBGrammarLoaded,
+            TreeSitterGrammarEventKind::TreeSitterSkippedLargeFile => {
+                SsbTsKind::TreeSitterSkippedLargeFile
+            }
+        };
+        // Build a minimal details_json from the optional free-form fields.
+        let details_json = {
+            let mut m = serde_json::Map::new();
+            if let Some(ref lid) = event.language_id {
+                m.insert("language_id".to_owned(), serde_json::Value::String(lid.clone()));
+            }
+            if let Some(ref d) = event.detail {
+                m.insert("detail".to_owned(), serde_json::Value::String(d.clone()));
+            }
+            serde_json::Value::Object(m)
+        };
+        let ts_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        let payload = SsbPayload::TreeSitterGrammarEvent(TreeSitterGrammarEventPayload {
+            kind: ssb_kind,
+            file: event.language_id.clone(),
+            details_json,
+            ts_ms,
         });
         self.dispatch_payload(payload);
     }

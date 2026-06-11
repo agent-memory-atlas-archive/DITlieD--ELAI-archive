@@ -4,7 +4,7 @@
 //
 // Surface-presence + round-trip assertions for the 6 new Tauri commands
 // (set_execution_mode, get_execution_mode, set_vram_budget, get_cloud_spend,
-// trigger_reindex, trigger_dep_audit), the new SsbPayload variant
+// reindex_now, trigger_dep_audit), the new SsbPayload variant
 // (ExecutionModeChanged), and the two DashboardState fields added by this
 // tier (execution_mode, vram_budget_mb). Pairs with tier4-settings-backend.mjs
 // on the frontend / invoke-handler side.
@@ -19,8 +19,8 @@
 //     design — D2-1 runtime-join precedent).
 
 use elai_dashboard_lib::commands::{
-    get_cloud_spend, get_execution_mode, set_execution_mode, set_vram_budget,
-    trigger_dep_audit, trigger_reindex, CloudSpendSnapshot, ProviderSpend,
+    get_cloud_spend, get_execution_mode, reindex_now, set_execution_mode, set_vram_budget,
+    trigger_dep_audit, CloudSpendSnapshot, ProviderSpend,
 };
 use elai_orchestrator::{ExecutionModeChangedPayload, SsbPayload};
 
@@ -33,7 +33,7 @@ fn tier4_command_symbols_are_callable() {
     let _ = &get_execution_mode;
     let _ = &set_vram_budget;
     let _ = &get_cloud_spend;
-    let _ = &trigger_reindex;
+    let _ = &reindex_now;
     let _ = &trigger_dep_audit;
 }
 

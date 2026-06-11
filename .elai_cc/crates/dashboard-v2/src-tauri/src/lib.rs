@@ -344,6 +344,117 @@ mod commands_f7;
 // (forensic opt-in); the read command is always live. cross-lang-pair:
 // dashboard/tauri/api.
 mod commands_f13;
+// G-4 / Slice A: McpRugPullDrawer (get_mcp_rug_pulls command). Reads
+// mcp_rug_pull_blocked rows emitted by the live MCP bridge re-pin gate
+// (DefaultMcpBridge::http_list_tools) when a reconnect re-fetch from a
+// previously-approved server no longer matches the blake3 schema pin. The
+// producer is DEFAULT-ON (kill-switch ELAI_MCP_REPIN_DISABLE only); the read
+// command is always live. cross-lang-pair: dashboard/tauri/api.
+mod commands_g4;
+// G-1 / Slice A: TaintFlowDrawer (get_taint_flows command). Reads taint_flow
+// rows emitted by the live data-plane taint gate (production_agent_rpc
+// git_commit / edit arms) when an untrusted ingest reaches a destructive sink
+// and the capability gate blocks it. The producer is DEFAULT-ON (kill-switch
+// ELAI_TAINT_PROPAGATE_DISABLE only); the read command is always live.
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_g1;
+// G-2 / Slice A: RraViewerPanel (get_run_artifact command). Reads
+// run_artifact_emitted rows emitted at the `elai run` exit when a Reproducible-
+// Run Artifact (.rra) bundle is sealed. The producer is DEFAULT-ON (kill-switch
+// ELAI_RRA_DISABLE only); the read command is always live.
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_g2;
+// G-3 / Slice A: BlastRadiusDrawer (get_blast_radius_blocks command). Reads
+// blast_radius_blocked rows emitted by the deterministic runtime blast-radius
+// gates (translate_tool_request / run_bash FS-escape arm + fetch_and_extract
+// egress arm) when a fail-closed gate refuses a post-expansion FS escape or a
+// denied egress host. The producer is DEFAULT-ON (kill-switch
+// ELAI_BLAST_RADIUS_DISABLE only); the read command is always live.
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_g3;
+// G-5 / Slice A: CockpitWindow (get_review_surface command). Reads
+// review_surface_scored rows emitted by `elai review --cockpit` (the reviewer-
+// cockpit Diff-Surface-to-Review DSR producer). The producer is DEFAULT-ON
+// (kill-switch ELAI_REVIEW_COCKPIT_DISABLE only); the read command is always
+// live. cross-lang-pair: dashboard/tauri/api.
+mod commands_g5;
+// G-8 / Slice A: AttestationDrawer (get_attestations command). Reads
+// provenance_attestation_emitted rows emitted at the `elai run` exit when a
+// signed in-toto v1 provenance attestation is built from the sealed G-2
+// Reproducible-Run Artifact. The producer is DEFAULT-ON (kill-switch
+// ELAI_ATTESTATION_DISABLE only); the read command is always live.
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_g8;
+// G-9 / Slice A: RedactionPanel (get_redaction_stats command). Reads
+// secret_redacted rows emitted by the write-time secret+PII redactor when it
+// fires on a typed SsbPayload free-text field. The producer is DEFAULT-ON
+// (redaction is always on); the read command is always live.
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_g9;
+// G-7 / Slice A: ConfidenceDrawer (get_claim_confidence + get_trifecta_quarantines
+// commands). Reads claim_confidence_scored rows (the REAL fused per-change
+// confidence feeding the conformal decision) + trifecta_quarantined rows (the
+// lethal-trifecta dual-LLM quarantine beacon). Always-live read commands.
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_g7;
+// G-6 / SCHEMA_VERSION 217: SafeDeltaPanel (get_safety_delta_latest command).
+// Reads the most recent safety_delta_measured flat-beacon row emitted by
+// `elai bench safedelta`. Surfaces the derived SAFEDELTA (gate-ON-vs-OFF
+// marginal residual rate) + 95% bootstrap CI + per-CWE delta + corpus_blake3 +
+// pinned seed + gate_recall + runpod_pending. The bench command IS the
+// entrypoint (W-2, no ELAI_*_ENABLE gate; Tier-2 dynamic arm is RunPod-gated).
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_g6;
+// G-10 / SCHEMA_VERSION 218: ModelDriftPanel (get_model_drift_status command).
+// Reads the most recent model_drift_suspected Pattern-2 beacon row emitted at
+// `elai run` exit or `elai model-drift check`. Surfaces identity_key + kind +
+// signals + per_family_delta + affected_template_ids + confirmed_by_fingerprint.
+// Default-ON (W-2); kill-switch ELAI_MODEL_DRIFT_DISABLE only. GD-5: cloud-lane
+// confirmed_by_fingerprint=false always (behavioral-suspected only). See
+// workflow/reasoning/G-10-decisions.md. cross-lang-pair: dashboard/tauri/api.
+mod commands_g10;
+// H-11 / SCHEMA_VERSION 220: scoped filesystem surface + canvas activity overlay read.
+// Four Tauri commands (read_dir / read_file / open_in_editor / mount_root) scoped to
+// project_root (canonicalize + reject out-of-root). One read command
+// (get_canvas_activity) for the canvasActivity.svelte.ts overlay subscriber. Security:
+// ALL path args canonicalized server-side; client cannot escape project_root.
+// cross-lang-pair: dashboard/tauri/api (stub.ts wrappers for all 5 commands).
+mod commands_h11;
+// H-13: canvas op stream (get_canvas_ops) + screenshot stub (capture_canvas_screenshot).
+// get_canvas_ops polls recent canvas_op_applied SSB rows for CanvasPanel.svelte.
+// capture_canvas_screenshot is a non-silent Tier-2 stub (stub-6 in stubs.md).
+// cross-lang-pair: stub.ts CanvasOpDto + get_canvas_ops + capture_canvas_screenshot.
+mod commands_h13;
+// H-14: design mode opaque-id resolution + recast writeback + dev-preview proxy.
+// apply_recast_patch: deterministic style/text patch (no model call; structural=stub-7).
+// resolve_oid: look up opaque data-oid -> {file, range, scope} via server-side OidMap.
+// start_dev_proxy / stop_dev_proxy: design preview proxy scaffold (live listener=stub-8).
+// cross-lang-pair: stub.ts DesignOidEntry + apply_recast_patch + resolve_oid + start/stop_dev_proxy.
+mod commands_h14;
+mod data_oid_tagger;
+mod dev_preview_proxy;
+mod recast_writeback;
+// H-15: canvas view reply channel (get_canvas_views) + taint-gated Select
+// (canvas_select_node) + StateCheckpoint emitter (emit_canvas_checkpoint).
+// get_canvas_views polls canvas_view_event SSB rows (SEPARATE drain from canvas_op_applied).
+// cross-lang-pair: stub.ts CanvasViewEventDto + get_canvas_views + canvas_select_node.
+mod commands_h15;
+// H-35: rewind_session -- session-state restore to a prior SSB seq.
+// cross-lang-pair: CommandWindow.svelte invoke("rewind_session") + this mod + generate_handler!.
+mod commands_h35;
+// H-49: time-travel undo/redo/history/jump + restore-files-only.
+// cross-lang-pair: BranchTree.svelte + CommandWindow.svelte + stub.ts + generate_handler!.
+mod commands_h49;
+// H-36: get_recent_notifications -- poll agent_notification_emitted SSB rows.
+// cross-lang-pair: NotificationManager.svelte poll + stub.ts + this mod + generate_handler!.
+mod commands_h36;
+// H-37: get_plan_approval_decisions -- poll plan_decision_event SSB rows.
+// cross-lang-pair: PlanApprovalCard.svelte + stub.ts + this mod + generate_handler!.
+mod commands_h37;
+// H-41: get_checker_gap_backlog + get_coverage_report -- H-41 checker-gap
+// instrument read surface. Polls checker_gap_detected + claim_routed SSB rows.
+// cross-lang-pair: CheckerCoveragePanel.svelte + types.ts + this mod + generate_handler!.
+mod commands_h41;
 mod media_validation;
 mod reflect_bridge;
 mod remote_sidecar_helpers;
@@ -433,6 +544,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // H-11 (SCHEMA_VERSION 220): scoped filesystem surface. Paired with the
+        // fs:allow-read-dir + fs:allow-read-text-file + fs:scope capability entries
+        // in default.json. NEVER granted fs:default (whole-disk).
+        .plugin(tauri_plugin_fs::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             // greeting
@@ -482,6 +597,9 @@ pub fn run() {
             // F-11 — config-DGM admit-loop feed (Admitted / RejectedByGuard /
             // LoopClosed rows from the darwin-loop four-guard chain).
             commands::get_darwinian_admits,
+            // H-46 — CMP parent-selection feed (CladeMetaproductivity /
+            // ImmediateScoreFallback rows from select_parent_with_cmp).
+            commands::get_clade_selections,
             commands::apply_proposal_from_user,
             commands::reject_proposal,
             commands::get_msi_status,
@@ -491,6 +609,8 @@ pub fn run() {
             commands::set_mcp_enabled,
             // KNOWLEDGE
             commands::get_query_trace_recent,
+            // B-4: HyDE hypothesis-preview feed for the QueryTrace inspector.
+            commands::get_hyde_query_recent,
             commands::get_search_mode,
             // C-8 Task #7: dashboard-originated SearchModeChanged emitter.
             commands::set_search_mode,
@@ -808,6 +928,12 @@ pub fn run() {
             // memory_conflict_detected rows filtered to
             // conflict_kind="semantic_contradiction").
             commands_e5::get_semantic_contradictions,
+            // H-33 (SCHEMA_VERSION 211) — governance mutation surface:
+            // forget (soft-close + Forgotten beacon), pin/unpin (Pinned/Unpinned
+            // beacons), and history-aware list for the "show superseded" toggle.
+            commands_e5::memory_forget,
+            commands_e5::memory_pin,
+            commands_e5::get_memory_facts_with_history,
             // E-1 dashboard slice — CHAT-MEMORY (MemoryNotes + CoreBlock)
             // read-only surface for the Svelte MemoryNotesPanel. Producer
             // wiring (NoteStore::insert + CoreBlockStore::upsert emitters
@@ -930,6 +1056,7 @@ pub fn run() {
             // modules; this surface validates + dispatches. ssb_resume_from
             // is FAIL-CLOSED on C-44/D-9 locked_keys_auditor.
             commands_e29::ssb_transcript,
+            commands_e29::ssb_transcript_paged,
             commands_e29::ssb_resume_from,
             commands_e29::ssb_promote_to_dataset,
             commands_e29::ssb_backfill_signals,
@@ -983,6 +1110,10 @@ pub fn run() {
             commands_e46::get_dual_ledger_state,
             commands_e46::get_recent_agentless_shortcuts,
             commands_e46::get_goal_drift_status,
+            // D-7: entropy histogram — last N `low_entropy_decomposition` rows
+            // from the planning_decomposition_event SSB stream. Wire-dark unless
+            // ELAI_PLANNING_DECOMPOSITION_ENABLE=1. DrawerKey: decomposition-entropy.
+            commands_e46::get_entropy_history,
             // D-26 — ReasoningTemplate archive dashboard composite surface.
             // get_archive_lineage walks the D-1 chain backwards from a
             // template id; get_template_archive_combined fuses archive +
@@ -1006,6 +1137,12 @@ pub fn run() {
             // SSB rows for the SycophancyFlagStrip inline widget. Pure
             // read projection; producer is the D-14 sycophancy module.
             commands_d27::get_sycophancy_flags_recent,
+            // D-27.1 (SCHEMA_VERSION 209) — discovery-queue reviewer actions.
+            // ratify_discovery emits DiscoveryRatifiedPayload; reject_discovery
+            // emits DiscoveryRejectedPayload. Both require non-empty reviewer_id.
+            // Prod entrypoints for SsbActionType::DiscoveryRatified / DiscoveryRejected.
+            commands_d27::ratify_discovery,
+            commands_d27::reject_discovery,
             // E-24 -- MCP bridge hardening status surface.
             commands::get_mcp_security_status,
             // E-51 -- Runtime capability probe (MLX / LlamaCpp platform detect).
@@ -1100,6 +1237,14 @@ pub fn run() {
             // PATH miss. cross-lang-pair: dashboard/tauri/api
             commands::get_framework_profile,
             commands::run_production_checklist,
+            // E-47: LoRA ship-gate status panel surface (read-only).
+            // Reads lora_ship_gate_event SSB rows via viewer.recent_rows_of_type.
+            // Wire-dark unless ELAI_LORA_SHIP_GATE_ENABLE=1 on the orchestrator
+            // side -- returns the wire_dark envelope when no rows exist.
+            // Intentionally no Enable command; flip requires editing
+            // .elai_cc/elai_cc.toml per workflow/decisions/E-47-flip-runbook.md.
+            // cross-lang-pair: dashboard/tauri/api
+            commands::get_lora_ship_gate_status,
             // E-10: hostile-critic structural simplifications panel surface.
             commands_e10::get_critic_decision_state,
             // E-38: 2026 AI roadmap signals + EU AI Act compliance panel.
@@ -1156,6 +1301,97 @@ pub fn run() {
             // read command always queries the SSB viewer for session_archived
             // rows (cold-archived stale-version stores).
             commands_f13::get_session_archives,
+            // G-4 / Slice A: McpRugPullDrawer feed. Always-live read of the
+            // mcp_rug_pull_blocked rows the live re-pin gate emits. cross-lang-
+            // pair: dashboard/tauri/api.
+            commands_g4::get_mcp_rug_pulls,
+            // G-1 / Slice A: TaintFlowDrawer feed. Always-live read of the
+            // taint_flow rows the live data-plane taint gate emits. cross-lang-
+            // pair: dashboard/tauri/api.
+            commands_g1::get_taint_flows,
+            // G-2 / Slice A: RraViewerPanel feed. Always-live read of the
+            // run_artifact_emitted rows the `elai run` exit seals. cross-lang-
+            // pair: dashboard/tauri/api.
+            commands_g2::get_run_artifact,
+            // G-3 / Slice A: BlastRadiusDrawer feed. Always-live read of the
+            // blast_radius_blocked rows the deterministic FS-escape + egress
+            // gates emit. cross-lang-pair: dashboard/tauri/api.
+            commands_g3::get_blast_radius_blocks,
+            // G-5 / Slice A: CockpitWindow feed. Always-live read of the
+            // review_surface_scored rows the `elai review --cockpit` DSR
+            // producer emits. cross-lang-pair: dashboard/tauri/api.
+            commands_g5::get_review_surface,
+            // G-8 / Slice A: AttestationDrawer feed. Always-live read of the
+            // provenance_attestation_emitted rows the `elai run` exit seals when
+            // a signed in-toto attestation is built. cross-lang-pair:
+            // dashboard/tauri/api.
+            commands_g8::get_attestations,
+            // G-9 / Slice A: RedactionPanel feed. Always-live read of the
+            // secret_redacted advisory rows the write-time redactor emits when a
+            // free-text field is scrubbed. cross-lang-pair: dashboard/tauri/api.
+            commands_g9::get_redaction_stats,
+            // G-7 / Slice A: ConfidenceDrawer feed. Always-live reads of the
+            // claim_confidence_scored rows (REAL fused per-change confidence) +
+            // the trifecta_quarantined rows (lethal-trifecta dual-LLM quarantine).
+            // cross-lang-pair: dashboard/tauri/api.
+            commands_g7::get_claim_confidence,
+            commands_g7::get_trifecta_quarantines,
+            // G-6 (SCHEMA_VERSION 217): safety_delta_measured rows from `elai bench safedelta`.
+            // Surfaces the derived SAFEDELTA + 95% CI + per-CWE + corpus_blake3 + runpod_pending.
+            // cross-lang-pair: dashboard/tauri/api.
+            commands_g6::get_safety_delta_latest,
+            // G-10 (SCHEMA_VERSION 218): model_drift_suspected rows from `elai run` exit or
+            // `elai model-drift check`. Surfaces identity_key + drift kind + signals +
+            // per-family delta + affected template ids + fingerprint-confirmed/behavioral badge.
+            // Default-ON (W-2); ELAI_MODEL_DRIFT_DISABLE kill-switch only. cross-lang-pair:
+            // dashboard/tauri/api.
+            commands_g10::get_model_drift_status,
+            // H-11 (SCHEMA_VERSION 220): scoped filesystem surface + canvas activity read.
+            // read_dir / read_file: list + read project files scoped to project_root.
+            // open_in_editor: shell-out to system editor (scoped, non-blocking).
+            // mount_root: register additional workspace root (multi-root support).
+            // get_canvas_activity: poll recent CanvasActivityEvent SSB rows for the
+            // canvasActivity.svelte.ts overlay subscriber. All paths canonicalized +
+            // scope-checked server-side. cross-lang-pair: dashboard/tauri/api.
+            commands_h11::read_dir,
+            commands_h11::read_file,
+            commands_h11::open_in_editor,
+            commands_h11::mount_root,
+            commands_h11::get_canvas_activity,
+            // H-13: canvas op stream + screenshot stub. cross-lang-pair: stub.ts.
+            commands_h13::get_canvas_ops,
+            commands_h13::capture_canvas_screenshot,
+            // H-14: design mode opaque-id resolution + recast writeback + proxy scaffold.
+            // cross-lang-pair: stub.ts DesignOidEntry + apply_recast_patch + resolve_oid.
+            commands_h14::resolve_oid,
+            commands_h14::apply_recast_patch,
+            commands_h14::start_dev_proxy,
+            commands_h14::stop_dev_proxy,
+            // H-15: canvas view reply channel + taint-gated Select + StateCheckpoint.
+            // cross-lang-pair: stub.ts CanvasViewEventDto + get_canvas_views + canvas_select_node.
+            commands_h15::get_canvas_views,
+            commands_h15::canvas_select_node,
+            commands_h15::emit_canvas_checkpoint,
+            // H-35: session-rewind restore command.
+            // cross-lang-pair: CommandWindow.svelte invoke("rewind_session").
+            commands_h35::rewind_session,
+            // H-49: time-travel undo/redo/history/jump + restore-files-only.
+            // cross-lang-pair: BranchTree.svelte + CommandWindow.svelte + stub.ts.
+            commands_h49::timetravel_undo,
+            commands_h49::timetravel_redo,
+            commands_h49::timetravel_jump,
+            commands_h49::timetravel_history,
+            commands_h49::timetravel_restore_files_only,
+            // H-36: poll recent agent_notification_emitted rows.
+            // cross-lang-pair: NotificationManager.svelte + stub.ts.
+            commands_h36::get_recent_notifications,
+            // H-37: poll plan_decision_event rows for the PlanApprovalCard.
+            // cross-lang-pair: PlanApprovalCard.svelte + stub.ts.
+            commands_h37::get_plan_approval_decisions,
+            // H-41: checker-gap backlog + Mode-A coverage for CheckerCoveragePanel.
+            // cross-lang-pair: CheckerCoveragePanel.svelte + types.ts.
+            commands_h41::get_checker_gap_backlog,
+            commands_h41::get_coverage_report,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the
@@ -1342,7 +1578,11 @@ pub fn run() {
                                                     )
                                                     .with_system_prompt(
                                                         elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
-                                                    ),
+                                                    )
+                                                    // G-1 (s-56068 fix B1): wire the live SSB so the
+                                                    // taint-flow gate emits its off-agent
+                                                    // SsbPayload::TaintFlow row on a blocked sink flow.
+                                                    .with_ssb(wiring.ssb.clone()),
                                                 )
                                             }
                                             Err(e) => {
@@ -1433,7 +1673,11 @@ pub fn run() {
                                             )
                                             .with_system_prompt(
                                                 elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
-                                            ),
+                                            )
+                                            // G-1 (s-56068 fix B1): wire the live SSB so the
+                                            // taint-flow gate emits its off-agent
+                                            // SsbPayload::TaintFlow row on a blocked sink flow.
+                                            .with_ssb(wiring.ssb.clone()),
                                         )
                                     };
                                     let executor =
@@ -1502,13 +1746,78 @@ pub fn run() {
                         // F-9 / Slice D3 — project_root threaded in so the
                         // DepWriteTimeGate resolves registry_check.py via
                         // SubprocessRegistryChecker::default_at_root.
+                        // H-38 BLOCK-1: dashboard runs headless (no CLI gate);
+                        // interactive_gate is None so stop-cost gate defaults to HOLD.
                         wiring.hook_dispatcher = Some(
                             elai_orchestrator::runtime_setup::build_production_hook_dispatcher(
                                 wiring.ssb.clone(),
                                 wiring.vibegate_seed_ok,
                                 &project_root,
+                                wiring.interactive_gate.clone(),
                             ),
                         );
+
+                        // B-28 WIRING-2 (item E2-DIFF) — install the production
+                        // buffer editor so the focus-tunnel DIFF branch applies
+                        // parsed hunks through the real 3-tier matcher instead of
+                        // falling back to STRUCTURED. The only production
+                        // BufferEditor impl is InProcessToolDispatcher (the
+                        // dashboard cannot depend on the CLI crate, so this
+                        // mirrors `install_buffer_editor` from runtime_builder.rs
+                        // inline). Standalone instance dedicated to hunk
+                        // application: apply_edits_to_buffer never touches the
+                        // TieredValidator, so the integration runner is a NoOp.
+                        // Independent of the agent-pool path above (DIFF must work
+                        // even when the agent binary is absent). Threaded onto
+                        // TaskRunnerConfig by apply_task_runner_wiring below.
+                        {
+                            struct DiffNoOpIntegrationRunner;
+                            impl elai_tools::tiered_validation::IntegrationCommandRunner
+                                for DiffNoOpIntegrationRunner
+                            {
+                                fn run_integration<'a>(
+                                    &'a self,
+                                    _level: &'a str,
+                                    _dir: &'a std::path::Path,
+                                ) -> std::pin::Pin<
+                                    Box<
+                                        dyn std::future::Future<
+                                                Output = elai_tools::tiered_validation::IntegrationRunOutcome,
+                                            > + Send
+                                            + 'a,
+                                    >,
+                                > {
+                                    Box::pin(async {
+                                        elai_tools::tiered_validation::IntegrationRunOutcome {
+                                            passed: false,
+                                            rules_fired: 0,
+                                            stderr_snippet: Some(
+                                                "integration tier not used on the buffer-editor \
+                                                 DIFF path (DiffNoOpIntegrationRunner)"
+                                                    .to_string(),
+                                            ),
+                                        }
+                                    })
+                                }
+                            }
+                            let validator = elai_tools::dispatcher::default_validator(
+                                std::sync::Arc::new(DiffNoOpIntegrationRunner),
+                                "rust",
+                            );
+                            let editor: std::sync::Arc<
+                                dyn elai_orchestrator::focus_tunnel::BufferEditor,
+                            > = std::sync::Arc::new(
+                                elai_tools::dispatcher::InProcessToolDispatcher::new(
+                                    std::sync::Arc::new(validator),
+                                ),
+                            );
+                            wiring.buffer_editor = Some(editor);
+                            tracing::info!(
+                                "dashboard-v2: B-28 production InProcessToolDispatcher \
+                                 buffer_editor installed; focus-tunnel DIFF branch will apply \
+                                 hunks through the 3-tier matcher"
+                            );
+                        }
 
                         let cfg = elai_orchestrator::apply_task_runner_wiring(
                             cursor_path,

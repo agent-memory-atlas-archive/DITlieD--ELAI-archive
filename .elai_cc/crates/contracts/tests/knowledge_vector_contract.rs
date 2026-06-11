@@ -30,7 +30,7 @@ fn _assert_vector_cache_api(cache: &VectorCache) {
     let code = vec![0.0f32; CODE_VEC_DIM];
     let text = vec![0.0f32; TEXT_VEC_DIM];
     let dv = DualVector::new(code, text).unwrap();
-    let _: Result<(), CacheError> = cache.insert(&hash, &dv, 0);
+    let _: Result<(), CacheError> = cache.insert(&hash, "src/contract.rs", &dv, 0);
     let _: Result<Option<DualVector>, CacheError> = cache.lookup(&hash);
     let _: Result<usize, CacheError> = cache.invalidate_keys(&[&hash[..]]);
     let _: Result<usize, CacheError> = cache.invalidate_file("path");
@@ -102,7 +102,7 @@ fn test_query_returns_dual_vector_results() {
     let dv = DualVector::new(code.clone(), text.clone()).unwrap();
 
     let hash = VectorCache::content_hash(b"fn example() { /* hybrid query target */ }");
-    cache.insert(&hash, &dv, 1700000000).unwrap();
+    cache.insert(&hash, "src/example.rs", &dv, 1700000000).unwrap();
 
     let found = cache.lookup(&hash).unwrap().expect("cache should return stored entry");
     // Both vectors must be populated (contract for hybrid search)
@@ -132,7 +132,7 @@ fn test_query_project_isolation() {
     let text = vec![2.0f32; TEXT_VEC_DIM];
     let dv = DualVector::new(code, text).unwrap();
     let hash = VectorCache::content_hash(b"fn project_a_only() {}");
-    cache_a.insert(&hash, &dv, 1700000000).unwrap();
+    cache_a.insert(&hash, "src/project_a.rs", &dv, 1700000000).unwrap();
 
     // Verify project A can find it
     let found_a = cache_a.lookup(&hash).unwrap();

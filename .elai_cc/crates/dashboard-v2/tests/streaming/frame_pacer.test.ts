@@ -164,3 +164,40 @@ test('pickCps returns 60 for code (markdown fence) and 100 for prose', () => {
   assert.equal(pickCps('```rust\nfn main() {}'), 60);
   assert.equal(pickCps('plain prose with no fences'), 100);
 });
+
+test('subscriber renders are monotonically non-decreasing and never drop chars', () => {
+  // E-2: cadence-correctness invariant. The cumulative rendered string must
+  // only ever grow (a streaming bubble that shrinks would flicker). Drive a
+  // bursty enqueue and assert every subscriber callback sees a string that
+  // starts with the previous one (prefix-stable) and is >= its length.
+  const mock = makeMockRaf();
+  const pacer = new FramePacer({
+    cps: 80,
+    rafSource: mock.raf,
+    cancelRafSource: mock.cancelRaf,
+    nowSource: mock.now,
+  });
+  const renders: string[] = [];
+  pacer.subscribe((r) => { renders.push(r); });
+  pacer.enqueue('the quick brown fox jumps over the lazy dog');
+  mock.advance(0);
+  for (let i = 0; i < 20; i++) {
+    mock.advance(50);
+  }
+  // Final flush drains any tail.
+  pacer.flush();
+  for (let i = 1; i < renders.length; i++) {
+    const prev = renders[i - 1];
+    const cur = renders[i];
+    assert.ok(
+      cur.length >= prev.length,
+      `render ${i} shrank: ${prev.length} -> ${cur.length}`,
+    );
+    assert.ok(
+      cur.startsWith(prev),
+      `render ${i} is not prefix-stable: "${prev}" !~> "${cur}"`,
+    );
+  }
+  // The full input must have rendered after flush.
+  assert.equal(pacer.getRendered(), 'the quick brown fox jumps over the lazy dog');
+});

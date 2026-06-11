@@ -1,0 +1,23 @@
+# E-40 Task 2 (Tranche B-3) — Go push/pop scope rules.
+# Design adoption of arXiv:2211.01224 (Stack Graphs); no runtime dep.
+language = "go"
+
+# Go has no re-export construct (identifiers are exported by capitalization
+# and consumed via fully-qualified `pkg.Name`), so follow_reexports is
+# false. Resolution: block/function locals (Local), package-level
+# identifiers in the same file (File), other files of the SAME package
+# directory (Module — Go packages are directories, so same-dir files are
+# one package), and imported packages (Crate). There is no CrossFile
+# re-export tier in idiomatic Go; cross-package names land at Crate.
+allowed_boundaries = ["local", "file", "module", "crate"]
+
+module_separator = "/"
+
+# A Go package is a directory; every .go file in the same directory is the
+# same package. The same-parent path check already captures this, so no
+# filename marker is needed (empty list => same-parent files are siblings).
+same_module_markers = []
+
+# Go has no `export ... from` re-export; cross-package access is always a
+# qualified import, modelled as a Crate boundary, not a CrossFile join.
+follow_reexports = false

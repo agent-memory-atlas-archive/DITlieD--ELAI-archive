@@ -34,6 +34,7 @@ use elai_knowledge::index_version::{check_and_upgrade, LogNotifier};
 
 use elai_core::paths::{
     dkg_db_path as core_dkg_db_path, models_dir_path as core_models_dir_path,
+    vector_cache_db_path as core_vector_cache_db_path,
     vectors_db_path as core_vectors_db_path,
 };
 
@@ -59,6 +60,10 @@ impl LiveCli {
         session_id: &str,
         clock: &Arc<dyn ClockProvider>,
         ssb: Option<Arc<elai_orchestrator::Ssb>>,
+        // 1I-R1: shared live SearchMode the cascade evaluator loop writes each
+        // tick so the per-query path can read+apply it. Cloned into the spawned
+        // loop; the caller keeps a clone on the LiveCli.
+        search_mode_shared: Arc<std::sync::Mutex<elai_knowledge::degradation::SearchMode>>,
     ) -> (Option<QueryPipeline>, Option<IndexingService>) {
         let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
@@ -224,6 +229,70 @@ impl LiveCli {
                         eprintln!("info: code_vec secondary index enabled (has_code_index={})", indexer.has_code_index());
                     }
                     pipeline.vector_indexer = Some(indexer);
+
+                    // 1C-R2: construct + install the on-disk dual-vector cache.
+                    // This is the production wiring that clears the wire-dark
+                    // VectorCache: with the cache installed, the file-write ->
+                    // re-index path in `live_cli::notify_file_changed` calls
+                    // `VectorIndexer::index_file(.., Some(cache))`, which runs
+                    // `VectorCache::invalidate_file` (evict stale embeddings for
+                    // the rewritten file) + `insert` (cache fresh dual-vectors).
+                    // Default-on: threading a cache is behaviour-preserving for
+                    // retrieval (identical results, only freshness/embedding-reuse
+                    // improves), so it is unconditional rather than gated behind a
+                    // default-OFF flag (a default-OFF cache flag would re-create
+                    // the wire-dark condition per wiring-enforcement R9).
+                    //
+                    // The cache is opened only when embeddings are available
+                    // (inside `vector_module.is_some()`); a cache without an
+                    // embedder would never be read or written.
+                    let cache_path = core_vector_cache_db_path(&project_root);
+                    if let Some(parent) = cache_path.parent() {
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            tracing::warn!(
+                                path = %parent.display(),
+                                error = %e,
+                                "1C-R2: failed to create indexes dir for vector cache (cache disabled this run)"
+                            );
+                        }
+                    }
+                    // C-1: install the same typed knowledge SSB sink used for
+                    // the pipeline so the cache's per-query hit-rate flush
+                    // (`flush_hit_rate_ssb`, called from `query_with_tier`)
+                    // reaches the dashboard. Falls back to the noop sink when
+                    // no Ssb writer is available (cold-start dashboard).
+                    let cache_sink: Arc<
+                        dyn elai_knowledge::knowledge_ssb_sink::KnowledgeSsbSink,
+                    > = match ssb.as_ref() {
+                        Some(ssb_arc) => Arc::new(
+                            elai_orchestrator::OrchestratorKnowledgeSsbSink::new(
+                                ssb_arc.clone(),
+                            ),
+                        ),
+                        None => elai_knowledge::knowledge_ssb_sink::noop_sink(),
+                    };
+                    match elai_knowledge::vector::cache::VectorCache::open_with_ssb(
+                        &cache_path,
+                        cache_sink,
+                    ) {
+                        Ok(cache) => {
+                            pipeline = pipeline.with_vector_cache(Arc::new(cache));
+                            tracing::info!(
+                                path = %cache_path.display(),
+                                "1C-R2: vector embedding cache installed (re-index eviction live)"
+                            );
+                        }
+                        Err(e) => {
+                            // Non-fatal: indexing still works without the cache
+                            // (every chunk re-embeds), it just loses the
+                            // eviction/reuse optimisation for this run.
+                            tracing::warn!(
+                                path = %cache_path.display(),
+                                error = %e,
+                                "1C-R2: vector cache open failed; re-indexing without cache this run"
+                            );
+                        }
+                    }
                 }
 
                 // Attach cross-encoder reranker (graceful degradation).
@@ -497,6 +566,12 @@ impl LiveCli {
                 if let Some(ref ssb_arc) = ssb {
                     let ssb_for_loop = ssb_arc.clone();
                     let initial_mode = cascade.current_mode();
+                    // 1I-R1: seed the shared mode with the post-startup mode and
+                    // hand the loop a clone to update each tick.
+                    if let Ok(mut m) = search_mode_shared.lock() {
+                        *m = initial_mode;
+                    }
+                    let _mode_handle = search_mode_shared.clone();
                     tokio::spawn(async move {
                         spawn_cascade_evaluator_loop(ssb_for_loop, initial_mode).await;
                     });

@@ -266,6 +266,7 @@ fn is_task_after_cutoff_strict_inequality() {
         eligibility_window_ms: 0,
         ngram_signature: Vec::new(),
         body: "alpha beta gamma delta epsilon zeta eta theta iota kappa".into(),
+        template_id: None,
     };
     assert!(is_task_after_cutoff(&task_after, &cutoff));
 
@@ -279,6 +280,7 @@ fn is_task_after_cutoff_strict_inequality() {
         eligibility_window_ms: 0,
         ngram_signature: Vec::new(),
         body: "alpha beta gamma delta epsilon zeta eta theta iota kappa".into(),
+        template_id: None,
     };
     assert!(!is_task_after_cutoff(&task_at, &cutoff));
 
@@ -296,6 +298,7 @@ fn is_task_after_cutoff_strict_inequality() {
         eligibility_window_ms: 0,
         ngram_signature: Vec::new(),
         body: "alpha beta gamma delta epsilon zeta eta theta iota kappa".into(),
+        template_id: None,
     };
     assert!(is_task_after_cutoff(&task_arxiv_after, &cutoff));
 }

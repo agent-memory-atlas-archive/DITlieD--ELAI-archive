@@ -49,10 +49,11 @@ fn decay_tick_updates_and_emits_stats() {
         superseded_by: None,
         trust_tier: TrustTier::T1CodebaseDerived,
         provenance: Provenance::codebase_derived("test"),
+        last_validated_at_ms: None,
     };
     store.insert(&f).expect("insert");
 
-    let stats = decay_tick(&store, t_now).expect("decay_tick");
+    let stats = decay_tick(&store, &std::collections::HashSet::new(), t_now).expect("decay_tick");
     assert_eq!(stats.rows_examined, 1);
     assert_eq!(stats.rows_updated, 1, "row must have been updated");
     assert!(stats.mean_trust_score > 0.73 && stats.mean_trust_score < 0.75);

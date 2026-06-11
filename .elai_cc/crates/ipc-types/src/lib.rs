@@ -984,6 +984,207 @@ pub const TOOL_XGRAMMAR_INFER: &str = "xgrammar_infer";
 pub const TOOL_CODEACT_EXEC: &str = "codeact_exec";
 
 // ---------------------------------------------------------------------------
+// H-13 canvas op tools (model drives the canvas)
+// ---------------------------------------------------------------------------
+
+/// Place (create) a new node on the canvas at the given coordinates.
+pub const TOOL_CANVAS_CREATE_NODE: &str = "canvas_create_node";
+
+/// Connect two existing nodes with a directed edge.
+pub const TOOL_CANVAS_CONNECT: &str = "canvas_connect";
+
+/// Update the label, metadata, or position of an existing canvas node.
+pub const TOOL_CANVAS_UPDATE_NODE: &str = "canvas_update_node";
+
+/// Add a text annotation anchored to a node or a free canvas position.
+pub const TOOL_CANVAS_ANNOTATE: &str = "canvas_annotate";
+
+/// Fork an existing node into a new sibling node sharing the same parent edges.
+pub const TOOL_CANVAS_FORK: &str = "canvas_fork";
+
+/// Render the current canvas graph as a Mermaid/architecture diagram
+/// (ARCHITECTURE mode); emits CanvasOpKind::LayoutChanged rows.
+pub const TOOL_CANVAS_RENDER_DIAGRAM: &str = "canvas_render_diagram";
+
+/// Capture the canvas as a PNG and route to the shipped media_validator Tier2.
+pub const TOOL_CANVAS_SCREENSHOT: &str = "canvas_screenshot";
+
+// ---------------------------------------------------------------------------
+// H-15 canvas spawn_view tool
+// ---------------------------------------------------------------------------
+
+/// Spawn a new canvas view with the given view_type and seed ops.
+/// view_type selects a registered renderer (e.g. "comparison_board").
+/// seed_ops are canvas_op_applied op_ids that bootstrap the view's initial graph.
+/// Emits a CanvasViewEvent(ViewSpawned) SSB row. Gated behind
+/// ELAI_CANVAS_SPAWN_ENABLE (default: text-unless-confidence-clears per GD-4).
+pub const TOOL_CANVAS_SPAWN_VIEW: &str = "canvas_spawn_view";
+
+/// Request for `canvas_spawn_view` — spawn a new canvas view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasSpawnViewRequest {
+    /// Renderer key selecting the view component (e.g. "comparison_board").
+    /// Must be a registered view_type in the renderer registry.
+    pub view_type: String,
+    /// Op ids (canvas_op_applied) to seed the view's initial graph state.
+    /// May be empty (spawns a blank view).
+    pub seed_ops: Vec<String>,
+    /// Canvas mode at spawn time.
+    pub mode: String,
+    /// Task id for SSB tracing.
+    pub task_id: String,
+}
+
+/// Response from `canvas_spawn_view`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasSpawnViewResponse {
+    /// Stable view instance identifier (used for per-tab SSB polling).
+    pub view_id: String,
+    /// Renderer view_type echo.
+    pub view_type: String,
+    /// Number of seed ops applied.
+    pub seed_op_count: usize,
+    /// Echo of the triggering task_id.
+    pub task_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// H-13 canvas op request/response wire structs.
+// Field names MUST match the JSON input_schema in production_agent_rpc.rs
+// build_tool_catalog() for the 3-arm pattern to round-trip correctly.
+// All structs postcard-serializable for the convert->dispatch arms.
+// ---------------------------------------------------------------------------
+
+/// Request for `canvas_create_node` — create a new node on the active canvas.
+/// NOTE: Optional fields use `#[serde(default)]` only (no skip_serializing_if)
+/// to ensure postcard round-trip compatibility (postcard requires fixed-width
+/// Option discriminants; skip_serializing_if would omit None bytes).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasCreateNodeRequest {
+    /// Unique node id chosen by the model (must not already exist in the graph).
+    pub node_id: String,
+    /// Human-readable label shown on the canvas node.
+    pub label: String,
+    /// Canvas mode namespace; must match the active mode (e.g. "arch", "code").
+    pub mode: String,
+    /// Optional x-coordinate hint (0.0-1.0 normalised canvas space).
+    #[serde(default)]
+    pub x: Option<f64>,
+    /// Optional y-coordinate hint (0.0-1.0 normalised canvas space).
+    #[serde(default)]
+    pub y: Option<f64>,
+    /// Arbitrary metadata (node type, colour, etc). JSON-encoded object string or null.
+    #[serde(default)]
+    pub meta: Option<String>,
+    /// Task id that triggered this op (for SSB tracing).
+    pub task_id: String,
+}
+
+/// Request for `canvas_connect` — add a directed edge between two existing nodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasConnectRequest {
+    /// Source node id (must exist in the graph).
+    pub from_id: String,
+    /// Target node id (must exist in the graph).
+    pub to_id: String,
+    /// Optional edge label.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Canvas mode namespace.
+    pub mode: String,
+    /// Task id for SSB tracing.
+    pub task_id: String,
+}
+
+/// Request for `canvas_update_node` — update the label or metadata of an existing node.
+/// NOTE: Optional fields use `#[serde(default)]` only for postcard compatibility.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasUpdateNodeRequest {
+    /// Id of the node to update (must exist in the graph).
+    pub node_id: String,
+    /// New label; if omitted the label is unchanged.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Metadata patch (JSON-encoded string); merged into existing meta.
+    #[serde(default)]
+    pub meta: Option<String>,
+    /// Canvas mode namespace.
+    pub mode: String,
+    /// Task id for SSB tracing.
+    pub task_id: String,
+}
+
+/// Request for `canvas_annotate` — add a text annotation to the canvas.
+/// NOTE: Optional fields use `#[serde(default)]` only for postcard compatibility.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasAnnotateRequest {
+    /// Annotation text.
+    pub text: String,
+    /// Node id to anchor the annotation to; null for free-floating.
+    #[serde(default)]
+    pub anchor_node_id: Option<String>,
+    /// Canvas mode namespace.
+    pub mode: String,
+    /// Task id for SSB tracing.
+    pub task_id: String,
+}
+
+/// Request for `canvas_fork` — fork an existing node into a sibling.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasForkRequest {
+    /// Id of the node to fork (must exist in the graph).
+    pub source_node_id: String,
+    /// Id for the new forked node (must not already exist).
+    pub new_node_id: String,
+    /// Label for the new forked node.
+    pub label: String,
+    /// Canvas mode namespace.
+    pub mode: String,
+    /// Task id for SSB tracing.
+    pub task_id: String,
+}
+
+/// Request for `canvas_render_diagram` — emit structured nodes/edges for an
+/// architecture diagram via the ARCHITECTURE mode canvas.
+/// Reuses the server-side `export_graph_mermaid` path for layout data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasRenderDiagramRequest {
+    /// Graph render mode passed to `export_graph_mermaid` (e.g. "symbol", "file").
+    pub graph_mode: String,
+    /// Maximum nodes to render; server-side default applied when None.
+    #[serde(default)]
+    pub max_nodes: Option<u32>,
+    /// Canvas mode (must be "arch").
+    pub mode: String,
+    /// Task id for SSB tracing.
+    pub task_id: String,
+}
+
+/// Request for `canvas_screenshot` — capture the canvas WebGL surface as PNG
+/// and route to the shipped media_validator Tier2 for VLM scoring.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasScreenshotRequest {
+    /// Canvas mode namespace at capture time.
+    pub mode: String,
+    /// Task id for SSB tracing and media_validator correlation.
+    pub task_id: String,
+}
+
+/// Uniform response returned by all canvas op tool arms.
+/// The `op_id` is a stable identifier for the emitted SSB row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasOpResponse {
+    /// Unique id for this canvas op SSB row.
+    pub op_id: String,
+    /// Snake-case wire name of the op kind (e.g. "node_created").
+    pub kind: String,
+    /// Canvas mode at the time the op was applied.
+    pub mode: String,
+    /// Echo of the triggering task_id.
+    pub task_id: String,
+}
+
+// ---------------------------------------------------------------------------
 // E-35 / SearchReplace tier-1 typed action shapes.
 // The full matcher + DelimiterCollisionGuard implementation lives in
 // crates/tools/src/search_replace.rs (this crate stays IPC-only).
@@ -1110,5 +1311,17 @@ mod e35_tests {
     fn well_known_tool_ids_stable() {
         assert_eq!(TOOL_XGRAMMAR_INFER, "xgrammar_infer");
         assert_eq!(TOOL_CODEACT_EXEC, "codeact_exec");
+    }
+
+    // H-13 canvas tool id stability.
+    #[test]
+    fn h13_canvas_tool_ids_stable() {
+        assert_eq!(TOOL_CANVAS_CREATE_NODE, "canvas_create_node");
+        assert_eq!(TOOL_CANVAS_CONNECT, "canvas_connect");
+        assert_eq!(TOOL_CANVAS_UPDATE_NODE, "canvas_update_node");
+        assert_eq!(TOOL_CANVAS_ANNOTATE, "canvas_annotate");
+        assert_eq!(TOOL_CANVAS_FORK, "canvas_fork");
+        assert_eq!(TOOL_CANVAS_RENDER_DIAGRAM, "canvas_render_diagram");
+        assert_eq!(TOOL_CANVAS_SCREENSHOT, "canvas_screenshot");
     }
 }

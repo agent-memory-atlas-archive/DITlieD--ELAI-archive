@@ -1,0 +1,25 @@
+{
+  "tools": [
+    {
+      "name": "send_email",
+      "description": "Send an email to a recipient",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": { "type": "string" },
+          "body": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "search",
+      "description": "Search the web",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "q": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

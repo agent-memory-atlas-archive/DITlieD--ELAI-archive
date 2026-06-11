@@ -37,12 +37,13 @@ use std::sync::Arc;
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::{EntropySource, SeededRng};
+use uuid::Uuid;
 
 use crate::archive_chain::{ArchiveChain, StagedEvalResult};
 use crate::reasoning_template::{TemplateError, TemplateId};
 use crate::ssb::{
-    BaiArmUpdatedPayload, Ssb, SsbPayload, TemplateCandidateRejectedPayload,
-    TemplatePromotedPayload,
+    BaiArmUpdatedPayload, BaiPromotionDecisionPayload, Ssb, SsbPayload,
+    TemplateCandidateRejectedPayload, TemplatePromotedPayload,
 };
 
 // ---------------------------------------------------------------------------
@@ -785,6 +786,35 @@ pub async fn emit_bai_round_with_canary(
             }
         }
         PromotionDecision::Held { .. } => {}
+    }
+
+    // D-5 closure (SCHEMA_VERSION 208): unified BaiPromotionDecision summary row.
+    // Emitted after the per-decision row so consumers can query a single row
+    // for the verdict without joining across the three-row sequence.
+    let decision_label = match &decision {
+        PromotionDecision::Promoted { .. } => "promoted",
+        PromotionDecision::Rejected { .. } => "rejected",
+        PromotionDecision::Held { .. } => "held",
+    };
+    let evidence_pass = eval.stage_10_pass + eval.stage_50_pass + eval.stage_200_pass;
+    let evidence_total = eval.stage_10_total + eval.stage_50_total + eval.stage_200_total;
+    let audit_id = Uuid::new_v4().simple().to_string();
+    let summary_payload = SsbPayload::BaiPromotionDecision(BaiPromotionDecisionPayload {
+        template_id: candidate_template_id.as_hex(),
+        decision: decision_label.into(),
+        stage: stage_label(eval).into(),
+        evidence_pass,
+        evidence_total,
+        audit_id,
+    });
+    if let Err(e) = ssb
+        .write_payload(agent_id, superstep, summary_payload, Vec::new())
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            "bai::emit_bai_round_with_canary: BaiPromotionDecision SSB write failed"
+        );
     }
 
     Ok(decision)
@@ -1552,5 +1582,91 @@ mod tests {
             cross_domain_deltas: Vec::new(),
         };
         assert_eq!(stage_label(&eval2), "stage_200");
+    }
+
+    // D-5 closure (SCHEMA_VERSION 208) — R4 off-agent artifact smoke.
+    //
+    // Calls emit_bai_round_with_canary with a real Ssb and asserts that
+    // a bai_promotion_decision row lands in the SSB database. The row is
+    // written by bai.rs (the emit path), not by this test, satisfying R4
+    // (off-agent artifact) and R7 (reachability from a non-test producer).
+    //
+    // Entrypoint chain (R7):
+    //   run_task_runner -> drive_task -> dispatch_bai_round
+    //   -> emit_bai_round_with_canary -> BaiPromotionDecision write.
+    // This test exercises emit_bai_round_with_canary directly (the canonical
+    // producer) so the off-agent artifact assertion is sound without
+    // spawning the full task runner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bai_promotion_decision_row_lands_in_ssb() {
+        use std::sync::Arc;
+        use tempfile::TempDir;
+        use crate::ssb::{Ssb, SsbActionType, SsbConfig};
+        use crate::ssb_viewer::SsbViewer;
+        use elai_core::clock::SeededClock;
+
+        let dir = TempDir::new().expect("tempdir");
+        let ssb = Arc::new(
+            Ssb::new(
+                SsbConfig {
+                    db_path: dir.path().join("bai_smoke.db"),
+                    pool_size: Some(2),
+                    project_id: "bai-smoke-project".into(),
+                    session_id: "bai-smoke-session".into(),
+                },
+                Arc::new(SeededClock::new()),
+            )
+            .expect("ssb init"),
+        );
+
+        let candidate_id = TemplateId::new_v4();
+        let mut chain = crate::archive_chain::ArchiveChain::new(
+            dir.path().join("bai-smoke-chain.jsonl"),
+        );
+        let mut arms: Vec<ArmPosterior> = Vec::new();
+        let mut rng = SeededRng::new(42);
+        let eval = crate::archive_chain::StagedEvalResult {
+            stage_10_pass: 8,
+            stage_10_total: 10,
+            stage_50_pass: 0,
+            stage_50_total: 0,
+            stage_200_pass: 0,
+            stage_200_total: 0,
+            cross_domain_deltas: Vec::new(),
+        };
+        let cfg = PromotionConfig::default();
+
+        let result = emit_bai_round_with_canary(
+            &mut chain,
+            &ssb,
+            "smoke-agent",
+            0,
+            candidate_id,
+            &eval,
+            &mut arms,
+            &mut rng,
+            &cfg,
+            None,
+        )
+        .await;
+        assert!(result.is_ok(), "emit_bai_round_with_canary returned Err: {result:?}");
+
+        // Allow the async writer to flush before opening the viewer.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Query the SSB for bai_promotion_decision rows via SsbViewer (off-agent
+        // artifact: written by the producer, not by this test).
+        let db_path = ssb.db_path().to_path_buf();
+        let viewer = SsbViewer::open(&db_path).expect("SsbViewer::open");
+        let rows = viewer
+            .recent_rows_of_type(
+                SsbActionType::BaiPromotionDecision.as_sql_str(),
+                10,
+            )
+            .expect("recent_rows_of_type");
+        assert!(
+            !rows.is_empty(),
+            "expected >= 1 bai_promotion_decision row in SSB; got 0 (R4 off-agent artifact missing)"
+        );
     }
 }

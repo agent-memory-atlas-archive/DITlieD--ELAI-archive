@@ -428,6 +428,20 @@ pub(crate) fn continue_from_handoff(
         return Ok(false);
     };
 
+    // H-33: print a memory resume summary flagging superseded facts before
+    // the session reconstruction. Read-only; non-fatal on any error.
+    if let Ok(project_root) = std::env::current_dir() {
+        match build_memory_resume_summary(&project_root, "default") {
+            Ok(summary) if !summary.is_empty() => {
+                println!("{summary}");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(error = %e, "/continue: memory resume summary failed (non-fatal)");
+            }
+        }
+    }
+
     // Reconstruct the in-memory session from the rehydrated message stream.
     //
     // B-9 cycle 2 (BLOCK-2 fix): prefer the structured `blocks` field
@@ -740,4 +754,62 @@ pub(crate) fn handle_session_command(
             Ok(false)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// H-33: /continue resume-summary helper
+// ---------------------------------------------------------------------------
+
+/// H-33: build a formatted memory resume summary for the `/continue` path.
+///
+/// Queries the FactStore for currently-active rows AND recently-superseded rows
+/// (valid_to_ms IS NOT NULL within the last 30 days, or superseded_by IS NOT
+/// NULL). Superseded rows are flagged with `[SUPERSEDED -> <id>]`.
+///
+/// Returns an empty string when no relevant rows exist. Non-fatal — callers
+/// should warn and continue on error (this is a best-effort summary).
+pub(crate) fn build_memory_resume_summary(
+    project_root: &Path,
+    user_id: &str,
+) -> Result<String, anyhow::Error> {
+    use elai_core::paths::memory_facts_db_path;
+    use elai_memory::FactStore;
+
+    let db_path = memory_facts_db_path(project_root);
+    if !db_path.exists() {
+        return Ok(String::new());
+    }
+    let store = FactStore::open(&db_path)
+        .map_err(|e| anyhow::anyhow!("open fact store: {e}"))?;
+
+    // list_including_closed returns ALL rows (active + closed/superseded).
+    // NOTE: "default" is a single-user assumption; multi-user support requires
+    // passing the resolved user_id through the call chain (WARN-1).
+    let all_rows = store
+        .list_including_closed(user_id, None, 100)
+        .map_err(|e| anyhow::anyhow!("list_including_closed: {e}"))?;
+
+    // Rows with valid_to_ms set are closed/superseded; the rest are active.
+    let superseded: Vec<_> = all_rows.iter().filter(|f| f.valid_to_ms.is_some()).collect();
+    let non_superseded: Vec<_> = all_rows.iter().filter(|f| f.valid_to_ms.is_none()).collect();
+
+    if all_rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut buf = String::from("--- memory resume summary ---\n");
+    for f in &superseded {
+        let sup_target = f.superseded_by.as_deref().unwrap_or("closed");
+        buf.push_str(&format!(
+            "  [SUPERSEDED -> {sup_target}]  {} | type={} | key={}\n",
+            f.fact_id,
+            f.fact_type.as_str(),
+            f.key,
+        ));
+    }
+    if !non_superseded.is_empty() {
+        buf.push_str(&format!("  {} active memory fact(s)\n", non_superseded.len()));
+    }
+    buf.push_str("---\n");
+    Ok(buf)
 }

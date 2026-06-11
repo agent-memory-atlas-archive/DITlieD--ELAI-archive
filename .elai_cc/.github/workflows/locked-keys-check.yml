@@ -1,0 +1,138 @@
+# D-9 — L3 Frozen Surfaces CI guard.
+#
+# Runs `elai audit-locked-keys --files <diff>` against every push and pull
+# request, refusing the change if any modified file overlaps an entry in
+# `.elai_cc/scripts/locked_keys_registry.toml`.
+#
+# Grounding (per CLAUDE.md grounded-by-default rule):
+#   * docs/thefinalglance/D-plan/D-9_l3_frozen_surfaces.md
+#   * scripts/locked_keys_check.sh (the pre-commit script this
+#     workflow mirrors)
+#   * arxiv:1908.04734 (Everitt current-RF; T1)
+#   * arxiv:1906.01820 (Hubinger mesa-optimization; T1)
+#
+# Scope:
+#   * Build the elai CLI in release mode (cached cargo target).
+#   * Compute the diff between the PR head and the base ref (or the
+#     parent commit for direct pushes).
+#   * Feed the file list to `elai audit-locked-keys --files ...`. The
+#     auditor emits a JSON body to stdout and exits 1 on any violation;
+#     CI fails the step on non-zero exit.
+#
+# Paths are relative to the .elai_cc/ working directory (this file lives
+# at .elai_cc/.github/workflows/). The git-diff steps run at the repo
+# root (${{ github.workspace }}) so diff paths are repo-root-relative,
+# matching the auditor's path normalisation.
+#
+# Runner: ubuntu-latest (matches archive-verify.yml).
+
+name: locked-keys-check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+  ELAI_CARGO_PROFILE: release
+
+jobs:
+  locked-keys-check:
+    name: D-9 locked keys check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .elai_cc
+
+    steps:
+      - name: Checkout (full history for diff)
+        uses: actions/checkout@v4
+        with:
+          # Need the full history (or at least the base ref) so we can
+          # compute `git diff <base>..HEAD --name-only`. fetch-depth=0
+          # pulls the full repo; for very large repos a shallower fetch
+          # plus explicit `git fetch origin <base>` would also work.
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .elai_cc/target/
+          key: ${{ runner.os }}-cargo-locked-keys-${{ hashFiles('.elai_cc/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-locked-keys-
+
+      - name: Check registry presence
+        id: registry_presence
+        run: |
+          if [ -f scripts/locked_keys_registry.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "Registry present; locked-keys audit will run."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Registry missing (.elai_cc/scripts/locked_keys_registry.toml); skipping."
+          fi
+
+      - name: Build elai CLI
+        if: steps.registry_presence.outputs.present == 'true'
+        run: cargo build --release --bin elai -p elai-cli
+
+      - name: Resolve diff base
+        if: steps.registry_presence.outputs.present == 'true'
+        id: diff_base
+        working-directory: ${{ github.workspace }}
+        run: |
+          # Pull-requests carry an explicit base; direct pushes fall
+          # back to HEAD~1. The `|| true` guards the very first commit
+          # on a fresh branch with no parent.
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="$(git rev-parse HEAD~1 2>/dev/null || echo '')"
+          fi
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "Diff base resolved to: ${BASE:-<none>}"
+
+      - name: Compute changed files
+        if: steps.registry_presence.outputs.present == 'true'
+        id: changed_files
+        working-directory: ${{ github.workspace }}
+        run: |
+          BASE="${{ steps.diff_base.outputs.base }}"
+          if [ -z "${BASE}" ]; then
+            echo "files=" >> "$GITHUB_OUTPUT"
+            echo "No diff base; treating as empty changed-file set."
+            exit 0
+          fi
+          # `--diff-filter=ACMRTUXB` matches all change kinds we care
+          # about (Added, Copied, Modified, Renamed, Type-changed, Updated,
+          # Unmerged, Broken). Deletions (D) are excluded — deleting a
+          # locked file is a separate L3_OVERRIDE conversation.
+          FILES="$(git diff --name-only --diff-filter=ACMRTUXB "${BASE}" HEAD | paste -sd, -)"
+          echo "files=${FILES}" >> "$GITHUB_OUTPUT"
+          echo "Changed files (comma-separated): ${FILES:-<none>}"
+
+      - name: Run locked-keys audit
+        if: steps.registry_presence.outputs.present == 'true'
+        env:
+          ELAI_LOCKED_KEYS_FILES: ${{ steps.changed_files.outputs.files }}
+        run: |
+          if [ -z "${ELAI_LOCKED_KEYS_FILES}" ]; then
+            echo "No changed files; running with --staged for the run-row beacon."
+            ./target/release/elai audit-locked-keys --staged --json
+          else
+            ./target/release/elai audit-locked-keys \
+              --files "${ELAI_LOCKED_KEYS_FILES}" \
+              --json
+          fi
+        # Exit 0 = clean audit. Exit 1 = at least one violation OR
+        # registry unreadable (fail-closed per WIRING_CONTRACT.stub_ban).

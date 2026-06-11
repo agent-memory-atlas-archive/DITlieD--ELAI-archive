@@ -49,6 +49,9 @@ fn fixture_data() -> VizData {
                 // C-24 (DRIFT-7 Path A): file mode leaves these None.
                 level: None,
                 status: None,
+                // H-10: dead-code fields; None in test fixture.
+                is_dead_code: None,
+                coverage_count: None,
             },
             VizFile {
                 id: "src/main.rs".to_string(),
@@ -59,6 +62,8 @@ fn fixture_data() -> VizData {
                 symbol_count: 0,
                 level: None,
                 status: None,
+                is_dead_code: None,
+                coverage_count: None,
             },
         ],
         file_edges: vec![VizFileEdge {

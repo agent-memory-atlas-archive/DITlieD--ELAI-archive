@@ -177,6 +177,7 @@ fn task_runner_config_accepts_dkg_querier_swap() {
         system_prober: None,
         feasibility_prober: None,
         autonomous_gate: None,
+        plan_interactive_gate: None,
         layer1a_processor: None,
         dispatch_context_profile: None,
         reflection_client: None,
@@ -197,6 +198,10 @@ fn task_runner_config_accepts_dkg_querier_swap() {
         mcp_dispatch: None,
         // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
         token_tracker: None,
+        // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
+        buffer_editor: None,
+        // E-46 D-8: contract fixture — module-constant defaults.
+        planning_config: Default::default(),
     };
     assert!(populated.dkg_querier_swap.is_some());
 }

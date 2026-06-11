@@ -315,6 +315,22 @@ mod tests {
     use proptest::prelude::*;
     use proptest_state_machine::{prop_state_machine, ReferenceStateMachine, StateMachineTest};
 
+    /// phase-3I.proptest: default proptest case count when `PROPTEST_CASES` is
+    /// unset or unparseable. Matches the proptest crate default (256) so CI
+    /// behaviour is unchanged unless the env var is supplied (e.g. a nightly
+    /// DST soak run exporting `PROPTEST_CASES=10000`).
+    const DEFAULT_PROPTEST_CASES: u32 = 256;
+
+    /// Resolve the proptest case count from the `PROPTEST_CASES` env var,
+    /// falling back to [`DEFAULT_PROPTEST_CASES`]. Lets operators dial the DST
+    /// state-machine sweep depth without recompiling.
+    fn proptest_cases() -> u32 {
+        std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_PROPTEST_CASES)
+    }
+
     impl ReferenceStateMachine for FsmReferenceModel {
         type State = ReferenceState;
         type Transition = FsmEvent;
@@ -483,7 +499,9 @@ mod tests {
     }
 
     prop_state_machine! {
-        #![proptest_config(ProptestConfig::with_cases(256))]
+        // phase-3I.proptest: case count is env-driven (PROPTEST_CASES) with a
+        // 256 default; see `proptest_cases()`.
+        #![proptest_config(ProptestConfig::with_cases(proptest_cases()))]
 
         #[test]
         fn fsm_reference_model_matches(sequential 1..200 => ActualSystem);

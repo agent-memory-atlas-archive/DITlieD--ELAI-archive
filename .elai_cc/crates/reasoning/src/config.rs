@@ -224,10 +224,16 @@ impl AgentGrcConfigLoader for TomlConfigLoader {
             });
         }
 
-        // (e) allowed_methods subset of all known variants
+        // (e) allowed_methods subset of all known variants.
+        // Comparison is by discriminant (variant shape), not by PartialEq field
+        // matching, so struct-variant wildcards in all_verification_methods() match
+        // any ArtifactCheck / VisualArtifactCheck regardless of field values.
         let all_known = all_verification_methods();
         for method in &config.allowed_methods {
-            if !all_known.contains(method) {
+            let known = all_known
+                .iter()
+                .any(|k| std::mem::discriminant(k) == std::mem::discriminant(method));
+            if !known {
                 return Err(GrcError::ConfigValidation {
                     role: config.role.clone(),
                     reason: format!("unknown verification method: {:?}", method),
@@ -301,7 +307,10 @@ fn validate_step_chain(config: &AgentGrcConfig) -> Result<(), GrcError> {
     Ok(())
 }
 
-/// All known VerificationMethod variants.
+/// All known VerificationMethod variants (one wildcard entry per variant).
+/// The validate_config membership check uses `std::mem::discriminant` comparison
+/// (not PartialEq field matching), so struct-variant entries here use empty
+/// strings as placeholders — only the discriminant (variant shape) is tested.
 fn all_verification_methods() -> Vec<VerificationMethod> {
     vec![
         VerificationMethod::FileCheck,
@@ -310,6 +319,15 @@ fn all_verification_methods() -> Vec<VerificationMethod> {
         VerificationMethod::WebCheck,
         VerificationMethod::ApiCheck,
         VerificationMethod::ApiRegistryCheck,
+        VerificationMethod::ArtifactCheck {
+            artifact_name: String::new(),
+            query: String::new(),
+        },
+        VerificationMethod::VisualArtifactCheck {
+            artifact_name: String::new(),
+            query: String::new(),
+            claim_category: String::new(),
+        },
     ]
 }
 
@@ -593,6 +611,80 @@ pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
                 require_scope_enumeration: false,
             })
         }
+        // base-phase-2 (2C): canonical Designer config. This is the SINGLE
+        // source of truth — agent_pool::default_grc_config(Designer) delegates
+        // here so the orchestrator and the reasoning crate can never diverge.
+        //
+        // Chain = [Observe, Hypothesize, PlanAction, Verify, Converge] per
+        // docs/specs/guide/steps/phase-2C.txt T14 (line 270-272). The
+        // PlanAction -> Verify edge is NOT in the default GrcState transition
+        // graph (PlanAction.allowed_next = [Act, Converge, Status]), so an
+        // additive transition_override {PlanAction: [Verify]} is required —
+        // Designer skips Act because it produces a PipelineSpec from the
+        // Research Report rather than mutating files. Mirrors
+        // TomlConfigLoader::load_config("designer") field-for-field.
+        //
+        // Pre-base-phase-2 the orchestrator hardcoded
+        // [Observe, PlanAction, Act, Verify] with EMPTY overrides, which made
+        // the Observe -> PlanAction edge unreachable: the Designer's second
+        // think() call returned GrcError::InvalidTransition, so a Designer
+        // agent could never complete its spec chain. Delegating to this arm
+        // fixes that latent bug and removes the second source of truth.
+        "designer" => {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::PlanAction, vec![GrcState::Verify]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(8, 1200),
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Hypothesize,
+                    GrcState::PlanAction,
+                    GrcState::Verify,
+                    GrcState::Converge,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: true,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                    VerificationMethod::TestCheck,
+                    VerificationMethod::WebCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: true,
+            })
+        }
+        // base-phase-2 (2C): canonical PromptEngineer config. Single source of
+        // truth, delegated to by agent_pool::default_grc_config(PromptEngineer).
+        //
+        // Chain = [Observe, Hypothesize, Converge] per phase-2C.txt T13 (line
+        // 264-266), budget 5/800. Both edges are in the default transition
+        // graph (Observe -> Hypothesize, Hypothesize -> Converge), so no
+        // override is needed. csq_required = false (the prompt engineer
+        // composes a transformed prompt; it does not Act on the system).
+        //
+        // Pre-base-phase-2 the orchestrator hardcoded the 5-step executor-shape
+        // chain [Observe, Hypothesize, PlanAction, Act, Verify], diverging from
+        // this 3-step spec chain (two sources of truth). Delegating here
+        // canonicalizes on the spec-grounded shape.
+        "prompt_engineer" => Some(AgentGrcConfig {
+            role: role.to_string(),
+            budget: GrcBudget::new(5, 800),
+            required_steps: vec![
+                GrcState::Observe,
+                GrcState::Hypothesize,
+                GrcState::Converge,
+            ],
+            grounding_level: GroundingLevel::High,
+            csq_required: false,
+            allowed_methods: vec![
+                VerificationMethod::FileCheck,
+                VerificationMethod::SourceCheck,
+            ],
+            transition_overrides: FxHashMap::default(),
+            require_scope_enumeration: false,
+        }),
         _ => None,
     }
 }

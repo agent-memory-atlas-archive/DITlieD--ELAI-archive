@@ -82,15 +82,32 @@ pub struct DecayTickStats {
 /// `now_ms` is the wall-clock time supplied by the caller's
 /// `ClockProvider`.
 ///
+/// H-33 (SCHEMA_VERSION 211): `pinned_ids` is the set of fact_ids that
+/// should be skipped by this decay pass (pin governance, behind
+/// `ELAI_MEMORY_PIN_ENABLE`). Callers that cannot or choose not to read
+/// pin beacons MUST pass an empty `HashSet` — this is the fail-toward-decay
+/// posture: if the pin beacon read fails or is unavailable, all facts
+/// decay normally (no silent protection).
+///
 /// Does NOT update `last_observed_at_ms` — decay is a passive process
 /// that does not count as an observation (otherwise the curve would never
 /// progress).
-pub fn decay_tick(store: &FactStore, now_ms: u128) -> Result<DecayTickStats, MemoryError> {
+pub fn decay_tick(
+    store: &FactStore,
+    pinned_ids: &std::collections::HashSet<String>,
+    now_ms: u128,
+) -> Result<DecayTickStats, MemoryError> {
     let rows = store.iter_current()?;
     let rows_examined = rows.len();
     let mut rows_updated = 0usize;
     let mut sum_trust: f64 = 0.0;
     for row in &rows {
+        // H-33: skip pinned facts. Fail-toward-decay: if pinned_ids is
+        // empty (caller could not read the SSB pin beacons), all rows decay.
+        if pinned_ids.contains(&row.fact_id) {
+            sum_trust += row.trust_score as f64;
+            continue;
+        }
         let new_trust = decayed_trust(
             row.trust_score,
             row.decay_rate_per_day,

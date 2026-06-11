@@ -318,3 +318,104 @@ pub async fn emit_skill_prior_retrieved(
     let seq = ssb.write_payload(agent_id, superstep, payload, Vec::new()).await?;
     Ok(Some(seq))
 }
+
+// ---------------------------------------------------------------------------
+// D-6 off-agent artifact smoke test
+// ---------------------------------------------------------------------------
+//
+// Drives the REAL `emit_bubble_up_replan_phase` write path against a temp
+// Ssb, then reads back via `query_by_type(SsbActionType::PlanningDecompositionEvent)`
+// and asserts >= 1 row with kind BubbleUpReplanPhase.
+//
+// ELAI_PLANNING_DECOMPOSITION_ENABLE must be set to "1" for the emitter to
+// write a row (the env gate is checked inside the fn).  The test sets it
+// explicitly so the gate is always open in test context.
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+
+    use crate::ssb::{
+        PlanningDecompositionEventKind, SsbActionType, SsbConfig, SsbPayload, SsbReader,
+    };
+
+    fn test_ssb() -> (crate::ssb::Ssb, TempDir) {
+        let dir = TempDir::new().expect("tempdir");
+        let cfg = SsbConfig {
+            db_path: dir.path().join("ssb.db"),
+            pool_size: Some(2),
+            project_id: "p-e46-test".into(),
+            session_id: "s-e46-test".into(),
+        };
+        let clock: Arc<dyn elai_core::clock::ClockProvider> =
+            Arc::new(elai_core::clock::SeededClock::new());
+        let ssb = crate::ssb::Ssb::new(cfg, clock).expect("ssb init");
+        (ssb, dir)
+    }
+
+    /// D-6 off-agent artifact: drives `emit_bubble_up_replan_phase` against a
+    /// temp Ssb and asserts the row is readable via `query_by_type`.
+    ///
+    /// Layer-4 smoke: the producer fn writes the row; the test only reads it
+    /// back via the public Ssb API (off-agent, R4-compliant).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn d6_emit_bubble_up_replan_phase_writes_readable_row() {
+        // Enable the env gate so the emitter actually writes.
+        // SAFETY: test-only, single fn, no parallel env mutation.
+        unsafe {
+            std::env::set_var(super::super::PLANNING_DECOMPOSITION_ENABLE_ENV, "1");
+        }
+
+        let (ssb, _dir) = test_ssb();
+        let ssb_ref = Arc::new(ssb);
+
+        let result = super::emit_bubble_up_replan_phase(
+            &ssb_ref,
+            "test-agent",
+            0,
+            Some("s-e46-test"),
+            "phase_42",
+            "phase_42 failed after 3 retries",
+            "integration gate: cargo check returned exit 1 on step boundary",
+            "build a Rust CLI that reads stdin and counts words",
+            1_000_000,
+        )
+        .await;
+
+        assert!(result.is_ok(), "emit should succeed: {result:?}");
+        let seq = result.unwrap();
+        assert!(seq.is_some(), "env gate open so seq must be Some");
+
+        // Off-agent read: the agent (producer fn) wrote the row; we only read.
+        let rows = ssb_ref
+            .query_by_type(SsbActionType::PlanningDecompositionEvent)
+            .expect("query_by_type must not error");
+
+        assert!(
+            !rows.is_empty(),
+            "expected >= 1 PlanningDecompositionEvent row after emit"
+        );
+
+        let found = rows.iter().any(|entry| {
+            // Rows are stored as MessagePack (rmp_serde::to_vec_named).
+            if let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(&entry.payload) {
+                if let SsbPayload::PlanningDecompositionEvent(p) = payload {
+                    return matches!(
+                        p.kind,
+                        PlanningDecompositionEventKind::BubbleUpReplanPhase
+                    );
+                }
+            }
+            false
+        });
+        assert!(
+            found,
+            "expected a row with kind=BubbleUpReplanPhase among the returned rows"
+        );
+
+        unsafe {
+            std::env::remove_var(super::super::PLANNING_DECOMPOSITION_ENABLE_ENV);
+        }
+    }
+}

@@ -18,7 +18,7 @@ use std::future::Future;
 use elai_core::{ClockProvider, EntropySource, OsEntropy};
 use elai_providers::{
     oauth_token_is_expired, resolve_startup_auth_source, AnthropicClient, AuthSource,
-    ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
+    CacheControl, ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
     OutputContentBlock, PromptCache,
     StreamEvent as ApiStreamEvent, SystemBlock, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
@@ -71,6 +71,11 @@ use crate::init::initialize_repo;
 use crate::render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use crate::*;
 
+/// H-2: nominal context-window size used only to construct a `ContextBudget`
+/// for the cross-turn cache-prefix stability check (the value does not affect
+/// the byte-prefix hashes, only slot allocation — large enough to never error).
+const CACHE_STABILITY_CTX_TOKENS: usize = 200_000;
+
 pub(crate) struct RuntimeClient {
     pub(crate) runtime: tokio::runtime::Runtime,
     pub(crate) client: AnthropicClient,
@@ -97,6 +102,24 @@ pub(crate) struct RuntimeClient {
     /// into focus-tunnel validation — keeps the legacy fast path unchanged.
     pub(crate) streaming_validator:
         Option<Arc<std::sync::Mutex<elai_orchestrator::focus_tunnel::StreamingValidator>>>,
+    /// H-2: previous-turn cache-prefix hashes `[BP0, BP1]`. Without persisting
+    /// them across turns, every `send` is a "first call" and `bp.valid` is
+    /// permanently false — the inert state H-2 fixes. `std::sync::Mutex`: a brief
+    /// sync lock taken in the synchronous part of `send`, never across an
+    /// `.await`. Seeded into a fresh `ContextBudget` each turn so
+    /// `update_breakpoints` (GD-1: consumed, not re-implemented) detects a
+    /// byte-stable prefix.
+    pub(crate) last_cache_prefix_hashes: std::sync::Mutex<[u64; 2]>,
+    /// H-3: optional Ssb handle so the streaming early-abort site can emit the
+    /// (existing B-28) StreamingEarlyTerminated off-agent row. None when telemetry
+    /// is disabled; populated from the same ssb the runtime builder owns.
+    pub(crate) streaming_ssb: Option<Arc<elai_orchestrator::Ssb>>,
+    /// H-34: per-turn MCP tool-set selection. When ELAI_MCP_DEFER_SCHEMA_ENABLE=1
+    /// and mcp_state is Some, `stream()` calls
+    /// `manager.get_injected_tool_set(Some(query))` to restrict the tool list
+    /// to floor UNION keyword UNION vector for each turn. None when MCP is not
+    /// configured (eager path, existing behavior).
+    pub(crate) mcp_state_for_injector: Option<Arc<Mutex<crate::mcp_glue::RuntimeMcpState>>>,
 }
 
 pub(crate) fn resolve_cli_auth_source() -> Result<AuthSource, anyhow::Error> {
@@ -309,6 +332,49 @@ impl ApiClient for RuntimeClient {
             }
         }).filter(|defs| !defs.is_empty());
 
+        // H-34: per-turn MCP tool-set injection via the ToolSelectionAssembler.
+        // When ELAI_MCP_DEFER_SCHEMA_ENABLE=1 and mcp_state_for_injector is wired,
+        // extract the last user message as the query and call get_injected_tool_set
+        // to obtain the floor UNION keyword UNION vector selection. Non-selected
+        // MCP tools are excluded from this turn's tool list (their schemas remain
+        // withheld in StdioSchemaCache and are resolved on first call via call_tool).
+        // When defer is OFF or mcp_state is absent, the existing tool list is unchanged.
+        let tool_defs = if std::env::var(elai_orchestrator::ELAI_MCP_DEFER_SCHEMA_ENABLE_ENV)
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false)
+        {
+            if let Some(ref mcp_state_arc) = self.mcp_state_for_injector {
+                // Extract the last user message text as the query.
+                let query: Option<String> = request.messages.iter().rev()
+                    .find(|m| m.role == MessageRole::User)
+                    .and_then(|m| {
+                        m.blocks.iter().find_map(|b| {
+                            if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None }
+                        })
+                    });
+                let query_ref: Option<&str> = query.as_deref();
+                let injected_set: HashSet<String> = {
+                    let guard = mcp_state_arc.lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    guard.manager.get_injected_tool_set(query_ref).into_iter().collect()
+                };
+                tool_defs.map(|defs| {
+                    defs.into_iter()
+                        .filter(|def| {
+                            // Keep all non-MCP tools (those not in the manager's
+                            // tool_index). Only filter tools that are known MCP tools.
+                            !def.name.contains("__") || injected_set.contains(def.name.as_str())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .filter(|defs| !defs.is_empty())
+            } else {
+                tool_defs
+            }
+        } else {
+            tool_defs
+        };
+
         // Branch 2: budget policy — compute real slot sizes, cap max_tokens
         let system_chars: usize = request.system_prompt.iter().map(|s| s.len()).sum();
         let slot_0 = system_chars / TOKEN_CHARS_PER_TOKEN;
@@ -438,12 +504,93 @@ impl ApiClient for RuntimeClient {
         let _stream_clock = elai_core::OsClock;
         let stream_start = _stream_clock.now();
 
+        // H-2: cross-turn cache-prefix stability (W-3: runs for EVERY policy, not
+        // Local-only). Feed REAL slot bytes — model id (keying: a model swap busts
+        // the prefix) + system + rules into the head slots, conversation bytes into
+        // CodeContext — seeded from the persisted previous-turn hashes, into the
+        // shipped length-prefixed-blake3 hasher (GD-1: consume update_breakpoints,
+        // never re-implement). bp0.valid => the head prefix is byte-identical to
+        // last turn, so the 1h TTL write will be re-read (breakeven on read #2).
+        let cache_head_stable = {
+            let mut system_bytes: Vec<u8> = self.model.clone().into_bytes();
+            system_bytes.push(b'\n');
+            system_bytes.extend_from_slice(request.system_prompt.join("\n\n").as_bytes());
+            let rules_bytes: Vec<u8> = self
+                .compiled_rules
+                .iter()
+                .flat_map(|(r, _)| r.predicate_json.bytes())
+                .collect();
+            let mut code_bytes: Vec<u8> = Vec::new();
+            for m in &request.messages {
+                for block in &m.blocks {
+                    match block {
+                        ContentBlock::Text { text } => code_bytes.extend_from_slice(text.as_bytes()),
+                        ContentBlock::ToolUse { input, .. } => {
+                            code_bytes.extend_from_slice(input.as_bytes());
+                        }
+                        ContentBlock::ToolResult { output, .. } => {
+                            code_bytes.extend_from_slice(output.as_bytes());
+                        }
+                    }
+                }
+            }
+            let empty: Vec<u8> = Vec::new();
+            match elai_orchestrator::context_budget::ContextBudget::compute(
+                CACHE_STABILITY_CTX_TOKENS,
+                [slot_0, slot_1, self.phase_slot_tokens],
+                BUDGET_OUTPUT_RESERVE,
+            ) {
+                Ok(mut budget) => {
+                    if let Ok(prev) = self.last_cache_prefix_hashes.lock() {
+                        budget.cache_breakpoints[0].prefix_hash = prev[0];
+                        budget.cache_breakpoints[1].prefix_hash = prev[1];
+                    }
+                    budget.update_breakpoints(&[
+                        &system_bytes,
+                        &rules_bytes,
+                        &empty,
+                        &empty,
+                        &code_bytes,
+                        &empty,
+                        &empty,
+                        &empty,
+                    ]);
+                    let bp0 = budget.cache_breakpoints[0].valid;
+                    // HD-2 cache-bust guard: a verified-stable breakpoint must carry
+                    // a non-zero, byte-identical prefix hash. A nondeterministic byte
+                    // in the cached prefix would flip valid=false on identical
+                    // logical content — that is a test failure, not a silent bill.
+                    debug_assert!(
+                        !bp0 || budget.cache_breakpoints[0].prefix_hash != 0,
+                        "H-2 HD-2: a valid cache breakpoint must carry a non-zero stable prefix hash (cache-bust guard)"
+                    );
+                    if let Ok(mut prev) = self.last_cache_prefix_hashes.lock() {
+                        prev[0] = budget.cache_breakpoints[0].prefix_hash;
+                        prev[1] = budget.cache_breakpoints[1].prefix_hash;
+                    }
+                    bp0
+                }
+                Err(_) => false,
+            }
+        };
+
+        // H-2: 1h TTL on the verified-byte-stable head prefix only (worth the 2x
+        // write solely when the prefix is reused turn-to-turn). Otherwise the
+        // provider's apply_anthropic_cache_markers stamps the default 5-min
+        // ephemeral; the per-model-id min-cacheable-prefix gate lives there too.
+        let system_blocks = (!request.system_prompt.is_empty()).then(|| {
+            let mut head = SystemBlock::text(request.system_prompt.join("\n\n"));
+            if cache_head_stable {
+                head.cache_control = Some(CacheControl::ephemeral_1h());
+            }
+            vec![head]
+        });
+
         let message_request = MessageRequest {
             model: self.model.clone(),
             max_tokens: effective_max_tokens,
             messages: convert_messages(&request.messages),
-            system: (!request.system_prompt.is_empty())
-                .then(|| vec![SystemBlock::text(request.system_prompt.join("\n\n"))]),
+            system: system_blocks,
             tool_choice: tool_defs.as_ref().map(|_| ToolChoice::Auto),
             tools: tool_defs,
             stream: true,
@@ -525,6 +672,28 @@ impl ApiClient for RuntimeClient {
                                         reason,
                                         "runtime_client: focus-tunnel StreamingValidator triggered EarlyTerm — terminating stream"
                                     );
+                                    // H-3: emit the off-agent StreamingEarlyTerminated row
+                                    // (the existing B-28 SSB variant — the wiring proof for
+                                    // the early-abort). `.await` directly: we are inside the
+                                    // outer block_on async, so a nested block_on would panic.
+                                    // Non-fatal — a telemetry write never breaks the stream.
+                                    if let Some(ssb) = self.streaming_ssb.as_ref() {
+                                        let tokens = u32::try_from(events.len()).unwrap_or(u32::MAX);
+                                        let payload = elai_orchestrator::ssb::SsbPayload::StreamingEarlyTerminated(
+                                            elai_orchestrator::ssb::StreamingEarlyTerminatedPayload {
+                                                step_id: String::new(),
+                                                mode: "stream".to_string(),
+                                                reason: reason.to_string(),
+                                                reason_detail: None,
+                                                token_count_at_term: tokens,
+                                                total_tokens_received: tokens,
+                                                language_hint: "generic".to_string(),
+                                            },
+                                        );
+                                        let _ = ssb
+                                            .write_payload("cli:stream", 0, payload, Vec::new())
+                                            .await;
+                                    }
                                     events.push(AssistantEvent::MessageStop);
                                     saw_stop = true;
                                     break;
@@ -697,6 +866,78 @@ pub(crate) fn collect_tool_results(summary: &elai_orchestrator::TurnSummary) -> 
             _ => None,
         })
         .collect()
+}
+
+/// 1C-R2: tool names whose successful execution mutates a file on disk and
+/// therefore must trigger an incremental re-index (BM25 + vector + DKG).
+/// Grounded in the canonical edit-checkpoint filter set
+/// (`orchestrator::architecture::edit_checkpoints` doc: `tool_name in
+/// {"Edit", "Write", "NotebookEdit"}`). Kept as a named constant so the set
+/// stays in one place rather than scattered string literals.
+pub(crate) const FILE_MUTATING_TOOL_NAMES: [&str; 3] = ["Write", "Edit", "NotebookEdit"];
+
+/// 1C-R2: extract the distinct `file_path` arguments of every *successful*
+/// file-mutating tool call in `summary`, preserving first-seen order.
+///
+/// A tool call counts as successful when no `ToolResult` for its `tool_use_id`
+/// is flagged `is_error == true`. The returned paths are the production input
+/// to `LiveCli::notify_file_changed`, which drives the incremental re-index
+/// (and, via the threaded `VectorCache`, the `invalidate_file` eviction of the
+/// rewritten file's stale embeddings). This is the entrypoint that makes the
+/// vector cache reachable from a real turn instead of dead code.
+pub(crate) fn extract_written_file_paths(
+    summary: &elai_orchestrator::TurnSummary,
+) -> Vec<PathBuf> {
+    // Tool-use ids whose result was an error — skip these (the write failed,
+    // so the on-disk file did not change and must not be re-indexed).
+    let errored_ids: HashSet<&str> = summary
+        .tool_results
+        .iter()
+        .flat_map(|message| message.blocks.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error: true,
+                ..
+            } => Some(tool_use_id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for block in summary
+        .assistant_messages
+        .iter()
+        .flat_map(|message| message.blocks.iter())
+    {
+        let ContentBlock::ToolUse { id, name, input } = block else {
+            continue;
+        };
+        if !FILE_MUTATING_TOOL_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        if errored_ids.contains(id.as_str()) {
+            continue;
+        }
+        // The tool input is a JSON object string; the file-mutating tools all
+        // carry the target under the `file_path` key (search_replace.rs /
+        // file_ops.rs deserialize that exact field).
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
+            continue;
+        };
+        let Some(file_path) = value.get("file_path").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if file_path.is_empty() {
+            continue;
+        }
+        let buf = PathBuf::from(file_path);
+        if seen.insert(buf.clone()) {
+            paths.push(buf);
+        }
+    }
+    paths
 }
 
 pub(crate) fn collect_prompt_cache_events(summary: &elai_orchestrator::TurnSummary) -> Vec<serde_json::Value> {

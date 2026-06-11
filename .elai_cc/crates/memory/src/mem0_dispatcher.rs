@@ -275,6 +275,7 @@ fn build_fact_from_candidate(candidate: &ExtractedFact, ctx: &DispatchContext) -
         superseded_by: None,
         trust_tier: ctx.trust_tier,
         provenance: ctx.provenance.clone(),
+        last_validated_at_ms: None,
     }
 }
 

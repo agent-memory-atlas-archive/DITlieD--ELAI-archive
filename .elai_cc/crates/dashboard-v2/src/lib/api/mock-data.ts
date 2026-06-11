@@ -441,6 +441,9 @@ export const DKG_STATS: DkgStats = {
   bm25_chunks: 22_340,
   vector_status: 'READY',
   freshness_decay_pct: 12,
+  // B-4: browser-dev fixture — small non-zero failure count so the
+  // "X files indexed, Y failed" row is visible without a live SSB DB.
+  failed_files: 3,
 };
 
 // ------------------------------------------------------------------

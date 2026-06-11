@@ -8,6 +8,11 @@ dependencies = [
     "torch>=2.2.0",
     "transformers>=4.45,<5",
     "numpy>=1.24",
+    # H-18 (Tier-2 sidecar): scipy for DSR/PBO/MinBTL computation via CSCV.
+    # Anti-slopsquat verified 2026-06-05: pypi.org/pypi/scipy/json -> 1.17.1,
+    # BSD-3-Clause license. scipy.stats.norm.cdf/ppf used for Phi/Phi_inv in
+    # compute_dsr_pbo_minbtl() (deflation_sidecar.py). RunPod-pending (Tier-2).
+    "scipy>=1.11",
     "bitsandbytes>=0.43.0",
     "safetensors>=0.4.0",
     "fastapi>=0.115.0",

@@ -179,3 +179,22 @@ c20_backfilled_at = "C-20"
 c20_sample_decide_calls = 200
 c20_sample_mode_switch_calls = 100
 c20_sample_accuracy_calls = 20
+
+# ---------------------------------------------------------------------------
+# 10. stagnation (C-10 anti-spiral primitives — config thresholds + counters)
+# ---------------------------------------------------------------------------
+# Config keys for the anti-spiral primitive stack. These are CONFIG THRESHOLDS
+# and zero-initialised RUN counters, NOT measured results: the live detector /
+# persona-switch counts are emitted at runtime as SSB rows
+# (StagnationSpinningDetected / StagnationOscillationDetected /
+# LateralThinkingActivated / GoalDriftWarning / WatchdogTimeout — see the C-10
+# wire-dark-allowlist rows). A non-zero value here is only written by a real
+# `elai measure` backfill after a live anti-spiral run, never hand-authored.
+# Decisions: workflow/reasoning/C-10-decisions.md.
+[stagnation]
+stagnation_detection_enabled = true   # master gate for the primitive stack
+persona_switch_count = 0              # RUN counter: lateral-thinking persona swaps (backfill-only)
+goal_drift_red_count = 0             # RUN counter: GoalDriftWarning RED escalations (backfill-only)
+watchdog_timeout_count = 0          # RUN counter: WatchdogTimeout fires (backfill-only)
+spin_threshold = 3                 # CONFIG: identical-edit repeats before Spinning fires (CLAUDE.md anti-spiral ">3")
+adaptive_futility_threshold = 0.15  # CONFIG: DiminishingReturns futility floor (delta below this = stall)

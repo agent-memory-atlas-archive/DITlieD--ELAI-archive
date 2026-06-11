@@ -1,0 +1,107 @@
+{
+  "suite": "seccodeplt_static_gate",
+  "model_id": "seccodeplt_curated_corpus",
+  "n_samples": 96,
+  "insecure_rate_before": 0.5,
+  "insecure_rate_after": 0.15625,
+  "safety_delta": 0.34375,
+  "gate_recall": 0.6875,
+  "ci_low": 0.28125,
+  "ci_high": 0.40625,
+  "seed": 42,
+  "corpus_blake3": "e162f48b02b0c86b32749a85f9543b269fb71ecc4c1de96514a55b3c57e328e6",
+  "per_cwe": [
+    {
+      "cwe": "CWE-285",
+      "candidates": 2,
+      "cwe_safety_delta": 0.0,
+      "insecure_blocked": 0,
+      "insecure_residual": 1
+    },
+    {
+      "cwe": "CWE-321",
+      "candidates": 4,
+      "cwe_safety_delta": 0.020833333333333332,
+      "insecure_blocked": 2,
+      "insecure_residual": 0
+    },
+    {
+      "cwe": "CWE-327",
+      "candidates": 14,
+      "cwe_safety_delta": 0.07291666666666667,
+      "insecure_blocked": 7,
+      "insecure_residual": 0
+    },
+    {
+      "cwe": "CWE-502",
+      "candidates": 8,
+      "cwe_safety_delta": 0.0,
+      "insecure_blocked": 0,
+      "insecure_residual": 4
+    },
+    {
+      "cwe": "CWE-532",
+      "candidates": 4,
+      "cwe_safety_delta": 0.020833333333333332,
+      "insecure_blocked": 2,
+      "insecure_residual": 0
+    },
+    {
+      "cwe": "CWE-639",
+      "candidates": 2,
+      "cwe_safety_delta": 0.0,
+      "insecure_blocked": 0,
+      "insecure_residual": 1
+    },
+    {
+      "cwe": "CWE-697",
+      "candidates": 2,
+      "cwe_safety_delta": 0.0,
+      "insecure_blocked": 0,
+      "insecure_residual": 1
+    },
+    {
+      "cwe": "CWE-78",
+      "candidates": 8,
+      "cwe_safety_delta": 0.0,
+      "insecure_blocked": 0,
+      "insecure_residual": 4
+    },
+    {
+      "cwe": "CWE-79",
+      "candidates": 16,
+      "cwe_safety_delta": 0.08333333333333333,
+      "insecure_blocked": 8,
+      "insecure_residual": 0
+    },
+    {
+      "cwe": "CWE-798",
+      "candidates": 4,
+      "cwe_safety_delta": 0.020833333333333332,
+      "insecure_blocked": 2,
+      "insecure_residual": 0
+    },
+    {
+      "cwe": "CWE-862",
+      "candidates": 8,
+      "cwe_safety_delta": 0.0,
+      "insecure_blocked": 0,
+      "insecure_residual": 4
+    },
+    {
+      "cwe": "CWE-89",
+      "candidates": 20,
+      "cwe_safety_delta": 0.10416666666666667,
+      "insecure_blocked": 10,
+      "insecure_residual": 0
+    },
+    {
+      "cwe": "CWE-95",
+      "candidates": 4,
+      "cwe_safety_delta": 0.020833333333333332,
+      "insecure_blocked": 2,
+      "insecure_residual": 0
+    }
+  ],
+  "runpod_pending": true
+}

@@ -44,6 +44,66 @@ fn glob_to_regex(glob: &str) -> Result<Regex, io::Error> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))
 }
 
+/// Normalize a path string for glob matching: forward-slash separators,
+/// lowercased (Windows is case-insensitive; matching the convention used by
+/// `is_hidden_path` keeps the two gates consistent). Pure string op — does not
+/// touch the filesystem, so it is safe for hidden/non-existent paths.
+fn normalize_for_match(path: &str) -> String {
+    path.replace('\\', "/").to_ascii_lowercase()
+}
+
+/// B-18C: per-agent filesystem restriction check (fail-closed).
+///
+/// Evaluates `path` against an agent's `allowed_paths` glob list, mirroring the
+/// documented semantics of `AgentHandle.allowed_paths` (agent_pool.rs): a
+/// positive glob WIDENS visibility, a `!`-prefixed glob RE-DENIES a sub-path.
+/// The check is applied IN ADDITION to the global `is_hidden_path` rules, never
+/// instead of them.
+///
+/// Returns `true` when the path is permitted for the agent:
+///   * empty `allowed_paths`  -> `true` (no per-agent restriction; the global
+///     hidden-path rules still apply at the call site — this preserves the
+///     existing top-level / unrestricted-agent behavior exactly).
+///   * non-empty `allowed_paths` -> `true` only if `path` matches at least one
+///     positive glob AND matches no `!`-negated glob (fail-closed default-deny:
+///     a path outside every positive allowance is denied).
+///
+/// A glob that fails to compile is treated as NON-matching (it can never widen
+/// the allowance), so a malformed allow pattern fails closed rather than open.
+#[must_use]
+pub fn path_within_allowed_paths(path: &str, allowed_paths: &[String]) -> bool {
+    if allowed_paths.is_empty() {
+        return true;
+    }
+    let normalized = normalize_for_match(path);
+
+    let mut positive_match = false;
+    for pattern in allowed_paths {
+        let trimmed = pattern.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(neg) = trimmed.strip_prefix('!') {
+            // Negated glob: if it matches, the path is denied outright.
+            if glob_matches(neg, &normalized) {
+                return false;
+            }
+        } else if glob_matches(trimmed, &normalized) {
+            positive_match = true;
+        }
+    }
+    positive_match
+}
+
+/// Match a single glob pattern against an already-normalized path. A glob that
+/// fails to compile never matches (fail-closed for allow checks).
+fn glob_matches(pattern: &str, normalized_path: &str) -> bool {
+    match glob_to_regex(&normalize_for_match(pattern)) {
+        Ok(re) => re.is_match(normalized_path),
+        Err(_) => false,
+    }
+}
+
 /// Maximum file size that can be read (10 MB).
 const MAX_READ_SIZE: u64 = 10 * 1024 * 1024;
 
@@ -665,9 +725,59 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        edit_file, glob_search, grep_search, is_symlink_escape, read_file, read_file_in_workspace,
-        write_file, GrepSearchInput, MAX_WRITE_SIZE,
+        edit_file, glob_search, grep_search, is_symlink_escape, path_within_allowed_paths,
+        read_file, read_file_in_workspace, write_file, GrepSearchInput, MAX_WRITE_SIZE,
     };
+
+    #[test]
+    fn allowed_paths_empty_permits_everything() {
+        // B-18C: empty allow-list = no per-agent restriction (existing behavior).
+        assert!(path_within_allowed_paths("/anything/at/all.rs", &[]));
+        assert!(path_within_allowed_paths("C:\\secret\\file.txt", &[]));
+    }
+
+    #[test]
+    fn allowed_paths_positive_glob_permits_inside_denies_outside() {
+        // B-18C: fail-closed default-deny — a path outside every positive glob
+        // is denied; a path inside is permitted.
+        let allow = vec!["/proj/**".to_string()];
+        assert!(path_within_allowed_paths("/proj/src/main.rs", &allow));
+        assert!(path_within_allowed_paths("/proj/deep/nested/x.rs", &allow));
+        assert!(!path_within_allowed_paths("/etc/passwd", &allow));
+        assert!(!path_within_allowed_paths("/other/file.rs", &allow));
+    }
+
+    #[test]
+    fn allowed_paths_negated_glob_redenies_subpath() {
+        // B-18C: `!`-prefixed glob re-denies a sub-path even when a positive
+        // glob would otherwise allow it (ContextCompiler memory-bank exclusion).
+        let allow = vec![
+            "/proj/**".to_string(),
+            "!/proj/workflow/memory-bank/**".to_string(),
+        ];
+        assert!(path_within_allowed_paths("/proj/src/main.rs", &allow));
+        assert!(!path_within_allowed_paths(
+            "/proj/workflow/memory-bank/active.md",
+            &allow
+        ));
+    }
+
+    #[test]
+    fn allowed_paths_match_is_separator_and_case_insensitive() {
+        // Mirrors is_hidden_path normalization: backslash == forward-slash, and
+        // matching is case-insensitive (Windows).
+        let allow = vec!["/Proj/**".to_string()];
+        assert!(path_within_allowed_paths("\\proj\\src\\main.rs", &allow));
+        assert!(path_within_allowed_paths("/PROJ/src/main.rs", &allow));
+    }
+
+    #[test]
+    fn allowed_paths_malformed_glob_fails_closed() {
+        // A glob that cannot compile must never widen the allowance: with only a
+        // broken positive pattern, nothing matches -> deny.
+        let allow = vec!["/proj/[".to_string()];
+        assert!(!path_within_allowed_paths("/proj/src/main.rs", &allow));
+    }
 
     fn temp_path(name: &str) -> std::path::PathBuf { // TEST_KEEP
         let unique = SystemTime::now() // TEST_KEEP

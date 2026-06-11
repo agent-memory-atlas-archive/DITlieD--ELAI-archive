@@ -79,3 +79,17 @@ plan        = "F-12"
 entrypoint  = "live REPL memory tick: dispatch_chat_memory_reflect (audit_conflicts + adjudicate_semantic)"
 expect_ssb  = "memory_conflict_detected"
 flag_default = "on"
+
+# ---- H-31 user-preference bi-temporal ledger (session s-8404) ----
+# The `/remember` capture producer (elai_memory::dispatch_one first production caller) emits a
+# user_decision_superseded SSB row when ELAI_USER_MEMORY_ENABLE=1. The contract test drives the
+# REAL `elai remember "<text>"` entrypoint and asserts the off-agent row lands in the live ssb.db,
+# AND that a contradicting `/remember` soft-closes the prior row (old.valid_to_ms ==
+# new.valid_from_ms), AND that the superseded fact never reaches an assembled prompt, AND that an
+# Auditor-role assembly contains ZERO user-memory (the Personalization-Trap firewall proof).
+# NOTE: added by an executing run -- trips gate_freeze_check.py until re-locked out-of-band.
+[[feature]]
+plan        = "H-31"
+entrypoint  = "elai remember \"<text>\" (ELAI_USER_MEMORY_ENABLE=1)"
+expect_ssb  = "user_decision_superseded"
+flag_default = "ELAI_USER_MEMORY_ENABLE"

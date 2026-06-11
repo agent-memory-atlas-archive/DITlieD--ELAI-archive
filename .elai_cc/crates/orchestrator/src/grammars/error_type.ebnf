@@ -1,0 +1,51 @@
+(* C-26 — error-type declaration EBNF grammar.
+ * Constrains executor output to a single thiserror-style Rust error enum
+ * declaration (or a Python exception class), used when the model is asked
+ * to author the error type for a module.  Per the CLAUDE.md Anti-Stale
+ * rule the canonical Rust error pattern is a `#[derive(Debug, Error)]`
+ * enum with `#[error("...")]` per-variant messages (thiserror), NOT
+ * `Box<dyn Error>`; this grammar bakes that shape in.
+ *
+ * Covers:
+ *   Rust   : `#[derive(Debug, Error)] pub enum E { #[error("..")] V, .. }`
+ *   Python : `class EError(Exception): pass`
+ *
+ * Resolution: caller joins this relative path against the grammars/ dir
+ * before forwarding to the sidecar (same as file_plan.ebnf).
+ *)
+
+error_type = rust_error | py_error ;
+
+(* ---- Rust thiserror enum ---- *)
+rust_error  = derive ws ( "pub" ws1 )? "enum" ws1 ident ws
+              "{" ws variant ( ws "," ws variant )* ( ws "," )? ws "}" ;
+derive      = "#[derive(" ws "Debug" ws "," ws "Error" ws ")]" ;
+variant     = error_attr ws ident variant_data? ;
+error_attr  = "#[error(" string ")]" ;
+variant_data = "(" ws type_expr ( ws "," ws type_expr )* ws ")"
+             | "{" ws field ( ws "," ws field )* ws "}" ;
+field       = ident ws ":" ws type_expr ;
+
+(* ---- Python exception class ---- *)
+py_error    = "class" ws1 ident ws "(" ws ident ws ")" ws ":" ws py_body ;
+py_body     = "pass" | docstring ( ws "pass" )? ;
+docstring   = '"""' ( ? any char except the closing triple-quote ? )* '"""' ;
+
+(* ---- shared type expression (shape-only) ---- *)
+type_expr   = "&" type_expr
+            | type_path generic? ;
+type_path   = ident ( "::" ident )* ;
+generic     = "<" ws type_expr ( ws "," ws type_expr )* ws ">" ;
+
+(* ---- lexical ---- *)
+ident       = ( letter | "_" ) ( letter | digit | "_" )* ;
+string      = '"' ( ? any char except '"' ? )* '"' ;
+letter      = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j"
+            | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t"
+            | "u" | "v" | "w" | "x" | "y" | "z"
+            | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J"
+            | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T"
+            | "U" | "V" | "W" | "X" | "Y" | "Z" ;
+digit       = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+ws          = ( " " | "\t" | "\n" | "\r" )* ;
+ws1         = ( " " | "\t" )+ ;

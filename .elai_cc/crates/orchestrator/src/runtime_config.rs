@@ -395,6 +395,33 @@ mod ppm_config_tests {
 /// surface.
 pub const ELAI_BAI_ENABLE_ENV: &str = "ELAI_BAI_ENABLE";
 
+/// E-15: env var that opts the production agent-pool executor into installing
+/// the Firecracker hot snapshot-restore pool + the live SSB writer that emits
+/// the off-agent `sandbox_backend_selected` / `agent_forked_from_snapshot`
+/// rows. DEFAULT-OFF: without `ELAI_SANDBOX_FIRECRACKER_ENABLE=1` the CLI boot
+/// site installs the plain executor (firecracker_pool = None) so the dispatch
+/// path stays dead and no SSB rows land. On KVM-absent hosts the pool itself
+/// degrades to the cold-boot / AppContainer / Gvisor fallback (RUNPOD-PENDING
+/// for the live microVM restore); the flag still wires the writer so the
+/// backend-selected observability lands cross-platform. Registered in
+/// wire-dark-allowlist.toml (R9) under promotion_plan_id = "E-15". Mirrors the
+/// [`ELAI_BAI_ENABLE_ENV`] precedent for naming + toggle consistency.
+pub const ELAI_SANDBOX_FIRECRACKER_ENABLE_ENV: &str = "ELAI_SANDBOX_FIRECRACKER_ENABLE";
+
+/// Read [`ELAI_SANDBOX_FIRECRACKER_ENABLE_ENV`]. Returns `true` iff set to a
+/// truthy token ("1" / "true" / "yes", case-insensitive). Any other value, or
+/// the var being unset, returns `false` (default-OFF).
+#[must_use]
+pub fn sandbox_firecracker_enabled() -> bool {
+    match std::env::var(ELAI_SANDBOX_FIRECRACKER_ENABLE_ENV) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        }
+        Err(_) => false,
+    }
+}
+
 /// D-29: env var that selects between the flat D-5 Beta/Thompson path and
 /// the hierarchical D-29 path. Defaults to "flat" when unset OR when the
 /// value is not a recognised mode token. Recognised tokens
@@ -495,6 +522,182 @@ impl CalibrationBootstrapMode {
 
     /// True iff the gate is `On`. Convenience for callers that only
     /// need the boolean.
+    #[must_use]
+    pub fn is_on(&self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+/// D-6 prod-wire: production wire-dark gate for the held-out task sampler.
+/// Unset OR unrecognised values map to [`HeldOutMode::Off`] (pattern-4
+/// default — same shape as [`CalibrationBootstrapMode`] / [`BaiMode`]).
+/// `ELAI_HELD_OUT_ENABLE=1` (case-insensitive `"1" / "on" / "true" / "yes"`)
+/// flips the gate `On`, at which point `task_runner::drive_task` samples one
+/// active held-out task from the store and emits a `HeldOutTaskUsed` SSB row.
+/// This is the INDEPENDENT drive_task call site, distinct from the D-5 BAI
+/// promotion flow (which has its own [`BaiMode`] gate).
+pub const ELAI_HELD_OUT_ENABLE_ENV: &str = "ELAI_HELD_OUT_ENABLE";
+
+/// D-6 prod-wire: wire-dark mode gate for the held-out sampler dispatch.
+/// `Off` is the default — the production drive_task hook MUST observe this
+/// before sampling the store + emitting `HeldOutTaskUsed` rows. Mirrors the
+/// [`CalibrationBootstrapMode`] precedent so the orchestrator's runtime
+/// probes follow one shape across modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldOutMode {
+    /// Sampler dispatch suppressed — the held-out store is never queried
+    /// from the production path and no `HeldOutTaskUsed` row is emitted.
+    /// Default (wire-dark).
+    Off,
+    /// Sampler dispatch live — the drive_task one-shot hook samples one
+    /// active task (CPU-only: SQLite read + 9-gram filter, no model) and
+    /// emits a `HeldOutTaskUsed` row.
+    On,
+}
+
+impl HeldOutMode {
+    /// Read [`ELAI_HELD_OUT_ENABLE_ENV`] and parse it into a
+    /// [`HeldOutMode`]. Returns [`Self::Off`] when the env var is unset OR
+    /// carries an unrecognised value (wire-dark default per pattern-4 —
+    /// same shape as [`CalibrationBootstrapMode::from_env`]).
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var(ELAI_HELD_OUT_ENABLE_ENV) {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "1" | "on" | "true" | "yes" => Self::On,
+                _ => Self::Off,
+            },
+            Err(_) => Self::Off,
+        }
+    }
+
+    /// Stable snake_case wire tag for the mode (mirrors
+    /// [`CalibrationBootstrapMode::as_str`]).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+
+    /// True iff the gate is `On`. Convenience for callers that only need
+    /// the boolean.
+    #[must_use]
+    pub fn is_on(&self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+/// E-12 prod-wire: production wire-dark gate for the framework-profile
+/// selection beacon. Unset OR unrecognised values map to
+/// [`FrameworkProfileMode::Off`] (pattern-4 default — same shape as
+/// [`HeldOutMode`]). `ELAI_FRAMEWORK_PROFILE_ENABLE=1` (case-insensitive
+/// `"1" / "on" / "true" / "yes"`) flips the gate `On`, at which point
+/// `task_runner::drive_task` resolves the project's
+/// [`crate::framework_profile::FrameworkProfile`] via
+/// `framework_profile::get_framework_profile` (the real non-test caller,
+/// R7) and emits a `FrameworkProfileSelected` SSB row once per runner.
+pub const ELAI_FRAMEWORK_PROFILE_ENABLE_ENV: &str = "ELAI_FRAMEWORK_PROFILE_ENABLE";
+
+/// E-12 prod-wire: wire-dark mode gate for the framework-profile beacon.
+/// `Off` is the default — the production drive_task hook MUST observe this
+/// before resolving the profile + emitting the `FrameworkProfileSelected`
+/// row. Mirrors the [`HeldOutMode`] precedent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameworkProfileMode {
+    /// Beacon suppressed — `get_framework_profile` is never called from
+    /// the production path and no `FrameworkProfileSelected` row is
+    /// emitted. Default (wire-dark).
+    Off,
+    /// Beacon live — drive_task resolves the profile (CPU-only: read the
+    /// `workflow/archetypes/*.toml` registry, no model / no network) and
+    /// emits one `FrameworkProfileSelected` row per runner.
+    On,
+}
+
+impl FrameworkProfileMode {
+    /// Read [`ELAI_FRAMEWORK_PROFILE_ENABLE_ENV`] and parse it. Returns
+    /// [`Self::Off`] when unset OR unrecognised (pattern-4 default —
+    /// same shape as [`HeldOutMode::from_env`]).
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var(ELAI_FRAMEWORK_PROFILE_ENABLE_ENV) {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "1" | "on" | "true" | "yes" => Self::On,
+                _ => Self::Off,
+            },
+            Err(_) => Self::Off,
+        }
+    }
+
+    /// Stable snake_case wire tag for the mode.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+
+    /// True iff the gate is `On`.
+    #[must_use]
+    pub fn is_on(&self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+/// E-12 prod-wire: production wire-dark gate for the production-grade
+/// checklist runner. Unset OR unrecognised values map to
+/// [`ProductionChecklistMode::Off`] (pattern-4 default). When
+/// `ELAI_PRODUCTION_CHECKLIST_ENABLE=1`, `task_runner::drive_task`
+/// dispatches `production_checklist::run_all` (the real non-test caller,
+/// R7) over the selected framework's security-check subset and records a
+/// `PerLevelAuditVerdict` SSB row with `mode="production_grade"`.
+pub const ELAI_PRODUCTION_CHECKLIST_ENABLE_ENV: &str = "ELAI_PRODUCTION_CHECKLIST_ENABLE";
+
+/// E-12 prod-wire: wire-dark mode gate for the production-grade checklist
+/// dispatch. `Off` is the default — running 15 external CLIs per task is
+/// heavy, so this stays opt-in (the runners return `ToolchainMissing`
+/// when the CLI is absent, which still produces an observable verdict
+/// row). Mirrors the [`HeldOutMode`] precedent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductionChecklistMode {
+    /// Checklist dispatch suppressed — `production_checklist::run_all` is
+    /// never called from the production path and no `production_grade`
+    /// audit verdict row is emitted. Default (wire-dark).
+    Off,
+    /// Checklist dispatch live — drive_task runs the selected
+    /// framework's security-check subset and emits a
+    /// `PerLevelAuditVerdict` row with `mode="production_grade"`.
+    On,
+}
+
+impl ProductionChecklistMode {
+    /// Read [`ELAI_PRODUCTION_CHECKLIST_ENABLE_ENV`] and parse it.
+    /// Returns [`Self::Off`] when unset OR unrecognised (pattern-4
+    /// default).
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var(ELAI_PRODUCTION_CHECKLIST_ENABLE_ENV) {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "1" | "on" | "true" | "yes" => Self::On,
+                _ => Self::Off,
+            },
+            Err(_) => Self::Off,
+        }
+    }
+
+    /// Stable snake_case wire tag for the mode.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+
+    /// True iff the gate is `On`.
     #[must_use]
     pub fn is_on(&self) -> bool {
         matches!(self, Self::On)
@@ -689,6 +892,47 @@ impl ClaimRouterRuntimeConfig {
     #[must_use]
     pub fn is_enabled() -> bool {
         match std::env::var(ELAI_CLAIM_ROUTER_ENABLE_ENV) {
+            Ok(raw) => matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            Err(_) => false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E-6 closure: failure-tracker runtime config (env var gate for the MAST
+// failure-mode SSB emit path). Master gate for E-6 SSB emissions per
+// workflow/reasoning/E-6-decisions.md DECISION-6. Mirrors the D-10
+// ClaimRouterRuntimeConfig empty-struct env-gate pattern so operators have
+// one consistent toggle across the producer-stack surface.
+// ---------------------------------------------------------------------------
+
+/// E-6 closure: env var that opts the MAST failure-mode telemetry into the
+/// `per_level_audit_dispatch::record_verdict` BLOCK-attribution hook.
+/// Without `ELAI_FAILURE_TRACKER_ENABLE=1` set,
+/// [`FailureTrackerRuntimeConfig::is_enabled`] returns `false` and the
+/// `audit_mast_tagged` SSB row stays dark — the verdict is still recorded
+/// (via `per_level_audit_verdict`), only the MAST attribution row is
+/// suppressed. Mirrors [`ELAI_CLAIM_ROUTER_ENABLE_ENV`] precedent.
+pub const ELAI_FAILURE_TRACKER_ENABLE_ENV: &str = "ELAI_FAILURE_TRACKER_ENABLE";
+
+/// E-6 closure: configuration for the MAST failure-mode telemetry hook.
+///
+/// Empty struct today — the only knob is the env-var gate (above). Kept as
+/// a named type so future per-mode confidence-band overrides do not break
+/// the call surface (same shape as [`ClaimRouterRuntimeConfig`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct FailureTrackerRuntimeConfig {}
+
+impl FailureTrackerRuntimeConfig {
+    /// Read [`ELAI_FAILURE_TRACKER_ENABLE_ENV`]. Returns `true` iff set to
+    /// `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive). Anything else
+    /// — including absence — disables the MAST telemetry emit (default OFF).
+    #[must_use]
+    pub fn is_enabled() -> bool {
+        match std::env::var(ELAI_FAILURE_TRACKER_ENABLE_ENV) {
             Ok(raw) => matches!(
                 raw.trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes" | "on"
@@ -1236,6 +1480,150 @@ mod operationalization_config_tests {
             ELAI_OPERATIONALIZATION_ENABLE_ENV,
             "ELAI_OPERATIONALIZATION_ENABLE"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D-3 closure: verifier-adapter runtime config (env var gate for the
+// task_runner post-task `dispatch_verifiers` hook). Mirrors the D-11
+// constructive-checker / D-12 operationalization gates so the operator
+// toggle pattern stays consistent across the producer-stack surface. The
+// `dispatch_verifiers` hook itself gates only on `Some(non_empty)`
+// verifier_adapters (it does not read the env var directly); this config
+// governs whether the boot-site `build_verifier_adapters` constructs the
+// adapter set at all, so the env flag is the single default-OFF toggle.
+// ---------------------------------------------------------------------------
+
+/// D-3 closure: env var that opts the verifier-consensus dispatch into the
+/// task-runner's post-task hook. Without `ELAI_VERIFIER_ENABLE=1` set,
+/// [`VerifierRuntimeConfig::is_enabled`] returns `false` and the boot-site
+/// `build_verifier_adapters` returns `None` — `ResolvedConfig.verifier_adapters`
+/// stays `None` and [`crate::task_runner::dispatch_verifiers`] is a strict
+/// no-op, so the `verifier_consensus_pass` / `verifier_consensus_fail` SSB
+/// row family stays dark until this env var is set. Mirrors
+/// [`ELAI_CHECKER_ENABLE_ENV`] precedent.
+pub const ELAI_VERIFIER_ENABLE_ENV: &str = "ELAI_VERIFIER_ENABLE";
+
+/// D-3 closure: configuration for the verifier-consensus dispatch hook.
+/// Today the only knob is the env-var gate (above). Future plans (D-9 L3
+/// config) may surface per-template consensus-rule overrides or per-kind
+/// adapter toggles; the struct exists so adding fields does not break the
+/// construction surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct VerifierRuntimeConfig {}
+
+impl VerifierRuntimeConfig {
+    /// Read [`ELAI_VERIFIER_ENABLE_ENV`]. Returns `true` iff set to
+    /// `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive). Anything
+    /// else — including absence — disables the dispatch hook.
+    #[must_use]
+    pub fn is_enabled() -> bool {
+        match std::env::var(ELAI_VERIFIER_ENABLE_ENV) {
+            Ok(raw) => matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            Err(_) => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod verifier_config_tests {
+    use super::*;
+
+    #[test]
+    fn verifier_is_disabled_by_default() {
+        // `ELAI_VERIFIER_ENABLE` MUST be opt-in. Absence -> false.
+        let _ = VerifierRuntimeConfig::is_enabled();
+    }
+
+    #[test]
+    fn verifier_truthy_strings_round_trip() {
+        for raw in ["1", "true", "yes", "on", "TRUE", "Yes"] {
+            let normalised = raw.trim().to_ascii_lowercase();
+            assert!(
+                matches!(normalised.as_str(), "1" | "true" | "yes" | "on"),
+                "{raw} must parse as truthy"
+            );
+        }
+        for raw in ["0", "false", "no", "off", "", "bogus"] {
+            let normalised = raw.trim().to_ascii_lowercase();
+            assert!(
+                !matches!(normalised.as_str(), "1" | "true" | "yes" | "on"),
+                "{raw} must NOT parse as truthy"
+            );
+        }
+    }
+
+    #[test]
+    fn verifier_env_var_token_is_canonical() {
+        // The env-var name MUST match the D-cluster toggle pattern
+        // (`ELAI_<DOMAIN>_ENABLE`). Locked here so future renames trip
+        // the contract.
+        assert_eq!(ELAI_VERIFIER_ENABLE_ENV, "ELAI_VERIFIER_ENABLE");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D-4 closure: tripwire runtime config (env var gate for the task_runner
+// post-task `dispatch_tripwires` hook). Mirrors the D-3 verifier gate so the
+// operator toggle pattern stays consistent across the D-cluster producer
+// stack. Default-OFF: without `ELAI_TRIPWIRE_ENABLE=1` the boot-site
+// `build_tripwire_monitor` returns `None`, `ResolvedConfig.tripwire_monitor`
+// stays `None`, and `crate::task_runner::dispatch_tripwires` is a strict
+// no-op so the `tripwire_fired` / `template_auto_reverted` row family stays
+// dark. Thresholds load from elai_cc.toml `[tripwire]` (never hardcoded in
+// the monitor constructor — the D-4 stub_ban L3-lock policy).
+// ---------------------------------------------------------------------------
+
+/// D-4 closure: env var that opts the tripwire post-consensus monitor into
+/// the task-runner's post-task hook. Without `ELAI_TRIPWIRE_ENABLE=1` set,
+/// [`TripwireRuntimeConfig::is_enabled`] returns `false` and the boot-site
+/// `build_tripwire_monitor` returns `None` — `ResolvedConfig.tripwire_monitor`
+/// stays `None` and [`crate::task_runner::dispatch_tripwires`] is a strict
+/// no-op. Mirrors [`ELAI_VERIFIER_ENABLE_ENV`] precedent.
+pub const ELAI_TRIPWIRE_ENABLE_ENV: &str = "ELAI_TRIPWIRE_ENABLE";
+
+/// D-4 closure: configuration for the tripwire-monitor dispatch hook. Today
+/// the only knob is the env-var gate (above); the detector thresholds load
+/// from elai_cc.toml `[tripwire]` via [`crate::tripwire::load_tripwire_config`].
+/// The struct exists so adding fields does not break the construction surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TripwireRuntimeConfig {}
+
+impl TripwireRuntimeConfig {
+    /// Read [`ELAI_TRIPWIRE_ENABLE_ENV`]. Returns `true` iff set to
+    /// `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive). Anything
+    /// else — including absence — disables the dispatch hook.
+    #[must_use]
+    pub fn is_enabled() -> bool {
+        match std::env::var(ELAI_TRIPWIRE_ENABLE_ENV) {
+            Ok(raw) => matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            Err(_) => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tripwire_config_tests {
+    use super::*;
+
+    #[test]
+    fn tripwire_is_disabled_by_default() {
+        // `ELAI_TRIPWIRE_ENABLE` MUST be opt-in. Absence -> false.
+        let _ = TripwireRuntimeConfig::is_enabled();
+    }
+
+    #[test]
+    fn tripwire_env_var_token_is_canonical() {
+        // The env-var name MUST match the D-cluster toggle pattern
+        // (`ELAI_<DOMAIN>_ENABLE`). Locked here so future renames trip
+        // the contract.
+        assert_eq!(ELAI_TRIPWIRE_ENABLE_ENV, "ELAI_TRIPWIRE_ENABLE");
     }
 }
 
@@ -2626,5 +3014,237 @@ mod observable_effect_config_tests {
         // Untouched fields pick up defaults.
         assert!((cfg.goodhart_min_component_variation - 1e-3).abs() < f64::EPSILON);
         assert_eq!(cfg.sandbox_default_tier, "container_isolated");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E-46 D-8: PlanningConfig — per-operator overrides for the planning-
+// decomposition substrate constants.
+// ---------------------------------------------------------------------------
+//
+// Loaded from elai_cc.toml `[planning.*]` stanzas by the CLI startup path.
+// When a field is absent the in-module constant is the canonical value
+// (LEDGER_RESET_BLOCKER_THRESHOLD, ENTROPY_RATIO_THRESHOLD, etc.); this
+// config only OVERRIDES at runtime so operators can tune without recompiling.
+//
+// Gating: the planning_decomposition substrate is wire-dark unless
+// `ELAI_PLANNING_DECOMPOSITION_ENABLE=1`. This config struct is always
+// constructed (it is pure data); it only has an effect when the env gate is
+// open AND the orchestrator reads these values instead of the module
+// constants.
+//
+// Decision: fields use `#[serde(default)]` so all stanzas are optional in
+// elai_cc.toml. Unknown keys are ignored (toml deny_unknown_fields is NOT
+// used here — forward-compat posture per the D-2 PPM precedent).
+// ---------------------------------------------------------------------------
+
+/// Ledger sub-config mirroring
+/// `crates/orchestrator/src/planning_decomposition/dual_ledger_ext.rs`
+/// constants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanningLedgerConfig {
+    /// Minimum concurrent blockers before a `BubbleUpLedgerReset` fires.
+    /// Mirrors `LEDGER_RESET_BLOCKER_THRESHOLD` (default 3).
+    #[serde(default = "default_ledger_reset_blocker_threshold")]
+    pub ledger_reset_blocker_threshold: usize,
+}
+
+fn default_ledger_reset_blocker_threshold() -> usize {
+    3
+}
+
+impl Default for PlanningLedgerConfig {
+    fn default() -> Self {
+        Self {
+            ledger_reset_blocker_threshold: default_ledger_reset_blocker_threshold(),
+        }
+    }
+}
+
+/// Goal-drift sub-config mirroring
+/// `crates/orchestrator/src/planning_decomposition/goal_drift_ext.rs`
+/// constants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanningGoalDriftConfig {
+    /// Jaccard similarity below which goal drift fires (default 0.25).
+    #[serde(default = "default_jaccard_similarity_threshold")]
+    pub jaccard_similarity_threshold: f32,
+    /// Cosine similarity below which goal drift fires (default 0.55).
+    #[serde(default = "default_cosine_similarity_threshold")]
+    pub cosine_similarity_threshold: f32,
+}
+
+fn default_jaccard_similarity_threshold() -> f32 {
+    0.25
+}
+
+fn default_cosine_similarity_threshold() -> f32 {
+    0.55
+}
+
+impl Default for PlanningGoalDriftConfig {
+    fn default() -> Self {
+        Self {
+            jaccard_similarity_threshold: default_jaccard_similarity_threshold(),
+            cosine_similarity_threshold: default_cosine_similarity_threshold(),
+        }
+    }
+}
+
+/// Entropy sub-config mirroring
+/// `crates/orchestrator/src/planning_decomposition/decomposition_entropy.rs`
+/// constants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanningEntropyConfig {
+    /// H_children / H_parent ratio below which a `LowEntropyDecomposition`
+    /// row fires (default 0.6).
+    #[serde(default = "default_entropy_ratio_threshold")]
+    pub entropy_ratio_threshold: f32,
+}
+
+fn default_entropy_ratio_threshold() -> f32 {
+    0.6
+}
+
+impl Default for PlanningEntropyConfig {
+    fn default() -> Self {
+        Self {
+            entropy_ratio_threshold: default_entropy_ratio_threshold(),
+        }
+    }
+}
+
+/// Depth-ceiling sub-config for the decomposition navigator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanningDepthCeilingConfig {
+    /// Maximum baby-step depth before the navigator forces escalation.
+    /// Not currently wired to a module constant (reserved for future use).
+    #[serde(default = "default_depth_ceiling")]
+    pub depth_ceiling: usize,
+}
+
+fn default_depth_ceiling() -> usize {
+    8
+}
+
+impl Default for PlanningDepthCeilingConfig {
+    fn default() -> Self {
+        Self {
+            depth_ceiling: default_depth_ceiling(),
+        }
+    }
+}
+
+/// Reflection-buffer sub-config mirroring
+/// `crates/orchestrator/src/planning_decomposition/reflection_buffer.rs`
+/// constants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanningReflectionBufferConfig {
+    /// Per-node reflection cap (default 8 = `MAX_REFLECTIONS_PER_NODE`).
+    #[serde(default = "default_max_reflections_per_node")]
+    pub max_reflections_per_node: usize,
+}
+
+fn default_max_reflections_per_node() -> usize {
+    8
+}
+
+impl Default for PlanningReflectionBufferConfig {
+    fn default() -> Self {
+        Self {
+            max_reflections_per_node: default_max_reflections_per_node(),
+        }
+    }
+}
+
+/// Skill-prior sub-config mirroring
+/// `crates/orchestrator/src/planning_decomposition/skill_prior.rs`
+/// constants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanningSkillPriorsConfig {
+    /// Default top-K skill matches returned per node (default 3 = `DEFAULT_TOP_K`).
+    #[serde(default = "default_skill_prior_top_k")]
+    pub default_top_k: usize,
+}
+
+fn default_skill_prior_top_k() -> usize {
+    3
+}
+
+impl Default for PlanningSkillPriorsConfig {
+    fn default() -> Self {
+        Self {
+            default_top_k: default_skill_prior_top_k(),
+        }
+    }
+}
+
+/// E-46 D-8: top-level planning-decomposition config, loaded from
+/// `elai_cc.toml` `[planning.*]` stanzas.
+///
+/// All sub-structs have `Default` implementations matching the in-module
+/// constants so an absent config is indistinguishable from an all-default one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PlanningConfig {
+    #[serde(default)]
+    pub ledger: PlanningLedgerConfig,
+    #[serde(default)]
+    pub goal_drift: PlanningGoalDriftConfig,
+    #[serde(default)]
+    pub entropy: PlanningEntropyConfig,
+    #[serde(default)]
+    pub depth_ceiling: PlanningDepthCeilingConfig,
+    #[serde(default)]
+    pub reflection_buffer: PlanningReflectionBufferConfig,
+    #[serde(default)]
+    pub skill_priors: PlanningSkillPriorsConfig,
+}
+
+impl PlanningConfig {
+    /// Deserialise from a `toml::Value` representing the top-level config
+    /// table (not the `[planning]` sub-table). The loader should pass the
+    /// `[planning]` sub-table value here.
+    ///
+    /// Returns `Default::default()` when the stanza is absent, keeping the
+    /// convention established by `PpmRuntimeConfig::from_toml_value`.
+    #[must_use]
+    pub fn from_toml_value(v: &toml::Value) -> Self {
+        toml::from_str(&toml::to_string(v).unwrap_or_default())
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod planning_config_tests {
+    use super::*;
+
+    #[test]
+    fn planning_config_defaults_match_module_constants() {
+        let cfg = PlanningConfig::default();
+        assert_eq!(cfg.ledger.ledger_reset_blocker_threshold, 3);
+        assert!((cfg.goal_drift.jaccard_similarity_threshold - 0.25).abs() < 1e-6);
+        assert!((cfg.goal_drift.cosine_similarity_threshold - 0.55).abs() < 1e-6);
+        assert!((cfg.entropy.entropy_ratio_threshold - 0.6).abs() < 1e-6);
+        assert_eq!(cfg.depth_ceiling.depth_ceiling, 8);
+        assert_eq!(cfg.reflection_buffer.max_reflections_per_node, 8);
+        assert_eq!(cfg.skill_priors.default_top_k, 3);
+    }
+
+    #[test]
+    fn planning_config_partial_toml_picks_up_defaults() {
+        let raw = r#"
+            [ledger]
+            ledger_reset_blocker_threshold = 5
+
+            [entropy]
+            entropy_ratio_threshold = 0.4
+        "#;
+        let value: toml::Value = toml::from_str(raw).expect("toml parse");
+        let cfg = PlanningConfig::from_toml_value(&value);
+        assert_eq!(cfg.ledger.ledger_reset_blocker_threshold, 5);
+        assert!((cfg.entropy.entropy_ratio_threshold - 0.4).abs() < 1e-6);
+        // Untouched fields pick up defaults.
+        assert!((cfg.goal_drift.jaccard_similarity_threshold - 0.25).abs() < 1e-6);
+        assert_eq!(cfg.skill_priors.default_top_k, 3);
     }
 }

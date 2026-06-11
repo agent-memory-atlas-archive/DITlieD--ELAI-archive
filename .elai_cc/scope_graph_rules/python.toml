@@ -1,0 +1,20 @@
+# E-40 Task 2 (Tranche B-3) — Python push/pop scope rules.
+# Design adoption of arXiv:2211.01224 (Stack Graphs); no runtime dep.
+language = "python"
+
+# Python resolves locals (Local), enclosing-function/class scope and
+# module-level names in the same file (File), names in the same package
+# (Module), names imported from another module via `import`/`from ... import`
+# (CrossFile), and top-level package roots (Crate). Dynamic-dispatch
+# (`obj.method()`) recall is partial under tree-sitter alone (E-40 Open
+# Question 2); such candidates surface at Heuristic confidence and the
+# caller escalates to the scip-python / pyright oracle (Task 5).
+allowed_boundaries = ["local", "file", "module", "cross_file", "crate"]
+
+module_separator = "/"
+
+# `__init__.py` marks a package directory; siblings under it are same-module.
+same_module_markers = ["__init__.py"]
+
+# `from .x import y` re-exports are common; follow them as CrossFile.
+follow_reexports = true

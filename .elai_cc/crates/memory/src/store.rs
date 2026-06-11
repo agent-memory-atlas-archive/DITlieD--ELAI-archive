@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     evidence_pointers TEXT NOT NULL,
     superseded_by TEXT,
     trust_tier TEXT NOT NULL DEFAULT 'T3',
-    provenance TEXT NOT NULL DEFAULT ''
+    provenance TEXT NOT NULL DEFAULT '',
+    last_validated_at_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_memory_facts_user_scope
     ON memory_facts(user_id, scope, fact_type);
@@ -68,6 +69,13 @@ impl FactStore {
         }
         let conn = Connection::open(path.as_ref())?;
         conn.execute_batch(CREATE_TABLE_SQL)?;
+        // H-32 migration: add last_validated_at_ms column to existing DBs.
+        // Idempotent: SQLite returns an error if the column already exists,
+        // which we silently ignore (the column will be present after the
+        // CREATE_TABLE_SQL on fresh DBs via the ALTER-guarded path below).
+        let _ = conn.execute_batch(
+            "ALTER TABLE memory_facts ADD COLUMN last_validated_at_ms INTEGER;"
+        );
         Ok(Self { conn })
     }
 
@@ -76,6 +84,11 @@ impl FactStore {
     pub fn open_in_memory() -> Result<Self, MemoryError> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(CREATE_TABLE_SQL)?;
+        // In-memory stores always use the fresh schema (column included), so
+        // the ALTER is a no-op but we run it anyway for consistency.
+        let _ = conn.execute_batch(
+            "ALTER TABLE memory_facts ADD COLUMN last_validated_at_ms INTEGER;"
+        );
         Ok(Self { conn })
     }
 
@@ -92,13 +105,13 @@ impl FactStore {
                 confidence, trust_score, ingested_at_ms, valid_from_ms,
                 valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                 evidence_pointers, superseded_by,
-                trust_tier, provenance
+                trust_tier, provenance, last_validated_at_ms
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11,
                 ?12, ?13, ?14,
                 ?15, ?16,
-                ?17, ?18
+                ?17, ?18, ?19
             )",
             params![
                 fact.fact_id,
@@ -119,6 +132,7 @@ impl FactStore {
                 fact.superseded_by,
                 fact.trust_tier.as_str(),
                 provenance_json,
+                fact.last_validated_at_ms.map(|v| v as i64),
             ],
         )?;
         Ok(())
@@ -131,7 +145,7 @@ impl FactStore {
                     confidence, trust_score, ingested_at_ms, valid_from_ms,
                     valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                     evidence_pointers, superseded_by,
-                    trust_tier, provenance
+                    trust_tier, provenance, last_validated_at_ms
              FROM memory_facts
              WHERE fact_id = ?1",
         )?;
@@ -156,7 +170,7 @@ impl FactStore {
                     confidence, trust_score, ingested_at_ms, valid_from_ms,
                     valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                     evidence_pointers, superseded_by,
-                    trust_tier, provenance
+                    trust_tier, provenance, last_validated_at_ms
              FROM memory_facts
              WHERE user_id = ?1 AND valid_to_ms IS NULL",
         );
@@ -201,6 +215,57 @@ impl FactStore {
         rows.into_iter().collect()
     }
 
+    /// List ALL facts for `user_id` including CLOSED ones (valid_to_ms IS NOT
+    /// NULL). Used by the staleness benchmark broken-retrieve negative control
+    /// (H-17 staleness_runner.rs) to model the EXACT same retrieval pipeline
+    /// but WITHOUT the valid_to_ms live-only filter — the ONLY difference from
+    /// the real retriever.
+    ///
+    /// Optional `fact_type` filter mirrors `list_current`. `limit` is a
+    /// CANDIDATE cap (caller applies further filters after).
+    ///
+    /// NEVER used in production retrieval; only in the benchmark negative arm.
+    pub fn list_including_closed(
+        &self,
+        user_id: &str,
+        fact_type: Option<FactType>,
+        limit: usize,
+    ) -> Result<Vec<MemoryFact>, MemoryError> {
+        let type_tag = fact_type.map(|t| t.as_str().to_owned());
+        let sql = if type_tag.is_some() {
+            format!(
+                "SELECT fact_id, user_id, project_id, scope, fact_type, key, value,
+                        confidence, trust_score, ingested_at_ms, valid_from_ms,
+                        valid_to_ms, decay_rate_per_day, last_observed_at_ms,
+                        evidence_pointers, superseded_by, trust_tier, provenance, last_validated_at_ms
+                 FROM memory_facts
+                 WHERE user_id = ?1 AND fact_type = ?2
+                 ORDER BY last_observed_at_ms DESC LIMIT {limit}"
+            )
+        } else {
+            format!(
+                "SELECT fact_id, user_id, project_id, scope, fact_type, key, value,
+                        confidence, trust_score, ingested_at_ms, valid_from_ms,
+                        valid_to_ms, decay_rate_per_day, last_observed_at_ms,
+                        evidence_pointers, superseded_by, trust_tier, provenance, last_validated_at_ms
+                 FROM memory_facts
+                 WHERE user_id = ?1
+                 ORDER BY last_observed_at_ms DESC LIMIT {limit}"
+            )
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows: Vec<Result<MemoryFact, MemoryError>> = if let Some(ref t) = type_tag {
+            stmt.query_map(params![user_id, t], row_to_fact)?
+                .map(|r| r.map_err(Into::into).and_then(|x| x))
+                .collect()
+        } else {
+            stmt.query_map(params![user_id], row_to_fact)?
+                .map(|r| r.map_err(Into::into).and_then(|x| x))
+                .collect()
+        };
+        rows.into_iter().collect()
+    }
+
     /// Supersede `old_fact_id` with `new_fact`. Atomic in a single
     /// transaction: closes the old row (`valid_to_ms = now_ms`) and links
     /// it to the new row via `superseded_by`, then inserts the new row.
@@ -231,13 +296,13 @@ impl FactStore {
                 confidence, trust_score, ingested_at_ms, valid_from_ms,
                 valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                 evidence_pointers, superseded_by,
-                trust_tier, provenance
+                trust_tier, provenance, last_validated_at_ms
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11,
                 ?12, ?13, ?14,
                 ?15, ?16,
-                ?17, ?18
+                ?17, ?18, ?19
             )",
             params![
                 new_fact.fact_id,
@@ -258,6 +323,7 @@ impl FactStore {
                 new_fact.superseded_by,
                 new_fact.trust_tier.as_str(),
                 provenance_json,
+                new_fact.last_validated_at_ms.map(|v| v as i64),
             ],
         )?;
         tx.commit()?;
@@ -308,6 +374,22 @@ impl FactStore {
             params![fact_id, now_ms as i64],
         )?;
         if updated == 0 {
+            return Err(MemoryError::NotFound(fact_id.to_owned()));
+        }
+        Ok(())
+    }
+
+    /// H-32: stamp `last_validated_at_ms` on a row after a successful
+    /// citation re-check. Non-fatal caller pattern: the caller logs + continues
+    /// on `NotFound` (fact may have been soft-closed by a concurrent tick).
+    pub fn update_validated_at(&self, fact_id: &str, now_ms: u128) -> Result<(), MemoryError> {
+        let n = self.conn.execute(
+            "UPDATE memory_facts
+             SET last_validated_at_ms = ?2
+             WHERE fact_id = ?1",
+            params![fact_id, now_ms as i64],
+        )?;
+        if n == 0 {
             return Err(MemoryError::NotFound(fact_id.to_owned()));
         }
         Ok(())
@@ -381,6 +463,7 @@ fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MemoryFact, M
     let superseded_by: Option<String> = row.get(15)?;
     let trust_tier_tag: String = row.get(16)?;
     let provenance_text: String = row.get(17)?;
+    let last_validated_at: Option<i64> = row.get(18)?;
 
     let value: serde_json::Value = match serde_json::from_str(&value_text) {
         Ok(v) => v,
@@ -427,5 +510,6 @@ fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MemoryFact, M
         superseded_by,
         trust_tier,
         provenance,
+        last_validated_at_ms: last_validated_at.map(|v| v as u128),
     }))
 }

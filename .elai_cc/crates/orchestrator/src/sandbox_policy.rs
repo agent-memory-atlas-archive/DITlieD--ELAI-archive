@@ -514,6 +514,28 @@ fn path_starts_with(candidate: &Path, prefix: &Path) -> bool {
     cand.iter().zip(pref.iter()).all(|(a, b)| a == b)
 }
 
+/// Returns `true` when `candidate`, resolved relative to `root` and
+/// canonicalised (collapsing `..`/`.`/symlinks via
+/// [`canonicalise_for_check`]), does NOT stay under `root`.
+///
+/// Reuses the same normalisation the sandbox FS gate uses so a
+/// path-traversal escape (`<root>/a/../../etc/passwd`) is judged identically
+/// at the IPC `ToolRequest` boundary and at the dispatcher FS boundary.
+/// `root` itself is canonicalised before comparison so a non-canonical
+/// `root` (e.g. via a symlinked cwd) does not produce a false escape.
+/// A relative `candidate` is joined onto `root` first; an absolute
+/// `candidate` is checked as-is.
+pub(crate) fn path_escapes_root(candidate: &Path, root: &Path) -> bool {
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    let resolved = canonicalise_for_check(&joined);
+    let root_resolved = canonicalise_for_check(root);
+    !path_starts_with(&resolved, &root_resolved)
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------

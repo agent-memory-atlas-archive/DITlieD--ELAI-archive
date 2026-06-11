@@ -209,6 +209,24 @@ enabled = true
 relations = ["identity", "inverse"]
 sample_size = 100
 
+# [testing.metamorphic.advanced_operators]: C-36 MuCoCo mutation-
+# consistency catalog (arXiv:2604.19086). The 11 MuCoCo operators
+# (MucocoOperator, metamorphic_testing.rs) are AST mutations dispatched
+# to the python sidecar (/mucoco/mutate); a semantic-preserving mutation
+# whose output diverges from the original is a behavioural inconsistency
+# (latent bug), emitted as the MucocoInconsistencyDetected SSB row.
+# Enum decision: MucocoOperator is CANONICAL; MetamorphicRelation is NOT
+# extended (those are relations, these are mutations). WIRE-DARK[C-36]:
+# default-OFF until the GPU-deferred sidecar pilot ships the detector.
+# operators = [] means "all 11"; an explicit list scopes the run.
+# sidecar_base_url is the /mucoco/mutate root; false_positive_audit_n is
+# the sample size for the post-pilot false-positive audit.
+[testing.metamorphic.advanced_operators]
+enabled = false
+operators = []
+sidecar_base_url = "http://127.0.0.1:8100"
+false_positive_audit_n = 50
+
 # 4D.13: Trusted domain classification for Oracle research pipeline.
 # Loaded by SourceQualityTable::new_from_elai_cc_toml().
 # T1 = authoritative primary sources. T2 = strong community sources.
@@ -880,11 +898,11 @@ min_score_threshold = 0.7
 # arXiv:2106.10417 (variance-dependent BAI). Decision doc:
 # workflow/reasoning/D-5-decisions.md.
 # ============================================================================
-# [bai]
-# alpha_prior = 1.0
-# beta_prior = 1.0
-# confidence_level = 0.95
-# promotion_threshold = 0.55
+[bai]
+alpha_prior = 1.0
+beta_prior = 1.0
+confidence_level = 0.95
+promotion_threshold = 0.55
 
 # ============================================================================
 # D-17: Honest-refusal SLA monitoring.
@@ -1666,37 +1684,38 @@ challenge_text_locked = true
 #     and does NOT specify implementation for refusal per
 #     D-16-decisions.md DECISION-6.
 # ============================================================================
-# [conformal]
+[conformal]
 # Master enable flag. The `[conformal].enable` toml key + the
 # `ELAI_CONFORMAL_REFUSAL_ENABLE` env var BOTH must be truthy for the
 # `dispatch_conformal_corpus_grow_hook` hook in the task_runner to fire.
 # The env var takes precedence at runtime so the toggle can be flipped
 # without editing the file. Default false — opt-in.
-# enable = false
+enable = false
 # UniCR Eq.5 miscoverage rate. Range (0.0, 1.0); paper default 0.10.
 # The CRC quantile is taken at `1 - alpha`. DO NOT conflate with
 # `rho` below — they are paper-distinct quantities.
-# alpha = 0.10
+alpha = 0.10
 # UniCR selective risk budget — the per-decision risk ceiling
 # enforced separately from the global miscoverage rate. Range (0.0,
 # 1.0); ELAI default 0.05 per paper §4.2 typical operating point.
 # Strictly < alpha so the selective predictor is more conservative
 # than the marginal one.
-# rho = 0.05
+rho = 0.05
 # Minimum tuple count below which `TauUpdater::update_tau` writes
 # the conservative fallback (0.9) instead of the computed quantile.
 # Default 50 — calibrated for early-bootstrap workflows; production
-# raises to >= 500 once the grower is online.
-# min_calibration_corpus_size = 50
+# raises to >= 500 once the grower is online. DEFAULT_MIN_CORPUS_SIZE
+# (the module constant) stays 20 until the grower is active.
+min_calibration_corpus_size = 50
 # Minimum interval (seconds) between successive corpus-grow events
 # emitted by `dispatch_conformal_corpus_grow_hook`. Throttles the
 # `calibration_corpus_updated` SSB row to one per hour by default so
 # the dashboard's audit-trail panel stays readable across long runs.
-# corpus_grow_min_interval_secs = 3600
+corpus_grow_min_interval_secs = 3600
 # On-disk path the durable tau scalar is written to. The string is
 # resolved relative to the project root; absolute paths bypass the
 # relative resolution. Default `.elai_cc/data/conformal_tau.txt`.
-# tau_path = ".elai_cc/data/conformal_tau.txt"
+tau_path = ".elai_cc/data/conformal_tau.txt"
 
 # ============================================================================
 # [observable_effect] (D-18 closure — L3-LOCKED)
@@ -1787,3 +1806,47 @@ confirm_user_understanding = true
 calibration_baseline_mmlu = 0.0
 calibration_baseline_humaneval = 0.0
 # enabled = false  # master switch; default false until E-47.1 producer ships
+
+# ============================================================================
+# E-46 D-8: Planning-decomposition substrate runtime overrides.
+# ============================================================================
+# All keys are OPTIONAL. When absent, the in-module constant is used:
+#   LEDGER_RESET_BLOCKER_THRESHOLD = 3 (dual_ledger_ext.rs)
+#   ENTROPY_RATIO_THRESHOLD        = 0.6 (decomposition_entropy.rs)
+#   JACCARD_SIMILARITY_THRESHOLD   = 0.25 (goal_drift_ext.rs)
+#   COSINE_SIMILARITY_THRESHOLD    = 0.55 (goal_drift_ext.rs)
+#   MAX_REFLECTIONS_PER_NODE       = 8 (reflection_buffer.rs)
+#   DEFAULT_TOP_K                  = 3 (skill_prior.rs)
+#
+# Loaded by `PlanningConfig::from_toml_value` in runtime_config.rs.
+# Wire-dark unless ELAI_PLANNING_DECOMPOSITION_ENABLE=1.
+#
+# Spec ref: docs/thefinalglance/E-plan/E-46_planning_decomposition.md
+# Decision doc: workflow/reasoning/E-46-decisions.md (D-8 section)
+# ============================================================================
+
+[planning.ledger]
+# Minimum concurrent blockers before a BubbleUpLedgerReset fires.
+ledger_reset_blocker_threshold = 3
+
+[planning.goal_drift]
+# Jaccard similarity below which goal drift fires.
+jaccard_similarity_threshold = 0.25
+# Cosine similarity below which goal drift fires.
+cosine_similarity_threshold = 0.55
+
+[planning.entropy]
+# H_children / H_parent ratio below which a LowEntropyDecomposition fires.
+entropy_ratio_threshold = 0.6
+
+[planning.depth_ceiling]
+# Maximum baby-step depth before the navigator forces escalation (reserved).
+depth_ceiling = 8
+
+[planning.reflection_buffer]
+# Per-node reflection cap (matches MAX_REFLECTIONS_PER_NODE = 8).
+max_reflections_per_node = 8
+
+[planning.skill_priors]
+# Default top-K skill matches per node (matches DEFAULT_TOP_K = 3).
+default_top_k = 3

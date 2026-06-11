@@ -1,0 +1,7 @@
+{
+  "claim_id": "covered-factual-1",
+  "claim_type": "factual",
+  "text": "The output of the function should equal 42 when the input is 6 times 7",
+  "has_grounding_evidence": true,
+  "note": "Factual claim WITH a Deterministic verifier in context. Routes Constructive; no CheckerGapDetected row expected."
+}

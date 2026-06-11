@@ -2954,22 +2954,105 @@ impl SsbViewer {
         self.recent_rows_of_type(SsbActionType::QueryTrace.as_sql_str(), limit)
     }
 
-    /// Query tier stats stub (Tier 3 Knowledge drawer). Reserved until a
-    /// dedicated SSB row records per-query tier decisions.
+    /// Query-tier routing histogram (Tier 3 Knowledge drawer).
+    ///
+    /// C-3: real aggregate over the most recent `query_trace` SSB rows
+    /// (capped at [`DRAWER_QUERY_HARD_CAP`]). Each row carries a
+    /// [`crate::ssb::QueryTracePayload`] with a `tier`
+    /// (`"FAST" / "STANDARD" / "DEEP" / "AUTO"`) and `total_latency_ms`.
+    /// Rows are bucketed by tier; `*_pct` is the share of the sample in
+    /// each bucket and `avg_latency_ms_*` is the mean latency within the
+    /// bucket. `AUTO` rows count toward `sample_size` and the percentage
+    /// denominator but are not surfaced as their own bucket (the histogram
+    /// has three named lanes). When no `query_trace` rows exist yet the
+    /// method returns an all-zero `QueryTierStats` (sample_size = 0), so the
+    /// dashboard renders "no data" without erroring.
     pub fn query_tier_stats(&self) -> Result<QueryTierStats, SsbViewerError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                SsbActionType::QueryTrace.as_sql_str(),
+                DRAWER_QUERY_HARD_CAP as i64,
+            ],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+
+        let mut fast_n: u32 = 0;
+        let mut standard_n: u32 = 0;
+        let mut deep_n: u32 = 0;
+        let mut fast_lat_sum: u64 = 0;
+        let mut standard_lat_sum: u64 = 0;
+        let mut deep_lat_sum: u64 = 0;
+        let mut sample_size: u32 = 0;
+
+        for row in rows {
+            let bytes = row?;
+            let Ok(payload): Result<SsbPayload, _> = rmp_serde::from_slice(&bytes) else {
+                continue;
+            };
+            let SsbPayload::QueryTrace(p) = payload else {
+                continue;
+            };
+            sample_size = sample_size.saturating_add(1);
+            match p.tier.as_str() {
+                "FAST" => {
+                    fast_n = fast_n.saturating_add(1);
+                    fast_lat_sum = fast_lat_sum.saturating_add(p.total_latency_ms);
+                }
+                "STANDARD" => {
+                    standard_n = standard_n.saturating_add(1);
+                    standard_lat_sum =
+                        standard_lat_sum.saturating_add(p.total_latency_ms);
+                }
+                "DEEP" => {
+                    deep_n = deep_n.saturating_add(1);
+                    deep_lat_sum = deep_lat_sum.saturating_add(p.total_latency_ms);
+                }
+                // "AUTO" (or any future tier label) counts toward the
+                // sample denominator but has no dedicated histogram lane.
+                _ => {}
+            }
+        }
+
+        let pct = |n: u32| -> f32 {
+            if sample_size == 0 {
+                0.0
+            } else {
+                (n as f32 / sample_size as f32) * 100.0
+            }
+        };
+        let avg = |sum: u64, n: u32| -> f32 {
+            if n == 0 {
+                0.0
+            } else {
+                sum as f32 / n as f32
+            }
+        };
+
         Ok(QueryTierStats {
-            fast_pct: 0.0,
-            standard_pct: 0.0,
-            deep_pct: 0.0,
-            avg_latency_ms_fast: 0.0,
-            avg_latency_ms_standard: 0.0,
-            avg_latency_ms_deep: 0.0,
-            sample_size: 0,
+            fast_pct: pct(fast_n),
+            standard_pct: pct(standard_n),
+            deep_pct: pct(deep_n),
+            avg_latency_ms_fast: avg(fast_lat_sum, fast_n),
+            avg_latency_ms_standard: avg(standard_lat_sum, standard_n),
+            avg_latency_ms_deep: avg(deep_lat_sum, deep_n),
+            sample_size,
         })
     }
 
-    /// Freshness state stub (Tier 3 Knowledge drawer). The freshness meta
-    /// DB does not expose a read endpoint yet; default values reported.
+    /// Freshness state (Tier 3 Knowledge drawer).
+    ///
+    /// WIRE-DARK[C-3]: there is no `freshness_computed` SSB action_type and
+    /// the freshness meta DB (`crates/knowledge/src/freshness.rs`) does not
+    /// expose a read endpoint reachable from the orchestrator SSB. Until a
+    /// freshness producer row lands, this honestly reports `known: false`
+    /// with zeroed config rather than fabricating decay/boost numbers (the
+    /// dashboard treats `known: false` as "no data yet"). Real SQL read is
+    /// blocked on the producer side, owned by a future knowledge-crate plan.
     pub fn freshness_state(&self) -> Result<FreshnessState, SsbViewerError> {
         Ok(FreshnessState {
             decay_rate: 0.0,
@@ -4294,6 +4377,473 @@ impl SsbViewer {
         Ok(out)
     }
 
+    /// G-4 — list `mcp_rug_pull_blocked` rows newest-first. Each row records a
+    /// live MCP rug-pull / line-jump: a reconnect-time `tools/list` re-fetch
+    /// from a previously-approved server whose blake3 schema pin no longer
+    /// matches. The changed tool(s) were blocked fail-closed until operator
+    /// re-approval (`update_pin`). DISTINCT from `mcp_schema_pin_violation`
+    /// (E-24 first-connect). `cap` is clamped to [`DRAWER_QUERY_HARD_CAP`] to
+    /// bound the IPC payload. Returns an empty Vec when no rug-pulls have been
+    /// recorded (the default state).
+    pub fn mcp_rug_pulls(&self, cap: usize) -> Result<Vec<McpRugPullRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::McpRugPullBlocked.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<McpRugPullRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::McpRugPullBlocked(p) = payload {
+                out.push(McpRugPullRow {
+                    seq,
+                    ts_ms,
+                    server_url: p.server_url,
+                    schema_blake3_before: p.schema_blake3_before,
+                    schema_blake3_after: p.schema_blake3_after,
+                    changed_tools: p.changed_tools,
+                    description_diff_count: p.description_diff_count,
+                    ingest_origin: p.ingest_origin,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// G-1 — list `taint_flow` rows newest-first. Each row records ONE
+    /// data-plane taint propagation that was BLOCKED at a destructive sink: an
+    /// untrusted ingest (web / tool-output / external file / sandbox stdout)
+    /// flowed into a destructive sink (git commit / file write) and the
+    /// `allow_tool_with_origin` capability gate rejected the call. `cap` is
+    /// clamped to [`DRAWER_QUERY_HARD_CAP`] to bound the IPC payload. Returns an
+    /// empty Vec when no tainted flow has been blocked (the default state).
+    pub fn taint_flows(&self, cap: usize) -> Result<Vec<TaintFlowRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::TaintFlow.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<TaintFlowRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::TaintFlow(p) = payload {
+                out.push(TaintFlowRow {
+                    seq,
+                    ts_ms,
+                    kind: p.kind.label().to_owned(),
+                    origin_blake3: p.origin_blake3,
+                    trust_level: p.trust_level,
+                    sink_tool: p.sink_tool.unwrap_or_default(),
+                    blocked: p.blocked,
+                    task_id: p.task_id,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// G-2 — list `run_artifact_emitted` rows newest-first. Each row records ONE
+    /// Reproducible-Run Artifact (`.rra`) that was sealed at run end: the blake3
+    /// root over the canonical bundle bytes, the honest per-lane guarantee level
+    /// (`reproducible_action_stream` / `verify_divergence` — never
+    /// `reproducible_tokens` for a cloud lane, GD-5), the F-gate evidence-
+    /// manifest entry count, and the pinned `ELAI_SEED`. The drawer renders
+    /// these so an operator can read the artifact's trust posture without
+    /// opening the file. `cap` is clamped to [`DRAWER_QUERY_HARD_CAP`] to bound
+    /// the IPC payload. Returns an empty Vec when no artifact has been sealed
+    /// (the default state on a fresh install).
+    pub fn run_artifacts(&self, cap: usize) -> Result<Vec<RunArtifactRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::RunArtifactEmitted.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<RunArtifactRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::RunArtifactEmitted(p) = payload {
+                out.push(RunArtifactRow {
+                    seq,
+                    ts_ms,
+                    root_blake3: p.root_blake3,
+                    guarantee_level: p.guarantee_level,
+                    gate_count: p.gate_count,
+                    seed: p.seed,
+                    session_id: p.session_id,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// G-8 — list `provenance_attestation_emitted` rows newest-first. Each row
+    /// records ONE signed in-toto v1 provenance attestation built from a sealed
+    /// G-2 Reproducible-Run Artifact and emitted at the `elai run` exit: the
+    /// blake3-Merkle subject digest (the value the git trailer carries + the
+    /// offline verify recomputes), the G-2 run-artifact root the attestation
+    /// chains to, the F-gate `verified_levels` rollup count (CONSUMED from the
+    /// G-2 manifest, GD-1), an all-passed flag, and the honest signing model
+    /// (`local_blake3_merkle`). The drawer renders these so an operator can read
+    /// the run's off-machine trust posture without opening the sidecar. `cap` is
+    /// clamped to [`DRAWER_QUERY_HARD_CAP`] to bound the IPC payload. Returns an
+    /// empty Vec when no attestation has been emitted (the default state on a
+    /// fresh install / before any `elai run` sealed one).
+    pub fn attestations(&self, cap: usize) -> Result<Vec<AttestationRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                SsbActionType::ProvenanceAttestationEmitted.as_sql_str(),
+                limit_i64
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<AttestationRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::ProvenanceAttestationEmitted(p) = payload {
+                out.push(AttestationRow {
+                    seq,
+                    ts_ms,
+                    session_id: p.session_id,
+                    subject_blake3: p.subject_blake3,
+                    run_artifact_root: p.run_artifact_root,
+                    verified_levels: p.verified_levels,
+                    all_passed: p.all_passed,
+                    signing_model: p.signing_model,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// G-9 — list `secret_redacted` advisory rows newest-first. Each row records
+    /// ONE write-time secret+PII redaction that fired on a typed SsbPayload
+    /// free-text field at the top of `Ssb::write_payload`: the redacted field
+    /// identity, the stable blake3-keyed token(s) that replaced the match(es),
+    /// the match count, and the per-kind `(label, count)` summary — NEVER the
+    /// raw secret. The panel renders the counts so an operator can see redaction
+    /// is firing on the write path without ever seeing a secret. `cap` is
+    /// clamped to [`DRAWER_QUERY_HARD_CAP`]. Returns an empty Vec when no
+    /// redaction has fired (the default state when no secret has been written).
+    pub fn redactions(&self, cap: usize) -> Result<Vec<RedactionStatRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::SecretRedacted.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<RedactionStatRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::SecretRedacted(p) = payload {
+                out.push(RedactionStatRow {
+                    seq,
+                    ts_ms,
+                    session_id: p.session_id,
+                    field: p.field,
+                    tokens: p.tokens,
+                    match_count: p.match_count,
+                    kind_counts: p.kind_counts,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// G-5 — list `review_surface_scored` rows newest-first. Each row records ONE
+    /// reviewer-cockpit Diff-Surface-to-Review (DSR) score: the DSR ratio
+    /// (un-vouched changed lines / total changed lines), the vouched / un-vouched
+    /// / total changed-line counts, and the pinned diff-base commit the score was
+    /// computed against. The cockpit window renders these so a reviewer sees the
+    /// headline DSR + the vouched/un-vouched split without re-running the score.
+    /// `cap` is clamped to [`DRAWER_QUERY_HARD_CAP`] to bound the IPC payload.
+    /// Returns an empty Vec when no score has been recorded (the default state
+    /// before any `elai review --cockpit` run).
+    pub fn review_surfaces(&self, cap: usize) -> Result<Vec<ReviewSurfaceRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::ReviewSurfaceScored.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<ReviewSurfaceRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::ReviewSurfaceScored(p) = payload {
+                out.push(ReviewSurfaceRow {
+                    seq,
+                    ts_ms,
+                    session_id: p.session_id,
+                    dsr: p.dsr,
+                    total_changed_lines: p.total_changed_lines,
+                    attention_lines: p.attention_lines,
+                    vouched_hunks: p.vouched_hunks,
+                    unvouched_hunks: p.unvouched_hunks,
+                    base_commit: p.base_commit,
+                    diff_available: p.diff_available,
+                    diff_unavailable_reason: p.diff_unavailable_reason.unwrap_or_default(),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// G-7 — list `claim_confidence_scored` rows newest-first. Each row records
+    /// ONE live per-change conformal decision carrying the REAL fused
+    /// `claim_score` (log-prob LOCAL-only + self-consistency + exec-agreement),
+    /// the three per-signal components, the lane, tau, the `decide()` verdict and
+    /// the abstained flag. The cockpit confidence-triage band reads these to
+    /// surface low-confidence hunks first. `cap` is clamped to
+    /// [`DRAWER_QUERY_HARD_CAP`]. Returns an empty Vec when no per-change
+    /// decision has fired (the default state behind the conformal triple gate).
+    pub fn claim_confidences(
+        &self,
+        cap: usize,
+    ) -> Result<Vec<ClaimConfidenceRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::ClaimConfidenceScored.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<ClaimConfidenceRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::ClaimConfidenceScored(p) = payload {
+                out.push(ClaimConfidenceRow {
+                    seq,
+                    ts_ms,
+                    claim_id: p.claim_id,
+                    claim_score: p.claim_score,
+                    logprob_component: p.logprob_component,
+                    self_consistency_component: p.self_consistency_component,
+                    exec_agreement_component: p.exec_agreement_component,
+                    lane: p.lane,
+                    tau: p.tau,
+                    conformal_verdict: p.conformal_verdict,
+                    abstained: p.abstained,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// G-7 — list `trifecta_quarantined` rows newest-first. Each row records ONE
+    /// tool-call chokepoint where the secret-present + untrusted-span + egress
+    /// legs co-occurred and the untrusted span was held back from the tool-caller.
+    /// Carries the blake3 of the untrusted origin (NEVER the raw span), the sink
+    /// tool, the three component flags, the quarantined flag and the no-tool
+    /// sub-LLM verdict. `cap` is clamped to [`DRAWER_QUERY_HARD_CAP`]. Returns an
+    /// empty Vec when no quarantine has fired (the default state — a benign run
+    /// never trips the trifecta).
+    pub fn trifecta_quarantines(
+        &self,
+        cap: usize,
+    ) -> Result<Vec<TrifectaQuarantineRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::TrifectaQuarantined.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<TrifectaQuarantineRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::TrifectaQuarantined(p) = payload {
+                out.push(TrifectaQuarantineRow {
+                    seq,
+                    ts_ms,
+                    task_id: p.task_id,
+                    untrusted_origin_blake3: p.untrusted_origin_blake3,
+                    sink_tool: p.sink_tool,
+                    secret_present: p.secret_present,
+                    untrusted_span: p.untrusted_span,
+                    egress_available: p.egress_available,
+                    quarantined: p.quarantined,
+                    sub_llm_verdict: p.sub_llm_verdict,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// G-3 — list `blast_radius_blocked` rows newest-first. Each row records ONE
+    /// deterministic runtime gate block: either a shell-EXPANDED FS-mutating
+    /// target that left the worktree root (`kind = fs_escape`) or an egress
+    /// host that was NUL/control-rejected or resolved outside the pinned
+    /// allow-set (`kind = egress_denied`). The drawer renders the pre- vs
+    /// post-expansion command diff (the `#10077` forensics fix) so an operator
+    /// can see exactly what the shell would have run. `cap` is clamped to
+    /// [`DRAWER_QUERY_HARD_CAP`]. Returns an empty Vec when no block has been
+    /// recorded (the default state — a block is the exception, not the rule).
+    pub fn blast_radius_blocks(
+        &self,
+        cap: usize,
+    ) -> Result<Vec<BlastRadiusBlockRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::BlastRadiusBlocked.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<BlastRadiusBlockRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::BlastRadiusBlocked(p) = payload {
+                out.push(BlastRadiusBlockRow {
+                    seq,
+                    ts_ms,
+                    kind: p.kind.label().to_owned(),
+                    pre_expansion_command: p.pre_expansion_command,
+                    post_expansion_command: p.post_expansion_command,
+                    target_or_host: p.target_or_host,
+                    worktree_root_blake3: p.worktree_root_blake3,
+                    trust_label: p.trust_label,
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// F-11 — list `darwinian_admit` rows newest-first. Each row records ONE
     /// candidate routed through the config-DGM four-guard chain: `Admitted`
     /// (passed all guards + inserted), `RejectedByGuard` (a guard fired —
@@ -4341,6 +4891,55 @@ impl SsbViewer {
                     alpha: p.alpha,
                     guard_rejected_by: p.guard_rejected_by,
                     candidate_blake3: p.candidate_blake3,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// H-46 — list CMP parent-selection events newest-first. Each row is one
+    /// `CladeSelected` SSB row emitted by `config_archive::select_parent_with_cmp`
+    /// during a DGM generation. Wire-dark producer (gated by `darwinian-evolve`
+    /// feature + `ELAI_DARWINIAN_LOOP_ENABLE=1`); empty in steady state.
+    /// `cap` is clamped to [`DRAWER_QUERY_HARD_CAP`] to bound the IPC payload.
+    pub fn clade_selections(
+        &self,
+        cap: usize,
+    ) -> Result<Vec<CladeSelectionRow>, SsbViewerError> {
+        let effective = cap.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::CladeSelected.as_sql_str(), limit_i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<CladeSelectionRow> = Vec::new();
+        for row in rows {
+            let (seq, ts_ms, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::CladeSelected(p) = payload {
+                out.push(CladeSelectionRow {
+                    seq,
+                    ts_ms,
+                    kind: p.kind.as_str().to_string(),
+                    node_id: p.node_id,
+                    cmp: p.cmp,
+                    clade_size: p.clade_size,
+                    immediate_score: p.immediate_score,
+                    key_used: p.key_used,
                 });
             }
         }
@@ -4723,6 +5322,257 @@ pub struct SessionArchiveRow {
     pub store_kind: String,
 }
 
+/// G-4 — DTO for [`SsbViewer::mcp_rug_pulls`]. One row per live MCP rug-pull /
+/// line-jump (a reconnect re-fetch whose schema pin no longer matched). Mirrors
+/// the [`crate::ssb::McpRugPullBlockedPayload`] fields, so the frontend
+/// `McpRugPull` DTO must mirror them exactly (serde serializes the Rust field
+/// names verbatim over the IPC boundary).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpRugPullRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// The MCP server whose re-fetched tool list no longer matched the pin.
+    pub server_url: String,
+    /// blake3 schema hash at pin time (before the rug-pull).
+    pub schema_blake3_before: String,
+    /// blake3 schema hash of the rug-pulled re-fetch (after).
+    pub schema_blake3_after: String,
+    /// Names of the tools whose description/presence changed (line-jump set).
+    pub changed_tools: Vec<String>,
+    /// Count of per-tool description swaps (the line-jump signal).
+    pub description_diff_count: u32,
+    /// The production entrypoint that re-fetched and tripped the gate.
+    pub ingest_origin: String,
+}
+
+/// G-1 — DTO for [`SsbViewer::taint_flows`]. One row per blocked data-plane
+/// taint propagation (an untrusted ingest reaching a destructive sink that the
+/// capability gate rejected). Mirrors the [`crate::ssb::TaintFlowPayload`]
+/// fields (with `kind` flattened to its `&str` label and `sink_tool`
+/// defaulted), so the frontend `TaintFlow` DTO must mirror them exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaintFlowRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// Ingest Kind label: `web` / `tool_output` / `file` / `sandbox_output`.
+    pub kind: String,
+    /// blake3 hex-prefix of the ingest origin (URL / server+tool / path / id).
+    pub origin_blake3: String,
+    /// The joined trust label that reached the sink (`untrusted`).
+    pub trust_level: String,
+    /// The destructive sink tool name that was blocked (`git_commit` / `edit`).
+    pub sink_tool: String,
+    /// Whether the sink was blocked (true for an emitted taint_flow row).
+    pub blocked: bool,
+    /// The task / turn id the flow belongs to (dashboard correlation).
+    pub task_id: String,
+}
+
+/// G-2 — DTO for [`SsbViewer::run_artifacts`]. One row per sealed Reproducible-
+/// Run Artifact (`.rra`). Mirrors the [`crate::ssb::RunArtifactEmittedPayload`]
+/// fields verbatim, so the frontend `RunArtifact` DTO must mirror them exactly
+/// (serde serializes the Rust field names verbatim over the IPC boundary).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunArtifactRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// blake3 hex-prefix of the canonical `.rra` bundle bytes (the root).
+    pub root_blake3: String,
+    /// Honest per-lane guarantee label (`reproducible_action_stream` /
+    /// `verify_divergence`; never `reproducible_tokens` for a cloud lane).
+    pub guarantee_level: String,
+    /// Number of F-gate verdict-hash entries in the evidence manifest.
+    pub gate_count: u32,
+    /// The pinned `ELAI_SEED` the action stream re-derives under.
+    pub seed: u64,
+    /// The session whose stream was bundled.
+    pub session_id: String,
+}
+
+/// G-8 — DTO for [`SsbViewer::attestations`]. One row per signed in-toto v1
+/// provenance attestation emitted at the `elai run` exit. Mirrors the
+/// [`crate::ssb::ProvenanceAttestationEmittedPayload`] fields verbatim (plus the
+/// row's `seq` + `ts_ms`), so the frontend `Attestation` DTO must mirror them
+/// exactly (serde serializes the Rust field names verbatim over the IPC boundary).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttestationRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// The run whose Reproducible-Run Artifact was attested.
+    pub session_id: String,
+    /// The in-toto subject digest: the blake3-Merkle root over the predicate
+    /// (the value the git trailer carries; the offline verify recomputes it).
+    pub subject_blake3: String,
+    /// The G-2 bundle root the attestation chains to (the run-artifact anchor).
+    pub run_artifact_root: String,
+    /// Count of F-gate verdicts in the SLSA-VSA `verified_levels` rollup.
+    pub verified_levels: u32,
+    /// `true` iff every present verified-level passed (every present manifest
+    /// entry IS a passed gate; gate-off leaves no entry).
+    pub all_passed: bool,
+    /// The honest signing-model label (default `local_blake3_merkle`).
+    pub signing_model: String,
+}
+
+/// G-9 — DTO for [`SsbViewer::redactions`]. One row per `secret_redacted`
+/// advisory: a write-time secret+PII redaction fired on a typed SsbPayload
+/// free-text field. Carries the redacted field identity + the stable
+/// blake3-keyed token(s) + the match count + the per-kind `(label, count)`
+/// summary — NEVER the raw secret. Serde field names are mirrored verbatim by
+/// the frontend `RedactionStat` DTO.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RedactionStatRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// The run whose write the redaction fired on.
+    pub session_id: String,
+    /// The redacted SsbPayload field identity (e.g. `idea_framing_started.prompt`).
+    pub field: String,
+    /// The stable blake3-keyed redaction token(s) that replaced the match(es).
+    pub tokens: Vec<String>,
+    /// Total number of redactions that fired on the write.
+    pub match_count: u32,
+    /// Sorted `(kind_label, count)` summary across the hits (no secret value).
+    pub kind_counts: Vec<(String, u32)>,
+}
+
+/// G-7 — DTO for [`SsbViewer::claim_confidences`]. One row per live per-change
+/// conformal decision. Mirrors the
+/// [`crate::ssb::ClaimConfidenceScoredPayload`] fields verbatim (plus the row's
+/// `seq` + `ts_ms`), so the frontend `ClaimConfidence` DTO must mirror them
+/// exactly (serde serializes the Rust field names verbatim over the IPC
+/// boundary).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimConfidenceRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// Synthetic per-claim id the decision was keyed on.
+    pub claim_id: String,
+    /// The calibrated fused confidence in `[0.0, 1.0]` fed to `decide()`.
+    pub claim_score: f64,
+    /// (a) Calibrated log-prob component. `None` on the cloud lane (GD-5).
+    pub logprob_component: Option<f64>,
+    /// (b) Self-consistency agreement component in `[0.0, 1.0]`.
+    pub self_consistency_component: f64,
+    /// (c) Oracle-free test execution-agreement component in `[0.0, 1.0]`.
+    pub exec_agreement_component: f64,
+    /// The lane the score was computed on (`local` | `cloud`).
+    pub lane: String,
+    /// The conformal `tau` threshold the decision used.
+    pub tau: f64,
+    /// The `decide()` verdict wire label (`abstain` | `answer`).
+    pub conformal_verdict: String,
+    /// Whether the decision abstained.
+    pub abstained: bool,
+}
+
+/// G-7 — DTO for [`SsbViewer::trifecta_quarantines`]. One row per lethal-trifecta
+/// quarantine. Mirrors the [`crate::ssb::TrifectaQuarantinedPayload`] fields
+/// verbatim (plus the row's `seq` + `ts_ms`); NEVER the raw secret or untrusted
+/// span. The frontend `TrifectaQuarantine` DTO must mirror them exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrifectaQuarantineRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// Synthetic task id the quarantine fired on.
+    pub task_id: String,
+    /// blake3 prefix of the untrusted origin (NEVER the raw span).
+    pub untrusted_origin_blake3: String,
+    /// The egress / destructive sink tool that was blocked.
+    pub sink_tool: String,
+    /// (a) A secret pattern matched in the live context (G-9 detector).
+    pub secret_present: bool,
+    /// (b) The pending span's provenance was `Untrusted` (G-1 taint).
+    pub untrusted_span: bool,
+    /// (c) The pending tool was an egress channel (capability gate subset).
+    pub egress_available: bool,
+    /// Whether the span was quarantined.
+    pub quarantined: bool,
+    /// The no-tool sub-LLM verdict label.
+    pub sub_llm_verdict: String,
+}
+
+/// G-5 — DTO for [`SsbViewer::review_surfaces`]. One row per reviewer-cockpit
+/// Diff-Surface-to-Review (DSR) score. Mirrors the
+/// [`crate::ssb::ReviewSurfaceScoredPayload`] fields verbatim (plus the row's
+/// `seq` + `ts_ms`), so the frontend `ReviewSurface` DTO must mirror them
+/// exactly (serde serializes the Rust field names verbatim over the IPC
+/// boundary).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewSurfaceRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// The session whose working-tree changes were scored.
+    pub session_id: String,
+    /// Diff-Surface-to-Review ratio in `[0.0, 1.0]`.
+    pub dsr: f64,
+    /// DSR denominator: total added + removed changed lines across all hunks.
+    pub total_changed_lines: u32,
+    /// DSR numerator: changed lines in un-vouched hunks (need full attention).
+    pub attention_lines: u32,
+    /// Count of vouched hunks (clean/passing deterministic signal).
+    pub vouched_hunks: u32,
+    /// Count of un-vouched hunks (need full attention).
+    pub unvouched_hunks: u32,
+    /// The deterministically resolved diff-base commit SHA the score used.
+    pub base_commit: String,
+    /// G-5 honesty fix: whether the working-tree diff was actually obtained.
+    /// `false` ONLY on a git error (absent / not a repo / non-zero exit /
+    /// unresolvable base); in that case the DSR/counts are NOT a review verdict
+    /// and the cockpit renders an "unavailable" banner, NOT a clean DSR=0. `true`
+    /// for both a real diff AND a genuinely empty diff (honest "no changes").
+    pub diff_available: bool,
+    /// G-5 honesty fix: the git error reason when `diff_available == false`;
+    /// empty otherwise.
+    pub diff_unavailable_reason: String,
+}
+
+/// G-3 — DTO for [`SsbViewer::blast_radius_blocks`]. One row per deterministic
+/// runtime blast-radius gate block. Mirrors the
+/// [`crate::ssb::BlastRadiusBlockedPayload`] fields (with `kind` flattened to
+/// its snake-case `&str` label and `ts_ms` dropped in favour of the row's
+/// `created_at`), so the frontend `BlastRadiusBlock` DTO must mirror them
+/// exactly (serde serializes the Rust field names verbatim over the IPC
+/// boundary).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlastRadiusBlockRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// Boundary-crossed label: `fs_escape` / `egress_denied`.
+    pub kind: String,
+    /// The original, un-expanded command/argv the agent issued.
+    pub pre_expansion_command: String,
+    /// The resolved/canonicalised target (FS) or rejected host+ip (egress) —
+    /// what would actually have executed/connected (the `#10077` forensics fix).
+    pub post_expansion_command: String,
+    /// The specific resolved FS target path, or the rejected egress host.
+    pub target_or_host: String,
+    /// blake3 hex-prefix of the canonical worktree root (identifier, not a
+    /// path). Empty for the egress arm.
+    pub worktree_root_blake3: String,
+    /// G-1 provenance trust label join when present; `""` for a pure-containment
+    /// block.
+    pub trust_label: String,
+}
+
 /// F-11 — DTO for [`SsbViewer::darwinian_admits`]. One row per candidate routed
 /// through the config-DGM four-guard chain. Mirrors the
 /// [`crate::ssb::DarwinianAdmitPayload`] fields (the 3-arm
@@ -4749,6 +5599,35 @@ pub struct DarwinianAdmitRow {
     pub guard_rejected_by: Option<String>,
     /// blake3 hex-prefix (16 chars) of the candidate `config_blob`.
     pub candidate_blake3: String,
+}
+
+/// H-46 — DTO for [`SsbViewer::clade_selections`]. One row per parent selection
+/// emitted from `config_archive::select_parent_with_cmp`. Mirrors the
+/// [`crate::ssb::CladeSelectedPayload`] fields (the 2-arm
+/// [`crate::ssb::CladeSelectedKind`] is flattened to a `kind` string), so the
+/// frontend `CladeSelection` DTO must mirror them exactly (serde serializes the
+/// Rust field names verbatim over the IPC boundary).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CladeSelectionRow {
+    /// SSB sequence number (newest-first ordering key).
+    pub seq: i64,
+    /// Row creation wall-clock ms.
+    pub ts_ms: i64,
+    /// Selection key discriminator as a snake-case string
+    /// (`"clade_metaproductivity"` or `"immediate_score_fallback"`).
+    pub kind: String,
+    /// Stable id of the selected parent variant.
+    pub node_id: String,
+    /// Clade-Metaproductivity aggregate (mean execution-grounded delta of
+    /// direct descendants). Equals `immediate_score` on fallback.
+    pub cmp: f64,
+    /// Count of descendants that contributed a measured delta to `cmp`. Zero
+    /// on `ImmediateScoreFallback`.
+    pub clade_size: usize,
+    /// Immediate sigmoid score of the selected node's own `alpha`.
+    pub immediate_score: f64,
+    /// Snake_case wire string of the selection key used.
+    pub key_used: String,
 }
 
 /// B-23 Phase 4H Group F — DTO for [`SsbViewer::latest_msi_per_mode`].

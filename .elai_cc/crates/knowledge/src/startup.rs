@@ -14,7 +14,14 @@ use crate::ReadinessStatus;
 const CANARY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RETRIES: u32 = 3;
 const DRIFT_THRESHOLD: f32 = 0.85;
+/// 1I-R4: legacy standalone reference-vector file. Per spec the canary
+/// reference now lives inside `index_version.toml` (see
+/// [`crate::index_version`]); this filename is retained only as a read-time
+/// fallback so deployments that wrote the old file before the move still find
+/// their reference on first startup after upgrade.
 const CANARY_REF_FILENAME: &str = "canary_reference_vec.json";
+/// 1I-R4: the canonical file the canary reference is read from / written to.
+const INDEX_VERSION_FILENAME: &str = "index_version.toml";
 
 // ---------------------------------------------------------------------------
 // StartupConfig
@@ -88,24 +95,49 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 // Reference vector persistence
 // ---------------------------------------------------------------------------
 
-fn reference_vec_path(project_data_dir: &Path) -> PathBuf {
+/// 1I-R4: legacy standalone reference-vector path (read-fallback only).
+fn legacy_reference_vec_path(project_data_dir: &Path) -> PathBuf {
     project_data_dir.join(CANARY_REF_FILENAME)
 }
 
+/// 1I-R4: the `index_version.toml` path that now holds the canary reference.
+fn index_version_path(project_data_dir: &Path) -> PathBuf {
+    project_data_dir.join(INDEX_VERSION_FILENAME)
+}
+
+/// Load the canary reference embedding.
+///
+/// 1I-R4: reads from `index_version.toml` first (the canonical location). If
+/// that has no reference yet, falls back to the legacy standalone JSON file so
+/// a deployment upgraded across this change keeps its prior reference.
 pub fn load_reference_vec(project_data_dir: &Path) -> Option<Vec<f32>> {
-    let path = reference_vec_path(project_data_dir);
-    let data = std::fs::read_to_string(&path).ok()?;
+    if let Some(v) =
+        crate::index_version::read_canary_reference_vec(&index_version_path(project_data_dir))
+    {
+        return Some(v);
+    }
+    // Legacy fallback: standalone canary_reference_vec.json.
+    let data = std::fs::read_to_string(legacy_reference_vec_path(project_data_dir)).ok()?;
     serde_json::from_str(&data).ok()
 }
 
+/// Persist the canary reference embedding inside `index_version.toml`.
+///
+/// 1I-R4: writes the reference into the `[index]` table (creating the file from
+/// the current binary's version metadata if it does not exist yet) instead of
+/// the old standalone JSON file. The `created_at` for a fresh file is the
+/// current system time.
 pub fn save_reference_vec(project_data_dir: &Path, vec: &[f32]) -> Result<(), std::io::Error> {
-    let path = reference_vec_path(project_data_dir);
+    let path = index_version_path(project_data_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string(vec)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&path, json)
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    crate::index_version::write_canary_reference_vec(&path, vec, created_at)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 // ---------------------------------------------------------------------------

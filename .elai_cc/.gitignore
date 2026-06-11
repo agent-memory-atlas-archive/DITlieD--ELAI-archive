@@ -94,3 +94,5 @@ crates/*/workflow/
 crates/*/C/Users/
 memory/*.sqlite
 /select_parent
+# codegraph live index (SQLite call-graph, ~132MB, machine-local, auto-rebuilt). Never commit.
+.codegraph/

@@ -83,7 +83,15 @@ export type WindowType =
   // E-40: orchestrator-rooted symbol-graph window (defs/refs/callers/
   // callees + personalized PageRank + LSP-oracle stats). See
   // workflow/reasoning/E-40-decisions.md.
-  | 'symbol_graph';
+  | 'symbol_graph'
+  // G-5: reviewer-cockpit Diff-Surface-to-Review (DSR) window — renders the
+  // vouched/un-vouched bands + the headline DSR from review_surface_scored
+  // rows. See workflow/reasoning/G-5-decisions.md.
+  | 'cockpit'
+  // H-10: sigma/WebGL canvas — full codebase graph with semantic zoom + LOD,
+  // dead-code island overlay (topology-suspected vs coverage-confirmed), and
+  // PageRank hub overlay. Reuses get_graph_view_data mode='symbol' feed.
+  | 'canvas';
 
 // ------------------------------------------------------------------
 // B-33 — Graph viewer (mirror of Rust visualization::types)
@@ -119,6 +127,15 @@ export interface VizFile {
   // GraphWindow's cytoscape selectors use these to pick shape + color.
   level?: string;
   status?: string;
+  // H-10: dead-code island overlay (HD-5). Additive Option fields; existing
+  // consumers that do not inspect them are unaffected.
+  // true  = topology-suspected dead (no static callers after entrypoints re-attach)
+  //         OR coverage-confirmed dead (coverage_count == 0 after llvm-cov run).
+  // The two cases are distinguished by coverage_count:
+  //   coverage_count === 0   -> confirmed dead (amber-ghost + dashed)
+  //   coverage_count === null -> topology-only suspected (amber-neutral ring)
+  is_dead_code?: boolean;
+  coverage_count?: number | null;
 }
 
 export interface VizFileEdge {
@@ -238,6 +255,9 @@ export type DrawerKey =
   // E-46 — Hierarchical decomposition tuning (dual ledger + AGENTLESS
   // shortcut taxonomy + goal-drift canary gauge).
   | 'planning-ledger'
+  // E-46 D-7 — Decomposition entropy histogram (low_entropy_decomposition SSB rows).
+  // Wire-dark unless ELAI_PLANNING_DECOMPOSITION_ENABLE=1.
+  | 'decomposition-entropy'
   // E-5 — User modeling + long-term memory drawer.
   | 'memory-facts'
   // E-1 dashboard slice — chat-memory (MemoryNotes + CoreBlock).
@@ -288,7 +308,81 @@ export type DrawerKey =
   // Producer gate ELAI_SSB_ARCHIVE_ON_BUMP_ENABLE is default-OFF / wire-dark
   // (forensic opt-in): session_archived rows emit at the run_migration DROP
   // site when a stale-version SSB is cold-archived before the destructive DROP.
-  | 'session-archive';
+  | 'session-archive'
+  // G-4 / Slice A: McpRugPullDrawer (get_mcp_rug_pulls).
+  // Default-ON (W-2): mcp_rug_pull_blocked rows emit from the live MCP bridge
+  // re-pin gate (DefaultMcpBridge::http_list_tools) when a reconnect re-fetch
+  // from a previously-approved server no longer matches the blake3 schema pin.
+  // The only opt-out is the kill-switch ELAI_MCP_REPIN_DISABLE.
+  | 'mcp-rug-pull'
+  // G-1 / Slice A: TaintFlowDrawer (get_taint_flows).
+  // Default-ON (W-2): taint_flow rows emit from the live data-plane taint gate
+  // (production_agent_rpc git_commit / edit arms) when an untrusted ingest (web
+  // body / MCP tool output / external file read / sandbox stdout) flows into a
+  // destructive sink and the capability gate blocks it. The only opt-out is the
+  // kill-switch ELAI_TAINT_PROPAGATE_DISABLE.
+  | 'taint-flow'
+  // G-2 / Slice A: RraViewerPanel (get_run_artifact).
+  // Default-ON (W-2): run_artifact_emitted rows emit at the `elai run` exit when
+  // a Reproducible-Run Artifact (.rra) bundle is sealed (SSB action stream +
+  // determinism pins + F-gate evidence manifest + blake3 root). The only opt-out
+  // is the kill-switch ELAI_RRA_DISABLE.
+  | 'rra-viewer'
+  // G-3 / Slice A: BlastRadiusDrawer (get_blast_radius_blocks).
+  // Default-ON (W-2): blast_radius_blocked rows emit from the deterministic
+  // runtime gates (translate_tool_request / run_bash FS-escape arm +
+  // fetch_and_extract egress arm) when a fail-closed gate refuses a
+  // post-expansion FS target outside the worktree root or a denied egress host.
+  // The only opt-out is the kill-switch ELAI_BLAST_RADIUS_DISABLE.
+  | 'blast-radius'
+  // G-8 / Slice A: AttestationDrawer (get_attestations).
+  // Default-ON (W-2): provenance_attestation_emitted rows emit at the `elai run`
+  // exit when a signed in-toto v1 provenance attestation is built from the sealed
+  // G-2 Reproducible-Run Artifact (the F-gate verified_levels rollup re-expressed
+  // + signed with a LOCAL blake3-Merkle proof, re-verifiable OFFLINE). The only
+  // opt-out is the kill-switch ELAI_ATTESTATION_DISABLE.
+  | 'attestation'
+  // G-9 / Slice A: RedactionPanel (get_redaction_stats).
+  // Default-ON (W-2): secret_redacted advisory rows emit whenever the write-time
+  // secret+PII redactor fires on a typed SsbPayload free-text field at the top of
+  // write_payload. The row carries the redacted field identity + stable
+  // blake3-keyed token(s) + match count, NEVER the raw secret. Redaction is
+  // always on (no enable flag).
+  | 'redaction'
+  // G-7 / Slice A: ConfidenceDrawer (get_claim_confidence + get_trifecta_quarantines).
+  // claim_confidence_scored rows carry the REAL fused per-change confidence
+  // feeding the conformal decision (the producer is behind the conformal triple
+  // gate); trifecta_quarantined rows are the lethal-trifecta dual-LLM quarantine
+  // beacon (default-ON, kill-switch ELAI_TRIFECTA_QUARANTINE_DISABLE only).
+  | 'confidence'
+  // G-6 / SCHEMA_VERSION 217: SafeDeltaPanel (get_safety_delta_latest).
+  // safety_delta_measured rows emitted by `elai bench safedelta`; surfaces the
+  // derived SAFEDELTA (gate-ON-vs-OFF marginal residual rate) + 95% bootstrap CI
+  // + per-CWE delta + corpus_blake3 + pinned seed + gate_recall + runpod_pending.
+  // Tier-1 = static-gate only; Tier-2 dynamic exploit-exec arm is RunPod-gated.
+  | 'safe-delta'
+  // G-10 / SCHEMA_VERSION 218: ModelDriftPanel (get_model_drift_status).
+  // model_drift_suspected rows emitted at `elai run` exit or `elai model-drift check`.
+  // Surfaces identity_key + drift kind + signals + per_family_delta +
+  // affected_template_ids + confirmed_by_fingerprint (GD-5 honest badge).
+  // Default-ON (W-2); kill-switch ELAI_MODEL_DRIFT_DISABLE only.
+  | 'model-drift';
+
+// ------------------------------------------------------------------
+// E-46 D-7 — Decomposition entropy histogram DTOs.
+// Mirror the Tauri command surface in commands_e46.rs::EntropyHistogramRow.
+// ------------------------------------------------------------------
+
+/** One low_entropy_decomposition SSB row projected for the histogram. */
+export interface EntropyHistogramRow {
+  parent_node_key: string;
+  /** H_children / H_parent, in [0.0, 1.0]. */
+  entropy_ratio: number;
+  h_parent: number;
+  h_children: number;
+  threshold: number;
+  ts_ms: number;
+}
 
 // ------------------------------------------------------------------
 // C-41 — Application Skills System DTOs.
@@ -559,6 +653,32 @@ export interface CsqEntry {
   function_context: string;
 }
 
+// B-5: one row from the full CSQ verdict log (`get_csq_log` -> SSB
+// csq_evaluated rows, every verdict regardless of whether it gated a baby
+// step). The command reshapes CsqEvaluatedPayload; `conclusion` carries the
+// raw severity label string (e.g. "Critical" / "Warning" / "Info"),
+// `guard_present` is the STOP-Verified guard-token presence flag, and
+// `blocked` is true when the verdict gated the step (Critical without guard).
+export interface CsqLogRow {
+  csq_id: string;
+  seq: number;
+  ts_ms: number;
+  conclusion: string | null;
+  guard_present: boolean;
+  blocked: boolean;
+  check_count: number;
+}
+
+// B-5: one per-role GRC budget config row (`get_agent_grc_config` ->
+// compile-time `default_grc_config` table). `role` doubles as the GRC topic
+// key (AgentGrcConfig carries no separate topic_prefix field).
+export interface GrcConfigRow {
+  role: string;
+  max_calls: number;
+  max_chars: number;
+  topic_prefix: string;
+}
+
 // GG Sidecar logit signals
 export interface GgSignals {
   mean_logprob: number;
@@ -693,6 +813,20 @@ export interface QueryTrace {
   hit_count: number;
 }
 
+// B-4: one persisted `hyde_query` SSB row (HydeStage::hypothesize). The
+// SSB payload stores the query-bytes blake3 hash + hypothesis CHAR LENGTH
+// (not the raw hypothesis text) + cache-hit flag + latency. The
+// KnowledgeDrawer QueryTrace inspector renders these as a hypothesis
+// preview strip.
+export interface HydeQueryRow {
+  seq: number;
+  ts: number;
+  query_hash: string;
+  hypothesis_len: number;
+  cache_hit: boolean;
+  latency_ms: number;
+}
+
 export type BreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export interface EmbeddingBreaker {
@@ -717,6 +851,11 @@ export interface DkgStats {
   bm25_chunks: number;
   vector_status: 'READY' | 'DEGRADED' | 'BUILDING';
   freshness_decay_pct: number; // 0-100
+  // B-4: count of files the DKG parser failed to ingest on the last index.
+  // Surfaced as "X files indexed, Y failed". See get_dkg_stats SSB-FIDELITY
+  // note — the current DkgReady SSB row does not yet persist this count, so
+  // the command emits 0 until the producer-side payload field is added.
+  failed_files: number;
 }
 
 export interface FreshnessStatus {
@@ -1566,6 +1705,72 @@ export interface DarwinianAdmit {
   guard_rejected_by: string | null;
   /** blake3 hex-prefix (16 chars) of the candidate config_blob. */
   candidate_blake3: string;
+}
+
+// ------------------------------------------------------------------
+// H-43 — execution-grounded DGM fitness feed row. Each entry is one
+// FitnessEvaluated SSB row emitted per scored candidate in the DGM
+// admit loop (darwin_admit_loop::run_one_generation). Wire-dark producer
+// (gated by darwinian-evolve feature + ELAI_DARWINIAN_LOOP_ENABLE=1);
+// empty in steady state.
+//
+// Kind discriminator: 'execution_pass_rate' | 'dual_agreement' | 'fitness_regression'.
+// fitness_regression means the candidate scored below its parent —
+// the promotion gate will reject it (negative margin).
+//
+// Mirrors FitnessEvaluatedPayload field-for-field (serde serializes the
+// Rust field names verbatim over the IPC boundary).
+// ------------------------------------------------------------------
+export interface FitnessEvaluated {
+  /** SSB sequence number (newest-first ordering key). */
+  seq: number;
+  /** Row creation wall-clock ms. */
+  ts_ms: number;
+  /** Discriminator: 'execution_pass_rate' | 'dual_agreement' | 'fitness_regression'. */
+  kind: string;
+  /** Fraction of frozen corpus tests the candidate passed [0, 1]. */
+  pass_rate: number;
+  /** Dual-execution output-consensus mass (CodeT) [0, 1]. */
+  dual_agreement: number;
+  /** Number of frozen corpus test cases evaluated. */
+  tests_total: number;
+  /** Weighted composite fitness = 0.7 * pass_rate + 0.3 * dual_agreement. */
+  fitness: number;
+  /** ELAI_SEED at evaluation time (GD-2 reproducibility). */
+  seed: number;
+  /** blake3 hex-prefix (16 chars) of the candidate config_blob. */
+  candidate_blake3: string;
+}
+
+// ------------------------------------------------------------------
+// H-46 — CMP parent-selection feed. Each entry is one CladeSelected SSB row
+// emitted by config_archive::select_parent_with_cmp during a DGM generation.
+// Wire-dark producer (gated by darwinian-evolve feature +
+// ELAI_DARWINIAN_LOOP_ENABLE=1); empty in steady state.
+//
+// key_used discriminator: 'clade_metaproductivity' | 'immediate_score_fallback'.
+// clade_size==0 means ImmediateScoreFallback (no-lineage cold-start guard).
+//
+// Mirrors `orchestrator::ssb_viewer::CladeSelectionRow` field-for-field (serde
+// serializes the Rust field names verbatim over the IPC boundary).
+// ------------------------------------------------------------------
+export interface CladeSelection {
+  /** SSB sequence number (newest-first ordering key). */
+  seq: number;
+  /** Row creation wall-clock ms. */
+  ts_ms: number;
+  /** Selection key: 'clade_metaproductivity' | 'immediate_score_fallback'. */
+  kind: string;
+  /** Stable id of the selected parent variant. */
+  node_id: string;
+  /** Clade-Metaproductivity aggregate (mean execution-grounded delta). */
+  cmp: number;
+  /** Count of descendants that contributed to cmp (0 = fallback). */
+  clade_size: number;
+  /** Immediate sigmoid score of the selected node's own alpha. */
+  immediate_score: number;
+  /** Snake_case wire string of the selection key used. */
+  key_used: string;
 }
 
 // ------------------------------------------------------------------
@@ -3091,6 +3296,35 @@ export interface RecentCheckerResults {
 }
 
 // ---------------------------------------------------------------------------
+// H-41 — checker-coverage + gap-backlog types (SCHEMA_VERSION 219).
+// Source of truth: commands_h41::{CheckerGapBacklogRowDto, CoverageReportDto}.
+// Wire-dark: ELAI_CHECKER_GAP_ENABLE=1 required on the writer side.
+// ---------------------------------------------------------------------------
+
+/** H-41 mirror of commands_h41::CheckerGapBacklogRowDto.
+ *  One ranked backlog entry: how many times a claim-class x taxon pair
+ *  emitted a CheckerGapDetected row. HIGH-priority (priority=2) rows are
+ *  NP-complete / undecidable — never-LLM-grade (Xu arXiv:2401.11817 RD-3). */
+export interface CheckerGapBacklogRow {
+  claim_type: string;
+  /** Xu Table-3 complexity taxon string (e.g. "np_complete_or_combinatorial"). */
+  complexity_taxon: string;
+  count: number;
+  /** 1 = normal, 2 = HIGH (NP-complete / undecidable). */
+  priority: number;
+}
+
+/** H-41 mirror of commands_h41::CoverageReportDto.
+ *  Live Mode-A coverage fraction for a session. Recomputable from the
+ *  SSB journal under ELAI_SEED (GD-2). */
+export interface CoverageReport {
+  mode_a_fraction: number;
+  constructive_count: number;
+  total_factual_computational: number;
+  session_id: string;
+}
+
+// ---------------------------------------------------------------------------
 // E-23 — developer-discourse positioning + UX-guard trust telemetry types.
 // Backed by orchestrator::trust_telemetry::TrustReport (Rust) plus the two
 // new commands get_context_state + get_trust_telemetry. Wire-dark unless
@@ -3465,4 +3699,406 @@ export interface SessionArchive {
   manifest_blake3: string;
   /** Which store: "ssb" (destructive journal) or "session_dag" (precautionary). */
   store_kind: string;
+}
+
+/**
+ * G-4 / Slice A: one mcp_rug_pull_blocked SSB row for the McpRugPullDrawer
+ * (DrawerKey mcp-rug-pull, command get_mcp_rug_pulls). Emitted by the live MCP
+ * bridge re-pin gate (DefaultMcpBridge::http_list_tools) when a reconnect-time
+ * tools/list re-fetch from a previously-approved server no longer matches the
+ * blake3 schema pin. The changed tool(s) are blocked fail-closed until operator
+ * re-approval. Field names mirror the Rust `McpRugPullRow` verbatim (serde).
+ */
+export interface McpRugPull {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** The MCP server whose re-fetched tool list no longer matched the pin. */
+  server_url: string;
+  /** blake3 schema hash at pin time (before the rug-pull). */
+  schema_blake3_before: string;
+  /** blake3 schema hash of the rug-pulled re-fetch (after). */
+  schema_blake3_after: string;
+  /** Names of the tools whose description/presence changed (line-jump set). */
+  changed_tools: string[];
+  /** Count of per-tool description swaps (the line-jump signal). */
+  description_diff_count: number;
+  /** The production entrypoint that re-fetched and tripped the gate. */
+  ingest_origin: string;
+}
+
+/**
+ * G-1 / Slice A: one taint_flow SSB row for the TaintFlowDrawer (DrawerKey
+ * taint-flow, command get_taint_flows). Emitted by the live data-plane taint
+ * gate (production_agent_rpc git_commit / edit arms) when an untrusted ingest
+ * (web body / MCP tool output / external file read / sandbox stdout) flows into
+ * a destructive sink and the allow_tool_with_origin capability gate REJECTS the
+ * call. Field names mirror the Rust `TaintFlowRow` verbatim (serde).
+ */
+export interface TaintFlow {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** Ingest Kind label: "web" / "tool_output" / "file" / "sandbox_output". */
+  kind: string;
+  /** blake3 hex-prefix of the ingest origin (URL / server+tool / path / id). */
+  origin_blake3: string;
+  /** The joined trust label that reached the sink ("untrusted"). */
+  trust_level: string;
+  /** The destructive sink tool name that was blocked ("git_commit" / "edit"). */
+  sink_tool: string;
+  /** Whether the sink was blocked (true for an emitted taint_flow row). */
+  blocked: boolean;
+  /** The task / turn id the flow belongs to (dashboard correlation). */
+  task_id: string;
+}
+
+/**
+ * G-2 / Slice A: one run_artifact_emitted SSB row for the RraViewerPanel
+ * (DrawerKey rra-viewer, command get_run_artifact). Emitted at the `elai run`
+ * exit when a Reproducible-Run Artifact (.rra) bundle is sealed: the blake3 root
+ * over the canonical bundle bytes, the honest per-lane guarantee level (never
+ * "reproducible_tokens" for a cloud lane, GD-5), the F-gate evidence-manifest
+ * entry count, and the pinned ELAI_SEED. Field names mirror the Rust
+ * `RunArtifactRow` verbatim (serde).
+ */
+export interface RunArtifact {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** blake3 hex-prefix of the canonical .rra bundle bytes (the root). */
+  root_blake3: string;
+  /**
+   * Honest per-lane guarantee label: "reproducible_action_stream" /
+   * "verify_divergence" (never "reproducible_tokens" for a cloud lane).
+   */
+  guarantee_level: string;
+  /** Number of F-gate verdict-hash entries in the evidence manifest. */
+  gate_count: number;
+  /** The pinned ELAI_SEED the action stream re-derives under. */
+  seed: number;
+  /** The session whose stream was bundled. */
+  session_id: string;
+}
+
+/**
+ * G-3 / Slice A: one blast_radius_blocked SSB row for the BlastRadiusDrawer
+ * (DrawerKey blast-radius, command get_blast_radius_blocks). Emitted by the
+ * deterministic runtime blast-radius gates when a fail-closed gate refuses an
+ * operation: either a shell-EXPANDED filesystem-mutating target that resolved
+ * OUTSIDE the per-run worktree root (kind = "fs_escape", from
+ * translate_tool_request / run_bash) or an outbound egress host that carried a
+ * NUL/control char or resolved outside the pinned allow-set (kind =
+ * "egress_denied", from fetch_and_extract). The pre/post-expansion command pair
+ * is the #10077 forensics fix. Field names mirror the Rust `BlastRadiusBlockRow`
+ * verbatim (serde).
+ */
+export interface BlastRadiusBlock {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** Boundary-crossed label: "fs_escape" / "egress_denied". */
+  kind: string;
+  /** The original, un-expanded command/argv the agent issued. */
+  pre_expansion_command: string;
+  /**
+   * The resolved/canonicalised target (FS) or rejected host+ip (egress) — what
+   * would actually have executed/connected (the #10077 forensics fix).
+   */
+  post_expansion_command: string;
+  /** The specific resolved FS target path, or the rejected egress host. */
+  target_or_host: string;
+  /**
+   * blake3 hex-prefix of the canonical worktree root (identifier, not a path).
+   * Empty for the egress arm.
+   */
+  worktree_root_blake3: string;
+  /** G-1 provenance trust label join when present; "" for a pure-containment block. */
+  trust_label: string;
+}
+
+/**
+ * G-8 / Slice A: one provenance_attestation_emitted SSB row for the
+ * AttestationDrawer (DrawerKey attestation, command get_attestations). Emitted at
+ * the `elai run` exit when a signed in-toto v1 provenance attestation is built
+ * from the sealed G-2 Reproducible-Run Artifact: the F-gate verified_levels
+ * rollup re-expressed as a custom in-toto predicate + signed with a LOCAL
+ * blake3-Merkle proof so it re-verifies OFFLINE without re-running ELAI
+ * (trust-without-re-running, SLSA-VSA). Field names mirror the Rust
+ * `AttestationRow` verbatim (serde).
+ */
+export interface Attestation {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** The run whose Reproducible-Run Artifact was attested. */
+  session_id: string;
+  /**
+   * The in-toto subject digest: the blake3-Merkle root over the predicate (the
+   * value the git trailer carries; `elai verify-attestation` recomputes it).
+   */
+  subject_blake3: string;
+  /** The G-2 bundle root the attestation chains to (the run-artifact anchor). */
+  run_artifact_root: string;
+  /** Count of F-gate verdicts in the SLSA-VSA verified_levels rollup. */
+  verified_levels: number;
+  /**
+   * true iff every present verified-level passed (every present manifest entry
+   * IS a passed gate; a gate-off state leaves no entry).
+   */
+  all_passed: boolean;
+  /** The honest signing-model label (default "local_blake3_merkle"). */
+  signing_model: string;
+}
+
+/**
+ * G-9 / Slice A: one secret_redacted SSB row for the RedactionPanel (DrawerKey
+ * redaction, command get_redaction_stats). Emitted whenever the write-time
+ * secret+PII redactor fires on a typed SsbPayload free-text field at the top of
+ * Ssb::write_payload (BEFORE msgpack serialization; the append-only invariant
+ * forces write-time). The row carries the redacted field identity + the stable
+ * blake3-keyed token(s) + the match count + the per-kind (label, count) summary,
+ * NEVER the raw secret. Field names mirror the Rust `RedactionStatRow` verbatim
+ * (serde). `kind_counts` is a list of [label, count] tuples.
+ */
+export interface RedactionStat {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** The run whose write the redaction fired on. */
+  session_id: string;
+  /** The redacted SsbPayload field identity (e.g. "idea_framing_started.prompt"). */
+  field: string;
+  /** The stable blake3-keyed redaction token(s) that replaced the match(es). */
+  tokens: string[];
+  /** Total number of redactions that fired on the write. */
+  match_count: number;
+  /** Sorted [kind_label, count] tuples across the hits (no secret value). */
+  kind_counts: [string, number][];
+}
+
+/**
+ * G-7 / Slice A: one claim_confidence_scored SSB row for the ConfidenceDrawer
+ * (DrawerKey confidence, command get_claim_confidence). Emitted per live
+ * per-change conformal decision carrying the REAL fused claim_score (log-prob
+ * LOCAL-only + self-consistency + exec-agreement components) that replaced the
+ * task_runner step-count placeholder. Field names mirror the Rust
+ * `ClaimConfidenceRow` verbatim (serde). `logprob_component` is null on the
+ * cloud lane (Anthropic returns no token log-probs — GD-5).
+ */
+export interface ClaimConfidence {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** Synthetic per-claim id the decision was keyed on. */
+  claim_id: string;
+  /** The calibrated fused confidence in [0,1] fed to decide(). */
+  claim_score: number;
+  /** (a) Calibrated log-prob component; null on the cloud lane. */
+  logprob_component: number | null;
+  /** (b) Self-consistency agreement component in [0,1]. */
+  self_consistency_component: number;
+  /** (c) Oracle-free test execution-agreement component in [0,1]. */
+  exec_agreement_component: number;
+  /** The lane the score was computed on ("local" | "cloud"). */
+  lane: string;
+  /** The conformal tau threshold the decision used. */
+  tau: number;
+  /** The decide() verdict wire label ("abstain" | "answer"). */
+  conformal_verdict: string;
+  /** Whether the decision abstained. */
+  abstained: boolean;
+}
+
+/**
+ * G-7 / Slice A: one trifecta_quarantined SSB row for the ConfidenceDrawer
+ * (DrawerKey confidence, command get_trifecta_quarantines). Emitted per tool-call
+ * chokepoint where the secret-present + untrusted-span + egress legs co-occur and
+ * the untrusted span was held back from the tool-caller. Field names mirror the
+ * Rust `TrifectaQuarantineRow` verbatim (serde). NEVER the raw secret or span.
+ */
+export interface TrifectaQuarantine {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** Synthetic task id the quarantine fired on. */
+  task_id: string;
+  /** blake3 prefix of the untrusted origin (NEVER the raw span). */
+  untrusted_origin_blake3: string;
+  /** The egress / destructive sink tool that was blocked. */
+  sink_tool: string;
+  /** (a) A secret pattern matched in the live context (G-9 detector). */
+  secret_present: boolean;
+  /** (b) The pending span's provenance was Untrusted (G-1 taint). */
+  untrusted_span: boolean;
+  /** (c) The pending tool was an egress channel (capability gate subset). */
+  egress_available: boolean;
+  /** Whether the span was quarantined. */
+  quarantined: boolean;
+  /** The no-tool sub-LLM verdict label. */
+  sub_llm_verdict: string;
+}
+
+/**
+ * G-5 / Slice A: one review_surface_scored SSB row for the CockpitWindow
+ * (WindowType 'cockpit', command get_review_surface). Emitted by the
+ * `elai review --cockpit` Diff-Surface-to-Review (DSR) producer: the DSR ratio
+ * (un-vouched changed lines / total changed lines, recomputed byte-identically
+ * from the pinned git-diff + the seq-ASC SSB stream, GD-2), the vouched /
+ * un-vouched / total changed-line counts, and the pinned diff-base commit. The
+ * window renders the headline DSR + the vouched/un-vouched split. Field names
+ * mirror the Rust `ReviewSurfaceRow` verbatim (serde).
+ */
+export interface ReviewSurface {
+  /** SSB monotonic sequence number (newest first ordering key). */
+  seq: number;
+  /** SSB row timestamp (epoch millis). */
+  ts_ms: number;
+  /** The session whose working-tree changes were scored. */
+  session_id: string;
+  /** Diff-Surface-to-Review ratio in [0.0, 1.0]. */
+  dsr: number;
+  /** DSR denominator: total added + removed changed lines across all hunks. */
+  total_changed_lines: number;
+  /** DSR numerator: changed lines in un-vouched hunks (need full attention). */
+  attention_lines: number;
+  /** Count of vouched hunks (clean/passing deterministic signal). */
+  vouched_hunks: number;
+  /** Count of un-vouched hunks (need full attention). */
+  unvouched_hunks: number;
+  /** The deterministically resolved diff-base commit SHA the score used. */
+  base_commit: string;
+  /**
+   * G-5 honesty fix: whether the working-tree diff was actually obtained.
+   * `false` ONLY on a git error (absent / not a repo / non-zero exit /
+   * unresolvable base); in that case the DSR/counts are NOT a review verdict and
+   * the cockpit renders a "diff unavailable" banner, NOT a clean DSR=0. `true`
+   * for both a real diff AND a genuinely empty diff (honest "no changes").
+   */
+  diff_available: boolean;
+  /**
+   * G-5 honesty fix: the git error reason when `diff_available === false`;
+   * empty string otherwise.
+   */
+  diff_unavailable_reason: string;
+}
+
+// ------------------------------------------------------------------
+// G-6 (SCHEMA_VERSION 217) — SafeDeltaPanel DTO.
+// Mirrors SafetyDeltaLatest in commands_g6.rs (camelCase on the wire).
+// ------------------------------------------------------------------
+
+/** The most recent `safety_delta_measured` SSB row surfaced by the SafeDeltaPanel. */
+export interface SafetyDeltaLatest {
+  /** Suite label from the underlying SecCodePlt report. */
+  suite: string;
+  /** Candidate-generation provenance label. */
+  model_id: string;
+  /** Derived SAFEDELTA = insecure_rate_before - insecure_rate_after. */
+  safety_delta: number;
+  /** Seeded bootstrap-resample 95% CI lower bound (GD-2). */
+  ci_low: number;
+  /** Seeded bootstrap-resample 95% CI upper bound (GD-2). */
+  ci_high: number;
+  /** Number of candidate completions evaluated. */
+  n_tasks: number;
+  /** Deterministic RNG seed (ELAI_SEED, default 0). */
+  seed: number;
+  /** blake3 hex of the corpus blob (provenance; anti-gaming). */
+  corpus_blake3: string;
+  /** Derived gate recall: (before - after) / before. */
+  gate_recall: number;
+  /**
+   * `true` = Tier-1 static-gate only; the live dynamic exploit-exec arm
+   * (BaxBench-392 arXiv:2502.11844, SUSVIBES-200 arXiv:2512.03262) is
+   * separately RunPod-gated. Never claim significance for Tier-1 (GD-5).
+   */
+  runpod_pending: boolean;
+  /** SSB row timestamp (unix milliseconds). */
+  ts: number;
+}
+
+// ------------------------------------------------------------------
+// G-10 (SCHEMA_VERSION 218) -- ModelDriftPanel DTO.
+// Mirrors ModelDriftStatus in commands_g10.rs (camelCase on the wire).
+// ------------------------------------------------------------------
+
+/** The most recent `model_drift_suspected` SSB row surfaced by the ModelDriftPanel. */
+export interface ModelDriftStatus {
+  /** blake3 identity key of the (model_pin, system_fingerprint, lane) tuple. */
+  identity_key: string;
+  /** Primary drift signal label: fingerprint_changed | canary_regressed | malformed_output_spike. */
+  kind: string;
+  /** All drift signal labels that fired (ordered: FingerprintChanged first if present). */
+  signals: string[];
+  /**
+   * Per-family regression delta: [family_label, transfer_score] pairs.
+   * Negative transfer_score means regression; threshold is DEFAULT_FAIL_BAND (0.05).
+   */
+  per_family_delta: [string, number][];
+  /**
+   * Domain labels of regressed families (for review routing surface, DD5).
+   * Format: "domain:<family_label>" (e.g. "domain:code_fix").
+   */
+  affected_template_ids: string[];
+  /**
+   * `true` ONLY for LOCAL lane + changed system fingerprint (GD-5 honest ceiling).
+   * NEVER `true` for CLOUD lane — cloud drift is behavioral-suspected only.
+   * The panel renders a FINGERPRINT-CONFIRMED / BEHAVIORAL-SUSPECTED badge.
+   */
+  confirmed_by_fingerprint: boolean;
+  /** Wall-clock ms at which the stored last-good baseline was captured. */
+  baseline_captured_at: number;
+  /** SSB row timestamp (unix milliseconds). */
+  ts: number;
+}
+
+// ---------------------------------------------------------------------------
+// H-13 canvas op types
+// ---------------------------------------------------------------------------
+
+/**
+ * H-13: 10-arm CanvasOpKind discriminator mirror.
+ * Wire labels are snake_case matching CanvasOpKind::as_str() on the Rust side.
+ */
+export type CanvasOpKind =
+  | 'node_created'
+  | 'edge_connected'
+  | 'node_deleted'
+  | 'edge_deleted'
+  | 'annotation_added'
+  | 'label_edited'
+  | 'group_created'
+  | 'node_forked'
+  | 'screenshot_captured'
+  | 'layout_changed';
+
+/**
+ * H-13: payload for a canvas_op_applied SSB row.
+ * Mirrors Rust CanvasOpPayload (ssb.rs) + CanvasOpDto (commands_h13.rs).
+ * Consumed by CanvasPanel.svelte to mutate the graphology graph live.
+ */
+export interface CanvasOpPayload {
+  /** Op kind discriminator (10-arm). */
+  kind: CanvasOpKind;
+  /** Primary node id affected (empty string for edge/annotation ops). */
+  node_id: string;
+  /** Flexible per-op JSON payload (matches CanvasCreate/Connect/etc. input schemas). */
+  op_data: Record<string, unknown>;
+  /** Canvas mode at emission time (e.g. "arch", "code"). */
+  mode: string;
+  /** Canonical task id. */
+  task_id: string;
+  /** Session id for correlation. */
+  session_id: string;
+  /** SSB row timestamp (unix ms). */
+  ts: number;
 }

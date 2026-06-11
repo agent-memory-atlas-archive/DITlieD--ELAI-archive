@@ -10,7 +10,7 @@
   const EFFORT_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, max: 4 };
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
   import { Pulse } from '../ui/index';
-  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks, load_handoff, get_context_state } from '../api/stub';
+  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks, load_handoff, get_context_state, rewind_session, timetravel_undo, timetravel_redo, timetravel_restore_files_only } from '../api/stub';
   import type { RecentTask, ContextState } from '../api/types';
   // E-4 chat UX critique surfaces. PinnedRulesPanel mounts as a sidebar
   // strip above the stream; ClaimConfidenceChip / HonestCorrectionBlock /
@@ -26,6 +26,13 @@
   // the first token arrives. shimmerEnabled follows motion.allow so
   // prefers-reduced-motion users get a static outline instead of the sweep.
   import SkeletonBubble from '$lib/components/SkeletonBubble.svelte';
+  // E-2 Task 2 -- CursorSentinel mounts next to the streamed text once the
+  // first token has arrived (streaming=true AND text!=''), giving the
+  // response a live blinking caret. It is the post-TTFT sibling of
+  // SkeletonBubble (which covers the pre-TTFT gap). Removed automatically
+  // when p.streaming flips false on stream_complete. CSS-only blink so the
+  // caret stays smooth even while the main thread drains FramePacer ticks.
+  import CursorSentinel from '$lib/components/CursorSentinel.svelte';
   import { motion } from '$lib/state/motion.svelte';
   // FINAL TRANCHE B2 / E-2 -- FramePacer is imported here so the symbol
   // is visible to the response-card render scope; the actual instance
@@ -515,6 +522,97 @@
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
   }
 
+  // ----------------------------------------------------------------
+  // H-35: rewind affordance
+  // ----------------------------------------------------------------
+  let rewindingCardIdx = $state<number | null>(null);
+
+  // H-49 time-travel undo/redo/restore-files-only state.
+  let ttBusy = $state<boolean>(false);
+  let ttError = $state<string | null>(null);
+
+  async function handleTimeTravelUndo(): Promise<void> {
+    if (ttBusy) return;
+    ttBusy = true;
+    ttError = null;
+    try {
+      const result = await timetravel_undo(session.sessionId, 'code');
+      if (result?.no_op) {
+        logStub('timetravel_undo', { status: 'no-op' });
+      } else if (result?.disabled) {
+        logStub('timetravel_undo', { status: 'disabled' });
+      } else if (result) {
+        logStub('timetravel_undo', { status: 'ok', head: result.head, divergence: result.divergence_detected });
+      }
+    } catch (e) {
+      ttError = e instanceof Error ? e.message : String(e);
+    } finally {
+      ttBusy = false;
+    }
+  }
+
+  async function handleTimeTravelRedo(): Promise<void> {
+    if (ttBusy) return;
+    ttBusy = true;
+    ttError = null;
+    try {
+      const result = await timetravel_redo(session.sessionId, 'code');
+      if (result?.no_op) {
+        logStub('timetravel_redo', { status: 'no-op (at tip)' });
+      } else if (result?.disabled) {
+        logStub('timetravel_redo', { status: 'disabled' });
+      }
+    } catch (e) {
+      ttError = e instanceof Error ? e.message : String(e);
+    } finally {
+      ttBusy = false;
+    }
+  }
+
+  async function handleRestoreFilesOnly(snapTarget: string): Promise<void> {
+    if (ttBusy) return;
+    ttBusy = true;
+    ttError = null;
+    try {
+      const result = await timetravel_restore_files_only(session.sessionId, snapTarget);
+      if (result?.no_op) {
+        logStub('timetravel_restore_files_only', { status: 'no-op (no manifest)' });
+      } else if (result?.disabled) {
+        logStub('timetravel_restore_files_only', { status: 'disabled' });
+      } else if (result) {
+        logStub('timetravel_restore_files_only', { status: 'ok', target: snapTarget });
+      }
+    } catch (e) {
+      ttError = e instanceof Error ? e.message : String(e);
+    } finally {
+      ttBusy = false;
+    }
+  }
+
+  async function handleRewind(cardIdx: number): Promise<void> {
+    rewindingCardIdx = cardIdx;
+    try {
+      // Use turn:<n> addressing (1-based card index within the stream).
+      // The CLI resolver will map this to the nth task_submitted/chat_message seq.
+      const turnTarget = cardIdx + 1;
+      const result = await rewind_session(
+        session.sessionId,
+        turnTarget,
+        'both',
+        false,
+      );
+      if (result?.no_op) {
+        logStub('rewind', { status: 'no-op', turn: turnTarget });
+      } else if (result?.disabled) {
+        logStub('rewind', { status: 'disabled' });
+      } else if (result) {
+        logStub('rewind', { status: 'ok', beacon_seq: result.beacon_seq, outcome: result.replay_outcome });
+      }
+    } finally {
+      rewindingCardIdx = null;
+    }
+  }
+
 </script>
 
 <div class="command-window">
@@ -598,7 +696,7 @@
         {/if}
       </div>
     {:else}
-      {#each commands.cards as card (card.id)}
+      {#each commands.cards as card, cardIdx (card.id)}
         <div class="card-wrapper anim-enter-lift">
 
           {#if card.kind === 'user'}
@@ -770,7 +868,7 @@
                        prefers-reduced-motion (motion.allow=false). -->
                   <SkeletonBubble shimmerEnabled={motion.allow} />
                 {:else}
-                  <pre class="response-text mono">{p.text || ' '}</pre>
+                  <pre class="response-text mono">{p.text || ' '}{#if p.streaming && p.text}<CursorSentinel visible={true} />{/if}</pre>
                 {/if}
                 {#if p.streaming}
                   <Pulse mode="line" size={1} />
@@ -850,6 +948,41 @@
                 original_claim_blake3_hex={meta.correction.original_claim_blake3_hex}
               />
             {/if}
+          {/if}
+          <!-- H-35: "Rewind to here" affordance. Visible on each transcript turn.
+               Invokes rewind_session(session.sessionId, turn=cardIdx+1, scope=both).
+               Cross-lang pair: commands_h35.rs::rewind_session + generate_handler!. -->
+          {#if card.kind === 'user' || card.kind === 'response'}
+            <div class="rewind-affordance">
+              <button
+                class="btn-rewind"
+                disabled={rewindingCardIdx !== null}
+                onclick={() => handleRewind(cardIdx)}
+                title="Rewind session state to before this turn"
+              >{rewindingCardIdx === cardIdx ? '…' : 'Rewind to here'}</button>
+              <!-- H-49: "Restore Files Only" — matches Cline parity (code scope, no conversation state change).
+                   Cross-lang pair: commands_h49.rs::timetravel_restore_files_only. -->
+              <button
+                class="btn-restore-files"
+                disabled={ttBusy}
+                onclick={() => handleRestoreFilesOnly(`turn:${cardIdx + 1}`)}
+                title="Restore Files Only to this turn's pre-edit state (conversation unchanged)"
+              >{ttBusy ? '…' : 'Restore Files Only'}</button>
+            </div>
+          {/if}
+          <!-- H-49: global undo/redo controls visible on the latest card only. -->
+          {#if cardIdx === commands.cards.length - 1}
+            <div class="tt-controls">
+              <button class="btn-tt" disabled={ttBusy} onclick={handleTimeTravelUndo} title="Undo last LLM file edit">
+                undo
+              </button>
+              <button class="btn-tt" disabled={ttBusy} onclick={handleTimeTravelRedo} title="Redo previously undone edit">
+                redo
+              </button>
+              {#if ttError}
+                <span class="tt-error">{ttError}</span>
+              {/if}
+            </div>
           {/if}
         </div>
       {/each}
@@ -2048,5 +2181,99 @@
   }
   .status-badge--injection-not_run {
     color: var(--text-ghost);
+  }
+  /* H-35: rewind affordance -- per-turn "Rewind to here" button. */
+  .rewind-affordance {
+    display: flex;
+    justify-content: flex-end;
+    padding: 2px 0 0;
+  }
+  .btn-rewind {
+    font-family: var(--font-sans);
+    font-size: 10px;
+    color: var(--text-ghost);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    padding: 2px 8px;
+    cursor: pointer;
+    outline: none;
+    opacity: 0;
+    transition:
+      opacity var(--dur-fast) var(--ease-std),
+      color var(--dur-fast) var(--ease-std),
+      border-color var(--dur-fast) var(--ease-std);
+  }
+  .card-wrapper:hover .btn-rewind {
+    opacity: 1;
+  }
+  .btn-rewind:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-default);
+  }
+  .btn-rewind:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  /* H-49 time-travel affordance styles */
+  .btn-restore-files {
+    font-family: var(--font-sans);
+    font-size: 10px;
+    color: var(--text-ghost);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    padding: 2px 8px;
+    cursor: pointer;
+    outline: none;
+    opacity: 0;
+    transition:
+      opacity var(--dur-fast) var(--ease-std),
+      color var(--dur-fast) var(--ease-std),
+      border-color var(--dur-fast) var(--ease-std);
+  }
+  .card-wrapper:hover .btn-restore-files {
+    opacity: 1;
+  }
+  .btn-restore-files:hover {
+    color: var(--teal, var(--text-secondary));
+    border-color: var(--border-default);
+  }
+  .btn-restore-files:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .tt-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+    padding: 2px 0;
+    justify-content: flex-end;
+  }
+  .btn-tt {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    background: var(--bg-hover);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-xs);
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 1px 6px;
+    outline: none;
+    transition: background 120ms var(--ease-std), color 120ms var(--ease-std);
+  }
+  .btn-tt:hover {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+  }
+  .btn-tt:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .tt-error {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--fail);
+    padding: 0 4px;
   }
 </style>

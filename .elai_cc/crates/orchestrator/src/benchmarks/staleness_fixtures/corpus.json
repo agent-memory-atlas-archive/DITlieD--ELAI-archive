@@ -1,0 +1,54 @@
+[
+  {
+    "id": "stale-pref-test-runner-001",
+    "fact_type": "preference",
+    "key": "test_runner",
+    "stale_value": "cargo nextest",
+    "fresh_value": "cargo test",
+    "stale_tier": "T3",
+    "fresh_tier": "T0",
+    "stale_evidence": ["ssn-h30-001-a"],
+    "fresh_evidence": ["ssn-h30-001-b"],
+    "expect_recognized": true,
+    "note": "co-referential (Type I) supersession; fresh tier strictly higher -> the adjudicator soft-closes the stale row (recognition), and retrieval serves the fresh value only (application)."
+  },
+  {
+    "id": "stale-pref-formatter-002",
+    "fact_type": "preference",
+    "key": "rust_formatter",
+    "stale_value": "rustfmt --edition 2018",
+    "fresh_value": "rustfmt --edition 2024",
+    "stale_tier": "T2",
+    "fresh_tier": "T0",
+    "stale_evidence": ["ssn-h30-002-a"],
+    "fresh_evidence": ["ssn-h30-002-b"],
+    "expect_recognized": true,
+    "note": "co-referential (Type I); fresh tier strictly higher -> recognized + applied."
+  },
+  {
+    "id": "stale-pref-lint-003",
+    "fact_type": "preference",
+    "key": "lint_tool",
+    "stale_value": "clippy::pedantic off",
+    "fresh_value": "clippy::pedantic on",
+    "stale_tier": "T1",
+    "fresh_tier": "T0",
+    "stale_evidence": ["ssn-h30-003-a"],
+    "fresh_evidence": ["ssn-h30-003-b"],
+    "expect_recognized": true,
+    "note": "co-referential (Type I); fresh tier strictly higher -> recognized + applied."
+  },
+  {
+    "id": "stale-pref-ci-noupgrade-004",
+    "fact_type": "preference",
+    "key": "ci_provider",
+    "stale_value": "github actions",
+    "fresh_value": "gitlab ci",
+    "stale_tier": "T0",
+    "fresh_tier": "T0",
+    "stale_evidence": ["ssn-h30-004-a"],
+    "fresh_evidence": ["ssn-h30-004-b"],
+    "expect_recognized": false,
+    "note": "co-referential (Type I) but the fresh row is NOT strictly higher tier than the stale row, so the tier-driven adjudicator SURFACES both instead of soft-closing the stale one (BeliefShift no-auto-overwrite default). Recognition MISS by construction: the store still holds the stale row valid. This is the honest SR<1.0 case (STALE Finding 1: recognition is imperfect); it makes SR a measured rate, not a tautology."
+  }
+]

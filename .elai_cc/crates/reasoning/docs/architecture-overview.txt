@@ -1,0 +1,186 @@
+REASONING CRATE ARCHITECTURE OVERVIEW
+Crate: elai-reasoning (crates/reasoning)
+Scope: Grounded Reasoning Chain (GRC) engine, per-agent GRC configuration,
+       grounding verification, counterfactual safety questions (CSQ), and
+       inline feasibility checks.
+Source of truth: this file documents the public trait surface as it exists in
+       crates/reasoning/src/engine.rs and crates/reasoning/src/config.rs. When
+       the trait changes, update Section 4. Created for spec task 2D.5
+       (docs/specs/guide/steps/phase-2D.txt line 372-373); kept in-crate
+       because docs/specs/ is the workflow root and crate-local docs live under
+       the crate per the project boundary rule.
+
+
+SECTION 1. PLACE IN THE WORKSPACE
+
+elai-reasoning is a low-level crate. It depends only on elai-core,
+elai-providers, and elai-memory (see crates/reasoning/Cargo.toml). It does NOT
+depend on elai-orchestrator or elai-tools. Higher layers consume it:
+  - elai-orchestrator instantiates one BasicGrcEngine per spawned agent
+    (crates/orchestrator/src/agent_pool.rs::InProcessAgentPool::spawn) and
+    applies a per-role AgentGrcConfig via GrcEngine::with_agent_config.
+  - elai-tools depends on elai-orchestrator (not on reasoning directly).
+Because reasoning sits below tools/orchestrator, a production test runner that
+needs subprocess execution (CargoTestRunner) cannot be authored inside this
+crate without inverting the layering; the TestRunner trait is defined here and
+the concrete runner is injected from above. See Section 5.
+
+
+SECTION 2. THE GRC STATE MACHINE
+
+GrcState (types.rs) is the step alphabet:
+  Observe, Hypothesize, PlanAction, Act, Verify, Converge, Status.
+GrcState::allowed_next() defines the base transition graph:
+  Observe     -> [Hypothesize, Converge, Status]
+  Hypothesize -> [PlanAction, Converge, Status]
+  PlanAction  -> [Act, Converge, Status]
+  Act         -> [Verify, Converge, Status]
+  Verify      -> [Observe, Hypothesize, Converge, Status]
+  Converge    -> [Observe, Status]
+  Status      -> [all states]            (free echo; does not advance the chain)
+The normal chain is Observe -> Hypothesize -> PlanAction -> Act -> Verify.
+Converge is reachable from any state (forced-convergence path). Status is free
+(no budget, no grounding, no transition check).
+
+Per-role configs may ADD transitions via AgentGrcConfig.transition_overrides
+(additive union only; a config can never REMOVE a base transition). Example:
+the Designer role adds {PlanAction: [Verify]} so it can skip Act and go
+PlanAction -> Verify; the Auditor adds {Verify: [Verify, Observe]} for a
+double-Verify chain. effective_allowed_next (config.rs) computes the merged set.
+
+
+SECTION 3. KEY TYPES (summary; full definitions in types.rs)
+
+  ThinkStep            one reasoning step: { step_type, content, topic,
+                       grounding, conclusion, scope }.
+  ThinkResult          outcome of think(): { step, budget_remaining,
+                       grounding_level, warnings }.
+  GrcBudget            { max_calls, max_chars, calls_used, chars_used }.
+  AgentGrcConfig       per-role policy: { role, budget, required_steps,
+                       grounding_level, csq_required, allowed_methods,
+                       transition_overrides, require_scope_enumeration }.
+  GroundingLevel       Uncertain < High < Verified (ordered).
+  VerificationMethod   FileCheck, SourceCheck, TestCheck, WebCheck, ApiCheck,
+                       ApiRegistryCheck, plus data-carrying ArtifactCheck /
+                       CosmosCheck / VisualArtifactCheck variants.
+  VerificationResult   { claim, passes, evidence, method_used }.
+  PlanGroundingResult  { claims, all_grounded, ungrounded, verify_needed }.
+  CsqResult / CsqCheck / CsqSeverity        counterfactual-safety output.
+  InlineFeasibilityState / InlineFeasibilityResult / FeasibilityMethod /
+  FeasibilityOutcome                        inline feasibility during EXECUTING.
+
+
+SECTION 4. THE GrcEngine TRAIT SURFACE  (canonical; defined in engine.rs)
+
+GrcEngine is the contract for grounded reasoning. The production implementor is
+BasicGrcEngine (engine.rs). Callers hold BasicGrcEngine by value (one engine per
+agent, topic budgets isolated per-agent) rather than as a trait object. All
+methods below are listed with their exact signatures and the phase that
+introduced them.
+
+Phase 2A (core reasoning loop):
+
+  fn think(&mut self, step: ThinkStep) -> Result<ThinkResult, GrcError>
+      Submit one reasoning step. Enforces, in order: state-transition validity
+      against effective transitions (base graph + the active config's
+      transition_overrides, then filtered to the config's step whitelist);
+      the anti-rubber-stamp rule for the auditor role (a Converge step is
+      rejected with GrcError::InsufficientFindings unless a prior Verify step's
+      content begins with "FINDING:"); budget enforcement (max_calls and
+      max_chars, check-then-increment, plus a must-converge rule when only one
+      call remains); grounding validation for steps where
+      step_type.requires_grounding() is true (Observe, Hypothesize, Verify) —
+      missing grounding is GrcError::UngroundedStep, grounding below the
+      config's minimum GroundingLevel is rejected, and UNCERTAIN grounding emits
+      a warning (it is NOT auto-resolved here; plan-level auto-resolution lives
+      in ground_plan — deliberate scope split, see base-phase-2 2B); and scope
+      enumeration (when require_scope_enumeration is set, the Observe step must
+      enumerate scope items and every item must reappear in the PlanAction step,
+      else a warning is pushed). Status steps bypass all of the above.
+
+  fn set_budget(&mut self, topic: &str, max_calls: u32, max_chars: u32)
+      Set (or reset) the per-topic budget. Each topic has an independent budget.
+
+  fn get_budget(&self, topic: &str) -> Option<&GrcBudget>
+      Read the current budget for a topic, if the topic exists.
+
+  fn reset_topic(&mut self, topic: &str)
+      Drop all state for one topic (budget counters and step history).
+
+Phase 2B (grounding verification):
+
+  fn verify_claim(&self, claim: &str, source: &str, context: &str)
+      -> Result<VerificationResult, GrcError>
+      Parse the claim's "type:reference" prefix (file/grep/test/search/tool/
+      artifact/cosmos/training), strip the prefix, and dispatch to the injected
+      Verifier. Returns the verifier's VerificationResult with the stripped
+      reference as the claim.
+
+  fn ground_plan(&self, plan: &str) -> PlanGroundingResult
+      Scan a whole plan string for "Grounding: <type>:<ref>" citations. For
+      "training:" claims it ATTEMPTS auto-resolution by running the verifier
+      (FileCheck/SourceCheck); a passing verify upgrades the claim to
+      GroundingLevel::Verified, a failing/erroring verify records it in both
+      ungrounded and verify_needed at GroundingLevel::Uncertain. Non-training
+      claims are verified directly. all_grounded is true iff ungrounded is
+      empty. This is the PLAN-boundary counterpart to think()'s per-step warning.
+
+Phase 2C (per-agent configuration routing):
+
+  fn with_agent_config(&mut self, config: AgentGrcConfig)
+      Install a per-agent config. Clears all topic state so leftover budget or
+      step history from a previous config cannot leak. NOTE: this does NOT
+      validate the config; validation is the loader's job (config.rs
+      AgentGrcConfigLoader::validate_config) and, for the orchestrator's
+      hardcoded table, is performed eagerly inside
+      orchestrator::agent_pool::default_grc_config (base-phase-2 2C
+      validate_config-at-construction).
+
+  fn get_agent_config(&self) -> Option<&AgentGrcConfig>
+      Read the installed config, if any.
+
+Phase 2D (CSQ and inline feasibility):
+
+  fn generate_csq(&self, function_id: &str, sensitive_ops: &[String])
+      -> Result<CsqResult, GrcError>
+      Produce counterfactual safety questions for a function given a list of
+      sensitive operations the caller detected. Empty sensitive_ops yields an
+      empty CsqResult (no CSQ needed). Each op is classified Critical or Warning
+      by pattern match (fs/file/write/delete/net/money/auth/token/credential...).
+
+  fn check_inline_feasibility(&mut self, claim: &str, sources: &[String])
+      -> Result<InlineFeasibilityResult, GrcError>
+      Check feasibility of a claim mid-EXECUTING. Mutates an InlineFeasibilityState
+      counter that is separate from the per-topic GRC budget; returns
+      GrcError::BudgetExhausted once the fixed inline-check cap (2) is reached.
+
+
+SECTION 5. CONFIG LOADING AND THE TestRunner SEAM
+
+AgentGrcConfigLoader (config.rs) is the loader contract:
+  fn load_config(&self, role, global_defaults) -> Result<AgentGrcConfig, GrcError>
+  fn validate_config(&self, config) -> Result<(), GrcError>
+validate_config enforces: (a) required_steps non-empty; (b) required_steps forms
+a valid chain through base+overridden transitions (validate_step_chain);
+(c) budget.max_calls >= required_steps.len(); (d) csq_required implies at least
+one Verify; (e) allowed_methods is a subset of the known VerificationMethod set.
+
+TomlConfigLoader is the current implementor (hardcoded role table; the
+elai_cc.toml [agents.{role}.grc] parse path is deferred to a future phase).
+agent_grc_config_for_role(role) is the canonical per-role config table and is
+the SINGLE source of truth for the orchestrator's default_grc_config delegation
+(executor/auditor remain inline in the orchestrator; designer, prompt_engineer,
+context_compiler, media_validator, idea_framer, idea_critic, and the per-level
+auditors delegate here so the two crates cannot diverge).
+
+TestRunner (verification.rs) abstracts test execution:
+  fn run_test(&self, name: &str, crate_name: &str) -> TestRunResult
+Implementors: MockTestRunner (tests), NoopTestRunner (the in-crate default,
+always returns "not available"). A production CargoTestRunner that actually runs
+cargo test would have to live ABOVE this crate (in tools/, which can reach the
+orchestrator's sandboxed command primitive crates/orchestrator/src/bash.rs::
+execute_bash) and be injected via LocalVerifier::new(file_reader, test_runner)
++ BasicGrcEngine::with_verifier. The default BasicGrcEngine::new path currently
+hardcodes NoopTestRunner, so production TEST_CHECK is unreachable until that
+injection is wired. This is tracked separately (see
+workflow/reasoning/base-phase-2-routing.md).

@@ -41,6 +41,9 @@ const BLOCK_AGENT_ERROR: &str = "Tool call rejected by policy";
 /// Generic warning message returned to agents on WARN.
 const WARN_AGENT_MESSAGE: &str = "Tool call warning issued";
 
+/// Generic message returned to agents on ESCALATE (decision routed up).
+const ESCALATE_AGENT_MESSAGE: &str = "Tool call escalated for review";
+
 // ---------------------------------------------------------------------------
 // IpcHookEvent — which hook is firing
 // ---------------------------------------------------------------------------
@@ -100,6 +103,7 @@ impl HookResult {
         match &self.verdict {
             HookVerdict::Block { .. } => BLOCK_AGENT_ERROR.to_string(),
             HookVerdict::Warn { .. } => WARN_AGENT_MESSAGE.to_string(),
+            HookVerdict::Escalate { .. } => ESCALATE_AGENT_MESSAGE.to_string(),
             HookVerdict::Allow => String::new(),
         }
     }

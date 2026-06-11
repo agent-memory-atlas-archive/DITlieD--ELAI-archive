@@ -15,11 +15,16 @@
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-use elai_orchestrator::{McpServerManager, McpTool, PermissionMode, ToolError};
+use elai_orchestrator::{
+    DeferredResolveInfo, McpServerManager, McpTool, PermissionMode, ToolError,
+    ELAI_MCP_DEFER_SCHEMA_ENABLE_ENV,
+};
 use elai_tools::RuntimeToolDefinition;
 use serde::Deserialize;
 use serde_json::json;
+use tracing::info;
 
 use crate::cli_consts::RuntimePluginStateBuildOutput;
 
@@ -166,6 +171,43 @@ impl RuntimeMcpState {
         qualified_tool_name: &str,
         arguments: Option<serde_json::Value>,
     ) -> Result<String, ToolError> {
+        // H-34: deferred schema resolve path. When ELAI_MCP_DEFER_SCHEMA_ENABLE=1,
+        // check if the called tool's schema was withheld. If so, resolve it from the
+        // StdioSchemaCache and emit a McpToolDeferred SSB row (one per cache-miss,
+        // not per hit -- mirrors mcp_bridge.rs:974-990 resolve_schema_on_demand shape).
+        // The SSB emission is best-effort: failure to emit never blocks the tool call.
+        let defer_info: Option<DeferredResolveInfo> = if std::env::var(ELAI_MCP_DEFER_SCHEMA_ENABLE_ENV)
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false)
+        {
+            self.runtime
+                .block_on(self.manager.resolve_withheld_schema(qualified_tool_name))
+        } else {
+            None
+        };
+
+        // Emit a McpToolDeferred SSB row on the FIRST resolve only (cache-miss).
+        // cache_hit=true means this tool was already resolved in a previous call;
+        // we log at debug level but do NOT emit a duplicate SSB row.
+        if let Some(ref info) = defer_info {
+            if !info.cache_hit {
+                info!(
+                    server_name = %info.server_name,
+                    tool = %info.tool_qualified_name,
+                    resolve_ns = info.resolve_ns,
+                    cache_hit = info.cache_hit,
+                    floor_size = info.injected_floor_size,
+                    "mcp_glue: deferred schema resolved for tool (first use)"
+                );
+                emit_mcp_tool_deferred_best_effort(info);
+            } else {
+                tracing::debug!(
+                    tool = %info.tool_qualified_name,
+                    "mcp_glue: deferred schema already resolved (cache-hit), skipping SSB emit"
+                );
+            }
+        }
+
         let response = self
             .runtime
             .block_on(self.manager.call_tool(qualified_tool_name, arguments))
@@ -353,4 +395,82 @@ pub(crate) fn mcp_annotation_flag(tool: &McpTool, key: &str) -> bool {
         .and_then(|annotations| annotations.get(key))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+/// H-34: best-effort SSB emission for a deferred schema resolve event.
+///
+/// Opens a minimal SSB writer in a new current-thread tokio runtime and
+/// emits one `McpToolDeferred` beacon. Best-effort: on any failure (missing
+/// ssb.db dir, writer init error) we log via `tracing::warn` and continue.
+/// The tool call itself is NEVER blocked by SSB emission failure.
+///
+/// This mirrors the `bench_staleness::emit_staleness_eval_measured` pattern
+/// exactly: `Ssb::new` MUST be constructed inside `rt.block_on` or it panics
+/// "no reactor running" on a live run (cargo check passes regardless).
+fn emit_mcp_tool_deferred_best_effort(info: &DeferredResolveInfo) {
+    use std::fs;
+    use std::sync::Arc as StdArc;
+    use elai_core::paths::sessions_dir_path;
+    use elai_core::OsClock;
+    use elai_orchestrator::ssb::McpToolDeferredPayload;
+    use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
+
+    let project_root = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("mcp_glue: McpToolDeferred SSB emit skipped, no cwd: {e}");
+            return;
+        }
+    };
+    let db_path = sessions_dir_path(&project_root).join("ssb.db");
+    if let Some(parent) = db_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            tracing::warn!("mcp_glue: McpToolDeferred SSB emit skipped, create_dir_all: {e}");
+            return;
+        }
+    }
+
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: "cli-mcp-defer".to_string(),
+    };
+    let clock: StdArc<dyn elai_core::clock::ClockProvider> = StdArc::new(OsClock);
+
+    let payload = McpToolDeferredPayload {
+        server_name: info.server_name.clone(),
+        tool_qualified_name: info.tool_qualified_name.clone(),
+        resolve_ns: info.resolve_ns,
+        cache_hit: info.cache_hit,
+        injected_floor_size: info.injected_floor_size,
+    };
+
+    // Build a new current-thread runtime for the SSB emit. Ssb::new must be
+    // inside block_on. Failure is best-effort -- we warn and continue.
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => {
+            let result = rt.block_on(async move {
+                let ssb = Ssb::new(cfg, clock).map_err(|e| e.to_string())?;
+                ssb.write_payload(
+                    "cli:mcp-defer",
+                    0,
+                    SsbPayload::McpToolDeferred(payload),
+                    Vec::new(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            });
+            if let Err(e) = result {
+                tracing::warn!("mcp_glue: McpToolDeferred SSB emit failed (best-effort): {e}");
+            }
+        }
+        Err(e) => {
+            tracing::warn!("mcp_glue: McpToolDeferred SSB runtime build failed: {e}");
+        }
+    }
 }

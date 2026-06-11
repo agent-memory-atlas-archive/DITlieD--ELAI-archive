@@ -17,6 +17,55 @@
 
   const branches = $derived(orchestrationData.sessionBranches);
 
+  // C-23: SSB branch-event banner feed. The get_session_branches command
+  // (orchestrationData.sessionBranches) derives each row from a typed
+  // branch SSB row — winners carry status "merged" (branch_merged), losers
+  // carry status "abandoned" (branch_closed). We render those as timestamped
+  // banner cards here so the SessionDag fork/merge/close lifecycle is visible
+  // inside the drawer (the ActivityWindow orbit is orbit-only and cannot host
+  // this list). No new Tauri command is introduced — this consumes the
+  // existing get_session_branches feed already polled on bootstrap.
+  type BranchEventKind = 'forked' | 'merged' | 'closed';
+  interface BranchEventBanner {
+    id: string;
+    kind: BranchEventKind;
+    label: string;
+    ts: number;
+  }
+
+  function branchStatusToKind(status: string): BranchEventKind {
+    switch (status) {
+      case 'merged': return 'merged';
+      case 'abandoned': return 'closed';
+      // active / forked branches that have no terminal SSB row yet.
+      default: return 'forked';
+    }
+  }
+
+  const branchEvents = $derived<BranchEventBanner[]>(
+    branches
+      .map((b) => ({
+        id: b.id,
+        kind: branchStatusToKind(b.status),
+        label: b.label,
+        ts: b.last_activity_ts ?? b.created_ts ?? 0,
+      }))
+      .sort((a, b) => b.ts - a.ts),
+  );
+
+  function branchEventTone(kind: BranchEventKind): string {
+    switch (kind) {
+      case 'merged': return 'var(--teal)';
+      case 'closed': return 'var(--fail)';
+      case 'forked': return 'var(--steel)';
+    }
+  }
+
+  function fmtBranchTs(ts: number): string {
+    if (!ts) return '';
+    return new Date(ts).toISOString().slice(11, 19);
+  }
+
   // C-23: per-branch action status (last command outcome). Keyed by
   // branch id so the drawer can render a per-row "merge requested"
   // banner. Cleared on successful refresh.
@@ -107,13 +156,39 @@
 
   <Divider />
 
+  <!-- C-23: SSB branch-event banner feed (branch_forked / branch_merged /
+       branch_closed), consuming the existing get_session_branches feed. -->
+  <section class="section">
+    <h3 class="section-header">BRANCH EVENTS</h3>
+    {#if branchEvents.length === 0}
+      <p class="section-subtitle">No branch fork / merge / close events recorded for this session yet.</p>
+    {:else}
+      <ul class="branch-events" data-testid="branch-event-banners">
+        {#each branchEvents as ev (ev.id)}
+          <li class="branch-event" style="border-left-color:{branchEventTone(ev.kind)};">
+            <span class="branch-event-kind" style="color:{branchEventTone(ev.kind)};">
+              branch_{ev.kind}
+            </span>
+            <span class="branch-event-label">{ev.label}</span>
+            {#if ev.ts}
+              <span class="branch-event-ts">{fmtBranchTs(ev.ts)}</span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <Divider />
+
   <section class="section">
     <h3 class="section-header">HOW IT WORKS</h3>
     <ul class="note">
       <li>
         Each branch op emits a typed SSB row
         (<code>branch_forked</code> / <code>branch_merged</code> /
-        <code>branch_closed</code>) — visible in the ActivityWindow feed.
+        <code>branch_closed</code>) — surfaced in the BRANCH EVENTS feed
+        above (and in the ActivityWindow orbit).
       </li>
       <li>
         Per-call DAG open: the dashboard does not hold a long-lived
@@ -192,5 +267,46 @@
 
   code {
     color: var(--text-secondary);
+  }
+
+  /* C-23 branch-event banners */
+  .branch-events {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .branch-event {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-left: 2px solid var(--border-subtle);
+    background: var(--bg-hover);
+    border-radius: var(--r-xs);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
+  .branch-event-kind {
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+
+  .branch-event-label {
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+
+  .branch-event-ts {
+    color: var(--text-ghost);
+    flex-shrink: 0;
   }
 </style>

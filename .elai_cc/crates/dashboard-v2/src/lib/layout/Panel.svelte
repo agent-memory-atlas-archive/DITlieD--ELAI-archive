@@ -25,7 +25,7 @@
 
   let { panelId, tabs, activeTabId, onTabSelect, onTabClose, onNewTab }: Props = $props();
 
-  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore', 'github', 'symbol_graph'];
+  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore', 'github', 'symbol_graph', 'cockpit', 'canvas'];
   const WINDOW_LABELS: Record<WindowType, string> = {
     command:  'Command',
     plan:     'Plan',
@@ -45,6 +45,11 @@
     // E-40: orchestrator-rooted symbol-graph (defs / refs / pagerank /
     // LSP-oracle stats).
     symbol_graph: 'Symbol Graph',
+    // G-5: reviewer-cockpit Diff-Surface-to-Review (DSR) window.
+    cockpit: 'Reviewer Cockpit (G-5)',
+    // H-10: sigma/WebGL codebase canvas — code graph + dead-code islands +
+    // PageRank hub overlay + semantic zoom + LOD.
+    canvas: 'Canvas (Code Graph)',
   };
 
   let dragOverTabId = $state<string | null>(null);

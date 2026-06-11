@@ -49,11 +49,15 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use elai_core::OsClock;
+use elai_orchestrator::abstention_score::{
+    AbstentionAggregate, OutcomeTriple, DEFAULT_CONFIDENCE_TARGET,
+};
 use elai_orchestrator::benchmarks::seccodeplt_runner::{
     SecCodePltError, SecCodePltReport, SecCodePltRunner,
 };
+use elai_orchestrator::conformal_calibration::RefusalDecision;
 use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
-use elai_orchestrator::ssb::InsecureRateMeasuredPayload;
+use elai_orchestrator::ssb::{AbstentionScoredPayload, InsecureRateMeasuredPayload};
 use elai_core::paths::sessions_dir_path;
 use thiserror::Error;
 
@@ -87,6 +91,9 @@ pub enum BenchSeccodepltError {
     /// Writing the InsecureRateMeasured beacon failed.
     #[error("seccodeplt could not write SSB beacon: {source_msg}")]
     SsbWrite { source_msg: String },
+    /// Writing the AbstentionScored beacon failed.
+    #[error("seccodeplt could not write abstention SSB beacon: {source_msg}")]
+    SsbAbstentionWrite { source_msg: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -131,14 +138,30 @@ pub fn run_inner(json: bool) -> Result<(), BenchSeccodepltError> {
     //    run (cargo check cannot catch it).
     emit_insecure_rate_measured(&project_root, &report)?;
 
+    // 3b. H-39: emit ONE AbstentionScored beacon (default-ON, kill-switch
+    //     ELAI_ABSTENTION_SCORE_DISABLE). Derive abstention-aware scores from
+    //     the report's pass/fail outcome + assume no-abstain channel for the
+    //     static corpus (abstention_rate=0 is the explicit plan allowance for
+    //     tasks with no RefusalDecision in their fixture). The score degrades
+    //     gracefully to a penalty-weighted pass rate in that case.
+    let abstention_agg = build_abstention_agg_from_report(&report);
+    let disabled = std::env::var("ELAI_ABSTENTION_SCORE_DISABLE")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    if !disabled {
+        emit_abstention_scored(&project_root, &report, &abstention_agg)?;
+    }
+
     // 4. Summary line, plus the full report JSON when --json is set.
     println!(
-        "SECCODEPLT suite={} n_samples={} before={:.4} after={:.4} gate_recall={:.4} corpus_blake3={}; report written to {}",
+        "SECCODEPLT suite={} n_samples={} before={:.4} after={:.4} gate_recall={:.4} \
+         abstention_score={:.4} corpus_blake3={}; report written to {}",
         report.suite,
         report.n_samples,
         report.insecure_rate_before,
         report.insecure_rate_after,
         report.gate_recall,
+        abstention_agg.mean_score(),
         report.corpus_blake3,
         report_path.display(),
     );
@@ -241,6 +264,104 @@ fn emit_insecure_rate_measured(
         )
         .await
         .map_err(|e| BenchSeccodepltError::SsbWrite {
+            source_msg: e.to_string(),
+        })?;
+        Ok::<(), BenchSeccodepltError>(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// H-39: abstention-aware score helpers
+// ---------------------------------------------------------------------------
+
+/// Build an AbstentionAggregate from a SecCodePlt report.
+///
+/// The static corpus has no RefusalDecision channel (the gate always answers).
+/// Per plan explicit allowance: abstention_rate=0, score degrades to a
+/// penalty-weighted pass rate. Each sample is treated as:
+///   - gate passed (not insecure after gate) = correct answer, no abstain.
+///   - gate rejected (insecure residual) = confident-wrong, no abstain.
+///
+/// n = n_samples. This is the in-process Tier-1 scorer; the live RunPod
+/// fixture with real RefusalDecision rows is Tier-2.
+fn build_abstention_agg_from_report(report: &SecCodePltReport) -> AbstentionAggregate {
+    let mut agg = AbstentionAggregate::new();
+    let n = report.n_samples as usize;
+    if n == 0 {
+        return agg;
+    }
+    // insecure_rate_after = fraction that passed the gate AND are insecure (FN residual).
+    // insecure_rate_before = fraction that are insecure across all samples.
+    // gate_approved_insecure = insecure_rate_after * n (wrong answers, no abstain).
+    // gate_approved_secure = (1.0 - insecure_rate_before) * n  (correct answers, no abstain).
+    // (Rounded to nearest integer; difference absorbed into the correct bucket.)
+    let wrong = ((report.insecure_rate_after * n as f64).round()) as usize;
+    let correct = n.saturating_sub(wrong);
+    for _ in 0..correct {
+        let outcome = OutcomeTriple::new(RefusalDecision::Answer { confidence: 0.9 }, true);
+        agg.record(outcome, DEFAULT_CONFIDENCE_TARGET);
+    }
+    for _ in 0..wrong {
+        let outcome = OutcomeTriple::new(RefusalDecision::Answer { confidence: 0.9 }, false);
+        agg.record(outcome, DEFAULT_CONFIDENCE_TARGET);
+    }
+    agg
+}
+
+/// Open the canonical session `ssb.db` and emit ONE `AbstentionScored` beacon.
+///
+/// Mirrors `emit_insecure_rate_measured`: Ssb::new MUST be inside rt.block_on.
+fn emit_abstention_scored(
+    project_root: &std::path::Path,
+    report: &SecCodePltReport,
+    agg: &AbstentionAggregate,
+) -> Result<(), BenchSeccodepltError> {
+    let db_path = sessions_dir_path(project_root).join("ssb.db");
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| BenchSeccodepltError::ReportDir {
+            path: parent.display().to_string(),
+            source_msg: e.to_string(),
+        })?;
+    }
+
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: "cli-bench-seccodeplt".to_string(),
+    };
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| BenchSeccodepltError::Runtime {
+            source_msg: e.to_string(),
+        })?;
+
+    let payload = AbstentionScoredPayload {
+        suite: report.suite.clone(),
+        mean_score: agg.mean_score(),
+        abstention_rate: agg.abstention_rate(),
+        confident_wrong_rate: agg.confident_wrong_rate(),
+        t: DEFAULT_CONFIDENCE_TARGET,
+        n: agg.n() as u32,
+        seed: report.seed,
+        corpus_blake3: report.corpus_blake3.clone(),
+    };
+
+    rt.block_on(async move {
+        let ssb = Ssb::new(cfg, clock).map_err(|e| BenchSeccodepltError::SsbOpen {
+            source_msg: e.to_string(),
+        })?;
+        ssb.write_payload(
+            "cli:bench-seccodeplt",
+            0,
+            SsbPayload::AbstentionScored(payload),
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| BenchSeccodepltError::SsbAbstentionWrite {
             source_msg: e.to_string(),
         })?;
         Ok::<(), BenchSeccodepltError>(())

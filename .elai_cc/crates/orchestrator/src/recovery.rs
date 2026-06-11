@@ -15,13 +15,26 @@ use crate::ssb::{
 // AgentDeathClassification
 // ---------------------------------------------------------------------------
 
+/// Stable marker that `ipc_accept::run_agent_session` prefixes onto the
+/// session failure reason when the gateway's `check_heartbeat_timeouts()`
+/// reports the agent's connection stopped sending heartbeats before the
+/// session deadline. `classify_agent_death` keys on this marker to map the
+/// failure to [`AgentDeathClassification::Timeout`] (a wedged-but-possibly-
+/// alive agent) rather than [`AgentDeathClassification::Crash`] (process
+/// died / connection dropped). phase-3C.2.
+pub const HEARTBEAT_TIMEOUT_MARKER: &str = "heartbeat_timeout:";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentDeathClassification {
     Crash,
     CleanExit,
-    // STUB(3C.2): heartbeat-based death detection not yet implemented. stub-ban-allow: 3C.2 follow-up
-    // Timeout is accepted but treated identically to Crash for recovery.
+    /// Agent stopped sending heartbeats (gateway
+    /// `IpcGateway::check_heartbeat_timeouts` flagged the connection) within
+    /// `elai_ipc_types::AGENT_HEARTBEAT_TIMEOUT_SECS`. Recovery treats this
+    /// distinctly from `Crash`: the process may still be alive but wedged, so
+    /// the recovery context records a `WEDGED` grounding source and does not
+    /// claim the process exited. phase-3C.2.
     Timeout,
     BudgetExceeded,
 }
@@ -34,6 +47,22 @@ impl AgentDeathClassification {
             Self::Timeout => "timeout",
             Self::BudgetExceeded => "budget_exceeded",
         }
+    }
+}
+
+/// Classify an agent death from the session failure reason produced by
+/// `ipc_accept::run_agent_session`. A reason carrying
+/// [`HEARTBEAT_TIMEOUT_MARKER`] is a heartbeat timeout (the gateway saw the
+/// connection go silent); every other non-clean failure reason is a `Crash`
+/// (process exit / connection drop / frame error). This is the behavioural
+/// hinge that makes the `Timeout` vs `Crash` distinction observable end to
+/// end (phase-3C.2): the production task_runner recovery path calls this
+/// instead of hard-coding `Crash`.
+pub fn classify_agent_death(reason: &str) -> AgentDeathClassification {
+    if reason.contains(HEARTBEAT_TIMEOUT_MARKER) {
+        AgentDeathClassification::Timeout
+    } else {
+        AgentDeathClassification::Crash
     }
 }
 
@@ -127,18 +156,33 @@ impl<C: ClockProvider> RecoveryManager<C> {
         ssb.write_payload(&agent_id_str, prior_step_index, death_payload, vec![])
             .await?;
 
-        // Build recovery context from checkpoint or fresh start
+        // Build recovery context from checkpoint or fresh start.
+        //
+        // phase-3C.2 behavioural distinction: a `Timeout` death means the
+        // agent went silent on heartbeats but the OS process was never
+        // confirmed dead — it may be wedged (blocked syscall, deadlock). We
+        // stamp a `WEDGED` grounding-source suffix so the dashboard + audit
+        // can tell "process crashed, restart cold" (Crash) apart from "agent
+        // stalled, resume from checkpoint and treat its scratch state as
+        // suspect" (Timeout). `Crash`/`CleanExit` keep the legacy source
+        // format so existing SSB consumers are unaffected.
+        let is_timeout = classification == AgentDeathClassification::Timeout;
         let (restored_grc_history, restored_active_files, first_grounding_source) =
             match checkpoint_data {
                 Some(data) => {
-                    let source =
-                        format!("CHECKPOINT:{checkpoint_path_fwd}");
+                    let source = if is_timeout {
+                        format!("CHECKPOINT:{checkpoint_path_fwd}:WEDGED")
+                    } else {
+                        format!("CHECKPOINT:{checkpoint_path_fwd}")
+                    };
                     (data.grc_history, data.active_files, source)
                 }
                 None => {
-                    let source = format!(
-                        "CHECKPOINT:{checkpoint_path_fwd}:MISSING"
-                    );
+                    let source = if is_timeout {
+                        format!("CHECKPOINT:{checkpoint_path_fwd}:MISSING:WEDGED")
+                    } else {
+                        format!("CHECKPOINT:{checkpoint_path_fwd}:MISSING")
+                    };
                     (Vec::new(), Vec::new(), source)
                 }
             };
@@ -511,21 +555,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recover_agent_timeout_treated_as_crash() {
+    async fn recover_agent_timeout_is_behaviourally_distinct_from_crash() {
+        // phase-3C.2: Timeout recovery now stamps a WEDGED grounding source
+        // (no on-disk checkpoint here, so the MISSING:WEDGED variant), whereas
+        // Crash keeps the legacy MISSING source. This asserts the distinction
+        // is observable in the AgentRecoveryContext, not collapsed into Crash.
         let tmp = tempfile::tempdir().expect("tempdir");
         let handle = test_handle(tmp.path());
-        let ssb = make_ssb(SeededClock::new()).await;
 
+        let ssb_timeout = make_ssb(SeededClock::new()).await;
         let mgr = RecoveryManager::new(SeededClock::new());
-        // STUB(3C.2): Timeout treated same as Crash. stub-ban-allow: test fixture for 3C.2 follow-up
-        let (recovered, ctx) = mgr
-            .recover_agent(&handle, AgentDeathClassification::Timeout, 1, &ssb)
+        let (recovered, ctx_timeout) = mgr
+            .recover_agent(&handle, AgentDeathClassification::Timeout, 1, &ssb_timeout)
             .await
             .expect("timeout recovery should succeed");
-
         assert_eq!(recovered.agent_id, handle.agent_id);
         assert_eq!(recovered.status, AgentStatus::Spawning);
-        assert_eq!(ctx.classification, AgentDeathClassification::Timeout);
+        assert_eq!(ctx_timeout.classification, AgentDeathClassification::Timeout);
+        assert!(
+            ctx_timeout.first_grounding_source.ends_with(":WEDGED"),
+            "timeout recovery must stamp WEDGED, got {}",
+            ctx_timeout.first_grounding_source
+        );
+
+        let ssb_crash = make_ssb(SeededClock::new()).await;
+        let (_h, ctx_crash) = mgr
+            .recover_agent(&handle, AgentDeathClassification::Crash, 1, &ssb_crash)
+            .await
+            .expect("crash recovery should succeed");
+        assert_eq!(ctx_crash.classification, AgentDeathClassification::Crash);
+        assert!(
+            !ctx_crash.first_grounding_source.ends_with(":WEDGED"),
+            "crash recovery must NOT stamp WEDGED, got {}",
+            ctx_crash.first_grounding_source
+        );
+    }
+
+    #[test]
+    fn classify_agent_death_maps_heartbeat_marker_to_timeout() {
+        // The reason string `run_agent_session` produces on a heartbeat
+        // timeout carries HEARTBEAT_TIMEOUT_MARKER; everything else is Crash.
+        let timeout_reason =
+            format!("{HEARTBEAT_TIMEOUT_MARKER} read timed out after 120000ms");
+        assert_eq!(
+            classify_agent_death(&timeout_reason),
+            AgentDeathClassification::Timeout
+        );
+        assert_eq!(
+            classify_agent_death("frame read error: connection reset"),
+            AgentDeathClassification::Crash
+        );
+        assert_eq!(
+            classify_agent_death("session timeout after 120000ms"),
+            AgentDeathClassification::Crash
+        );
     }
 
     #[tokio::test]

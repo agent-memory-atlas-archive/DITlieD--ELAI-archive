@@ -19,7 +19,7 @@
 //
 // Async I/O: tokio::io::{AsyncReadExt, AsyncWriteExt}. Mutex: tokio::sync.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use elai_core::clock::{ClockProvider, OsClock};
@@ -52,6 +52,61 @@ use crate::ipc_gateway::{FrameRouteResult, IpcGateway};
 pub trait IpcHookDispatcher: IpcHookTrait {}
 
 impl<T: IpcHookTrait + ?Sized> IpcHookDispatcher for T {}
+
+// ---------------------------------------------------------------------------
+// 4C PATH-TRAVERSAL guard — reject ToolRequests whose target path escapes the
+// project/session root BEFORE the request reaches pre_tool_use / dispatch.
+// ---------------------------------------------------------------------------
+
+/// Env var that overrides the project root used as the path-traversal jail
+/// for agent `ToolRequest` frames. When unset, the orchestrator process's
+/// current working directory (the canonical ELAI session root) is used.
+pub const ELAI_PROJECT_ROOT_ENV: &str = "ELAI_PROJECT_ROOT";
+
+/// Sanitized error returned to the agent when a ToolRequest path escapes the
+/// project root. Carries no absolute path so the jail boundary is not leaked.
+const PATH_TRAVERSAL_REJECT_MSG: &str = "Tool call rejected: path outside project root";
+
+/// JSON keys, in priority order, that a tool's `arguments` may use to name a
+/// filesystem target. Mirrors `permissions::extract_permission_subject` so the
+/// IPC boundary and the permission layer agree on what counts as "the path".
+const TOOL_PATH_ARG_KEYS: &[&str] = &[
+    "path",
+    "file_path",
+    "filePath",
+    "notebook_path",
+    "notebookPath",
+];
+
+/// Resolve the project root that bounds agent file access. Reads
+/// [`ELAI_PROJECT_ROOT_ENV`] first, falling back to the process cwd. Returns
+/// `None` only when neither source yields a usable path (cwd unreadable AND
+/// env unset), in which case the caller fails closed.
+fn resolve_project_root() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var(ELAI_PROJECT_ROOT_ENV) {
+        if !v.trim().is_empty() {
+            return Some(PathBuf::from(v));
+        }
+    }
+    std::env::current_dir().ok()
+}
+
+/// Extract the first filesystem-target path from a tool's JSON `arguments`.
+/// Returns `None` when the bytes are not UTF-8 JSON, not an object, or carry
+/// none of [`TOOL_PATH_ARG_KEYS`] (a tool that names no path cannot traverse).
+fn extract_tool_path(arguments: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(arguments).ok()?;
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let obj = value.as_object()?;
+    for key in TOOL_PATH_ARG_KEYS {
+        if let Some(s) = obj.get(*key).and_then(serde_json::Value::as_str) {
+            if !s.trim().is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
 
 // ---------------------------------------------------------------------------
 // InferOutcome / ToolOutcome
@@ -424,10 +479,28 @@ pub async fn run_agent_session(
                 };
             }
             Err(_) => {
+                // phase-3C.2: the per-frame read bound just elapsed. Ask the
+                // gateway whether THIS agent's connection went silent on
+                // heartbeats (the periodic `check_heartbeat_timeouts()` poll
+                // the spec calls for — the read deadline IS the poll cadence).
+                // If so, stamp HEARTBEAT_TIMEOUT_MARKER so the downstream
+                // recovery path classifies it as `Timeout` (wedged agent)
+                // instead of `Crash`. Otherwise keep the generic read-timeout
+                // reason (a slow-but-live agent that never hung).
+                let heartbeat_timed_out = {
+                    let gw = gateway.lock().await;
+                    gw.check_heartbeat_timeouts().contains(&agent_id)
+                };
+                let reason = if heartbeat_timed_out {
+                    format!(
+                        "{} read timed out after {timeout_ms}ms",
+                        crate::recovery::HEARTBEAT_TIMEOUT_MARKER
+                    )
+                } else {
+                    format!("read timed out after {timeout_ms}ms")
+                };
                 return AgentSessionOutcome {
-                    final_state: AgentFinalState::Failed {
-                        reason: format!("read timed out after {timeout_ms}ms"),
-                    },
+                    final_state: AgentFinalState::Failed { reason },
                     frames_handled,
                 };
             }
@@ -511,6 +584,42 @@ pub async fn run_agent_session(
             }
 
             FrameRouteResult::ToolRequest { tool_id, arguments } => {
+                // 4C PATH-TRAVERSAL: reject BEFORE pre_tool_use / dispatch when
+                // the tool names a path that canonicalises outside the project
+                // root. canonicalise_for_check collapses `..`/`.`/symlinks and
+                // tolerates yet-to-be-created write targets. Fail closed: if the
+                // root cannot be resolved at all, deny any path-bearing request.
+                let traversal_reject: Option<String> = match extract_tool_path(&arguments) {
+                    Some(path_str) => match resolve_project_root() {
+                        Some(root) => {
+                            if crate::sandbox_policy::path_escapes_root(
+                                Path::new(&path_str),
+                                &root,
+                            ) {
+                                tracing::warn!(
+                                    agent_id = %agent_id,
+                                    tool_id = %tool_id,
+                                    "ToolRequest rejected: path escapes project root"
+                                );
+                                Some(PATH_TRAVERSAL_REJECT_MSG.to_string())
+                            } else {
+                                None
+                            }
+                        }
+                        None => {
+                            tracing::error!(
+                                agent_id = %agent_id,
+                                tool_id = %tool_id,
+                                "ToolRequest path check failed closed: project root unresolved"
+                            );
+                            Some(PATH_TRAVERSAL_REJECT_MSG.to_string())
+                        }
+                    },
+                    // No path argument => nothing to jail here; downstream hooks
+                    // and the dispatcher still apply their own checks.
+                    None => None,
+                };
+
                 // C-11 D4: pre_tool_use hook fires BEFORE rpc dispatch when a
                 // dispatcher is wired. BLOCK verdict short-circuits the call
                 // and returns a sanitized error to the agent (no rule_id /
@@ -526,7 +635,11 @@ pub async fn run_agent_session(
                     file_path: None,
                     active_rules_count: 0,
                 };
-                let blocked_msg = if let Some(d) = hook_dispatcher.as_ref() {
+                let blocked_msg = if let Some(reason) = traversal_reject {
+                    // Path-traversal denial takes precedence and skips the hook
+                    // dispatch entirely — the request never reaches the tool.
+                    Some(reason)
+                } else if let Some(d) = hook_dispatcher.as_ref() {
                     match d.pre_tool_use(&pre_ctx) {
                         Ok(result) if result.verdict.is_block() => {
                             Some(result.sanitized_agent_message())

@@ -469,7 +469,7 @@ fn emit_route_decision_log(
 /// Read the wire-dark env gate. Mirrors the helper pattern used by
 /// `elai_orchestrator::ssb::ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV`
 /// consumers.
-fn route_decision_ssb_enabled() -> bool {
+pub(crate) fn route_decision_ssb_enabled() -> bool {
     matches!(
         std::env::var(crate::ssb::ELAI_ROUTE_DECISION_SSB_ENABLE_ENV)
             .ok()

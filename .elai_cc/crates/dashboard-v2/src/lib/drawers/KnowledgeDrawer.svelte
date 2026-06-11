@@ -153,6 +153,12 @@
     return pass ? 'teal' : 'fail';
   }
 
+  // B-4: HyDE hypothesis-preview rows (newest-first). The inspector shows
+  // the latest hypothesis (length + cache-hit + latency, no raw text — the
+  // SSB row persists hash + length only) plus a short history strip.
+  const hydeQueries = $derived(d.recentHydeQueries);
+  const hydeLatest = $derived(hydeQueries[0]);
+
   // Compute stage bar segments for the most recent trace
   const trace = $derived(d.recentTraces[0]);
   const totalMs = $derived(trace?.total_ms ?? 1);
@@ -257,6 +263,19 @@
         <Badge tone="teal" size="xs">READY</Badge>
         <span class="index-metric">{d.dkgStats.nodes} nodes / {d.dkgStats.edges} edges / 9.67s build</span>
       </div>
+      <!-- B-4: files-indexed / files-failed line. Failure count is 0 until
+           the DkgReady SSB payload persists a parse-failure count (see
+           get_dkg_stats SSB-FIDELITY note); a non-zero count renders in the
+           fail tone. -->
+      <div class="index-row">
+        <span class="index-name">FILES</span>
+        <Badge tone={d.dkgStats.failed_files > 0 ? 'warn' : 'teal'} size="xs">
+          {d.dkgStats.failed_files > 0 ? `${d.dkgStats.failed_files} FAILED` : 'OK'}
+        </Badge>
+        <span class="index-metric">
+          {d.dkgStats.nodes.toLocaleString()} indexed, {d.dkgStats.failed_files.toLocaleString()} failed
+        </span>
+      </div>
       <div class="index-row">
         <span class="index-name">BM25</span>
         <Badge tone="teal" size="xs">READY</Badge>
@@ -352,6 +371,47 @@
     {:else}
       <span class="ghost-text">no recent traces</span>
     {/if}
+
+    <!-- B-4: HyDE hypothesis preview. Surfaces the most recent
+         hyde_query SSB row (HydeStage::hypothesize) inline under the query
+         trace. The SSB payload persists the query-bytes blake3 hash +
+         hypothesis CHAR LENGTH + cache-hit + latency, NOT the raw
+         hypothesis text — so the preview shows length / cache-hit /
+         latency, with the query hash as a stable identifier. -->
+    <div class="hyde-preview">
+      <div class="hyde-preview-label">HYDE HYPOTHESIS</div>
+      {#if hydeLatest}
+        <div class="hyde-latest">
+          <Badge tone={hydeLatest.cache_hit ? 'teal' : 'ghost'} size="xs">
+            {hydeLatest.cache_hit ? 'CACHE HIT' : 'GENERATED'}
+          </Badge>
+          <span class="hyde-len">
+            {hydeLatest.hypothesis_len > 0
+              ? `${hydeLatest.hypothesis_len} chars`
+              : 'no hypothesis (short query / breaker open)'}
+          </span>
+          <span class="hyde-latency">{hydeLatest.latency_ms} ms</span>
+        </div>
+        <div class="hyde-hash mono" title="blake3 hash of the query bytes">
+          {String(hydeLatest.query_hash ?? '').slice(0, 16)}…
+        </div>
+        {#if hydeQueries.length > 1}
+          <div class="hyde-strip">
+            {#each hydeQueries.slice(0, 8) as hq}
+              <span
+                class="hyde-chip"
+                title="seq {hq.seq} @ {fmtTsShort(hq.ts)} — {hq.hypothesis_len} chars, {hq.cache_hit ? 'cache hit' : 'generated'}, {hq.latency_ms} ms"
+              >
+                {fmtTsShort(hq.ts)}
+                <span class="hyde-chip-meta">{hq.cache_hit ? '✓' : hq.hypothesis_len}</span>
+              </span>
+            {/each}
+          </div>
+        {/if}
+      {:else}
+        <span class="ghost-text">no HyDE rows yet — run a STANDARD/DEEP non-code query.</span>
+      {/if}
+    </div>
   </Card>
 
   <!-- E-17 SP4 — RAG retrieval-quality beacons (4 cards).
@@ -788,7 +848,7 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--r-xs);
     color: var(--text-primary);
-    font-size: 11px;
+    font-size: 10px;
     padding: 3px 8px;
     outline: none;
     transition: border-color var(--dur-fast) var(--ease-std);
@@ -944,6 +1004,65 @@
     display: flex;
     justify-content: space-between;
     margin-top: 4px;
+  }
+
+  /* B-4: HyDE hypothesis preview block (inside the QUERY TRACE card). */
+  .hyde-preview {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border-subtle);
+  }
+  .hyde-preview-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--text-secondary);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .hyde-latest {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+  .hyde-len {
+    color: var(--text-primary);
+  }
+  .hyde-latency {
+    color: var(--text-ghost);
+    margin-left: auto;
+  }
+  .hyde-hash {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    margin-top: 2px;
+  }
+  .hyde-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .hyde-chip {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+    border-radius: var(--r-xs);
+    padding: 1px 5px;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+  .hyde-chip-meta {
+    color: var(--text-primary);
+  }
+  .mono {
+    font-family: var(--font-mono);
   }
 
   .trace-hits {

@@ -17,7 +17,9 @@ use elai_orchestrator::context_budget::{
 use elai_orchestrator::ssb::{Ssb, SsbConfig};
 use tempfile::TempDir;
 
-const _: () = assert!(SLOT_COUNT == 8);
+// H-31 (SCHEMA_VERSION 240): bumped 8 -> 9 for ContextSlot::Memory (the user-preference
+// bi-temporal ledger retrieval-into-prompt slot, appended after OutputReserve).
+const _: () = assert!(SLOT_COUNT == 9);
 const _: () = assert!(CACHE_BREAKPOINT_COUNT == 2);
 
 // Compile-time size assertions to detect accidental field additions.

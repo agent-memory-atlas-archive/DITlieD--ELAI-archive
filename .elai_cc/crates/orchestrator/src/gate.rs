@@ -301,14 +301,15 @@ pub fn run_interactive_gate(
 
 /// Mock interactive gate that returns pre-configured decisions.
 /// Tests construct it with a sequence of decisions to return.
-#[cfg(test)]
+/// Not gated by #[cfg(test)] so external contract-test crates can use it
+/// without a test-only re-export. Dead-code-elision removes it from release
+/// binaries when unused.
 pub struct MockInteractiveGate {
     decisions: std::sync::Mutex<Vec<GateDecision>>,
     /// Records each summary presented, for assertions.
     presented: std::sync::Mutex<Vec<EvidenceSummary>>,
 }
 
-#[cfg(test)]
 impl MockInteractiveGate {
     /// Create a mock that returns the given decisions in order.
     /// The last decision repeats if more calls than decisions.
@@ -330,7 +331,6 @@ impl MockInteractiveGate {
     }
 }
 
-#[cfg(test)]
 impl InteractiveGate for MockInteractiveGate {
     fn present_gate(
         &self,

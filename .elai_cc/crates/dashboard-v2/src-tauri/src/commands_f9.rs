@@ -212,8 +212,10 @@ pub async fn write_time_slop_status(state: State<'_, AppState>) -> CmdResult<Wri
 
     let total_blocked = u32::try_from(rows.len()).unwrap_or(u32::MAX);
 
-    // Per-verdict-kind counts.
-    let mut count_map: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    // Per-verdict-kind counts. BTreeMap (not HashMap) per CLAUDE.md coding
+    // standards; the result is sorted by count below, so iteration order here
+    // is not observable (behavior-neutral swap).
+    let mut count_map: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
     for row in &rows {
         *count_map.entry(row.verdict_kind.clone()).or_insert(0) += 1;
     }

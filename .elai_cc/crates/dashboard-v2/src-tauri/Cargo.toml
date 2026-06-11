@@ -21,6 +21,12 @@ tauri-build = { version = "2.5", features = [] }
 [dependencies]
 tauri = { version = "2.11", features = ["custom-protocol"] }
 tauri-plugin-dialog = "2.7"
+# H-11 (SCHEMA_VERSION 220): scoped filesystem surface for FileExplorer.
+# Version 2.5.1 VERIFIED: already present in Cargo.lock as a transitive dep at
+# 2.5.1 (tauri-plugin-fs in Cargo.lock L6667, anti-slopsquat verified in
+# workflow/sessions/s-10612/exploration/H-11-integration.md). Compatible with
+# tauri 2.11 (same ^2 major). Scoped to project_root; NEVER fs:default.
+tauri-plugin-fs = "2.5.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

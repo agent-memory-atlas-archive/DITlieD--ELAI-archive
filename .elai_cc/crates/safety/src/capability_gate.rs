@@ -55,6 +55,14 @@ pub enum CapabilityGateError {
 ///
 /// Additive: a tool name in this list does NOT bypass
 /// `destructive_verb_allowlist::check_argv` — both layers run.
+///
+/// TAINT-SINK TOOLS: canvas content-read tools that feed selected node content
+/// into the model prompt are classified here as taint sinks. Without this,
+/// `allow_tool_with_origin("canvas_select", ...)` always returns Allow regardless
+/// of provenance, making the Blocked verdict in run_select_gate unreachable.
+/// These are NOT destructive in the file-system sense but ARE taint sinks:
+/// untrusted web-sourced content that re-enters the model prompt via a canvas
+/// Select is a prompt-injection vector (H-15 CANVAS §19).
 pub const DESTRUCTIVE_TOOLS: &[&str] = &[
     "bash",
     "shell",
@@ -67,6 +75,9 @@ pub const DESTRUCTIVE_TOOLS: &[&str] = &[
     "curl",
     "web_fetch",  // can be used for exfil even though "fetch" sounds read-only
     "http_post",
+    // Canvas taint-sink tools: content-read operations that feed node content
+    // into the model prompt (prompt-injection risk; H-15 CANVAS §19 trust moat).
+    "canvas_select",
 ];
 
 /// Decide whether a tool call may proceed given its argv provenance.

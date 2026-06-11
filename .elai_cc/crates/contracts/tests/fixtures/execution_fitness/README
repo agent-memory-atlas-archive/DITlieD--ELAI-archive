@@ -1,0 +1,11 @@
+H-43 execution fitness frozen test fixture.
+
+C_good: a candidate whose eval_log contains the expected output tokens -> high pass-rate.
+C_bad:  a candidate whose eval_log is missing or wrong -> low pass-rate.
+
+The test set hash is the blake3 of the corpus bytes (computed at test time from
+the inline fixture bytes in h43_execution_fitness_contract.rs -- no separate file
+is required for the Tier-1 in-process scorer).
+
+Gate-frozen (R8): this directory is read-only to the running admit loop.
+A candidate cannot inject into this fixture.

@@ -21,14 +21,21 @@ use super::{CODE_VEC_DIM, TEXT_VEC_DIM};
 /// 100.0 yields a percentage in the closed interval [0.0, 100.0].
 const HIT_RATE_PCT_SCALE: f64 = 100.0;
 
+// 1C-R2: `file_path` maps each cached dual-vector back to the source file so a
+// file-write can evict exactly the rows that file produced (see
+// [`VectorCache::invalidate_file`]). The companion index keeps the per-file
+// DELETE off a full-table scan. The `DROP TABLE` keeps the migration a clean
+// rebuild (the cache is a derived artifact, safe to discard on schema bump).
 const SCHEMA_SQL: &str = "
 DROP TABLE IF EXISTS vector_cache;
 CREATE TABLE IF NOT EXISTS vector_cache (
     content_hash BLOB PRIMARY KEY,
+    file_path TEXT NOT NULL,
     code_vec BLOB NOT NULL,
     text_vec BLOB NOT NULL,
     cached_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_vector_cache_file_path ON vector_cache (file_path);
 ";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +44,10 @@ CREATE TABLE IF NOT EXISTS vector_cache (
 
 #[derive(Debug)]
 pub enum CacheError {
+    /// 1C-R2: opening the on-disk SQLite cache file failed (bad path,
+    /// permissions, corrupt db). Distinguished from `Migration` so the
+    /// production caller can log the failing path separately.
+    Open(rusqlite::Error),
     Migration(rusqlite::Error),
     Query(rusqlite::Error),
     DeserError(String),
@@ -46,6 +57,7 @@ pub enum CacheError {
 impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Open(e) => write!(f, "open error: {e}"),
             Self::Migration(e) => write!(f, "migration error: {e}"),
             Self::Query(e) => write!(f, "query error: {e}"),
             Self::DeserError(e) => write!(f, "deserialization error: {e}"),
@@ -95,13 +107,37 @@ impl VectorCache {
         })
     }
 
+    /// 1C-R2: open (creating if absent) the on-disk SQLite cache at `db_path`
+    /// and install the typed knowledge SSB sink. This is the production
+    /// constructor: `cli::live_cli::build_local_knowledge_stack` derives
+    /// `db_path` from [`elai_core::paths::vector_cache_db_path`] (sibling of
+    /// the vector index db) so the cache persists across runs and a re-index
+    /// can evict + reuse prior embeddings. Mirrors the on-disk open path used
+    /// by `DkgEngine::new` / `FreshnessDb::new`. The parent directory must
+    /// already exist (the indexes dir is created when the vector index is
+    /// first written); the caller ensures it.
+    pub fn open_with_ssb(
+        db_path: &std::path::Path,
+        ssb_sink: Arc<dyn KnowledgeSsbSink>,
+    ) -> Result<Self, CacheError> {
+        let conn = Connection::open(db_path).map_err(CacheError::Open)?;
+        Self::with_ssb(conn, ssb_sink)
+    }
+
     pub fn content_hash(content: &[u8]) -> Vec<u8> {
         blake3::hash(content).as_bytes().to_vec()
     }
 
+    /// Insert (or replace) a cached dual-vector keyed by content hash.
+    ///
+    /// 1C-R2: `file_path` records which source file produced the chunk so a
+    /// later [`Self::invalidate_file`] can evict exactly this file's rows when
+    /// the file is rewritten. Callers pass the chunk's source path
+    /// (`chunk.path.to_string_lossy()` at the indexer site).
     pub fn insert(
         &self,
         hash: &[u8],
+        file_path: &str,
         dual: &DualVector,
         cached_at: i64,
     ) -> Result<(), CacheError> {
@@ -109,9 +145,9 @@ impl VectorCache {
         let text_bytes = f32_slice_to_le_bytes(&dual.text_vec);
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO vector_cache (content_hash, code_vec, text_vec, cached_at) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![hash, code_bytes, text_bytes, cached_at],
+                "INSERT OR REPLACE INTO vector_cache (content_hash, file_path, code_vec, text_vec, cached_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![hash, file_path, code_bytes, text_bytes, cached_at],
             )
             .map_err(CacheError::Query)?;
         Ok(())
@@ -190,16 +226,22 @@ impl VectorCache {
         true
     }
 
-    /// Invalidate cache entries for a given file path.
-    /// NOTE: vector_cache schema has no file_path column. This requires either
-    /// a schema extension or caller pre-computing which content_hash keys
-    /// map to the file. Returning NotSupported until schema clarification.
-    pub fn invalidate_file(&self, _file_path: &str) -> Result<usize, CacheError> {
-        Err(CacheError::NotSupported(
-            "vector_cache has no file_path column; invalidation requires schema extension or \
-             caller-provided content_hash keys"
-                .into(),
-        ))
+    /// Invalidate (delete) every cached dual-vector that was produced by
+    /// `file_path`. Returns the number of rows deleted.
+    ///
+    /// 1C-R2: the `file_path` column (added in the M3 schema) makes this a
+    /// single indexed DELETE. The indexer calls this from `index_file`'s
+    /// re-index path (right after `remove_file`) so a file-write evicts the
+    /// stale embeddings for exactly that file before fresh chunks are inserted.
+    pub fn invalidate_file(&self, file_path: &str) -> Result<usize, CacheError> {
+        let deleted = self
+            .conn
+            .execute(
+                "DELETE FROM vector_cache WHERE file_path = ?1",
+                rusqlite::params![file_path],
+            )
+            .map_err(CacheError::Query)?;
+        Ok(deleted)
     }
 
     pub fn invalidate_keys(&self, hash_keys: &[&[u8]]) -> Result<usize, CacheError> {
@@ -273,7 +315,7 @@ mod tests {
         let dv = DualVector::new(code.clone(), text.clone()).unwrap();
 
         let hash = VectorCache::content_hash(b"fn main() {}");
-        cache.insert(&hash, &dv, 1700000000).unwrap();
+        cache.insert(&hash, "src/main.rs", &dv, 1700000000).unwrap();
 
         let found = cache.lookup(&hash).unwrap();
         assert!(found.is_some());
@@ -293,14 +335,25 @@ mod tests {
     }
 
     #[test]
-    fn vector_cache_invalidate_file_returns_not_supported() {
+    fn vector_cache_invalidate_file_deletes_only_that_file() {
+        // 1C-R2: invalidate_file deletes exactly the rows produced by the
+        // given file path, leaving other files' entries intact.
         let cache = in_memory_cache();
-        let result = cache.invalidate_file("src/main.rs");
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            CacheError::NotSupported(_) => {}
-            other => panic!("expected NotSupported, got {other:?}"),
-        }
+        let dv = DualVector::new(vec![0.5f32; CODE_VEC_DIM], vec![0.5f32; TEXT_VEC_DIM]).unwrap();
+
+        let hash_a = VectorCache::content_hash(b"fn a() {}");
+        let hash_b = VectorCache::content_hash(b"fn b() {}");
+        cache.insert(&hash_a, "src/a.rs", &dv, 1700000000).unwrap();
+        cache.insert(&hash_b, "src/b.rs", &dv, 1700000000).unwrap();
+
+        let deleted = cache.invalidate_file("src/a.rs").unwrap();
+        assert_eq!(deleted, 1, "exactly one row for src/a.rs");
+        assert!(cache.lookup(&hash_a).unwrap().is_none(), "a.rs evicted");
+        assert!(cache.lookup(&hash_b).unwrap().is_some(), "b.rs untouched");
+
+        // Invalidating a file with no cached rows is a no-op (0 deleted).
+        let none = cache.invalidate_file("src/missing.rs").unwrap();
+        assert_eq!(none, 0);
     }
 
     #[test]
@@ -311,7 +364,7 @@ mod tests {
         let dv = DualVector::new(code, text).unwrap();
 
         let hash = VectorCache::content_hash(b"delete me");
-        cache.insert(&hash, &dv, 1700000000).unwrap();
+        cache.insert(&hash, "src/delete.rs", &dv, 1700000000).unwrap();
         assert!(cache.lookup(&hash).unwrap().is_some());
 
         let deleted = cache.invalidate_keys(&[&hash]).unwrap();
@@ -344,7 +397,7 @@ mod tests {
 
         let content = b"pub fn example() -> bool { true }";
         let hash = VectorCache::content_hash(content);
-        cache.insert(&hash, &dv, 1700000000).unwrap();
+        cache.insert(&hash, "src/example.rs", &dv, 1700000000).unwrap();
 
         let found = cache.lookup(&hash).unwrap().expect("should find cached entry");
         assert_eq!(found.code_vec.len(), CODE_VEC_DIM);
@@ -362,7 +415,7 @@ mod tests {
 
         let content = b"fn invalidate_me() {}";
         let hash = VectorCache::content_hash(content);
-        cache.insert(&hash, &dv, 1700000000).unwrap();
+        cache.insert(&hash, "src/invalidate_me.rs", &dv, 1700000000).unwrap();
         assert!(cache.lookup(&hash).unwrap().is_some());
 
         let deleted = cache.invalidate_keys(&[&hash]).unwrap();

@@ -32,7 +32,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::ssb::{
     ConfigArchivedPayload, MsiUpdatePayload, ProposalAppliedPayload, ProposalGeneratedPayload,
-    ProposalRejectedPayload, Ssb, SsbPayload,
+    ProposalRejectedPayload, Ssb, SsbPayload, SteeringVectorRefreshTriggeredPayload,
 };
 use elai_core::{CommitOutcome, GitBranchPolicy, GitCommitRequest, ToolDispatcher};
 use elai_core::{ClockProvider as _, OsClock};
@@ -1102,6 +1102,26 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
             // apply_proposal future on the python script.
             if matches!(proposal.table, DataTable::DeprecatedPatterns) {
                 trigger_steering_vector_refresh(&self.rules_db_path);
+                // C-21 (SCHEMA_VERSION 231) — emit the off-agent artifact (R4)
+                // proving the steering-vector refresh was requested. The refresh
+                // itself is a fire-and-forget python spawn with no in-process
+                // result, so this row is the only evidence a consumer can read to
+                // distinguish "refresh requested" from "this branch never ran".
+                let _ = self
+                    .ssb
+                    .write_payload(
+                        LAYER1A_AGENT_ID,
+                        0,
+                        SsbPayload::SteeringVectorRefreshTriggered(
+                            SteeringVectorRefreshTriggeredPayload {
+                                pipeline_mode: proposal.pipeline_mode.as_str().to_owned(),
+                                rules_db_path: self.rules_db_path.display().to_string(),
+                                reason: "deprecated_pattern_promoted".to_owned(),
+                            },
+                        ),
+                        Vec::new(),
+                    )
+                    .await;
             }
 
             Ok(ProposalOutcome {

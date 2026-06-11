@@ -18,11 +18,14 @@ use serde::{Deserialize, Serialize};
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::skill_registry::{find_skills, DiscoveryRoot, SkillOrigin};
+use elai_orchestrator::skill_telemetry::{
+    self, build_invoked_payload, SkillOutcome, TriggerMethod,
+};
 use elai_orchestrator::{
     LearnedSkill, SkillStore, SkillTrustTier, Ssb, SsbConfig, SsbPayload, TIER_MIN_AGE_SECS,
     TIER_MIN_INVOCATIONS,
 };
-use elai_orchestrator::ssb::{SkillLibraryEventKind, SkillLibraryEventPayload};
+use elai_orchestrator::ssb::{SkillLibraryEventKind, SkillLibraryEventPayload, SkillSystemEventPayload};
 
 use crate::args::{CliOutputFormat, SkillsAction};
 
@@ -181,13 +184,37 @@ fn run_eval(
         }
         let precision = if tp + fp == 0 { 0.0 } else { tp as f32 / (tp + fp) as f32 };
         let recall = if tp + fn_count == 0 { 0.0 } else { tp as f32 / (tp + fn_count) as f32 };
-        reports.push(EvalReport {
+        let report = EvalReport {
             skill: m.name.clone(),
             precision,
             recall,
             n_positive: positives.len(),
             n_negative: negatives.len(),
-        });
+        };
+
+        // E-43: emit SkillSystemEvent SSB row + hook-executions log entry when
+        // ELAI_SKILL_SYSTEM_ENABLE=1. Gate is checked inside skill_telemetry.
+        // Outcome: EvalBelowThreshold when precision < 0.9 OR recall < 0.8,
+        // otherwise Passed. Mirrors the emit_skill_library_event pattern.
+        if skill_telemetry::is_enabled() {
+            let outcome = if precision < 0.9 || recall < 0.8 {
+                SkillOutcome::EvalBelowThreshold
+            } else {
+                SkillOutcome::Passed
+            };
+            let ts_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let payload = build_invoked_payload(&m.name, TriggerMethod::Explicit, "", outcome, ts_ms);
+            // Write the hook-executions.log entry (off-agent artifact).
+            let workflow_root = project_root().join("workflow");
+            let _ = skill_telemetry::log_skill_invocation(&workflow_root, "cli-skills-eval", &payload);
+            // Also emit to SSB (best-effort; non-fatal on failure).
+            let _ = emit_skill_system_event(payload);
+        }
+
+        reports.push(report);
     }
 
     match output_format {
@@ -729,6 +756,42 @@ fn seed_demo_store(now: u64) -> SkillStore {
         last_verified: 0,
     });
     store
+}
+
+/// E-43: emit ONE `SkillSystemEvent` row to the session ssb.db.
+/// Gated by `skill_telemetry::is_enabled()` at the call site; this fn
+/// does NOT re-check the env (caller already gated). Mirrors
+/// `emit_skill_library_event` below.
+fn emit_skill_system_event(payload: SkillSystemEventPayload) -> Result<(), String> {
+    let db_path = sessions_dir_path(&project_root()).join("ssb.db");
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("skill_system: cannot create session dir {}: {e}", parent.display()))?;
+    }
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_owned(),
+        session_id: "cli-skills-eval".to_owned(),
+    };
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("skill_system: tokio runtime build failed: {e}"))?;
+    rt.block_on(async move {
+        let ssb = Ssb::new(cfg, clock)
+            .map_err(|e| format!("skill_system: SSB open failed: {e}"))?;
+        ssb.write_payload(
+            "cli:skills-eval",
+            0,
+            SsbPayload::SkillSystemEvent(payload),
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| format!("skill_system: SSB write failed: {e}"))?;
+        Ok::<(), String>(())
+    })
 }
 
 /// Open the session `ssb.db` and emit ONE `SkillLibraryEvent` row, awaited

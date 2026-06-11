@@ -283,6 +283,34 @@ fn ensure_raw_blocks_column(db: &Connection) -> Result<(), SessionDagError> {
     Ok(())
 }
 
+/// H-49 (SCHEMA_VERSION 226): add `file_manifest` TEXT (nullable) and
+/// `head` TEXT (nullable) columns to the `snapshots` table.
+///
+/// `file_manifest` stores the blake3 hash of the CAS manifest for the
+/// file-tree state captured at this snapshot node.
+/// `head` is a session-wide pointer: the snap_id of the current undo-tree
+/// HEAD (stored on the LATEST snapshot row; the session resolver reads it
+/// from the most-recently-updated row with a non-NULL head value).
+///
+/// Idempotent — safe to call on every `open()`/`new()`.  Mirrors the
+/// `ensure_raw_blocks_column` pattern exactly.
+fn ensure_timetravel_columns(db: &Connection) -> Result<(), SessionDagError> {
+    let mut stmt = db.prepare("PRAGMA table_info(snapshots)")?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .collect();
+    if !columns.iter().any(|c| c == "file_manifest") {
+        db.execute_batch(
+            "ALTER TABLE snapshots ADD COLUMN file_manifest TEXT",
+        )?;
+    }
+    if !columns.iter().any(|c| c == "head") {
+        db.execute_batch("ALTER TABLE snapshots ADD COLUMN head TEXT")?;
+    }
+    Ok(())
+}
+
 pub struct SessionDag {
     db: Connection,
     session_id: String,
@@ -372,6 +400,8 @@ impl SessionDag {
             // when the table already exists), apply the `raw_blocks`
             // migration here too.
             ensure_raw_blocks_column(&db)?;
+            // H-49: add file_manifest + head columns for the undo-tree HEAD.
+            ensure_timetravel_columns(&db)?;
             db.execute(
                 "INSERT OR IGNORE INTO schema_version (version) VALUES (?1)",
                 params![SCHEMA_VERSION],
@@ -444,6 +474,8 @@ impl SessionDag {
         // `blocks: None`. This is idempotent — `pragma table_info` skips the
         // ALTER if the column is already present.
         ensure_raw_blocks_column(&db)?;
+        // H-49: lazily add file_manifest + head columns for the undo-tree HEAD.
+        ensure_timetravel_columns(&db)?;
 
         let active_branches = Self::load_branches_from_db(&db, session_id)?;
 
@@ -1695,6 +1727,105 @@ impl SessionDag {
                 Ok(Some(pair))
             }
             None => Ok(None),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // H-49: undo-tree HEAD + file_manifest API
+    // -----------------------------------------------------------------------
+
+    /// Set the undo-tree HEAD to `snap_id` on the given snapshot row.
+    ///
+    /// The HEAD is stored as a nullable TEXT column on the `snapshots` table.
+    /// Only one row needs to carry a non-NULL `head` at a time; callers should
+    /// clear old head values by calling `set_head` on the new node.  The
+    /// "current HEAD" is resolved by [`Self::get_head`].
+    pub fn set_head(&self, snap_id: &str) -> Result<(), SessionDagError> {
+        // Clear all existing head values for this session.
+        self.db.execute(
+            "UPDATE snapshots SET head = NULL WHERE session_id = ?1",
+            rusqlite::params![self.session_id],
+        )?;
+        // Set the new head.
+        self.db.execute(
+            "UPDATE snapshots SET head = ?1 WHERE snap_id = ?1",
+            rusqlite::params![snap_id],
+        )?;
+        Ok(())
+    }
+
+    /// Return the current undo-tree HEAD snap_id for this session, if any.
+    ///
+    /// Reads from the `head` column; returns the most-recently-set non-NULL
+    /// value.  Returns `Ok(None)` when no HEAD has been set.
+    pub fn get_head(&self) -> Result<Option<String>, SessionDagError> {
+        let mut stmt = self.db.prepare(
+            "SELECT head FROM snapshots \
+             WHERE session_id = ?1 AND head IS NOT NULL \
+             ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![self.session_id])?;
+        if let Some(row) = rows.next()? {
+            let h: Option<String> = row.get(0)?;
+            Ok(h)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Return the direct children of `node_id` in the undo-tree (snapshots
+    /// whose `parent_id = node_id`), ordered by creation time ascending.
+    pub fn children_of(
+        &self,
+        node_id: &str,
+    ) -> Result<Vec<String>, SessionDagError> {
+        let mut stmt = self.db.prepare(
+            "SELECT snap_id FROM snapshots \
+             WHERE parent_id = ?1 AND session_id = ?2 \
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![node_id, self.session_id],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut ids = Vec::new();
+        for r in rows {
+            ids.push(r?);
+        }
+        Ok(ids)
+    }
+
+    /// Store a CAS manifest hash on a snapshot row.
+    ///
+    /// The manifest hash (blake3 of the JSON manifest) links a snapshot node
+    /// to the set of file-content hashes captured at that point.
+    pub fn set_file_manifest(
+        &self,
+        snap_id: &str,
+        manifest_hash: &str,
+    ) -> Result<(), SessionDagError> {
+        self.db.execute(
+            "UPDATE snapshots SET file_manifest = ?1 WHERE snap_id = ?2",
+            rusqlite::params![manifest_hash, snap_id],
+        )?;
+        Ok(())
+    }
+
+    /// Retrieve the CAS manifest hash for a snapshot row.
+    /// Returns `Ok(None)` when the snapshot has no file_manifest set.
+    pub fn get_file_manifest(
+        &self,
+        snap_id: &str,
+    ) -> Result<Option<String>, SessionDagError> {
+        let mut stmt = self.db.prepare(
+            "SELECT file_manifest FROM snapshots WHERE snap_id = ?1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![snap_id])?;
+        if let Some(row) = rows.next()? {
+            let h: Option<String> = row.get(0)?;
+            Ok(h)
+        } else {
+            Ok(None)
         }
     }
 }

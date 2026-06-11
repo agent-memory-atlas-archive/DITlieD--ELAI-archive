@@ -42,6 +42,12 @@ pub use prompt_cache::{
     PromptCacheStats,
 };
 pub use providers::anthropic::{AnthropicClient, AnthropicClient as ApiClient, AuthSource};
+// H-5 — Anthropic Message Batches non-interactive lane (50% pricing). Re-exported at
+// the crate root so the orchestrator + contract tests reference a stable path.
+pub use providers::anthropic_batch::{
+    half_price_cents, AnthropicBatchClient, BatchId, BatchItem, BatchProcessingStatus,
+    BatchResultItem, BatchResultOutcome, BatchStatus,
+};
 pub use providers::openai_compat::{
     build_chat_completion_request_for_test, OpenAiCompatClient, OpenAiCompatConfig,
 };

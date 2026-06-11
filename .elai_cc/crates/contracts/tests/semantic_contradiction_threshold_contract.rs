@@ -48,6 +48,7 @@ fn fact(id: &str, key: &str, value: serde_json::Value, t: u128) -> MemoryFact {
         superseded_by: None,
         trust_tier: TrustTier::T1CodebaseDerived,
         provenance: Provenance::user_direct("test"),
+        last_validated_at_ms: None,
     }
 }
 

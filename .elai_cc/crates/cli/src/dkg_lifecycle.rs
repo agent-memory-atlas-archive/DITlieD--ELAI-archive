@@ -76,6 +76,22 @@ pub fn semantic_contradiction_killed() -> bool {
         .unwrap_or(false)
 }
 
+/// H-32: env kill-switch for the citation-validity TTL expiry maintenance pass.
+///
+/// Default-ON: the pass runs UNLESS this var is set to a truthy value
+/// (`1` / `true` / `yes` / `on`). Fold into H-31's gate posture — no
+/// separate ENABLE flag (W-2: no default-OFF graveyard).
+pub const ELAI_FACT_VALIDATION_KILL: &str = "ELAI_FACT_VALIDATION_KILL";
+
+/// True iff the H-32 citation-validity TTL expiry pass is DISABLED via
+/// [`ELAI_FACT_VALIDATION_KILL`]. Default-ON: returns `false` unless the var
+/// is set to a truthy value.
+pub fn fact_validation_killed() -> bool {
+    std::env::var(ELAI_FACT_VALIDATION_KILL)
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
 /// F-5 / Slice A4: process-global staleness-broadcast queue.
 ///
 /// The memory-decay seam (`live_cli.rs` inline decay tick) PUSHES quarantine
@@ -315,7 +331,10 @@ pub fn ensure_dkg_or_rebuild_with_clock(
 
     if trigger.is_none() {
         // Fresh on-disk file: load and return without rebuild.
-        let engine = DkgEngine::new(&db_path, None, 0).map_err(|e| {
+        // E-42: pass the sink so DkgEngine::build_graph (if ever called on
+        // this engine) can emit tree-sitter health events. Fresh-load engines
+        // rarely call build_graph again, but plumbing here is cheap and correct.
+        let engine = DkgEngine::new_with_sink(&db_path, None, 0, sink).map_err(|e| {
             anyhow!(
                 "ensure_dkg_or_rebuild: DkgEngine::new on existing fresh {}: {}",
                 db_path.display(),
@@ -341,7 +360,9 @@ pub fn ensure_dkg_or_rebuild_with_clock(
     // (crates/core/src/clock.rs:54). Duration measurement is identical
     // shape, but jump-safe.
     let started_at = OsClock.instant_now();
-    let rebuild_result = run_rebuild(&db_path, workspace_root);
+    // E-42: pass sink clone to run_rebuild so DkgEngine::build_graph can emit
+    // tree-sitter grammar health rows during the rebuild walk.
+    let rebuild_result = run_rebuild(&db_path, workspace_root, sink.clone());
     let duration_ms = started_at.elapsed().as_millis() as u64;
 
     match rebuild_result {
@@ -370,12 +391,20 @@ pub fn ensure_dkg_or_rebuild_with_clock(
     }
 }
 
-/// Run the actual rebuild: open the engine, walk the workspace, return
-/// the populated engine alongside the node count. Split out so
-/// [`ensure_dkg_or_rebuild_with_clock`] can wrap a single Result<_>
-/// branch in the success/failure SSB-emission pair.
-fn run_rebuild(db_path: &Path, workspace_root: &Path) -> Result<(DkgEngine, usize)> {
-    let mut engine = DkgEngine::new(db_path, None, 0).map_err(|e| {
+/// Run the actual rebuild: open the engine with the given SSB sink, walk the
+/// workspace, return the populated engine alongside the node count. Split out
+/// so [`ensure_dkg_or_rebuild_with_clock`] can wrap a single Result<_> branch
+/// in the success/failure SSB-emission pair.
+///
+/// E-42: `sink` is threaded through so `DkgEngine::build_graph` can emit
+/// `tree_sitter_grammar_event` SSB rows when
+/// `ELAI_TREE_SITTER_GRAMMARS_ENABLE=1`.
+fn run_rebuild(
+    db_path: &Path,
+    workspace_root: &Path,
+    sink: Arc<dyn KnowledgeSsbSink>,
+) -> Result<(DkgEngine, usize)> {
+    let mut engine = DkgEngine::new_with_sink(db_path, None, 0, sink).map_err(|e| {
         anyhow!(
             "ensure_dkg_or_rebuild: DkgEngine::new for rebuild on {}: {}",
             db_path.display(),

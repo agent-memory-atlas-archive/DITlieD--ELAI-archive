@@ -431,6 +431,18 @@ pub struct AppState {
     /// active session (the per-call resolver will then refuse the
     /// command with a typed `DagBranchError::NoActiveSession`).
     pub dag_db_path: Arc<Mutex<Option<PathBuf>>>,
+    /// H-11 (SCHEMA_VERSION 220): server-side allowed-root registry for the
+    /// scoped filesystem commands (read_dir / read_file / open_in_editor).
+    ///
+    /// Seeded at startup with the canonicalized project_root. `mount_root`
+    /// pushes additional roots as the user opens multi-root workspaces.
+    /// `read_dir` / `read_file` / `open_in_editor` REJECT any root argument
+    /// that is not under one of these entries (server-side scope enforcement,
+    /// not dependent on the Tauri capability system which std::fs bypasses).
+    ///
+    /// `std::sync::Mutex` is correct here: all read_dir / mount_root callers
+    /// are sync Tauri command handlers — no guard is held across `.await`.
+    pub allowed_roots: Arc<Mutex<Vec<PathBuf>>>,
     /// C-47b: optional calibration registry with the cold-tier persist store
     /// installed. None when ELAI_C47B_CASE_BASE_PERSIST_ENABLE is unset at
     /// startup OR when CasePersistStore::open fails (fail-open per D3).
@@ -633,6 +645,12 @@ impl AppState {
             }
         };
 
+        // H-11: capture canonical project_root BEFORE project_root is moved
+        // into Arc<Mutex<>> below. canonicalize is best-effort (falls back to
+        // clone on IO failure, e.g. path not yet created in tests).
+        let initial_allowed_root = std::fs::canonicalize(&project_root)
+            .unwrap_or_else(|_| project_root.clone());
+
         Self {
             viewer,
             writer,
@@ -689,6 +707,9 @@ impl AppState {
             // None at startup so a fresh install with no sessions does
             // not falsely advertise a DAG.
             dag_db_path: Arc::new(Mutex::new(None)),
+            // H-11: seed allowed_roots with the canonicalized project_root.
+            // initial_allowed_root was captured above before project_root was moved.
+            allowed_roots: Arc::new(Mutex::new(vec![initial_allowed_root])),
             // C-29: empty IntentPair registry at startup. PlanWindow
             // populates it via the `add_intent_pair` command.
             intent_pairs: Arc::new(Mutex::new(BTreeMap::new())),
@@ -799,6 +820,36 @@ impl AppState {
         }
     }
 
+    /// H-11: register an additional allowed root for the scoped filesystem
+    /// commands. Canonicalizes `path` before storing so comparison against
+    /// canonicalized request paths is sound. No-op (returns `Ok(false)`) if
+    /// the root is already registered. Returns `Err` if the mutex is poisoned
+    /// so callers (e.g. `mount_root`) can propagate the failure to the client
+    /// rather than silently succeeding.
+    pub fn add_allowed_root(&self, path: PathBuf) -> Result<bool, String> {
+        let canonical = std::fs::canonicalize(&path)
+            .map_err(|e| format!("add_allowed_root: cannot canonicalize {}: {e}", path.display()))?;
+        let mut roots = self.allowed_roots.lock()
+            .map_err(|_| "add_allowed_root: allowed_roots mutex is poisoned".to_string())?;
+        if roots.contains(&canonical) {
+            return Ok(false);
+        }
+        roots.push(canonical);
+        Ok(true)
+    }
+
+    /// H-11: return true if `canonical_path` starts with any registered
+    /// allowed root (canonicalized). Used by read_dir / read_file /
+    /// open_in_editor to enforce server-side scope before touching the FS.
+    /// Fail-closed: returns false on mutex poison.
+    pub fn is_path_allowed(&self, canonical_path: &std::path::Path) -> bool {
+        match self.allowed_roots.lock() {
+            Ok(roots) => path_is_within_roots(canonical_path, &roots),
+            // Poisoned mutex: fail-closed. Do NOT allow access on lock failure.
+            Err(_) => false,
+        }
+    }
+
     fn open_pair(
         db_path: &Path,
         clock: Arc<dyn ClockProvider>,
@@ -838,5 +889,97 @@ impl AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Pure predicate: return `true` if `candidate` starts with ANY entry in
+/// `roots`. Both `candidate` and every element of `roots` MUST be
+/// canonicalized before calling.
+///
+/// This is the single authoritative gate for the allowed-root check. Both
+/// `AppState::is_path_allowed` and the unit tests below call this function
+/// directly so a logic change here is caught by both the production and the
+/// test path.
+pub(crate) fn path_is_within_roots(candidate: &std::path::Path, roots: &[std::path::PathBuf]) -> bool {
+    roots.iter().any(|r| candidate.starts_with(r))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    // Construct a minimal allowed_roots registry for testing without
+    // building a full AppState (which has filesystem/env/network side-effects).
+    fn make_roots(paths: &[&std::path::Path]) -> Vec<std::path::PathBuf> {
+        paths.iter().map(|p| std::fs::canonicalize(p).expect("canonicalize")).collect()
+    }
+
+    #[test]
+    fn path_is_within_roots_rejects_outside_path() {
+        let allowed_dir = TempDir::new().expect("allowed_dir");
+        let outside_dir = TempDir::new().expect("outside_dir");
+        let roots = make_roots(&[allowed_dir.path()]);
+        let candidate = std::fs::canonicalize(outside_dir.path()).expect("canon outside");
+        assert!(
+            !path_is_within_roots(&candidate, &roots),
+            "path outside allowed roots must be rejected"
+        );
+    }
+
+    #[test]
+    fn path_is_within_roots_accepts_subpath() {
+        let root_dir = TempDir::new().expect("root_dir");
+        let sub = root_dir.path().join("src");
+        std::fs::create_dir(&sub).expect("create src");
+        let file = sub.join("lib.rs");
+        std::fs::write(&file, b"fn foo() {}").expect("write");
+        let roots = make_roots(&[root_dir.path()]);
+        let candidate = std::fs::canonicalize(&file).expect("canon file");
+        assert!(
+            path_is_within_roots(&candidate, &roots),
+            "file inside allowed root must be accepted"
+        );
+    }
+
+    #[test]
+    fn path_is_within_roots_accepts_secondary_root() {
+        let primary = TempDir::new().expect("primary");
+        let secondary = TempDir::new().expect("secondary");
+        let file = secondary.path().join("readme.md");
+        std::fs::write(&file, b"# readme").expect("write");
+        // Only primary is initially in roots.
+        let mut roots = make_roots(&[primary.path()]);
+        let candidate = std::fs::canonicalize(&file).expect("canon file");
+        assert!(
+            !path_is_within_roots(&candidate, &roots),
+            "file under secondary root must be rejected before add"
+        );
+        // After adding secondary root, it must be accepted.
+        roots.push(std::fs::canonicalize(secondary.path()).expect("canon secondary"));
+        assert!(
+            path_is_within_roots(&candidate, &roots),
+            "file under secondary root must be accepted after add"
+        );
+    }
+
+    #[test]
+    fn is_path_allowed_uses_path_is_within_roots_via_mutex() {
+        // Test the Arc<Mutex<Vec<PathBuf>>> lock path that is_path_allowed uses,
+        // exercising the real mutex-guarded gate (not a raw vec call).
+        let root_dir = TempDir::new().expect("root_dir");
+        let file = root_dir.path().join("main.rs");
+        std::fs::write(&file, b"fn main() {}").expect("write");
+        let canonical_root = std::fs::canonicalize(root_dir.path()).expect("canon root");
+        let canonical_file = std::fs::canonicalize(&file).expect("canon file");
+
+        let roots: Arc<Mutex<Vec<std::path::PathBuf>>> =
+            Arc::new(Mutex::new(vec![canonical_root]));
+        let is_allowed = match roots.lock() {
+            Ok(r) => path_is_within_roots(&canonical_file, &r),
+            Err(_) => false,
+        };
+        assert!(is_allowed, "file inside root must be allowed via mutex gate");
     }
 }

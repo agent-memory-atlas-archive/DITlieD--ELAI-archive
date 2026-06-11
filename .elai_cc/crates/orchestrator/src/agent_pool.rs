@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use elai_core::EntropySource;
 use elai_reasoning::{
-    agent_grc_config_for_role, AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcEngine, GrcState,
-    GroundingLevel,
+    agent_grc_config_for_role, AgentGrcConfig, AgentGrcConfigLoader, BasicGrcEngine, GrcBudget,
+    GrcEngine, GrcState, GroundingLevel, TomlConfigLoader,
 };
 
 use crate::sandbox::{AgentSandbox, AppContainerConfig, SandboxHandle};
@@ -174,6 +174,29 @@ pub struct AgentPoolConfig {
     pub enable_sandbox: bool,
 }
 
+/// Env override for the agent sandbox default. When set to a truthy value
+/// (`1`/`true`/`on`), `enable_sandbox` is forced ON regardless of platform;
+/// when set to a falsy value (`0`/`false`/`off`), it is forced OFF. When the
+/// var is UNSET the platform default (`cfg!(target_os = "windows")`) holds, so
+/// existing behaviour — and the `default_enable_sandbox_matches_platform`
+/// contract — is unchanged. This is the opt-in Linux path that B-18B will
+/// promote to a platform default once clone3+seccomp isolation lands; it is
+/// registered in `wire-dark-allowlist.toml` (R9) with promotion_plan_id=B-18B.
+pub const ELAI_SANDBOX_ENABLE_ENV: &str = "ELAI_SANDBOX_ENABLE";
+
+/// Resolve the sandbox default: explicit env override wins, else platform.
+fn sandbox_default_enabled() -> bool {
+    match std::env::var(ELAI_SANDBOX_ENABLE_ENV) {
+        Ok(v) => match v.trim() {
+            "1" | "true" | "TRUE" | "on" | "ON" => true,
+            "0" | "false" | "FALSE" | "off" | "OFF" => false,
+            // Unrecognised value: ignore the override, keep platform default.
+            _ => cfg!(target_os = "windows"),
+        },
+        Err(_) => cfg!(target_os = "windows"),
+    }
+}
+
 impl Default for AgentPoolConfig {
     fn default() -> Self {
         Self {
@@ -185,8 +208,10 @@ impl Default for AgentPoolConfig {
             // through launch_agent_process. The factory in
             // create_sandbox() falls back to a non-isolating Job+RestrictedToken
             // path on hosts where AppContainer is unavailable, so this default
-            // is safe even on older Windows.
-            enable_sandbox: cfg!(target_os = "windows"),
+            // is safe even on older Windows. ELAI_SANDBOX_ENABLE overrides this
+            // (opt-in Linux path); unset = platform default (see
+            // sandbox_default_enabled).
+            enable_sandbox: sandbox_default_enabled(),
         }
     }
 }
@@ -220,6 +245,20 @@ pub trait AgentPool {
         role: AgentRole,
         task: String,
     ) -> Result<AgentHandle, AgentPoolError>;
+
+    /// H-42: spawn with an explicit decomposition level so the GRC budget is
+    /// scaled to the real serial depth of the sub-task.  Default implementation
+    /// delegates to `spawn` (d=0, no scaling) for backward compatibility.
+    /// Override in `InProcessAgentPool` to apply the real depth factor.
+    fn spawn_with_level(
+        &mut self,
+        role: AgentRole,
+        task: String,
+        level: crate::pipeline_tree_navigator::DecompositionLevel,
+    ) -> Result<AgentHandle, AgentPoolError> {
+        let _ = level; // base impl ignores level; InProcessAgentPool overrides
+        self.spawn(role, task)
+    }
 
     fn spawn_parallel(
         &mut self,
@@ -477,11 +516,21 @@ impl<E: EntropySource> InProcessAgentPool<E> {
     }
 }
 
-impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
-    fn spawn(
+impl<E: EntropySource> InProcessAgentPool<E> {
+    /// Shared implementation for `spawn` and `spawn_with_level`.
+    ///
+    /// H-42: `level` controls the GRC budget scale factor (1 + 0.25*d).
+    /// - `spawn()` passes `DecompositionLevel::Concept` (d=0, no scaling, flat base).
+    /// - `spawn_with_level()` passes the real level; BabyStep (d=3) yields 1.75x budget.
+    ///
+    /// All logic that was previously duplicated between the two public entry points
+    /// lives here. Kill-switch: `ELAI_REASONING_BUDGET_SCALE_DISABLE=1` in the env
+    /// makes `scale_grc_budget` return the base unchanged for any depth.
+    fn spawn_inner(
         &mut self,
         role: AgentRole,
         task: String,
+        level: crate::pipeline_tree_navigator::DecompositionLevel,
     ) -> Result<AgentHandle, AgentPoolError> {
         // VRAM check: model_pool.available_vram() must meet minimum
         let available = self.model_pool.available_vram();
@@ -493,7 +542,32 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
         }
 
         let agent_id = self.generate_uuid();
-        let grc_config = default_grc_config(&role);
+
+        let base_config = default_grc_config(&role);
+        let depth = crate::reasoning_budget::estimate_serial_depth(level);
+        let grc_config = crate::reasoning_budget::scale_grc_budget(base_config.clone(), depth);
+
+        // Emit tracing::info when scaling actually changed the budget (non-zero depth,
+        // kill-switch off). The SSB row is emitted by spawn_with_level callers that
+        // own an Arc<Ssb>; this tracing row is the secondary observable artifact.
+        if grc_config.budget.max_calls != base_config.budget.max_calls {
+            let ceiling = base_config
+                .budget
+                .max_calls
+                .saturating_mul(crate::reasoning_budget::LOCKED_BUDGET_CEILING);
+            tracing::info!(
+                target: "orchestrator::reasoning_budget",
+                role = %grc_config.role,
+                base_calls = base_config.budget.max_calls,
+                serial_depth = depth,
+                scaled_calls = grc_config.budget.max_calls,
+                ceiling = ceiling,
+                kind = "depth_bound",
+                action_type = "reasoning_budget_scaled",
+                "H-42: ReasoningBudgetScaled — depth-scaled GRC budget at dispatch"
+            );
+        }
+
         let scratch_dir = self.config.scratch_base.join(agent_id.to_string());
 
         // Instantiate a fresh reasoning engine and apply the role-specific GRC config.
@@ -668,6 +742,27 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
         self.agents.insert(agent_id, handle.clone());
         Ok(handle)
     }
+}
+
+impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
+    fn spawn(
+        &mut self,
+        role: AgentRole,
+        task: String,
+    ) -> Result<AgentHandle, AgentPoolError> {
+        // H-42: no depth scaling in the bare spawn(); use spawn_with_level() for
+        // callers that know the real DecompositionLevel (e.g. BabyStep dispatch).
+        self.spawn_inner(role, task, crate::pipeline_tree_navigator::DecompositionLevel::Concept)
+    }
+
+    fn spawn_with_level(
+        &mut self,
+        role: AgentRole,
+        task: String,
+        level: crate::pipeline_tree_navigator::DecompositionLevel,
+    ) -> Result<AgentHandle, AgentPoolError> {
+        self.spawn_inner(role, task, level)
+    }
 
     fn max_concurrent(&self) -> usize {
         let available = self.model_pool.available_vram();
@@ -761,7 +856,7 @@ fn agent_role_to_snake_case(role: AgentRole) -> &'static str {
 // ---------------------------------------------------------------------------
 
 pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
-    match role {
+    let config = match role {
         AgentRole::Executor => AgentGrcConfig {
             role: "executor".into(),
             budget: GrcBudget {
@@ -782,66 +877,108 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
             require_scope_enumeration: true,
             ..AgentGrcConfig::default()
         },
-        AgentRole::Auditor => AgentGrcConfig {
-            role: "auditor".into(),
-            budget: GrcBudget {
-                max_calls: 10,
-                max_chars: 1200,
-                calls_used: 0,
-                chars_used: 0,
-            },
-            required_steps: vec![
-                GrcState::Observe,
-                GrcState::Hypothesize,
+        // WARN-attribution fix (H-41 fixer): delegate to the reasoning crate's
+        // canonical config table so `transition_overrides` (specifically
+        // Hypothesize -> [Verify], Verify -> [Verify, Observe]) are included.
+        // The hardcoded arm was missing those overrides; the new validate_config
+        // call in this function caught the latent bug. Pattern mirrors B-41
+        // per-level auditor arms above.
+        AgentRole::Auditor => agent_grc_config_for_role("auditor").unwrap_or_else(|| {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Hypothesize, vec![GrcState::Verify]);
+            overrides.insert(
                 GrcState::Verify,
-                GrcState::Verify,
-            ],
-            grounding_level: GroundingLevel::Verified,
-            csq_required: true,
-            require_scope_enumeration: false,
-            ..AgentGrcConfig::default()
-        },
-        AgentRole::Designer => AgentGrcConfig {
-            role: "designer".into(),
-            budget: GrcBudget {
-                max_calls: 8,
-                max_chars: 1200,
-                calls_used: 0,
-                chars_used: 0,
-            },
-            // Designer: Observe -> PlanAction -> Act -> Verify (no Hypothesize —
-            // designer produces PipelineSpec from Research Report, not investigating)
-            required_steps: vec![
-                GrcState::Observe,
-                GrcState::PlanAction,
-                GrcState::Act,
-                GrcState::Verify,
-            ],
-            grounding_level: GroundingLevel::High,
-            csq_required: true,
-            require_scope_enumeration: true,
-            ..AgentGrcConfig::default()
-        },
-        AgentRole::PromptEngineer => AgentGrcConfig {
-            role: "prompt_engineer".into(),
-            budget: GrcBudget {
-                max_calls: 5,
-                max_chars: 800,
-                calls_used: 0,
-                chars_used: 0,
-            },
-            required_steps: vec![
-                GrcState::Observe,
-                GrcState::Hypothesize,
-                GrcState::PlanAction,
-                GrcState::Act,
-                GrcState::Verify,
-            ],
-            grounding_level: GroundingLevel::High,
-            csq_required: false,
-            require_scope_enumeration: false,
-            ..AgentGrcConfig::default()
-        },
+                vec![GrcState::Verify, GrcState::Observe],
+            );
+            AgentGrcConfig {
+                role: "auditor".into(),
+                budget: GrcBudget {
+                    max_calls: 10,
+                    max_chars: 1200,
+                    calls_used: 0,
+                    chars_used: 0,
+                },
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Hypothesize,
+                    GrcState::Verify,
+                    GrcState::Verify,
+                ],
+                grounding_level: GroundingLevel::Verified,
+                csq_required: true,
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+                ..AgentGrcConfig::default()
+            }
+        }),
+        // base-phase-2 (2C): Designer + PromptEngineer now delegate to the
+        // reasoning crate's canonical config table (agent_grc_config_for_role),
+        // exactly like the ContextCompiler / MediaValidator / IdeaFramer arms.
+        // This removes the two-source-of-truth divergence and fixes the latent
+        // Designer chain bug.
+        //
+        // Pre-fix the Designer arm hardcoded [Observe, PlanAction, Act, Verify]
+        // with empty transition_overrides. Observe -> PlanAction is NOT in the
+        // base allowed_next (Observe -> [Hypothesize, Converge, Status]), so the
+        // first Designer agent to run its second think() got back
+        // GrcError::InvalidTransition and could never complete its chain. The
+        // canonical chain [Observe, Hypothesize, PlanAction, Verify, Converge]
+        // (spec phase-2C.txt T14) with override {PlanAction: [Verify]} is valid.
+        //
+        // agent_grc_config_for_role("designer") returns Some by construction
+        // (explicit arm in reasoning/src/config.rs); the unwrap_or_else fallback
+        // is unreachable but required to satisfy no-.expect()-in-production.
+        // The fallback deliberately carries the full valid chain (NOT
+        // ..AgentGrcConfig::default(), which would yield the executor-shape
+        // default and re-diverge) so even the unreachable branch stays correct.
+        AgentRole::Designer => agent_grc_config_for_role("designer").unwrap_or_else(|| {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::PlanAction, vec![GrcState::Verify]);
+            AgentGrcConfig {
+                role: "designer".into(),
+                budget: GrcBudget {
+                    max_calls: 8,
+                    max_chars: 1200,
+                    calls_used: 0,
+                    chars_used: 0,
+                },
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Hypothesize,
+                    GrcState::PlanAction,
+                    GrcState::Verify,
+                    GrcState::Converge,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: true,
+                transition_overrides: overrides,
+                require_scope_enumeration: true,
+                ..AgentGrcConfig::default()
+            }
+        }),
+        // base-phase-2 (2C): canonical chain [Observe, Hypothesize, Converge]
+        // (spec phase-2C.txt T13), budget 5/800. Pre-fix this hardcoded the
+        // executor-shape 5-step chain, diverging from the reasoning crate.
+        AgentRole::PromptEngineer => {
+            agent_grc_config_for_role("prompt_engineer").unwrap_or_else(|| AgentGrcConfig {
+                role: "prompt_engineer".into(),
+                budget: GrcBudget {
+                    max_calls: 5,
+                    max_chars: 800,
+                    calls_used: 0,
+                    chars_used: 0,
+                },
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Hypothesize,
+                    GrcState::Converge,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                require_scope_enumeration: false,
+                ..AgentGrcConfig::default()
+            })
+        }
         AgentRole::MemoryWriter => AgentGrcConfig {
             role: "memory_writer".into(),
             budget: GrcBudget {
@@ -971,7 +1108,39 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
                 }
             })
         }
+    };
+
+    // base-phase-2 (2C): validate the hardcoded config EAGERLY at construction
+    // instead of deferring to the first failing think() at runtime. Without
+    // this, an invalid required_steps chain (e.g. the pre-fix Designer arm
+    // whose Observe -> PlanAction edge is not in the base transition graph)
+    // stays dormant until an agent of that role runs its second reasoning step,
+    // at which point think() returns GrcError::InvalidTransition deep inside a
+    // live run. Validating here makes any future drift fail fast and loud.
+    //
+    // No production panic (CLAUDE.md no-.unwrap()/.expect() rule): on failure
+    // we emit a tracing::error! so the dead-evidence path screams, and a
+    // debug_assert! so dev + test builds abort immediately while release builds
+    // log-and-continue with the (still returned) config. The canonical configs
+    // above all pass validation today; this guard exists to catch regressions.
+    let loader = TomlConfigLoader::new();
+    if let Err(err) = loader.validate_config(&config) {
+        tracing::error!(
+            target: "orchestrator::agent_pool",
+            role = %config.role,
+            error = %err,
+            "default_grc_config produced an INVALID GRC config — this is a code \
+             regression in the hardcoded per-role chain; fix the required_steps \
+             / transition_overrides for this role"
+        );
+        debug_assert!(
+            false,
+            "default_grc_config({:?}) is invalid: {err}",
+            role
+        );
     }
+
+    config
 }
 
 // ---------------------------------------------------------------------------
@@ -1878,10 +2047,10 @@ impl CanaryStatusSummary {
 //      route).
 
 use crate::checker_registry::{CheckerKind, CheckerRegistry, CheckerResult};
-use crate::claim::Claim;
+use crate::claim::{Claim, ClaimType};
 use crate::grounding_mode::{select_grounding_mode, GroundingMode};
 use crate::orch_context::OrchContext;
-use crate::ssb::{CheckerResultEmittedPayload, ClaimRoutedPayload};
+use crate::ssb::{CheckerGapDetectedPayload, CheckerResultEmittedPayload, ClaimRoutedPayload};
 
 /// Producer-side SSB emitter for `claim_routed` rows. The production
 /// adapter wraps `Arc<Ssb>::write_payload` (callers in `task_runner`
@@ -2051,6 +2220,193 @@ pub async fn route_claim<E: ClaimRoutedEmitter + ?Sized>(
         claim_id: claim.claim_id.clone(),
     };
     (mode, guard)
+}
+
+// ---------------------------------------------------------------------------
+// H-41 — checker-gap emit surface.
+// ---------------------------------------------------------------------------
+//
+// RISK-1 mitigation: route_claim signature is NOT changed. Instead we add:
+//   1. CheckerGapEmitter trait — same pattern as ClaimRoutedEmitter above.
+//   2. VecCheckerGapEmitter — test emitter accumulating rows in a Vec.
+//   3. route_claim_with_gap — thin async wrapper over route_claim that adds
+//      the gap-detect logic AFTER the routing decision, keeping all existing
+//      callers untouched (the one production caller in task_runner.rs can
+//      switch to route_claim_with_gap independently; this wrapper is the
+//      H-41 entry point / PRODUCTION ENTRYPOINT for the gap instrument).
+//
+// The gap condition (per grounding_mode.rs:159-170):
+//   claim is Factual|Computational AND
+//   OrchContext.available_verifiers has NO VerifierKind::Deterministic
+//   → route fell to FalsifiabilityCrossFamily / ConformalRefusal / ConservativeFallback
+//
+// Wire-dark: ELAI_CHECKER_GAP_ENABLE env var. Default-OFF per R9 / wire-dark-allowlist.toml.
+
+/// Emitter trait for [`SsbActionType::CheckerGapDetected`] rows (H-41).
+/// Production adapter wraps `Arc<Ssb>::write_payload`; tests use
+/// [`VecCheckerGapEmitter`].
+pub trait CheckerGapEmitter: Send + Sync {
+    /// Emit one `checker_gap_detected` SSB row. Returning `Err(String)` is
+    /// best-effort — the caller logs the error and continues routing.
+    fn emit_gap(
+        &self,
+        payload: CheckerGapDetectedPayload,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
+}
+
+/// Test-only emitter that accumulates [`CheckerGapDetectedPayload`] rows in
+/// a `Vec` behind a `tokio::sync::Mutex`.
+#[derive(Default)]
+pub struct VecCheckerGapEmitter {
+    rows: tokio::sync::Mutex<Vec<CheckerGapDetectedPayload>>,
+}
+
+impl VecCheckerGapEmitter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            rows: tokio::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    pub async fn rows(&self) -> Vec<CheckerGapDetectedPayload> {
+        self.rows.lock().await.clone()
+    }
+
+    pub async fn len(&self) -> usize {
+        self.rows.lock().await.len()
+    }
+
+    pub async fn is_empty(&self) -> bool {
+        self.rows.lock().await.is_empty()
+    }
+}
+
+impl CheckerGapEmitter for VecCheckerGapEmitter {
+    fn emit_gap(
+        &self,
+        payload: CheckerGapDetectedPayload,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            self.rows.lock().await.push(payload);
+            Ok(())
+        })
+    }
+}
+
+/// H-41 production entry point: calls [`route_claim`], then — when
+/// `gap_enabled` is `true` — detects whether a Factual/Computational claim
+/// fell to a non-Constructive mode for lack of a `VerifierKind::Deterministic`
+/// verifier and emits a `CheckerGapDetected` SSB row via `gap_emitter`.
+///
+/// The gap-emit is BEST-EFFORT: if the emitter returns an error, the routing
+/// decision is unchanged and the error is logged via `tracing::warn`.
+///
+/// Use [`route_claim_with_gap_env`] for the production caller that reads the
+/// `ELAI_CHECKER_GAP_ENABLE` env var. This function accepts the flag directly
+/// so tests can control it without env-var races (env vars are process-global
+/// and unsafe across concurrent tokio tests).
+///
+/// Signature keeps `route_claim` untouched (RISK-1 mitigation: no existing
+/// call site is broken). The single production caller in `task_runner.rs` can
+/// switch to `route_claim_with_gap_env` independently; H-41 uses this as its
+/// W-3 production entrypoint.
+pub async fn route_claim_with_gap<E, G>(
+    claim: &Claim,
+    ctx: &OrchContext,
+    emitter: &E,
+    gap_emitter: &G,
+    now_ms: i64,
+    gap_enabled: bool,
+) -> (GroundingMode, EmissionGuard)
+where
+    E: ClaimRoutedEmitter + ?Sized,
+    G: CheckerGapEmitter + ?Sized,
+{
+    // Step 1: route exactly as before (no logic change — GD-1).
+    let (mode, guard) = route_claim(claim, ctx, emitter, now_ms).await;
+
+    // Step 2: gap detection — only when enabled.
+    //
+    // BLOCK-2(c) fix: two gap conditions are detected:
+    //
+    // Gap-A (original): Factual|Computational claim + no Deterministic verifier
+    //   in OrchContext.available_verifiers. The claim fell to a non-Constructive
+    //   mode because the D-11 checker registry has no registered adapter that can
+    //   cover it.
+    //
+    // Gap-B (new, production path): Procedural|Hypothetical claim fell to
+    //   OperationalDeferred. This represents the "no D-18 adapter registered"
+    //   gap. D-18 is not yet plumbed into OrchContext (no
+    //   `has_operational_adapter` field exists), so a Procedural claim that
+    //   routes to OperationalDeferred is ALWAYS a gap until D-18 lands. The
+    //   `dispatch_claim_routing` production site in task_runner.rs synthesises
+    //   a Procedural claim, so Gap-B is the condition that fires on every real
+    //   task when ELAI_CHECKER_GAP_ENABLE=1. Without Gap-B the instrument would
+    //   NEVER fire from the production path (BLOCK-2 compounding bug).
+    if gap_enabled {
+        let emit_gap = if matches!(
+            claim.claim_type,
+            ClaimType::Factual | ClaimType::Computational
+        ) {
+            // Gap-A: Factual/Computational without a Deterministic verifier.
+            let has_det = ctx
+                .available_verifiers
+                .iter()
+                .any(|v| *v == crate::verification_result::VerifierKind::Deterministic);
+            !has_det
+        } else if matches!(
+            claim.claim_type,
+            ClaimType::Procedural | ClaimType::Hypothetical
+        ) {
+            // Gap-B: Procedural/Hypothetical fell to OperationalDeferred, which
+            // means no D-18 sandbox adapter is registered. This IS the production
+            // gap the H-41 instrument is designed to measure.
+            mode == GroundingMode::OperationalDeferred
+        } else {
+            false
+        };
+
+        if emit_gap {
+            let taxon = crate::checker_coverage::classify_complexity_taxon(claim);
+            let gap_payload = CheckerGapDetectedPayload {
+                claim_id: claim.claim_id.clone(),
+                claim_type: claim.claim_type.as_str().to_string(),
+                complexity_taxon: taxon.as_str().to_string(),
+                fell_to_mode: mode.as_str().to_string(),
+                ts_ms: now_ms,
+            };
+            if let Err(e) = gap_emitter.emit_gap(gap_payload).await {
+                tracing::warn!(
+                    claim_id = claim.claim_id.as_str(),
+                    mode = mode.as_str(),
+                    error = %e,
+                    "route_claim_with_gap: gap emit failed (route still applies)"
+                );
+            }
+        }
+    }
+
+    (mode, guard)
+}
+
+/// Production convenience wrapper over [`route_claim_with_gap`] that reads
+/// `ELAI_CHECKER_GAP_ENABLE` from the environment. Default-OFF (R9 / W-2).
+pub async fn route_claim_with_gap_env<E, G>(
+    claim: &Claim,
+    ctx: &OrchContext,
+    emitter: &E,
+    gap_emitter: &G,
+    now_ms: i64,
+) -> (GroundingMode, EmissionGuard)
+where
+    E: ClaimRoutedEmitter + ?Sized,
+    G: CheckerGapEmitter + ?Sized,
+{
+    let gap_enabled = std::env::var("ELAI_CHECKER_GAP_ENABLE")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    route_claim_with_gap(claim, ctx, emitter, gap_emitter, now_ms, gap_enabled).await
 }
 
 /// D-10 read surface — the most recent N `claim_routed` SSB rows the
@@ -3833,12 +4189,48 @@ mod tests {
         assert_eq!(designer.role, "designer");
         assert_eq!(executor.role, "executor");
         assert_ne!(designer.role, executor.role);
-        // Designer has fewer required_steps (no Hypothesize)
+        // base-phase-2 (2C): canonical Designer chain per spec phase-2C.txt T14
+        // is [Observe, Hypothesize, PlanAction, Verify, Converge] (5 steps,
+        // ends in Converge, no Act — Designer emits a PipelineSpec, it does not
+        // mutate). Executor is [Observe, Hypothesize, PlanAction, Act, Verify]
+        // (5 steps, has Act, no Converge). Still distinct: Designer has Converge
+        // and no Act; Executor has Act and no Converge.
         assert_ne!(designer.required_steps, executor.required_steps);
-        assert_eq!(designer.required_steps.len(), 4); // Observe, PlanAction, Act, Verify
-        assert_eq!(executor.required_steps.len(), 5); // Observe, Hypothesize, PlanAction, Act, Verify
-        assert!(!designer.required_steps.contains(&GrcState::Hypothesize));
-        assert!(executor.required_steps.contains(&GrcState::Hypothesize));
+        assert_eq!(
+            designer.required_steps,
+            vec![
+                GrcState::Observe,
+                GrcState::Hypothesize,
+                GrcState::PlanAction,
+                GrcState::Verify,
+                GrcState::Converge,
+            ]
+        );
+        assert_eq!(
+            executor.required_steps,
+            vec![
+                GrcState::Observe,
+                GrcState::Hypothesize,
+                GrcState::PlanAction,
+                GrcState::Act,
+                GrcState::Verify,
+            ]
+        );
+        // Designer ends in Converge and has no Act; Executor is the inverse.
+        assert!(designer.required_steps.contains(&GrcState::Converge));
+        assert!(!designer.required_steps.contains(&GrcState::Act));
+        assert!(executor.required_steps.contains(&GrcState::Act));
+        assert!(!executor.required_steps.contains(&GrcState::Converge));
+        // Both spec chains must pass eager validation (2C
+        // validate_config-at-construction). default_grc_config already
+        // validates internally; assert explicitly here as a regression guard.
+        let loader = TomlConfigLoader::new();
+        loader
+            .validate_config(&designer)
+            .expect("canonical designer config must validate");
+        loader
+            .validate_config(&executor)
+            .expect("canonical executor config must validate");
     }
 
     #[test]

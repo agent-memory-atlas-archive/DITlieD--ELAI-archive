@@ -22,6 +22,13 @@ use elai_web_search::fetcher::WebFetcher;
 use elai_web_search::source_quality::SourceQualityTable;
 use elai_web_search::{SearchError, SearchResult, WebSearchError};
 
+use elai_safety::provenance::Provenance;
+use elai_safety::taint_flow::tainted_context;
+use elai_safety::blast_radius::{check_egress_host, resolve_host_std, BlastRadiusVerdict};
+
+use crate::blast_radius_ssb_adapter::{blast_radius_gate_disabled, emit_blast_radius_blocked};
+use crate::sandbox::researcher_net::ResearcherNetConfig;
+use crate::ssb::BlastRadiusKind;
 use crate::capability_flow::{commit_minimal_set, CommittedToolSet};
 use crate::research_budget::{EvidenceItem, ResearchBudgetManager};
 use crate::research_tier::ResearchTierConfig;
@@ -72,6 +79,12 @@ pub enum WebResearchOrchestratorError {
 
     #[error("Max iterations reached for node {node_id:?} after {iterations} iterations")]
     MaxIterationsReached { node_id: NodeId, iterations: u32 },
+
+    /// G-3: the host-side egress blast-radius gate refused the outbound connect
+    /// — the host carried a NUL/control char, failed to resolve, or resolved to
+    /// an IP outside the pinned allow-set (fail-closed).
+    #[error("Egress denied for host {host}: {detail}")]
+    EgressDenied { host: String, detail: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +431,17 @@ impl WebResearchOrchestrator {
                     match self.fetch_and_extract(&result.url).await {
                         Ok((text, tier, ftag)) => {
                             last_fetcher = ftag;
+                            // G-1 INGEST: a web-fetched page body is UNTRUSTED
+                            // external content. Register it into the process-
+                            // local taint side-table keyed by its content so a
+                            // later destructive sink whose argv derives from
+                            // this body is blocked by the capability gate. The
+                            // side-table skips Trusted labels, so this is a
+                            // no-op for trusted flows. Default-ON (W-2): no env
+                            // gate guards the register; the kill-switch is at
+                            // the sink. See workflow/reasoning/G-1-decisions.md.
+                            tainted_context()
+                                .register(&text, Provenance::from_web(result.url.clone()));
                             extracted_items.push((result.clone(), text, tier));
                         }
                         Err(e) => {
@@ -663,6 +687,61 @@ impl WebResearchOrchestrator {
         Ok(results)
     }
 
+    /// G-3: build the pinned egress IP allow-set by resolving each allowed host
+    /// (the [`ResearcherNetConfig`] allow-list + trusted resolvers). Returns the
+    /// union of every resolved IP plus the literal resolver IPs. Hosts that fail
+    /// to resolve contribute nothing (a host whose resolution is empty can never
+    /// match, so the gate fails closed for it — by design).
+    fn pinned_egress_ips() -> Vec<std::net::IpAddr> {
+        let cfg = ResearcherNetConfig::default();
+        let mut ips: Vec<std::net::IpAddr> = Vec::new();
+        for host in &cfg.allowed_hosts {
+            ips.extend(resolve_host_std(host));
+        }
+        ips.extend(cfg.trusted_resolvers.iter().copied());
+        ips
+    }
+
+    /// G-3: host-side egress blast-radius gate. Runs BEFORE any outbound connect
+    /// in [`Self::fetch_and_extract`], fail-closed. Rejects a NUL/control-char
+    /// host BEFORE resolution, then confirms every resolved IP is in the pinned
+    /// allow-set. On a [`BlastRadiusVerdict::Block`] the fetch is REFUSED and a
+    /// `blast_radius_blocked{EgressDenied}` SSB row is emitted through the live
+    /// `ssb_writer` (the off-agent artifact, R4). Kill-switch
+    /// `ELAI_BLAST_RADIUS_DISABLE` disarms it (default-ON, R9).
+    fn enforce_egress(&self, url: &str) -> Result<(), WebResearchOrchestratorError> {
+        if blast_radius_gate_disabled() {
+            return Ok(());
+        }
+        let host = elai_web_search::parse_domain(url);
+        let allowed = Self::pinned_egress_ips();
+        let verdict = check_egress_host(&host, &allowed, resolve_host_std);
+        if let BlastRadiusVerdict::Block {
+            kind,
+            pre_expansion,
+            post_expansion,
+        } = verdict
+        {
+            if let Some(ssb) = self.ssb_writer.as_ref() {
+                emit_blast_radius_blocked(
+                    ssb,
+                    BlastRadiusKind::from(kind),
+                    &pre_expansion,
+                    &post_expansion,
+                    &host,
+                    "", // egress arm: no worktree root applies
+                    "", // pure host-pin block; no provenance join
+                    i64::try_from(self.clock.now_ms()).unwrap_or(i64::MAX),
+                );
+            }
+            return Err(WebResearchOrchestratorError::EgressDenied {
+                host,
+                detail: post_expansion,
+            });
+        }
+        Ok(())
+    }
+
     /// Fetch a URL and extract its content. Returns (text, source_tier, fetcher_tag).
     ///
     /// `fetcher_tag` is `"obscura"` when the headless-browser path was used,
@@ -671,10 +750,17 @@ impl WebResearchOrchestrator {
     /// D4: if the "obscura" feature is enabled and an ObscuraFetcher was attached
     /// via with_obscura_fetcher(), uses the headless-browser path; otherwise falls
     /// back to the reqwest WebFetcher.
+    ///
+    /// G-3: the host-side egress blast-radius gate ([`Self::enforce_egress`])
+    /// runs FIRST, before any outbound connect — a NUL/control-char host or an
+    /// IP outside the pinned allow-set is refused fail-closed.
     pub async fn fetch_and_extract(
         &mut self,
         url: &str,
     ) -> Result<(String, SourceTier, &'static str), WebResearchOrchestratorError> {
+        // G-3 EGRESS GATE: reject NUL/control-char host + pin the resolved IP
+        // BEFORE connect (fail-closed).
+        self.enforce_egress(url)?;
         #[cfg(feature = "obscura")]
         let (page, fetcher_tag) = {
             if let Some(ref obscura) = self.obscura_fetcher {

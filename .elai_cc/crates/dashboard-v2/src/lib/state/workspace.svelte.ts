@@ -6,7 +6,24 @@ import type { WindowType, DrawerKey, TabModel, GateMode } from '../api/types';
 import { logStub } from '../api/stub';
 
 const STORAGE_KEY = 'elai.dashboard-v2.workspace.v1';
-const VALID_WINDOW_TYPES = new Set<string>(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore']);
+/** H-11: SEPARATE key from STORAGE_KEY so explorer rail width does not
+ *  overwrite the left/right panel split ratio (pitfall from context-package:
+ *  explorer-rail-width-separate-key). */
+const EXPLORER_WIDTH_KEY = 'elai.dashboard-v2.explorer-width.v1';
+/** H-12: SEPARATE key for the canvas-as-default flag. MUST NOT reuse STORAGE_KEY
+ *  or EXPLORER_WIDTH_KEY — different persistence dimension. Using a separate key
+ *  ensures existing persisted workspaces (serialized under STORAGE_KEY) are NOT
+ *  invalidated by this preference toggle. Schema-safe by design.
+ *  Promotion path (W-2): this flag graduates to default-ON when H-16 retires
+ *  the orbit after one release with canvas-as-default shipping without regressions. */
+const CANVAS_DEFAULT_KEY = 'elai.dashboard-v2.canvas-default.v1';
+/** H-11: default explorer rail width in pixels. */
+const EXPLORER_WIDTH_DEFAULT = 250;
+/** H-11: minimum explorer rail width in pixels (below this = hidden). */
+const EXPLORER_WIDTH_MIN = 120;
+/** H-11: maximum explorer rail width in pixels. */
+const EXPLORER_WIDTH_MAX = 400;
+const VALID_WINDOW_TYPES = new Set<string>(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore', 'cockpit', 'canvas']);
 
 /** C-7: closed-tab recovery stack max length. FIFO ring-buffer eviction. */
 const CLOSED_TABS_MAX = 10;
@@ -98,6 +115,20 @@ function createWorkspace() {
    */
   let tabDragging = $state<boolean>(false);
   /**
+   * H-11: explorer rail width in pixels. Persisted under EXPLORER_WIDTH_KEY
+   * (NOT STORAGE_KEY -- orthogonal dimension, must not overwrite panelSplit).
+   * 0 = collapsed/hidden. Default: EXPLORER_WIDTH_DEFAULT (250px).
+   */
+  let explorerWidth = $state<number>(EXPLORER_WIDTH_DEFAULT);
+  /**
+   * H-12: canvas-as-default flag. When true, new sessions open with the Canvas
+   * window as the primary panel (instead of Activity). Persisted under
+   * CANVAS_DEFAULT_KEY (NOT STORAGE_KEY — separate dimension). Default: false.
+   * The orbit remains accessible as a tab until H-16 retires it.
+   * Promotion path (W-2): graduates to default-ON at H-16 after one release.
+   */
+  let canvasAsDefault = $state<boolean>(false);
+  /**
    * C-7: ring buffer of recently-closed tabs (newest at index 0).
    * Bounded at CLOSED_TABS_MAX; oldest entry evicted on overflow.
    * Populated by closeTab(); read by RecoveryModal via the exported getter.
@@ -139,6 +170,87 @@ function createWorkspace() {
       persistTimer = null;
       persistNow();
     }, 250);
+  }
+
+  // H-11: explorer rail width persistence (separate key, separate debounce timer).
+  let explorerWidthTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function persistExplorerWidthNow() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(EXPLORER_WIDTH_KEY, String(explorerWidth));
+    } catch (err) {
+      console.debug('[workspace] persist explorerWidth failed', err);
+    }
+  }
+
+  function scheduleExplorerWidthPersist() {
+    if (explorerWidthTimer !== null) clearTimeout(explorerWidthTimer);
+    explorerWidthTimer = setTimeout(() => {
+      explorerWidthTimer = null;
+      persistExplorerWidthNow();
+    }, 250);
+  }
+
+  /** H-11: set explorer rail width (clamped to EXPLORER_WIDTH_MIN..MAX, or 0 for hidden). */
+  function setExplorerWidth(px: number) {
+    const clamped =
+      px <= 0 ? 0 : Math.max(EXPLORER_WIDTH_MIN, Math.min(EXPLORER_WIDTH_MAX, px));
+    explorerWidth = clamped;
+    scheduleExplorerWidthPersist();
+  }
+
+  /** H-11: load persisted explorer width from localStorage. */
+  function loadExplorerWidth() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const raw = localStorage.getItem(EXPLORER_WIDTH_KEY);
+      if (raw !== null) {
+        const n = parseInt(raw, 10);
+        if (!isNaN(n)) {
+          explorerWidth = n <= 0 ? 0 : Math.max(EXPLORER_WIDTH_MIN, Math.min(EXPLORER_WIDTH_MAX, n));
+        }
+      }
+    } catch {
+      // localStorage unavailable — use default
+    }
+  }
+
+  // H-12: canvas-as-default flag persistence (separate key from STORAGE_KEY).
+  function persistCanvasDefaultNow() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(CANVAS_DEFAULT_KEY, canvasAsDefault ? '1' : '0');
+    } catch (err) {
+      console.debug('[workspace] persist canvasAsDefault failed', err);
+    }
+  }
+
+  /** H-12: load persisted canvas-as-default flag from localStorage. */
+  function loadCanvasDefault() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const raw = localStorage.getItem(CANVAS_DEFAULT_KEY);
+      if (raw !== null) {
+        canvasAsDefault = raw === '1';
+      }
+    } catch {
+      // localStorage unavailable — use default (false)
+    }
+  }
+
+  /** H-12: set canvas-as-default flag. When true, applies canvas as primary
+   *  panel unless the user has already customized the workspace layout.
+   *  The single-consumer SSB handover (canvas.svelte.ts activateCanvas /
+   *  deactivateCanvas) handles the subscription transfer when the canvas
+   *  window mounts. */
+  function setCanvasAsDefault(on: boolean) {
+    canvasAsDefault = on;
+    persistCanvasDefaultNow();
+    // If enabling and the user has not customized the layout, apply it now.
+    if (on && !userCustomized) {
+      primary = makePanel('canvas');
+    }
   }
 
   function hydrate(data: WorkspaceSerialized) {
@@ -541,6 +653,16 @@ function createWorkspace() {
       }
       logStub('workspace.setActiveDrawer', { key: activeDrawer });
     },
+
+    // H-11: explorer rail width (separate localStorage key from panelSplit).
+    get explorerWidth() { return explorerWidth; },
+    setExplorerWidth,
+    loadExplorerWidth,
+
+    // H-12: canvas-as-default flag (separate localStorage key CANVAS_DEFAULT_KEY).
+    get canvasAsDefault() { return canvasAsDefault; },
+    setCanvasAsDefault,
+    loadCanvasDefault,
   };
 }
 

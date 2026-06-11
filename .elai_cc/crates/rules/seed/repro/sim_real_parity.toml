@@ -1,0 +1,146 @@
+# H-24 sim-to-real parity seed rules -- LOCKED seed (two rows).
+# mutable=0: immutable seed rows, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS;
+#   "trading" is detected by ["trading","backtest","signal","pipeline"] path
+#   keywords in rule_engine.rs:206-214).
+# Default-ON; kill-switch only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_sim_real_parity_rules()
+#
+# Purpose:
+#   Part A of H-24 (T-8 trust-hardening). The CHEAP per-edit early-catch for the
+#   STRUCTURAL sim-real divergence (the research/backtest path is not the SAME
+#   path that runs live) before the EXPENSIVE replay==golden gate
+#   (sim_real_parity::verify_replay_golden) is ever scheduled. Two LOCKED rows:
+#     FIN-SIMREAL-001 (AstPattern): a mode-divergent-branch ban -- a branch on
+#       backtest-vs-live mode (`if self.LiveMode:` / `if backtest:` / `if live:` /
+#       `if mode == "live"`) found INSIDE the order-emission / signal / OnData
+#       execution path. SCOPED (see SCOPING below) -- NOT a blanket ban.
+#     FIN-SIMREAL-002 (SchemaRequired): a single-entrypoint manifest -- the
+#       strategy must declare ONE shared execution entrypoint + its swappable
+#       adapters (data source, fill model, clock). Missing => BLOCK.
+#   The Rust runtime replay==golden gate (sim_real_parity.rs) is the sound EFFECT-
+#   prover; these AST/schema legs are the necessary-not-sufficient static legs
+#   (R5: a name-match is not a proof; the runtime replay is the load-bearing
+#   backstop).
+#
+# SCOPING (CRITICAL -- grounded in LEAN, workflow/papers/lean-sim-real-parity-
+# interface.md SECTION 2):
+#   The mode-divergent-branch ban MUST be SCOPED to the order/signal execution
+#   path. LiveMode (a.k.a. AlgorithmMode) is a LEGITIMATE LEAN property whose
+#   official doc-comment intent is "notification emails, displaying runtime
+#   statistics" -- a BLANKET ban would false-positive-block every legitimate
+#   `if self.LiveMode:` notification/logging conditional. The DANGEROUS antipattern
+#   is a mode-branch that guards EXECUTION/SIGNAL/ORDER logic (e.g.
+#   `if self.LiveMode: self.MarketOrder(...)`), which makes the backtest run a
+#   different code path than live, voiding the parity guarantee. The `scope` field
+#   below narrows the AstPattern to the execution-path call-graph: modules named
+#   for order/signal/execution/fill/strategy + the OnData/on_data/Initialize entry
+#   methods. RESIDUAL (documented in H-24-decisions.md): the scope is a NAME-based
+#   approximation of "reachable from order-emission" -- a precise call-graph scope
+#   (LEAN: "scope to the call-graph reachable from order-emission functions") is
+#   not expressible in a single tree-sitter query; the runtime replay==golden gate
+#   is the sound backstop. The scope is bounded to the narrowest defensible
+#   execution-path pattern to avoid false-blocking logging/notification code.
+#
+# Grounding (QuantConnect LEAN, verified 2026-06-05,
+#   workflow/papers/lean-sim-real-parity-interface.md):
+#   - Single-entrypoint pattern: the strategy implements ONE IAlgorithm with
+#     Initialize() + OnData(); the ENGINE swaps the IBrokerage / ISynchronizer
+#     adapter (BacktestingBrokerage vs the live broker; Synchronizer vs
+#     LiveSynchronizer). Strategy code is NOT the adapter; the engine is.
+#   - LiveMode is read-only-to-strategy, set once by the engine; legitimate use is
+#     notifications/runtime-stats; a mode-branch in order/signal logic voids parity.
+#   Sources:
+#     github.com/QuantConnect/Lean Common/Interfaces/IAlgorithm.cs
+#     quantconnect.com/docs/v2/writing-algorithms/live-trading/reconciliation
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding is
+# performed by project_rule_seeder.rs::seed_sim_real_parity_rules() which inserts
+# the rows directly. The tree-sitter python query + the SchemaRequired field list
+# below are authoritative; the Rust runtime replay==golden gate (sim_real_parity.rs)
+# is the sound backstop.
+
+[[rules]]
+rule_id = "FIN-SIMREAL-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "No mode-divergent branch (if LiveMode / if backtest / if live) on the order/signal execution path"
+description = """
+LOCKED mode-divergent-branch AST ban (H-24, T-8 trust-hardening).
+FAILS at TESTING_FIRST on a branch on backtest-vs-live mode found INSIDE the
+order-emission / signal / OnData execution path:
+  if self.LiveMode: ...        (or self.AlgorithmMode == AlgorithmMode.LiveTrading)
+  if backtest: ... / if live: ... / if mode == "live": ...
+A mode-branch guarding execution/signal/order logic makes the backtest run a
+DIFFERENT code path than live, voiding the parity guarantee by construction
+(the classic sim-real divergence). SCOPED to the execution-path modules/methods:
+LiveMode is LEGITIMATE for notifications/logging/runtime-stats per LEAN's official
+doc, so a BLANKET ban is wrong -- the ban fires only inside the order/signal scope.
+The CAUSE-catcher: a mode-divergent fast-path silently breaks parity while every
+existing gate stays green. The EFFECT-prover is the runtime replay==golden gate
+(sim_real_parity::verify_replay_golden) which blake3-EXACT-checks a seeded replay
+against a frozen golden event log. This static AST leg is necessary-not-sufficient
+(R5); the runtime replay is the load-bearing backstop. mutable=0: LOCKED,
+lifecycle-immune (TD-2). Same-env/same-seed scope (TD-5). Part B (numeric
+live-vs-backtest reconciliation) is DEFERRED Tier-2 (GD-5).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+type = "ast_pattern"
+language = "python"
+# query_format "sexp": the query is a tree-sitter s-expression (the QueryFormat
+# enum's valid snake_case variants are "sexp" | "ast_grep"; "sexp" is the
+# tree-sitter s-expression form used here).
+query_format = "sexp"
+# Scope the ban to the order/signal execution path (NOT a blanket ban -- LiveMode
+# is legitimate for notifications/logging). The scope is a name-based
+# approximation of "reachable from order-emission"; the runtime replay==golden
+# gate is the sound backstop (see SCOPING note above + H-24-decisions.md residual).
+scope = "execution_path:order,signal,fill,execution,strategy,on_data,ondata,initialize"
+# A tree-sitter python query matching an `if`/`elif` whose condition tests a
+# backtest-vs-live mode flag (self.LiveMode / self.AlgorithmMode / a bare
+# live|backtest|mode identifier). The execution-path scope (above) restricts WHERE
+# this fires; the rules-engine AstPattern evaluator applies the scope to the match.
+query = "(if_statement condition: [(attribute attribute: (identifier) @flag (#match? @flag \"^(LiveMode|AlgorithmMode)$\")) (comparison_operator (attribute attribute: (identifier) @flag2 (#match? @flag2 \"^(LiveMode|AlgorithmMode)$\"))) (identifier) @mode (#match? @mode \"^(live|backtest|mode)$\") (comparison_operator (identifier) @mode2 (#match? @mode2 \"^(live|backtest|mode)$\"))]) @mode_branch"
+
+[[rules]]
+rule_id = "FIN-SIMREAL-002"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "Strategy must declare a single shared execution entrypoint + swappable adapters (data source, fill model, clock)"
+description = """
+LOCKED single-entrypoint manifest gate (H-24, T-8 trust-hardening).
+A SchemaRequired predicate forcing the strategy to declare ONE shared execution
+entrypoint and its swappable adapters, so the live and backtest paths differ ONLY
+in the engine-injected adapter, never in the strategy logic (the LEAN
+adapter-swap pattern: one IAlgorithm with Initialize()+OnData(); the engine swaps
+IBrokerage/ISynchronizer). The manifest must declare ALL of:
+  - entrypoint         (the single shared execution entrypoint symbol, e.g. OnData)
+  - init_entrypoint    (the single shared init entrypoint, e.g. Initialize)
+  - data_source_adapter (the swappable data-source adapter id)
+  - fill_model_adapter  (the swappable fill-model adapter id)
+  - clock_adapter       (the swappable clock/ClockProvider adapter id)
+A missing manifest => BLOCK: without a declared single entrypoint the engine
+cannot guarantee live and backtest run the same code path. mutable=0: LOCKED,
+lifecycle-immune (TD-2). Same-env/same-seed scope (TD-5). Grounding: LEAN
+single-entrypoint pattern (workflow/papers/lean-sim-real-parity-interface.md).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+type = "schema_required"
+output_type = "sim_real_entrypoint_manifest"
+
+[rules.predicate_json.schema]
+required = [
+    "entrypoint",
+    "init_entrypoint",
+    "data_source_adapter",
+    "fill_model_adapter",
+    "clock_adapter",
+]

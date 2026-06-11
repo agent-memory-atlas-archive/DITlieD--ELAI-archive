@@ -37,9 +37,10 @@ use elai_knowledge::bm25::Bm25Index;
 use elai_knowledge::catrag::{CatRag, CatRagConfig};
 use elai_knowledge::dkg::DkgEngine;
 use elai_knowledge::knowledge_ssb_sink::{
-    DkgRebuildCompleteEvent, DkgRebuildStartedEvent, HydeQueryEvent, HydeSkippedCodeQueryEvent,
-    KnowledgeSsbSink, PagerankRunEvent, QueryTraceEvent, RrfComponentWeightsEvent,
-    RrfQualityGateFiredEvent, DeepPoolCappedEvent, VectorCacheHitRateEvent,
+    DeepPoolCappedEvent, DkgRebuildCompleteEvent, DkgRebuildStartedEvent, HydeQueryEvent,
+    HydeSkippedCodeQueryEvent, KnowledgeSsbSink, PagerankRunEvent, QueryTraceEvent,
+    RrfComponentWeightsEvent, RrfQualityGateFiredEvent, TreeSitterGrammarEvent,
+    VectorCacheHitRateEvent,
 };
 use elai_knowledge::pagerank::{compute_repo_map, DkgSnapshot, PageRankConfig};
 use elai_knowledge::pipeline::QueryPipeline;
@@ -89,6 +90,7 @@ impl KnowledgeSsbSink for RecordingSink {
             .expect("dkg_complete lock")
             .push(event);
     }
+    fn emit_tree_sitter_grammar_event(&self, _event: TreeSitterGrammarEvent) {}
 }
 
 // ---------------------------------------------------------------------------

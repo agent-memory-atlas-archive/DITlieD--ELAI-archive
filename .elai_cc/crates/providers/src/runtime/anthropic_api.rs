@@ -209,7 +209,14 @@ impl RuntimeAdapter for AnthropicApiRuntime {
         messages: Vec<Message>,
         config: CompletionConfig,
     ) -> RuntimeFuture<'_, CompletionResponse> {
-        let request = self.build_request(messages, &config);
+        let mut request = self.build_request(messages, &config);
+        // H-1: stamp the shipped ephemeral cache markers on the stable prefix
+        // (last system block + last tool def) at the adapter boundary. This is
+        // idempotent with the unconditional apply at AnthropicClient::send_message
+        // (anthropic.rs); doing it here too makes the RuntimeAdapter path's
+        // cache-marker consume explicit and independent of send_message internals
+        // (GD-1: REUSE the shipped stamper, never re-implement it).
+        crate::providers::anthropic::apply_anthropic_cache_markers(&mut request);
         let client = Arc::clone(&self.client);
         Box::pin(async move {
             let response = client.send_message(&request).await?;

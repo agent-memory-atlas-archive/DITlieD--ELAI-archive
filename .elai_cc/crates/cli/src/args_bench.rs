@@ -52,9 +52,18 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "seccodeplt" {
         return parse_bench_seccodeplt_args(&rest[1..]);
     }
+    if sub == "safedelta" {
+        return parse_bench_safedelta_args(&rest[1..]);
+    }
+    if sub == "staleness" {
+        return parse_bench_staleness_args(&rest[1..]);
+    }
+    if sub == "mcp-schema-budget" {
+        return parse_bench_mcp_schema_budget_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'safedelta' | 'staleness' | 'mcp-schema-budget')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -756,6 +765,120 @@ fn parse_bench_seccodeplt_args(rest: &[String]) -> Result<CliAction, String> {
         }
     }
     Ok(CliAction::BenchSeccodeplt { json })
+}
+
+/// H-30 — parse `elai bench staleness [--json] [--broken-retrieval]`. The
+/// fixture corpus is embedded at compile time + the report dir is fixed
+/// (`<cwd>/benchmarks/staleness/`), so the flags are `--json` (full report to
+/// stdout) and `--broken-retrieval` (the R2 negative-control arm). Hand-rolled
+/// per the CLAUDE.md "no new clap dep" rule.
+fn parse_bench_staleness_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut json = false;
+    let mut broken_retrieval = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--broken-retrieval" => {
+                broken_retrieval = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench staleness` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchStaleness {
+        json,
+        broken_retrieval,
+    })
+}
+
+/// G-6: parse `elai bench safedelta [--suites <csv>] [--seed <u64>] [--json]`.
+///
+/// `--suites` accepts a comma-separated list of suite labels. Tier-1 only
+/// processes `seccodeplt`; other suites require a live RunPod endpoint and
+/// will return a `RunpodPending` error at runtime. If omitted, defaults to
+/// `["seccodeplt"]` (the embedded static-gate corpus).
+///
+/// `--seed` accepts a `u64`. If omitted, defaults to 0 (the default ELAI_SEED
+/// path, same as `from_embedded`).
+fn parse_bench_safedelta_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut suites: Vec<String> = Vec::new();
+    let mut seed: u64 = 0;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--suites" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --suites".to_string())?;
+                suites = value.split(',').map(|s| s.trim().to_string()).collect();
+                i += 2;
+            }
+            flag if flag.starts_with("--suites=") => {
+                let raw = &flag["--suites=".len()..];
+                suites = raw.split(',').map(|s| s.trim().to_string()).collect();
+                i += 1;
+            }
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench safedelta` argument: {other}"));
+            }
+        }
+    }
+    // Default to the embedded seccodeplt corpus when no suites specified.
+    if suites.is_empty() {
+        suites.push("seccodeplt".to_string());
+    }
+    Ok(CliAction::BenchSafedelta { suites, seed, json })
+}
+
+/// H-34 -- parse `elai bench mcp-schema-budget [--json]`.
+///
+/// The fixture corpus is embedded at compile time and the report dir is fixed
+/// (`<cwd>/benchmarks/mcp_schema_budget/`), so the only flag is `--json`
+/// (full report to stdout). Hand-rolled per the CLAUDE.md "no new clap dep" rule.
+fn parse_bench_mcp_schema_budget_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `bench mcp-schema-budget` argument: {other}"
+                ));
+            }
+        }
+    }
+    Ok(CliAction::BenchMcpSchemaBudget { json })
 }
 
 fn validate_bool_arg(name: &str, value: &str) -> Result<(), String> {

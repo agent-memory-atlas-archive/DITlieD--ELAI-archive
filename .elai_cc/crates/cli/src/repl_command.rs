@@ -139,6 +139,16 @@ pub(super) fn dispatch(
                 super::LiveCli::print_memory()?;
                 false
             }
+            // H-31: capture a durable WORK preference into the bi-temporal user-memory ledger
+            // (activates the wire-dark elai_memory substrate via dispatch_one) and emit a
+            // UserDecisionSuperseded SSB row. Gated behind ELAI_USER_MEMORY_ENABLE (R9, default-OFF).
+            SlashCommand::Remember { text } => {
+                match crate::user_memory_capture::capture_remember(&text) {
+                    Ok(outcome) => crate::user_memory_capture::print_capture_outcome(&outcome, false),
+                    Err(e) => println!("remember: {e}"),
+                }
+                false
+            }
             SlashCommand::Init => {
                 run_init(CliOutputFormat::Text)?;
                 false
@@ -286,7 +296,11 @@ pub(super) fn dispatch(
                         let oracle_cache = cli
                             .oracle_cache
                             .get_or_insert_with(|| {
-                                Arc::new(elai_orchestrator::oracle_cache::OracleAnswerCache::new())
+                                // H-8: disk-backed so idempotent /research|/ask
+                                // grounding answers survive a process restart.
+                                Arc::new(
+                                    elai_orchestrator::oracle_cache::OracleAnswerCache::persisted_default(),
+                                )
                             })
                             .clone();
                         let oracle_project_root = std::env::current_dir()

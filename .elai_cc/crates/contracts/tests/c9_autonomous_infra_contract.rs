@@ -443,6 +443,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         via_mcp: false,
         // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
+        // B-28 WIRING-2: legacy contract path -- no production buffer editor.
+        buffer_editor: None,
         // B-08: legacy contract path -- pipeline_grc opt-in elsewhere.
         pipeline_grc: None,
         // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
@@ -474,6 +476,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         via_mcp: false,
         // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
+        // B-28 WIRING-2: legacy contract path -- no production buffer editor.
+        buffer_editor: None,
         // B-08: legacy contract path -- pipeline_grc opt-in elsewhere.
         pipeline_grc: None,
         // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
@@ -506,6 +510,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         via_mcp: false,
         // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
+        // B-28 WIRING-2: legacy contract path -- no production buffer editor.
+        buffer_editor: None,
         // B-08: legacy contract path -- pipeline_grc opt-in elsewhere.
         pipeline_grc: None,
         // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.

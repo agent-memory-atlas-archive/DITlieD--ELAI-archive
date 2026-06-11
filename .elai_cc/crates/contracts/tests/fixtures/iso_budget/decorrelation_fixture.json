@@ -1,0 +1,22 @@
+{
+  "description": "H-40 frozen decorrelation fixture. 10-item ensemble; two roles under test.",
+  "roles": {
+    "executor": {
+      "outcomes":     [true,  true,  true,  true,  false, true,  true,  false, true,  false],
+      "ground_truth": [true,  true,  false, true,  false, true,  true,  false, true,  false]
+    },
+    "researcher": {
+      "outcomes":     [false, true,  false, true,  false, false, true,  false, true,  false],
+      "ground_truth": [true,  true,  false, true,  false, true,  true,  false, true,  false]
+    }
+  },
+  "consensus": [false, true, false, true, false, false, true, false, true, false],
+  "notes": [
+    "Consensus false = items 0,2,4,5,7,9 (6 ensemble failures).",
+    "executor outcomes at those indices: [true,true,false,true,false,false] -> catches 0,2,5 = 3/6=0.50.",
+    "executor UCR=0.50 > LOW_UNIQUE_CATCH_FLOOR(0.10): RETAINED even with low lift (RD-2).",
+    "researcher outcomes at those indices: [false,false,false,false,false,false] -> catches 0 = 0/6=0.0.",
+    "researcher UCR=0.0 < LOW_UNIQUE_CATCH_FLOOR(0.10): prunable when lift is also low.",
+    "R2 arm: if predicate was lift-only, BOTH would be prunable; with H-40 predicate, executor is RETAINED."
+  ]
+}

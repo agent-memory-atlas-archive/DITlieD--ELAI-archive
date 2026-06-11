@@ -1,0 +1,7 @@
+{
+  "claim_id": "uncovered-factual-1",
+  "claim_type": "factual",
+  "text": "The deployment was successful according to the monitoring dashboard",
+  "has_grounding_evidence": false,
+  "note": "Factual claim with NO Deterministic verifier in context. Should emit CheckerGapDetected with fell_to_mode != constructive."
+}

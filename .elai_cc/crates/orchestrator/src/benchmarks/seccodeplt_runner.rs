@@ -225,6 +225,14 @@ impl SecCodePltRunner {
         Self::from_json_with_seed(CORPUS_JSON, seed)
     }
 
+    /// Construct from the embedded corpus with an EXPLICIT seed (overrides
+    /// `ELAI_SEED`). Used by G-6's `run_safedelta` so the CLI can pin a seed
+    /// without mutating the process environment. Corpus bytes are the same
+    /// compile-time-embedded `CORPUS_JSON` used by [`Self::from_embedded`].
+    pub fn from_embedded_with_seed(seed: u64) -> Result<Self, SecCodePltError> {
+        Self::from_json_with_seed(CORPUS_JSON, seed)
+    }
+
     /// Construct from explicit corpus JSON bytes + an explicit seed. Used by
     /// the calibration / unit tests; production uses [`Self::from_embedded`].
     pub fn from_json_with_seed(json: &str, seed: u64) -> Result<Self, SecCodePltError> {

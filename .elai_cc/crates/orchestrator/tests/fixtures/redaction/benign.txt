@@ -1,0 +1,13 @@
+version 1.2.3.4 build pinned
+release tag v10.20.300.4000 shipped
+uuid 550e8400-e29b-41d4-a716-446655440000 generated
+git commit 9fceb02d0ae598e95dc970b74767f19372d61af8 landed
+blake3 root e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+posix path /usr/local/bin/elai resolved
+windows path C:\Users\dev\repo\src\main.rs opened
+function call some_function(x, y) returned a string
+short token = "tiny" assigned
+base64 asset aGVsbG8gd29ybGQK decoded
+docker image sha256:abc123 not a secret here
+hex color #1a2b3c painted
+semantic range 0.0.0.0 placeholder host noted

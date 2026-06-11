@@ -35,10 +35,15 @@
 //!                            (0.15). Range [0.0, 1.0].
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use elai_core::paths::sessions_dir_path;
+use elai_core::OsClock;
 use elai_orchestrator::benchmarks::sycophancy_runner::{
-    BenchError, SycophancyBenchmark, SycophancyBenchmarkReport,
+    BenchError, SycophancyBenchmark, SycophancyBenchmarkReport, BENCH_RUNNER_NAME,
 };
+use elai_orchestrator::ssb::SycophancyBenchRunCompletedPayload;
+use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -69,6 +74,15 @@ pub enum BenchSycophancyError {
     /// `--fp-ceiling` outside [0.0, 1.0].
     #[error("sycophancy bench --fp-ceiling {value} is out of range [0.0, 1.0]")]
     InvalidFpCeiling { value: f64 },
+    /// Could not create the directory holding the canonical session `ssb.db`.
+    #[error("sycophancy bench could not create ssb.db dir {path}: {source_msg}")]
+    SsbDir { path: String, source_msg: String },
+    /// Opening the SSB single-writer failed.
+    #[error("sycophancy bench could not open SSB writer: {source_msg}")]
+    SsbOpen { source_msg: String },
+    /// Writing the SycophancyBenchRunCompleted row failed.
+    #[error("sycophancy bench could not write SSB row: {source_msg}")]
+    SsbWrite { source_msg: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -126,8 +140,17 @@ pub(crate) fn run(
         .build()
         .map_err(anyhow::Error::from)?;
 
+    // The benchmark AND the SSB emit both run inside the SAME runtime: `Ssb::new`
+    // spawns a single-writer task that panics "no reactor running" unless it is
+    // constructed inside `rt.block_on` (CLAUDE.md F-2b playbook + bench_seccodeplt
+    // precedent). One `SycophancyBenchRunCompleted` row is written per run (D-23
+    // single end-of-run row), regardless of pass/fail, so CI / dashboard always
+    // get the off-agent artifact even on a FAIL.
+    let ssb_root = project_root.clone();
     let outcome = rt.block_on(async move {
-        run_async(fixtures_path, detection_floor, fp_ceiling).await
+        let report = run_async(fixtures_path, detection_floor, fp_ceiling).await?;
+        emit_run_completed(&ssb_root, &report).await?;
+        Ok::<SycophancyBenchmarkReport, BenchSycophancyError>(report)
     });
 
     match outcome {
@@ -143,6 +166,61 @@ pub(crate) fn run(
             std::process::exit(1);
         }
     }
+}
+
+/// Open the canonical session `ssb.db` and emit exactly ONE
+/// `SycophancyBenchRunCompleted` row built from the REAL run metrics, awaited
+/// (durable). Mirrors `bench_seccodeplt::emit_insecure_rate_measured`: the
+/// `Ssb::new` single-writer task MUST be constructed inside a live runtime, so
+/// this is called from within the caller's `rt.block_on`.
+async fn emit_run_completed(
+    project_root: &std::path::Path,
+    report: &SycophancyBenchmarkReport,
+) -> Result<(), BenchSycophancyError> {
+    let db_path = sessions_dir_path(project_root).join("ssb.db");
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| BenchSycophancyError::SsbDir {
+            path: parent.display().to_string(),
+            source_msg: e.to_string(),
+        })?;
+    }
+
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: "cli-bench-sycophancy".to_string(),
+    };
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+
+    let payload = SycophancyBenchRunCompletedPayload {
+        tp: report.tp,
+        fp: report.fp,
+        tn: report.tn,
+        fn_: report.fn_,
+        inconclusive: report.inconclusive,
+        detection_rate: report.detection_rate,
+        fp_rate: report.fp_rate,
+        verdict: report.verdict.as_str().to_string(),
+        total_fixtures: report.total(),
+        fixture_blake3: report.fixture_blake3.clone(),
+        runner_name: BENCH_RUNNER_NAME.to_string(),
+    };
+
+    let ssb = Ssb::new(cfg, clock).map_err(|e| BenchSycophancyError::SsbOpen {
+        source_msg: e.to_string(),
+    })?;
+    ssb.write_payload(
+        "cli:bench-sycophancy",
+        0,
+        SsbPayload::SycophancyBenchRunCompleted(payload),
+        Vec::new(),
+    )
+    .await
+    .map_err(|e| BenchSycophancyError::SsbWrite {
+        source_msg: e.to_string(),
+    })?;
+    Ok(())
 }
 
 /// Async core — constructs the runner, runs the benchmark, returns the

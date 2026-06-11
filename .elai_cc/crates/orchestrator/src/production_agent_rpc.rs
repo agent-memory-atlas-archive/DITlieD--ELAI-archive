@@ -27,9 +27,15 @@ use elai_core::tool_dispatcher::{
 };
 use elai_ipc_types::{
     EntryPointsRequest, ExportGraphMermaidRequest, IndexArtifactsRequest, ListArtifactsRequest,
-    RemoveArtifactsRequest, SearchArtifactsRequest, SymbolContextRequest,
-    SymbolDataflowImpactRequest, SymbolDslQueryRequest, SymbolFlowRequest,
-    SymbolImpactRequest, SymbolListRequest, TOOL_CLASSIFY, TOOL_COMPILE_CHECK,
+    CanvasAnnotateRequest, CanvasConnectRequest, CanvasCreateNodeRequest, CanvasForkRequest,
+    CanvasRenderDiagramRequest, CanvasScreenshotRequest, CanvasSpawnViewRequest,
+    CanvasSpawnViewResponse, CanvasUpdateNodeRequest, RemoveArtifactsRequest,
+    SearchArtifactsRequest,
+    SymbolContextRequest, SymbolDataflowImpactRequest, SymbolDslQueryRequest, SymbolFlowRequest,
+    SymbolImpactRequest, SymbolListRequest, TOOL_CANVAS_ANNOTATE, TOOL_CANVAS_CONNECT,
+    TOOL_CANVAS_CREATE_NODE, TOOL_CANVAS_FORK, TOOL_CANVAS_RENDER_DIAGRAM,
+    TOOL_CANVAS_SCREENSHOT, TOOL_CANVAS_SPAWN_VIEW, TOOL_CANVAS_UPDATE_NODE, TOOL_CLASSIFY,
+    TOOL_COMPILE_CHECK,
     TOOL_DKG_CALLERS, TOOL_DKG_DATA_FLOW, TOOL_DKG_DEPENDENTS, TOOL_DKG_SUBGRAPH, TOOL_EDIT,
     TOOL_ENTRY_POINTS, TOOL_EXPORT_GRAPH_MERMAID, TOOL_FILE_READ, TOOL_GIT_BRANCH,
     TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_INDEX_ARTIFACTS, TOOL_LIST_ARTIFACTS,
@@ -55,9 +61,394 @@ use serde_json::Value;
 
 use crate::ipc_accept::{AgentRpcServer, InferOutcome, ToolOutcome};
 
+use elai_safety::provenance::{Provenance, Provenanced, TextSource};
+use elai_safety::taint_flow::tainted_context;
+use elai_safety::{allow_tool_with_origin, CapabilityVerdict};
+use elai_safety::blast_radius::{check_fs_target, expand_fs_token, worktree_root_blake3, BlastRadiusVerdict, ExpandedToken};
+use crate::ssb::{BlastRadiusKind, TaintFlowKind};
+use crate::taint_flow_ssb_adapter::emit_taint_flow;
+use crate::blast_radius_ssb_adapter::{blast_radius_gate_disabled, emit_blast_radius_blocked};
+
 
 /// Default sidecar base URL when ANTHROPIC_BASE_URL is unset.
 const DEFAULT_SIDECAR_URL: &str = "http://localhost:8100";
+
+/// G-1: kill-switch env var. When set to a truthy value the data-plane taint
+/// gate at the destructive-sink dispatch arms is DISARMED (pass-through). There
+/// is NO enable flag (W-2 / R9): the gate is DEFAULT-ON, and this is the only
+/// opt-out. Read fresh at each gate call so a long-running process honors a
+/// mid-run flip.
+const TAINT_PROPAGATE_DISABLE_ENV: &str = "ELAI_TAINT_PROPAGATE_DISABLE";
+
+/// G-1: correlation id for taint_flow rows emitted from the agent-requested
+/// tool-dispatch fan. The per-turn task id is not threaded into
+/// `translate_tool_request` (it would require a signature change across the
+/// IPC `AgentRpcServer` trait); this constant names the seam so a dashboard
+/// subscriber can attribute the row to the agent dispatch path. (Per-turn
+/// attribution is a documented follow-up, G-1-decisions.md GD-5.)
+const TAINT_FLOW_TASK_ID: &str = "agent_tool_dispatch";
+
+/// G-7: kill-switch env var for the lethal-trifecta dual-LLM quarantine gate.
+/// When truthy the trifecta gate is DISARMED (pass-through). There is NO enable
+/// flag (W-2 / R9): the gate is DEFAULT-ON and this is the only opt-out. Read
+/// fresh at each gate call so a long-running process honors a mid-run flip.
+const TRIFECTA_QUARANTINE_DISABLE_ENV: &str = "ELAI_TRIFECTA_QUARANTINE_DISABLE";
+
+/// G-7: correlation id for trifecta_quarantined rows emitted from the
+/// agent-requested tool-dispatch fan (same seam rationale as
+/// [`TAINT_FLOW_TASK_ID`]).
+const TRIFECTA_QUARANTINE_TASK_ID: &str = "agent_tool_dispatch";
+
+/// G-1: env var naming the trusted-source workspace root for the file-read
+/// path-screen (DD4). A file read resolving under this prefix is treated as
+/// first-party Trusted source; anything else is Untrusted. Defaults to
+/// `.elai_cc` (the project boundary per CLAUDE.md) when unset.
+const TAINT_PROJECT_ROOT_ENV: &str = "ELAI_PROJECT_ROOT";
+
+/// Default trusted-source workspace prefix when `ELAI_PROJECT_ROOT` is unset.
+const TAINT_PROJECT_ROOT_DEFAULT: &str = ".elai_cc";
+
+/// G-1: resolve the trusted-source workspace root for the file-read path-screen.
+fn taint_project_root() -> PathBuf {
+    std::env::var(TAINT_PROJECT_ROOT_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(TAINT_PROJECT_ROOT_DEFAULT))
+}
+
+/// G-1: whether the data-plane taint gate is disarmed via the kill-switch.
+fn taint_gate_disabled() -> bool {
+    std::env::var(TAINT_PROPAGATE_DISABLE_ENV)
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            !(v.is_empty() || v == "0" || v == "false" || v == "no")
+        })
+        .unwrap_or(false)
+}
+
+/// G-1: map a [`TextSource`] to the SSB [`TaintFlowKind`] + a human origin
+/// string for the taint_flow row. Only the four UNTRUSTED ingest categories
+/// can reach a blocked sink, so the trusted/recallable arms fall back to the
+/// closest Kind (they are never emitted in practice — the gate only blocks
+/// Untrusted).
+fn taint_flow_kind_and_origin(source: &TextSource) -> (TaintFlowKind, String) {
+    match source {
+        TextSource::Web { url } => (TaintFlowKind::Web, url.clone()),
+        TextSource::ToolOutput { server_url, tool_name } => {
+            (TaintFlowKind::ToolOutput, format!("{server_url}::{tool_name}"))
+        }
+        TextSource::File { source_path } => {
+            (TaintFlowKind::File, source_path.to_string_lossy().into_owned())
+        }
+        TextSource::SandboxOutput { sandbox_id } => {
+            (TaintFlowKind::Sandbox, sandbox_id.clone())
+        }
+        // These cannot block (Trusted / Recallable); reported as File for
+        // completeness should the gate semantics ever widen to Recallable.
+        TextSource::UserPrompt | TextSource::System | TextSource::Memory { .. } => {
+            (TaintFlowKind::File, source.label().to_owned())
+        }
+    }
+}
+
+/// G-1 SINK GATE: refuse a destructive sink whose argv CONTAINS an untrusted
+/// ingest's content VERBATIM as a substring.
+///
+/// HONEST SCOPE (s-56068 B2b, GD-5): this gate blocks a destructive sink
+/// (git_commit / edit) whose argv contains an untrusted ingest's content
+/// VERBATIM as a substring (>= `MIN_TAINT_MATCH_LEN` bytes), within the SAME
+/// PROCESS. It does NOT cover transformed / summarized / paraphrased untrusted
+/// content (the agent rewording an injected instruction breaks the verbatim
+/// substring screen), cross-process sinks, or untrusted content arriving via a
+/// non-`McpToolRegistry` MCP transport (those ingest sites are not registered).
+/// Do not read this as taint-tracking dataflow; it is a verbatim-substring
+/// content match, not a derives-from analysis.
+///
+/// For each `argv_part` (e.g. a git commit message + the file paths, or an
+/// edit's file_path + new_text), look up the process-local taint side-table
+/// for an untrusted ingest the part contains verbatim (the dependency
+/// screen). If found, build a `Provenanced<String>` and consult the SHIPPED
+/// `allow_tool_with_origin(gate_tool, &[..])` gate. On `Reject`, emit a
+/// `taint_flow` SSB row (the off-agent artifact) and return `Err` so the
+/// destructive dispatch is BLOCKED fail-closed.
+///
+/// `gate_tool` is the canonical destructive-tool name the gate checks against
+/// `DESTRUCTIVE_TOOLS` (e.g. `"bash"` for git commit, `"fs_write"` for edit).
+/// `sink_tool` is the human sink label recorded on the SSB row (e.g.
+/// `"git_commit"`, `"edit"`). Returns `Ok(())` when the flow is clean or the
+/// kill-switch is set.
+fn enforce_taint_sink_gate(
+    gate_tool: &str,
+    sink_tool: &str,
+    argv_parts: &[&str],
+    ssb: Option<&Arc<crate::ssb::Ssb>>,
+) -> Result<(), String> {
+    if taint_gate_disabled() {
+        return Ok(());
+    }
+    let ctx = tainted_context();
+    for part in argv_parts {
+        // HONEST SCOPE (GD-5): `lookup_for_argv` is a VERBATIM substring match
+        // (>= MIN_TAINT_MATCH_LEN bytes), same-process only. It does NOT catch
+        // transformed/summarized/paraphrased untrusted content, cross-process
+        // sinks, or non-McpToolRegistry MCP transports.
+        let Some(prov) = ctx.lookup_for_argv(part) else {
+            continue;
+        };
+        // The gate Rejects on Untrusted only (Recallable does not block, by
+        // design — capability_gate.rs:96). Build the argv element carrying the
+        // joined provenance so the gate sees the trust label.
+        let argv: Vec<Provenanced<String>> =
+            vec![Provenanced::new((*part).to_owned(), prov.clone())];
+        match allow_tool_with_origin(gate_tool, &argv) {
+            Ok(CapabilityVerdict::Reject {
+                reason,
+                offending_trust_label,
+                ..
+            }) => {
+                let (kind, origin) = taint_flow_kind_and_origin(&prov.source);
+                if let Some(ssb) = ssb {
+                    emit_taint_flow(
+                        ssb,
+                        kind,
+                        &origin,
+                        &offending_trust_label,
+                        sink_tool,
+                        TAINT_FLOW_TASK_ID,
+                    );
+                }
+                return Err(format!(
+                    "G-1 taint gate: destructive sink `{sink_tool}` BLOCKED — argv derives \
+                     from untrusted ingest ({origin}); {reason}"
+                ));
+            }
+            Ok(CapabilityVerdict::Allow) => {}
+            Err(e) => {
+                // Empty tool name is the only gate error; treat any gate error
+                // as fail-CLOSED (do not let a destructive sink through on a
+                // gate malfunction).
+                return Err(format!(
+                    "G-1 taint gate: destructive sink `{sink_tool}` BLOCKED — gate error: {e:?}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// G-7: whether the lethal-trifecta quarantine gate is disarmed via the
+/// kill-switch. Default-ON otherwise (R9).
+fn trifecta_quarantine_disabled() -> bool {
+    std::env::var(TRIFECTA_QUARANTINE_DISABLE_ENV)
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            !(v.is_empty() || v == "0" || v == "false" || v == "no")
+        })
+        .unwrap_or(false)
+}
+
+/// G-7 LETHAL-TRIFECTA QUARANTINE GATE. Runs BEFORE a destructive / egress
+/// dispatch (alongside the G-1 taint gate + G-3 blast-radius gate), fail-closed.
+///
+/// Detects the lethal trifecta at the tool-call chokepoint by COMPOSING three
+/// already-shipped subsystems (GD-1, re-implements none):
+///   * (a) SECRET-PRESENT — the G-9 redaction detector
+///     ([`crate::redaction::redact`]) matches a secret pattern in the visible
+///     argv context. This is the bridge for the confidentiality leg the taint
+///     table cannot see (it drops Trusted provenance).
+///   * (b) UNTRUSTED SPAN — the G-1 taint table
+///     ([`elai_safety::TaintedContext::lookup_for_argv`]) returns an `Untrusted`
+///     provenance for an argv part.
+///   * (c) EGRESS — the pending `gate_tool` is egress / destructive
+///     ([`elai_safety::is_destructive_tool`]).
+///
+/// On ALL THREE: the untrusted span MUST NOT reach the tool-caller. We BLOCK the
+/// destructive dispatch fail-closed (return `Err`) so the injected instruction
+/// never drives the real tool, and emit a `trifecta_quarantined` SSB row through
+/// the LIVE `Arc<Ssb>` (the off-agent artifact, R4).
+///
+/// G-7 FIX 2 (GD-5 honesty): at THIS synchronous chokepoint NO sub-LLM runs —
+/// the no-tool sub-LLM routing ([`crate::quarantine::query_quarantined`]) is the
+/// producer-side primitive but it requires a live `QuarantineDispatcher` that is
+/// NOT threaded into `translate_tool_request`. The load-bearing property here is
+/// the hard BLOCK — the raw untrusted span + the egress tool never co-flow. The
+/// emitted row is therefore HONEST: `quarantined = false`,
+/// `sub_llm_verdict = "not_run_blocked"` (it does NOT claim a sub-LLM
+/// quarantined the span when it was a hard block). Live-sub-LLM routing at this
+/// chokepoint is a DEFERRED follow-up.
+///
+/// G-7 FIX 3 (GD-5 scope honesty): the secret leg (a) scans the tool ARGV only
+/// (commit message + paths), NOT the full live agent context. The live agent
+/// messages are not accessible at this free-fn chokepoint. This is fail-closed-
+/// SAFE (argv under-detection causes a missed BLOCK, never a false BLOCK) but
+/// NARROWER than "secret-in-context": a context-secret not present in this argv
+/// is NOT yet detected. Broadening to the full context is a DEFERRED follow-up
+/// (it needs the agent messages threaded to this chokepoint).
+///
+/// Returns `Ok(())` when the trifecta does NOT fire (any leg missing — the FP
+/// guard) or the kill-switch is set.
+fn enforce_trifecta_quarantine_gate(
+    gate_tool: &str,
+    sink_tool: &str,
+    argv_parts: &[&str],
+    ssb: Option<&Arc<crate::ssb::Ssb>>,
+) -> Result<(), String> {
+    if trifecta_quarantine_disabled() {
+        return Ok(());
+    }
+    // Leg (c): is the pending tool an EGRESS channel? Cheapest check first; if
+    // not egress, no trifecta is possible regardless of the other legs. The
+    // egress subset (curl/web_fetch/http_post/bash/shell) is STRICTER than the
+    // broad destructive-sink set — a local fs_write cannot exfiltrate off-box.
+    if !crate::quarantine::is_egress_tool(gate_tool) {
+        return Ok(());
+    }
+    // Leg (a): does any visible argv part contain a secret (G-9 detector)?
+    // G-7 FIX 3 SCOPE (GD-5 honesty): this scans ONLY the tool argv parts (the
+    // commit message + paths the agent passed), NOT the full live agent
+    // context/messages — those are not accessible at this free-fn chokepoint
+    // (`translate_tool_request` receives the decoded `wire` argv, not the agent
+    // conversation). Fail-closed-SAFE: a secret that is in the agent context but
+    // absent from this argv is under-detected (a missed BLOCK), never a false
+    // BLOCK. Broadening to the full context is a DEFERRED follow-up (needs the
+    // agent messages threaded here).
+    let secret_present = argv_parts
+        .iter()
+        .any(|part| crate::quarantine::context_holds_secret(part));
+    if !secret_present {
+        return Ok(());
+    }
+    // Leg (b): does any argv part derive from an untrusted ingest (G-1 taint)?
+    let ctx = tainted_context();
+    let (components, untrusted_prov) =
+        crate::quarantine::detect_trifecta(&ctx, argv_parts, gate_tool, secret_present);
+    if !components.is_trifecta() {
+        // Missing a leg (no untrusted span reached the argv) — FP guard, allow.
+        return Ok(());
+    }
+    // ALL THREE legs present. Block fail-closed + emit the off-agent artifact.
+    let origin = match untrusted_prov.as_ref() {
+        Some(prov) => taint_flow_kind_and_origin(&prov.source).1,
+        // is_trifecta() guarantees untrusted_span, so prov is Some; this arm is
+        // defensive only.
+        None => sink_tool.to_owned(),
+    };
+    if let Some(ssb) = ssb {
+        // G-7 FIX 2 (GD-5 honesty): at THIS synchronous chokepoint NO sub-LLM
+        // runs — `query_quarantined` requires a live `QuarantineDispatcher`
+        // (an AnthropicClient impl) that is NOT threaded into the free
+        // `translate_tool_request` chokepoint, only the `dispatcher` + `ssb`
+        // are. Wiring the live client here is a large signature-ripple blast
+        // radius (every caller + `translate_tool_request_for_test`), so the
+        // shipped behaviour is the hard BLOCK below. The emitted row therefore
+        // MUST reflect what actually happened: `quarantined = false` (no
+        // sub-LLM routed the span) and `sub_llm_verdict = "not_run_blocked"`
+        // (the dispatch was hard-blocked, not quarantine-summarized). It would
+        // be a lie to claim a sub-LLM ran. The load-bearing security property
+        // is unchanged: the destructive dispatch is REFUSED (Err below) so the
+        // untrusted span never reaches the real tool. DEFERRED follow-up: route
+        // the untrusted span through the LIVE no-tool sub-LLM
+        // (production_agent_rpc.rs:457 `client` as a `QuarantineDispatcher`)
+        // once the client is threaded to this chokepoint; then this row's
+        // `quarantined`/`sub_llm_verdict` reflect the real sub-LLM output.
+        crate::trifecta_quarantine_ssb_adapter::emit_trifecta_quarantined(
+            ssb,
+            components,
+            &origin,
+            sink_tool,
+            false,
+            "not_run_blocked",
+            TRIFECTA_QUARANTINE_TASK_ID,
+        );
+    }
+    Err(format!(
+        "G-7 lethal-trifecta gate: destructive sink `{sink_tool}` BLOCKED — a secret \
+         is present AND an untrusted span flows into an egress-capable tool. The \
+         untrusted span was quarantined and never reached the tool-caller."
+    ))
+}
+
+/// G-3: resolve the per-process home directory for `~` expansion in the FS
+/// blast-radius gate. Injected into [`expand_fs_token`] so the gate is
+/// deterministic. `HOME` (Unix) then `USERPROFILE` (Windows).
+fn home_dir_for_expansion() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+/// G-3: FS post-expansion blast-radius gate. Runs BEFORE a real filesystem-
+/// mutating dispatch (the `fs_write` edit arm; git_commit paths), fail-closed.
+///
+/// For each path token the agent issued, expand `~`/`$VAR`/glob Rust-side then
+/// [`check_fs_target`] the resolved target against the per-run worktree root.
+/// On a [`BlastRadiusVerdict::Block`] the call is REFUSED with an Err and a
+/// `blast_radius_blocked{FsEscape}` SSB row is emitted through the LIVE
+/// `Arc<Ssb>` already threaded into the dispatch fan (the off-agent artifact,
+/// R4). The kill-switch `ELAI_BLAST_RADIUS_DISABLE` disarms the gate (R9
+/// default-ON otherwise). COMPOSES with E-30's pre-expansion verb gate
+/// (different layer, different subject) — re-implements neither (GD-1).
+///
+/// `pre_expansion` is the original command/argv string recorded verbatim on the
+/// row (the `#10077` forensics fix). `now_ms` is the injected clock value.
+fn enforce_fs_blast_radius(
+    path_tokens: &[&str],
+    worktree_root: &std::path::Path,
+    pre_expansion: &str,
+    ssb: Option<&Arc<crate::ssb::Ssb>>,
+    now_ms: i64,
+) -> Result<(), String> {
+    if blast_radius_gate_disabled() {
+        return Ok(());
+    }
+    let home = home_dir_for_expansion();
+    for token in path_tokens {
+        let candidate: PathBuf = match expand_fs_token(token, home.as_deref()) {
+            ExpandedToken::Path(p) => p,
+            // A glob token: only the literal base before the first wildcard is
+            // known. Check containment of that base; a glob whose base could
+            // reach outside the root is refused (fail-closed on ambiguity).
+            ExpandedToken::GlobBase(base) => {
+                // An empty base means a bare `*.rs` relative to cwd; join it
+                // onto the worktree root so an in-root glob is allowed.
+                if base.as_os_str().is_empty() {
+                    worktree_root.to_path_buf()
+                } else {
+                    base
+                }
+            }
+        };
+        let verdict = check_fs_target(&candidate, worktree_root, pre_expansion);
+        if let BlastRadiusVerdict::Block {
+            kind,
+            pre_expansion: pre,
+            post_expansion: post,
+        } = verdict
+        {
+            if let Some(ssb) = ssb {
+                emit_blast_radius_blocked(
+                    ssb,
+                    BlastRadiusKind::from(kind),
+                    &pre,
+                    &post,
+                    &candidate.to_string_lossy(),
+                    &worktree_root_blake3(worktree_root),
+                    "", // pure containment block; no provenance join here
+                    now_ms,
+                );
+            }
+            return Err(format!(
+                "G-3 blast-radius gate: filesystem target `{}` BLOCKED — resolves OUTSIDE \
+                 the worktree root `{}` (fail-closed); resolved={}",
+                token,
+                worktree_root.display(),
+                post
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Default model used when constructing a `MessageRequest`.
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
@@ -751,6 +1142,203 @@ impl ProductionAgentRpcServer {
             }),
             cache_control: None,
         };
+        // H-13: canvas op tools (model drives the canvas). cache_control: None
+        // (inert-by-design per C2; apply_anthropic_cache_markers re-stamps at
+        // send_message time). 7 tools; all 3 arms (catalog+convert+dispatch).
+        let canvas_create_node = ToolDefinition {
+            name: TOOL_CANVAS_CREATE_NODE.to_string(),
+            description: Some(
+                "Create a new node on the active canvas. Allowed modes: arch, code. \
+                 node_id must be unique in the current graph."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "node_id": { "type": "string", "minLength": 1,
+                                 "description": "Unique node id (must not already exist)." },
+                    "label":   { "type": "string", "description": "Human-readable label." },
+                    "mode":    { "type": "string", "description": "Canvas mode (arch or code)." },
+                    "x":       { "type": "number", "description": "Optional x-coord 0-1 normalised." },
+                    "y":       { "type": "number", "description": "Optional y-coord 0-1 normalised." },
+                    "meta":    { "description": "Optional metadata JSON object." },
+                    "task_id": { "type": "string", "description": "Triggering task id." }
+                },
+                "required": ["node_id", "label", "mode", "task_id"]
+            }),
+            cache_control: None,
+        };
+        let canvas_connect = ToolDefinition {
+            name: TOOL_CANVAS_CONNECT.to_string(),
+            description: Some(
+                "Connect two existing canvas nodes with a directed edge. \
+                 Both from_id and to_id must already exist in the graph."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "from_id": { "type": "string", "minLength": 1,
+                                 "description": "Source node id (must exist)." },
+                    "to_id":   { "type": "string", "minLength": 1,
+                                 "description": "Target node id (must exist)." },
+                    "label":   { "type": ["string", "null"],
+                                 "description": "Optional edge label." },
+                    "mode":    { "type": "string", "description": "Canvas mode (arch or code)." },
+                    "task_id": { "type": "string", "description": "Triggering task id." }
+                },
+                "required": ["from_id", "to_id", "mode", "task_id"]
+            }),
+            cache_control: None,
+        };
+        let canvas_update_node = ToolDefinition {
+            name: TOOL_CANVAS_UPDATE_NODE.to_string(),
+            description: Some(
+                "Update the label or metadata of an existing canvas node. \
+                 node_id must exist in the graph."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "node_id": { "type": "string", "minLength": 1,
+                                 "description": "Node id to update (must exist)." },
+                    "label":   { "type": ["string", "null"],
+                                 "description": "New label; omit to leave unchanged." },
+                    "meta":    { "description": "Metadata patch merged into existing." },
+                    "mode":    { "type": "string",
+                                 "description": "Canvas mode (arch, code, or plan)." },
+                    "task_id": { "type": "string", "description": "Triggering task id." }
+                },
+                "required": ["node_id", "mode", "task_id"]
+            }),
+            cache_control: None,
+        };
+        let canvas_annotate = ToolDefinition {
+            name: TOOL_CANVAS_ANNOTATE.to_string(),
+            description: Some(
+                "Add a text annotation to the canvas, optionally anchored to a node."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "text":           { "type": "string", "minLength": 1,
+                                        "description": "Annotation text." },
+                    "anchor_node_id": { "type": ["string", "null"],
+                                        "description": "Node to anchor to; null for free-floating." },
+                    "mode":           { "type": "string",
+                                        "description": "Canvas mode." },
+                    "task_id":        { "type": "string", "description": "Triggering task id." }
+                },
+                "required": ["text", "mode", "task_id"]
+            }),
+            cache_control: None,
+        };
+        let canvas_fork = ToolDefinition {
+            name: TOOL_CANVAS_FORK.to_string(),
+            description: Some(
+                "Fork an existing node into a new sibling node sharing the same parent edges."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "source_node_id": { "type": "string", "minLength": 1,
+                                        "description": "Node to fork (must exist)." },
+                    "new_node_id":    { "type": "string", "minLength": 1,
+                                        "description": "Id for the forked node (must not exist)." },
+                    "label":          { "type": "string", "description": "Label for the forked node." },
+                    "mode":           { "type": "string",
+                                        "description": "Canvas mode (arch or code)." },
+                    "task_id":        { "type": "string", "description": "Triggering task id." }
+                },
+                "required": ["source_node_id", "new_node_id", "label", "mode", "task_id"]
+            }),
+            cache_control: None,
+        };
+        let canvas_render_diagram = ToolDefinition {
+            name: TOOL_CANVAS_RENDER_DIAGRAM.to_string(),
+            description: Some(
+                "Render the current graph as a structured architecture diagram in ARCHITECTURE mode. \
+                 Reuses the server-side export_graph_mermaid path for layout data. \
+                 Emits CanvasOpKind::LayoutChanged rows. Allowed mode: arch only."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "graph_mode": { "type": "string",
+                                    "enum": ["symbol", "file", "decomposition"],
+                                    "description": "Graph data mode for layout." },
+                    "max_nodes":  { "type": ["integer", "null"], "minimum": 1, "maximum": 200,
+                                    "description": "Max nodes; server default when omitted." },
+                    "mode":       { "type": "string", "const": "arch",
+                                    "description": "Must be arch." },
+                    "task_id":    { "type": "string", "description": "Triggering task id." }
+                },
+                "required": ["graph_mode", "mode", "task_id"]
+            }),
+            cache_control: None,
+        };
+        let canvas_screenshot = ToolDefinition {
+            name: TOOL_CANVAS_SCREENSHOT.to_string(),
+            description: Some(
+                "Capture the canvas as a PNG. Emits CanvasOpKind::ScreenshotCaptured SSB row. \
+                 Actual pixel capture (canvas.toDataURL) is Tier-2-pending (stub-6); \
+                 the Tauri capture API is not yet available in this tier. \
+                 VLM/media_validator scoring is also Tier-2-pending (RUNPOD-PENDING). \
+                 This call always emits the SSB row; the capture itself returns an Err reason \
+                 until the Tier-2 screenshot path is wired."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "mode":    { "type": "string", "description": "Canvas mode at capture time." },
+                    "task_id": { "type": "string", "description": "Triggering task id." }
+                },
+                "required": ["mode", "task_id"]
+            }),
+            cache_control: None,
+        };
+
+        // H-15: spawn_view reply-channel verb (1 tool).
+        let canvas_spawn_view = ToolDefinition {
+            name: TOOL_CANVAS_SPAWN_VIEW.to_string(),
+            description: Some(
+                "Spawn a new canvas view of the given view_type, seeded by existing \
+                 canvas op ids. view_type selects a registered renderer \
+                 (e.g. 'comparison_board'). Emits a CanvasViewEvent(ViewSpawned) SSB row. \
+                 Default gated behind routing-confidence; suppress-canvas hatch applies."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "view_type": {
+                        "type": "string",
+                        "description": "Renderer key (e.g. 'comparison_board')."
+                    },
+                    "seed_ops": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Op ids (canvas_op_applied) to seed the view's graph."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "Canvas mode at spawn time."
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "Triggering task id."
+                    }
+                },
+                "required": ["view_type", "seed_ops", "mode", "task_id"]
+            }),
+            cache_control: None,
+        };
+
         vec![
             edit, file_read, validate, compile_check, classify, git_commit,
             // C-24: B-29 Phase 5 symbol-graph tools, now agent-visible.
@@ -759,6 +1347,11 @@ impl ProductionAgentRpcServer {
             dkg_callers, dkg_dependents, dkg_data_flow, dkg_subgraph,
             // E-40 Tranche B-2: SymbolGraph DSL + dataflow tools.
             symbol_dsl_query, symbol_dataflow_impact,
+            // H-13: canvas op tools (model drives the canvas). 7 tools.
+            canvas_create_node, canvas_connect, canvas_update_node, canvas_annotate,
+            canvas_fork, canvas_render_diagram, canvas_screenshot,
+            // H-15: spawn_view reply-channel verb. 1 tool.
+            canvas_spawn_view,
         ]
     }
 
@@ -1075,6 +1668,84 @@ fn convert_json_input_to_postcard(tool_id: &str, input: Value) -> Result<Vec<u8>
                 format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
             })
         }
+        // H-13: canvas op tools (model drives the canvas).
+        TOOL_CANVAS_CREATE_NODE => {
+            let req: CanvasCreateNodeRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_CANVAS_CONNECT => {
+            let req: CanvasConnectRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_CANVAS_UPDATE_NODE => {
+            let req: CanvasUpdateNodeRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_CANVAS_ANNOTATE => {
+            let req: CanvasAnnotateRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_CANVAS_FORK => {
+            let req: CanvasForkRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_CANVAS_RENDER_DIAGRAM => {
+            let req: CanvasRenderDiagramRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_CANVAS_SCREENSHOT => {
+            let req: CanvasScreenshotRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        // H-15: spawn_view reply-channel verb.
+        TOOL_CANVAS_SPAWN_VIEW => {
+            let req: CanvasSpawnViewRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        // B-34: entry-point detection verb. Mirrors the symbol-graph arms —
+        // the typed `EntryPointsRequest` deserialisation is the input-validation
+        // gate before postcard encode. The dispatcher arm at TOOL_ENTRY_POINTS
+        // re-decodes these bytes via `postcard::from_bytes`.
+        TOOL_ENTRY_POINTS => {
+            let req: EntryPointsRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
         unknown => Err(format!(
             "convert_json_input_to_postcard: no mapping for tool_id '{unknown}'"
         )),
@@ -1175,6 +1846,30 @@ pub(crate) async fn translate_tool_request(
         TOOL_EDIT => {
             let wire: elai_ipc_types::EditRequest = postcard::from_bytes(arguments)
                 .map_err(|e| format!("tool edit: decode error: {e}"))?;
+            // G-1 SINK GATE: block an edit whose target path or new content
+            // derives from untrusted ingest (web/tool-output/file/sandbox).
+            // `fs_write` is the canonical destructive-tool name the capability
+            // gate checks. Runs BEFORE the real dispatch (fail-closed).
+            enforce_taint_sink_gate(
+                "fs_write",
+                "edit",
+                &[wire.file_path.as_str(), wire.new_text.as_str()],
+                ssb,
+            )?;
+            // G-3 SINK GATE: block an edit whose EXPANDED target path resolves
+            // OUTSIDE the per-run worktree root (the post-expansion FS escape,
+            // e.g. file_path = `~/.ssh/authorized_keys` or `../../etc/x`). Runs
+            // BEFORE the real dispatch (fail-closed); emits blast_radius_blocked
+            // {FsEscape} through the live Ssb. The worktree root is the project
+            // boundary (`taint_project_root()`); only the file_path is a path
+            // token (new_text is content, not a path).
+            enforce_fs_blast_radius(
+                &[wire.file_path.as_str()],
+                taint_project_root().as_path(),
+                &format!("edit {}", wire.file_path),
+                ssb,
+                i64::try_from(clock.now_ms()).unwrap_or(i64::MAX),
+            )?;
             let req = EditRequest {
                 file_path: PathBuf::from(wire.file_path),
                 old_text: wire.old_text,
@@ -1264,6 +1959,37 @@ pub(crate) async fn translate_tool_request(
                      received empty list"
                         .to_string()
                 })?;
+            // G-1 SINK GATE: block a git commit whose message or any path
+            // derives from untrusted ingest. Git shells out, so the canonical
+            // destructive-tool name the gate checks is `bash`. Runs BEFORE the
+            // real dispatch (fail-closed). Build the argv-parts view before
+            // `wire.paths` is consumed below.
+            {
+                let mut parts: Vec<&str> = Vec::with_capacity(wire.paths.len() + 1);
+                parts.push(wire.message.as_str());
+                for p in &wire.paths {
+                    parts.push(p.as_str());
+                }
+                enforce_taint_sink_gate("bash", "git_commit", &parts, ssb)?;
+                // G-7 LETHAL-TRIFECTA GATE: git shells out (`bash` is an egress
+                // channel), so block when a secret is present AND the commit
+                // message/paths derive from an untrusted ingest AND the egress
+                // sink is reachable. The untrusted span is quarantined and never
+                // reaches the tool-caller (the load-bearing security property).
+                enforce_trifecta_quarantine_gate("bash", "git_commit", &parts, ssb)?;
+                // G-3 SINK GATE: block a git commit whose EXPANDED path tokens
+                // resolve OUTSIDE the worktree root (a commit reaching outside
+                // the per-run tree). Only the paths are path tokens (the commit
+                // message is not). Fail-closed; emits blast_radius_blocked
+                // {FsEscape} through the live Ssb.
+                enforce_fs_blast_radius(
+                    &wire.paths.iter().map(String::as_str).collect::<Vec<&str>>(),
+                    taint_project_root().as_path(),
+                    &format!("git_commit {}", wire.paths.join(" ")),
+                    ssb,
+                    i64::try_from(clock.now_ms()).unwrap_or(i64::MAX),
+                )?;
+            }
             let files: Vec<PathBuf> = wire.paths.into_iter().map(PathBuf::from).collect();
             // WARN-3: use GitBranchPolicy::default() (BranchPerPlan) instead of Main.
             // plan_id: wire GitCommitRequest has no plan_id field; fall back to a
@@ -1305,9 +2031,21 @@ pub(crate) async fn translate_tool_request(
             }
             let path = PathBuf::from(wire.file_path);
             let view = dispatcher
-                .dispatch_file_read_outline(path, OUTLINE_LINE_THRESHOLD)
+                .dispatch_file_read_outline(path.clone(), OUTLINE_LINE_THRESHOLD)
                 .await
                 .map_err(|e| format!("tool file_read: dispatch error: {e:?}"))?;
+            // G-1 INGEST: a file read is path-screened. A read of TRACKED
+            // in-project source under the workspace root is Trusted (first-party
+            // code under version control); any other path (external / untracked
+            // / parent-escape) is Untrusted. Register the read content into the
+            // taint side-table so a later destructive sink whose argv derives
+            // from external file content is gated. The side-table skips Trusted
+            // labels, so a tracked .elai_cc/ read is a no-op (the FP-guard case).
+            if let Some(content) = view.full_content.as_deref() {
+                let prov =
+                    Provenance::from_file_screened(path.clone(), taint_project_root().as_path());
+                tainted_context().register(content, prov);
+            }
             let value = serde_json::json!({
                 "outline_only": view.outline_only,
                 "total_lines": view.total_lines,
@@ -2156,7 +2894,175 @@ pub(crate) async fn translate_tool_request(
                 .map_err(|e| format!("tool export_graph_mermaid: serialise error: {e}"))
         }
 
+        // H-13: canvas op tools (model drives the canvas).
+        // Pattern: postcard decode -> CanvasDispatcher (mode-gating + sanitize)
+        // -> SSB row (canvas_op_applied) -> JSON response.
+        // InProcessCanvasDispatcher is the dyn dispatch point (HD-4 gate:
+        // auditor-driven; this path is the PRODUCTION entrypoint, W-3).
+        TOOL_CANVAS_CREATE_NODE
+        | TOOL_CANVAS_CONNECT
+        | TOOL_CANVAS_UPDATE_NODE
+        | TOOL_CANVAS_ANNOTATE
+        | TOOL_CANVAS_FORK
+        | TOOL_CANVAS_RENDER_DIAGRAM
+        | TOOL_CANVAS_SCREENSHOT => {
+            use crate::canvas_dispatcher::{CanvasOpsDispatcher, InProcessCanvasDispatcher};
+            // Build the default CommittedToolSet for the canvas role.
+            // In production task_runner wires this via check_against_commitment;
+            // in the standalone dispatch path we build a canvas-permissive set.
+            let committed = crate::capability_flow::commit_minimal_set(
+                "canvas_op_dispatch",
+                &[crate::tool_filter::ToolCategory::Canvas],
+                0,
+            );
+            let canvas_mode = extract_canvas_mode_from_postcard(tool_id, arguments)?;
+            let session_id = ssb.map(|s| s.session_id().to_owned()).unwrap_or_default();
+            let resp = InProcessCanvasDispatcher
+                .dispatch_canvas_op(
+                    tool_id,
+                    arguments,
+                    &canvas_mode,
+                    &session_id,
+                    &committed,
+                    ssb,
+                )
+                .map_err(|e| format!("tool {tool_id}: {e}"))?;
+            serde_json::to_vec(&resp)
+                .map_err(|e| format!("tool {tool_id}: serialise response error: {e}"))
+        }
+
+        // H-15: spawn_view reply-channel verb.
+        // Pattern: postcard decode -> autonomy gate -> emit CanvasViewEvent(ViewSpawned)
+        // SSB row -> compose seed_ops via CanvasDispatcher (no new dispatcher needed:
+        // seed_ops are existing canvas_op_applied op_ids) -> JSON response.
+        TOOL_CANVAS_SPAWN_VIEW => {
+            // Autonomy kill-switch (GD-4): spawn_view is DEFAULT-ON (W-2 compliance).
+            // Set ELAI_CANVAS_SPAWN_DISABLE=1 to suppress (emergency hatch only).
+            // A default-ON kill-switch needs no wire-dark-allowlist row (not wire-dark).
+            if std::env::var("ELAI_CANVAS_SPAWN_DISABLE").as_deref() == Ok("1") {
+                return Err(format!(
+                    "tool {tool_id}: spawn_view suppressed via ELAI_CANVAS_SPAWN_DISABLE=1 \
+                     (emergency kill-switch active). Unset to re-enable."
+                ));
+            }
+            let req: CanvasSpawnViewRequest =
+                postcard::from_bytes(arguments).map_err(|e| {
+                    format!("tool {tool_id}: postcard decode error: {e}")
+                })?;
+
+            let session_id = ssb.map(|s| s.session_id().to_owned()).unwrap_or_default();
+            // Generate a stable view_id: blake3 of view_type + task_id + session_id.
+            let view_id = {
+                use blake3::Hasher;
+                let mut h = Hasher::new();
+                h.update(req.view_type.as_bytes());
+                h.update(b"|");
+                h.update(req.task_id.as_bytes());
+                h.update(b"|");
+                h.update(session_id.as_bytes());
+                format!("view-{}", &h.finalize().to_hex()[..16])
+            };
+
+            // Emit CanvasViewEvent(ViewSpawned) SSB row.
+            if let Some(ssb_ref) = ssb {
+                let payload = crate::ssb::SsbPayload::CanvasViewEvent(crate::ssb::CanvasViewPayload {
+                    kind: crate::ssb::CanvasViewKind::ViewSpawned,
+                    view_type: req.view_type.clone(),
+                    view_id: view_id.clone(),
+                    seed_op_ids: req.seed_ops.clone(),
+                    node_id: String::new(),
+                    taint_flagged: false,
+                    task_id: req.task_id.clone(),
+                    session_id: session_id.clone(),
+                });
+                let ssb_clone = ssb_ref.clone();
+                let ts_ms = i64::try_from(clock.now_ms()).unwrap_or(i64::MAX);
+                let _ = tokio::task::spawn(async move {
+                    if let Err(e) = ssb_clone
+                        .write_payload(
+                            "spawn_view_dispatch",
+                            ts_ms,
+                            payload,
+                            vec![],
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            view_id = %view_id,
+                            error = %e,
+                            "spawn_view: SSB ViewSpawned write failed (best-effort)"
+                        );
+                    }
+                });
+            }
+
+            let resp = CanvasSpawnViewResponse {
+                view_id: {
+                    // Re-compute for the response (view_id was moved into the async block).
+                    let mut h = blake3::Hasher::new();
+                    h.update(req.view_type.as_bytes());
+                    h.update(b"|");
+                    h.update(req.task_id.as_bytes());
+                    h.update(b"|");
+                    h.update(session_id.as_bytes());
+                    format!("view-{}", &h.finalize().to_hex()[..16])
+                },
+                view_type: req.view_type,
+                seed_op_count: req.seed_ops.len(),
+                task_id: req.task_id,
+            };
+            serde_json::to_vec(&resp)
+                .map_err(|e| format!("tool {tool_id}: serialise response error: {e}"))
+        }
+
         unknown => Err(format!("unknown tool_id: {unknown}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// H-13 helper: extract canvas mode from postcard arguments without full decode.
+// Used by translate_tool_request canvas_* dispatch arms to pass current_mode
+// to CanvasDispatcher before the full decode step.
+// ---------------------------------------------------------------------------
+
+/// Extract the `mode` field from a postcard-encoded canvas request without
+/// deserializing the full struct. Uses the cheapest available request type
+/// that all canvas tools share (CanvasScreenshotRequest has only mode+task_id).
+fn extract_canvas_mode_from_postcard(
+    tool_id: &str,
+    arguments: &[u8],
+) -> Result<String, String> {
+    // All canvas Request structs have `mode: String` as the second-to-last field.
+    // The cheapest extraction path is CanvasScreenshotRequest (2-field struct).
+    // For other tools we rely on the full decode inside the dispatcher.
+    // Fallback: decode as CanvasScreenshotRequest; if that fails, use "unknown".
+    match postcard::from_bytes::<elai_ipc_types::CanvasScreenshotRequest>(arguments) {
+        Ok(r) => Ok(r.mode),
+        Err(_) => {
+            // Try the other request types in order of likelihood.
+            if let Ok(r) = postcard::from_bytes::<elai_ipc_types::CanvasCreateNodeRequest>(arguments) {
+                return Ok(r.mode);
+            }
+            if let Ok(r) = postcard::from_bytes::<elai_ipc_types::CanvasConnectRequest>(arguments) {
+                return Ok(r.mode);
+            }
+            if let Ok(r) = postcard::from_bytes::<elai_ipc_types::CanvasUpdateNodeRequest>(arguments) {
+                return Ok(r.mode);
+            }
+            if let Ok(r) = postcard::from_bytes::<elai_ipc_types::CanvasAnnotateRequest>(arguments) {
+                return Ok(r.mode);
+            }
+            if let Ok(r) = postcard::from_bytes::<elai_ipc_types::CanvasForkRequest>(arguments) {
+                return Ok(r.mode);
+            }
+            if let Ok(r) = postcard::from_bytes::<elai_ipc_types::CanvasRenderDiagramRequest>(arguments) {
+                return Ok(r.mode);
+            }
+            Err(format!(
+                "tool {tool_id}: cannot extract canvas mode from postcard arguments \
+                 (all decode attempts failed)"
+            ))
+        }
     }
 }
 

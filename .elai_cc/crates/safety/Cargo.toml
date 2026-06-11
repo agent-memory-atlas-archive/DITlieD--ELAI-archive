@@ -18,7 +18,7 @@ once_cell = "1"
 # OsEntropy / SeededRng impls.
 elai-core = { path = "../core" }
 # E-37: tool_description_pin persists per-tool blake3 hashes to TOML files
-# at .elai/mcp/tool_descriptions/<server>/<tool>.toml (mirrors mcp_schema_pin
+# at .elai_cc/mcp/tool_descriptions/<server>/<tool>.toml (mirrors mcp_schema_pin
 # layout in elai-plugins).
 toml = { workspace = true }
 # E-37: PromptArmor LLM classifier uses native `async fn in trait` (Rust 1.75+,

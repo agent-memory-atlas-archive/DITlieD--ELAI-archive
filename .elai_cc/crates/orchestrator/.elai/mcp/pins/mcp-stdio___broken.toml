@@ -1,0 +1,7 @@
+pinned_hash = "656a06a39bcef41b189e480f83d331e5a39592d21aa2688818d4ee1216b73e13"
+pinned_at_ms = 1780633357712
+server_url = "mcp-stdio://broken"
+
+[[pinned_tools]]
+name = "echo"
+description = "Echoes text"

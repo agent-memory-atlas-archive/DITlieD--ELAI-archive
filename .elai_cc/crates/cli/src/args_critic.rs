@@ -121,6 +121,46 @@ pub(crate) fn parse_tier_eval_args(rest: &[String]) -> Result<CliAction, String>
     Ok(CliAction::TierEval { suites, budget })
 }
 
+/// E-6 — parse `elai mast report [--session <id>] [--limit N] [--json]`.
+/// `rest` is the args AFTER the `mast` token. The only subcommand is
+/// `report`; it may be omitted (bare `elai mast` == `elai mast report`).
+pub(crate) fn parse_mast_args(rest: &[String]) -> Result<CliAction, String> {
+    // Skip an optional leading "report" subcommand token.
+    let args: &[String] = match rest.first().map(String::as_str) {
+        Some("report") => &rest[1..],
+        _ => rest,
+    };
+    let mut session: Option<String> = None;
+    let mut limit: Option<usize> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--session" => {
+                session = Some(
+                    args.get(i + 1)
+                        .ok_or_else(|| "missing value for --session".to_string())?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--limit" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --limit".to_string())?;
+                limit = Some(v.parse().map_err(|e| format!("invalid --limit: {e}"))?);
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => return Err(format!("unknown flag for `mast`: {other}")),
+        }
+    }
+    Ok(CliAction::Mast { session, limit, json })
+}
+
 pub(crate) fn parse_critic_report_args(rest: &[String]) -> Result<CliAction, String> {
     let mut output: Option<String> = None;
     let mut i = 0;
@@ -165,4 +205,50 @@ pub(crate) fn parse_lora_gate_check_args(rest: &[String]) -> Result<CliAction, S
         }
     }
     Ok(CliAction::LoraGateCheck { config, json })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::args::{parse_args, CliAction};
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// E-6 ON-PATH dispatch: the real top-level `parse_args` resolves
+    /// `mast report --session <id> --limit N --json` to `CliAction::Mast`
+    /// with the parsed fields. This drives the SAME entrypoint chain
+    /// (`parse_args` -> `"mast"` arm -> `parse_mast_args`) that `elai mast`
+    /// uses in production, so the dispatch is proven reachable, not just
+    /// the parser in isolation.
+    #[test]
+    fn mast_report_dispatches_through_parse_args() {
+        let action = parse_args(&argv(&[
+            "mast", "report", "--session", "s-1", "--limit", "50", "--json",
+        ]))
+        .expect("mast report must parse");
+        assert_eq!(
+            action,
+            CliAction::Mast {
+                session: Some("s-1".to_string()),
+                limit: Some(50),
+                json: true,
+            }
+        );
+    }
+
+    /// Bare `elai mast` (no subcommand, no flags) defaults to a Mast report
+    /// over all sessions.
+    #[test]
+    fn bare_mast_defaults_to_report_all() {
+        let action = parse_args(&argv(&["mast"])).expect("bare mast must parse");
+        assert_eq!(
+            action,
+            CliAction::Mast {
+                session: None,
+                limit: None,
+                json: false,
+            }
+        );
+    }
 }

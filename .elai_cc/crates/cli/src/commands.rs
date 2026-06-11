@@ -157,6 +157,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "remember",
+        aliases: &[],
+        summary: "Remember a durable work preference (needs ELAI_USER_MEMORY_ENABLE=1)",
+        argument_hint: Some("<text>"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
         name: "init",
         aliases: &[],
         summary: "Create a starter ELAI.md for this repo",
@@ -1223,6 +1230,14 @@ pub enum SlashCommand {
         language: Option<String>,
     },
     Memory,
+    /// H-31 — `/remember <text>` captures a durable WORK preference into the bi-temporal
+    /// user-memory ledger (activates the wire-dark elai_memory substrate). Runs the secret/PII
+    /// reject FIRST, folds into the FactStore via `dispatch_one` (ADD or UPDATE-via-supersede),
+    /// and emits a UserDecisionSuperseded SSB row. Gated behind ELAI_USER_MEMORY_ENABLE (R9).
+    Remember {
+        /// The preference text to remember.
+        text: String,
+    },
     Init,
     Diff,
     Version,
@@ -1529,6 +1544,9 @@ pub fn validate_slash_command_input(
             validate_no_args(command, &args)?;
             SlashCommand::Memory
         }
+        "remember" => SlashCommand::Remember {
+            text: require_remainder(command, remainder, "<text>")?,
+        },
         "init" => {
             validate_no_args(command, &args)?;
             SlashCommand::Init
@@ -2703,10 +2721,9 @@ fn slash_command_category(name: &str) -> &'static str {
         | "version" | "login" | "logout" | "usage" | "stats" | "rename" | "privacy-settings" => {
             "Session & visibility"
         }
-        "compact" | "clear" | "config" | "memory" | "init" | "diff" | "commit" | "pr" | "issue"
-        | "export" | "plugin" | "branch" | "add-dir" | "files" | "hooks" | "release-notes" => {
-            "Workspace & git"
-        }
+        "compact" | "clear" | "config" | "memory" | "remember" | "init" | "diff" | "commit" | "pr"
+        | "issue" | "export" | "plugin" | "branch" | "add-dir" | "files" | "hooks"
+        | "release-notes" => "Workspace & git",
         "agents" | "skills" | "teleport" | "debug-tool-call" | "mcp" | "context" | "tasks"
         | "doctor" | "install" | "ide" | "desktop" | "profile" => "Discovery & debugging",
         "bughunter" | "ultraplan" | "review" | "security-review" | "advisor" | "insights" => {
@@ -3228,6 +3245,16 @@ fn render_mcp_report_for(
             let rest: Vec<&str> = args.split_whitespace().skip(1).collect();
             Ok(crate::mcp_authz_cmd::render_text(cwd, &rest))
         }
+        // E-24 Task 6: `mcp pin [list|show <server>|update <server>]`.
+        // Reads/writes the schema-hash pin store under
+        // `<cwd>/.elai/mcp/pins/*.toml`. The list/show paths read the
+        // off-agent pin records the bridge wrote on connect; the update
+        // path is operator-gated re-approval via `update_pin`.
+        Some("pin") => Ok(crate::mcp_pin_cmd::render_text(cwd, &[])),
+        Some(args) if args.split_whitespace().next() == Some("pin") => {
+            let rest: Vec<&str> = args.split_whitespace().skip(1).collect();
+            Ok(crate::mcp_pin_cmd::render_text(cwd, &rest))
+        }
         Some(args) => Ok(render_mcp_usage(Some(args))),
     }
 }
@@ -3278,6 +3305,12 @@ fn render_mcp_report_json_for(
         Some(args) if args.split_whitespace().next() == Some("authz") => {
             let rest: Vec<&str> = args.split_whitespace().skip(1).collect();
             Ok(crate::mcp_authz_cmd::render_json(cwd, &rest))
+        }
+        // E-24 Task 6: `mcp pin [...]` JSON variant.
+        Some("pin") => Ok(crate::mcp_pin_cmd::render_json(cwd, &[])),
+        Some(args) if args.split_whitespace().next() == Some("pin") => {
+            let rest: Vec<&str> = args.split_whitespace().skip(1).collect();
+            Ok(crate::mcp_pin_cmd::render_json(cwd, &rest))
         }
         Some(args) => Ok(render_mcp_usage_json(Some(args))),
     }
@@ -4363,8 +4396,9 @@ fn render_skills_usage_json(unexpected: Option<&str>) -> Value {
 fn render_mcp_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "MCP".to_string(),
-        "  Usage            /mcp [list|show <server>|help]".to_string(),
-        "  Direct CLI       elai mcp [list|show <server>|help]".to_string(),
+        "  Usage            /mcp [list|show <server>|authz ...|pin ...|help]".to_string(),
+        "  Direct CLI       elai mcp [list|show <server>|authz ...|pin ...|help]".to_string(),
+        "  Pin (E-24)       elai mcp pin [list|show <server>|update <server>]".to_string(),
         "  Sources          .elai/settings.json, .elai/settings.local.json".to_string(),
     ];
     if let Some(args) = unexpected {
@@ -4378,8 +4412,9 @@ fn render_mcp_usage_json(unexpected: Option<&str>) -> Value {
         "kind": "mcp",
         "action": "help",
         "usage": {
-            "slash_command": "/mcp [list|show <server>|help]",
-            "direct_cli": "elai mcp [list|show <server>|help]",
+            "slash_command": "/mcp [list|show <server>|authz ...|pin ...|help]",
+            "direct_cli": "elai mcp [list|show <server>|authz ...|pin ...|help]",
+            "pin_e24": "elai mcp pin [list|show <server>|update <server>]",
             "sources": [".elai/settings.json", ".elai/settings.local.json"],
         },
         "unexpected": unexpected,
@@ -4639,6 +4674,7 @@ pub fn handle_slash_command(
         | SlashCommand::Runtime { .. }
         | SlashCommand::Mucoco { .. }
         | SlashCommand::Memory
+        | SlashCommand::Remember { .. }
         | SlashCommand::Init
         | SlashCommand::Diff
         | SlashCommand::Version
@@ -5177,7 +5213,8 @@ mod tests {
         // C-24 bumped 150 -> 151 (added /graph mermaid for deterministic Mermaid export).
         // C-25 bumped 151 -> 152 (added /pipeline for compiled-pipeline cache inspection).
         // s-68264 bumped 152 -> 153 (post-campaign spec addition).
-        assert_eq!(slash_command_specs().len(), 153);
+        // H-31 bumped 153 -> 156 (/remember + 2 follow-on specs).
+        assert_eq!(slash_command_specs().len(), 156);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 
@@ -5573,8 +5610,12 @@ mod tests {
         let cwd = temp_dir("mcp-usage");
 
         let help = super::handle_mcp_slash_command(Some("help"), &cwd).expect("mcp help");
-        assert!(help.contains("Usage            /mcp [list|show <server>|help]"));
-        assert!(help.contains("Direct CLI       elai mcp [list|show <server>|help]"));
+        assert!(help.contains("Usage            /mcp [list|show <server>|authz ...|pin ...|help]"));
+        assert!(
+            help.contains("Direct CLI       elai mcp [list|show <server>|authz ...|pin ...|help]")
+        );
+        // E-24: the `pin` subcommand is advertised in the usage surface.
+        assert!(help.contains("elai mcp pin [list|show <server>|update <server>]"));
 
         let unexpected =
             super::handle_mcp_slash_command(Some("show alpha beta"), &cwd).expect("mcp usage");
@@ -5582,13 +5623,63 @@ mod tests {
 
         let nested_help =
             super::handle_mcp_slash_command(Some("show --help"), &cwd).expect("mcp help");
-        assert!(nested_help.contains("Usage            /mcp [list|show <server>|help]"));
+        assert!(
+            nested_help.contains("Usage            /mcp [list|show <server>|authz ...|pin ...|help]")
+        );
         assert!(nested_help.contains("Unexpected       show"));
 
         let unknown_help =
             super::handle_mcp_slash_command(Some("inspect --help"), &cwd).expect("mcp usage");
-        assert!(unknown_help.contains("Usage            /mcp [list|show <server>|help]"));
+        assert!(
+            unknown_help
+                .contains("Usage            /mcp [list|show <server>|authz ...|pin ...|help]")
+        );
         assert!(unknown_help.contains("Unexpected       inspect"));
+
+        let _ = fs::remove_dir_all(cwd);
+    }
+
+    // E-24 Task 6: prove the `mcp pin` subcommand is reachable through the
+    // REAL production dispatch (handle_mcp_slash_command ->
+    // render_mcp_report_for -> mcp_pin_cmd) and reads back an off-agent
+    // artifact (the .elai/mcp/pins/*.toml record the production
+    // elai_plugins::pin_or_verify writes on connect). Drives the actual
+    // slash-command handler the binary calls (main.rs CliAction::Mcp ->
+    // print_mcp -> handle_mcp_slash_command), not the inner renderer.
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn mcp_pin_subcommand_reads_back_production_pin_via_dispatch() {
+        let cwd = temp_dir("mcp-pin-dispatch");
+        let url = "http://localhost:8200";
+        let tools = vec![
+            elai_plugins::ToolDef {
+                name: "search".into(),
+                description: "Search the web".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            },
+        ];
+        // Production write path (what the bridge does on first connect).
+        let status =
+            elai_plugins::pin_or_verify(&cwd, url, &tools).expect("production pin write");
+        assert_eq!(status, elai_plugins::PinStatus::Pinned);
+
+        // Real dispatch: `elai mcp pin` (text).
+        let list = super::handle_mcp_slash_command(Some("pin"), &cwd).expect("mcp pin list");
+        assert!(list.contains("Pinned servers   1"), "got: {list}");
+        assert!(list.contains(url), "list must name the pinned server: {list}");
+
+        // Real dispatch: `elai mcp pin show <url>` (json).
+        let show = super::handle_mcp_slash_command_json(
+            Some(&format!("pin show {url}")),
+            &cwd,
+        )
+        .expect("mcp pin show json");
+        assert_eq!(show["found"], true);
+        assert_eq!(show["server_url"], url);
+        assert_eq!(
+            show["pinned_hash"].as_str().expect("hash"),
+            elai_plugins::hash_tool_list(&tools)
+        );
 
         let _ = fs::remove_dir_all(cwd);
     }

@@ -167,11 +167,13 @@ fn opusplan_overlay_default_off() {
 }
 
 #[test]
-fn compaction_ladder_default_off() {
-    // E-25 D1: wire-dark default OFF; gate-off path returns zero-effect
-    // LadderRunResult.
+fn compaction_ladder_off_via_killswitch() {
+    // H-6: the E-25 ladder is now DEFAULT-ON; the kill-switch is
+    // ELAI_E25_COMPACTION_LADDER_ENABLE="0". The gate-off path still returns a
+    // zero-effect LadderRunResult — exercised here via the kill-switch (was: env
+    // removed, when default was OFF).
     let prior = std::env::var(ELAI_E25_COMPACTION_LADDER_ENABLE_VAR).ok();
-    unsafe { std::env::remove_var(ELAI_E25_COMPACTION_LADDER_ENABLE_VAR); }
+    unsafe { std::env::set_var(ELAI_E25_COMPACTION_LADDER_ENABLE_VAR, "0"); }
     assert!(!compaction_ladder_enabled());
     let ladder = CompactionLadder::default_order(20_000);
     let out: LadderRunResult =
@@ -179,8 +181,9 @@ fn compaction_ladder_default_off() {
     assert!(out.tiers_run.is_empty());
     assert_eq!(out.bytes_freed, 0);
     assert_eq!(out.final_budget_tokens, 30_000);
-    if let Some(v) = prior {
-        unsafe { std::env::set_var(ELAI_E25_COMPACTION_LADDER_ENABLE_VAR, v); }
+    match prior {
+        Some(v) => unsafe { std::env::set_var(ELAI_E25_COMPACTION_LADDER_ENABLE_VAR, v); },
+        None => unsafe { std::env::remove_var(ELAI_E25_COMPACTION_LADDER_ENABLE_VAR); },
     }
 }
 

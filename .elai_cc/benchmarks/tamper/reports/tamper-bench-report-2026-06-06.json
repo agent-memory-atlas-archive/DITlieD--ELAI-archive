@@ -1,0 +1,134 @@
+{
+  "per_scenario": [
+    {
+      "id": "scenario_01",
+      "scenario_kind": "PositiveControl",
+      "expected_error_kind": null,
+      "observed_outcome": "CleanPass",
+      "wall_ms": 12,
+      "passed": true
+    },
+    {
+      "id": "scenario_02",
+      "scenario_kind": "BrokenParent",
+      "expected_error_kind": "broken_parent",
+      "observed_outcome": {
+        "ExpectedError": {
+          "kind": "broken_parent"
+        }
+      },
+      "wall_ms": 15,
+      "passed": true
+    },
+    {
+      "id": "scenario_03",
+      "scenario_kind": "ContentHashMismatch",
+      "expected_error_kind": "hash_mismatch",
+      "observed_outcome": {
+        "ExpectedError": {
+          "kind": "hash_mismatch"
+        }
+      },
+      "wall_ms": 14,
+      "passed": true
+    },
+    {
+      "id": "scenario_04",
+      "scenario_kind": "DuplicateHash",
+      "expected_error_kind": "duplicate_hash",
+      "observed_outcome": {
+        "ExpectedError": {
+          "kind": "duplicate_hash"
+        }
+      },
+      "wall_ms": 15,
+      "passed": true
+    },
+    {
+      "id": "scenario_05",
+      "scenario_kind": "MalformedJson",
+      "expected_error_kind": "malformed_json",
+      "observed_outcome": {
+        "ExpectedError": {
+          "kind": "malformed_json"
+        }
+      },
+      "wall_ms": 14,
+      "passed": true
+    },
+    {
+      "id": "scenario_06",
+      "scenario_kind": "DeleteEntry",
+      "expected_error_kind": "broken_parent",
+      "observed_outcome": {
+        "ExpectedError": {
+          "kind": "broken_parent"
+        }
+      },
+      "wall_ms": 16,
+      "passed": true
+    },
+    {
+      "id": "scenario_07",
+      "scenario_kind": "AppendMalformedTrailing",
+      "expected_error_kind": "malformed_json",
+      "observed_outcome": {
+        "ExpectedError": {
+          "kind": "malformed_json"
+        }
+      },
+      "wall_ms": 15,
+      "passed": true
+    },
+    {
+      "id": "scenario_08",
+      "scenario_kind": "MultiTamper",
+      "expected_error_kind": "broken_parent",
+      "observed_outcome": {
+        "ExpectedError": {
+          "kind": "broken_parent"
+        }
+      },
+      "wall_ms": 20,
+      "passed": true
+    },
+    {
+      "id": "scenario_09",
+      "scenario_kind": "RevertBackup",
+      "expected_error_kind": null,
+      "observed_outcome": "CleanPass",
+      "wall_ms": 16,
+      "passed": true
+    },
+    {
+      "id": "scenario_10",
+      "scenario_kind": "FailFastSingleError",
+      "expected_error_kind": "broken_parent",
+      "observed_outcome": {
+        "ExpectedError": {
+          "kind": "broken_parent"
+        }
+      },
+      "wall_ms": 15,
+      "passed": true
+    }
+  ],
+  "gating_verdict": "pass",
+  "max_wall_ms": 20,
+  "total_scenarios": 10,
+  "passed_count": 10,
+  "failed_count": 0,
+  "scenarios_blake3": "6e8f17e64c43b385788df635d3ba16675b0402cffe129dfaa44ce41f1952d1f9",
+  "scenario_kind_counts": {
+    "AppendMalformedTrailing": 1,
+    "BrokenParent": 1,
+    "ContentHashMismatch": 1,
+    "DeleteEntry": 1,
+    "DuplicateHash": 1,
+    "FailFastSingleError": 1,
+    "MalformedJson": 1,
+    "MultiTamper": 1,
+    "PositiveControl": 1,
+    "RevertBackup": 1
+  }
+}

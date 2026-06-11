@@ -1,15 +1,20 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::io;
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use elai_knowledge::vector::ort_session::OrtSession as TextOrtSession;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
+use tracing::warn;
 
 use crate::config::{McpTransport, RuntimeConfig, ScopedMcpServerConfig};
 use crate::mcp::mcp_tool_name;
@@ -480,12 +485,195 @@ impl ManagedMcpServer {
     }
 }
 
+// ---------------------------------------------------------------------------
+// H-34: Defer-load schema cache (STDIO-specific; C-35 compose-not-reuse).
+//
+// The C-35 LazySchemaCache (crates/plugins/src/mcp/lazy.rs:30) is typed on
+// FullSchema = McpToolSpec (the HTTP-bridge type). The STDIO lane holds McpTool,
+// which is a DIFFERENT type. Reusing LazySchemaCache would cause every resolve
+// call to return LazyCacheError::ToolNotFound (no McpTool keys in that map).
+//
+// Mitigation (context-package Risk #1): inline a separate StdioSchemaCache here,
+// typed for McpTool. This is NOT a generalization of lazy.rs -- it is a parallel
+// thin struct. Do NOT change lazy.rs (protects C-35 wiring). Comment per context package.
+// ---------------------------------------------------------------------------
+
+/// Environment variable that enables deferred schema loading on the STDIO lane.
+/// Default-OFF (R9 compliance). Wire-dark unless set to `"1"`.
+pub const ELAI_MCP_DEFER_SCHEMA_ENABLE_ENV: &str = "ELAI_MCP_DEFER_SCHEMA_ENABLE";
+
+/// Returns true when `ELAI_MCP_DEFER_SCHEMA_ENABLE=1` is set.
+fn mcp_defer_schema_enabled() -> bool {
+    std::env::var(ELAI_MCP_DEFER_SCHEMA_ENABLE_ENV)
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+}
+
+/// Maximum schema tokens for the always-floor injected set before we warn.
+/// Named const per CLAUDE.md "no magic numbers" rule. Mirrors
+/// `elai_orchestrator::benchmarks::mcp_schema_budget_runner::INJECTED_CAP_TOKENS`.
+const STDIO_FLOOR_TOKEN_CAP: u32 = 500;
+
+/// H-34: always-floor tool qualified-name prefixes. Tools whose qualified names
+/// start with one of these prefixes are ALWAYS injected with their full schema
+/// regardless of the defer-load gate. The set is intentionally small (<=6 tools)
+/// to keep the always-injected cost under STDIO_FLOOR_TOKEN_CAP tokens.
+///
+/// Modeled on odysseus tool_index.py:24-37 ALWAYS_AVAILABLE convention.
+/// ELAI's floor is NOT the same as odysseus's bash/python/web_search -- it
+/// is the subset of ELAI MCP tools needed in nearly every REPL session.
+pub const ALWAYS_AVAILABLE: &[&str] = &[
+    "local-rag__mcp_search_context",
+    "local-rag__mcp_memorize",
+    "pod-lifecycle__pod_list",
+    "pod-lifecycle__pod_get_state",
+];
+
+/// H-34 vector-top-K: maximum number of tools the vector tier may add beyond
+/// the floor+keyword selection in a single `get_injected_tool_set` call.
+/// Named const -- no magic numbers.
+const VECTOR_TOP_K_CAP: usize = 4;
+
+/// H-34 vector-top-K: minimum cosine similarity for a tool to be included via
+/// the vector tier. Tools below this threshold are not injected even if they
+/// rank in the top-K. Value 0.30 is intentionally conservative to avoid
+/// injecting semantically-unrelated tools. Grounded from odysseus tool_index.py
+/// similarity thresholding at tool_index.py:445-454.
+const VECTOR_SIMILARITY_THRESHOLD: f32 = 0.30;
+
+/// H-34 vector-top-K: compute cosine similarity between two equal-length f32
+/// vectors. Returns 0.0 if either vector has zero magnitude (degenerate case).
+#[inline]
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if mag_a == 0.0 || mag_b == 0.0 {
+        0.0
+    } else {
+        dot / (mag_a * mag_b)
+    }
+}
+
+/// H-34: STDIO-path deferred schema cache.
+///
+/// Holds the WITHHELD full-schema McpTool entries for tools that were NOT
+/// injected in the initial always-floor slice. On first use of a withheld
+/// tool, `resolve` returns the cached McpTool so the caller can proceed.
+///
+/// The cache is Arc<TokioMutex<...>> because `resolve` is called from
+/// `mcp_glue::RuntimeMcpState::call_tool` which uses `self.runtime.block_on`.
+/// All operations must therefore be awaitable inside that block_on call.
+/// (Context-package Risk #2: `call_tool` is sync; resolution must be inside
+/// block_on -- same pattern as the existing `call_tool` / `manager.call_tool`
+/// pairing.)
+#[derive(Debug, Clone)]
+pub struct StdioSchemaCache {
+    /// Withheld tool schemas keyed by fully-qualified tool name.
+    inner: Arc<TokioMutex<HashMap<String, McpTool>>>,
+    /// Tracks which tools have been resolved at least once. On the FIRST
+    /// resolve for a given tool `resolved.insert(key)` returns `true`; all
+    /// subsequent resolves return `false`. Used by
+    /// `McpServerManager::resolve_withheld_schema` to set `cache_hit`
+    /// correctly so `mcp_glue` only emits a `McpToolDeferred` SSB row on
+    /// the first call, not on every subsequent call to the same tool.
+    resolved: Arc<TokioMutex<HashSet<String>>>,
+}
+
+impl StdioSchemaCache {
+    /// Create an empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(TokioMutex::new(HashMap::new())),
+            resolved: Arc::new(TokioMutex::new(HashSet::new())),
+        }
+    }
+
+    /// Insert a withheld tool schema into the cache.
+    pub async fn insert(&self, qualified_name: String, tool: McpTool) {
+        self.inner.lock().await.insert(qualified_name, tool);
+    }
+
+    /// Resolve a withheld tool schema. Returns `Some((McpTool, is_first))`.
+    /// `is_first` is `true` on the FIRST call for this `qualified_name` and
+    /// `false` on all subsequent calls (i.e. cache-hit semantics: first call
+    /// = miss, every repeat = hit). Returns `None` if the tool was never
+    /// withheld (floor tool or unknown).
+    pub async fn resolve_with_first_flag(&self, qualified_name: &str) -> Option<(McpTool, bool)> {
+        let tool = self.inner.lock().await.get(qualified_name).cloned()?;
+        let is_first = self.resolved.lock().await.insert(qualified_name.to_string());
+        Some((tool, is_first))
+    }
+
+    /// Resolve a withheld tool schema. Returns `Some(McpTool)` on cache-hit,
+    /// `None` if the tool was never withheld (floor tool or unknown).
+    /// Does NOT track first-resolve; use `resolve_with_first_flag` for
+    /// emit-once semantics.
+    pub async fn resolve(&self, qualified_name: &str) -> Option<McpTool> {
+        self.inner.lock().await.get(qualified_name).cloned()
+    }
+
+    /// Number of withheld entries currently in the cache.
+    pub async fn len(&self) -> usize {
+        self.inner.lock().await.len()
+    }
+}
+
+impl Default for StdioSchemaCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// H-34: information returned by `McpServerManager::resolve_withheld_schema`.
+/// Used by `mcp_glue::RuntimeMcpState::call_tool` to build a `McpToolDeferredPayload`.
+#[derive(Debug, Clone)]
+pub struct DeferredResolveInfo {
+    pub server_name: String,
+    pub tool_qualified_name: String,
+    pub resolve_ns: u64,
+    pub cache_hit: bool,
+    pub injected_floor_size: u32,
+}
+
+/// H-34: returns true if the given qualified tool name belongs to the always-floor set.
+///
+/// A tool is on the floor if its qualified_name is in `ALWAYS_AVAILABLE`.
+/// Named-const check, no magic literals.
+fn is_floor_tool(qualified_name: &str) -> bool {
+    ALWAYS_AVAILABLE.contains(&qualified_name)
+}
+
+/// H-34: keyword-force-include check. Returns true if the query string
+/// contains the tool's name or server prefix (case-insensitive).
+/// Used to augment the always-floor set with query-relevant tools.
+fn keyword_matches(qualified_name: &str, query: &str) -> bool {
+    let lq = query.to_ascii_lowercase();
+    let lt = qualified_name.to_ascii_lowercase();
+    // Check both the full qualified name and the tool-name suffix after the separator.
+    lt.contains(&lq)
+        || qualified_name
+            .split("__")
+            .any(|part| part.to_ascii_lowercase().contains(&lq))
+}
+
+// ---------------------------------------------------------------------------
+
 #[derive(Debug)]
 pub struct McpServerManager {
     servers: BTreeMap<String, ManagedMcpServer>,
     unsupported_servers: Vec<UnsupportedMcpServer>,
     tool_index: BTreeMap<String, ToolRoute>,
     next_request_id: u64,
+    /// H-34: STDIO deferred schema cache. Present when
+    /// `ELAI_MCP_DEFER_SCHEMA_ENABLE=1`; `None` otherwise (eager-load path).
+    schema_cache: Option<Arc<StdioSchemaCache>>,
+    /// H-34 vector-top-K: granite-embed.onnx OrtSession for semantic tool
+    /// selection. Loaded at construction time from the project models dir;
+    /// `None` when the model file is absent or fails to load (graceful fallback:
+    /// floor+keyword only with a `tracing::debug!`). 384-dim, CPU EP.
+    text_embedder: Option<Arc<TextOrtSession>>,
 }
 
 impl McpServerManager {
@@ -515,12 +703,205 @@ impl McpServerManager {
             }
         }
 
+        // H-34: create the STDIO schema cache when the defer-load gate is ON.
+        // Wire-dark by default (R9). When ON, withheld schemas are held here
+        // and resolved on first use in call_tool.
+        let schema_cache = if mcp_defer_schema_enabled() {
+            Some(Arc::new(StdioSchemaCache::new()))
+        } else {
+            None
+        };
+
+        // H-34 vector-top-K: attempt to load granite-embed.onnx from the project
+        // models directory. Graceful fallback: if the model file is absent or the
+        // OrtSession fails to initialise, log at debug and set text_embedder=None
+        // (floor+keyword path remains fully functional). The model file is located
+        // at <project_root>/models/onnx/granite-embed.onnx with its paired tokenizer.
+        let text_embedder: Option<Arc<TextOrtSession>> = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| {
+                let onnx_dir = elai_core::paths::models_dir_path(&cwd).join("onnx");
+                let model_path = onnx_dir.join("granite-embed.onnx");
+                let tok_path = onnx_dir.join("granite-embed-tokenizer.json");
+                // max_seq_len=512, output_dim=384 per knowledge_stack.rs:185.
+                match TextOrtSession::new(&model_path, &tok_path, 512, 384) {
+                    Ok(sess) => Some(Arc::new(sess)),
+                    Err(e) => {
+                        tracing::debug!(
+                            model = %model_path.display(),
+                            error = %e,
+                            "mcp_stdio: granite-embed not loaded; vector-top-K unavailable, falling back to floor+keyword"
+                        );
+                        None
+                    }
+                }
+            });
+
         Self {
             servers: managed_servers,
             unsupported_servers,
             tool_index: BTreeMap::new(),
             next_request_id: 1,
+            schema_cache,
+            text_embedder,
         }
+    }
+
+    /// H-34: returns the STDIO deferred schema cache if the defer-load gate is ON.
+    /// Used by `mcp_glue::RuntimeMcpState::call_tool` to resolve withheld schemas.
+    #[must_use]
+    pub fn stdio_schema_cache(&self) -> Option<&Arc<StdioSchemaCache>> {
+        self.schema_cache.as_ref()
+    }
+
+    /// H-34: resolve a withheld schema on first use of a deferred tool.
+    ///
+    /// Returns `Some(DeferredResolveInfo)` when `ELAI_MCP_DEFER_SCHEMA_ENABLE=1`
+    /// and the tool's schema was withheld (cache-miss on first call, cache-hit on
+    /// subsequent calls). Returns `None` when the gate is OFF or the tool is not
+    /// in the withheld set (floor tool, already fully-schemed).
+    ///
+    /// The caller (`mcp_glue::RuntimeMcpState::call_tool`) emits a
+    /// `McpToolDeferred` SSB row using the info.
+    pub async fn resolve_withheld_schema(
+        &self,
+        qualified_tool_name: &str,
+    ) -> Option<DeferredResolveInfo> {
+        let cache = self.schema_cache.as_ref()?;
+        let start = Instant::now();
+        // Use resolve_with_first_flag so we know whether this is the first
+        // time this tool has been resolved. `is_first=true` means cache-miss
+        // (first use); `is_first=false` means cache-hit (already resolved).
+        let (found, cache_hit) = match cache.resolve_with_first_flag(qualified_tool_name).await {
+            Some((_tool, is_first)) => (true, !is_first),
+            None => (false, false),
+        };
+        let resolve_ns = start.elapsed().as_nanos() as u64;
+        if !found {
+            return None;
+        }
+        // Determine the floor_size at resolve time: count floor tools in tool_index.
+        let injected_floor_size = self
+            .tool_index
+            .keys()
+            .filter(|k| is_floor_tool(k.as_str()))
+            .count() as u32;
+        // WARN-2 fix: after a server reconnect the tool_index may be temporarily
+        // unpopulated for this tool. Rather than returning None silently (losing
+        // the DeferredResolveInfo and suppressing the SSB row), derive the
+        // server_name from the qualified prefix (split("__").next()) and return
+        // a partial DeferredResolveInfo. The caller still emits the SSB row and
+        // the tool call proceeds normally via call_tool's own dispatch path.
+        let server_name = self
+            .tool_index
+            .get(qualified_tool_name)
+            .map(|r| r.server_name.clone())
+            .unwrap_or_else(|| {
+                qualified_tool_name
+                    .split("__")
+                    .next()
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
+        Some(DeferredResolveInfo {
+            server_name,
+            tool_qualified_name: qualified_tool_name.to_string(),
+            resolve_ns,
+            cache_hit,
+            injected_floor_size,
+        })
+    }
+
+    /// H-34: ToolSelectionAssembler -- returns the injected tool set for a given
+    /// optional query string. Implements the three-tier selection:
+    ///
+    /// 1. always-floor (ALWAYS_AVAILABLE, named const <=6) -- always included.
+    /// 2. keyword-force-include -- tools whose qualified_name contains the query
+    ///    string (case-insensitive), if a query is provided.
+    /// 3. vector-top-K (granite-embed.onnx via OrtSession, CPU, graceful fallback)
+    ///    -- ONNX embedding is Tier-1 optional; when absent or load fails, falls
+    ///    back to floor+keyword only with a `tracing::warn!`.
+    ///
+    /// Modeled on odysseus tool_index.py get_tools_for_query (tool_index.py:431-454).
+    /// The ONNX model load is deferred to a future pass; the floor+keyword path
+    /// ships now as the deterministic Tier-1 baseline.
+    ///
+    /// Returns a Vec of qualified tool names that should receive full schemas.
+    #[must_use]
+    pub fn get_injected_tool_set(&self, query: Option<&str>) -> Vec<String> {
+        let mut selected: Vec<String> = Vec::new();
+
+        // Tier 1: always-floor set -- unconditionally included.
+        for &floor_name in ALWAYS_AVAILABLE {
+            if self.tool_index.contains_key(floor_name) {
+                selected.push(floor_name.to_string());
+            }
+        }
+
+        // Tier 2: keyword-force-include -- any tool whose qualified_name contains
+        // the query string. Only runs when a query is provided.
+        if let Some(q) = query {
+            if !q.is_empty() {
+                for qname in self.tool_index.keys() {
+                    if !selected.contains(qname) && keyword_matches(qname, q) {
+                        selected.push(qname.clone());
+                    }
+                }
+            }
+        }
+
+        // Tier 3: vector-top-K (granite-embed.onnx via OrtSession, CPU).
+        // When the text_embedder is loaded AND a query is provided, embed the
+        // query + each non-selected tool's description, rank by cosine similarity,
+        // and include the top-K tools (K = VECTOR_TOP_K_CAP) that exceed the
+        // similarity threshold. Graceful fallback: if the embedder is absent or
+        // any embed call fails, log at debug and skip the vector tier silently.
+        if let (Some(q), Some(embedder)) = (query, &self.text_embedder) {
+            if !q.is_empty() {
+                match embedder.embed(q) {
+                    Ok(query_vec) => {
+                        let mut scored: Vec<(String, f32)> = self
+                            .tool_index
+                            .keys()
+                            .filter(|qname| !selected.contains(qname))
+                            .filter_map(|qname| {
+                                // Use tool description if available via schema_cache
+                                // peeking; fall back to the qualified name as text.
+                                // Tool descriptions are not held in tool_index directly
+                                // (only ToolRoute). Use the qualified name as proxy text.
+                                let tool_text = qname.replace("__", " ").replace('_', " ");
+                                embedder.embed(&tool_text).ok().map(|tv| {
+                                    (qname.clone(), cosine_similarity(&query_vec, &tv))
+                                })
+                            })
+                            .collect();
+                        // Sort descending by similarity; take top-K above threshold.
+                        scored.sort_by(|a, b| {
+                            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        for (qname, sim) in scored.into_iter().take(VECTOR_TOP_K_CAP) {
+                            if sim >= VECTOR_SIMILARITY_THRESHOLD {
+                                selected.push(qname);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            error = %e,
+                            "mcp_stdio: vector-top-K embed failed; using floor+keyword only"
+                        );
+                    }
+                }
+            }
+        } else if query.is_some() {
+            // Embedder absent at runtime (model file not found at startup).
+            tracing::debug!(
+                query = query.unwrap_or(""),
+                "mcp_stdio: vector-top-K unavailable (embedder not loaded); floor+keyword only"
+            );
+        }
+
+        selected
     }
 
     #[must_use]
@@ -562,12 +943,24 @@ impl McpServerManager {
         let mut working_servers = Vec::new();
         let mut failed_servers = Vec::new();
 
+        // H-34: snapshot the defer-enable flag and cache Arc BEFORE the loop so
+        // we can pass a cloned Arc into the async block without borrowing self.
+        // This is the gate-guarded branch: when OFF, all tools are injected
+        // eagerly (existing behavior). When ON, only floor+keyword tools are
+        // returned in `discovered_tools`; the rest are withheld in schema_cache.
+        let defer_schema = self.schema_cache.as_ref().cloned();
+
         for server_name in server_names {
             match self.discover_tools_for_server(&server_name).await {
                 Ok(server_tools) => {
                     working_servers.push(server_name.clone());
                     self.clear_routes_for_server(&server_name);
                     for tool in server_tools {
+                        // H-34 gate: when ELAI_MCP_DEFER_SCHEMA_ENABLE=1, insert the
+                        // route unconditionally (so call_tool can dispatch any tool)
+                        // but only inject the full schema into discovered_tools for
+                        // always-floor tools. Non-floor tools are withheld in the cache.
+                        // When OFF, all tools are injected eagerly (existing behavior).
                         self.tool_index.insert(
                             tool.qualified_name.clone(),
                             ToolRoute {
@@ -575,7 +968,52 @@ impl McpServerManager {
                                 raw_name: tool.raw_name.clone(),
                             },
                         );
-                        discovered_tools.push(tool);
+
+                        if let Some(cache) = &defer_schema {
+                            // Defer-load ON path.
+                            if is_floor_tool(&tool.qualified_name) {
+                                // Always-floor: inject with full schema immediately.
+                                discovered_tools.push(tool);
+                            } else {
+                                // Non-floor: withhold schema; store in cache for lazy resolve.
+                                cache.insert(tool.qualified_name.clone(), tool.tool.clone()).await;
+                                // Push a schema-stripped version so the model can see the
+                                // tool exists but is prompted to use ToolSearch to load it.
+                                let stripped = ManagedMcpTool {
+                                    tool: McpTool {
+                                        input_schema: None,
+                                        ..tool.tool.clone()
+                                    },
+                                    ..tool
+                                };
+                                discovered_tools.push(stripped);
+                            }
+                        } else {
+                            // Eager-load path (default): inject with full schema.
+                            discovered_tools.push(tool);
+                        }
+                    }
+
+                    // H-34: floor cap check -- warn if the always-floor set schema
+                    // tokens would exceed STDIO_FLOOR_TOKEN_CAP. The check is
+                    // approximate (token count estimated from serialized schema length
+                    // / 4 chars-per-token heuristic) and WARNS only; it never panics.
+                    if defer_schema.is_some() {
+                        let floor_schema_chars: usize = discovered_tools
+                            .iter()
+                            .filter(|t| is_floor_tool(&t.qualified_name))
+                            .filter_map(|t| t.tool.input_schema.as_ref())
+                            .map(|s| s.to_string().len())
+                            .sum();
+                        // Approx 4 chars/token for JSON. STDIO_FLOOR_TOKEN_CAP is in tokens.
+                        let approx_tokens = (floor_schema_chars / 4) as u32;
+                        if approx_tokens > STDIO_FLOOR_TOKEN_CAP {
+                            warn!(
+                                approx_tokens,
+                                cap = STDIO_FLOOR_TOKEN_CAP,
+                                "mcp_stdio: floor-only schema slice exceeds cap; trim ALWAYS_AVAILABLE"
+                            );
+                        }
                     }
                 }
                 Err(error) => {
@@ -792,7 +1230,10 @@ impl McpServerManager {
 
         loop {
             match self.discover_tools_for_server_once(server_name).await {
-                Ok(tools) => return Ok(tools),
+                Ok(tools) => {
+                    Self::run_rug_pull_gate_for_server(server_name, &tools)?;
+                    return Ok(tools);
+                }
                 Err(error) if attempts == 0 && Self::is_retryable_error(&error) => {
                     self.reset_server(server_name).await?;
                     attempts += 1;
@@ -805,6 +1246,70 @@ impl McpServerManager {
                 }
             }
         }
+    }
+
+    /// G-4: run the live MCP rug-pull / line-jump re-pin gate against a
+    /// freshly-discovered stdio tool list -- the REAL default-run seam through
+    /// which MCP tool descriptions reach the agent.
+    ///
+    /// On first connect the list is pinned; on a reconnect re-fetch a rug-pull
+    /// (a changed tool description / shape on a previously-approved server)
+    /// emits the off-agent `mcp_rug_pull_blocked` SSB row and returns an
+    /// `InvalidResponse` error so the catalog refresh is BLOCKED fail-closed
+    /// (the rugged server's tools are dropped -- `discover_tools` propagates
+    /// the error; `discover_tools_best_effort` marks the server failed). The
+    /// pin is NEVER auto-updated on a rug-pull (operator-gated re-approval).
+    ///
+    /// Without the `mcp` feature the gate is a no-op (the schema-pin engine
+    /// lives behind `elai-plugins/mcp`): byte-identical to the pre-G-4 path.
+    #[cfg(feature = "mcp")]
+    fn run_rug_pull_gate_for_server(
+        server_name: &str,
+        tools: &[ManagedMcpTool],
+    ) -> Result<(), McpServerManagerError> {
+        use crate::mcp_rugpull_gate::{run_stdio_repin_gate, StdioRepinOutcome};
+        use elai_plugins::mcp_schema_pin::ToolDef;
+
+        let tool_defs: Vec<ToolDef> = tools
+            .iter()
+            .map(|managed| ToolDef {
+                name: managed.raw_name.clone(),
+                description: managed.tool.description.clone().unwrap_or_default(),
+                input_schema: managed
+                    .tool
+                    .input_schema
+                    .clone()
+                    .unwrap_or(JsonValue::Null),
+            })
+            .collect();
+
+        match run_stdio_repin_gate(server_name, &tool_defs) {
+            StdioRepinOutcome::Blocked { changed_tools } => {
+                Err(McpServerManagerError::InvalidResponse {
+                    server_name: server_name.to_string(),
+                    method: "tools/list",
+                    details: format!(
+                        "G-4: MCP server rug-pulled its tool schema after approval \
+                         (changed tools: {changed_tools:?}); catalog blocked until \
+                         operator re-approval (elai mcp pin update)"
+                    ),
+                })
+            }
+            StdioRepinOutcome::Disabled
+            | StdioRepinOutcome::NoWorkspaceRoot
+            | StdioRepinOutcome::Pinned
+            | StdioRepinOutcome::Unchanged => Ok(()),
+        }
+    }
+
+    /// G-4: without the `mcp` feature the schema-pin engine is absent; the gate
+    /// is a no-op so non-`mcp` builds keep the exact pre-G-4 discovery shape.
+    #[cfg(not(feature = "mcp"))]
+    fn run_rug_pull_gate_for_server(
+        _server_name: &str,
+        _tools: &[ManagedMcpTool],
+    ) -> Result<(), McpServerManagerError> {
+        Ok(())
     }
 
     async fn discover_tools_for_server_once(
@@ -1140,6 +1645,24 @@ impl McpServerManager {
             server.initialized = true;
             return Ok(());
         }
+    }
+
+    /// H-34 test helper: pre-populate the tool_index with the given entries so
+    /// contract tests can exercise `get_injected_tool_set` without starting real
+    /// MCP servers. Available when the `test-support` feature is enabled.
+    #[cfg(feature = "test-support")]
+    pub fn insert_tool_for_test(&mut self, qualified_name: &str, server_name: &str) {
+        self.tool_index.insert(
+            qualified_name.to_string(),
+            ToolRoute {
+                server_name: server_name.to_string(),
+                raw_name: qualified_name
+                    .split("__")
+                    .nth(1)
+                    .unwrap_or(qualified_name)
+                    .to_string(),
+            },
+        );
     }
 }
 

@@ -1,0 +1,22 @@
+# E-40 Task 2 (Tranche B-3) — Rust push/pop scope rules.
+# Design adoption of arXiv:2211.01224 (Stack Graphs); no github/stack-graphs
+# runtime dep (archived 2025-09-09). Consumed by
+# orchestrator::symbol_graph::scope_graph::ScopeGraph::load_from_dir.
+language = "rust"
+
+# Boundaries a name reference may cross, tightest-first. Rust resolves
+# in-file (Local), within a module's sibling items (File), across sibling
+# modules in the same crate (Module), across files via `use`/`pub use`
+# re-exports (CrossFile), and across crate boundaries for `pub` items
+# reachable through the dependency graph (Crate).
+allowed_boundaries = ["local", "file", "module", "cross_file", "crate"]
+
+# Cargo/Rust file paths are '/'-delimited module segments.
+module_separator = "/"
+
+# Two items in a mod.rs neighbourhood (or the same source file) are
+# same-module siblings.
+same_module_markers = ["mod.rs", "lib.rs"]
+
+# `pub use` re-exports are first-class in Rust; follow them as CrossFile.
+follow_reexports = true

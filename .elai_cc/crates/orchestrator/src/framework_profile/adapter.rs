@@ -92,6 +92,123 @@ pub trait FrameworkAdapter: Send + Sync {
     }
 }
 
+/// E-12 plan task #7 — OTel + Sentry + structured-logger server-entry
+/// seeds, keyed by canonical [`crate::framework_profile::FrameworkProfile`]
+/// slug (the manifest basename: `nextjs15` / `svelte5` /
+/// `fastapi-modern` / `hono` / `generic`).
+///
+/// Each value is a token-budgeted code stub (~15-25 LOC) the C-32
+/// `SkeletonGenerator::generate` path injects at the top of the emitted
+/// server entry so every scaffolded app ships observability wiring by
+/// default. The MiniCritic flags removal of these seeds as a BLOCK
+/// (the BLANK_N fill cannot strip them).
+///
+/// Anti-stale-training / anti-slopsquatting posture: the seeds NEVER
+/// inline a pinned dependency version (Tier-A guard 4 forbids version
+/// literals in source). They reference the framework's logging/OTel
+/// idiom and read configuration from environment variables
+/// (`SENTRY_DSN`, `OTEL_SERVICE_NAME`, ...) so the concrete dependency
+/// version is resolved by the manifest at `workflow/archetypes/<name>.toml`,
+/// not here. The Python seed uses `orjson` for structured logging
+/// (CLAUDE.md HARD RULE: orjson over json); the Node seeds use `pino`.
+pub const SERVER_ENTRY_SEEDS: &[(&str, &str)] = &[
+    (
+        "nextjs15",
+        // Next.js App Router instrumentation hook (instrumentation.ts).
+        "// elai-seed: observability (DO NOT REMOVE — MiniCritic BLOCK on strip)\n\
+         import * as Sentry from '@sentry/nextjs';\n\
+         import pino from 'pino';\n\
+         export const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });\n\
+         export async function register() {\n\
+         \x20 Sentry.init({\n\
+         \x20\x20\x20 dsn: process.env.SENTRY_DSN,\n\
+         \x20\x20\x20 tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? '0.1'),\n\
+         \x20\x20\x20 environment: process.env.NODE_ENV,\n\
+         \x20 });\n\
+         \x20 logger.info({ service: process.env.OTEL_SERVICE_NAME }, 'observability initialized');\n\
+         }\n",
+    ),
+    (
+        "svelte5",
+        // SvelteKit hooks.server.ts seed.
+        "// elai-seed: observability (DO NOT REMOVE — MiniCritic BLOCK on strip)\n\
+         import * as Sentry from '@sentry/sveltekit';\n\
+         import pino from 'pino';\n\
+         export const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });\n\
+         Sentry.init({\n\
+         \x20 dsn: process.env.SENTRY_DSN,\n\
+         \x20 tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? '0.1'),\n\
+         \x20 environment: process.env.NODE_ENV,\n\
+         });\n\
+         logger.info({ service: process.env.OTEL_SERVICE_NAME }, 'observability initialized');\n",
+    ),
+    (
+        "fastapi-modern",
+        // FastAPI main.py seed: sentry-sdk + OTel + orjson structured logging.
+        "# elai-seed: observability (DO NOT REMOVE — MiniCritic BLOCK on strip)\n\
+         import os\n\
+         import logging\n\
+         import orjson\n\
+         import sentry_sdk\n\
+         from opentelemetry import trace\n\
+         from opentelemetry.sdk.resources import Resource\n\
+         sentry_sdk.init(\n\
+         \x20\x20\x20\x20dsn=os.environ.get('SENTRY_DSN'),\n\
+         \x20\x20\x20\x20traces_sample_rate=float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0.1')),\n\
+         \x20\x20\x20\x20environment=os.environ.get('APP_ENV', 'production'),\n\
+         )\n\
+         _resource = Resource.create({'service.name': os.environ.get('OTEL_SERVICE_NAME', 'app')})\n\
+         logging.basicConfig(level=os.environ.get('LOG_LEVEL', 'INFO'))\n\
+         logging.getLogger('app').info(orjson.dumps({'event': 'observability_initialized'}).decode())\n",
+    ),
+    (
+        "hono",
+        // Hono edge entry seed (Node/edge): Sentry + pino.
+        "// elai-seed: observability (DO NOT REMOVE — MiniCritic BLOCK on strip)\n\
+         import * as Sentry from '@sentry/node';\n\
+         import pino from 'pino';\n\
+         export const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });\n\
+         Sentry.init({\n\
+         \x20 dsn: process.env.SENTRY_DSN,\n\
+         \x20 tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? '0.1'),\n\
+         \x20 environment: process.env.NODE_ENV,\n\
+         });\n\
+         logger.info({ service: process.env.OTEL_SERVICE_NAME }, 'observability initialized');\n",
+    ),
+    (
+        "generic",
+        // Language-neutral comment seed: instructs the executor to add
+        // OTel + error-tracking + structured logging in the project's
+        // idiom. Carries the same DO-NOT-REMOVE marker so the MiniCritic
+        // strip-guard fires uniformly across profiles.
+        "// elai-seed: observability (DO NOT REMOVE — MiniCritic BLOCK on strip)\n\
+         // Initialize error tracking (read DSN from SENTRY_DSN), an\n\
+         // OpenTelemetry tracer (service name from OTEL_SERVICE_NAME), and\n\
+         // a structured JSON logger at the server entry point before any\n\
+         // request handler is registered.\n",
+    ),
+];
+
+/// E-12 plan task #7 — look up the server-entry observability seed for a
+/// canonical framework profile slug. Returns the `generic` seed when the
+/// slug has no dedicated entry (every slug resolves to SOME seed, so the
+/// `SkeletonGenerator` always emits an observability block). Never
+/// returns `None` for a present `generic` row; the `Option` is retained
+/// so a future caller can distinguish "no generic fallback configured".
+#[must_use]
+pub fn server_entry_seed_for(profile_name: &str) -> Option<&'static str> {
+    SERVER_ENTRY_SEEDS
+        .iter()
+        .find(|(name, _)| *name == profile_name)
+        .map(|(_, seed)| *seed)
+        .or_else(|| {
+            SERVER_ENTRY_SEEDS
+                .iter()
+                .find(|(name, _)| *name == "generic")
+                .map(|(_, seed)| *seed)
+        })
+}
+
 /// Generic / fallback adapter. Used when no concrete framework
 /// adapter has been wired for the current `FrameworkProfile`. Returns
 /// `UnknownTemplate` from `apply` (the scaffold pipeline falls back to
@@ -147,5 +264,52 @@ mod tests {
         let bogus = std::path::Path::new("/elai_e12_bogus_target_xyzzy");
         let res = g.apply("any", bogus, "task");
         assert!(matches!(res, Err(FrameworkAdapterError::TargetMissing { .. })));
+    }
+
+    #[test]
+    fn server_entry_seeds_cover_the_four_representative_profiles_plus_generic() {
+        for slug in ["nextjs15", "svelte5", "fastapi-modern", "hono", "generic"] {
+            let seed = server_entry_seed_for(slug);
+            assert!(seed.is_some(), "missing server-entry seed for {slug}");
+            let body = seed.unwrap_or_default();
+            // Every seed wires error tracking (Sentry DSN) + OTel service +
+            // carries the DO-NOT-REMOVE marker the MiniCritic strip-guard
+            // greps for. The generic seed uses a comment-only form but still
+            // references SENTRY_DSN + OTEL_SERVICE_NAME + the marker.
+            assert!(
+                body.contains("SENTRY_DSN"),
+                "{slug} seed missing SENTRY_DSN"
+            );
+            assert!(
+                body.contains("OTEL_SERVICE_NAME"),
+                "{slug} seed missing OTEL_SERVICE_NAME"
+            );
+            assert!(
+                body.contains("DO NOT REMOVE"),
+                "{slug} seed missing MiniCritic strip-guard marker"
+            );
+        }
+    }
+
+    #[test]
+    fn server_entry_seed_unknown_slug_falls_back_to_generic() {
+        let unknown = server_entry_seed_for("redwoodsdk-not-yet-shipped");
+        let generic = server_entry_seed_for("generic");
+        assert_eq!(unknown, generic, "unknown slug must fall back to generic");
+    }
+
+    #[test]
+    fn server_entry_seeds_carry_no_inlined_version_literals() {
+        // Tier-A guard 4: seeds must not pin a dependency version literal.
+        // Heuristic check: no `@<digit>` (npm version spec) and no `==<digit>`
+        // (pip pin) appears in any seed body.
+        for (slug, body) in SERVER_ENTRY_SEEDS {
+            assert!(
+                !body.contains("==1")
+                    && !body.contains("==2")
+                    && !body.contains("==3"),
+                "{slug} seed contains a pip version pin"
+            );
+        }
     }
 }

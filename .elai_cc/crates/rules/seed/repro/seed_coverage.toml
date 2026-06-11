@@ -1,0 +1,68 @@
+# H-23 reproducibility seed-coverage AST gate -- LOCKED seed.
+# mutable=0: immutable seed row, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS;
+#   "trading" is detected by ["trading","backtest","signal","pipeline"] path
+#   keywords in rule_engine.rs:206-214).
+# Default-ON; kill-switch only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_repro_rules()
+#
+# Purpose:
+#   The CHEAP per-edit early-catch for the CAUSE of non-reproducibility. FAILS at
+#   TESTING_FIRST on any unseeded RNG call before the EXPENSIVE same-seed re-run
+#   (rerun_equality::verify_rerun_digest) is ever scheduled. The re-run is the
+#   sound EFFECT-prover; this AST gate is the necessary-not-sufficient static leg
+#   (R5: a name-match is not a proof; the runtime re-run is the load-bearing
+#   backstop).
+#
+# Grounding (PyTorch reproducibility, verified 2026-06-05):
+#   - CUBLAS_WORKSPACE_CONFIG=:16:8 (or :4096:8) is REQUIRED for deterministic
+#     cuBLAS on CUDA >= 10.2 (PyTorch Reproducibility notes, docs.pytorch.org).
+#   - torch.use_deterministic_algorithms(True) forces deterministic kernels (a
+#     superset of torch.backends.cudnn.deterministic=True).
+#   - torch.backends.cudnn.benchmark = False disables nondeterministic autotune.
+#   - A complete seed set: torch.manual_seed + torch.cuda.manual_seed_all +
+#     numpy.random.seed + random.seed + PYTHONHASHSEED.
+#   - DataLoader(shuffle=True) needs a seeded torch.Generator (worker_init_fn +
+#     generator=) or the shuffle order is nondeterministic across runs.
+#   Sources:
+#     https://docs.pytorch.org/docs/stable/notes/randomness.html
+#     https://docs.pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding
+# is performed by project_rule_seeder.rs::seed_repro_rules() which inserts the
+# row directly. The tree-sitter python query below is authoritative; the Rust
+# runtime re-run gate (rerun_equality.rs) is the sound backstop.
+
+[[rules]]
+rule_id = "REPRO-SEED-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "Experiment RNG must be seeded (no unseeded np.random/torch/random / DataLoader shuffle)"
+description = """
+LOCKED seed-coverage AST gate (H-23, T-7 trust-hardening).
+FAILS at TESTING_FIRST on any unseeded RNG draw in the experiment:
+  1. np.random.* / numpy.random.* / torch.* / random.* draw or shuffle without a
+     preceding seed call in scope.
+  2. DataLoader(shuffle=True) without a seeded torch.Generator (generator=).
+  3. A missing determinism env var: PYTHONHASHSEED, CUBLAS_WORKSPACE_CONFIG, or a
+     missing torch.use_deterministic_algorithms(True) call.
+The CAUSE-catcher: a hidden unseeded RNG silently breaks reproducibility while
+every existing gate stays green. The EFFECT-prover is the runtime re-run gate
+(rerun_equality::verify_rerun_digest) which blake3-hashes the declared outputs of
+two same-seed re-runs and asserts byte-equality. This static AST leg is
+necessary-not-sufficient (R5); the runtime re-run is the load-bearing backstop.
+mutable=0: LOCKED, lifecycle-immune (TD-2). Same-env/same-seed scope (TD-5).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+type = "ast_pattern"
+language = "python"
+query_format = "tree_sitter"
+# A tree-sitter python query matching an np/numpy/torch/random RNG call or
+# shuffle/permutation. The seed-presence check (no preceding seed call in scope)
+# + the env-var presence check are enforced by the rules-engine AstPattern
+# evaluator over the matched scope.
+query = "(call function: (attribute object: (identifier) @mod attribute: (identifier) @fn) (#match? @mod \"^(np|numpy|torch|random)$\") (#match? @fn \"^(rand|randn|random|shuffle|permutation|randint|manual_seed)$\")) @rng_call"

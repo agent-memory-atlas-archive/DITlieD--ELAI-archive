@@ -26,7 +26,7 @@
 // is itself an O(N) sweep that drops everything stale; no test asserts
 // per-entry eviction order. rustc-hash already in workspace dependencies
 // (Cargo.toml:46) and orchestrator Cargo.toml:27.
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rustc_hash::FxHashMap;
@@ -172,6 +172,10 @@ pub fn confidence_str(c: AnswerConfidence) -> &'static str {
 #[derive(Debug)]
 pub struct OracleAnswerCache {
     inner: Mutex<CacheInner>,
+    /// H-8: when `Some`, the cache persists to disk so idempotent grounding
+    /// answers survive a process restart. `None` = in-process only (the legacy
+    /// `new()`/`with_capacity()` behaviour, used by tests). Set by `persisted()`.
+    disk_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -184,6 +188,36 @@ struct CacheInner {
     max_entries: usize,
 }
 
+/// H-8: on-disk form of the oracle answer cache. A `Vec` (not the `FxHashMap`)
+/// because serde_json cannot use the struct `CacheKey` as a JSON object key; the
+/// Vec preserves LRU order (oldest entry first).
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct OracleCacheDisk {
+    entries: Vec<(CacheKey, CachedAnswer)>,
+}
+
+/// H-8: resolve `$HOME/.elai/cache/oracle-cache/answers.json` (Windows:
+/// `%USERPROFILE%`), mirroring the PromptCache disk layout (GD-1). Returns `None`
+/// when the home dir is unresolvable or the cache dir cannot be created — the cache
+/// then stays in-process only (graceful: no disk persistence).
+fn oracle_cache_disk_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    let dir = PathBuf::from(home)
+        .join(".elai")
+        .join("cache")
+        .join("oracle-cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("answers.json"))
+}
+
+/// H-8: best-effort load of the on-disk cache. A missing or corrupt file yields
+/// `None` (empty cache), never a panic — mirrors PromptCache's corrupt->empty
+/// discipline.
+fn load_oracle_cache_disk(path: &Path) -> Option<OracleCacheDisk> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 impl OracleAnswerCache {
     /// Construct an empty cache with the given capacity.
     pub fn with_capacity(max_entries: usize) -> Self {
@@ -193,12 +227,86 @@ impl OracleAnswerCache {
                 map: FxHashMap::with_capacity_and_hasher(max_entries, Default::default()),
                 max_entries: max_entries.max(1),
             }),
+            disk_path: None,
         }
     }
 
     /// Default-capacity constructor (512 entries).
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_MAX_ENTRIES)
+    }
+
+    /// H-8: disk-backed constructor. Loads any persisted idempotent-grounding
+    /// answers from `$HOME/.elai/cache/oracle-cache/answers.json` (best-effort — a
+    /// missing/corrupt file yields an empty cache, never a panic) and persists on
+    /// every successful insert. CONFINEMENT: only the `/research|/ask` grounding arm
+    /// constructs this and it is the cache's single insert caller, so durable
+    /// caching stays confined to idempotent grounding answers (GD-5 staleness
+    /// guard). Per-tier TTL is still enforced on `get`, so stale on-disk entries are
+    /// dropped on read.
+    #[must_use]
+    pub fn persisted(max_entries: usize) -> Self {
+        let cap = max_entries.max(1);
+        let disk_path = oracle_cache_disk_path();
+        let mut cache_inner = CacheInner {
+            order: Vec::with_capacity(cap),
+            map: FxHashMap::with_capacity_and_hasher(cap, Default::default()),
+            max_entries: cap,
+        };
+        if let Some(path) = disk_path.as_ref() {
+            if let Some(disk) = load_oracle_cache_disk(path) {
+                for (key, answer) in disk.entries {
+                    if cache_inner.order.len() >= cap {
+                        break;
+                    }
+                    if cache_inner.map.insert(key, answer).is_none() {
+                        cache_inner.order.push(key);
+                    }
+                }
+            }
+        }
+        Self {
+            inner: Mutex::new(cache_inner),
+            disk_path,
+        }
+    }
+
+    /// H-8: default-capacity disk-backed constructor (512 entries).
+    #[must_use]
+    pub fn persisted_default() -> Self {
+        Self::persisted(DEFAULT_MAX_ENTRIES)
+    }
+
+    /// H-8: serialize the current cache (LRU order) to `disk_path`. No-op when the
+    /// cache is in-process (`disk_path` is `None`). Best-effort — a serialize or
+    /// write error is logged, never propagated (persistence must never break the
+    /// grounding path).
+    fn persist_to_disk(&self) {
+        let Some(path) = self.disk_path.as_ref() else {
+            return;
+        };
+        let snapshot = {
+            let Ok(inner) = self.inner.lock() else {
+                return;
+            };
+            OracleCacheDisk {
+                entries: inner
+                    .order
+                    .iter()
+                    .filter_map(|k| inner.map.get(k).map(|v| (*k, v.clone())))
+                    .collect(),
+            }
+        };
+        match serde_json::to_vec(&snapshot) {
+            Ok(bytes) => {
+                if let Err(e) = std::fs::write(path, bytes) {
+                    tracing::warn!(error = %e, "oracle_cache: disk persist write failed (non-fatal)");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "oracle_cache: disk persist serialize failed (non-fatal)");
+            }
+        }
     }
 
     /// Number of entries currently cached.
@@ -245,25 +353,30 @@ impl OracleAnswerCache {
         if entry.ttl_secs() == 0 {
             return false;
         }
-        let Ok(mut inner) = self.inner.lock() else {
-            return false;
-        };
-        let max = inner.max_entries;
-        if !inner.map.contains_key(&key) {
-            inner.order.push(key);
-        } else if let Some(pos) = inner.order.iter().position(|k| k == &key) {
-            let k = inner.order.remove(pos);
-            inner.order.push(k);
-        }
-        inner.map.insert(key, entry);
-        // LRU eviction (oldest first).
-        while inner.map.len() > max {
-            let Some(victim) = inner.order.first().copied() else {
-                break;
+        {
+            let Ok(mut inner) = self.inner.lock() else {
+                return false;
             };
-            inner.order.remove(0);
-            inner.map.remove(&victim);
+            let max = inner.max_entries;
+            if !inner.map.contains_key(&key) {
+                inner.order.push(key);
+            } else if let Some(pos) = inner.order.iter().position(|k| k == &key) {
+                let k = inner.order.remove(pos);
+                inner.order.push(k);
+            }
+            inner.map.insert(key, entry);
+            // LRU eviction (oldest first).
+            while inner.map.len() > max {
+                let Some(victim) = inner.order.first().copied() else {
+                    break;
+                };
+                inner.order.remove(0);
+                inner.map.remove(&victim);
+            }
         }
+        // H-8: persist to disk after a successful insert (no-op when in-process;
+        // lock released above — persist_to_disk re-locks briefly for the snapshot).
+        self.persist_to_disk();
         true
     }
 

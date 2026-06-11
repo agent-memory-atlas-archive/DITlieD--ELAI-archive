@@ -37,6 +37,7 @@ fn make_fact_with_tier(
         superseded_by: None,
         trust_tier: tier,
         provenance,
+        last_validated_at_ms: None,
     }
 }
 
@@ -87,8 +88,9 @@ fn safety_critical_filter_excludes_t2_t3() {
         fact_type: None,
         trust_override: None,
         safety_critical: true,
+        citation_validator: None,
     };
-    let results = get_relevant_facts(&store, "default", &filter, 10, T + 1000)
+    let (results, _) = get_relevant_facts(&store, "default", &filter, 10, T + 1000)
         .expect("get_relevant_facts");
 
     let ids: Vec<&str> = results.iter().map(|f| f.fact_id.as_str()).collect();
@@ -116,7 +118,7 @@ fn provenance_propagates_to_caller() {
     assert_eq!(reloaded.provenance, prov, "provenance survives insert/get");
 
     let filter = RetrievalFilter::default();
-    let results = get_relevant_facts(&store, "default", &filter, 10, T + 1000)
+    let (results, _) = get_relevant_facts(&store, "default", &filter, 10, T + 1000)
         .expect("get_relevant_facts");
     let hit = results.iter().find(|f| f.fact_id == "f-prov").expect("found");
     assert_eq!(hit.provenance, prov, "provenance propagates through retrieval");
@@ -143,8 +145,9 @@ fn migration_default_is_t3() {
         fact_type: None,
         trust_override: None,
         safety_critical: true,
+        citation_validator: None,
     };
-    let results = get_relevant_facts(&store, "default", &filter, 10, T + 1000)
+    let (results, _) = get_relevant_facts(&store, "default", &filter, 10, T + 1000)
         .expect("get_relevant_facts");
     assert!(
         results.iter().all(|f| f.fact_id != "f-legacy"),

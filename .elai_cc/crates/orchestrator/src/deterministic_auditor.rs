@@ -177,6 +177,26 @@ impl DeterministicAuditorConfig {
         deprecated_patterns: Vec<DeprecatedPatternEntry>,
         mutation: MutationConfig,
     ) -> Self {
+        // C-31 Task 7 — seed per-language file-size overrides from the project's
+        // ACTUAL language composition (`profile.languages.distribution`). For
+        // every language the project actually contains, copy its canonical
+        // LanguageLimits out of the spec default table into
+        // `language_limit_overrides` so the T2 file-discipline check
+        // (evaluate_file_size) keys on the project's real languages rather than
+        // an empty override map. Previously this map was always empty (wire-dark
+        // -- the field existed but `from_profile*` never populated it).
+        // Languages with no entry in the default table (Unknown / Other / exotic)
+        // are skipped so no fabricated limits are invented.
+        let mut file_discipline = FileDisciplineConfig::default();
+        let default_limits = file_discipline.limits.clone();
+        for lang in profile.languages.distribution.keys() {
+            let key = lang.id_str();
+            if let Some(limits) = default_limits.get(key) {
+                file_discipline
+                    .language_limit_overrides
+                    .insert(key.to_string(), limits.clone());
+            }
+        }
         Self {
             enabled: true,
             build_cmds: profile.commands.build.clone(),
@@ -184,7 +204,7 @@ impl DeterministicAuditorConfig {
             deprecated_patterns,
             primary_language: profile.languages.primary.clone(),
             project_root: profile.project_root.clone(),
-            file_discipline: FileDisciplineConfig::default(),
+            file_discipline,
             mutation,
             // C-29: per-profile callers default to MetamorphicConfig::default()
             // (identity + inverse enabled). The `with_metamorphic` variant

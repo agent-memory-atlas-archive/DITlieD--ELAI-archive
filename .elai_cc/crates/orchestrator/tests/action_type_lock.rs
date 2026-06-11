@@ -546,7 +546,99 @@ use elai_orchestrator::ssb::{SkillLibraryEventKind, SsbActionType, TestIntegrity
 // Config-DGM admit-loop beacon, wire-dark unless ELAI_DARWINIAN_LOOP_ENABLE=1
 // AND cfg(feature darwinian-evolve). Counts as ONE variant. 483 -> 484.
 // Session: s-6312.
-const TOTAL_VARIANTS: usize = 484;
+// G-plan + H-plan repair (2026-06-07, s-build-repair): 33 new variants
+// completing G/H-plan security, verifiability, canvas, batch, staleness.
+// 484 -> 517.
+// D-27.1 (SCHEMA_VERSION 209, 2026-06-07): DiscoveryRatified +
+// DiscoveryRejected discovery-queue reviewer-action beacons.
+// Emitted by `ratify_discovery` / `reject_discovery` Tauri commands in
+// commands_d27.rs. 518 -> 520.
+// H-32 (SCHEMA_VERSION 210, 2026-06-07): FactValidationFailed flat beacon.
+// Emitted by the H-32 citation-validity gate when a Tier-A fact's DKG
+// citation fails to re-resolve. 520 -> 521.
+// H-33 (SCHEMA_VERSION 211, 2026-06-07): MemoryGovernanceEvent flat beacon.
+// forget/pin/unpin governance. 521 -> 522.
+// H-34 (SCHEMA_VERSION 212, 2026-06-07): McpToolDeferred -- deferred MCP schema
+// resolve on the live STDIO lane. Emitted on cache-miss when
+// ELAI_MCP_DEFER_SCHEMA_ENABLE=1. 522 -> 523.
+// H-34 (SCHEMA_VERSION 213, 2026-06-07): McpSchemaBudgetMeasured -- mcp-schema-budget
+// bench result beacon. Emitted by `elai bench mcp-schema-budget`. 523 -> 524.
+// H-35 (SCHEMA_VERSION 214, 2026-06-07): SessionRewound -- /rewind restore beacon.
+// Emitted by `elai rewind <target>` and `rewind_session` Tauri command. 524 -> 525.
+// H-36 (SCHEMA_VERSION 215, 2026-06-07): AgentNotificationEmitted -- completion/needs-input
+// dev-event beacon. Emitted by NotificationDispatcher::notify on PhaseComplete and
+// AutonomyDecision::RequestHuman. 525 -> 526.
+// H-37 (SCHEMA_VERSION 216, 2026-06-07): PlanDecisionEvent -- plan-approval gate
+// decision at PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST. Gated by
+// ELAI_PLAN_APPROVAL_GATE_ENABLE=1. Pattern-2 4-arm PlanDecisionKind discriminator
+// (Approve/Redirect/Reject/AutoAdvance). 526 -> 527.
+// H-38 (SCHEMA_VERSION 217, 2026-06-07): StopConfirmationEvent -- cost-confirm gate
+// outcome on task/pod stop. Emitted by dispatch_stop on ConfirmRequired/RejectedHeld
+// unconditionally; PassedNoFriction when ELAI_STOP_COST_CONFIRM_ENABLE=1.
+// Pattern-2 single-variant 3-arm StopOutcomeKind discriminator. 527 -> 528.
+// H-39 (SCHEMA_VERSION 218, 2026-06-08): AbstentionScored -- abstention-aware scoring
+// bench beacon. Emitted by bench_safedelta/bench_seccodeplt after computing the
+// AbstentionAggregate over the run's outcome triples. Closes the self-improvement
+// loop misalignment (darwin_admit_loop reward abstention-blind). Flat beacon.
+// Default-ON kill-switch ELAI_ABSTENTION_SCORE_DISABLE. 528 -> 529.
+// H-41 (SCHEMA_VERSION 219, 2026-06-08): CheckerGapDetected -- emitted at the
+// route_claim_with_gap call site when a Factual/Computational claim falls to
+// non-Constructive because no VerifierKind::Deterministic in context.
+// Off-agent backlog artifact. Wire-dark: ELAI_CHECKER_GAP_ENABLE. Flat beacon.
+// 529 -> 530.
+// H-42 (SCHEMA_VERSION 220, 2026-06-08): ReasoningBudgetScaled -- serial-depth-
+// scaled GRC budget decision beacon. Emitted at agent_pool::spawn + bsp/engine.rs
+// timeout path. Default-ON kill-switch ELAI_REASONING_BUDGET_SCALE_DISABLE.
+// Pattern-2 single-variant 2-arm ReasoningBudgetScaledKind: DepthBound /
+// AccessBound. Grounding: Merrill & Sabharwal 2310.07923 + Li et al. 2402.12875
+// + Yehudai et al. 2503.01544. 530 -> 531.
+// H-43 (SCHEMA_VERSION 221, 2026-06-08): FitnessEvaluated -- execution-grounded
+// DGM fitness beacon. Replaces blake3-of-bytes derived_alpha (GAP-1) with a
+// measured pass-rate signal (CodeRM arXiv:2501.01054 + CodeT arXiv:2207.10397).
+// Emitted per scored candidate in darwin_admit_loop under darwinian-evolve feature.
+// Pattern-2 single-variant 3-arm FitnessEvaluatedKind:
+// ExecutionPassRate | DualAgreement | FitnessRegression. 531 -> 532.
+// H-44 (SCHEMA_VERSION 222, 2026-06-11): TrapBehaviorDetected -- behavioral
+// cheat-detector beacon. Replaces keyword-grep (GAP-2) with ImpossibleBench
+// conflict canary (2510.20270) + IsomorphMismatch (2604.15149) + CodeHalu
+// execution-classification (2405.00253) + KeywordFallback advisory. Carries
+// frozen TRACE-style recall measurement (2601.20103). Pattern-2 single-variant
+// 4-arm TrapBehaviorDetectedKind:
+// ImpossiblePassExploit | IsomorphMismatch | ExecutionHallucination | KeywordFallback.
+// 532 -> 533.
+// H-45 (SCHEMA_VERSION 223, 2026-06-11): PromotionScoreAggregated -- worst-case/
+// variance-penalized aggregate over lineage-diverse promotion verdicts.
+// (Coste 2310.02743 WCO+UWO + Eisenstein 2312.09244 + Co-rewarding 2508.00410 +
+// PRMBench 2501.03124 tau calibration). Replaces candidate mean as the
+// two_gate_promote margin. Pattern-2 single-variant 3-arm
+// PromotionScoreAggregatedKind:
+// WorstCaseScored | VariancePenalized | LineageDiverseDisagree.
+// 533 -> 534.
+//
+// H-46 (SCHEMA_VERSION 224, 2026-06-11): CladeSelected -- HGM clade-
+// metaproductivity parent-selection beacon (HGM 2510.21614, ICLR 2026 oral).
+// Emitted from config_archive::select_parent_with_cmp on the REAL loop
+// selection step. CMP aggregates execution-grounded descendant deltas (H-43).
+// ImmediateScoreFallback for clade_size==0 leaves (cold-start guard).
+// Pattern-2 single-variant 2-arm CladeSelectedKind:
+// CladeMetaproductivity | ImmediateScoreFallback.
+// 534 -> 535.
+//
+// H-47 (SCHEMA_VERSION 225, 2026-06-11): EvalFirewallEvent -- DGM eval firewall
+// beacon. Composes D-6 date-gate + E-54 template-regen + H-19 Thresholdout budget
+// binding. Emitted once per generation (aggregate counts) from run_one_generation.
+// The H-19 budget leg REUSES HoldoutBudgetEvent (GD-1: no second budget variant).
+// Pattern-2 single-variant 3-arm EvalFirewallEventKind:
+// PreUpdateItemRejected | TemplateRegenerated | IndistinguishabilityProbe.
+// 535 -> 536.
+//
+// H-49 (SCHEMA_VERSION 226, 2026-06-11): EditHistoryEvent -- reversible LLM edits
+// beacon. Emitted by the default-ON CAS time-travel capture hook in task_runner.rs
+// and by elai undo/redo/jump CLI ops. Default-ON kill-switch ELAI_TIMETRAVEL_DISABLE.
+// Pattern-2 single-variant 6-arm EditHistoryEventKind:
+// SnapshotCaptured | Deduped | Redo | Branched | Jumped | TooLargeSkipped.
+// 536 -> 537.
+const TOTAL_VARIANTS: usize = 537;
 
 /// All SsbActionType variants in enum DECLARATION order. Append-only -- new
 /// variants go at the end of this array AND at the end of the enum AND get a
@@ -785,6 +877,7 @@ const ALL_VARIANTS: [SsbActionType; TOTAL_VARIANTS] = [
     SsbActionType::TemplateAutoReverted,
     SsbActionType::PrmBenchRunCompleted,
     SsbActionType::BaiArmUpdated,
+    SsbActionType::BaiPromotionDecision,
     SsbActionType::HeldOutTaskAdded,
     SsbActionType::HeldOutTaskUsed,
     SsbActionType::CanaryRunCompleted,
@@ -1639,6 +1732,110 @@ const ALL_VARIANTS: [SsbActionType; TOTAL_VARIANTS] = [
     // completed. Wire-dark unless ELAI_DARWINIAN_LOOP_ENABLE=1 AND cfg(feature
     // darwinian-evolve). Session: s-6312.
     SsbActionType::DarwinianAdmit,
+    // G-plan + H-plan repair (2026-06-07, s-build-repair): 35 new variants
+    // completing G-plan security/verifiability substrate + H-plan canvas/batch.
+    SsbActionType::McpRugPullBlocked,
+    SsbActionType::TaintFlow,
+    SsbActionType::BlastRadiusBlocked,
+    SsbActionType::TrifectaQuarantined,
+    SsbActionType::RunArtifactEmitted,
+    SsbActionType::ReviewSurfaceScored,
+    SsbActionType::ProvenanceAttestationEmitted,
+    SsbActionType::SafetyDeltaMeasured,
+    SsbActionType::ModelDriftSuspected,
+    SsbActionType::SecretRedacted,
+    SsbActionType::ClaimConfidenceScored,
+    SsbActionType::SteeringVectorRefreshTriggered,
+    SsbActionType::CanvasOpApplied,
+    SsbActionType::CanvasViewEvent,
+    SsbActionType::CanvasActivityEvent,
+    SsbActionType::BatchLifecycle,
+    SsbActionType::DeflationGateEvaluated,
+    SsbActionType::LeakageBlocked,
+    SsbActionType::LookaheadDifferential,
+    SsbActionType::TradingNullTest,
+    SsbActionType::RerunHashEquality,
+    SsbActionType::SimRealParity,
+    SsbActionType::ResultManifestVerified,
+    SsbActionType::DifferentialDivergence,
+    SsbActionType::GateSelfValidation,
+    SsbActionType::RewardTampering,
+    SsbActionType::HoldoutBudgetEvent,
+    SsbActionType::DriftInterlock,
+    SsbActionType::TrialRegistered,
+    SsbActionType::MucocoInconsistencyDetected,
+    SsbActionType::MucocoSkipReason,
+    SsbActionType::UserDecisionSuperseded,
+    SsbActionType::StalenessEvalMeasured,
+    // D-27.1 (SCHEMA_VERSION 209): discovery-queue reviewer-action beacons.
+    SsbActionType::DiscoveryRatified,
+    SsbActionType::DiscoveryRejected,
+    // H-32 (SCHEMA_VERSION 210): FactValidationFailed flat beacon.
+    SsbActionType::FactValidationFailed,
+    // H-33 (SCHEMA_VERSION 211): MemoryGovernanceEvent flat beacon.
+    SsbActionType::MemoryGovernanceEvent,
+    // H-34 (SCHEMA_VERSION 212): McpToolDeferred -- deferred STDIO schema resolve.
+    SsbActionType::McpToolDeferred,
+    // H-34 (SCHEMA_VERSION 213): McpSchemaBudgetMeasured -- bench result beacon.
+    SsbActionType::McpSchemaBudgetMeasured,
+    // H-35 (SCHEMA_VERSION 214): SessionRewound -- session-rewind restore beacon.
+    SsbActionType::SessionRewound,
+    // H-36 (SCHEMA_VERSION 215): AgentNotificationEmitted -- completion/needs-input
+    // dev-event beacon. Emitted by NotificationDispatcher::notify.
+    SsbActionType::AgentNotificationEmitted,
+    // H-37 (SCHEMA_VERSION 216): PlanDecisionEvent -- plan-approval gate decision.
+    // Pattern-2 4-arm PlanDecisionKind (Approve/Redirect/Reject/AutoAdvance).
+    SsbActionType::PlanDecisionEvent,
+    // H-38 (SCHEMA_VERSION 217): StopConfirmationEvent -- cost-confirm gate outcome.
+    // Pattern-2 single-variant 3-arm StopOutcomeKind discriminator.
+    SsbActionType::StopConfirmationEvent,
+    // H-39 (SCHEMA_VERSION 218): AbstentionScored -- abstention-aware scoring bench beacon.
+    // Flat beacon. Default-ON, kill-switch ELAI_ABSTENTION_SCORE_DISABLE.
+    SsbActionType::AbstentionScored,
+    // H-41 (SCHEMA_VERSION 219): CheckerGapDetected -- off-agent backlog beacon.
+    // Emitted when Factual/Computational claim falls to non-Constructive.
+    // Wire-dark: ELAI_CHECKER_GAP_ENABLE. Flat beacon.
+    SsbActionType::CheckerGapDetected,
+    // H-42 (SCHEMA_VERSION 220): ReasoningBudgetScaled -- serial-depth-scaled GRC
+    // budget decision beacon. Default-ON, kill-switch
+    // ELAI_REASONING_BUDGET_SCALE_DISABLE. Pattern-2 single-variant 2-arm
+    // ReasoningBudgetScaledKind: DepthBound / AccessBound.
+    SsbActionType::ReasoningBudgetScaled,
+    // H-43 (SCHEMA_VERSION 221): FitnessEvaluated -- execution-grounded DGM fitness
+    // beacon. Replaces blake3-of-bytes derived_alpha (GAP-1). Pattern-2 single-variant
+    // 3-arm FitnessEvaluatedKind: ExecutionPassRate | DualAgreement | FitnessRegression.
+    SsbActionType::FitnessEvaluated,
+    // H-44 (SCHEMA_VERSION 222): TrapBehaviorDetected -- behavioral cheat-detector
+    // beacon. Replaces keyword-grep (GAP-2) with ImpossibleBench/IsomorphMismatch/
+    // CodeHalu/KeywordFallback detection + frozen TRACE recall. Pattern-2 single-variant
+    // 4-arm TrapBehaviorDetectedKind.
+    SsbActionType::TrapBehaviorDetected,
+    // H-45 (SCHEMA_VERSION 223): PromotionScoreAggregated -- worst-case/variance-penalized
+    // aggregate over lineage-diverse promotion verdicts (Coste 2310.02743 WCO+UWO +
+    // PRMBench 2501.03124 tau calibration). Replaces candidate mean as the
+    // two_gate_promote margin. Pattern-2 single-variant 3-arm
+    // PromotionScoreAggregatedKind: WorstCaseScored | VariancePenalized |
+    // LineageDiverseDisagree.
+    SsbActionType::PromotionScoreAggregated,
+    // H-46 (SCHEMA_VERSION 224): CladeSelected -- HGM clade-metaproductivity
+    // parent-selection beacon (HGM 2510.21614, ICLR 2026 oral). Emitted from
+    // config_archive::select_parent_with_cmp. CMP aggregates H-43 execution-
+    // grounded deltas. Pattern-2 single-variant 2-arm CladeSelectedKind:
+    // CladeMetaproductivity | ImmediateScoreFallback.
+    SsbActionType::CladeSelected,
+    // H-47 (SCHEMA_VERSION 225): EvalFirewallEvent -- DGM eval firewall beacon.
+    // Composes D-6 date-gate + E-54 template-regen + H-19 Thresholdout budget.
+    // Emitted once per generation from run_one_generation. H-19 budget leg
+    // REUSES HoldoutBudgetEvent (GD-1). Pattern-2 single-variant 3-arm
+    // EvalFirewallEventKind: PreUpdateItemRejected | TemplateRegenerated |
+    // IndistinguishabilityProbe.
+    SsbActionType::EvalFirewallEvent,
+    // H-49 (SCHEMA_VERSION 226): EditHistoryEvent -- reversible LLM edits beacon.
+    // Emitted by the default-ON CAS time-travel capture hook (task_runner.rs) and
+    // by elai undo/redo/jump CLI ops. Default-ON kill-switch ELAI_TIMETRAVEL_DISABLE.
+    // Pattern-2 single-variant 6-arm EditHistoryEventKind:
+    // SnapshotCaptured | Deduped | Redo | Branched | Jumped | TooLargeSkipped.
+    SsbActionType::EditHistoryEvent,
 ];
 
 /// Compile-time exhaustiveness check: if a new variant lands in ssb.rs without
@@ -1879,6 +2076,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::TemplateAutoReverted => (),
         SsbActionType::PrmBenchRunCompleted => (),
         SsbActionType::BaiArmUpdated => (),
+        SsbActionType::BaiPromotionDecision => (),
         SsbActionType::HeldOutTaskAdded => (),
         SsbActionType::HeldOutTaskUsed => (),
         SsbActionType::CanaryRunCompleted => (),
@@ -2244,6 +2442,77 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::SessionArchived => (),
         // F-11 / Slice A1 (SCHEMA_VERSION 207): config-DGM admit-loop beacon.
         SsbActionType::DarwinianAdmit => (),
+        // G-plan + H-plan repair (2026-06-07): new variants.
+        SsbActionType::McpRugPullBlocked => (),
+        SsbActionType::TaintFlow => (),
+        SsbActionType::BlastRadiusBlocked => (),
+        SsbActionType::TrifectaQuarantined => (),
+        SsbActionType::RunArtifactEmitted => (),
+        SsbActionType::ReviewSurfaceScored => (),
+        SsbActionType::ProvenanceAttestationEmitted => (),
+        SsbActionType::SafetyDeltaMeasured => (),
+        SsbActionType::ModelDriftSuspected => (),
+        SsbActionType::SecretRedacted => (),
+        SsbActionType::ClaimConfidenceScored => (),
+        SsbActionType::SteeringVectorRefreshTriggered => (),
+        SsbActionType::CanvasOpApplied => (),
+        SsbActionType::CanvasViewEvent => (),
+        SsbActionType::CanvasActivityEvent => (),
+        SsbActionType::BatchLifecycle => (),
+        SsbActionType::DeflationGateEvaluated => (),
+        SsbActionType::LeakageBlocked => (),
+        SsbActionType::LookaheadDifferential => (),
+        SsbActionType::TradingNullTest => (),
+        SsbActionType::RerunHashEquality => (),
+        SsbActionType::SimRealParity => (),
+        SsbActionType::ResultManifestVerified => (),
+        SsbActionType::DifferentialDivergence => (),
+        SsbActionType::GateSelfValidation => (),
+        SsbActionType::RewardTampering => (),
+        SsbActionType::HoldoutBudgetEvent => (),
+        SsbActionType::DriftInterlock => (),
+        SsbActionType::TrialRegistered => (),
+        SsbActionType::MucocoInconsistencyDetected => (),
+        SsbActionType::MucocoSkipReason => (),
+        SsbActionType::UserDecisionSuperseded => (),
+        SsbActionType::StalenessEvalMeasured => (),
+        // D-27.1 (SCHEMA_VERSION 209): discovery-queue reviewer-action beacons.
+        SsbActionType::DiscoveryRatified => (),
+        SsbActionType::DiscoveryRejected => (),
+        // H-32 (SCHEMA_VERSION 210): FactValidationFailed flat beacon.
+        SsbActionType::FactValidationFailed => (),
+        // H-33 (SCHEMA_VERSION 211): MemoryGovernanceEvent flat beacon.
+        SsbActionType::MemoryGovernanceEvent => (),
+        // H-34 (SCHEMA_VERSION 212): McpToolDeferred deferred STDIO schema resolve.
+        SsbActionType::McpToolDeferred => (),
+        // H-34 (SCHEMA_VERSION 213): McpSchemaBudgetMeasured bench result beacon.
+        SsbActionType::McpSchemaBudgetMeasured => (),
+        // H-35 (SCHEMA_VERSION 214): SessionRewound session-rewind restore beacon.
+        SsbActionType::SessionRewound => (),
+        // H-36 (SCHEMA_VERSION 215): AgentNotificationEmitted dev-event notification beacon.
+        SsbActionType::AgentNotificationEmitted => (),
+        // H-37 (SCHEMA_VERSION 216): PlanDecisionEvent plan-approval gate decision.
+        SsbActionType::PlanDecisionEvent => (),
+        // H-38 (SCHEMA_VERSION 217): StopConfirmationEvent cost-confirm gate outcome.
+        SsbActionType::StopConfirmationEvent => (),
+        // H-39 (SCHEMA_VERSION 218): AbstentionScored abstention-aware scoring bench beacon.
+        SsbActionType::AbstentionScored => (),
+        // H-41 (SCHEMA_VERSION 219): CheckerGapDetected off-agent backlog beacon.
+        SsbActionType::CheckerGapDetected => (),
+        // H-42 (SCHEMA_VERSION 220): ReasoningBudgetScaled serial-depth-scaled GRC budget beacon.
+        SsbActionType::ReasoningBudgetScaled => (),
+        // H-43 (SCHEMA_VERSION 221): FitnessEvaluated execution-grounded DGM fitness beacon.
+        SsbActionType::FitnessEvaluated => (),
+        // H-44 (SCHEMA_VERSION 222): TrapBehaviorDetected behavioral cheat-detector beacon.
+        SsbActionType::TrapBehaviorDetected => (),
+        // H-45 (SCHEMA_VERSION 223): PromotionScoreAggregated worst-case/variance-penalized aggregate.
+        SsbActionType::PromotionScoreAggregated => (),
+        // H-46 (SCHEMA_VERSION 224): CladeSelected HGM clade-metaproductivity parent selection beacon.
+        SsbActionType::CladeSelected => (),
+        // H-47 (SCHEMA_VERSION 225): EvalFirewallEvent DGM eval firewall beacon (date-gate + regen + budget).
+        SsbActionType::EvalFirewallEvent => (),
+        // H-49 (SCHEMA_VERSION 226): EditHistoryEvent reversible LLM edits beacon (CAS capture + redo/branch/jump).
+        SsbActionType::EditHistoryEvent => (),
     }
 }
 

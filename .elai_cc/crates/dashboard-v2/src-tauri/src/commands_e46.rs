@@ -340,3 +340,105 @@ fn detail_to_drift_row(d: elai_orchestrator::SsbActionDetail) -> Option<GoalDrif
         ts_ms: obj.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0),
     })
 }
+
+// ---------------------------------------------------------------------------
+// D-7: entropy history surface (DecompositionEntropyHistogram)
+// ---------------------------------------------------------------------------
+
+/// One `low_entropy_decomposition` row projected for the histogram.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntropyHistogramRow {
+    /// Node key of the parent decomposition node.
+    pub parent_node_key: String,
+    /// Entropy ratio (H_children / H_parent), in [0.0, 1.0].
+    pub entropy_ratio: f64,
+    /// H_parent (Shannon entropy of the parent label set).
+    pub h_parent: f64,
+    /// H_children (Shannon entropy of the children label set).
+    pub h_children: f64,
+    /// Threshold at time of emission.
+    pub threshold: f64,
+    /// Wall-clock UNIX ms.
+    pub ts_ms: i64,
+}
+
+/// D-7: return last `limit` `low_entropy_decomposition` SSB rows, sorted
+/// most-recent first. Feeds the `DecompositionEntropyHistogram` Svelte panel
+/// (DrawerKey `decomposition-entropy`).
+///
+/// Rows are written by
+/// `elai_orchestrator::planning_decomposition::producers::emit_low_entropy_decomposition`
+/// when the entropy-ratio gate fires (default-OFF via
+/// `ELAI_PLANNING_DECOMPOSITION_ENABLE`; wire-dark unless the env var is set).
+#[tauri::command]
+pub async fn get_entropy_history(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<EntropyHistogramRow>, String> {
+    let cap = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+    let viewer = match &state.viewer {
+        Some(v) => v.clone(),
+        None => return Ok(Vec::new()),
+    };
+
+    let mut rows: Vec<EntropyHistogramRow> = Vec::new();
+    match viewer.recent_rows_of_type("planning_decomposition_event", cap * 4) {
+        Ok(details) => {
+            for d in details {
+                if let Some(r) = detail_to_entropy_row(d) {
+                    rows.push(r);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                action_type = "planning_decomposition_event",
+                error = %e,
+                "get_entropy_history: viewer error"
+            );
+        }
+    }
+    // Most-recent first; already sorted descending from viewer but re-sort for
+    // robustness after the kind-filter step.
+    rows.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
+    rows.truncate(cap);
+    Ok(rows)
+}
+
+fn detail_to_entropy_row(d: elai_orchestrator::SsbActionDetail) -> Option<EntropyHistogramRow> {
+    if d.action_type.as_str() != "planning_decomposition_event" {
+        return None;
+    }
+    // The payload is a PlanningDecompositionEvent; unwrap outer envelope first.
+    let outer = unwrap_variant(&d.payload_json, "PlanningDecompositionEvent")?;
+    // Kind discriminator check (Pattern-2 single-variant).
+    let kind = outer.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    if kind != "LowEntropyDecomposition" && kind != "low_entropy_decomposition" {
+        return None;
+    }
+    let details = outer.get("details_json").and_then(|v| v.as_object())?;
+    Some(EntropyHistogramRow {
+        parent_node_key: details
+            .get("parent_node_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        entropy_ratio: details
+            .get("entropy_ratio")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        h_parent: details
+            .get("h_parent")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        h_children: details
+            .get("h_children")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        threshold: details
+            .get("threshold")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        ts_ms: outer.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0),
+    })
+}

@@ -54,11 +54,13 @@ pub enum ToolCategory {
     Knowledge,
     /// Stub write: limited write (<50 lines) for FEASIBILITY_PROBE
     StubWrite,
+    /// Canvas op tools (H-13): model-driven canvas mutations via canvas_* tool catalog.
+    Canvas,
 }
 
 impl ToolCategory {
     /// All categories for iteration.
-    pub const ALL: [ToolCategory; 16] = [
+    pub const ALL: [ToolCategory; 17] = [
         ToolCategory::Read,
         ToolCategory::Edit,
         ToolCategory::Bash,
@@ -75,6 +77,7 @@ impl ToolCategory {
         ToolCategory::Git,
         ToolCategory::Knowledge,
         ToolCategory::StubWrite,
+        ToolCategory::Canvas,
     ];
 
     /// Classify a tool name into its category. Tool names are matched
@@ -162,6 +165,17 @@ impl ToolCategory {
 
             // Knowledge engine
             "knowledgeengine" | "knowledge_engine" => ToolCategory::Knowledge,
+
+            // Canvas ops (H-13): model-driven canvas mutations
+            "canvas_create_node" => ToolCategory::Canvas,
+            "canvas_connect" => ToolCategory::Canvas,
+            "canvas_update_node" => ToolCategory::Canvas,
+            "canvas_annotate" => ToolCategory::Canvas,
+            "canvas_fork" => ToolCategory::Canvas,
+            "canvas_render_diagram" => ToolCategory::Canvas,
+            "canvas_screenshot" => ToolCategory::Canvas,
+            // H-15: spawn_view reply-channel verb.
+            "canvas_spawn_view" => ToolCategory::Canvas,
 
             // FSM internal
             "fsm_get_state" => ToolCategory::FsmInternal,

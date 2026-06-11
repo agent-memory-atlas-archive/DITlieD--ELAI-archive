@@ -232,6 +232,7 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             system_prober: None,
             feasibility_prober: None,
             autonomous_gate: None,
+            plan_interactive_gate: None,
             layer1a_processor: None,
             dispatch_context_profile: None,
             reflection_client: None,
@@ -252,6 +253,10 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             mcp_dispatch: None,
             // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
             token_tracker: None,
+            // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
+            buffer_editor: None,
+            // E-46 D-8: contract fixture — module-constant defaults.
+            planning_config: Default::default(),
         },
     );
 
@@ -338,6 +343,7 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             system_prober: None,
             feasibility_prober: None,
             autonomous_gate: None,
+            plan_interactive_gate: None,
             layer1a_processor: None,
             dispatch_context_profile: None,
             reflection_client: None,
@@ -358,6 +364,10 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             mcp_dispatch: None,
             // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
             token_tracker: None,
+            // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
+            buffer_editor: None,
+            // E-46 D-8: contract fixture — module-constant defaults.
+            planning_config: Default::default(),
         },
     );
 
@@ -440,6 +450,7 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             system_prober: None,
             feasibility_prober: None,
             autonomous_gate: None,
+            plan_interactive_gate: None,
             layer1a_processor: None,
             dispatch_context_profile: None,
             reflection_client: None,
@@ -460,6 +471,10 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             mcp_dispatch: None,
             // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
             token_tracker: None,
+            // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
+            buffer_editor: None,
+            // E-46 D-8: contract fixture — module-constant defaults.
+            planning_config: Default::default(),
         },
     );
 

@@ -59,3 +59,31 @@ pub mod tamper_runner;
 // from the scorer, never literals. Distinct from SeCodePLT's DYNAMIC
 // secure-coding rate (the live-model 3-way metric is RunPod-gated).
 pub mod seccodeplt_runner;
+// G-6 (SCHEMA_VERSION 217): SAFEDELTA gate-ON-vs-gate-OFF safety-delta runner.
+// DERIVES the delta from the SHIPPED SecCodePltRunner (GD-1, compose-not-
+// restate). Adds a seeded bootstrap 95% CI + per-CWE delta breakdown.
+// Tier-1 = static-gate ablation over the embedded corpus (offline, deterministic).
+// Tier-2 = live multi-suite (SUSVIBES-200 arXiv:2512.03262, BaxBench-392
+// arXiv:2502.11844, dynamic exploit-exec floor) = RUNPOD-PENDING.
+pub mod safedelta_runner;
+// H-30: staleness / intent-drift INSTRUMENT. Drives the SHIPPED bi-temporal
+// memory substrate (FactStore + audit_conflicts + get_relevant_facts) over a
+// labeled supersession fixture in an ISOLATED in-memory store and computes two
+// grounded rates (STALE arXiv:2605.06527): SR (State Resolution = recognition,
+// did the supersession path close the stale row) and IPA (Implicit Policy
+// Adaptation = application, did retrieval serve the fresh value and never the
+// stale one). The invariant SR >= IPA always holds (application cannot exceed
+// recognition). The --broken-retrieval arm reads include-closed rows so a
+// recognized-stale row LEAKS (stale_fact_reached_prompt > 0) -- R2: the
+// instrument must be able to scream. Offline, deterministic, no model, no live
+// store. MEASURES, does not gate (default-ON, no ELAI_*_ENABLE flag).
+pub mod staleness_runner;
+// H-34: MCP-schema token-budget MEASURE-FIRST runner. Drives an embedded
+// multi-server MCP tool catalog (20 tools: local-rag / pod-lifecycle / notion)
+// OFFLINE and computes a before/after schema token cost: baseline (all tools
+// injected eagerly) vs. injected (floor-only set, defer-load ON-path minimum).
+// Both token counts are COMPUTED from the corpus fixture, never literals.
+// baseline > injected guaranteed by corpus structure. Injected <= 500 tokens
+// (INJECTED_CAP_TOKENS named const). Live multi-server measurement (real
+// tokenizer, RunPod) is a benchmark-class deferral tracked under H-34.
+pub mod mcp_schema_budget_runner;

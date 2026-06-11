@@ -373,6 +373,44 @@ fn is_test_file(file_path: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Scope matching (path-prefix default + execution_path:<csv> module predicate)
+// ---------------------------------------------------------------------------
+
+/// Prefix marking an `execution_path:<csv>` scope predicate.
+///
+/// A scope of the form `execution_path:order,signal,fill` is a module-token
+/// (substring) predicate, NOT a literal path prefix: it matches a file whose
+/// path CONTAINS any of the comma-separated tokens. This expresses the
+/// "reachable from order-emission" call-path scope (LEAN, H-24) as a name-based
+/// approximation that the `starts_with` path-prefix scope cannot — a value like
+/// `execution_path:order,...` begins no real file path, so under the legacy
+/// `starts_with` semantics the scoped rule would fire NEVER (wire-dark).
+const EXECUTION_PATH_SCOPE_PREFIX: &str = "execution_path:";
+
+/// Decide whether `file_path` is within `scope`.
+///
+/// Two scope dialects:
+///   * `execution_path:<csv>` — module-token predicate: true iff the lowercased
+///     `file_path` CONTAINS any non-empty comma-separated token (substring).
+///     This is the H-24 order/signal execution-path scope; it deliberately does
+///     NOT match logging/notification files (their paths contain none of the
+///     execution tokens), so legitimate `if self.LiveMode:` logging branches are
+///     out of scope and never false-blocked.
+///   * any other value — literal path-PREFIX match (`file_path.starts_with`),
+///     the legacy default used by every existing scoped rule (no regression).
+fn scope_matches(scope: &str, file_path: &str) -> bool {
+    if let Some(csv) = scope.strip_prefix(EXECUTION_PATH_SCOPE_PREFIX) {
+        let lower_path = file_path.to_lowercase();
+        csv.split(',')
+            .map(str::trim)
+            .filter(|tok| !tok.is_empty())
+            .any(|tok| lower_path.contains(&tok.to_lowercase()))
+    } else {
+        file_path.starts_with(scope)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Severity ordering for tie-breaking
 // ---------------------------------------------------------------------------
 
@@ -562,7 +600,7 @@ impl DefaultRuleEngine {
                 } else {
                     let in_scope = scope
                         .as_ref()
-                        .is_none_or(|s| context.file_path.starts_with(s.as_str()));
+                        .is_none_or(|s| scope_matches(s.as_str(), context.file_path));
                     if in_scope {
                         if let Some(m) = compiled_regex.find(context.source) {
                             let ev = format!(
@@ -587,7 +625,7 @@ impl DefaultRuleEngine {
             } => {
                 let in_scope = scope
                     .as_ref()
-                    .is_none_or(|s| context.file_path.starts_with(s.as_str()));
+                    .is_none_or(|s| scope_matches(s.as_str(), context.file_path));
                 if !in_scope {
                     return Ok(Verdict {
                         rule_id: rule.rule_id.clone(),
@@ -1359,6 +1397,77 @@ mod tests {
         assert!(
             result.iter().all(|v| v.result == VerdictResult::Allow),
             "out-of-scope file should not trigger"
+        );
+    }
+
+    // -- scope_matches: legacy path-prefix dialect (no regression) --
+
+    #[test]
+    fn scope_matches_path_prefix_default_unchanged() {
+        // A non-execution_path scope keeps the legacy starts_with semantics.
+        assert!(
+            scope_matches("tests/", "tests/foo.rs"),
+            "prefix scope matches a path that starts with it"
+        );
+        assert!(
+            !scope_matches("tests/", "src/main.rs"),
+            "prefix scope does NOT match an unrelated path"
+        );
+        assert!(
+            !scope_matches("tests/", "src/tests/foo.rs"),
+            "prefix scope is anchored at the start, not a substring"
+        );
+    }
+
+    // -- scope_matches: execution_path:<csv> module-token dialect (H-24) --
+
+    #[test]
+    fn scope_matches_execution_path_fires_on_in_scope_module() {
+        // H-24 FIN-SIMREAL-001 scope: an order/signal/execution-path file is in
+        // scope because its path CONTAINS an execution token (substring match),
+        // even though it does not START with "execution_path:...".
+        let scope = "execution_path:order,signal,fill,execution,strategy,on_data,ondata,initialize";
+        assert!(
+            scope_matches(scope, "strategy/order_emission.py"),
+            "an order-emission module is on the execution path (in scope)"
+        );
+        assert!(
+            scope_matches(scope, "src/signals/momentum.py"),
+            "a signal module is on the execution path (in scope)"
+        );
+        assert!(
+            scope_matches(scope, "algo/OnData_handler.py"),
+            "scope tokens match case-insensitively (OnData)"
+        );
+    }
+
+    #[test]
+    fn scope_matches_execution_path_excludes_logging_notification() {
+        // The LEAN-grounded scoping invariant: a logging/notification module is
+        // NOT on the execution path, so the ban is out of scope there (no
+        // false-block of a legitimate `if self.LiveMode: log(...)`).
+        let scope = "execution_path:order,signal,fill,execution,strategy,on_data,ondata,initialize";
+        assert!(
+            !scope_matches(scope, "utils/logging.py"),
+            "a logging module must be out of scope (legitimate LiveMode use)"
+        );
+        assert!(
+            !scope_matches(scope, "notifications/email.py"),
+            "a notification module must be out of scope (legitimate LiveMode use)"
+        );
+    }
+
+    #[test]
+    fn scope_matches_execution_path_empty_tokens_never_match() {
+        // A degenerate execution_path scope with no real tokens matches nothing
+        // (fail-closed: an empty token must not become a universal substring).
+        assert!(
+            !scope_matches("execution_path:", "strategy/order.py"),
+            "an empty execution_path token list matches no file"
+        );
+        assert!(
+            !scope_matches("execution_path:,, ,", "strategy/order.py"),
+            "blank/whitespace-only tokens are skipped, not treated as universal"
         );
     }
 

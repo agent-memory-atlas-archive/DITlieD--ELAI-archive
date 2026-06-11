@@ -895,8 +895,11 @@ impl LiveCli {
                 // FIX C: wire DKG/BM25/vector retrieval for --backend=local -p
                 // callers, matching the knowledge stack built in new_local.
                 // D1: pass ssb.clone() so init_indexing_service can emit SSB rows.
+                let search_mode_shared_p = std::sync::Arc::new(std::sync::Mutex::new(
+                    elai_knowledge::degradation::SearchMode::Hybrid,
+                ));
                 let (knowledge_pipeline, indexing_service) =
-                    Self::build_local_knowledge_stack(&backend_cfg, &session.id, &clock, ssb.clone());
+                    Self::build_local_knowledge_stack(&backend_cfg, &session.id, &clock, ssb.clone(), search_mode_shared_p);
                 let cli = Self {
                     model,
                     allowed_tools,
@@ -996,8 +999,11 @@ impl LiveCli {
         };
         // FIX C: extracted to shared helper; steering precompute stays inline below.
         // D1: pass ssb.clone() so init_indexing_service can emit SSB rows.
+        let search_mode_shared_nl = std::sync::Arc::new(std::sync::Mutex::new(
+            elai_knowledge::degradation::SearchMode::Hybrid,
+        ));
         let (knowledge_pipeline, indexing_service) =
-            Self::build_local_knowledge_stack(&backend_config, &session.id, &clock, ssb.clone());
+            Self::build_local_knowledge_stack(&backend_config, &session.id, &clock, ssb.clone(), search_mode_shared_nl);
 
         // patch-1.33: opt-in steering vector precompute per agent role. Gated on
         // ELAI_PRECOMPUTE_STEERING=1 so the default cold start (which runs
@@ -1247,20 +1253,44 @@ impl LiveCli {
                         &fsm_state,
                     ) {
                         Ok(snap) => {
-                            // Pull the trimmed view back from the persisted snapshot
-                            // so the in-flight `session` reflects post-handoff state.
-                            if let Ok((_, trimmed)) = dag.load_snapshot(&snap.snap_id) {
-                                for (i, tm) in trimmed.iter().enumerate() {
-                                    if tm.is_stubbed && i < session.messages.len() {
-                                        session.messages[i] = ConversationMessage {
-                                            role: session.messages[i].role,
-                                            blocks: vec![ContentBlock::Text {
-                                                text: "[stubbed — content archived in SSB]".to_owned(),
-                                            }],
-                                            usage: None,
-                                        };
-                                    }
+                            // H-49 RV-2 / H-6 recover_stubs live wire:
+                            // Pull the trimmed view back from the snapshot and
+                            // recover real content for any stubbed messages via
+                            // the SSB. Falls back to the placeholder only if the
+                            // SSB recovery fails (best-effort; never panics).
+                            use elai_orchestrator::SsbReader as _;
+                            let recovered = dag.recover_stubs(
+                                &snap.snap_id,
+                                ssb_ref.as_ref(),
+                            );
+                            let trimmed = match recovered {
+                                Ok(msgs) => msgs,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "recover_stubs failed (falling back to placeholder): {e}"
+                                    );
+                                    // Fall back: load raw snapshot for non-stubbed messages.
+                                    dag.load_snapshot(&snap.snap_id)
+                                        .map(|(_, m)| m)
+                                        .unwrap_or_default()
                                 }
+                            };
+                            for (i, tm) in trimmed.iter().enumerate() {
+                                if i >= session.messages.len() {
+                                    break;
+                                }
+                                let text = if tm.is_stubbed {
+                                    // recover_stubs failed for this message — use placeholder.
+                                    "[stubbed — content archived in SSB]".to_owned()
+                                } else {
+                                    // Real content recovered from SSB.
+                                    String::from_utf8_lossy(&tm.content).into_owned()
+                                };
+                                session.messages[i] = ConversationMessage {
+                                    role: session.messages[i].role,
+                                    blocks: vec![ContentBlock::Text { text }],
+                                    usage: None,
+                                };
                             }
                         }
                         Err(e) => eprintln!("warn: create_handoff failed: {e}"),
@@ -1849,7 +1879,17 @@ impl LiveCli {
         // makes progress in the LiveCli REPL path even without it.
         // Emits a MemoryEvolutionRun(phase="decay_tick") SSB row per
         // tick per E-5-decisions.md SCHEMA-LOCK (no new variant).
-        match elai_memory::decay_tick(&facts, now_ms) {
+        //
+        // H-33: read pin beacons from SSB when ELAI_MEMORY_PIN_ENABLE=1.
+        // build_pin_set_from_ssb returns an empty set on any error
+        // (fail-toward-decay: if beacon read fails, all facts decay normally).
+        let pinned_ids_for_decay =
+            if std::env::var("ELAI_MEMORY_PIN_ENABLE").is_ok() {
+                build_pin_set_from_ssb(self.ssb.as_ref())
+            } else {
+                std::collections::HashSet::new()
+            };
+        match elai_memory::decay_tick(&facts, &pinned_ids_for_decay, now_ms) {
             Ok(stats) => {
                 tracing::debug!(
                     rows_examined = stats.rows_examined,
@@ -2112,6 +2152,75 @@ impl LiveCli {
                                 {
                                     let _ = rt.block_on(ssb.write_payload(
                                         "cli.semantic_contradiction",
+                                        0,
+                                        payload,
+                                        Vec::new(),
+                                    ));
+                                }
+                            });
+                        }
+                    }
+                }
+
+                // H-32: citation-validity TTL expiry pass. Runs as a SIBLING
+                // to the F-5/F-12 blocks, still inside the Ok(stats) arm.
+                // Collects Tier-A facts (DomainKnowledge + Mistake) that have
+                // been unread for >28 days (UNUSED_TTL_MS) and soft-closes them
+                // (never DELETE, per stub_ban). Each soft-close emits a
+                // fact_validation_failed SSB row with reason="unknown" (the fact
+                // aged out without a validation confirmation; fail-closed per R2).
+                // Kill-switch: ELAI_FACT_VALIDATION_KILL, default-ON.
+                if !crate::dkg_lifecycle::fact_validation_killed() {
+                    use elai_memory::collect_unused_ttl_expired;
+                    // list_current for the single-user "default" path. Pull a
+                    // generous current slice (same 256 candidate cap as the
+                    // decay scheduler uses) to find TTL-expired Tier-A rows.
+                    let current_facts: Vec<elai_memory::MemoryFact> = facts
+                        .list_current("default", None, None, 256)
+                        .unwrap_or_default();
+                    let expired_ids = collect_unused_ttl_expired(&current_facts, now_ms);
+                    for fact_id in &expired_ids {
+                        // Soft-close the expired row. Treat NotFound as benign
+                        // (race with a concurrent close). Never abort the tick.
+                        match facts.soft_close(fact_id, now_ms) {
+                            Ok(()) => {
+                                tracing::info!(
+                                    target = "memory.citation_validity",
+                                    fact_id = %fact_id,
+                                    "H-32: Tier-A fact TTL expired, soft-closed (never deleted)"
+                                );
+                            }
+                            Err(elai_memory::MemoryError::NotFound(_)) => {
+                                // Already closed by a concurrent path — benign.
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    fact_id = %fact_id,
+                                    "H-32: soft_close errored on TTL-expired fact (non-fatal)"
+                                );
+                            }
+                        }
+                        // Emit the off-agent fact_validation_failed SSB beacon.
+                        if let Some(ssb) = self.ssb.as_ref() {
+                            let payload =
+                                elai_orchestrator::ssb::SsbPayload::FactValidationFailed(
+                                    elai_orchestrator::ssb::FactValidationFailedPayload {
+                                        fact_id: fact_id.clone(),
+                                        citation: String::new(),
+                                        reason: "unknown".into(),
+                                        evidence_blake3: String::new(),
+                                    },
+                                );
+                            let ssb = Arc::clone(ssb);
+                            std::thread::spawn(move || {
+                                if let Ok(rt) =
+                                    tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                {
+                                    let _ = rt.block_on(ssb.write_payload(
+                                        "cli.fact_validation_ttl_expired",
                                         0,
                                         payload,
                                         Vec::new(),
@@ -3085,4 +3194,80 @@ fn c17_research_oracle_prefix(
     }
 
     format!("{}{}", block, query)
+}
+
+/// H-33: read the most recent `MemoryGovernanceEvent` beacons from the SSB
+/// viewer and build the set of currently-pinned `fact_id`s.
+///
+/// Protocol: scan recent rows for `memory_governance_event` action type,
+/// fold Pinned -> add to set, Unpinned -> remove from set (latest beacon wins
+/// for each fact_id).
+///
+/// Fail-toward-decay: returns an empty set on ANY error (SSB unavailable,
+/// decode error, viewer not attached). The caller must NOT treat an empty
+/// return as "nothing is pinned" — it may mean "beacon read failed". The
+/// correct semantic is: if the pin set cannot be read, all facts decay.
+fn build_pin_set_from_ssb(ssb: Option<&Arc<elai_orchestrator::Ssb>>) -> std::collections::HashSet<String> {
+    use elai_orchestrator::ssb::SsbActionType;
+    use elai_orchestrator::SsbViewer;
+
+    let Some(ssb) = ssb else {
+        return std::collections::HashSet::new();
+    };
+    // Open a read-only viewer on the same DB path as the writer.
+    let viewer = match SsbViewer::open(ssb.db_path()) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "H-33: pin-set build: cannot open ssb viewer (fail-toward-decay)");
+            return std::collections::HashSet::new();
+        }
+    };
+    // Read up to the last 2000 rows to capture pin history.
+    let rows = match viewer.recent_rows_of_type(
+        SsbActionType::MemoryGovernanceEvent.as_sql_str(),
+        2000,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "H-33: pin-set build failed (fail-toward-decay)");
+            return std::collections::HashSet::new();
+        }
+    };
+    // Fold: latest beacon per fact_id wins.
+    // Rows are returned newest-first by SSB viewer convention.
+    // SsbActionDetail carries payload_json (serde_json::Value) not a typed
+    // SsbPayload — deserialize the MemoryGovernanceEvent variant from JSON.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut pinned: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for row in rows {
+        // Try to extract from externally-tagged shape:
+        // {"MemoryGovernanceEvent": {"fact_id":..., "kind":..., ...}}
+        let obj = row.payload_json.as_object().and_then(|o| {
+            o.get("MemoryGovernanceEvent").and_then(|v| v.as_object())
+        });
+        let Some(inner) = obj else { continue };
+        let fact_id = match inner.get("fact_id").and_then(|v| v.as_str()) {
+            Some(s) => s.to_owned(),
+            None => continue,
+        };
+        let kind_str = match inner.get("kind").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        // Only the first (newest) beacon per fact_id is authoritative.
+        if seen.contains(&fact_id) {
+            continue;
+        }
+        seen.insert(fact_id.clone());
+        // kind discriminator: "pinned", "unpinned", "forgotten" (snake_case per serde)
+        match kind_str {
+            "pinned" => {
+                pinned.insert(fact_id);
+            }
+            _ => {
+                // "unpinned" or "forgotten": not pinned.
+            }
+        }
+    }
+    pinned
 }

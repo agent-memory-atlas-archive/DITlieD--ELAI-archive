@@ -380,6 +380,7 @@ fn category_label(cat: ToolCategory) -> &'static str {
         ToolCategory::Git => "git",
         ToolCategory::Knowledge => "knowledge",
         ToolCategory::StubWrite => "stub_write",
+        ToolCategory::Canvas => "canvas",
     }
 }
 

@@ -15,8 +15,8 @@ use crate::prompt_cache::{PromptCache, PromptCacheRecord, PromptCacheStats};
 use super::{preflight_message_request, Provider, ProviderFuture};
 use crate::sse::SseParser;
 use crate::types::{
-    CacheControl, MessageDeltaEvent, MessageRequest, MessageResponse, StreamEvent, SystemBlock,
-    Usage,
+    CacheControl, InputContentBlock, MessageDeltaEvent, MessageRequest, MessageResponse,
+    StreamEvent, SystemBlock, Usage,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -437,6 +437,16 @@ impl AnthropicClient {
         &self.auth
     }
 
+    /// H-5 — a Message Batches sibling sharing THIS client's auth + base_url, for the
+    /// non-interactive lane (50% pricing). The synchronous client stays the interactive
+    /// transport; the batch client is constructed here so the private `auth`/`base_url`
+    /// fields are reused rather than re-resolved (GD-1, no transport restatement).
+    #[must_use]
+    pub fn batch_client(&self) -> super::anthropic_batch::AnthropicBatchClient {
+        super::anthropic_batch::AnthropicBatchClient::from_auth(self.auth.clone())
+            .with_base_url(self.base_url.clone())
+    }
+
     pub async fn send_message(
         &self,
         request: &MessageRequest,
@@ -695,7 +705,16 @@ impl AnthropicClient {
         if is_oauth_bearer {
             request_builder = request_builder
                 .header("anthropic-version", OAUTH_ANTHROPIC_VERSION)
-                .header("anthropic-beta", OAUTH_BETA_HEADER)
+                // H-4: join the advanced-tool-use umbrella beta onto the OAuth header.
+                // The OAuth branch does NOT loop profile betas (C14), so a beta added
+                // the normal way is dead on the live OAuth path — the join is mandatory.
+                .header(
+                    "anthropic-beta",
+                    format!(
+                        "{OAUTH_BETA_HEADER},{}",
+                        crate::telemetry_types::ADVANCED_TOOL_USE_BETA
+                    ),
+                )
                 .header("user-agent", CLAUDE_CLI_USER_AGENT)
                 .header("x-app", CLAUDE_X_APP_HEADER)
                 .header("x-claude-code-session-id", claude_code_session_id());
@@ -1023,20 +1042,163 @@ pub fn read_base_url() -> String {
 /// usage, but no request ever carried a marker, so the cache hit rate
 /// was always 0 and the spend tracker reported full input cost on every
 /// call. Wiring markers makes the cloud-mode spend ledger honest.
-fn apply_anthropic_cache_markers(request: &mut MessageRequest) {
-    if let Some(blocks) = request.system.as_mut() {
-        if let Some(last) = blocks.last_mut() {
-            if last.cache_control.is_none() {
-                last.cache_control = Some(CacheControl::ephemeral());
+/// H-2: the automatic prompt-cache prefix-check lookback window. Anthropic's
+/// gateway auto-detects a cache hit against the last ~20 content blocks; the
+/// H-2 tail breakpoint is placed within this window.
+pub(crate) const CACHE_TAIL_LOOKBACK_BLOCKS: usize = 20;
+
+/// H-2: rough chars-per-token used only to estimate whether a system prefix
+/// clears the model's min cacheable size before placing a default marker.
+const CACHE_TOKEN_CHARS_EST: usize = 4;
+
+/// H-2: the minimum cacheable prefix size (in tokens), keyed on the EXACT model
+/// id — never a coarse "Opus = 4096" tier. Below this size Anthropic ignores
+/// `cache_control` markers, so a head marker on a shorter prefix is wasted.
+/// Grounded (docs.anthropic.com prompt-caching, 2026-06-03): 1024 = Opus 4.8,
+/// Sonnet 4.6/4.5, Opus 4.1/4, Sonnet 4; 4096 = Opus 4.7/4.6/4.5, Haiku 4.5,
+/// Mythos Preview; 2048 = Haiku 3.5. Opus 4.8 = 1024 (NOT 4096).
+pub(crate) fn min_cacheable_prefix(model: &str) -> u32 {
+    const PREFIX_1024: u32 = 1024;
+    const PREFIX_2048: u32 = 2048;
+    const PREFIX_4096: u32 = 4096;
+    let m = model.to_ascii_lowercase();
+    let has = |needle: &str| m.contains(needle);
+    if has("haiku-3-5") || has("haiku-3.5") || has("3-5-haiku") || has("3.5-haiku") {
+        // Canonical Anthropic id is `claude-3-5-haiku-20241022` (segment
+        // `3-5-haiku`), not `haiku-3-5` — match both orderings.
+        PREFIX_2048
+    } else if has("opus-4-7")
+        || has("opus-4.7")
+        || has("opus-4-6")
+        || has("opus-4.6")
+        || has("opus-4-5")
+        || has("opus-4.5")
+        || has("haiku-4-5")
+        || has("haiku-4.5")
+        || has("mythos")
+    {
+        PREFIX_4096
+    } else {
+        // Opus 4.8, Sonnet 4.6/4.5, Sonnet 4, Opus 4.1/4, and the safe default.
+        PREFIX_1024
+    }
+}
+
+/// H-1 shipped this stamper (last system block + last tool def). H-2 extends it
+/// to honour the cache-stable layout: the stable-prefix TTL chosen by the caller
+/// (runtime_client sets the system head to `ephemeral_1h()` on a verified
+/// byte-stable prefix) is MIRRORED onto the last tool def, so the
+/// longer-TTL-before-shorter ordering holds (block order is tools -> system ->
+/// messages). A 5-min tail breakpoint then caches the recent-conversation
+/// prefix. Idempotent (`is_none` guards) so a caller-set 1h head is respected.
+pub(crate) fn apply_anthropic_cache_markers(request: &mut MessageRequest) {
+    // T6: only stamp the stable prefix when it clears the model's MIN cacheable
+    // size — below it Anthropic ignores cache_control, so a default marker is
+    // wasted. Keyed on the EXACT model id (never a coarse tier). A caller-set 1h
+    // head (runtime_client, gated on bp.valid) is left untouched by the is_none
+    // guards regardless; Anthropic harmlessly ignores it if sub-min.
+    let model_min = min_cacheable_prefix(&request.model);
+    let system_tokens_est: u32 = request
+        .system
+        .as_ref()
+        .map(|b| b.iter().map(|s| s.text.len()).sum::<usize>() / CACHE_TOKEN_CHARS_EST)
+        .unwrap_or(0)
+        .try_into()
+        .unwrap_or(u32::MAX);
+    let prefix_cacheable = system_tokens_est >= model_min;
+
+    // The stable-prefix TTL: mirror whatever the caller put on the head system
+    // block (None => default 5-min ephemeral). Cloned before any mutation.
+    let prefix_marker = request
+        .system
+        .as_ref()
+        .and_then(|blocks| blocks.last())
+        .and_then(|s| s.cache_control.clone())
+        .unwrap_or_else(CacheControl::ephemeral);
+    if prefix_cacheable {
+        if let Some(blocks) = request.system.as_mut() {
+            if let Some(last) = blocks.last_mut() {
+                if last.cache_control.is_none() {
+                    last.cache_control = Some(CacheControl::ephemeral());
+                }
+            }
+        }
+        if let Some(tools) = request.tools.as_mut() {
+            if let Some(last) = tools.last_mut() {
+                if last.cache_control.is_none() {
+                    // Mirror the head TTL so tools (earlier in block order) are
+                    // never SHORTER-TTL than the system head (Anthropic ordering).
+                    last.cache_control = Some(prefix_marker);
+                }
             }
         }
     }
-    if let Some(tools) = request.tools.as_mut() {
-        if let Some(last) = tools.last_mut() {
-            if last.cache_control.is_none() {
-                last.cache_control = Some(CacheControl::ephemeral());
+    apply_tail_breakpoint(request);
+}
+
+/// H-2 tail breakpoint: mark the last markable (`Text` | `ToolUse`) content
+/// block within the [`CACHE_TAIL_LOOKBACK_BLOCKS`] window with a 5-min marker so
+/// the recent-conversation prefix caches while volatile newest content stays
+/// after it. `ToolResult` has no `cache_control` field, so the walk skips it.
+/// Never 1h (the tail is the volatile region). Optimal block placement is a
+/// Tier-2 tuning concern (needs live cache-read measurement) — H-2 ships the
+/// mechanism.
+fn apply_tail_breakpoint(request: &mut MessageRequest) {
+    let total_blocks: usize = request.messages.iter().map(|m| m.content.len()).sum();
+    if total_blocks == 0 {
+        return;
+    }
+    let window_start = total_blocks.saturating_sub(CACHE_TAIL_LOOKBACK_BLOCKS);
+    let mut idx = 0usize;
+    let mut target: Option<(usize, usize)> = None;
+    for (mi, msg) in request.messages.iter().enumerate() {
+        for (bi, block) in msg.content.iter().enumerate() {
+            if idx >= window_start
+                && matches!(
+                    block,
+                    InputContentBlock::Text { .. } | InputContentBlock::ToolUse { .. }
+                )
+            {
+                target = Some((mi, bi));
+            }
+            idx += 1;
+        }
+    }
+    if let Some((mi, bi)) = target {
+        if let Some(block) = request
+            .messages
+            .get_mut(mi)
+            .and_then(|m| m.content.get_mut(bi))
+        {
+            match block {
+                InputContentBlock::Text { cache_control, .. }
+                | InputContentBlock::ToolUse { cache_control, .. } => {
+                    if cache_control.is_none() {
+                        *cache_control = Some(CacheControl::ephemeral());
+                    }
+                }
+                InputContentBlock::ToolResult { .. } => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod h2_cache_layout_tests {
+    use super::min_cacheable_prefix;
+
+    #[test]
+    fn min_prefix_keyed_on_exact_model_id() {
+        // Opus 4.8 = 1024, NOT 4096 (the binding correction).
+        assert_eq!(min_cacheable_prefix("claude-opus-4-8"), 1024);
+        assert_eq!(min_cacheable_prefix("claude-sonnet-4-6"), 1024);
+        // The 4096 tier.
+        assert_eq!(min_cacheable_prefix("claude-opus-4-7"), 4096);
+        assert_eq!(min_cacheable_prefix("claude-haiku-4-5-20251001"), 4096);
+        // Haiku 3.5 = 2048 — the CANONICAL Anthropic id (segment "3-5-haiku").
+        assert_eq!(min_cacheable_prefix("claude-3-5-haiku-20241022"), 2048);
+        // Unknown -> safe 1024 default.
+        assert_eq!(min_cacheable_prefix("some-future-model"), 1024);
     }
 }
 

@@ -65,12 +65,19 @@ import type {
   RrfQualityGateRow,
   HydeSkippedCodeQueryRow,
   RrfComponentWeightsRow,
+  // B-4 — HyDE hypothesis-preview row for the QueryTrace inspector.
+  HydeQueryRow,
+  // B-5 — full CSQ verdict log row + per-role GRC config row.
+  CsqLogRow,
+  GrcConfigRow,
   // B-3 #11 — RulesDrawer rule_transition feed.
   RuleTransitionRow,
   // F-8 / Slice A5 — SCF symbolic-conflict feed row.
   SymbolicConflict,
   // F-11 — config-DGM admit-loop feed row.
   DarwinianAdmit,
+  // H-46 — CMP parent-selection feed row.
+  CladeSelection,
 } from '../api/types';
 
 const POLL_INTERVAL_MS = 10_000;
@@ -124,8 +131,11 @@ const RAG_QUALITY_BEACON_LIMIT = 10;
 type RagQualityLoadState = 'idle' | 'loading' | 'ready' | 'error';
 
 function createKnowledge() {
-  let dkgStats = $state<DkgStats>({ nodes: 0, edges: 0, bm25_chunks: 0, vector_status: 'BUILDING', freshness_decay_pct: 0 });
+  let dkgStats = $state<DkgStats>({ nodes: 0, edges: 0, bm25_chunks: 0, vector_status: 'BUILDING', freshness_decay_pct: 0, failed_files: 0 });
   let recentTraces = $state<QueryTrace[]>([]);
+  // B-4: HyDE hypothesis-preview feed (newest-first), shown inline in the
+  // QueryTrace inspector. Empty in steady state until a HyDE row lands.
+  let recentHydeQueries = $state<HydeQueryRow[]>([]);
   let breakers = $state<EmbeddingBreaker[]>([]);
   let recallMetrics = $state<RecallMetrics[]>([]);
   let searchMode = $state<SearchMode>('HYBRID');
@@ -151,6 +161,7 @@ function createKnowledge() {
       const [
         stats,
         traces,
+        hyde,
         brk,
         recall,
         sm,
@@ -161,6 +172,8 @@ function createKnowledge() {
       ] = await Promise.all([
         stub.get_dkg_stats(),
         stub.get_query_trace_recent(5),
+        // B-4: HyDE hypothesis-preview rows for the QueryTrace inspector.
+        stub.get_hyde_query_recent(5),
         stub.get_embedding_breakers(),
         stub.get_recall_metrics(),
         stub.get_search_mode(),
@@ -175,6 +188,7 @@ function createKnowledge() {
       ]);
       dkgStats = stats;
       recentTraces = traces;
+      recentHydeQueries = hyde;
       breakers = brk;
       recallMetrics = recall;
       searchMode = sm.mode;
@@ -203,6 +217,8 @@ function createKnowledge() {
   return {
     get dkgStats() { return dkgStats; },
     get recentTraces() { return recentTraces; },
+    /** B-4: HyDE hypothesis-preview rows (newest-first) for the QueryTrace inspector. */
+    get recentHydeQueries() { return recentHydeQueries; },
     get breakers() { return breakers; },
     get recallMetrics() { return recallMetrics; },
     get searchMode() { return searchMode; },
@@ -273,9 +289,14 @@ function createReasoning() {
   // darwinian-evolve. Admitted / RejectedByGuard / LoopClosed.
   let darwinianAdmits = $state<DarwinianAdmit[]>([]);
 
+  // H-46 — CMP parent-selection rows. Empty in steady state; rows appear only
+  // after a `darwin-loop` run with ELAI_DARWINIAN_LOOP_ENABLE=1 + feature
+  // darwinian-evolve. CladeMetaproductivity / ImmediateScoreFallback.
+  let cladeSelections = $state<CladeSelection[]>([]);
+
   async function refresh() {
     try {
-      const [budgets, sweep, csqs, gg, mistakes, feas, reflect, conflicts, admits] = await Promise.all([
+      const [budgets, sweep, csqs, gg, mistakes, feas, reflect, conflicts, admits, clades] = await Promise.all([
         stub.get_grc_budgets(),
         stub.get_grounding_sweep(),
         stub.get_csq_pending(),
@@ -285,6 +306,7 @@ function createReasoning() {
         stub.get_reflect_state(),
         stub.get_symbolic_conflicts(),
         stub.get_darwinian_admits(),
+        stub.get_clade_selections(),
       ]);
       grcBudgets = budgets;
       groundingSweep = sweep;
@@ -305,6 +327,7 @@ function createReasoning() {
       reflectState = reflect;
       symbolicConflicts = conflicts;
       darwinianAdmits = admits;
+      cladeSelections = clades;
     } catch (err) {
       console.debug('[reasoningData] refresh failed', err);
     }
@@ -324,6 +347,8 @@ function createReasoning() {
     get symbolicConflicts() { return symbolicConflicts; },
     // F-11 — config-DGM admit-loop rows (Admitted / RejectedByGuard / LoopClosed).
     get darwinianAdmits() { return darwinianAdmits; },
+    // H-46 — CMP parent-selection rows (CladeMetaproductivity / ImmediateScoreFallback).
+    get cladeSelections() { return cladeSelections; },
     unwired: {
       groundingSweep: false, // C-1: get_grounding_sweep reads SSB grounding_sweep_result rows
       csqPending: false,     // C-1: get_csq_pending reads SSB csq_evaluated rows where blocked=true
@@ -337,6 +362,10 @@ function createReasoning() {
       // steady state (loop not run / gated OFF), not unwired — the producer
       // (darwin-loop CLI) ships in F-11 behind feature + ELAI_DARWINIAN_LOOP_ENABLE.
       darwinianAdmits: false,
+      // H-46: get_clade_selections reads SSB clade_selected rows. Empty =
+      // steady state (loop not run / gated OFF), not unwired — the producer
+      // ships in H-46 behind darwinian-evolve feature + ELAI_DARWINIAN_LOOP_ENABLE.
+      cladeSelections: false,
     },
     bootstrap: rc.bootstrap,
     teardown: rc.teardown,

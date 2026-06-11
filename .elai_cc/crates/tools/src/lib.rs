@@ -150,6 +150,11 @@ pub struct GlobalToolRegistry {
     enforcer: Option<PermissionEnforcer>,
     /// A-31: action policy from [actions] section of elai_cc.toml.
     action_policy: action_classifier::ActionPolicy,
+    /// B-18C: per-agent filesystem allow-list (`AgentHandle.allowed_paths`
+    /// semantics). Empty = no per-agent restriction (default). When set via
+    /// [`Self::with_allowed_paths`] / [`Self::set_allowed_paths`], every
+    /// path-bearing tool denies fail-closed for targets outside the allowance.
+    allowed_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -168,6 +173,7 @@ impl GlobalToolRegistry {
             runtime_tools: Vec::new(),
             enforcer: None,
             action_policy: action_classifier::ActionPolicy::default(),
+            allowed_paths: Vec::new(),
         }
     }
 
@@ -176,6 +182,22 @@ impl GlobalToolRegistry {
     pub fn with_action_policy(mut self, policy: action_classifier::ActionPolicy) -> Self {
         self.action_policy = policy;
         self
+    }
+
+    /// B-18C: attach a per-agent filesystem allow-list. Production callers that
+    /// own an `AgentHandle` pass `handle.allowed_paths.clone()` here so every
+    /// path-bearing tool routed through this registry is fail-closed against the
+    /// agent's allowance. Empty list = no restriction.
+    #[must_use]
+    pub fn with_allowed_paths(mut self, allowed_paths: Vec<String>) -> Self {
+        self.allowed_paths = allowed_paths;
+        self
+    }
+
+    /// B-18C: set the per-agent filesystem allow-list in place. See
+    /// [`Self::with_allowed_paths`].
+    pub fn set_allowed_paths(&mut self, allowed_paths: Vec<String>) {
+        self.allowed_paths = allowed_paths;
     }
 
     pub fn with_plugin_tools(plugin_tools: Vec<PluginTool>) -> Result<Self, String> {
@@ -202,6 +224,7 @@ impl GlobalToolRegistry {
             runtime_tools: Vec::new(),
             enforcer: None,
             action_policy: action_classifier::ActionPolicy::default(),
+            allowed_paths: Vec::new(),
         })
     }
 
@@ -390,12 +413,24 @@ impl GlobalToolRegistry {
 
     pub fn execute(&self, name: &str, input: &Value) -> Result<String, String> {
         if mvp_tool_specs().iter().any(|spec| spec.name == name) {
-            return execute_tool_with_enforcer(self.enforcer.as_ref(), &self.action_policy, name, input);
+            return execute_tool_with_enforcer_scoped(
+                self.enforcer.as_ref(),
+                &self.action_policy,
+                &self.allowed_paths,
+                name,
+                input,
+            );
         }
         if let Some(plugin) = self.plugin_tools.iter().find(|tool| tool.definition().name == name) {
             return plugin.execute(input).map_err(|error| error.to_string());
         }
-        execute_tool_with_enforcer(self.enforcer.as_ref(), &self.action_policy, name, input)
+        execute_tool_with_enforcer_scoped(
+            self.enforcer.as_ref(),
+            &self.action_policy,
+            &self.allowed_paths,
+            name,
+            input,
+        )
     }
 
     fn searchable_tool_specs(&self) -> Vec<SearchableToolSpec> {
@@ -1384,6 +1419,32 @@ fn execute_tool_with_enforcer(
     name: &str,
     input: &Value,
 ) -> Result<String, String> {
+    execute_tool_with_enforcer_scoped(enforcer, action_policy, &[], name, input)
+}
+
+/// B-18C: tool dispatch with an optional per-agent `allowed_paths` restriction.
+///
+/// `allowed_paths` is the calling agent's filesystem allow-list (glob patterns,
+/// `AgentHandle.allowed_paths` semantics). Empty slice = no per-agent
+/// restriction (the original unrestricted behavior). When non-empty, every
+/// path-bearing tool arm (read/write/edit/glob/grep) denies — fail-closed,
+/// same `not_found` envelope as a hidden path so the two gates are
+/// indistinguishable to the agent (R31 leak-uniformity) — when the target
+/// falls outside the allowance, IN ADDITION TO the global `is_hidden_path`
+/// rules.
+fn execute_tool_with_enforcer_scoped(
+    enforcer: Option<&PermissionEnforcer>,
+    action_policy: &action_classifier::ActionPolicy,
+    allowed_paths: &[String],
+    name: &str,
+    input: &Value,
+) -> Result<String, String> {
+    // B-18C: a path is denied when it is globally hidden OR (when the agent has
+    // a non-empty allow-list) it falls outside that allow-list. Fail-closed.
+    let path_denied = |candidate: &str| -> bool {
+        is_hidden_path(candidate)
+            || !file_ops::path_within_allowed_paths(candidate, allowed_paths)
+    };
     // A-31: action classifier + confirmation gate.
     // Classify risk, check gate, produce DAIRA trace entry.
     let (gate_decision, trace_entry) =
@@ -1419,9 +1480,11 @@ fn execute_tool_with_enforcer(
         "read_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                if is_hidden_path(path) {
+                if path_denied(path) {
                     // R31 (tools.txt:264-266): hidden paths must be indistinguishable
                     // from missing paths. Mirror std::io::ErrorKind::NotFound display.
+                    // B-18C: same envelope when the path is outside the agent's
+                    // allowed_paths, so the restriction is unobservable.
                     return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
                 }
             }
@@ -1432,7 +1495,7 @@ fn execute_tool_with_enforcer(
         "write_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                if is_hidden_path(path) {
+                if path_denied(path) {
                     return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
                 }
             }
@@ -1441,7 +1504,7 @@ fn execute_tool_with_enforcer(
         "edit_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                if is_hidden_path(path) {
+                if path_denied(path) {
                     return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
                 }
             }
@@ -1451,6 +1514,15 @@ fn execute_tool_with_enforcer(
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(pattern) = input.get("pattern").and_then(|v| v.as_str()) {
                 if is_hidden_path(pattern) {
+                    return Ok("[]".to_string());
+                }
+            }
+            // B-18C: restrict the search ROOT (a concrete path) to the agent's
+            // allowed_paths. The `pattern` itself is a glob, not a single path,
+            // so it keeps the hidden-path-only check above; the `path` arg is a
+            // real directory and is fail-closed here. Empty allowance = no-op.
+            if let Some(root) = input.get("path").and_then(|v| v.as_str()) {
+                if !file_ops::path_within_allowed_paths(root, allowed_paths) {
                     return Ok("[]".to_string());
                 }
             }
@@ -1467,11 +1539,15 @@ fn execute_tool_with_enforcer(
             let path_opt = input.get("path").and_then(|v| v.as_str());
             let glob_opt = input.get("glob").and_then(|v| v.as_str());
             if let Some(path) = path_opt {
-                if is_hidden_path(path) {
+                // B-18C: the search root is a concrete path -> fail-closed
+                // against allowed_paths in addition to the hidden-path rule.
+                if path_denied(path) {
                     return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
                 }
             }
             if let Some(glob) = glob_opt {
+                // `glob` is a glob pattern, not a single path: hidden-path rule
+                // only (a broad glob must not be force-denied by the allow-list).
                 if is_hidden_path(glob) {
                     return Err(structured_error("not_found", &format!("No such file or directory: {glob}")));
                 }
@@ -2064,6 +2140,95 @@ fn from_value<T: for<'de> Deserialize<'de>>(input: &Value) -> Result<T, String> 
     serde_json::from_value(input.clone()).map_err(|error| error.to_string())
 }
 
+/// G-3: shell verbs whose arguments are filesystem WRITE/DELETE targets. The
+/// blast-radius gate only checks containment for these (a `cat`/`grep`/`ls`
+/// read is not a mutation and must not be over-blocked — the FP guard). This is
+/// a NECESSARY-not-sufficient list (an obfuscated `eval`/base64 path evades it
+/// — DD1 honest limit; the Linux Tier-2 kernel backstop covers that on Linux,
+/// Windows has none). E-30 gates the VERB pre-expansion; G-3 gates the PATH
+/// post-expansion — composing layers, neither re-implemented.
+const FS_MUTATING_VERBS: &[&str] = &[
+    "rm", "rmdir", "mv", "cp", "dd", "truncate", "shred", "unlink",
+    "tee", "install", "ln", "mkdir", "touch", "chmod", "chown",
+];
+
+/// G-3: extract candidate path tokens from a bash command for the FS gate.
+///
+/// Splits on whitespace, skips the verb itself + any `-flag` tokens, and yields
+/// the remaining tokens ONLY when the leading verb is in [`FS_MUTATING_VERVS`].
+/// A non-mutating command yields an empty Vec (the false-positive guard — a
+/// read/list/grep is never blocked). Honest limit: this is not a shell parser;
+/// it does not resolve command substitution, pipelines, or `&&` chains beyond
+/// the first segment. Fail-closed posture lives in `check_fs_target`, not here.
+fn extract_fs_mutating_targets(command: &str) -> Vec<&str> {
+    // Only inspect the first `;`/`&&`/`|` segment's leading verb. A multi-verb
+    // chain still gets each segment checked because we scan every segment.
+    let mut targets: Vec<&str> = Vec::new();
+    for segment in command.split(|c| c == ';' || c == '|' || c == '&') {
+        let mut tokens = segment.split_whitespace();
+        let Some(verb) = tokens.next() else {
+            continue;
+        };
+        // Strip a leading path on the verb (e.g. `/bin/rm` -> `rm`).
+        let verb_leaf = verb.rsplit(['/', '\\']).next().unwrap_or(verb);
+        if !FS_MUTATING_VERBS.contains(&verb_leaf) {
+            continue;
+        }
+        for tok in tokens {
+            // Skip flags; `--` and bare `-` are not paths.
+            if tok.starts_with('-') {
+                continue;
+            }
+            targets.push(tok);
+        }
+    }
+    targets
+}
+
+/// G-3: the bash post-expansion FS blast-radius gate. Returns `Err(reason)` when
+/// any FS-mutating target resolves OUTSIDE the worktree root (cwd), fail-closed.
+/// The kill-switch `ELAI_BLAST_RADIUS_DISABLE` disarms it (default-ON, R9).
+fn check_bash_blast_radius(command: &str) -> Result<(), String> {
+    if elai_orchestrator::blast_radius_ssb_adapter::blast_radius_gate_disabled() {
+        return Ok(());
+    }
+    let worktree_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    for token in extract_fs_mutating_targets(command) {
+        let candidate: PathBuf = match elai_safety::blast_radius::expand_fs_token(token, home.as_deref()) {
+            elai_safety::blast_radius::ExpandedToken::Path(p) => p,
+            elai_safety::blast_radius::ExpandedToken::GlobBase(base) => {
+                if base.as_os_str().is_empty() {
+                    worktree_root.clone()
+                } else {
+                    base
+                }
+            }
+        };
+        // A relative target is resolved against the worktree root (the cwd the
+        // shell will run in); an absolute / `~`-expanded target stands alone.
+        let resolved = if candidate.is_absolute() {
+            candidate
+        } else {
+            worktree_root.join(&candidate)
+        };
+        let verdict =
+            elai_safety::blast_radius::check_fs_target(&resolved, &worktree_root, command);
+        if let elai_safety::blast_radius::BlastRadiusVerdict::Block { post_expansion, .. } =
+            verdict
+        {
+            return Err(format!(
+                "G-3 blast-radius gate: bash filesystem target `{token}` BLOCKED — resolves \
+                 OUTSIDE the worktree root `{}` (fail-closed); resolved={post_expansion}",
+                worktree_root.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn run_bash(input: BashCommandInput) -> Result<String, String> {
     // A-26: Tool routing layer — reject commands that should use dedicated tools.
     if let Some(rejection) = routing_rules::check_routing(&input.command) {
@@ -2079,6 +2244,19 @@ fn run_bash(input: BashCommandInput) -> Result<String, String> {
     // A-27: Safety filter — block dangerous/destructive commands.
     if let Err(msg) = safety_filter::check_bash_safety(&input.command) {
         return Err(structured_error("safety_blocked", &msg));
+    }
+
+    // G-3: deterministic post-EXPANSION filesystem blast-radius gate. ELAI hands
+    // the whole command to `sh -lc` / `cmd /C`, so `~`/`$VAR`/glob/symlink expand
+    // AFTER the A-27 regex check (the #10077 shape). This gate expands path-like
+    // tokens Rust-side and fails CLOSED if any FS-mutating target resolves
+    // outside the worktree root (cwd). Runs AFTER check_bash_safety, BEFORE
+    // execute_bash. The SSB row (blast_radius_blocked) is emitted on the
+    // translate_tool_request FS arm which holds the live Ssb; this tools-crate
+    // path has no Ssb, so it fails closed with a structured error only (the
+    // block itself is the observable effect — the verb never runs).
+    if let Err(msg) = check_bash_blast_radius(&input.command) {
+        return Err(structured_error("blast_radius_blocked", &msg));
     }
 
     if let Some(output) = workspace_test_branch_preflight(&input.command) {
@@ -2708,6 +2886,10 @@ struct AgentJob {
     prompt: String,
     system_prompt: Vec<String>,
     allowed_tools: BTreeSet<String>,
+    /// B-18C: per-agent filesystem allow-list (glob patterns) carried from spawn
+    /// to the sub-agent's tool executor. Empty = no restriction (the default for
+    /// SDK subagent types that have no role-scoped path policy).
+    allowed_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -3414,6 +3596,10 @@ where
     );
     let system_prompt = vec![build_agent_system_preamble(&normalized_subagent_type)];
     let allowed_tools = allowed_tools_for_subagent(&normalized_subagent_type);
+    // B-18C: derive the sub-agent's filesystem allow-list while the subagent
+    // type is still owned (it is moved into the manifest below). Empty for the
+    // SDK subagent types that carry no role-scoped path policy.
+    let allowed_paths = allowed_paths_for_subagent(&normalized_subagent_type);
 
     let output_contents = format!(
         "# Agent Task
@@ -3457,6 +3643,7 @@ where
         prompt: structured_prompt,
         system_prompt,
         allowed_tools,
+        allowed_paths,
     };
     if let Err(error) = spawn_fn(job) {
         let error = format!("failed to spawn sub-agent: {error}");
@@ -3514,8 +3701,11 @@ fn build_agent_runtime(
     let allowed_tools = job.allowed_tools.clone();
     let api_client = ProviderRuntimeClient::new(model, allowed_tools.clone())?;
     let permission_policy = agent_permission_policy();
+    // B-18C: thread the sub-agent's filesystem allow-list into its tool
+    // executor so every file tool is fail-closed against the allowance.
     let tool_executor = SubagentToolExecutor::new(allowed_tools)
-        .with_enforcer(PermissionEnforcer::new(permission_policy.clone()));
+        .with_enforcer(PermissionEnforcer::new(permission_policy.clone()))
+        .with_allowed_paths(job.allowed_paths.clone());
     Ok(ConversationRuntime::new(
         Session::new(),
         api_client,
@@ -3644,6 +3834,25 @@ fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
         ],
     };
     tools.into_iter().map(str::to_string).collect()
+}
+
+/// B-18C: per-subagent filesystem allow-list (glob patterns) for the in-process
+/// `Agent`-tool spawn path. Returns the allow-list that the spawned sub-agent's
+/// `SubagentToolExecutor` enforces fail-closed.
+///
+/// The SDK subagent types routed through this path (`Explore`, `Plan`,
+/// `Verification`, the general default, etc.) carry NO role-scoped path policy:
+/// they inherit the parent process's working tree and are bounded by the global
+/// `is_hidden_path` rules (`.elai_cc/`, `rules.db`). An empty allow-list is the
+/// correct, deliberate "no extra per-agent restriction" policy here — mirroring
+/// `AgentHandle.allowed_paths` "Empty = no extra allowances" — NOT a stub. The
+/// orchestrator-side per-role restriction (`role_default_allowed_paths` for
+/// `AgentRole::{Auditor,ContextCompiler,...}`) is applied where those handles
+/// are constructed (agent_pool.rs); this seam keeps the dispatch leg wired so a
+/// future SDK-subagent-type -> path policy is a one-line table entry, not a
+/// re-plumb.
+fn allowed_paths_for_subagent(_subagent_type: &str) -> Vec<String> {
+    Vec::new()
 }
 
 fn agent_permission_policy() -> PermissionPolicy {
@@ -4005,6 +4214,11 @@ impl ApiClient for ProviderRuntimeClient {
 struct SubagentToolExecutor {
     allowed_tools: BTreeSet<String>,
     enforcer: Option<PermissionEnforcer>,
+    /// B-18C: per-agent filesystem allow-list for this sub-agent. Empty = no
+    /// restriction (existing behavior). Populated from the spawning
+    /// `AgentJob.allowed_paths` so the sub-agent's file tools are fail-closed
+    /// to its allowance.
+    allowed_paths: Vec<String>,
 }
 
 impl SubagentToolExecutor {
@@ -4012,11 +4226,19 @@ impl SubagentToolExecutor {
         Self {
             allowed_tools,
             enforcer: None,
+            allowed_paths: Vec::new(),
         }
     }
 
     fn with_enforcer(mut self, enforcer: PermissionEnforcer) -> Self {
         self.enforcer = Some(enforcer);
+        self
+    }
+
+    /// B-18C: attach the sub-agent's filesystem allow-list (glob patterns,
+    /// `AgentHandle.allowed_paths` semantics). Empty = no restriction.
+    fn with_allowed_paths(mut self, allowed_paths: Vec<String>) -> Self {
+        self.allowed_paths = allowed_paths;
         self
     }
 }
@@ -4030,8 +4252,14 @@ impl ToolExecutor for SubagentToolExecutor {
         }
         let value = serde_json::from_str(input)
             .map_err(|error| ToolError::new(format!("invalid tool input JSON: {error}")))?;
-        execute_tool_with_enforcer(self.enforcer.as_ref(), &action_classifier::ActionPolicy::default(), tool_name, &value)
-            .map_err(ToolError::new)
+        execute_tool_with_enforcer_scoped(
+            self.enforcer.as_ref(),
+            &action_classifier::ActionPolicy::default(),
+            &self.allowed_paths,
+            tool_name,
+            &value,
+        )
+        .map_err(ToolError::new)
     }
 }
 
@@ -7690,6 +7918,56 @@ printf 'pwsh:%s' "$1"
             result.is_ok(),
             "glob_search should be allowed in read-only mode: {result:?}"
         );
+    }
+
+    #[test]
+    #[cfg_attr(windows, ignore = "P: elai_tools lib-test exe segfaults (STATUS_STACK_BUFFER_OVERRUN 0xc0000409) on Windows; same batch as worker_tools_* tests. Pure-string matcher coverage lives in file_ops::tests (runs on Windows).")]
+    fn given_agent_allowed_paths_when_read_outside_then_denied_fail_closed() {
+        // B-18C: a GlobalToolRegistry carrying a per-agent allow-list denies a
+        // read of a path OUTSIDE the allowance (fail-closed), with the SAME
+        // not_found envelope a hidden path produces (R31 leak-uniformity), and
+        // permits a read INSIDE the allowance. This proves the gate is wired at
+        // the production `execute` dispatch boundary, not only in the matcher.
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let inside_root = temp_path("b18c-allowed");
+        fs::create_dir_all(&inside_root).expect("create inside root");
+        let inside_file = inside_root.join("ok.txt");
+        fs::write(&inside_file, "content\n").expect("write inside file");
+
+        let outside_root = temp_path("b18c-denied");
+        fs::create_dir_all(&outside_root).expect("create outside root");
+        let outside_file = outside_root.join("secret.txt");
+        fs::write(&outside_file, "secret\n").expect("write outside file");
+
+        let allow_glob = format!("{}/**", inside_root.display());
+        let registry = super::GlobalToolRegistry::builtin().with_allowed_paths(vec![allow_glob]);
+
+        // Inside the allowance -> permitted.
+        let ok = registry.execute(
+            "read_file",
+            &json!({ "path": inside_file.display().to_string() }),
+        );
+        assert!(ok.is_ok(), "read inside allowed_paths should succeed: {ok:?}");
+
+        // Outside the allowance -> denied, fail-closed, not_found envelope.
+        let denied = registry
+            .execute(
+                "read_file",
+                &json!({ "path": outside_file.display().to_string() }),
+            )
+            .expect_err("read outside allowed_paths must be denied");
+        let err_json: serde_json::Value =
+            serde_json::from_str(&denied).expect("error is a structured JSON envelope");
+        assert_eq!(
+            err_json["error_code"], "not_found",
+            "denied path must mirror missing-file envelope: {denied}"
+        );
+
+        let _ = fs::remove_dir_all(inside_root);
+        let _ = fs::remove_dir_all(outside_root);
     }
 
     #[test]

@@ -16,8 +16,8 @@ use std::sync::Arc;
 use elai_orchestrator::start_task_runner;
 
 use crate::runtime_builder::{
-    apply_task_runner_wiring, build_task_runner_wiring, install_production_agent_pool,
-    CliInteractiveGate,
+    apply_task_runner_wiring, build_task_runner_wiring, install_buffer_editor,
+    install_production_agent_pool, CliInteractiveGate,
 };
 
 /// Parsed `elai run` arguments.
@@ -51,6 +51,13 @@ pub struct RunArgs {
     /// `scripts/ci-mcp-parity.sh` to compare in-process vs via-mcp legs.
     /// One JSON object per line: {action_type, payload, seq, created_at}.
     pub export_ssb: Option<PathBuf>,
+    /// G-2 -- when `--emit-rra` is set, force-write a Reproducible-Run Artifact
+    /// (`.rra`) bundle at run end to the session's `run.rra` (or to the path
+    /// given by `--emit-rra <path>`). The RRA is emitted by default at run end
+    /// (the kill-switch is `ELAI_RRA_DISABLE`); this flag additionally lets the
+    /// operator pin a custom output path. `None` => default
+    /// `<sessions>/<sid>/run.rra`.
+    pub emit_rra: Option<PathBuf>,
 }
 
 /// Synchronous entry consumed by the `CliAction::Run` match arm. Owns its
@@ -348,24 +355,54 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
     // agent binary lookup) so the synthetic fallback semantics are preserved.
     install_production_agent_pool(&mut wiring, &project_root, &session_id).await?;
 
+    // B-28 WIRING-2 (item E2-DIFF) — install the production buffer editor so the
+    // focus-tunnel DIFF branch applies hunks through the real 3-tier matcher
+    // instead of falling back to STRUCTURED. Independent of the agent-pool path
+    // above (DIFF must work even when the agent binary is absent). The slot is
+    // threaded onto TaskRunnerConfig by apply_task_runner_wiring below.
+    install_buffer_editor(&mut wiring);
+
     // C-13 — install the production hook dispatcher BEFORE wiring is
     // applied so apply_task_runner_wiring threads it onto
     // TaskRunnerConfig.hook_dispatcher (Tier-1 surface). See
     // workflow/reasoning/C-13-decisions.md (DECISION D3 option 3A).
     // F-9 / Slice D3 — project_root threaded in so the gate can resolve
     // the registry_check.py path via SubprocessRegistryChecker::default_at_root.
+    // H-38 BLOCK-1: thread interactive_gate into the stop-cost confirm path so
+    // CLI Interactive mode can present the confirm prompt on high-spend stops.
+    // Autonomous / headless callers have interactive_gate=None; the cost gate
+    // still fires and defaults to HOLD (fail-closed).
     wiring.hook_dispatcher =
         Some(elai_orchestrator::runtime_setup::build_production_hook_dispatcher(
             wiring.ssb.clone(),
             wiring.vibegate_seed_ok,
             &project_root,
+            wiring.interactive_gate.clone(),
         ));
     tracing::info!(
-        "elai run: production InProcessHookDispatcher with RuffPostToolUseRunner + VibeGate SSB + DepWriteTimeGate installed"
+        "elai run: production InProcessHookDispatcher with RuffPostToolUseRunner + VibeGate SSB + DepWriteTimeGate + StopCostGate installed"
     );
 
     let ssb_writer: Arc<elai_orchestrator::Ssb> = wiring.ssb.clone();
-    let cfg = apply_task_runner_wiring(cursor_path, &wiring);
+    // G-2: retain a clone of the live run handle for the RRA seal at run end
+    // (DD2: the same Arc<Ssb> reads the stream AND writes the beacon row;
+    // start_task_runner consumes `ssb_writer` below).
+    let rra_ssb: Arc<elai_orchestrator::Ssb> = ssb_writer.clone();
+    let mut cfg = apply_task_runner_wiring(cursor_path, &wiring);
+    // E-46 D-8: thread the `[planning.*]` TOML stanzas (already parsed into
+    // `elai_config.planning` above) onto `TaskRunnerConfig::planning_config`
+    // so the orchestrator uses operator-supplied thresholds at runtime instead
+    // of the compile-time module constants. `elai_config` was loaded above for
+    // the `[cloud]` section; reuse the same parse result here (zero extra I/O).
+    // Default-safe: `PlanningConfig::default()` matches the module constants, so
+    // an absent `[planning]` stanza in elai_cc.toml has zero behavioural effect.
+    cfg.planning_config = elai_config.planning.clone();
+    tracing::info!(
+        ledger_reset_blocker_threshold = cfg.planning_config.ledger.ledger_reset_blocker_threshold,
+        entropy_ratio_threshold = cfg.planning_config.entropy.entropy_ratio_threshold,
+        jaccard_similarity_threshold = cfg.planning_config.goal_drift.jaccard_similarity_threshold,
+        "elai run: E-46 D-8 planning_config threaded from elai_cc.toml [planning.*]"
+    );
 
     let (mut handle, cancel) = start_task_runner(ssb_writer, cfg);
 
@@ -429,8 +466,426 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
         handle.finish().await;
     }
 
+    // G-2 -- seal the Reproducible-Run Artifact (.rra) at run end, using the
+    // SAME live `ssb_writer` handle that wrote the rest of the stream (DD2: the
+    // emit + the run_artifact_emitted row MUST share the run's Arc<Ssb>; a fresh
+    // Ssb::new would bind a different session_id and split the stream). Default-
+    // ON; suppressed only by the ELAI_RRA_DISABLE kill-switch. Best-effort: an
+    // RRA failure is logged and never masks the runner outcome.
+    if !rra_disabled() {
+        let rra_path = args.emit_rra.clone().unwrap_or_else(|| {
+            project_root
+                .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+                .join("sessions")
+                .join(&session_id)
+                .join("run.rra")
+        });
+        if let Err(e) = emit_run_artifact(&rra_ssb, &session_id, &rra_path).await {
+            tracing::warn!(error = %e, "elai run: G-2 RRA emit failed (best-effort); run outcome unaffected");
+        }
+    } else {
+        tracing::info!("elai run: G-2 RRA emit suppressed by ELAI_RRA_DISABLE kill-switch");
+    }
+
+    // G-8 -- build + sign + emit the in-toto provenance attestation at run end,
+    // ALONGSIDE the G-2 RRA emit, using the SAME live `rra_ssb` handle (DD4: the
+    // attestation row MUST share the run's Arc<Ssb> + read the SAME stream the
+    // RRA does; a fresh Ssb::new would split the session_id). The attestation
+    // re-expresses the G-2 RunArtifact manifest as a signed in-toto Statement +
+    // writes the sidecar attestation.intoto.json + emits the
+    // provenance_attestation_emitted beacon. Default-ON; suppressed only by the
+    // ELAI_ATTESTATION_DISABLE kill-switch. Best-effort: a failure is logged and
+    // never masks the runner outcome.
+    if !attestation_disabled() {
+        let attestation_path = project_root
+            .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+            .join("sessions")
+            .join(&session_id)
+            .join("attestation.intoto.json");
+        if let Err(e) = emit_attestation(&rra_ssb, &session_id, &attestation_path).await {
+            tracing::warn!(error = %e, "elai run: G-8 attestation emit failed (best-effort); run outcome unaffected");
+        }
+    } else {
+        tracing::info!(
+            "elai run: G-8 attestation emit suppressed by ELAI_ATTESTATION_DISABLE kill-switch"
+        );
+    }
+
+    // G-10 -- run the exogenous model-version behavioral-regression check at
+    // run end, ALONGSIDE the G-2 RRA emit + G-8 attestation, using the SAME
+    // live `rra_ssb` handle (DD4: the row MUST share the run's Arc<Ssb>). On
+    // a detected identity change (fingerprint/model differs from the last-good
+    // baseline) re-runs the canary and emits ModelDriftSuspected on regression.
+    // Default-ON; suppressed only by the ELAI_MODEL_DRIFT_DISABLE kill-switch.
+    // Best-effort: a failure is logged and never masks the runner outcome. See
+    // workflow/reasoning/G-10-decisions.md (DD4: NOT runtime_setup.rs).
+    if !model_drift_disabled() {
+        if let Err(e) = emit_model_drift_check(&rra_ssb, &session_id, &project_root).await {
+            tracing::warn!(
+                error = %e,
+                "elai run: G-10 model-drift check failed (best-effort); run outcome unaffected"
+            );
+        }
+    } else {
+        tracing::info!(
+            "elai run: G-10 model-drift check suppressed by ELAI_MODEL_DRIFT_DISABLE kill-switch"
+        );
+    }
+
     outcome
 }
+
+/// G-2 kill-switch check. The RRA emit is DEFAULT-ON; the only opt-out is the
+/// `ELAI_RRA_DISABLE` kill-switch (truthy value). There is deliberately NO
+/// default-OFF enable flag (W-2: default-off is not a terminal state; the
+/// deterministic check asserts zero enable-flag references for this feature).
+fn rra_disabled() -> bool {
+    env_truthy("ELAI_RRA_DISABLE")
+}
+
+/// G-8 kill-switch check. The attestation emit is DEFAULT-ON; the only opt-out
+/// is the `ELAI_ATTESTATION_DISABLE` kill-switch (truthy value). There is
+/// deliberately NO default-OFF enable flag (W-2 / R9: default-off is not a
+/// terminal state; the deterministic check asserts zero enable-flag references
+/// for this feature -- the kill-switch above is the sole control).
+fn attestation_disabled() -> bool {
+    env_truthy("ELAI_ATTESTATION_DISABLE")
+}
+
+/// Shared truthy-env check for the G-2 / G-8 DEFAULT-ON kill-switches: a var set
+/// to `1` / `true` / `yes` / `on` (case-insensitive) disables the feature.
+fn env_truthy(var: &str) -> bool {
+    match std::env::var(var) {
+        Ok(raw) => {
+            let v = raw.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        }
+        Err(_) => false,
+    }
+}
+
+/// G-10 kill-switch check. The model-drift check is DEFAULT-ON; the only
+/// opt-out is the `ELAI_MODEL_DRIFT_DISABLE` kill-switch (truthy value).
+/// There is deliberately NO default-OFF enable flag (W-2: default-off is not
+/// a terminal state; the deterministic check asserts zero enable-flag
+/// references for this feature — the kill-switch above is the sole control).
+fn model_drift_disabled() -> bool {
+    env_truthy("ELAI_MODEL_DRIFT_DISABLE")
+}
+
+/// G-10 -- run the exogenous model-version behavioral-regression check at run
+/// end. Reads the full ordered stream via the LIVE `ssb` handle (same handle
+/// G-2 + G-8 use), resolves the identity tuple from the DeterminismConfig
+/// pins + the model_swap stream, reads the last-good baseline file (if any),
+/// re-runs the canary fixture set, and emits ONE `model_drift_suspected` row
+/// on regression. Best-effort: on any failure logs a warn and returns Err.
+async fn emit_model_drift_check(
+    ssb: &Arc<elai_orchestrator::Ssb>,
+    session_id: &str,
+    project_root: &std::path::Path,
+) -> Result<(), anyhow::Error> {
+    use elai_orchestrator::{
+        canary::{CanaryFamily, CanaryFamilyBundle, MarkerEvaluator, DEFAULT_MIN_PER_FAMILY},
+        held_out::{ExpectedOutcome, HeldOutTask, TaskId, TaskSource},
+        model_drift::{
+            check_model_drift, record_baseline, now_ms, DriftSignal, DriftVerdict, Lane, ModelIdentity,
+        },
+        ssb::{DriftSignalKind, ModelDriftSuspectedPayload, SsbPayload},
+    };
+    use elai_orchestrator::ssb::SsbReader as _;
+
+    // 1. Read the session stream to derive the identity tuple.
+    let stream = ssb
+        .query_session_stream_asc(session_id)
+        .map_err(|e| anyhow::anyhow!("G-10: reading session stream: {e}"))?;
+
+    let pins = elai_orchestrator::determinism::DeterminismConfig::from_env()
+        .map_err(|e| anyhow::anyhow!("G-10: resolving determinism pins: {e}"))?;
+
+    // build_rra derives model_pin + system_fingerprint_pin + has_cloud from stream.
+    let artifact = elai_orchestrator::rra::build_rra(session_id, &stream, &pins);
+
+    let identity = ModelIdentity::from_rra_fields(
+        artifact.model_pin.as_deref(),
+        artifact.system_fingerprint_pin.as_deref(),
+        // has_cloud heuristic: GuaranteeLevel reflects the cloud/local split.
+        matches!(
+            artifact.guarantee_level,
+            elai_orchestrator::rra::GuaranteeLevel::VerifyDivergence { .. }
+        ),
+    );
+
+    // 2. Build fixture canary bundles (same as CLI baseline/check commands).
+    let bundles: Vec<CanaryFamilyBundle> = CanaryFamily::all()
+        .iter()
+        .map(|f| {
+            let tasks: Vec<HeldOutTask> = (0..DEFAULT_MIN_PER_FAMILY)
+                .map(|i| HeldOutTask {
+                    task_id: TaskId(format!("pass_g10_{}_{}", f.as_str(), i)),
+                    source: TaskSource::Synthetic { seed: i as u64 },
+                    content_blake3: {
+                        let h = blake3::hash(
+                            format!("g10_fixture_{}_{}", f.as_str(), i).as_bytes(),
+                        );
+                        format!("{:.16}", h.to_hex())
+                    },
+                    expected_outcome: ExpectedOutcome::Code("ok".to_owned()),
+                    ingested_ts_ms: 0,
+                    eligibility_window_ms: 0,
+                    ngram_signature: vec![],
+                    body: format!("g10 fixture task {} {}", f.as_str(), i),
+                    template_id: None,
+                })
+                .collect();
+            CanaryFamilyBundle { family: *f, tasks }
+        })
+        .collect();
+
+    let evaluator = MarkerEvaluator {
+        pass_marker: "pass_g10".to_owned(),
+    };
+
+    // 3. Try to load the last-good baseline. If absent, capture one and skip emit.
+    let baseline_dir = project_root
+        .join("benchmarks")
+        .join("model_drift");
+    let latest_baseline = std::fs::read_dir(&baseline_dir)
+        .ok()
+        .and_then(|entries| {
+            let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+                .filter_map(|e| {
+                    let e = e.ok()?;
+                    let p = e.path();
+                    if p.extension().and_then(|s| s.to_str()) == Some("json") {
+                        let mt = e.metadata().ok()?.modified().ok()?;
+                        Some((mt, p))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            files.sort_by(|a, b| b.0.cmp(&a.0));
+            files.into_iter().next().map(|(_, p)| p)
+        });
+
+    let baseline = match latest_baseline {
+        Some(path) => {
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("G-10: read baseline {}: {e}", path.display()))?;
+            serde_json::from_str::<elai_orchestrator::model_drift::DriftBaseline>(&raw)
+                .map_err(|e| anyhow::anyhow!("G-10: parse baseline: {e}"))?
+        }
+        None => {
+            // No baseline yet — capture one and skip drift check this run.
+            tracing::info!(
+                identity_key = %identity.identity_key(),
+                "G-10: no baseline found; capturing baseline for current identity (no drift check this run)"
+            );
+            let ts = now_ms();
+            let baseline = record_baseline(&identity, &bundles, &evaluator, ts)
+                .await
+                .map_err(|e| anyhow::anyhow!("G-10: record_baseline: {e}"))?;
+            // Write baseline file.
+            let _ = std::fs::create_dir_all(&baseline_dir);
+            let key = identity.identity_key();
+            let prefix = &key[..key.len().min(16)];
+            let path = baseline_dir.join(format!("baseline-{prefix}.json"));
+            if let Ok(json) = serde_json::to_string_pretty(&baseline) {
+                let _ = std::fs::write(&path, json);
+            }
+            return Ok(());
+        }
+    };
+
+    // 4. Re-run the canary and check for drift.
+    let ts = now_ms();
+    let verdict = check_model_drift(&identity, &baseline, &bundles, &evaluator, ts)
+        .await
+        .map_err(|e| anyhow::anyhow!("G-10: check_model_drift: {e}"))?;
+
+    match verdict {
+        DriftVerdict::NoDrift | DriftVerdict::BaselineCaptured => {
+            tracing::debug!(
+                identity_key = %identity.identity_key(),
+                "G-10: model-drift check: NoDrift"
+            );
+        }
+        DriftVerdict::BehavioralDriftSuspected {
+            ref signals,
+            ref per_family_delta,
+            ref affected_template_ids,
+            confirmed_by_fingerprint,
+        } => {
+            // 5. Emit the off-agent SSB row (R4): the real run entrypoint detected
+            //    drift and this row landed through the SAME live Arc<Ssb>.
+            let primary_kind = if signals.iter().any(|s| matches!(s, DriftSignal::FingerprintChanged)) {
+                DriftSignalKind::FingerprintChanged
+            } else if signals.iter().any(|s| matches!(s, DriftSignal::CanaryRegressed)) {
+                DriftSignalKind::CanaryRegressed
+            } else {
+                DriftSignalKind::MalformedOutputSpike
+            };
+
+            let payload = ModelDriftSuspectedPayload {
+                identity_key: identity.identity_key(),
+                kind: primary_kind,
+                signals: signals.iter().map(|s| s.label().to_owned()).collect(),
+                per_family_delta: per_family_delta
+                    .iter()
+                    .map(|(f, d)| (f.as_str().to_owned(), *d))
+                    .collect(),
+                affected_template_ids: affected_template_ids.clone(),
+                confirmed_by_fingerprint,
+                baseline_captured_at: baseline.captured_at_ms,
+            };
+
+            ssb.write_payload(
+                "cli:run-model-drift",
+                0,
+                SsbPayload::ModelDriftSuspected(payload),
+                Vec::new(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("G-10: writing model_drift_suspected row: {e}"))?;
+
+            tracing::warn!(
+                identity_key = %identity.identity_key(),
+                confirmed_by_fingerprint,
+                "G-10: BehavioralDriftSuspected emitted -- model_drift_suspected row written"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// G-2 -- build + write the `.rra` bundle and emit ONE `run_artifact_emitted`
+/// SSB row through the LIVE run handle (DD2). Reads the full ordered stream via
+/// the same handle, builds the artifact from the determinism pins, writes it
+/// uncompressed (DD1), then writes the beacon row carrying the blake3 root.
+async fn emit_run_artifact(
+    ssb: &Arc<elai_orchestrator::Ssb>,
+    session_id: &str,
+    rra_path: &std::path::Path,
+) -> Result<(), anyhow::Error> {
+    use elai_orchestrator::ssb::SsbReader as _;
+
+    // 1. Read the full, ordered, untruncated action stream for this session.
+    let stream = ssb
+        .query_session_stream_asc(session_id)
+        .map_err(|e| anyhow::anyhow!("reading session stream for RRA: {e}"))?;
+
+    // 2. Resolve the determinism pins (seed / hardware class / fingerprint).
+    let pins = elai_orchestrator::determinism::DeterminismConfig::from_env()
+        .map_err(|e| anyhow::anyhow!("resolving determinism pins for RRA: {e}"))?;
+
+    // 3. Build + write the artifact.
+    let artifact = elai_orchestrator::rra::build_rra(session_id, &stream, &pins);
+    elai_orchestrator::rra::write_rra(&artifact, rra_path)
+        .map_err(|e| anyhow::anyhow!("writing .rra to {}: {e}", rra_path.display()))?;
+
+    // 4. Emit the off-agent beacon row through the SAME live handle (R4): a
+    //    real run entrypoint sealed the artifact and this row landed.
+    let gate_count = u32::try_from(artifact.manifest.len()).unwrap_or(u32::MAX);
+    let payload = elai_orchestrator::ssb::SsbPayload::RunArtifactEmitted(
+        elai_orchestrator::RunArtifactEmittedPayload {
+            root_blake3: artifact.root_blake3.clone(),
+            guarantee_level: artifact.guarantee_level.as_sql_str().to_owned(),
+            gate_count,
+            seed: artifact.seed,
+            session_id: session_id.to_owned(),
+        },
+    );
+    ssb.write_payload("cli:run-rra", 0, payload, Vec::new())
+        .await
+        .map_err(|e| anyhow::anyhow!("writing run_artifact_emitted row: {e}"))?;
+
+    tracing::info!(
+        rra_path = %rra_path.display(),
+        root_blake3 = %artifact.root_blake3,
+        guarantee_level = %artifact.guarantee_level.as_sql_str(),
+        gate_count,
+        "elai run: G-2 RRA sealed + run_artifact_emitted row written"
+    );
+    Ok(())
+}
+
+/// G-8 -- build + sign + write the in-toto provenance attestation and emit ONE
+/// `provenance_attestation_emitted` SSB row through the LIVE run handle (DD4).
+/// Reads the SAME full ordered stream the RRA reads via the same handle, builds
+/// the G-2 [`RunArtifact`] (GD-1: CONSUMES the F-gate manifest, re-implements
+/// none), re-expresses it as a signed in-toto Statement (a LOCAL blake3-Merkle
+/// proof; no new dep), writes the sidecar `attestation.intoto.json`, then writes
+/// the off-agent beacon row carrying the blake3-Merkle subject digest.
+async fn emit_attestation(
+    ssb: &Arc<elai_orchestrator::Ssb>,
+    session_id: &str,
+    attestation_path: &std::path::Path,
+) -> Result<(), anyhow::Error> {
+    use elai_orchestrator::ssb::SsbReader as _;
+
+    // 1. Read the full, ordered, untruncated action stream for this session
+    //    (the SAME stream G-2 reads — shared handle, DD4).
+    let stream = ssb
+        .query_session_stream_asc(session_id)
+        .map_err(|e| anyhow::anyhow!("reading session stream for attestation: {e}"))?;
+
+    // 2. Resolve the determinism pins (seed / hardware class / fingerprint).
+    let pins = elai_orchestrator::determinism::DeterminismConfig::from_env()
+        .map_err(|e| anyhow::anyhow!("resolving determinism pins for attestation: {e}"))?;
+
+    // 3. Build the G-2 RunArtifact (GD-1: CONSUME the manifest, re-implement no
+    //    F-gate), then re-express + sign it as an in-toto Statement.
+    let artifact = elai_orchestrator::rra::build_rra(session_id, &stream, &pins);
+    let statement = elai_orchestrator::attestation::build_attestation(&artifact)
+        .map_err(|e| anyhow::anyhow!("building in-toto attestation: {e}"))?;
+
+    // 4. Write the sidecar attestation.intoto.json next to the run artifacts.
+    elai_orchestrator::attestation::write_sidecar(&statement, attestation_path).map_err(|e| {
+        anyhow::anyhow!(
+            "writing attestation sidecar to {}: {e}",
+            attestation_path.display()
+        )
+    })?;
+
+    // 5. Emit the off-agent beacon row through the SAME live handle (R4): a real
+    //    run entrypoint built + signed the attestation and this row landed.
+    let subject_blake3 = statement
+        .subject_digest()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("attestation has no subject digest"))?;
+    let verified_levels = u32::try_from(statement.predicate.verified_levels.len()).unwrap_or(u32::MAX);
+    let all_passed = statement.predicate.verified_levels.iter().all(|v| v.passed);
+    let payload = elai_orchestrator::ssb::SsbPayload::ProvenanceAttestationEmitted(
+        elai_orchestrator::ProvenanceAttestationEmittedPayload {
+            session_id: session_id.to_owned(),
+            subject_blake3: subject_blake3.clone(),
+            run_artifact_root: artifact.root_blake3.clone(),
+            verified_levels,
+            all_passed,
+            signing_model: ATTESTATION_SIGNING_MODEL.to_owned(),
+        },
+    );
+    ssb.write_payload("cli:run-attestation", 0, payload, Vec::new())
+        .await
+        .map_err(|e| anyhow::anyhow!("writing provenance_attestation_emitted row: {e}"))?;
+
+    tracing::info!(
+        attestation_path = %attestation_path.display(),
+        subject_blake3 = %subject_blake3,
+        run_artifact_root = %artifact.root_blake3,
+        verified_levels,
+        all_passed,
+        "elai run: G-8 in-toto attestation signed + provenance_attestation_emitted row written"
+    );
+    Ok(())
+}
+
+/// G-8 -- the honest signing-model label recorded on every emitted attestation
+/// beacon (GD-5): the default is a LOCAL blake3-Merkle proof (offline recompute),
+/// NOT a Sigstore-Rekor transparency-log witness. The deferred cosign-keyless
+/// path (feature `cosign-attest`) would record a different label.
+const ATTESTATION_SIGNING_MODEL: &str = "local_blake3_merkle";
 
 // ---------------------------------------------------------------------------
 // C-39 lifecycle + SSB export helpers

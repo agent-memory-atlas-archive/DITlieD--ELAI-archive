@@ -474,6 +474,82 @@ impl InMemoryChannelRegistry {
             }
         }
     }
+
+    /// phase-3D.recover_from_checkpoint: install a serialized [`ChannelState`]
+    /// (produced by [`ChannelRegistry::snapshot_for_scheduling`] and persisted
+    /// in a `BspCheckpoint`) back into the registry under `name`.
+    ///
+    /// This is the inverse of `snapshot_for_scheduling`. Because `ChannelState`
+    /// is type-erased bytes that drop the per-write `ssb_seq` (LastValue/Topic)
+    /// and the Topic `accumulate` flag, restoration preserves those from any
+    /// pre-declared entry already present under `name` (channels are declared
+    /// at registry construction, so the seq/accumulate metadata is the live
+    /// registry's, not the snapshot's). Bytes — the actual channel value — come
+    /// from the checkpoint. When no entry exists yet, a fresh entry is created
+    /// with `ssb_seq = 0` and `accumulate = false` (the conservative default;
+    /// a non-accumulating topic is cleared each superstep, so a mis-defaulted
+    /// flag cannot leak stale data across barriers).
+    pub fn restore_state(&mut self, name: &str, state: &ChannelState) {
+        match state {
+            ChannelState::LastValue(bytes) => {
+                match self.last_values.get_mut(name) {
+                    Some(entry) => {
+                        entry.bytes = bytes.clone();
+                    }
+                    None => {
+                        self.last_values.insert(
+                            name.to_owned(),
+                            LastValueEntry {
+                                bytes: bytes.clone(),
+                                ssb_seq: 0,
+                            },
+                        );
+                    }
+                }
+            }
+            ChannelState::Topic(entries) => {
+                // Reconstruct ordered (bytes, seq) pairs. The snapshot lost the
+                // per-entry seq; assign a monotonic index so read order is the
+                // checkpoint order and a later real write (with a real seq)
+                // always supersedes.
+                let rebuilt: Vec<(Vec<u8>, i64)> = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, b)| (b.clone(), i64::try_from(idx).unwrap_or(i64::MAX)))
+                    .collect();
+                match self.topics.get_mut(name) {
+                    Some(entry) => {
+                        entry.entries = rebuilt;
+                    }
+                    None => {
+                        self.topics.insert(
+                            name.to_owned(),
+                            TopicEntry {
+                                entries: rebuilt,
+                                accumulate: false,
+                            },
+                        );
+                    }
+                }
+            }
+            ChannelState::Ephemeral(maybe_bytes) => {
+                match self.ephemerals.get_mut(name) {
+                    Some(entry) => {
+                        entry.bytes = maybe_bytes.clone();
+                    }
+                    None => {
+                        self.ephemerals.insert(
+                            name.to_owned(),
+                            EphemeralEntry {
+                                bytes: maybe_bytes.clone(),
+                                write_count: 0,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Default for InMemoryChannelRegistry {

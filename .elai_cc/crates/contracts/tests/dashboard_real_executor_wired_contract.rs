@@ -130,6 +130,7 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
         system_prober: None,
         feasibility_prober: None,
         autonomous_gate: None,
+        plan_interactive_gate: None,
         layer1a_processor: None,
         dispatch_context_profile: None,
         reflection_client: None,
@@ -150,6 +151,10 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
         mcp_dispatch: None,
         // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
         token_tracker: None,
+        // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
+        buffer_editor: None,
+        // E-46 D-8: contract fixture — module-constant defaults.
+        planning_config: Default::default(),
     };
 
     assert!(
@@ -194,6 +199,7 @@ fn contract_task_runner_config_synthetic_fallback_shape() {
         system_prober: None,
         feasibility_prober: None,
         autonomous_gate: None,
+        plan_interactive_gate: None,
         layer1a_processor: None,
         dispatch_context_profile: None,
         reflection_client: None,
@@ -214,6 +220,10 @@ fn contract_task_runner_config_synthetic_fallback_shape() {
         mcp_dispatch: None,
         // C.5: legacy contract fixture -- no live tracker (sentinel fallback).
         token_tracker: None,
+        // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
+        buffer_editor: None,
+        // E-46 D-8: contract fixture — module-constant defaults.
+        planning_config: Default::default(),
     };
     assert!(cfg.baby_step_executor.is_none());
     assert!(!cfg.anti_spiral_enabled);

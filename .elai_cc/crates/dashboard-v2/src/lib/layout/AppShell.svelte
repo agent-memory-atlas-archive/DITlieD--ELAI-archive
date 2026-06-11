@@ -8,6 +8,9 @@
 
   interface Props {
     sidebar: Snippet;
+    /** H-11: optional explorer rail content (FileExplorer.svelte). When absent
+     *  the explorer column has 0 width (--explorer-width defaults to 0px). */
+    explorer?: Snippet;
     primaryPanel: Snippet;
     divider: Snippet;
     secondaryPanel: Snippet;
@@ -17,7 +20,7 @@
     children?: Snippet;
   }
 
-  let { sidebar, primaryPanel, divider, secondaryPanel, rail, statusBar, overlay }: Props = $props();
+  let { sidebar, explorer, primaryPanel, divider, secondaryPanel, rail, statusBar, overlay }: Props = $props();
 
   let shellEl = $state<HTMLElement | undefined>(undefined);
   let dropStripHover = $state(false);
@@ -136,11 +139,17 @@
 <div
   class="app-shell anim-enter-fade"
   bind:this={shellEl}
-  style="--panel-split: 50%"
+  style="--panel-split: 50%; --explorer-width: {workspace.explorerWidth}px"
 >
   <div class="sidebar-col">
     {@render sidebar()}
   </div>
+
+  {#if explorer && workspace.explorerWidth > 0}
+    <div class="explorer-col">
+      {@render explorer()}
+    </div>
+  {/if}
 
   <div class="panels-area">
     {@render primaryPanel()}
@@ -183,7 +192,12 @@
     width: 100vw;
     height: 100vh;
     display: grid;
-    grid-template-columns: 48px 1fr 0; /* C-6: matches Sidebar width 48px */
+    /* H-11: added explorer rail column (column 2). Column 1 = 48px Sidebar
+     * (C-6 preserved). Column 2 = explorer rail (--explorer-width CSS var,
+     * default 0 = hidden). Column 3 = main panels area. Column 4 = right rail.
+     * SEPARATE from panelSplit; driven by workspace.explorerWidth.
+     * Sidebar.svelte grid-column remains 1; panels-area shifts from 2 -> 3. */
+    grid-template-columns: 48px var(--explorer-width, 0px) 1fr 0; /* C-6 + H-11 */
     grid-template-rows: 1fr 22px;
     background: var(--bg-void);
     overflow: hidden;
@@ -199,8 +213,20 @@
     z-index: 10;
   }
 
-  .panels-area {
+  /* H-11: explorer rail slot (column 2). Hidden when --explorer-width is 0. */
+  .explorer-col {
     grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-void);
+    border-right: 1px solid var(--border-subtle);
+    min-width: 0;
+  }
+
+  .panels-area {
+    grid-column: 3; /* H-11: shifted from 2 -> 3 to make room for explorer rail */
     grid-row: 1;
     display: flex;
     flex-direction: row;
@@ -261,7 +287,7 @@
   }
 
   .statusbar-row {
-    grid-column: 2 / 4;
+    grid-column: 2 / 5; /* H-11: extended to cover explorer col + panels + right rail */
     grid-row: 2;
     display: flex;
     align-items: stretch;

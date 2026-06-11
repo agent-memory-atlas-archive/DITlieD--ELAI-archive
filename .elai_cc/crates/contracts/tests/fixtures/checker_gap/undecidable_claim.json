@@ -1,0 +1,7 @@
+{
+  "claim_id": "undecidable-1",
+  "claim_type": "computational",
+  "text": "This assertion requires first-order entailment reasoning over unbounded domains",
+  "has_grounding_evidence": false,
+  "note": "Computational claim with first-order entailment keyword. classify_complexity_taxon should return Undecidable (priority=2, HIGH)."
+}

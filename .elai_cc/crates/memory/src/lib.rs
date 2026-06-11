@@ -36,6 +36,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod citation_validity;
 pub mod contradiction;
 pub mod core_block;
 pub mod decay;
@@ -88,7 +89,11 @@ pub use quarantine_broadcast::{
     collect_quarantined, QuarantineBroadcastQueue, QuarantineRecord,
     QUARANTINE_QUEUE_CAPACITY, STALENESS_QUARANTINE_THRESHOLD,
 };
-pub use retrieval::{get_relevant_facts, RetrievalFilter};
+pub use citation_validity::{
+    classify_fact_tier, collect_unused_ttl_expired, revalidate_citation, CitationPointer,
+    CitationValidator, NullValidator, Tier, Validity, UNUSED_TTL_MS,
+};
+pub use retrieval::{get_relevant_facts, RetrievalFilter, ValidationExclusion};
 pub use semantic_contradiction::{
     adjudicate_semantic, collect_cross_key_candidates, pair_fingerprint, ContradictionCandidate,
     DeterministicNliJudge, NliJudge, NliLabel, NliVerdict, SemanticAction, SemanticConflictOutcome,

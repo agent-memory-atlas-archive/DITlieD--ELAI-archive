@@ -73,6 +73,11 @@ pub use mcp_bridge::{
     // GatewayAuthzSsbEmitter / C-47 CaseBaseSsbEmitter precedent.
     ReliabilityGateSsbEmitter, NoopReliabilityEmitter,
     reliability_emit_kinds, reliability_reject_reasons,
+    // G-4: live MCP rug-pull / line-jump re-pin gate emitter trait + noop +
+    // kill-switch env var + accessor. Same dependency-inversion as E-18; the
+    // orchestrator wires a real implementor via `with_rug_pull_ssb_emitter`.
+    RugPullSsbEmitter, NoopRugPullSsbEmitter, ELAI_MCP_REPIN_DISABLE_ENV,
+    mcp_repin_disabled,
 };
 #[cfg(feature = "mcp")]
 pub use mcp_lifecycle::{HeartbeatMonitor, McpConnectionManager, RetryPolicy};
@@ -115,7 +120,10 @@ pub use mcp::pins::{
     DEFAULT_PINS_PATH as MCP_PINS_DEFAULT_PATH,
 };
 #[cfg(feature = "mcp")]
-pub use mcp_schema_pin::{PinStatus, PinRecord, ToolDef, SchemaPinError, pin_or_verify, update_pin, hash_tool_list};
+pub use mcp_schema_pin::{
+    hash_tool_list, pin_or_verify, read_pin, reverify_on_list_changed, update_pin, PinRecord,
+    PinStatus, RugPullVerdict, SchemaPinError, ToolDef, ToolDescDiff, ToolDescEntry,
+};
 #[cfg(feature = "mcp")]
 pub use mcp_budget::{BudgetedTool, EnforceReport, TokenBudget, DEFAULT_BUDGET_TOKENS, enforce, estimate_tokens};
 #[cfg(feature = "mcp")]

@@ -62,6 +62,10 @@ use elai_orchestrator::ssb_viewer::SymbolicConflictRow;
 // producer is the wire-dark darwin-loop CLI, gated by feature + env at the
 // orchestrator/CLI layer, not here).
 use elai_orchestrator::ssb_viewer::DarwinianAdmitRow;
+// H-46: CladeSelectionRow is the CMP parent-selection feed. Same access model as
+// DarwinianAdmitRow — read-side always compiled; producer is wire-dark
+// (config_archive::select_parent_with_cmp behind darwinian-evolve + env).
+use elai_orchestrator::ssb_viewer::CladeSelectionRow;
 // B-3 #28: SelfModProposalRow only consumed by the
 // #[cfg(feature="self-modification")] branches of get_pending_proposals /
 // get_applied_proposals; gate the import to match so default builds don't
@@ -242,13 +246,31 @@ pub async fn runtime_composer2_status(
 // E-24: MCP security status
 // ---------------------------------------------------------------------------
 
-/// E-24: Returns MCP security status for all connected servers.
-/// In MVP, returns an empty list (no connected servers on startup).
-/// The dashboard polls this to render McpStatusPanel.
+/// E-24 / G-4: Returns the real MCP security status feed for the
+/// `McpStatusPanel`. De-stubbed in G-4 (was a hard-coded `vec![]`): now reads
+/// the `mcp_rug_pull_blocked` SSB rows via the viewer, so a runtime rug-pull /
+/// line-jump (a reconnect re-fetch whose blake3 schema pin no longer matched)
+/// surfaces as a real security event with its before/after schema hashes, the
+/// changed tool names, and the description-diff count. Returns an empty list
+/// when no SSB DB is reachable (fresh install) or no rug-pull has occurred.
+///
+/// The dedicated `McpRugPullDrawer` reads the same rows via
+/// `commands_g4::get_mcp_rug_pulls` (richer, capped feed); this command keeps
+/// the existing panel's contract (a flat `Vec<Value>` it polls).
 #[tauri::command]
-pub fn get_mcp_security_status() -> Vec<serde_json::Value> {
-    vec![]
+pub fn get_mcp_security_status(state: State<'_, AppState>) -> Vec<serde_json::Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return vec![];
+    };
+    let rows = viewer.mcp_rug_pulls(MCP_SECURITY_STATUS_FEED_CAP).unwrap_or_default();
+    rows.into_iter()
+        .filter_map(|r| serde_json::to_value(r).ok())
+        .collect()
 }
+
+/// G-4 — read cap for the legacy `get_mcp_security_status` panel feed. Kept
+/// small (the panel is a status summary, not the full forensic drawer).
+const MCP_SECURITY_STATUS_FEED_CAP: usize = 50;
 
 // ---------------------------------------------------------------------------
 // FSM / SYSTEM STATUS
@@ -1212,6 +1234,34 @@ pub fn get_darwinian_admits(state: State<'_, AppState>) -> CmdResult<Value> {
     serde_json::to_value(rows).map_err(map_err)
 }
 
+/// H-46 — dashboard read cap for the CMP parent-selection feed.
+const CLADE_SELECTIONS_FEED_CAP: usize = 200;
+
+/// H-46 — list CMP parent-selection events newest-first. Each entry is one
+/// `CladeSelected` SSB row emitted by `config_archive::select_parent_with_cmp`
+/// during a DGM generation. Surfaces `node_id`, `cmp`, `clade_size`,
+/// `immediate_score`, and `key_used` (CladeMetaproductivity /
+/// ImmediateScoreFallback).
+///
+/// NOT gated behind the `self-modification` feature: `SsbViewer::clade_selections`
+/// is an always-compiled read-side query; the PRODUCER (the darwin-loop CLI) is
+/// the wire-dark surface (gated by feature `darwinian-evolve` + env
+/// `ELAI_DARWINIAN_LOOP_ENABLE=1`), not this reader.
+///
+/// Returns an empty array when no SSB DB is reachable. Serde serializes
+/// `CladeSelectionRow`'s field names verbatim, so the frontend `CladeSelection`
+/// DTO must mirror them exactly.
+#[tauri::command]
+pub fn get_clade_selections(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows: Vec<CladeSelectionRow> = viewer
+        .clade_selections(CLADE_SELECTIONS_FEED_CAP)
+        .unwrap_or_default();
+    serde_json::to_value(rows).map_err(map_err)
+}
+
 /// Phase A4 — operator confirms a pending Layer 1A proposal. Delegates to
 /// `Layer1aProcessor::apply_proposal`, which is the canonical path that
 /// mutates rules.db AND emits the `ProposalApplied` (+ `MsiUpdate` /
@@ -1397,6 +1447,71 @@ pub fn get_query_trace_recent(state: State<'_, AppState>, n: u32) -> CmdResult<V
 /// C-1: default row count returned by `get_query_trace_recent` when the
 /// caller passes `n=0`. Named constant per codeRules baseline.
 const QUERY_TRACE_DEFAULT_LIMIT: usize = 20;
+
+/// B-4: default row count returned by `get_hyde_query_recent` when the
+/// caller passes `n=0`. Matches `QUERY_TRACE_DEFAULT_LIMIT` — the
+/// KnowledgeDrawer hypothesis-preview panel shows the latest event plus a
+/// short history strip.
+const HYDE_QUERY_DEFAULT_LIMIT: usize = 20;
+
+/// B-4: dashboard-side hard cap on `get_hyde_query_recent`. The viewer's
+/// own `DRAWER_QUERY_HARD_CAP` (500) is the absolute ceiling; we keep a
+/// tighter cap here so a frontend bug cannot pull hundreds of rows over IPC
+/// for this narrow per-event feed.
+const HYDE_QUERY_HARD_CAP: usize = 200;
+
+/// B-4: read the most recent `hyde_query` SSB rows written by
+/// `HydeStage::hypothesize`. Returns `[]` when no SSB DB is reachable OR no
+/// rows have been written yet. Each row is reshaped from
+/// [`elai_orchestrator::HydeQueryPayload`] for the KnowledgeDrawer
+/// hypothesis-preview inline panel.
+///
+/// SSB-FIDELITY NOTE: the `hyde_query` payload persists `query_hash`
+/// (blake3 hex of the query bytes) + `hypothesis_len` (char length of the
+/// produced hypothesis; `0` when none was produced) + `cache_hit` +
+/// `latency_ms`. It deliberately does NOT persist the full hypothesis
+/// TEXT (privacy / row-size); the dashboard previews length + cache-hit +
+/// latency, not the raw hypothesis string.
+#[tauri::command]
+pub fn get_hyde_query_recent(state: State<'_, AppState>, n: u32) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let limit = (n as usize)
+        .max(HYDE_QUERY_DEFAULT_LIMIT)
+        .min(HYDE_QUERY_HARD_CAP);
+    let rows = viewer
+        .recent_rows_of_type(SsbActionType::HydeQuery.as_sql_str(), limit)
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        // SsbPayload serializes externally-tagged:
+        //   {"HydeQuery": {query_hash, hypothesis_len, cache_hit, latency_ms}}
+        let inner = detail
+            .payload_json
+            .get("HydeQuery")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "query_hash": inner.get("query_hash").cloned().unwrap_or(Value::Null),
+            "hypothesis_len": inner
+                .get("hypothesis_len")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            "cache_hit": inner
+                .get("cache_hit")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            "latency_ms": inner
+                .get("latency_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        }));
+    }
+    Ok(json!(out))
+}
 
 // ---------------------------------------------------------------------------
 // E-17 SP4: RAG retrieval-quality SSB row surface
@@ -2154,6 +2269,15 @@ pub fn get_dkg_stats(state: State<'_, AppState>) -> CmdResult<Value> {
                 .unwrap_or(0),
             "vector_status": "READY",
             "freshness_decay_pct": 0,
+            // B-4 (SSB-FIDELITY): the DkgReady SSB row that backs
+            // `dkg_stats()` currently carries node_count + edge_count +
+            // languages only — it does NOT persist a parse-failure count
+            // (DkgEngine::failed_files() exists but is never plumbed into
+            // IndexingSummary -> DkgReadyPayload). Read the field
+            // defensively so this command picks the count up automatically
+            // once the producer-side payload field lands; until then it
+            // reports 0 rather than fabricating a number.
+            "failed_files": v.get("failed_files").and_then(|x| x.as_u64()).unwrap_or(0),
         }))
     } else {
         // Real numbers from metrics/phase_1A.toml fallback.
@@ -2163,6 +2287,8 @@ pub fn get_dkg_stats(state: State<'_, AppState>) -> CmdResult<Value> {
             "bm25_chunks": 0,
             "vector_status": "BUILDING",
             "freshness_decay_pct": 0,
+            // B-4: no SSB DB reachable -> failure count unknown, report 0.
+            "failed_files": 0,
         }))
     }
 }
@@ -2407,6 +2533,9 @@ fn b33_build_decomposition_view(
             // selectors EXIST in GraphWindow style array, so the moment
             // status flows here, visual feedback ships automatically.
             status: None,
+            // H-10 (HD-5): dead-code fields not applicable to decomposition view.
+            is_dead_code: None,
+            coverage_count: None,
         });
         if let Some(p) = parent {
             edges.push(VizFileEdge {
@@ -5552,6 +5681,152 @@ fn extract_text_delta(frame: &str) -> Option<String> {
     delta.get("text").and_then(|t| t.as_str()).map(str::to_owned)
 }
 
+// ---------------------------------------------------------------------------
+// E-2 — streaming timing telemetry (StreamingTimingRecorded SSB beacon).
+//
+// The SSB variant + payload live in elai_orchestrator::ssb (off-limits to
+// this unit); this is the PRODUCER side that plumbs + emits. The emit is
+// gated wire-dark behind ELAI_STREAMING_TIMING_ENABLE so default builds emit
+// nothing (zero behaviour change). The env-var name is declared locally
+// because ssb.rs (where sibling *_ENABLE_ENV consts live) is frozen for the
+// paused H-plan; the const value is the canonical flag string regardless.
+// ---------------------------------------------------------------------------
+
+/// Production gate for the StreamingTimingRecorded emit. Default-OFF.
+const ELAI_STREAMING_TIMING_ENABLE_ENV: &str = "ELAI_STREAMING_TIMING_ENABLE";
+
+/// True iff `ELAI_STREAMING_TIMING_ENABLE` is set to a truthy value.
+fn streaming_timing_enabled() -> bool {
+    std::env::var(ELAI_STREAMING_TIMING_ENABLE_ENV)
+        .ok()
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+/// Nearest-rank percentile (P-th) of a slice of inter-chunk gaps in ms.
+/// Returns 0 when the slice is empty. `pct` is clamped to `[0, 100]`. The
+/// slice is sorted in-place by the caller's clone; this fn takes a sorted
+/// view to avoid re-sorting per percentile.
+fn percentile_ms(sorted_gaps: &[u32], pct: u32) -> u32 {
+    if sorted_gaps.is_empty() {
+        return 0;
+    }
+    let pct = pct.min(100);
+    // Nearest-rank: rank = ceil(pct/100 * n), 1-based, clamped to n.
+    let n = sorted_gaps.len();
+    let rank = ((pct as usize * n) + 99) / 100; // ceil(pct*n/100)
+    let idx = rank.saturating_sub(1).min(n - 1);
+    sorted_gaps[idx]
+}
+
+/// Accumulates per-stream timing while SSE chunks arrive, then materializes a
+/// [`StreamingTimingRecordedPayload`] at stream-end. All wall-clock math uses
+/// [`std::time::Instant`] so it is monotonic and unaffected by clock skew;
+/// only the final `ts_ms` field is UNIX-epoch wall time.
+struct StreamTiming {
+    start: std::time::Instant,
+    ttft: Option<std::time::Duration>,
+    last_chunk_at: Option<std::time::Instant>,
+    inter_chunk_gaps_ms: Vec<u32>,
+    tokens_emitted: u32,
+}
+
+impl StreamTiming {
+    fn new() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            ttft: None,
+            last_chunk_at: None,
+            inter_chunk_gaps_ms: Vec::new(),
+            tokens_emitted: 0,
+        }
+    }
+
+    /// Record one rendered text delta. Sets TTFT on the first delta and
+    /// records the gap since the previous delta on every subsequent one.
+    fn on_delta(&mut self) {
+        let now = std::time::Instant::now();
+        if self.ttft.is_none() {
+            self.ttft = Some(now.duration_since(self.start));
+        }
+        if let Some(prev) = self.last_chunk_at {
+            // NARROWING-OK: gaps are sub-second in practice; saturate at u32::MAX.
+            let gap = now.duration_since(prev).as_millis();
+            self.inter_chunk_gaps_ms
+                .push(u32::try_from(gap).unwrap_or(u32::MAX));
+        }
+        self.last_chunk_at = Some(now);
+        self.tokens_emitted = self.tokens_emitted.saturating_add(1);
+    }
+
+    /// Build the typed SSB payload for this stream. `ts_ms` is wall-clock.
+    fn into_payload(
+        self,
+        request_id: String,
+        stop_reason: &str,
+        ts_ms: i64,
+    ) -> elai_orchestrator::ssb::StreamingTimingRecordedPayload {
+        let total_ms =
+            u32::try_from(self.start.elapsed().as_millis()).unwrap_or(u32::MAX);
+        let ttft_ms = self
+            .ttft
+            .map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX))
+            .unwrap_or(0);
+        let mut sorted = self.inter_chunk_gaps_ms.clone();
+        sorted.sort_unstable();
+        let mean_inter_chunk_ms = if sorted.is_empty() {
+            0
+        } else {
+            // u64 accumulation avoids overflow on long streams.
+            let sum: u64 = sorted.iter().map(|&g| g as u64).sum();
+            u32::try_from(sum / sorted.len() as u64).unwrap_or(u32::MAX)
+        };
+        elai_orchestrator::ssb::StreamingTimingRecordedPayload {
+            request_id,
+            ttft_ms,
+            mean_inter_chunk_ms,
+            p50_inter_chunk_ms: percentile_ms(&sorted, 50),
+            p99_inter_chunk_ms: percentile_ms(&sorted, 99),
+            total_ms,
+            tokens_emitted: self.tokens_emitted,
+            stop_reason: stop_reason.to_owned(),
+            ts_ms,
+        }
+    }
+}
+
+/// Emit a StreamingTimingRecorded SSB row for a completed chat stream.
+/// No-op (returns immediately) when the wire-dark gate is OFF or no SSB
+/// writer is wired. Best-effort: a failed write is swallowed because the
+/// user-facing stream already completed; telemetry must never surface as a
+/// stream error.
+async fn emit_streaming_timing(
+    writer: Option<&std::sync::Arc<elai_orchestrator::ssb::Ssb>>,
+    timing: StreamTiming,
+    request_id: String,
+    stop_reason: &str,
+    ts_ms: i64,
+) {
+    if !streaming_timing_enabled() {
+        return;
+    }
+    let Some(writer) = writer else {
+        return;
+    };
+    let payload = SsbPayload::StreamingTimingRecorded(timing.into_payload(
+        request_id,
+        stop_reason,
+        ts_ms,
+    ));
+    // Best-effort: log on failure, never propagate.
+    if let Err(e) = writer
+        .write_payload("dashboard-v2", 0, payload, vec![])
+        .await
+    {
+        tracing::warn!(error = %e, "streaming_timing_recorded emit failed");
+    }
+}
+
 /// POSTs to `{sidecar_url}/v1/messages` with `stream=true`, then reads the
 /// SSE response chunk-by-chunk and emits Tauri events to the frontend:
 /// - `"chat-stream:{request_id}"` — one per `content_block_delta/text_delta`.
@@ -5808,8 +6083,22 @@ pub async fn start_chat_stream(
     let active_streams = state.active_streams.clone();
     let stream_id_task = stream_id.clone();
     let app_task = app.clone();
+    // E-2: SSB writer + clock cloned out of `state` (not Send into the task)
+    // so the StreamingTimingRecorded beacon can be emitted at stream-end.
+    let timing_writer = state.writer.clone();
+    let timing_clock = state.clock.clone();
 
     let join = tokio::task::spawn(async move {
+        // E-2: monotonic per-stream timing accumulator. Starts the wall-clock
+        // anchor at the moment the request task begins.
+        let mut timing = StreamTiming::new();
+        let timing_ts = || {
+            timing_clock
+                .system_now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        };
         let mut req = streaming_client.post(&messages_url);
         for (k, v) in &headers {
             req = req.header(*k, v);
@@ -5829,6 +6118,14 @@ pub async fn start_chat_stream(
                     &format!("chat-stream-end:{stream_id_task}"),
                     json!({ "stream_id": stream_id_task, "error": format!("upstream HTTP {status}: {detail}") }),
                 );
+                emit_streaming_timing(
+                    timing_writer.as_ref(),
+                    timing,
+                    stream_id_task.clone(),
+                    "error",
+                    timing_ts(),
+                )
+                .await;
                 return;
             }
             Err(e) => {
@@ -5836,6 +6133,14 @@ pub async fn start_chat_stream(
                     &format!("chat-stream-end:{stream_id_task}"),
                     json!({ "stream_id": stream_id_task, "error": e.to_string() }),
                 );
+                emit_streaming_timing(
+                    timing_writer.as_ref(),
+                    timing,
+                    stream_id_task.clone(),
+                    "error",
+                    timing_ts(),
+                )
+                .await;
                 return;
             }
         };
@@ -5855,6 +6160,9 @@ pub async fn start_chat_stream(
                         let frame = sse_buf[..pos].to_owned();
                         sse_buf = sse_buf[pos + 2..].to_owned();
                         if let Some(text) = extract_text_delta(&frame) {
+                            // E-2: record per-token timing (TTFT on the first
+                            // delta, inter-chunk gap on each subsequent one).
+                            timing.on_delta();
                             let _ = app_task.emit(
                                 &format!("chat-stream:{stream_id_task}"),
                                 json!({ "text": text, "stream_id": stream_id_task }),
@@ -5869,6 +6177,14 @@ pub async fn start_chat_stream(
                             if let Ok(mut g) = active_streams.lock() {
                                 g.remove(&stream_id_task);
                             }
+                            emit_streaming_timing(
+                                timing_writer.as_ref(),
+                                timing,
+                                stream_id_task.clone(),
+                                "end_turn",
+                                timing_ts(),
+                            )
+                            .await;
                             return;
                         }
                     }
@@ -5881,6 +6197,14 @@ pub async fn start_chat_stream(
                     if let Ok(mut g) = active_streams.lock() {
                         g.remove(&stream_id_task);
                     }
+                    emit_streaming_timing(
+                        timing_writer.as_ref(),
+                        timing,
+                        stream_id_task.clone(),
+                        "end_turn",
+                        timing_ts(),
+                    )
+                    .await;
                     return;
                 }
                 Err(e) => {
@@ -5891,6 +6215,14 @@ pub async fn start_chat_stream(
                     if let Ok(mut g) = active_streams.lock() {
                         g.remove(&stream_id_task);
                     }
+                    emit_streaming_timing(
+                        timing_writer.as_ref(),
+                        timing,
+                        stream_id_task.clone(),
+                        "error",
+                        timing_ts(),
+                    )
+                    .await;
                     return;
                 }
             }
@@ -5922,6 +6254,126 @@ pub async fn cancel_chat_stream(
             Ok(json!({ "ok": true, "stream_id": request_id }))
         }
         None => Ok(json!({ "ok": false, "stream_id": request_id, "reason": "not found" })),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E-2 — StreamingTimingRecorded emit smoke (off-agent artifact proof).
+//
+// Wiring-enforcement R4/R7: the load-bearing proof is the SSB ROW the emit
+// leaves in a real Ssb (not the agent's stdout, not a leaf-name grep). The
+// orchestrator INTEGRATION test harness does not link in this env (ort/ndarray
+// rlib-format failure), so this lives as an IN-CRATE #[cfg(test)] lib test:
+// drive `emit_streaming_timing` against a temp-file Ssb with the wire-dark gate
+// ON, then read the row back via `query_by_type` and decode the payload. The
+// gate is exercised both ways (OFF => zero rows, ON => exactly one).
+// One sequential #[tokio::test] (the shared ELAI_* env races a parallel split).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod streaming_timing_emit_tests {
+    use super::{
+        emit_streaming_timing, percentile_ms, StreamTiming,
+        ELAI_STREAMING_TIMING_ENABLE_ENV,
+    };
+    use elai_orchestrator::ssb::{Ssb, SsbActionType, SsbConfig, SsbPayload};
+    use elai_orchestrator::{decode_ssb_payload_bytes, SsbReader};
+    use std::sync::Arc;
+
+    fn temp_ssb(name: &str) -> (tempfile::TempDir, Arc<Ssb>) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let cfg = SsbConfig {
+            db_path: dir.path().join(format!("{name}.db")),
+            pool_size: Some(2),
+            project_id: "default".into(),
+            session_id: "test-session".into(),
+        };
+        let clock: Arc<dyn elai_core::ClockProvider> =
+            Arc::new(elai_core::clock::SeededClock::new());
+        let ssb = Arc::new(Ssb::new(cfg, clock).expect("ssb init"));
+        (dir, ssb)
+    }
+
+    #[test]
+    fn percentile_nearest_rank_matches_known_values() {
+        // empty -> 0
+        assert_eq!(percentile_ms(&[], 50), 0);
+        // single element -> that element at every percentile
+        assert_eq!(percentile_ms(&[7], 99), 7);
+        // sorted [10,20,30,40,50]: p50 nearest-rank = ceil(0.5*5)=3rd = 30,
+        // p99 = ceil(0.99*5)=5th = 50, p0 clamps to 1st = 10.
+        let s = [10u32, 20, 30, 40, 50];
+        assert_eq!(percentile_ms(&s, 50), 30);
+        assert_eq!(percentile_ms(&s, 99), 50);
+        assert_eq!(percentile_ms(&s, 0), 10);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn emit_writes_one_streaming_timing_row_when_gate_on() {
+        // SEQUENTIAL: the gate env var is process-global; this single test
+        // owns it for both the OFF and ON legs, then clears it.
+        let (_dir, ssb) = temp_ssb("ssb_streaming_timing");
+
+        // --- OFF leg: gate cleared => zero rows, even with a writer wired. ---
+        std::env::remove_var(ELAI_STREAMING_TIMING_ENABLE_ENV);
+        let mut off_timing = StreamTiming::new();
+        off_timing.on_delta();
+        emit_streaming_timing(
+            Some(&ssb),
+            off_timing,
+            "req-off".to_owned(),
+            "end_turn",
+            1_700_000_000_000,
+        )
+        .await;
+        let off_rows = ssb
+            .query_by_type(SsbActionType::StreamingTimingRecorded)
+            .expect("query off rows");
+        assert!(
+            off_rows.is_empty(),
+            "gate OFF must emit zero rows; got {}",
+            off_rows.len()
+        );
+
+        // --- ON leg: gate set => exactly one row with the decoded fields. ---
+        std::env::set_var(ELAI_STREAMING_TIMING_ENABLE_ENV, "1");
+        let mut on_timing = StreamTiming::new();
+        // Three deltas -> tokens_emitted=3, two inter-chunk gaps recorded.
+        on_timing.on_delta();
+        on_timing.on_delta();
+        on_timing.on_delta();
+        emit_streaming_timing(
+            Some(&ssb),
+            on_timing,
+            "req-on".to_owned(),
+            "end_turn",
+            1_700_000_000_001,
+        )
+        .await;
+
+        let rows = ssb
+            .query_by_type(SsbActionType::StreamingTimingRecorded)
+            .expect("query on rows");
+        assert_eq!(rows.len(), 1, "gate ON must emit exactly one row");
+
+        // Decode the row payload — the off-agent artifact the auditor reads.
+        // decode_ssb_payload_bytes is the public, dep-free msgpack decoder
+        // (matches Ssb::write_payload's rmp_serde::to_vec_named wire format).
+        let decoded: SsbPayload =
+            decode_ssb_payload_bytes(&rows[0].payload).expect("decode payload");
+        match decoded {
+            SsbPayload::StreamingTimingRecorded(p) => {
+                assert_eq!(p.request_id, "req-on");
+                assert_eq!(p.tokens_emitted, 3, "three deltas => three tokens");
+                assert_eq!(p.stop_reason, "end_turn");
+                assert_eq!(p.ts_ms, 1_700_000_000_001);
+                // p50 <= p99 always holds for a non-decreasing distribution.
+                assert!(p.p50_inter_chunk_ms <= p.p99_inter_chunk_ms);
+            }
+            other => panic!("expected StreamingTimingRecorded, got {other:?}"),
+        }
+
+        // Cleanup the process-global gate so sibling tests see default-OFF.
+        std::env::remove_var(ELAI_STREAMING_TIMING_ENABLE_ENV);
     }
 }
 
@@ -8582,6 +9034,30 @@ pub async fn get_trust_telemetry(state: State<'_, AppState>) -> CmdResult<TrustR
         _ => 1.0_f64 / 60.0_f64, // 1 minute floor; aggregate_session also floors.
     };
     let report = aggregate_session(&rows, elapsed_hours);
+
+    // E-23 WIRING_CONTRACT observable_effect: emit a DeveloperDiscourseEvent
+    // SSB row of kind TrustTelemetryAggregated whenever the gate is ON and a
+    // writer is present. Best-effort: a write failure is logged via tracing but
+    // never surfaces as a command error (the caller needs the DTO regardless).
+    if let Some(writer) = state.writer.as_ref() {
+        use elai_orchestrator::trust_telemetry::build_aggregated_payload;
+        let payload = SsbPayload::DeveloperDiscourseEvent(build_aggregated_payload(
+            &report,
+            Some(writer.session_id().to_owned()),
+            now_ms(&state),
+        ));
+        if let Err(e) = writer
+            .write_payload("dashboard-v2", 0, payload, vec![])
+            .await
+        {
+            tracing::warn!(
+                target: "elai_dashboard",
+                error = %e,
+                "get_trust_telemetry: SSB emit failed (best-effort, DTO still returned)"
+            );
+        }
+    }
+
     Ok(TrustReportDto {
         tasks_per_hour: report.tasks_per_hour,
         findings_per_task: report.findings_per_task,
@@ -11013,5 +11489,155 @@ pub fn get_optimizer_run(state: State<'_, AppState>, n: u32) -> CmdResult<Value>
         "latest_held_out_lift_pct": latest_held_out.map(Value::from).unwrap_or(Value::Null),
         "overfit_risk": overfit_risk,
         "reflection_lm_too_small": false,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// E-47 -- LoRA ship gate status (read-only, cross-lang-pair: dashboard/tauri/api)
+// ---------------------------------------------------------------------------
+
+/// Read the current LoRA ship-gate status from the SSB viewer.
+///
+/// Returns:
+///   - `gate_status`: derived gate outcome string ("refused" / "calibration_missing" /
+///     "calibration_passed" / "wire_dark") -- "wire_dark" when no rows exist and
+///     the gate is disabled.
+///   - `gate_enabled`: bool mirroring `LoraShipGateConfig::enabled` from the
+///     most recent SSB row's details_json, or false when no rows exist.
+///   - `ship_gate_token`: the token from the config snapshot in the most
+///     recent row's details_json, or "DEFERRED_PER_E47_REPORT" (default-deferred).
+///   - `confirm_user_understanding`: bool from the config snapshot, or false.
+///   - `rows`: recent `lora_ship_gate_event` SSB rows (newest first, up to N).
+///
+/// Wire-dark: when ELAI_LORA_SHIP_GATE_ENABLE is unset on the orchestrator
+/// side, no SSB rows are emitted; this command returns the wire-dark envelope
+/// (gate_status = "wire_dark", rows = []).  The config fields are extracted
+/// from SSB row details_json when rows exist; otherwise they show the
+/// default-deferred values.
+///
+/// Intentionally read-only: there is no Enable command -- the operator flips
+/// the gate by editing .elai_cc/elai_cc.toml per
+/// workflow/decisions/E-47-flip-runbook.md.
+///
+/// Off-agent artifact: `viewer.recent_rows_of_type("lora_ship_gate_event", N)`
+/// reads SSB rows written by the real orchestrator producer
+/// (notify_lora_ship_gate in crates/orchestrator/src/lora_ship_gate.rs), not
+/// by this command. Missing rows => gate_status = "wire_dark".
+#[tauri::command]
+pub fn get_lora_ship_gate_status(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> CmdResult<Value> {
+    use elai_orchestrator::lora_ship_gate::LORA_SHIP_GATE_DEFERRAL_TOKEN;
+
+    const DEFAULT_LIMIT: usize = 50;
+    let cap = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({
+            "gate_status": "wire_dark",
+            "gate_enabled": false,
+            "ship_gate_token": LORA_SHIP_GATE_DEFERRAL_TOKEN,
+            "confirm_user_understanding": false,
+            "rows": [],
+        }));
+    };
+
+    let raw = viewer
+        .recent_rows_of_type(
+            SsbActionType::LoraShipGateEvent.as_sql_str(),
+            cap,
+        )
+        .unwrap_or_default();
+
+    // Extract config fields from the most recent row's details_json.
+    // The orchestrator stores a config snapshot in details_json alongside
+    // the gate outcome, so the dashboard can show the active config without
+    // reading elai_cc.toml directly.
+    let (gate_enabled, ship_gate_token, confirm_user_understanding, gate_status) =
+        if let Some(first) = raw.first() {
+            let outer = &first.payload_json;
+            // The SSB payload nests under the variant key "LoraShipGateEvent".
+            let inner = outer
+                .get("LoraShipGateEvent")
+                .and_then(|v| v.as_object())
+                .map(|m| serde_json::Value::Object(m.clone()))
+                .unwrap_or_else(|| outer.clone());
+
+            let details = inner.get("details_json").unwrap_or(&inner);
+
+            let enabled = details
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let token = details
+                .get("ship_gate_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or(LORA_SHIP_GATE_DEFERRAL_TOKEN)
+                .to_owned();
+            let confirm = details
+                .get("confirm_user_understanding")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            // Derive gate_status from the most recent row's phase field.
+            let phase = inner
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("refused")
+                .to_owned();
+            (enabled, token, confirm, phase)
+        } else {
+            (
+                false,
+                LORA_SHIP_GATE_DEFERRAL_TOKEN.to_owned(),
+                false,
+                "wire_dark".to_owned(),
+            )
+        };
+
+    let mut rows_out: Vec<Value> = Vec::with_capacity(raw.len());
+    for detail in &raw {
+        let outer = &detail.payload_json;
+        let inner = outer
+            .get("LoraShipGateEvent")
+            .and_then(|v| v.as_object())
+            .map(|m| serde_json::Value::Object(m.clone()))
+            .unwrap_or_else(|| outer.clone());
+
+        let phase = inner
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("refused")
+            .to_owned();
+        let agent_id = inner
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let session_id = inner
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let details_json = inner
+            .get("details_json")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+
+        rows_out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "phase": phase,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "details_json": details_json,
+        }));
+    }
+
+    Ok(json!({
+        "gate_status": gate_status,
+        "gate_enabled": gate_enabled,
+        "ship_gate_token": ship_gate_token,
+        "confirm_user_understanding": confirm_user_understanding,
+        "rows": rows_out,
     }))
 }

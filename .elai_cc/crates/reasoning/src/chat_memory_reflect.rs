@@ -144,7 +144,9 @@ pub fn reflect(
     )?;
 
     // 5) Run the decay tick on the facts table.
-    let decay = decay_tick(facts_store, now_ms)?;
+    // H-33: pass empty pin set (chat_memory_reflect does not have access
+    // to the SSB viewer; fail-toward-decay is the correct posture here).
+    let decay = decay_tick(facts_store, &std::collections::HashSet::new(), now_ms)?;
 
     Ok(ReflectResult {
         note_id: note.note_id,

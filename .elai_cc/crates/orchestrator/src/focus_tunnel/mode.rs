@@ -180,8 +180,13 @@ impl ModeSelector {
     ) -> ModeSelection {
         let preferred = step.preferred_mode;
 
-        // Rule 1 — CLOUD always wins.
-        if matches!(exec, ExecMode::Cloud) {
+        // Rule 1 — CLOUD forces STRUCTURED, EXCEPT on an EditExisting step where DIFF
+        // is the output-token-cheaper mode (H-3). CreateFile + non-edit cloud steps
+        // still force Structured (the model can't emit a file path in DIFF; Rule 2).
+        // The relax lets cloud EditExisting fall through to the FIM/DIFF rules.
+        if matches!(exec, ExecMode::Cloud)
+            && !matches!(step.action, StepAction::EditExisting)
+        {
             return ModeSelection {
                 mode: GenerationMode::Structured,
                 rule_fired: SelectionRule::CloudOverride,

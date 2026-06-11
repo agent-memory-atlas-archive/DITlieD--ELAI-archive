@@ -108,6 +108,14 @@
   );
   const warnAt80 = $derived(dayPct !== null && dayPct >= 80);
   const blocked = $derived(dayPct !== null && dayPct >= 100);
+
+  // H-9: the MEASURED cache hit-rate — the day-aggregate cache-read fraction
+  // (cache_read / total cached input). The believe-the-number instrument for
+  // H-1/H-2; never a literature figure (HD-1). Zero-guarded.
+  const cacheTotal = $derived(spend.cache_read_tokens + spend.cache_creation_tokens);
+  const cacheHitRate = $derived(
+    cacheTotal > 0 ? (spend.cache_read_tokens / cacheTotal) * 100 : 0,
+  );
 </script>
 
 <section class="cloud-panel" aria-label="Cloud mode panel">
@@ -255,6 +263,16 @@
       <span class="mono cloud-panel__metric">
         {spend.cache_read_tokens} read · {spend.cache_creation_tokens} write
       </span>
+    </div>
+  </div>
+
+  <!-- H-9 cost cockpit: the MEASURED cache hit-rate (cache-read fraction of
+       cached input). The believe-the-number instrument for H-1/H-2. -->
+  <div class="cloud-panel__row">
+    <span class="cloud-panel__label mono">Cache hit rate</span>
+    <div class="cloud-panel__control">
+      <span class="mono cloud-panel__metric">{cacheHitRate.toFixed(1)}%</span>
+      <span class="cloud-panel__hint mono">measured · cache-read fraction (today)</span>
     </div>
   </div>
 

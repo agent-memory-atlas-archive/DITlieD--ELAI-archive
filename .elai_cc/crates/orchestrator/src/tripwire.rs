@@ -199,6 +199,95 @@ impl Default for TripwireConfig {
     }
 }
 
+/// Default location of the `[tripwire]` stanza relative to the workspace
+/// root that owns the `.elai_cc/` tree (the orchestrator process CWD).
+const TRIPWIRE_TOML_SUFFIX: &str = ".elai_cc/elai_cc.toml";
+
+/// Load the [`TripwireConfig`] from the workspace `elai_cc.toml` `[tripwire]`
+/// stanza, mapping the toml key names to the struct fields and falling back
+/// to [`TripwireConfig::defaults`] for any key that is missing or absent.
+///
+/// D-4 stub_ban L3-lock: thresholds MUST come from `elai_cc.toml`, never be
+/// hardcoded in the [`TripwireMonitor`] constructor (defends against an agent
+/// editing the thresholds in-code per companion §4). The toml key names are
+/// the committed `[tripwire]` labels (`delta_rho`, `corr_window`,
+/// `iqr_multiplier`, `ppl_sigma_mult`, `ddm_min_instances`,
+/// `ddm_warning_threshold`, `ddm_drift_threshold`, `kl_spec_tau`) which differ
+/// from the struct field names; the mapping is explicit here so a rename on
+/// either side trips the loader rather than silently dropping a value.
+///
+/// Resolution mirrors `build_checker_runtime`: the orchestrator runs with CWD
+/// = the workspace root, so `current_dir().join(".elai_cc/elai_cc.toml")` is
+/// the canonical path. Any failure (file missing, parse error, no `[tripwire]`
+/// stanza) is non-fatal and returns [`TripwireConfig::defaults`] — the
+/// paper-cited defaults are themselves valid, so the monitor never runs with
+/// nonsense thresholds.
+#[must_use]
+pub fn load_tripwire_config() -> TripwireConfig {
+    let path = match std::env::current_dir() {
+        Ok(root) => root.join(TRIPWIRE_TOML_SUFFIX),
+        Err(e) => {
+            warn!(error = %e, "tripwire: current_dir() failed; using paper-cited defaults");
+            return TripwireConfig::defaults();
+        }
+    };
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                "tripwire: elai_cc.toml unreadable; using paper-cited defaults"
+            );
+            return TripwireConfig::defaults();
+        }
+    };
+    load_tripwire_config_from_str(&raw)
+}
+
+/// Parse a [`TripwireConfig`] from a raw toml string. Split out so the
+/// per-key mapping is unit-testable without filesystem access. Missing keys
+/// (and a missing `[tripwire]` stanza) fall back to the paper-cited defaults.
+#[must_use]
+pub fn load_tripwire_config_from_str(raw: &str) -> TripwireConfig {
+    let defaults = TripwireConfig::defaults();
+    let value: toml::Value = match toml::from_str(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "tripwire: elai_cc.toml parse failed; using paper-cited defaults");
+            return defaults;
+        }
+    };
+    let Some(section) = value.get("tripwire").and_then(toml::Value::as_table) else {
+        // No [tripwire] stanza — the committed config ships one, so this only
+        // happens on a stripped config; the defaults are still paper-valid.
+        return defaults;
+    };
+    let f32_or = |key: &str, fallback: f32| -> f32 {
+        section
+            .get(key)
+            .and_then(toml::Value::as_float)
+            .map_or(fallback, |v| v as f32)
+    };
+    let u32_or = |key: &str, fallback: u32| -> u32 {
+        section
+            .get(key)
+            .and_then(toml::Value::as_integer)
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(fallback)
+    };
+    TripwireConfig {
+        kl_spec_tau: f32_or("kl_spec_tau", defaults.kl_spec_tau),
+        rho_delta_threshold: f32_or("delta_rho", defaults.rho_delta_threshold),
+        iqr_outlier_multiplier: f32_or("iqr_multiplier", defaults.iqr_outlier_multiplier),
+        ppl_anomaly_sigma: f32_or("ppl_sigma_mult", defaults.ppl_anomaly_sigma),
+        ddm_warning_threshold: f32_or("ddm_warning_threshold", defaults.ddm_warning_threshold),
+        ddm_drift_threshold: f32_or("ddm_drift_threshold", defaults.ddm_drift_threshold),
+        min_sample_count: u32_or("ddm_min_instances", defaults.min_sample_count),
+        window_size: u32_or("corr_window", defaults.window_size),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TripwireFired event + id
 // ---------------------------------------------------------------------------
@@ -985,6 +1074,44 @@ mod tests {
             passed,
             ts_ms: 1_700_000_000_000,
         }
+    }
+
+    #[test]
+    fn load_tripwire_config_maps_committed_toml_keys() {
+        // The committed [tripwire] key names differ from the struct fields;
+        // assert the explicit per-key mapping picks up every overridden value.
+        let raw = "\
+[tripwire]
+kl_spec_tau = 0.7
+delta_rho = 0.4
+corr_window = 80
+iqr_multiplier = 2.5
+ppl_sigma_mult = 1.5
+ddm_min_instances = 42
+ddm_warning_threshold = 2.2
+ddm_drift_threshold = 3.3
+";
+        let cfg = load_tripwire_config_from_str(raw);
+        assert!((cfg.kl_spec_tau - 0.7).abs() < 1e-6);
+        assert!((cfg.rho_delta_threshold - 0.4).abs() < 1e-6);
+        assert_eq!(cfg.window_size, 80);
+        assert!((cfg.iqr_outlier_multiplier - 2.5).abs() < 1e-6);
+        assert!((cfg.ppl_anomaly_sigma - 1.5).abs() < 1e-6);
+        assert_eq!(cfg.min_sample_count, 42);
+        assert!((cfg.ddm_warning_threshold - 2.2).abs() < 1e-6);
+        assert!((cfg.ddm_drift_threshold - 3.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn load_tripwire_config_falls_back_per_missing_key() {
+        // Empty / missing stanza -> paper-cited defaults (never nonsense).
+        let defaults = TripwireConfig::defaults();
+        assert_eq!(load_tripwire_config_from_str(""), defaults);
+        assert_eq!(load_tripwire_config_from_str("[other]\nx = 1\n"), defaults);
+        // Partial stanza keeps defaults for the keys it omits.
+        let partial = load_tripwire_config_from_str("[tripwire]\nkl_spec_tau = 0.9\n");
+        assert!((partial.kl_spec_tau - 0.9).abs() < 1e-6);
+        assert_eq!(partial.window_size, defaults.window_size);
     }
 
     #[test]

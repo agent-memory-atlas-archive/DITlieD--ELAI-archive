@@ -191,6 +191,7 @@ mod tests {
             superseded_by: None,
             trust_tier: tier,
             provenance: Provenance::user_direct("test"),
+            last_validated_at_ms: None,
         }
     }
 

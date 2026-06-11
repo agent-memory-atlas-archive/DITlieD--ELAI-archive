@@ -80,10 +80,14 @@ if "%HAVE_RG%"=="0" (
         "Get-ChildItem -Path '%CRATES_DIR%' -Recurse -Filter *.rs ^| Where-Object { $_.FullName -notmatch '\\tests?\\' -and $_.FullName -notmatch '\\examples\\' -and $_.FullName -notmatch '\\target\\' -and $_.Name -ne 'main.rs' -and $_.Name -ne 'build.rs' } ^| Select-String -Pattern ' as (i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|f32|f64)([^a-zA-Z0-9_]|$)' ^| ForEach-Object { '{0}:{1}:{2}' -f $_.Path, $_.LineNumber, $_.Line.TrimStart() }" > "%TMP_CAST%" 2>nul
 )
 
-:: Filter out doc comments (/// or //!) and rules/src/schema.rs (deprecated_pattern fixture registry)
+:: Filter out comment lines (first non-space char // , covering // /// //!) and
+:: rules/src/schema.rs (deprecated_pattern fixture registry). The prior filter
+:: only caught doc comments (/// //!) and missed plain // lines (e.g.
+:: ppm_health.rs:65), tripping the gate and breaking CI. The comment regex
+:: drops any rg/Select-String line of the form path:lineno:<ws>// .
 set "TMP_BOX_F=%TEMP%\anti_stale_box_f_%RANDOM%_%RANDOM%.txt"
 break > "%TMP_BOX_F%"
-powershell -NoProfile -Command "Get-Content '%TMP_BOX%' ^| Where-Object { $_ -notmatch 'rules[\\\\/]+src[\\\\/]+schema\.rs:' -and $_ -notmatch ':\s*///' -and $_ -notmatch ':\s*//!' } ^| Set-Content '%TMP_BOX_F%'"
+powershell -NoProfile -Command "Get-Content '%TMP_BOX%' ^| Where-Object { $_ -notmatch 'rules[\\\\/]+src[\\\\/]+schema\.rs:' -and $_ -notmatch '^[^:]*:[0-9]+:\s*//' } ^| Set-Content '%TMP_BOX_F%'"
 copy /y "%TMP_BOX_F%" "%TMP_BOX%" >nul
 del /q "%TMP_BOX_F%" 2>nul
 

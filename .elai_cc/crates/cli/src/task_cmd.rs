@@ -37,7 +37,8 @@ use thiserror::Error;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::runtime_builder::{
-    apply_task_runner_wiring, build_task_runner_wiring, install_production_agent_pool,
+    apply_task_runner_wiring, build_task_runner_wiring, install_buffer_editor,
+    install_production_agent_pool,
 };
 
 /// Categories of `Finding(severity="error")` that signal `drive_task`
@@ -424,11 +425,14 @@ async fn run_task_async(args: TaskArgs) -> Result<(), TaskCmdError> {
     wiring.cloud_config = Some(cloud_config);
     // F-9 / Slice D3 — repo_root threaded in so the gate resolves
     // registry_check.py via SubprocessRegistryChecker::default_at_root.
+    // H-38 BLOCK-1: task_cmd runs in autonomous mode (gate_mode=Autonomous set
+    // above); interactive_gate is None so the stop-cost gate defaults to HOLD.
     wiring.hook_dispatcher =
         Some(elai_orchestrator::runtime_setup::build_production_hook_dispatcher(
             wiring.ssb.clone(),
             wiring.vibegate_seed_ok,
             &repo_root,
+            wiring.interactive_gate.clone(),
         ));
 
     // patch-1.14 — install the production agent pool so non-baby-step
@@ -441,6 +445,13 @@ async fn run_task_async(args: TaskArgs) -> Result<(), TaskCmdError> {
     install_production_agent_pool(&mut wiring, &repo_root, &session_id)
         .await
         .map_err(|e| TaskCmdError::Wiring(format!("agent pool install failed: {e}")))?;
+
+    // B-28 WIRING-2 (item E2-DIFF) — install the production buffer editor so the
+    // focus-tunnel DIFF branch applies hunks through the real 3-tier matcher
+    // instead of falling back to STRUCTURED. Mirrors `elai run`; independent of
+    // the agent-pool path (DIFF must work even when the agent binary is absent).
+    // Threaded onto TaskRunnerConfig by apply_task_runner_wiring below.
+    install_buffer_editor(&mut wiring);
 
     let ssb_writer: Arc<Ssb> = wiring.ssb.clone();
 

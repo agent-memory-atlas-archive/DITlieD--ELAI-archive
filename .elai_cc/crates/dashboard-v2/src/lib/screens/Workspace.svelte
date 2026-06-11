@@ -56,6 +56,25 @@
     if (!restored) {
       workspace.applyGateModeLayout(session.gateMode);
     }
+    // H-12: restore the canvas-as-default flag from localStorage. Must run AFTER
+    // tryLoadFromStorage so the workspace layout is already set before we
+    // conditionally override the primary panel. If canvasAsDefault is true and
+    // the user has not customized the layout (userCustomized=false after a fresh
+    // boot), setCanvasAsDefault(true) will apply canvas as the primary panel —
+    // matching the W-2 acceptance criterion "canvas-as-default active at boot".
+    workspace.loadCanvasDefault();
+    // Guard: only apply the canvas-as-default override if no canvas tab already
+    // exists in the primary panel. Without this guard, every boot where
+    // canvasAsDefault && !userCustomized would call setCanvasAsDefault(true) and
+    // replace primary with a NEW makePanel('canvas'), discarding the stored tab id.
+    // Idempotent across restarts: if the tab is already there (from a prior stored
+    // layout), skip the override entirely.
+    const primaryAlreadyHasCanvas = workspace.primary.tabs.some(
+      (t) => t.type === 'canvas',
+    );
+    if (workspace.canvasAsDefault && !workspace.userCustomized && !primaryAlreadyHasCanvas) {
+      workspace.setCanvasAsDefault(true);
+    }
     // Enable autosave only AFTER the initial decision so we don't immediately
     // overwrite a stored snapshot with a default-layout snapshot.
     workspace.enablePersistence();

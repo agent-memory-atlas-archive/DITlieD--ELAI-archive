@@ -133,7 +133,10 @@ pub fn spawn_decay_scheduler(
             // Acquire the store lock and run one pass.
             let stats_res = {
                 let guard = store.lock().await;
-                decay_tick(&guard, now_ms)
+                // H-33: pass empty pin set — the scheduler does not read
+                // SSB pin beacons (fail-toward-decay; live_cli path handles
+                // the pin-aware path when ELAI_MEMORY_PIN_ENABLE is set).
+                decay_tick(&guard, &std::collections::HashSet::new(), now_ms)
             };
             match stats_res {
                 Ok(stats) => {
@@ -188,6 +191,7 @@ mod tests {
             superseded_by: None,
             trust_tier: TrustTier::T1CodebaseDerived,
             provenance: Provenance::codebase_derived("test"),
+            last_validated_at_ms: None,
         }
     }
 

@@ -250,9 +250,9 @@ fn tool_times_to_json(tt: &ToolTimes) -> String {
 
     let sorted_ns: Vec<u128> = sorted.iter().map(|ms| (*ms * 1_000_000.0) as u128).collect();
 
-    let p50 = percentile(&sorted_ns, 50) as f64 / 1_000_000.0;
-    let p95 = percentile(&sorted_ns, 95) as f64 / 1_000_000.0;
-    let p99 = percentile(&sorted_ns, 99) as f64 / 1_000_000.0;
+    let p50 = percentile(&sorted_ns, 50.0) as f64 / 1_000_000.0;
+    let p95 = percentile(&sorted_ns, 95.0) as f64 / 1_000_000.0;
+    let p99 = percentile(&sorted_ns, 99.0) as f64 / 1_000_000.0;
     let mean = mean_ms(&sorted_ns);
     let count = sorted.len();
 
@@ -325,7 +325,7 @@ fn main() {
                     .collect();
                 let mut sorted_ns2 = sorted_ns.clone();
                 sorted_ns2.sort_unstable();
-                let p99_ms = percentile(&sorted_ns2, 99) as f64 / 1_000_000.0;
+                let p99_ms = percentile(&sorted_ns2, 99.0) as f64 / 1_000_000.0;
                 eprintln!(
                     "[B-29.5]   {} p99={:.1}ms mean={:.1}ms",
                     tool.tool,

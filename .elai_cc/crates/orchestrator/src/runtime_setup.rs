@@ -172,6 +172,16 @@ pub struct RuntimeWiring {
     /// surface (zero-regression default). The CLI / dashboard wiring
     /// sites construct this Arc based on `wiring.via_mcp`.
     pub mcp_dispatch: Option<Arc<dyn crate::dispatch::Dispatch>>,
+    /// B-28 WIRING-2 (item E2-DIFF) — production buffer editor for the
+    /// focus-tunnel DIFF execution branch. When `Some`,
+    /// [`apply_task_runner_wiring`] assigns it onto
+    /// [`TaskRunnerConfig::buffer_editor`] so `run_diff_step_with_provider`
+    /// applies parsed hunks through the real 3-tier matcher instead of
+    /// falling back to STRUCTURED. The CLI / dashboard wiring sites set this
+    /// to the `Arc<InProcessToolDispatcher>` they already build (the only
+    /// production `BufferEditor` impl lives in the `tools` crate, which
+    /// `orchestrator` cannot depend on). `None` keeps the pre-wire fallback.
+    pub buffer_editor: Option<Arc<dyn crate::focus_tunnel::BufferEditor>>,
     /// B-8 (PipelineGrc activation) — production-shaped `PipelineGrc`
     /// handle. When `Some`, [`apply_task_runner_wiring`] assigns it onto
     /// [`TaskRunnerConfig::pipeline_grc`] so the 4 safety gates
@@ -266,6 +276,17 @@ pub async fn build_task_runner_wiring(
         .map_err(|e| anyhow::anyhow!("build_task_runner_wiring: SSB init failed: {e}"))?;
     let ssb = Arc::new(ssb);
 
+    // G-4: install the process-global SSB writer for the live MCP rug-pull /
+    // re-pin gate on the STDIO transport leg. The default `elai run` serves
+    // MCP tool descriptions through `McpServerManager::discover_tools_*`, which
+    // has no `Arc<Ssb>` in scope; this slot lets that real seam emit the
+    // off-agent `mcp_rug_pull_blocked` row on a rug-pull without threading an
+    // Ssb through the manager ctor + cli glue (mirrors the `lock` B-31.5
+    // process-global writer). Idempotent; the gate still BLOCKS fail-closed
+    // even when this is never called (only the SSB row is then dropped).
+    #[cfg(feature = "mcp")]
+    crate::mcp_rugpull_gate::install_ssb_writer(Arc::clone(&ssb));
+
     // 3. Construct the production feasibility prober. Mirrors
     //    `dashboard-v2/src-tauri/src/state.rs:381-383`.
     //
@@ -331,6 +352,220 @@ pub async fn build_task_runner_wiring(
             error = %e,
             "build_task_runner_wiring: seeding F-2a security rules failed; \
              VibeGate seed integrity will fail-closed"
+        ),
+    }
+
+    // H-18 — seed the LOCKED COMPOSITE deflation promotion gate (FIN-DEFL-001,
+    // mutable=0) into the project rules.db alongside the F-2a security rules.
+    // This is the production caller that lights up the mutable=0 DB guarantee +
+    // COMPOSITE predicate (DSR >= 0.95 AND PBO < 0.5 AND MinTRL); without it the
+    // deflation gate row was test-only / wire-dark. Idempotent.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_deflation_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: H-18 deflation gate seed rule ensured (FIN-DEFL-001, mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding H-18 deflation gate rule failed; \
+             FIN-DEFL-001 promotion gate will not be DB-backed"
+        ),
+    }
+
+    // H-19 — seed the LOCKED reusable-holdout query-budget gate (FIN-HOLDOUT-001,
+    // mutable=0) into the project rules.db alongside the deflation gate. This is the
+    // production caller that lights up the mutable=0 DB guarantee + the Thresholdout DP
+    // exhaustion invariant (budget_remaining > 0; once HOLDOUT_BUDGET_TOTAL above-threshold
+    // queries are spent the OOS query is REFUSED); without it the FIN-HOLDOUT-001 row would
+    // be test-only / wire-dark. The Rust gate (holdout_budget::query_holdout) enforces the
+    // exhaustion + the seeded Laplace noise as named constants; this seed feeds the vibesec
+    // blake3 seed-integrity baseline. Idempotent.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_holdout_budget_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: H-19 holdout budget gate seed rule ensured (FIN-HOLDOUT-001, mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding H-19 holdout budget gate rule failed; \
+             FIN-HOLDOUT-001 query-budget gate will not be DB-backed"
+        ),
+    }
+
+    // H-29 — seed the LOCKED drift-interlock gate rows (FIN-DRIFT-001 + FIN-DRIFT-002,
+    // mutable=0) into the project rules.db alongside the deflation/holdout gates. This is the
+    // production caller that lights up the mutable=0 DB guarantee + the four-axis drift interlock
+    // (PSI on inputs+outputs < 0.25, a matching blake3 vendor-schema fingerprint, a fresh 90d
+    // validation, a bounded rolling-14d deviation); without it the FIN-DRIFT-* rows would be
+    // test-only / wire-dark. The Rust gate (drift_interlock::evaluate_drift_interlock) enforces
+    // the full interlock with a persistent journal-derived latch (DEFAULT-HALTED on missing
+    // evidence, SURVIVES restart, NO agent unlock); this seed feeds the vibesec blake3
+    // seed-integrity baseline. Idempotent.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_drift_interlock_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: H-29 drift interlock gate seed rules ensured (FIN-DRIFT-001/002, mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding H-29 drift interlock gate rules failed; \
+             FIN-DRIFT-* interlock rows will not be DB-backed"
+        ),
+    }
+
+    // H-20 — seed the LOCKED COMPOSITE leakage gate (FIN-LEAK-001, mutable=0)
+    // into the project rules.db alongside the deflation gate. This is the
+    // production caller that lights up the leakage COMPOSITE (GraphReachability
+    // over the DKG: fit-site reaching BOTH train+test sink => SoundBlock
+    // L1.2/L1.3); without it the FIN-LEAK-001 row was test-only / wire-dark.
+    // Idempotent.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_leakage_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: H-20 leakage gate seed rule ensured (FIN-LEAK-001, mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding H-20 leakage gate rule failed; \
+             FIN-LEAK-001 leakage gate will not be DB-backed"
+        ),
+    }
+
+    // H-22 — seed the LOCKED COMPOSITE trading null-test gate (FIN-NULL-001,
+    // mutable=0) into the project rules.db alongside the deflation + leakage
+    // gates. This is the production caller that lights up the mutable=0 DB
+    // guarantee + the permutation-null significance invariant (p < alpha/N,
+    // Bonferroni over N from H-17); without it the FIN-NULL-001 row would be
+    // test-only / wire-dark. The Rust gate (trading_null_gate::evaluate_trading_null)
+    // evaluates the LOCKED alpha as a named constant; this seed feeds the vibesec
+    // blake3 seed-integrity baseline. Idempotent.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_trading_nulls_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: H-22 trading null-test gate seed rule ensured (FIN-NULL-001, mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding H-22 trading null-test gate rule failed; \
+             FIN-NULL-001 null-test gate will not be DB-backed"
+        ),
+    }
+
+    // H-23 — seed the LOCKED reproducibility sub-gates (REPRO-SEED-001 AST
+    // seed-coverage + REPRO-ENV-001 SchemaRequired env-pin manifest, both
+    // mutable=0) into the project rules.db alongside the deflation + leakage +
+    // null-test gates. These are the production callers that light up the
+    // mutable=0 DB guarantee + the env-pin precondition that STRUCTURALLY enforces
+    // hazard A (a run that never declared its seed/determinism env cannot pass);
+    // without this the REPRO-* rows would be test-only / wire-dark. The pure
+    // re-run hash-equality DECISION lives in rerun_equality::verify_rerun_digest
+    // (CLI-only); these seed rows are the static CAUSE-catchers + the vibesec
+    // blake3 seed-integrity baseline. Idempotent.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_repro_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: H-23 reproducibility seed rules ensured (REPRO-SEED-001 + REPRO-ENV-001, mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding H-23 reproducibility rules failed; \
+             REPRO-SEED-001 / REPRO-ENV-001 will not be DB-backed"
+        ),
+    }
+
+    // H-24 — seed the LOCKED sim-to-real parity Part-A sub-gates (FIN-SIMREAL-001
+    // mode-divergent-branch AST ban SCOPED to the order/signal execution path +
+    // FIN-SIMREAL-002 single-entrypoint SchemaRequired manifest, both mutable=0)
+    // into the project rules.db alongside the repro + null-test gates. This is the
+    // production caller that lights up the mutable=0 DB guarantee + the single-
+    // entrypoint precondition that STRUCTURALLY enforces sim-real parity (the
+    // research/backtest path must be the SAME path that runs live); without this
+    // the FIN-SIMREAL-* rows would be test-only / wire-dark. The pure replay==
+    // golden DECISION lives in sim_real_parity::verify_replay_golden (CLI-only);
+    // these seed rows are the static STRUCTURAL CAUSE-catchers + the vibesec
+    // blake3 seed-integrity baseline. Idempotent.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_sim_real_parity_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: H-24 sim-to-real parity seed rules ensured (FIN-SIMREAL-001 + FIN-SIMREAL-002, mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding H-24 sim-to-real parity rules failed; \
+             FIN-SIMREAL-001 / FIN-SIMREAL-002 will not be DB-backed"
+        ),
+    }
+
+    // H-25 — seed the LOCKED result-manifest re-derivation Part-A sub-gates
+    // (FIN-RESMANIFEST-001 SchemaRequired manifest-shape + FIN-RESMANIFEST-002
+    // monkeypatch AstPattern SCOPED to the result-emitting surface, both mutable=0)
+    // into the project rules.db alongside the repro + parity + null-test gates. This
+    // is the production caller that lights up the mutable=0 DB guarantee + the
+    // manifest-shape precondition that STRUCTURALLY enforces "every reported number
+    // carries provenance" (the F-4 None-hash analog for an empirical result);
+    // without this the FIN-RESMANIFEST-* rows would be test-only / wire-dark. The
+    // pure re-parse/re-hash DECISION lives in result_manifest::verify_result
+    // (CLI-only); these seed rows are the static STRUCTURAL CAUSE-catchers. The
+    // MonkeypatchBlocked verdict is emitted by the rule-engine over FIN-RESMANIFEST-
+    // 002. Idempotent.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_result_manifest_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: H-25 result-manifest re-derivation seed rules ensured (FIN-RESMANIFEST-001 + FIN-RESMANIFEST-002, mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding H-25 result-manifest rules failed; \
+             FIN-RESMANIFEST-001 / FIN-RESMANIFEST-002 will not be DB-backed"
+        ),
+    }
+
+    // H-26 — seed the LOCKED financial-invariant naked-float-`==` ban
+    // (FIN-INVARIANT-001 AstPattern SCOPED to the order/signal/pnl/price execution
+    // surface, mutable=0) into the project rules.db alongside the repro + parity +
+    // null-test + result-manifest gates. This is the production caller that lights up
+    // the mutable=0 DB guarantee for the static naked-float-== leg; without this the
+    // FIN-INVARIANT-001 row would be test-only / wire-dark. The pure divergence /
+    // accounting-identity DECISION lives in shadow_exec::diff_shadow_impls (CLI-only);
+    // this seed row is the static STRUCTURAL CAUSE-catcher (a float == on money is a
+    // precision bug). The NakedFloatEq verdict is emitted by the rule-engine over
+    // FIN-INVARIANT-001. Idempotent.
+    match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_financial_invariant_rules(
+        &rules_conn,
+        &clock_for_rules,
+    ) {
+        Ok(inserted) => tracing::info!(
+            inserted,
+            "build_task_runner_wiring: H-26 financial-invariant seed rules ensured (FIN-INVARIANT-001 naked-float-== ban, mutable=0)"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "build_task_runner_wiring: seeding H-26 financial-invariant rules failed; \
+             FIN-INVARIANT-001 will not be DB-backed"
         ),
     }
 
@@ -453,6 +688,10 @@ pub async fn build_task_runner_wiring(
         // dashboard pre-C-39) keep the unchanged tool-dispatch surface.
         // The CLI run_subcommand populates this based on wiring.via_mcp.
         mcp_dispatch: None,
+        // B-28 WIRING-2: default to None so non-CLI callers keep the
+        // pre-wire DIFF->STRUCTURED fallback. The CLI + dashboard wiring
+        // sites set this to the Arc<InProcessToolDispatcher> they build.
+        buffer_editor: None,
         // B-8: live by default; `ELAI_DISABLE_PIPELINE_GRC` overrides
         // to `None` above. Tests that want the legacy no-gate path
         // overwrite this field on the bundle before calling apply.
@@ -599,6 +838,11 @@ pub fn apply_task_runner_wiring(
     // TaskRunnerConfig so the crystallizer post-execute hook reaches it via
     // ResolvedConfig. `None` on the bundle keeps the acquisition hook a no-op.
     cfg.skill_store = wiring.skill_store.clone();
+    // B-28 WIRING-2 (item E2-DIFF) — thread the production buffer editor onto
+    // TaskRunnerConfig so the focus-tunnel DIFF branch applies hunks through
+    // the real matcher. `None` on the bundle keeps the DIFF->STRUCTURED
+    // fallback (the CLI/dashboard sites set it to InProcessToolDispatcher).
+    cfg.buffer_editor = wiring.buffer_editor.clone();
 
     // C-39 — plumb the optional Dispatch impl onto TaskRunnerConfig so
     // future tool-call sites can route through this seam. When
@@ -640,6 +884,17 @@ pub fn apply_task_runner_wiring(
     // test override), the field stays `None` and every gated call site
     // short-circuits to the pre-B-8 no-op.
     cfg.pipeline_grc = wiring.pipeline_grc.clone();
+
+    // H-37: thread the optional CliInteractiveGate handle onto
+    // TaskRunnerConfig.plan_interactive_gate so drive_task can invoke it at
+    // the PLANNING -> TESTING_FIRST boundary when the gate is enabled.
+    // Only set when an interactive_gate was installed on the RuntimeWiring
+    // (which happens in run_subcommand.rs when gate_mode == Interactive).
+    // In autonomous / non-interactive mode the field stays None and the gate
+    // auto-advances (PlanDecisionKind::AutoAdvance, no human prompt).
+    if let Some(ig) = wiring.interactive_gate.clone() {
+        cfg.plan_interactive_gate = Some(ig);
+    }
 
     cfg
 }
@@ -721,6 +976,68 @@ where
     ))
 }
 
+/// E-15 — build the production [`AgentPoolBabyStepExecutor`] WITH the
+/// Firecracker hot snapshot-restore pool and the live SSB writer installed,
+/// gated by the default-OFF [`crate::runtime_config::sandbox_firecracker_enabled`]
+/// flag.
+///
+/// When the flag is OFF this is identical to
+/// [`build_default_baby_step_executor`] — no pool, no SSB rows, the firecracker
+/// dispatch path stays dead. When ON, the returned executor:
+/// - installs a [`crate::sandbox::FirecrackerHotPool::with_defaults`] rooted at
+///   `{snapshot_root}/snapshots`, and
+/// - installs `ssb` as the writer the firecracker dispatch path uses to emit the
+///   off-agent `sandbox_backend_selected` + `agent_forked_from_snapshot` rows.
+///
+/// `snapshot_root` is normally the per-session dir (the parent of the IPC
+/// `socket_dir`); the snapshots live in a `snapshots/` sub-folder so they GC
+/// alongside the session. The CLI boot site (`runtime_builder.rs`) passes
+/// `wiring.ssb.clone()` and the session dir.
+///
+/// Anti-stub: no `.unwrap()` / `.expect()` / `panic!`; the pool + executor
+/// constructors are infallible and nothing is run here.
+#[must_use]
+pub fn build_default_baby_step_executor_with_sandbox<E>(
+    entropy: E,
+    agent_binary_path: std::path::PathBuf,
+    socket_dir: std::path::PathBuf,
+    gateway: Arc<tokio::sync::Mutex<IpcGateway>>,
+    rpc_server: Arc<dyn AgentRpcServer + Send + Sync + 'static>,
+    ssb: Arc<Ssb>,
+    snapshot_root: std::path::PathBuf,
+) -> Arc<dyn BabyStepExecutor>
+where
+    E: elai_core::EntropySource + Send + 'static,
+{
+    let model_pool = crate::task_runner::runtime_model_pool();
+    let pool = Arc::new(tokio::sync::Mutex::new(InProcessAgentPool::new(
+        AgentPoolConfig::default(),
+        entropy,
+        model_pool,
+    )));
+    let executor = crate::task_runner::AgentPoolBabyStepExecutor::new(
+        pool,
+        agent_binary_path,
+        socket_dir,
+        gateway,
+        rpc_server,
+    );
+
+    if crate::runtime_config::sandbox_firecracker_enabled() {
+        let snapshot_dir = snapshot_root.join("snapshots");
+        let fc_pool = Arc::new(crate::sandbox::FirecrackerHotPool::with_defaults(
+            snapshot_dir,
+        ));
+        Arc::new(
+            executor
+                .with_firecracker_pool(fc_pool)
+                .with_ssb_writer(ssb),
+        )
+    } else {
+        Arc::new(executor)
+    }
+}
+
 /// C-13 — build the production [`InProcessHookDispatcher`] with the
 /// [`elai_plugins::post_tool_use::RuffPostToolUseRunner`] installed.
 ///
@@ -751,26 +1068,46 @@ where
 /// ([`DepWriteTimeGate`]) using `SubprocessRegistryChecker::default_at_root`
 /// with `project_root`.  DEFAULT-ON: always installed in production so
 /// every PreToolUse file-write path probes the registry for unknown deps.
+///
+/// H-38: `stop_gate` threads the production [`InteractiveGate`] into the
+/// cost-confirmation stop path. Pass `wiring.interactive_gate.clone()` from
+/// the CLI caller so [`dispatch_stop`] can present the confirm prompt when
+/// spend exceeds `CONFIRM_COST_FLOOR_USD`. `None` means headless/autonomous:
+/// the gate still fires but defaults to HOLD (fail-closed) when no prompter
+/// is installed. The SSB db path is derived from `ssb.db_path()`.
 #[must_use]
 pub fn build_production_hook_dispatcher(
     ssb: Arc<Ssb>,
     vibegate_seed_ok: bool,
     project_root: &std::path::Path,
+    stop_gate: Option<Arc<dyn InteractiveGate>>,
 ) -> Arc<InProcessHookDispatcher> {
     use crate::vibesec::dep_writetime_gate::{DepWriteTimeGate, SubprocessRegistryChecker};
     let ruff = Arc::new(elai_plugins::post_tool_use::RuffPostToolUseRunner::new());
     let registry_checker: std::sync::Arc<dyn crate::vibesec::dep_writetime_gate::RegistryExistenceChecker + Send + Sync> =
         std::sync::Arc::new(SubprocessRegistryChecker::default_at_root(project_root));
     let dep_gate = Arc::new(DepWriteTimeGate::new(Some(ssb.clone()), registry_checker));
-    let dispatcher = InProcessHookDispatcher::new(None)
+    // H-38: derive db_path from the already-open Ssb so callers do not need to
+    // re-plumb SsbConfig. The path is a &Path from the live instance.
+    let db_path_str = ssb.db_path().to_string_lossy().into_owned();
+    let mut dispatcher = InProcessHookDispatcher::new(None)
         .with_ruff_runner(ruff)
         .with_vibegate_ssb(
-            ssb,
+            ssb.clone(),
             crate::task_runner::RUNNER_AGENT_ID,
             crate::task_runner::RUNNER_SUPERSTEP,
         )
         .with_vibegate_seed_ok(vibegate_seed_ok)
-        .with_dep_writetime_gate(dep_gate);
+        .with_dep_writetime_gate(dep_gate)
+        // H-38 BLOCK-1: wire stop-cost SSB so day_usd is read from real CloudSpend
+        // rows and StopConfirmationEvent beacons are emitted unconditionally on the
+        // blocked path (R1/R4 off-agent artifact, fail-closed).
+        .with_stop_cost_ssb(ssb, db_path_str);
+    // H-38 BLOCK-1: wire the interactive gate when provided (CLI Interactive mode).
+    // Headless/autonomous callers pass None; gate defaults to HOLD (fail-closed).
+    if let Some(gate) = stop_gate {
+        dispatcher = dispatcher.with_stop_confirm_gate(gate);
+    }
     Arc::new(dispatcher)
 }
 

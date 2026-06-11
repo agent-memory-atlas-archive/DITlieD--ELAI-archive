@@ -1,0 +1,16 @@
+# ELAI local gate (GAP-PP0-2 / base-phase-0-FINISH.md)
+# Lightweight CI substitute for the Windows cross-platform compile pass.
+# Run with `just check`. Requires `just` (https://github.com/casey/just) on PATH.
+# This is a COMPILE-only gate (cargo check), not a test run; the auditor owns tests.
+
+# Default recipe: list available recipes when `just` is run with no target.
+default:
+    @just --list
+
+# Compile-check the entire workspace on the host target.
+# Variant for an explicit Windows MSVC pass:
+#   cargo check --workspace --target x86_64-pc-windows-msvc
+# (the host triple already covers Windows when run on a Windows box; the explicit
+#  --target form is for cross-compile / CI matrix use.)
+check:
+    cargo check --workspace

@@ -30,6 +30,7 @@ fn make_trust_fact(id: &str, tier: TrustTier, trust: f32) -> MemoryFact {
         superseded_by: None,
         trust_tier: tier,
         provenance: Provenance::user_direct("contract-test"),
+        last_validated_at_ms: None,
     }
 }
 
@@ -105,8 +106,9 @@ fn contract_safety_critical_retrieval_filter() {
         fact_type: None,
         trust_override: None,
         safety_critical: true,
+        citation_validator: None,
     };
-    let sc_results = get_relevant_facts(&store, "u1", &sc_filter, 10, T + 1000)
+    let (sc_results, _) = get_relevant_facts(&store, "u1", &sc_filter, 10, T + 1000)
         .expect("get");
     let sc_ids: Vec<_> = sc_results.iter().map(|f| f.fact_id.as_str()).collect();
     assert!(sc_ids.contains(&"ct0"));
@@ -115,7 +117,7 @@ fn contract_safety_critical_retrieval_filter() {
     assert!(!sc_ids.contains(&"ct3"));
 
     let open_filter = RetrievalFilter::default();
-    let open_results = get_relevant_facts(&store, "u1", &open_filter, 10, T + 2000)
+    let (open_results, _) = get_relevant_facts(&store, "u1", &open_filter, 10, T + 2000)
         .expect("get open");
     assert_eq!(open_results.len(), 4, "all 4 tiers visible in non-safety query");
 }

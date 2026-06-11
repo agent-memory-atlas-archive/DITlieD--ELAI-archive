@@ -82,6 +82,9 @@
   // E-46 — Hierarchical decomposition tuning panel (dual ledger +
   // AGENTLESS shortcuts + goal-drift canary).
   import PlanningLedgerPanel from '../drawers/PlanningLedgerPanel.svelte';
+  // E-46 D-7 — Decomposition entropy histogram (low_entropy_decomposition rows).
+  // Wire-dark unless ELAI_PLANNING_DECOMPOSITION_ENABLE=1.
+  import DecompositionEntropyHistogram from '../drawers/DecompositionEntropyHistogram.svelte';
   // E-5 — User modeling + long-term memory drawer.
   import MemoryFactsDrawer from '../drawers/MemoryFactsDrawer.svelte';
   // E-1 dashboard slice — chat-memory (MemoryNotes + CoreBlock).
@@ -135,8 +138,64 @@
   // (forensic opt-in): session_archived rows emit at the run_migration DROP site
   // when a stale-version SSB is cold-archived before the destructive DROP.
   import SessionArchiveDrawer from '../drawers/SessionArchiveDrawer.svelte';
+  // G-4 / Slice A — McpRugPullDrawer (DrawerKey mcp-rug-pull).
+  // Default-ON (W-2): mcp_rug_pull_blocked rows emit from the live MCP bridge
+  // re-pin gate (DefaultMcpBridge::http_list_tools) when a reconnect re-fetch
+  // from a previously-approved server no longer matches the blake3 schema pin.
+  import McpRugPullDrawer from '../drawers/McpRugPullDrawer.svelte';
+  // G-1 / Slice A — TaintFlowDrawer (DrawerKey taint-flow).
+  // Default-ON (W-2): taint_flow rows emit from the live data-plane taint gate
+  // (production_agent_rpc git_commit / edit arms) when an untrusted ingest
+  // reaches a destructive sink and the capability gate blocks it.
+  import TaintFlowDrawer from '../drawers/TaintFlowDrawer.svelte';
+  // G-2 / Slice A — RraViewerPanel (DrawerKey rra-viewer).
+  // Default-ON (W-2): run_artifact_emitted rows emit at the `elai run` exit when
+  // a Reproducible-Run Artifact (.rra) bundle is sealed. The only opt-out is the
+  // kill-switch ELAI_RRA_DISABLE. Panel lives under windows/ per the G-2
+  // WIRING_CONTRACT; mounted here as a drawer key so it has a wired route.
+  import RraViewerPanel from '../windows/RraViewerPanel.svelte';
+  // G-3 / Slice A — BlastRadiusDrawer (DrawerKey blast-radius).
+  // Default-ON (W-2): blast_radius_blocked rows emit from the deterministic
+  // runtime gates (translate_tool_request / run_bash FS-escape arm +
+  // fetch_and_extract egress arm) when a fail-closed gate refuses a
+  // post-expansion FS escape or a denied egress host. The only opt-out is the
+  // kill-switch ELAI_BLAST_RADIUS_DISABLE.
+  import BlastRadiusDrawer from '../drawers/BlastRadiusDrawer.svelte';
+  // G-8 / Slice A — AttestationDrawer (DrawerKey attestation).
+  // Default-ON (W-2): provenance_attestation_emitted rows emit at the `elai run`
+  // exit when a signed in-toto v1 provenance attestation is built from the sealed
+  // G-2 Reproducible-Run Artifact + signed with a LOCAL blake3-Merkle proof
+  // (re-verifiable OFFLINE). The only opt-out is the kill-switch
+  // ELAI_ATTESTATION_DISABLE.
+  import AttestationDrawer from '../drawers/AttestationDrawer.svelte';
+  // G-9 / Slice A — RedactionPanel (DrawerKey redaction).
+  // Default-ON (W-2): secret_redacted advisory rows emit whenever the write-time
+  // secret+PII redactor fires on a typed SsbPayload free-text field. The row
+  // carries the redacted field + stable blake3-keyed token(s) + match count,
+  // NEVER the raw secret. Redaction is always on (no enable flag).
+  import RedactionPanel from '../drawers/RedactionPanel.svelte';
+  // G-7 / Slice A — ConfidenceDrawer (DrawerKey confidence).
+  // claim_confidence_scored rows carry the REAL fused per-change confidence
+  // feeding the conformal decision (producer behind the conformal triple gate);
+  // trifecta_quarantined rows are the lethal-trifecta dual-LLM quarantine beacon
+  // (default-ON, kill-switch ELAI_TRIFECTA_QUARANTINE_DISABLE only).
+  import ConfidenceDrawer from '../drawers/ConfidenceDrawer.svelte';
+  // G-6 / SCHEMA_VERSION 217 — SafeDeltaPanel (DrawerKey safe-delta).
+  // safety_delta_measured rows emitted by `elai bench safedelta`. Surfaces the
+  // derived SAFEDELTA (gate-ON-vs-OFF marginal residual rate) + 95% bootstrap
+  // CI + corpus_blake3 + gate_recall + runpod_pending status.
+  // The bench command IS the entrypoint (W-2, no ELAI_*_ENABLE gate; Tier-2
+  // dynamic arm is RunPod-gated). cross-lang-pair: dashboard/tauri/api.
+  import SafeDeltaPanel from '../drawers/SafeDeltaPanel.svelte';
+  // G-10 / SCHEMA_VERSION 218 — ModelDriftPanel (DrawerKey model-drift).
+  // model_drift_suspected rows emitted at `elai run` exit or `elai model-drift check`.
+  // Surfaces identity_key + drift kind + signals + per_family_delta +
+  // affected_template_ids + confirmed_by_fingerprint (GD-5 honest badge).
+  // Default-ON (W-2); ELAI_MODEL_DRIFT_DISABLE kill-switch only.
+  // cross-lang-pair: dashboard/tauri/api.
+  import ModelDriftPanel from '../drawers/ModelDriftPanel.svelte';
 
   let { drawerKey }: { drawerKey: DrawerKey } = $props();
 </script>
 
-{#if drawerKey === 'knowledge'}<KnowledgeDrawer />{:else if drawerKey === 'reasoning'}<ReasoningDrawer />{:else if drawerKey === 'orchestration'}<OrchestrationDrawer />{:else if drawerKey === 'rules'}<RulesDrawer />{:else if drawerKey === 'research'}<ResearchDrawer />{:else if drawerKey === 'providers'}<ProvidersDrawer />{:else if drawerKey === 'project-intelligence'}<ProjectIntelligenceDrawer />{:else if drawerKey === 'anti-staleness'}<AntiStalenessDrawer />{:else if drawerKey === 'tools-hooks'}<ToolsHooksDrawer />{:else if drawerKey === 'web-quality'}<WebQualityDrawer />{:else if drawerKey === 'cosmos'}<CosmosDrawer />{:else if drawerKey === 'sessions'}<SessionsDrawer />{:else if drawerKey === 'mutation-archive'}<MutationArchivePanel />{:else if drawerKey === 'ppm-scores'}<PpmScoresPanel />{:else if drawerKey === 'verification-consensus'}<VerificationConsensusPanel />{:else if drawerKey === 'tripwires'}<TripwirePanel />{:else if drawerKey === 'incidents'}<IncidentsDrawer />{:else if drawerKey === 'prmbench'}<PrmBenchPanel />{:else if drawerKey === 'sycophancy-bench'}<SycophancyBenchPanel />{:else if drawerKey === 'bai-arms'}<BaiArmsPanel />{:else if drawerKey === 'held-out'}<HeldOutPanel />{:else if drawerKey === 'canary'}<CanaryPanel />{:else if drawerKey === 'locked-keys'}<LockedKeysPanel />{:else if drawerKey === 'mode-routing'}<ModeRoutingPanel />{:else if drawerKey === 'mode-routing-bench'}<ModeRoutingBenchPanel />{:else if drawerKey === 'checker-registry'}<CheckerRegistryPanel />{:else if drawerKey === 'adversary'}<AdversaryPanel />{:else if drawerKey === 'baby-step'}<BabyStepPanel />{:else if drawerKey === 'conformal-calibration'}<ConformalCalibrationPanel />{:else if drawerKey === 'conformal-validation'}<ConformalValidationPanel />{:else if drawerKey === 'novelty'}<NoveltyPanel />{:else if drawerKey === 'observable-effect'}<ObservableEffectPanel />{:else if drawerKey === 'refusal-sla'}<RefusalRateGauge />{:else if drawerKey === 'arc-bench'}<ARCBenchPanel />{:else if drawerKey === 'planning-ledger'}<PlanningLedgerPanel />{:else if drawerKey === 'memory-facts'}<MemoryFactsDrawer />{:else if drawerKey === 'chat-memory'}<MemoryNotesPanel />{:else if drawerKey === 'grammar-compile'}<GrammarCompilePanel />{:else if drawerKey === 'archive-explorer'}<ArchiveExplorerView />{:else if drawerKey === 'discovery-queue'}<DiscoveryQueueDrawer />{:else if drawerKey === 'mode-routing-dashboard'}<ModeRoutingDashboardView />{:else if drawerKey === 'failure-modes'}<FailureModesDrawer />{:else if drawerKey === 'skills'}<SkillsPanel />{:else if drawerKey === 'vibegate'}<VibeGateDrawer />{:else if drawerKey === 'security-rules'}<SecurityRulesPanel />{:else if drawerKey === 'deps-security'}<DepsSecurityPanel />{:else if drawerKey === 'security-monotonicity'}<SecurityMonotonicityDrawer />{:else if drawerKey === 'staleness-quarantine'}<StalenessQuarantineDrawer />{:else if drawerKey === 'template-ranking'}<TemplateRankingDrawer />{:else if drawerKey === 'session-archive'}<SessionArchiveDrawer />{/if}
+{#if drawerKey === 'knowledge'}<KnowledgeDrawer />{:else if drawerKey === 'reasoning'}<ReasoningDrawer />{:else if drawerKey === 'orchestration'}<OrchestrationDrawer />{:else if drawerKey === 'rules'}<RulesDrawer />{:else if drawerKey === 'research'}<ResearchDrawer />{:else if drawerKey === 'providers'}<ProvidersDrawer />{:else if drawerKey === 'project-intelligence'}<ProjectIntelligenceDrawer />{:else if drawerKey === 'anti-staleness'}<AntiStalenessDrawer />{:else if drawerKey === 'tools-hooks'}<ToolsHooksDrawer />{:else if drawerKey === 'web-quality'}<WebQualityDrawer />{:else if drawerKey === 'cosmos'}<CosmosDrawer />{:else if drawerKey === 'sessions'}<SessionsDrawer />{:else if drawerKey === 'mutation-archive'}<MutationArchivePanel />{:else if drawerKey === 'ppm-scores'}<PpmScoresPanel />{:else if drawerKey === 'verification-consensus'}<VerificationConsensusPanel />{:else if drawerKey === 'tripwires'}<TripwirePanel />{:else if drawerKey === 'incidents'}<IncidentsDrawer />{:else if drawerKey === 'prmbench'}<PrmBenchPanel />{:else if drawerKey === 'sycophancy-bench'}<SycophancyBenchPanel />{:else if drawerKey === 'bai-arms'}<BaiArmsPanel />{:else if drawerKey === 'held-out'}<HeldOutPanel />{:else if drawerKey === 'canary'}<CanaryPanel />{:else if drawerKey === 'locked-keys'}<LockedKeysPanel />{:else if drawerKey === 'mode-routing'}<ModeRoutingPanel />{:else if drawerKey === 'mode-routing-bench'}<ModeRoutingBenchPanel />{:else if drawerKey === 'checker-registry'}<CheckerRegistryPanel />{:else if drawerKey === 'adversary'}<AdversaryPanel />{:else if drawerKey === 'baby-step'}<BabyStepPanel />{:else if drawerKey === 'conformal-calibration'}<ConformalCalibrationPanel />{:else if drawerKey === 'conformal-validation'}<ConformalValidationPanel />{:else if drawerKey === 'novelty'}<NoveltyPanel />{:else if drawerKey === 'observable-effect'}<ObservableEffectPanel />{:else if drawerKey === 'refusal-sla'}<RefusalRateGauge />{:else if drawerKey === 'arc-bench'}<ARCBenchPanel />{:else if drawerKey === 'planning-ledger'}<PlanningLedgerPanel />{:else if drawerKey === 'memory-facts'}<MemoryFactsDrawer />{:else if drawerKey === 'chat-memory'}<MemoryNotesPanel />{:else if drawerKey === 'grammar-compile'}<GrammarCompilePanel />{:else if drawerKey === 'archive-explorer'}<ArchiveExplorerView />{:else if drawerKey === 'discovery-queue'}<DiscoveryQueueDrawer />{:else if drawerKey === 'mode-routing-dashboard'}<ModeRoutingDashboardView />{:else if drawerKey === 'failure-modes'}<FailureModesDrawer />{:else if drawerKey === 'skills'}<SkillsPanel />{:else if drawerKey === 'vibegate'}<VibeGateDrawer />{:else if drawerKey === 'security-rules'}<SecurityRulesPanel />{:else if drawerKey === 'deps-security'}<DepsSecurityPanel />{:else if drawerKey === 'security-monotonicity'}<SecurityMonotonicityDrawer />{:else if drawerKey === 'staleness-quarantine'}<StalenessQuarantineDrawer />{:else if drawerKey === 'template-ranking'}<TemplateRankingDrawer />{:else if drawerKey === 'session-archive'}<SessionArchiveDrawer />{:else if drawerKey === 'mcp-rug-pull'}<McpRugPullDrawer />{:else if drawerKey === 'taint-flow'}<TaintFlowDrawer />{:else if drawerKey === 'rra-viewer'}<RraViewerPanel />{:else if drawerKey === 'blast-radius'}<BlastRadiusDrawer />{:else if drawerKey === 'attestation'}<AttestationDrawer />{:else if drawerKey === 'redaction'}<RedactionPanel />{:else if drawerKey === 'confidence'}<ConfidenceDrawer />{:else if drawerKey === 'safe-delta'}<SafeDeltaPanel />{:else if drawerKey === 'model-drift'}<ModelDriftPanel />{:else if drawerKey === 'decomposition-entropy'}<DecompositionEntropyHistogram />{/if}

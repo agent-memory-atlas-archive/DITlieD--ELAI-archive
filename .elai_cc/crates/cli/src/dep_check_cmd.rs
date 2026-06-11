@@ -75,6 +75,13 @@ pub fn run(path: String, offline: bool) -> anyhow::Result<()> {
                 has_block = true;
                 println!("write-time slop block: {}", finding.message);
             }
+            HookVerdictKind::Escalate => {
+                // Escalate is not "clean": surface it and exit non-zero so a
+                // CI dep-check fails rather than silently passing a dep that a
+                // rule routed up for review.
+                has_block = true;
+                println!("write-time slop escalate: {}", finding.message);
+            }
             HookVerdictKind::Warn => {
                 println!("write-time slop warn: {}", finding.message);
             }

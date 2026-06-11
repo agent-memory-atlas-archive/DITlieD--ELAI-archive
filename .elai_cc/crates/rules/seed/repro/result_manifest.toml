@@ -1,0 +1,141 @@
+# H-25 result manifest re-derivation seed rules -- LOCKED seed (two rows).
+# mutable=0: immutable seed rows, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS;
+#   "trading" is detected by ["trading","backtest","signal","pipeline"] path
+#   keywords in rule_engine.rs:206-214; trading_nulls.toml:3 documents the same).
+# Default-ON; kill-switch only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_result_manifest_rules()
+#
+# Purpose:
+#   The STATIC legs of H-25 (T-9 trust-hardening, the anti-fabrication gate that
+#   generalises the F-4 stdout_hash leg from "the test PASS is honest" to "the
+#   empirical RESULT is honest"). Two LOCKED rows:
+#     FIN-RESMANIFEST-001 (SchemaRequired): every reported empirical NUMBER must
+#       carry a result manifest binding it to its provenance. Missing any required
+#       field => BLOCK (the anti-fabrication signature -- a reported number with no
+#       manifest is the F-4 None-hash analog).
+#     FIN-RESMANIFEST-002 (AstPattern): a monkeypatch ban -- strategy code may NOT
+#       import / redefine / monkeypatch (setattr / direct rebinding) a
+#       result-emitting function to FAKE a number. The metric/backtest harness is
+#       frozen (gate-manifest); a monkeypatch voids the re-derivation guarantee by
+#       construction. SCOPED to result-emitting modules (NOT a blanket ban).
+#   The Rust runtime re-derivation gate (result_manifest.rs::verify_result) is the
+#   sound EFFECT-prover: it re-parses each declared number from its
+#   orchestrator-captured output (RESTRICTED grammar, NO string-eval) and re-hashes
+#   the pinned inputs. These AST/schema legs are the necessary-not-sufficient static
+#   legs (R5: a name-match is not a proof; the runtime re-parse is the load-bearing
+#   backstop).
+#
+# SCOPING (CRITICAL -- mirror the H-24 sim_real_parity.toml scope rationale):
+#   The monkeypatch ban MUST be SCOPED to result-emitting modules. A blanket ban on
+#   setattr / fn-rebinding would false-positive-block legitimate dynamic code
+#   (config wiring, dependency injection, test doubles in non-result paths). The
+#   DANGEROUS antipattern is rebinding/monkeypatching a RESULT-EMITTING function
+#   (compute_sharpe / report_pnl / emit_metric / record_result) so the run reports a
+#   fabricated number while the real harness is bypassed. The `scope` field narrows
+#   the AstPattern to the result/metric/report execution surface via the
+#   execution_path:<csv> predicate (rule_engine.rs:401 scope_matches; a value like
+#   `execution_path:result,...` is a module-token CONTAINS predicate, NOT a path
+#   prefix -- under the legacy starts_with semantics a scoped rule would fire NEVER
+#   / wire-dark). RESIDUAL (documented in H-25-decisions.md): the scope is a
+#   name-based approximation; the runtime re-derivation gate is the sound backstop.
+#
+# COMPLETENESS HONESTY (TD-5): Tier-1 proves every DECLARED result re-derives + the
+#   manifest is non-trivial; it does NOT prove the declaration is COMPLETE (no
+#   hidden / cherry-picked output). The produced-vs-declared diff is the DEFERRED
+#   Tier-2 Python runner (RunPod-pending). in-toto/Sigstore/DVC are design-inspired
+#   precedents ONLY; no non-repudiation is inherited (that is the shipped G-8
+#   attestation). See workflow/reasoning/H-25-decisions.md.
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding is
+# performed by project_rule_seeder.rs::seed_result_manifest_rules() which inserts
+# the rows directly. The tree-sitter python query + the SchemaRequired field list
+# below are authoritative; the Rust runtime re-derivation gate
+# (result_manifest.rs::verify_result) is the sound backstop.
+
+[[rules]]
+rule_id = "FIN-RESMANIFEST-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "Every reported empirical number must carry a result manifest binding it to its provenance"
+description = """
+LOCKED result-manifest SchemaRequired gate (H-25, T-9 trust-hardening).
+A reported empirical NUMBER (Sharpe / P&L / plot-derived stat) MUST carry a result
+manifest declaring its provenance: a missing manifest (or a missing required field)
+=> BLOCK. This is the anti-fabrication signature -- a reported number with no
+manifest is the F-4 None-hash analog (a passing test row with a None stdout_hash is
+the fabrication signature; this generalises it to an empirical result). The runtime
+re-derivation gate (result_manifest.rs::verify_result) RE-PARSES the number from the
+orchestrator-captured output and RE-HASHES the pinned inputs; this SchemaRequired
+leg is the structural precondition (the number cannot be re-derived without the
+provenance fields). The manifest must declare ALL of: metric_name, value,
+captured_output_blake3, parser_expr, data_hash, code_commit, env_lock_hash, run_id,
+elai_seed, n_trials (bound from H-17). DSR/PBO/N are BOUND from H-17/H-18, never
+recomputed (GD-1). mutable=0: LOCKED, lifecycle-immune (TD-2). Same-env/same-seed
+scope (TD-5).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+type = "schema_required"
+output_type = "result_manifest"
+
+[rules.predicate_json.schema]
+required = [
+    "metric_name",
+    "value",
+    "captured_output_blake3",
+    "parser_expr",
+    "data_hash",
+    "code_commit",
+    "env_lock_hash",
+    "run_id",
+    "elai_seed",
+    "n_trials",
+]
+
+[[rules]]
+rule_id = "FIN-RESMANIFEST-002"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "No monkeypatching / redefining a result-emitting function to fake a number"
+description = """
+LOCKED monkeypatch-ban AST gate (H-25, T-9 trust-hardening).
+FAILS at TESTING_FIRST on strategy code that monkeypatches / redefines / rebinds a
+RESULT-EMITTING function (setattr(obj, "compute_sharpe", ...), a module-level
+assignment rebinding compute_sharpe / report_pnl / emit_metric / record_result) so
+the run reports a FABRICATED number while the frozen metric/backtest harness is
+bypassed. The metric harness is in the gate-manifest frozen set (TD-2); a
+monkeypatch voids the re-derivation guarantee by construction. SCOPED to the
+result/metric/report execution surface (NOT a blanket ban -- legitimate dynamic
+wiring / dependency injection in non-result modules is out of scope, so it is not
+false-blocked). The EFFECT-prover is the runtime re-derivation gate
+(result_manifest.rs::verify_result, blake3 re-parse + re-hash of an
+orchestrator-captured output). This static AST leg is necessary-not-sufficient (R5);
+the runtime re-parse is the load-bearing backstop. mutable=0: LOCKED,
+lifecycle-immune (TD-2). Same-env/same-seed scope (TD-5).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+type = "ast_pattern"
+language = "python"
+# query_format "sexp": a tree-sitter s-expression (QueryFormat valid variants are
+# "sexp" | "ast_grep").
+query_format = "sexp"
+# Scope the ban to the result/metric/report execution surface (NOT a blanket ban --
+# monkeypatching is legitimate in config/DI/test-double code outside result paths).
+# The scope is a name-based approximation of "reachable from result-emission"; the
+# runtime re-derivation gate is the sound backstop (see SCOPING note above +
+# H-25-decisions.md residual).
+scope = "execution_path:result,metric,report,sharpe,pnl,emit_metric,record_result"
+# A tree-sitter python query matching either a setattr(...) call whose attribute-name
+# argument is a result-emitting fn name, OR a module/class-level assignment that
+# rebinds a result-emitting fn identifier. The execution-path scope (above) restricts
+# WHERE this fires; the rules-engine AstPattern evaluator applies the scope to the
+# match.
+query = "[(call function: (identifier) @f (#eq? @f \"setattr\") arguments: (argument_list (_) (string) @attr (#match? @attr \"(compute_sharpe|report_pnl|emit_metric|record_result|compute_metric)\"))) (assignment left: (identifier) @lhs (#match? @lhs \"^(compute_sharpe|report_pnl|emit_metric|record_result|compute_metric)$\") right: [(lambda) (identifier) (attribute)])] @monkeypatch"

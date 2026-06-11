@@ -121,6 +121,12 @@ CREATE INDEX IF NOT EXISTS idx_symbol_name_shard    ON symbol_name_index(shard_k
 CREATE INDEX IF NOT EXISTS idx_symbol_reverse_shard ON symbol_reverse_index(shard_bucket);
 ";
 
+/// H-10: Combined schema SQL exposed for integration tests that need to
+/// construct a minimal dkg.db in-process without going through DkgEngine::new.
+/// Only available under the `test-helpers` feature gate.
+#[cfg(feature = "test-helpers")]
+pub const SCHEMA_SQL_FOR_TEST: &str = SCHEMA_SQL;
+
 // ---------------------------------------------------------------------------
 // Schema v4 migration — adds `language` column to dkg_nodes
 // ---------------------------------------------------------------------------
@@ -230,13 +236,38 @@ pub struct DkgEngine {
     build_graph_called: bool,
     index_version_path: Option<PathBuf>,
     created_at: i64,
+    /// E-42: knowledge-side SSB sink for tree-sitter grammar health events.
+    /// Wire-dark by default (`noop_sink()`). Set via
+    /// [`DkgEngine::new_with_sink`].
+    sink: std::sync::Arc<dyn crate::knowledge_ssb_sink::KnowledgeSsbSink>,
 }
 
 impl DkgEngine {
+    /// Construct a `DkgEngine` with the default no-op SSB sink. All existing
+    /// callers that do not need tree-sitter health telemetry call this variant.
     pub fn new(
         db_path: &Path,
         index_version_path: Option<&Path>,
         created_at: i64,
+    ) -> Result<Self, KnowledgeError> {
+        Self::new_with_sink(
+            db_path,
+            index_version_path,
+            created_at,
+            crate::knowledge_ssb_sink::noop_sink(),
+        )
+    }
+
+    /// E-42: construct a `DkgEngine` with a live knowledge SSB sink so
+    /// `build_graph` can emit `tree_sitter_grammar_event` rows when
+    /// `ELAI_TREE_SITTER_GRAMMARS_ENABLE=1`. The `dkg_lifecycle::run_rebuild`
+    /// seam passes the real `OrchestratorKnowledgeSsbSink` here; test code
+    /// passes a recording sink or the default noop.
+    pub fn new_with_sink(
+        db_path: &Path,
+        index_version_path: Option<&Path>,
+        created_at: i64,
+        sink: std::sync::Arc<dyn crate::knowledge_ssb_sink::KnowledgeSsbSink>,
     ) -> Result<Self, KnowledgeError> {
         let conn = Connection::open(db_path)?;
 
@@ -303,6 +334,7 @@ impl DkgEngine {
             build_graph_called: false,
             index_version_path: index_version_path.map(|p| p.to_path_buf()),
             created_at,
+            sink,
         })
     }
 
@@ -310,6 +342,24 @@ impl DkgEngine {
         let mut source_files = Vec::new();
         walk_source_files(project_root, &mut source_files);
         source_files.sort();
+
+        // E-42: ABI probe — one pass over the registry before the source loop.
+        // Guarded by the ELAI_TREE_SITTER_GRAMMARS_ENABLE env var so this is
+        // wire-dark by default. Each mismatch emits one SSB row.
+        if crate::tree_sitter_health::is_enabled() {
+            use crate::knowledge_ssb_sink::{TreeSitterGrammarEvent, TreeSitterGrammarEventKind};
+            use crate::tree_sitter_health::abi_probe::probe_abi_versions;
+            let records = probe_abi_versions(self.registry.iter());
+            for rec in &records {
+                if !rec.in_range {
+                    self.sink.emit_tree_sitter_grammar_event(TreeSitterGrammarEvent {
+                        kind: TreeSitterGrammarEventKind::AbiProbeMismatch,
+                        language_id: Some(rec.abi.language_id.clone()),
+                        detail: Some(format!("version={}", rec.abi.version)),
+                    });
+                }
+            }
+        }
 
         let mut files_parsed: usize = 0;
         let mut total_node_count: usize = 0;
@@ -326,11 +376,41 @@ impl DkgEngine {
                 Some(g) => g,
                 None => { continue; }
             };
+            // Read source bytes before set_language so we can run the large-file
+            // guard (E-42) without entering the parser.
+            let source_bytes = std::fs::read(file_path)?;
+            let file_path_str = file_path.to_string_lossy().to_string();
+
+            // E-42: large-file guard. Skip files above 2 MiB for tree-sitter;
+            // they will be handled as raw text by the chunking pipeline.
+            // Guarded by ELAI_TREE_SITTER_GRAMMARS_ENABLE for SSB emission only;
+            // the skip itself is always enforced.
+            {
+                use crate::tree_sitter_health::large_file::{
+                    should_skip_for_size, TREE_SITTER_LARGE_FILE_BYTES,
+                };
+                let byte_count = source_bytes.len() as u64;
+                if should_skip_for_size(byte_count) {
+                    if crate::tree_sitter_health::is_enabled() {
+                        use crate::knowledge_ssb_sink::{
+                            TreeSitterGrammarEvent, TreeSitterGrammarEventKind,
+                        };
+                        self.sink.emit_tree_sitter_grammar_event(TreeSitterGrammarEvent {
+                            kind: TreeSitterGrammarEventKind::TreeSitterSkippedLargeFile,
+                            language_id: None,
+                            detail: Some(format!(
+                                "path={file_path_str} bytes={byte_count} threshold={}",
+                                TREE_SITTER_LARGE_FILE_BYTES
+                            )),
+                        });
+                    }
+                    files_parsed += 1;
+                    continue;
+                }
+            }
             parser
                 .set_language(&grammar.tree_sitter_language())
                 .map_err(|e| KnowledgeError::Graph(format!("set_language failed: {e}")))?;
-            let source_bytes = std::fs::read(file_path)?;
-            let file_path_str = file_path.to_string_lossy().to_string();
 
             // Compute blake3 hash
             let hash = blake3::hash(&source_bytes);
@@ -405,6 +485,26 @@ impl DkgEngine {
                 continue;
             }
 
+            // E-42: Svelte runes parse health — emit one SSB row per .svelte file
+            // carrying the ERROR / MISSING node ratio and runes detection flag.
+            // Gated by ELAI_TREE_SITTER_GRAMMARS_ENABLE.
+            if lang_id == "svelte" && crate::tree_sitter_health::is_enabled() {
+                use crate::knowledge_ssb_sink::{TreeSitterGrammarEvent, TreeSitterGrammarEventKind};
+                use crate::tree_sitter_health::svelte_health::{compute_health, detect_runes};
+                if let Ok(source_str) = std::str::from_utf8(&source_bytes) {
+                    let runes = detect_runes(source_str);
+                    let health = compute_health(&tree);
+                    self.sink.emit_tree_sitter_grammar_event(TreeSitterGrammarEvent {
+                        kind: TreeSitterGrammarEventKind::SvelteRunesParseHealth,
+                        language_id: Some("svelte".to_owned()),
+                        detail: Some(format!(
+                            "runes={runes} error={} missing={} total={} ratio={:.4}",
+                            health.error, health.missing, health.total, health.ratio()
+                        )),
+                    });
+                }
+            }
+
             // Extract nodes
             let nodes = grammar.extract_nodes(&tree, &source_bytes);
 
@@ -460,6 +560,15 @@ impl DkgEngine {
         // Generate cross-file edges: "imports" and "implements"
         self.generate_cross_edges()?;
 
+        // H-10: materialise the dkg_nodes_pagerank table so get_pagerank_top
+        // returns non-empty results. Runs after generate_cross_edges so the
+        // full import topology is available to the PageRank pass. Failures are
+        // logged and do NOT abort the build (the dashboard degrades gracefully
+        // via the existing IF-EXISTS probe in ssb_viewer::pagerank_top).
+        if let Err(e) = self.materialise_pagerank() {
+            tracing::warn!("H-10 pagerank materialisation failed (non-fatal): {e}");
+        }
+
         // A-48: Extract heuristic data flow edges from tree-sitter ASTs
         self.extract_all_data_flow_edges(&source_files)?;
 
@@ -490,6 +599,122 @@ impl DkgEngine {
             files_parsed,
             data_flow_count: usize::try_from(data_flow_count).unwrap_or(0),
         })
+    }
+
+    // H-10: materialise the dkg_nodes_pagerank table.
+    //
+    // The table schema matches what SsbViewer::pagerank_top expects:
+    //   CREATE TABLE dkg_nodes_pagerank (symbol TEXT, path TEXT, score REAL)
+    //
+    // We run a lightweight iterative PageRank over the DkgSnapshot (which
+    // has only contains/imports/implements edges — no call edges).  The
+    // resulting scores rank files by structural centrality in the import
+    // graph, which is a useful approximation until the full call-weighted
+    // variant (SymbolGraphCache join) is wired in H-11+.
+    //
+    // Performance: for a ~399K-node DKG, building the DkgSnapshot is
+    // memory-heavy (all raw_nodes loaded into RAM). We guard with a node
+    // count cap (MAX_PAGERANK_NODES) and log a warning if exceeded — the
+    // dashboard degrades gracefully via the IF-EXISTS probe.
+    fn materialise_pagerank(&self) -> Result<(), KnowledgeError> {
+        use crate::pagerank::{DkgSnapshot, PageRankConfig};
+
+        /// Maximum number of DKG nodes for which we run full symbol-level PageRank.
+        /// Above this threshold the symbol graph is too large to rank in-process;
+        /// we skip writing uniform scores (which carry no ranking signal) and leave
+        /// the table empty. The canvas detects an empty table via `get_pagerank_top`
+        /// returning `known: false` and renders without hub highlighting — honest
+        /// degradation per GD-2 (every emitted number must be a real metric).
+        /// The 50 000 bound was measured as safe on the smallest target configs
+        /// (≤8 GB RAM); the ELAI self-index (398 741 nodes) always exceeds it.
+        const MAX_PAGERANK_NODES: usize = 50_000;
+
+        let snapshot = DkgSnapshot::from_engine(self)?;
+
+        if snapshot.nodes.is_empty() {
+            return Ok(());
+        }
+
+        // Create the table if it does not already exist.
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS dkg_nodes_pagerank (
+                symbol TEXT NOT NULL,
+                path   TEXT NOT NULL,
+                score  REAL NOT NULL
+            );
+            DELETE FROM dkg_nodes_pagerank;",
+        )?;
+
+        let n = snapshot.nodes.len();
+
+        // For graphs exceeding the cap: leave the table empty so the canvas
+        // degrades to "PageRank unavailable" rather than displaying meaningless
+        // uniform scores. Surface the degradation state via a tracing::warn
+        // that the dashboard log panel can surface.
+        if n > MAX_PAGERANK_NODES {
+            tracing::warn!(
+                node_count = n,
+                cap = MAX_PAGERANK_NODES,
+                "H-10 pagerank: graph exceeds cap; PageRank unavailable for this index. \
+                 Canvas hub highlighting disabled. Re-index on a file-level snapshot \
+                 (H-11+) to enable PageRank at this scale."
+            );
+            // Table exists but is empty — get_pagerank_top returns known:false,
+            // canvas renders with pageRankKnown=false (no COLOR_HUB applied).
+            return Ok(());
+        }
+
+        // Compute scores via power-iteration PageRank.
+        let scores: Vec<(String, String, f64)> = {
+            // Run PageRank with default config, no task-personalization.
+            let config = PageRankConfig::default();
+            // We need a simple power-iteration here; reuse the existing
+            // internal infrastructure via compute_repo_map with an empty
+            // task string. The ranked output gives us scores per node.
+            let repo_map = crate::pagerank::compute_repo_map(
+                &snapshot,
+                "",             // no task string — global rank
+                &[],            // no active files pinned
+                &config,
+                &|s: &str| s.len(), // trivial token estimator; result is only scores
+            );
+
+            // compute_repo_map returns ranked_symbols sorted descending.
+            // We need to re-derive the per-node score from the rank field.
+            // Build a lookup from node_id -> score.
+            use std::collections::HashMap;
+            let id_to_score: HashMap<i64, f64> = repo_map.ranked_symbols.iter()
+                .map(|rs| (rs.node_id, rs.rank))
+                .collect();
+
+            snapshot.nodes.iter().map(|node| {
+                let score = id_to_score.get(&node.node_id).copied().unwrap_or(0.0);
+                (
+                    node.symbol_name.clone(),
+                    node.file_path.to_string_lossy().into_owned(),
+                    score,
+                )
+            }).collect()
+        };
+
+        // Batch insert.
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO dkg_nodes_pagerank (symbol, path, score) VALUES (?1, ?2, ?3)"
+            )?;
+            for (symbol, path, score) in &scores {
+                stmt.execute(rusqlite::params![symbol, path, score])?;
+            }
+        }
+        tx.commit()?;
+
+        tracing::debug!(
+            "H-10 pagerank: materialised {} rows into dkg_nodes_pagerank",
+            scores.len()
+        );
+
+        Ok(())
     }
 
     fn generate_cross_edges(&self) -> Result<(), KnowledgeError> {

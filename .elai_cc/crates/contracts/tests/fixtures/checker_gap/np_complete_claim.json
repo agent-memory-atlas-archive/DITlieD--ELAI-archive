@@ -1,0 +1,7 @@
+{
+  "claim_id": "np-complete-1",
+  "claim_type": "computational",
+  "text": "This is a SAT-based constraint satisfaction problem requiring NP-complete verification",
+  "has_grounding_evidence": false,
+  "note": "Computational claim with SAT-based keyword. classify_complexity_taxon should return NpCompleteOrCombinatorial (priority=2, HIGH)."
+}

@@ -28,7 +28,12 @@ ops_per_sec = 49333991
 # delta is approximate — no phase_3H.toml workspace baseline exists
 compile_time_delta_sec = 32.81
 
-# measured: RUSTFLAGS="--cfg madsim" cargo check --workspace (bash, 2026-04-09)
-# check completed in 83s on Windows (dev profile, incremental off after clean)
-# IPC tests tagged #[ignore] on Windows per systemPatterns cfg(unix) gating
-madsim_compile_time_sec = 83.0
+# phase-3I.madsim_metric: the previously recorded madsim_compile_time_sec = 83.0
+# was flagged as fabricated in the base-phase-3 reconciliation (2026-06-04): the
+# claimed `RUSTFLAGS="--cfg madsim" cargo check --workspace` run was never
+# reproduced against real madsim-gated code, so the number is NOT trustworthy.
+# It is removed rather than re-fabricated. A real re-measure requires a
+# RUSTFLAGS="--cfg madsim" build with the madsim dev-dep harness (E-44) wired,
+# which is out of scope for this wiring pass. Re-add ONLY with a reproduced
+# measurement (cmd + wall-clock + date), never an estimate.
+madsim_compile_time_sec_status = "UNMEASURED — see comment above; do not estimate"

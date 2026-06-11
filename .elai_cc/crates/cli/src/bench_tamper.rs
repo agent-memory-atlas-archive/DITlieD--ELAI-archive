@@ -39,10 +39,15 @@
 //!                                   wall budget.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use elai_core::paths::sessions_dir_path;
+use elai_core::OsClock;
 use elai_orchestrator::benchmarks::tamper_runner::{
     TamperBenchError, TamperBenchmark, TamperBenchmarkReport,
 };
+use elai_orchestrator::ssb::DeterminismTamperSuiteCompletedPayload;
+use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -68,6 +73,15 @@ pub enum BenchTamperError {
     /// JSON serialisation failure when rendering the report.
     #[error("tamper bench could not serialise report: {source_msg}")]
     Serialise { source_msg: String },
+    /// Could not create the directory holding the canonical session `ssb.db`.
+    #[error("tamper bench could not create ssb.db dir {path}: {source_msg}")]
+    SsbDir { path: String, source_msg: String },
+    /// Opening the SSB single-writer failed.
+    #[error("tamper bench could not open SSB writer: {source_msg}")]
+    SsbOpen { source_msg: String },
+    /// Writing the DeterminismTamperSuiteCompleted row failed.
+    #[error("tamper bench could not write SSB row: {source_msg}")]
+    SsbWrite { source_msg: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +115,16 @@ pub(crate) fn run(
         .build()
         .map_err(anyhow::Error::from)?;
 
-    let outcome = rt.block_on(async move { run_async(scenarios_path, wall_budget_ms).await });
+    // Benchmark + SSB emit run inside the SAME runtime: `Ssb::new` spawns a
+    // single-writer task that panics without a live reactor (CLAUDE.md F-2b
+    // playbook + bench_seccodeplt precedent). One `DeterminismTamperSuiteCompleted`
+    // row per run (D-25 single end-of-run row), pass or fail.
+    let ssb_root = project_root.clone();
+    let outcome = rt.block_on(async move {
+        let report = run_async(scenarios_path, wall_budget_ms).await?;
+        emit_run_completed(&ssb_root, &report).await?;
+        Ok::<TamperBenchmarkReport, BenchTamperError>(report)
+    });
 
     match outcome {
         Ok(report) => {
@@ -116,6 +139,56 @@ pub(crate) fn run(
             std::process::exit(1);
         }
     }
+}
+
+/// Open the canonical session `ssb.db` and emit exactly ONE
+/// `DeterminismTamperSuiteCompleted` row built from the REAL run metrics,
+/// awaited (durable). Mirrors `bench_seccodeplt::emit_insecure_rate_measured`:
+/// the `Ssb::new` single-writer task MUST be constructed inside a live runtime,
+/// so this is called from within the caller's `rt.block_on`.
+async fn emit_run_completed(
+    project_root: &std::path::Path,
+    report: &TamperBenchmarkReport,
+) -> Result<(), BenchTamperError> {
+    let db_path = sessions_dir_path(project_root).join("ssb.db");
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| BenchTamperError::SsbDir {
+            path: parent.display().to_string(),
+            source_msg: e.to_string(),
+        })?;
+    }
+
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: "cli-bench-tamper".to_string(),
+    };
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+
+    let payload = DeterminismTamperSuiteCompletedPayload {
+        total_scenarios: report.total_scenarios,
+        passed: report.passed_count,
+        failed: report.failed_count,
+        max_wall_ms: report.max_wall_ms,
+        verdict: report.gating_verdict.as_str().to_string(),
+        scenarios_blake3: report.scenarios_blake3.clone(),
+    };
+
+    let ssb = Ssb::new(cfg, clock).map_err(|e| BenchTamperError::SsbOpen {
+        source_msg: e.to_string(),
+    })?;
+    ssb.write_payload(
+        "cli:bench-tamper",
+        0,
+        SsbPayload::DeterminismTamperSuiteCompleted(payload),
+        Vec::new(),
+    )
+    .await
+    .map_err(|e| BenchTamperError::SsbWrite {
+        source_msg: e.to_string(),
+    })?;
+    Ok(())
 }
 
 /// Parse an optional u64 argument; exits 1 on parse failure with a

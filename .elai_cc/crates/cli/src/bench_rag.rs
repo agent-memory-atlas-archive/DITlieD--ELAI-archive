@@ -138,8 +138,18 @@ pub(crate) fn run(
     // index. If the harness wants SSB beacons, the dashboard wires them
     // in production runs via `live_cli` — the bench surface is the JSON
     // stdout payload. (Confirmed: not needed for SP6 monotonicity contract.)
-    let (pipeline_opt, _indexing) =
-        LiveCli::build_local_knowledge_stack(&backend_cfg, session_id, &clock, None);
+    // 1I-R1: bench passes None ssb so the cascade loop never spawns; the shared
+    // mode handle is required by the signature but unused on this path.
+    let bench_search_mode = std::sync::Arc::new(std::sync::Mutex::new(
+        elai_knowledge::degradation::SearchMode::Hybrid,
+    ));
+    let (pipeline_opt, _indexing) = LiveCli::build_local_knowledge_stack(
+        &backend_cfg,
+        session_id,
+        &clock,
+        None,
+        bench_search_mode,
+    );
 
     let Some(pipeline) = pipeline_opt else {
         let output = BenchRagOutput {

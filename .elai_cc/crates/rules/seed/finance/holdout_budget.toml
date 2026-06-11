@@ -1,0 +1,60 @@
+# H-19 reusable-holdout query budget -- LOCKED Thresholdout DP gate seed.
+# mutable=0: immutable seed row, lifecycle-immune (TD-2).
+# Domain: trading (NOT "finance" -- "finance" is not in DOMAIN_KEYWORDS;
+#   "trading" is detected by ["trading","backtest","signal","pipeline"] path
+#   keywords in rule_engine.rs:206-214).
+# Default-ON; kill-switch: ELAI_HOLDOUT_BUDGET_DISABLE env var only (W-2).
+# Seeded by: crates/rules/src/project_rule_seeder.rs::seed_holdout_budget_rules()
+#
+# Grounding:
+#   - Dwork, Feldman, Hardt, Pitassi, Reingold, Roth (2015) "Generalization in
+#     Adaptive Data Analysis and Holdout Reuse" NIPS 2015, arXiv:1506.02629.
+#     Thresholdout, Figure 1 + Theorem 25. LOCKED parameters (NOT tunable):
+#       sigma = tau / (96 * ln(4*m/beta))   (96 = union-bound PROOF constant)
+#       T     = (3/4) * tau
+#       noise scales: gamma ~ Lap(2*sigma), eta ~ Lap(4*sigma), xi ~ Lap(sigma)
+#   - Dwork et al. (2015) "Preserving Statistical Validity in Adaptive Data
+#     Analysis" STOC 2015, arXiv:1411.2664 (the DP-to-generalization transfer).
+# See: workflow/reasoning/H-19-decisions.md for the locked budget/threshold discussion.
+#
+# NOTE: this file is a canonical documentation artifact. The actual DB seeding
+# is performed by project_rule_seeder.rs::seed_holdout_budget_rules() which
+# inserts the row directly (same pattern as seed_deflation_rules). The TOML is
+# authoritative for the budget/threshold values; the Rust code in
+# crates/orchestrator/src/holdout_budget.rs implements them as named constants
+# (HOLDOUT_BUDGET_TOTAL, HOLDOUT_TAU, T_FRACTION_OF_TAU, the noise multipliers,
+# SIGMA_DENOMINATOR_CONSTANT). This seed feeds the vibesec blake3 seed-integrity
+# baseline.
+
+[[rules]]
+rule_id = "FIN-HOLDOUT-001"
+domain = "trading"
+tier = 1
+severity = "BLOCK"
+mutable = 0
+title = "OOS holdout query requires budget_remaining > 0 (Thresholdout exhaustion)"
+description = """
+LOCKED reusable-holdout query-budget gate (H-19, TB-1 deployment-trust half).
+Blocks an out-of-sample holdout query when the Thresholdout budget is spent:
+  budget_remaining = HOLDOUT_BUDGET_TOTAL - queries_spent must be > 0.
+queries_spent is the append-only COUNT of above-threshold (budget-consuming)
+queries; once it reaches HOLDOUT_BUDGET_TOTAL the holdout is EXHAUSTED and the
+OOS query is REFUSED (budget_exhausted) -- the honest exhaustion limit: the
+holdout CANNOT be refreshed in-place, only replaced with fresh i.i.d. data via
+the out-of-band provision path (which asserts the new data_window is DISJOINT
+from the spent window). The exhaustion refusal is enforced at the Rust gate
+level (holdout_budget.rs::query_holdout) BEFORE the rules engine; this MetricGate
+is the rules-engine echo. mutable=0: LOCKED, lifecycle-immune (TD-2). Final
+provisioning of a fresh holdout remains a human/frozen Layer-3 step (R8 residue).
+"""
+phase_mask = 4294967295
+
+[rules.predicate_json]
+# A single MetricGate: budget_remaining must be > 0 to pass; <= 0 => Block
+# (budget_exhausted). The Rust gate already fail-closes on BudgetMissing /
+# exhausted BEFORE the metric is populated; this is the rules-engine echo.
+type = "metric_gate"
+metric_name = "budget_remaining"
+operator = "gt"
+threshold = 0.0
+source = "holdout_budget"

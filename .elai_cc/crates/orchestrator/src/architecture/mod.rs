@@ -57,6 +57,10 @@ pub mod hook_prompt;
 // session-4 DECISION-5). See workflow/reasoning/E-25-trancheC-
 // decisions.md.
 pub mod edit_checkpoints;
+// H-49 (SCHEMA_VERSION 226): reversible LLM edits — CAS object store +
+// undo/redo/branch engine over the SHIPPED E-25 edit_checkpoints primitives.
+// Kill-switch: ELAI_TIMETRAVEL_DISABLE (default-ON; no wire-dark-allowlist row).
+pub mod timetravel;
 
 pub use catalog::{
     ArchetypeCatalog, ArchetypeEntry, AuthScheme, MultiTenancyModel, ProductionChecklistSubset,

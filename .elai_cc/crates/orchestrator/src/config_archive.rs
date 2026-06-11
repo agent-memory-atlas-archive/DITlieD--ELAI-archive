@@ -15,6 +15,7 @@
 //! and 4H.7 (parent-selection mode-filtering).
 //! Grounding: workflow/papers/dgm-interface.md (section 2.3 formulas).
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use elai_core::EntropySource;
 
+use crate::clade_metaproductivity::{clade_metaproductivity, SelectionKey};
 use crate::self_mod_layer1a::PipelineMode;
 use crate::self_mod_types::{ConfigVariant, VariantId, VariantStatus};
 
@@ -289,6 +291,72 @@ impl ConfigArchive {
         Ok(sample_variant(&variants, entropy))
     }
 
+    /// H-46 — CMP-weighted parent selection (production path).
+    ///
+    /// Selects the next parent to self-modify by the node's
+    /// **Clade-Metaproductivity** (CMP) rather than the immediate sigmoid
+    /// score (HGM 2510.21614: expand the lineage that produced the most-
+    /// improving descendants, not the highest single-node score).
+    ///
+    /// `fitness_deltas` is a map of `variant_id -> execution-grounded fitness
+    /// delta` (H-43 signal). A node with no measured descendants falls back to
+    /// `ImmediateScoreFallback` (sigmoid * exploration_bonus).
+    ///
+    /// `seed` is the `ELAI_SEED` value forwarded into the `CladeSelected` SSB
+    /// row for GD-2 reproducibility.
+    ///
+    /// Returns `(selected_id, clade_scores)`. The caller emits the
+    /// `CladeSelected` SSB row using the `clade_scores` slice.
+    pub async fn select_parent_with_cmp<E: EntropySource + ?Sized>(
+        &self,
+        mode: PipelineMode,
+        fitness_deltas: &HashMap<VariantId, f64>,
+        entropy: &mut E,
+        force_immediate_score: bool,
+    ) -> Result<(VariantId, Vec<crate::clade_metaproductivity::CladeScore>), ConfigArchiveError> {
+        let variants = self.list_variants(mode).await?;
+        if variants.is_empty() {
+            return Ok((String::new(), Vec::new()));
+        }
+
+        let clade_scores = if force_immediate_score {
+            // R2 broken-arm path: ignore the CMP; use immediate sigmoid score.
+            // This arm is ONLY for falsifiability contract tests (it reproduces
+            // the dead-end selection the CMP key avoids).
+            variants
+                .iter()
+                .map(|v| {
+                    let s = f64::from(sigmoid_perf_score(v.score));
+                    crate::clade_metaproductivity::CladeScore {
+                        cmp: s,
+                        clade_size: 0,
+                        immediate_score: s,
+                        key: SelectionKey::ImmediateScoreFallback,
+                    }
+                })
+                .collect::<Vec<_>>()
+        } else {
+            clade_metaproductivity(&variants, fitness_deltas)
+        };
+
+        // Build CMP-weighted probabilities for the CDF sampler.
+        let weights: Vec<f32> = clade_scores
+            .iter()
+            .zip(variants.iter())
+            .map(|(cs, v)| {
+                // For CMP key: weight = cmp * exploration_bonus (so unexplored
+                //   nodes still get a diversity bonus even with a good lineage).
+                // For fallback key: weight = immediate_score * exploration_bonus
+                //   (identical to the original sigmoid * exploration path).
+                let base = cs.cmp as f32;
+                base * exploration_bonus(v.children_count)
+            })
+            .collect();
+
+        let selected = sample_variant_weights(&variants, &weights, entropy);
+        Ok((selected, clade_scores))
+    }
+
     /// Enforce the per-mode archive cap. Drops oldest archived variants by
     /// (score ASC, created_at ASC) but ALWAYS keeps:
     ///   - status='active' rows
@@ -400,6 +468,25 @@ pub fn sample_variant<E: EntropySource + ?Sized>(
         return String::new();
     }
     let weights = parent_selection_weights(variants);
+    sample_variant_weights(variants, &weights, entropy)
+}
+
+/// Like [`sample_variant`] but accepts a pre-computed weights slice.
+/// Used by the H-46 CMP path which computes its own weight vector.
+/// Parallel to `variants` — panics (debug) if lengths differ.
+pub fn sample_variant_weights<E: EntropySource + ?Sized>(
+    variants: &[ConfigVariant],
+    weights: &[f32],
+    entropy: &mut E,
+) -> VariantId {
+    if variants.is_empty() {
+        return String::new();
+    }
+    debug_assert_eq!(
+        variants.len(),
+        weights.len(),
+        "sample_variant_weights: variants and weights must have the same length"
+    );
     let total: f32 = weights.iter().sum();
     if total <= 0.0 {
         return variants[0].variant_id.clone();

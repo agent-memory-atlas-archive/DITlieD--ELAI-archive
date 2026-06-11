@@ -41,6 +41,7 @@ fn prompt_injection_t2_blocked_from_safety_critical() {
         superseded_by: None,
         trust_tier: TrustTier::T2WebSourced,
         provenance: Provenance::web_sourced("https://malicious-repo.example/commit/abc123"),
+        last_validated_at_ms: None,
     };
     store.insert(&malicious_fact).expect("insert malicious T2 fact");
 
@@ -64,6 +65,7 @@ fn prompt_injection_t2_blocked_from_safety_critical() {
         superseded_by: None,
         trust_tier: TrustTier::T0UserDirect,
         provenance: Provenance::user_direct("cli-session-1"),
+        last_validated_at_ms: None,
     };
     store.insert(&legitimate_fact).expect("insert legitimate T0 fact");
 
@@ -73,8 +75,9 @@ fn prompt_injection_t2_blocked_from_safety_critical() {
         fact_type: None,
         trust_override: None,
         safety_critical: true,
+        citation_validator: None,
     };
-    let results = get_relevant_facts(&store, "default", &filter, 10, T + 1000)
+    let (results, _) = get_relevant_facts(&store, "default", &filter, 10, T + 1000)
         .expect("get_relevant_facts");
 
     // The malicious T2 injection must NOT appear.
@@ -94,7 +97,7 @@ fn prompt_injection_t2_blocked_from_safety_critical() {
     // Verify the malicious row IS present in a non-safety-critical query
     // (demonstrating it wasn't deleted, just filtered).
     let all_filter = RetrievalFilter::default();
-    let all_results = get_relevant_facts(&store, "default", &all_filter, 10, T + 2000)
+    let (all_results, _) = get_relevant_facts(&store, "default", &all_filter, 10, T + 2000)
         .expect("get_relevant_facts all");
     let malicious_in_all = all_results.iter().any(|f| f.fact_id == "inject-t2");
     assert!(

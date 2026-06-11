@@ -153,12 +153,21 @@ scan_cast() {
 # Additional excludes:
 #   - rules/src/schema.rs is the DEPRECATED_PATTERN fixture registry; it
 #     LISTS the banned strings as data. Same role as spec fixture lines.
-#   - Lines starting with /// or //! are doc comments — text only.
+#   - Comment lines (first non-space char is `//`, covering `//`, `///`, `//!`)
+#     are prose, not code. The pattern is documented verbatim across the
+#     codebase ("no Box<dyn Error>" anti-stale notes) and must never trip the
+#     gate. The earlier `:\s*///|:\s*//!` filter only caught doc comments and
+#     missed plain `//` lines (e.g. ppm_health.rs:65), breaking CI.
 scan 'Box<dyn [A-Za-z_:]*Error[ +>]' "$TMP_BOX"
-# Filter out doc comments and the rules schema fixture file.
+# Filter out comment lines and the rules schema fixture file. The schema.rs
+# path is matched separator-agnostically (rg emits backslash paths on Windows,
+# forward-slash on Linux). The comment filter strips any rg line of the form
+# `<path>:<lineno>:<ws>//...` where the first non-space char of the source line
+# is `//` — this drops `//`, `///`, and `//!` uniformly.
 if [ -s "$TMP_BOX" ]; then
     FILTERED="$(mktemp -t anti_stale_box_f.XXXXXX 2>/dev/null || mktemp)"
-    grep -v -E '^[^:]*rules/src/schema\.rs:|:\s*///|:\s*//!' "$TMP_BOX" > "$FILTERED" || true
+    grep -v -E '[\\/]rules[\\/]src[\\/]schema\.rs:|^[^:]*:[0-9]+:[[:space:]]*//' \
+        "$TMP_BOX" > "$FILTERED" || true
     mv "$FILTERED" "$TMP_BOX"
 fi
 BOX_COUNT="$(wc -l < "$TMP_BOX" | tr -d ' ')"

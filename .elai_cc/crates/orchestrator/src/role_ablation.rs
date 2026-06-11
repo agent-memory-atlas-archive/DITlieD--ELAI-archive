@@ -39,6 +39,17 @@ pub enum RoleAblationError {
     Ssb(#[from] SsbError),
 }
 
+/// Prunable-role decision emitted by `run_role_ablation` after reading the
+/// H-40 `insufficient_contribution` per-role map. Callers MUST check
+/// `report.runpod_pending` before acting; stub path yields empty decisions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoleAblationPrunableEntry {
+    /// Snake_case AgentRole wire tag.
+    pub role: String,
+    /// `true` = prunable (low lift AND low unique-catch); `false` = retain.
+    pub prunable: bool,
+}
+
 pub async fn run_role_ablation(
     ssb: &Arc<Ssb>,
     agent_id: &str,
@@ -46,7 +57,7 @@ pub async fn run_role_ablation(
     task_fixture: &str,
     budget_tokens: u32,
     _cfg: RoleProfileConfig,
-) -> Result<IsoBudgetReport, RoleAblationError> {
+) -> Result<(IsoBudgetReport, Vec<RoleAblationPrunableEntry>), RoleAblationError> {
     let report = iso_budget_harness::run_ablation(ssb, agent_id, superstep, task_fixture, budget_tokens).await?;
     let baseline_score = report.full_pipeline.pass_rate;
     let challenger_score = report.single_agent_wait.pass_rate;
@@ -68,7 +79,16 @@ pub async fn run_role_ablation(
         ts_ms: now_ms(),
     });
     ssb.write_payload(agent_id, superstep, payload, Vec::new()).await?;
-    Ok(report)
+
+    // H-40: read per-role insufficient_contribution; empty on stub path.
+    // Callers check runpod_pending before acting on prunable entries.
+    let prunable_entries: Vec<RoleAblationPrunableEntry> = report
+        .insufficient_contribution
+        .iter()
+        .map(|(role, &prunable)| RoleAblationPrunableEntry { role: role.clone(), prunable })
+        .collect();
+
+    Ok((report, prunable_entries))
 }
 
 fn build_run_id_prefix(agent_id: &str, superstep: i64, salt: &[u8]) -> [u8; 8] {
