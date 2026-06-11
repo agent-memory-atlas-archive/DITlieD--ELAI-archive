@@ -408,6 +408,50 @@ pub(super) fn dispatch(
                         );
                         match elai_orchestrator::run_research_pipeline(&query, &tier_cfg, backend.as_ref(), &grounding) {
                             Ok(answer) => {
+                                // H-53: citation pre-binding on the REAL /research answer path.
+                                // freeze_anchors + check_citation_in_set run over the real evidence;
+                                // build_outcome_prebind + mint_verified produce VerifiedCitation objects;
+                                // CitationAnchorsBound SSB row emitted as off-agent artifact (R4).
+                                // Kill-switch ELAI_CITATION_PREBIND_DISABLE reverts to legacy path.
+                                let prebind = elai_orchestrator::prebind_research_answer(&answer);
+                                if let Some(ssb) = &cli.ssb {
+                                    use elai_orchestrator::ssb::{
+                                        CitationAnchorsBoundKind, CitationAnchorsBoundPayload,
+                                        SsbPayload,
+                                    };
+                                    let is_disabled = elai_orchestrator::citation_prebind::prebind_disabled();
+                                    let kind = if is_disabled {
+                                        CitationAnchorsBoundKind::Blocked
+                                    } else {
+                                        CitationAnchorsBoundKind::Bound
+                                    };
+                                    let blake3_set_hash_hex = {
+                                        let h = blake3::Hash::from_bytes(prebind.anchor_set.set_blake3);
+                                        format!("{}", h.to_hex())
+                                    };
+                                    let ssb_for_prebind = ssb.clone();
+                                    let payload = SsbPayload::CitationAnchorsBound(
+                                        CitationAnchorsBoundPayload {
+                                            kind,
+                                            anchor_count: prebind.anchor_set.len() as u32,
+                                            seed: prebind.anchor_set.seed,
+                                            blake3_set_hash_hex,
+                                        },
+                                    );
+                                    if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                                        rt.block_on(async move {
+                                            if let Err(e) = ssb_for_prebind.write_payload("research", 0, payload, vec![]).await {
+                                                tracing::warn!(error = %e, "H-53: failed to emit CitationAnchorsBound SSB row");
+                                            }
+                                        });
+                                    }
+                                }
+                                if prebind.has_ghost {
+                                    tracing::warn!(
+                                        ghost_count = prebind.citation_checks.iter().filter(|r| r.outcome.must_block()).count(),
+                                        "H-53: ghost citation detected in /research answer — D-16 refusal path (display suppressed)"
+                                    );
+                                }
                                 println!("Research answer ({} sources, {} caveats):",
                                     answer.sources_consulted.len(), answer.caveats.len());
                                 println!("{}", answer.answer_text);

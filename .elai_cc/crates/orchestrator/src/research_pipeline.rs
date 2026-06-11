@@ -741,6 +741,184 @@ fn phase_f_deterministic(
 }
 
 // ===========================================================================
+// H-53: citation pre-binding on the real answer path
+// ===========================================================================
+
+/// Result of `prebind_research_answer` — the frozen evidence set, per-citation
+/// check results, and verified-citation objects minted by the production
+/// `citation_verifier::prebind_verify_citations` path.
+///
+/// The `CitationAnchorsBound` SSB row is emitted by the CALLER (repl_command.rs)
+/// after this function returns so the SSB handle stays outside the sync pipeline.
+#[derive(Debug)]
+pub struct PrebindOutcome {
+    /// The frozen, blake3-pinned evidence set built from the answer's evidence chain.
+    pub anchor_set: crate::citation_prebind::EvidenceAnchorSet,
+    /// Per-citation check results for every `[N]` marker found in the answer text.
+    /// An entry with `outcome.must_block() == true` means the citation is a ghost
+    /// or stale anchor that must be held from the final answer (D-16 refusal path).
+    pub citation_checks: Vec<crate::citation_prebind::CitationCheckResult>,
+    /// Verified-citation objects produced by `build_outcome_prebind` + `mint_verified`
+    /// for every citation whose `[N]` was present in the pre-bound set (Bound outcome).
+    /// GHOST / STALE citations are NOT included here — the caller routes them to D-16.
+    pub verified_citations: Vec<crate::research::web_orchestrator::citation_verifier::VerifiedCitation>,
+    /// `true` if any citation in `citation_checks` has `must_block() == true`.
+    pub has_ghost: bool,
+}
+
+/// H-53 — wire the citation pre-binding stage onto the REAL answer path.
+///
+/// Called by `repl_command.rs` AFTER a successful `run_research_pipeline` run,
+/// BEFORE the answer is displayed or cached. This is the production caller chain
+/// that closes the wire-dark BLOCK:
+///   `run_research_pipeline` -> `prebind_research_answer` ->
+///   `citation_prebind::freeze_anchors` (non-test, non-demo caller)
+///   `citation_prebind::check_citation_in_set` (non-test, non-demo caller)
+///   `citation_verifier::prebind_verify_citations` ->
+///     `build_outcome_prebind` (non-dead-code caller)
+///     `mint_verified` (non-dead-code caller)
+///
+/// When `ELAI_CITATION_PREBIND_DISABLE` is set the function returns an empty
+/// `PrebindOutcome` with `anchor_set.is_empty() == true` so the caller can
+/// emit a `CitationAnchorsBound::Blocked` SSB row and fall through to the
+/// legacy detect-after path (E-48 open-world verifier).
+///
+/// No `.unwrap()`/`.expect()` in production paths; all failures are logged and
+/// gracefully degraded.
+pub fn prebind_research_answer(
+    answer: &ResearchAnswer,
+) -> PrebindOutcome {
+    use crate::citation_prebind::{
+        freeze_anchors, check_citation_in_set, extract_citation_ids,
+        prebind_disabled, RankedEvidence,
+    };
+    use crate::research::web_orchestrator::citation_verifier::{
+        prebind_verify_citations,
+    };
+    use crate::research_tree::{EvidenceLevel, SourceCitation, SourceQuality};
+
+    // Kill-switch: fall through to legacy path.
+    if prebind_disabled() {
+        let empty_set = freeze_anchors(&[], 0);
+        return PrebindOutcome {
+            anchor_set: empty_set,
+            citation_checks: Vec::new(),
+            verified_citations: Vec::new(),
+            has_ghost: false,
+        };
+    }
+
+    // Read ELAI_SEED for deterministic id assignment (GD-2).
+    let seed: u64 = std::env::var("ELAI_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    // Build RankedEvidence from the answer's evidence chain.
+    // Each fact in a VerifiedClaim becomes one ranked evidence item.
+    // Rank is assigned by appearance order (first fact in first claim = rank 0).
+    let mut ranked: Vec<RankedEvidence> = Vec::new();
+    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut rank: u32 = 0;
+    for claim in &answer.evidence_chain {
+        for fact in &claim.supporting_facts {
+            // Deduplicate by source URL so each source gets one anchor.
+            if seen_urls.insert(fact.source_url.clone()) {
+                let excerpt = fact.exact_quote
+                    .as_deref()
+                    .unwrap_or(fact.claim.as_str())
+                    .to_owned();
+                ranked.push(RankedEvidence {
+                    rank,
+                    excerpt,
+                    source_uri: fact.source_url.clone(),
+                    retrieved_at_ms: 0, // retrieval timestamp not tracked in ExtractedFact
+                    source_tier: match fact.source_tier {
+                        SourceTier::T1Authoritative => 0,
+                        SourceTier::T2Strong => 1,
+                        SourceTier::T3Weak => 2,
+                        SourceTier::T4Rejected => 3,
+                    },
+                });
+                rank = rank.saturating_add(1);
+            }
+        }
+    }
+
+    // Freeze the evidence set.
+    let anchor_set = freeze_anchors(&ranked, seed);
+
+    if anchor_set.is_empty() {
+        tracing::debug!(
+            path = "prebind",
+            reason = "no_evidence",
+            "prebind_research_answer: empty anchor set (no evidence chain facts)"
+        );
+        return PrebindOutcome {
+            anchor_set,
+            citation_checks: Vec::new(),
+            verified_citations: Vec::new(),
+            has_ghost: false,
+        };
+    }
+
+    // Extract [N] citation markers from the answer text.
+    let cited_ids = extract_citation_ids(&answer.answer_text);
+
+    // Check each citation against the closed set.
+    let citation_checks: Vec<_> = cited_ids
+        .iter()
+        .map(|&id| check_citation_in_set(&anchor_set, id, ""))
+        .collect();
+
+    let has_ghost = citation_checks.iter().any(|r| r.outcome.must_block());
+
+    // Build (SourceCitation, anchor_id, excerpt) tuples for Bound citations only.
+    // Ghost/Stale citations are excluded — the caller routes them to D-16 refusal.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let prebind_items: Vec<(SourceCitation, u32, String)> = citation_checks
+        .iter()
+        .filter(|r| !r.outcome.must_block())
+        .filter_map(|r| {
+            anchor_set.get(r.id).map(|anchor| {
+                let citation = SourceCitation {
+                    url: anchor.source_uri.clone(),
+                    title: format!("Source [{}]", anchor.id),
+                    quality: match anchor.source_tier {
+                        0 => SourceQuality::Tier1,
+                        _ => SourceQuality::Tier2,
+                    },
+                    evidence_level: EvidenceLevel::SingleSource,
+                    excerpt: anchor.excerpt.clone(),
+                };
+                (citation, r.id, anchor.excerpt.clone())
+            })
+        })
+        .collect();
+
+    let verified_citations = prebind_verify_citations(&prebind_items, "prebind_path", now_ms);
+
+    tracing::debug!(
+        anchor_count = anchor_set.len(),
+        cited_count = citation_checks.len(),
+        ghost_count = citation_checks.iter().filter(|r| r.outcome.must_block()).count(),
+        bound_count = verified_citations.len(),
+        "prebind_research_answer: citation pre-binding complete"
+    );
+
+    PrebindOutcome {
+        anchor_set,
+        citation_checks,
+        verified_citations,
+        has_ghost,
+    }
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 

@@ -485,6 +485,8 @@ pub fn score_candidate_with_aggregate(
                 "behavioral trap: execution_hallucination".to_string(),
             Some(DetectedKind::KeywordFallback) =>
                 "behavioral trap: keyword_fallback (unreachable in hard-block path)".to_string(),
+            Some(DetectedKind::ClosureEscapeHatch) =>
+                "behavioral trap: closure_escape_hatch (unregistered escape in proof closure)".to_string(),
             None => "behavioral trap: unknown".to_string(),
         };
         return Ok((
@@ -641,6 +643,9 @@ pub fn score_candidate_with_trap(
             // Keep for exhaustiveness.
             Some(DetectedKind::KeywordFallback) =>
                 "behavioral trap: keyword_fallback (unreachable in hard-block path)".to_string(),
+            // H-54: closure escape-hatch is a deterministic behavioral block.
+            Some(DetectedKind::ClosureEscapeHatch) =>
+                "behavioral trap: closure_escape_hatch (unregistered escape in proof closure)".to_string(),
             None => "behavioral trap: unknown".to_string(),
         };
         return Ok((

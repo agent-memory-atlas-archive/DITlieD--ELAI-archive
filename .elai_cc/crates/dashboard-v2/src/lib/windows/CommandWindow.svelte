@@ -10,7 +10,8 @@
   const EFFORT_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, max: 4 };
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
   import { Pulse } from '../ui/index';
-  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks, load_handoff, get_context_state, rewind_session, timetravel_undo, timetravel_redo, timetravel_restore_files_only } from '../api/stub';
+  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks, load_handoff, get_context_state, rewind_session, timetravel_undo, timetravel_redo, timetravel_restore_files_only, resume_offer, tiered_load_confirm } from '../api/stub';
+  import type { TopicHandleDto } from '../api/stub';
   import type { RecentTask, ContextState } from '../api/types';
   // E-4 chat UX critique surfaces. PinnedRulesPanel mounts as a sidebar
   // strip above the stream; ClaimConfidenceChip / HonestCorrectionBlock /
@@ -44,6 +45,9 @@
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const _framePacerSymbolUsed = _FramePacer;
 
+  // H-51: open handoff topic detected at startup.
+  let handoffOffer = $state<TopicHandleDto | null>(null);
+  let handoffDismissed = $state(false);
   // Live recent-tasks list (was a mock import). Polled every 10s.
   let recentTasks = $state<RecentTask[]>([]);
   // E-23 — context-state snapshot drives the runtime_choice_badge +
@@ -93,6 +97,8 @@
     }
     void refresh();
     void refreshContext();
+    // H-51: detect open handoff topic on startup.
+    resume_offer().then((h) => { if (alive && h) handoffOffer = h; }).catch(() => {});
     const t = setInterval(refresh, 10_000);
     const tCtx = setInterval(refreshContext, 5_000);
     return () => { alive = false; clearInterval(t); clearInterval(tCtx); };
@@ -616,6 +622,36 @@
 </script>
 
 <div class="command-window">
+  <!-- H-51: sleep-time handoff resume offer banner. Shown once per session
+       when resume_offer() detects a recent digest file (modified < 8 h ago).
+       Dismissed on 'Resume' (triggers tiered_load_confirm) or 'Dismiss'. -->
+  {#if handoffOffer && !handoffDismissed}
+    <div class="handoff-offer-banner" role="alert">
+      <span class="handoff-offer-text">
+        Open topic: <strong>{handoffOffer.topic_slug}</strong>
+        (~{handoffOffer.loaded_tokens} tokens). Resume?
+      </span>
+      <button
+        class="handoff-offer-btn handoff-offer-btn--yes"
+        onclick={async () => {
+          const result = await tiered_load_confirm(handoffOffer!.topic_slug);
+          if (result) {
+            // Inject digest summary as a status card in the stream.
+            commands.appendCard('status', {
+              kind: 'status',
+              text: `[H-51 Tiered Load] Resumed topic '${result.topic_slug}'. Digest loaded (${result.loaded_tokens} tokens).`,
+            });
+          }
+          handoffDismissed = true;
+          handoffOffer = null;
+        }}
+      >Resume</button>
+      <button
+        class="handoff-offer-btn handoff-offer-btn--no"
+        onclick={() => { handoffDismissed = true; handoffOffer = null; }}
+      >Dismiss</button>
+    </div>
+  {/if}
   <!-- E-4 Task 3: pinned-rules visible panel. Sidebar strip above the
        stream; collapsed by default. Wire-dark unless the producer is
        running with ELAI_CHAT_UX_CRITIQUE_ENABLE=1 (still renders with
@@ -1224,6 +1260,42 @@
     padding: 4px var(--s-3, 8px) 0 var(--s-3, 8px);
     position: relative;
     z-index: 2;
+  }
+
+  /* H-51: handoff resume offer banner */
+  .handoff-offer-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 6px);
+    padding: 6px var(--s-3, 8px);
+    background: var(--surface-overlay, #1e2433);
+    border-bottom: 1px solid var(--border-default, #2e3446);
+    font-size: var(--text-xs, 11px);
+    color: var(--text-secondary, #8b9cc8);
+    flex-shrink: 0;
+  }
+  .handoff-offer-text {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .handoff-offer-btn {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    border-radius: var(--r-2, 4px);
+    font-size: var(--text-xs, 11px);
+    cursor: pointer;
+    border: 1px solid var(--border-default, #2e3446);
+    background: transparent;
+  }
+  .handoff-offer-btn--yes {
+    color: var(--accent-primary, #7c8cf8);
+    border-color: var(--accent-primary, #7c8cf8);
+  }
+  .handoff-offer-btn--no {
+    color: var(--text-tertiary, #5a6480);
   }
 
   /* E-4 Tasks 1, 2, 12: bubble-level chat UX critique overlays. The

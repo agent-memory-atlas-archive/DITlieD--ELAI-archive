@@ -1,0 +1,41 @@
+# obligation-closure-allowlist.toml - gate-owned (rule R9, R8, H-54).
+#
+# A "discharged" proof obligation that has an UNREGISTERED escape hatch
+# (sorry/admit/axiom/assume/VerifierExternal/KaniAssumeVacuous) anywhere
+# in its transitive dependency closure FAILS the H-54 gate UNLESS it has
+# a matching, unexpired [[obligation]] row here.
+#
+# This mirrors AlphaProof Nexus's own discipline (arXiv:2605.22763v1):
+# 128 `sorry` markers confined to 2 LABELLED QuantumOptics files with
+# literature citations; the other 69 files are fully closed. A deliberately
+# open obligation must be DECLARED, not silently green.
+#
+# This file is authored OUT-OF-BAND; a plan run being evaluated by the gate
+# may not edit it (gate_freeze_check.py enforces R8). After a reviewed
+# change, re-lock:
+#   python .claude/tools/gate_freeze_check.py --lock
+#
+# Schema (ALL fields required; an incomplete row grants NO exception):
+#   [[obligation]]
+#   obligation_id    = "<verifier_kind>:<goal_id>"
+#                      e.g. "dafny:MyProof_Lemma3" or "verus:inv_holds"
+#   owner            = "name"          # accountable person
+#   reason           = "text"          # why the open obligation is legitimate
+#   expiry_date      = "YYYY-MM-DD"    # hard date; past expiry = BLOCK
+#   evidence_pointer = "arXiv:... or GitHub issue URL"
+#
+# KILL-SWITCH: ELAI_CLOSURE_SCAN_DISABLE disables the H-54 closure scan.
+# Registered in wire-dark-allowlist.toml (R9 kill_switch, not an experiment).
+#
+# ---- ACTIVE EXEMPTIONS ----
+# (none yet — no deliberately-open obligations declared as of H-54 ship)
+#
+# When the first live verifier obligation needs an exemption (e.g. an open
+# Dafny benchmark case with a literature citation), add a row here:
+#
+# [[obligation]]
+# obligation_id    = "dafny:OpenBenchmarkCase"
+# owner            = "maintainer"
+# reason           = "open benchmark case per arXiv:XXXX; fully closed proof deferred"
+# expiry_date      = "2027-01-01"
+# evidence_pointer = "arXiv:XXXX"

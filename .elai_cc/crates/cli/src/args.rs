@@ -480,6 +480,20 @@ pub(crate) enum CliAction {
         action: ReviewAction,
         output_format: CliOutputFormat,
     },
+    /// H-53: `elai prebind [--demo-prebind] [--allow-freeform-citations]` —
+    /// citation pre-binding + constrained synthesis on the /research|/ask
+    /// answer path. `--demo-prebind` is the H-53 W-1 seeded-fixture trigger
+    /// (the observable_effect proof): builds a deterministic evidence set,
+    /// calls `freeze_anchors`, runs closed-set membership + blake3-support
+    /// check (Bound/Ghost/Stale outcomes), and emits a genuine
+    /// `CitationAnchorsBound` SSB row. `--allow-freeform-citations` is the
+    /// BROKEN-ARM probe (R2 proof): bypasses closed-set check and fires the
+    /// Blocked arm. Default-ON kill-switch: ELAI_CITATION_PREBIND_DISABLE.
+    /// Handler at crates/cli/src/prebind_cmd.rs.
+    Prebind {
+        allow_freeform: bool,
+        output_format: CliOutputFormat,
+    },
     /// G-8: `elai verify-attestation <commit>` — re-verify a signed in-toto v1
     /// provenance attestation OFFLINE, without re-running ELAI (trust-without-
     /// re-running, SLSA-VSA). Reads the digest-only `ELAI-Provenance-Digest`
@@ -1891,7 +1905,8 @@ pub(crate) enum ResultManifestDemoMode {
 /// so the dispatcher can match a single arm (mirrors `RraAction`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReviewAction {
-    /// `elai review --cockpit [--session <id>] [--base <ref>]` — compute + print
+    /// `elai review --cockpit [--session <id>] [--base <ref>]
+    ///   [--demo-anchor] [--trust-model-line-numbers]` — compute + print
     /// the reviewer-cockpit DSR and emit a `review_surface_scored` row.
     ///
     /// * `session` — the session whose SSB vouch stream is read + whose `ssb.db`
@@ -1900,9 +1915,24 @@ pub(crate) enum ReviewAction {
     /// * `base` — the git ref to diff the working tree against. `None` defaults
     ///   to `HEAD`. The driver resolves it to a concrete commit SHA via
     ///   `git rev-parse` and records that SHA in the row (deterministic pin).
+    /// * `demo_anchor` — H-52 W-1 seeded-fixture trigger: injects deterministic
+    ///   snippet-bearing ReviewFindings over a fixed diff fixture so the resolver
+    ///   runs on REAL snippets and emits genuine FindingAnchored rows covering all
+    ///   three observable-effect cases: (a) Anchored, (b) Ambiguous, (c) Unanchorable.
+    ///   The W-1 live-CLI proof; the DEFERRED model-finding source (E-41/C-40) is
+    ///   the future consumer. NOT a stub — it is the sanctioned observable_effect
+    ///   pattern used by every other gate in this run (H-21/H-26/H-27 etc.).
+    /// * `trust_model_line` — H-52 BROKEN-ARM (R2 proof): anchors case (b) to a
+    ///   model-emitted line instead of the resolver, intentionally mis-anchoring
+    ///   the Ambiguous finding to the wrong hunk. A gate using this mode fails R2
+    ///   (a resolver that stays "right" when fed a model line is itself a FAIL).
     Cockpit {
         session: Option<String>,
         base: Option<String>,
+        /// H-52 W-1 seeded-fixture trigger. Default: false.
+        demo_anchor: bool,
+        /// H-52 broken-arm flag (R2 proof). Default: false.
+        trust_model_line: bool,
     },
 }
 
@@ -2128,15 +2158,22 @@ pub(crate) enum DafnyAction {
 /// deferred to mistakes.md cite-incident #11 (E-53-INGEST-pending).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FormalVerifyAction {
-    /// `elai formal-verify run --target PATH --verifier KIND` —
+    /// `elai formal-verify run --target PATH --verifier KIND [--demo-escape-hatch]` —
     /// dispatch one verifier against a target file. KIND must be one
     /// of `z3_smt` / `dafny` / `kani` / `verus`. Z3 / Kani / Verus
     /// routes are RUNPOD-PENDING stubs returning Inapplicable in the
     /// lean E-53 ship; Dafny route reuses C-52 invoke_dafny_cli and
     /// surfaces RunpodPending when the binary is absent.
+    ///
+    /// `--demo-escape-hatch` is the H-54 W-1 seeded-fixture trigger: feeds a
+    /// frozen goal containing a relocated sorry (AlphaProof failure mode 1:1)
+    /// so the scan returns EscapeHatchAnywhere and emits the off-agent
+    /// TrapBehaviorDetected(ClosureEscapeHatch) SSB row.
     Run {
         target: String,
         verifier: String,
+        /// H-54: seeded-fixture demo trigger.
+        demo_escape_hatch: bool,
     },
     /// `elai formal-verify status` — print the 4 verifier toolchains
     /// + each one's RUNPOD-PENDING posture + the substitute-models
@@ -2710,6 +2747,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // G-5 — `elai review --cockpit [--session <id>] [--base <ref>]`. The
         // reviewer-cockpit DSR producer; handler at crates/cli/src/review_cmd.rs.
         "review" => parse_review_subcommand_args(&rest[1..], output_format),
+        // H-53 — `elai prebind [--demo-prebind] [--allow-freeform-citations]`. Citation
+        // pre-binding + constrained synthesis on the /research|/ask answer path.
+        // --demo-prebind: H-53 W-1 seeded-fixture trigger (the observable_effect proof).
+        // --allow-freeform-citations: BROKEN-ARM (R2 proof, emits Blocked SSB row).
+        // Handler at crates/cli/src/prebind_cmd.rs.
+        "prebind" => parse_prebind_subcommand_args(&rest[1..], output_format),
         // G-8 — `elai verify-attestation <commit>`. Offline in-toto provenance
         // attestation verifier; handler at crates/cli/src/verify_attestation_cmd.rs.
         // READ-ONLY; trust-without-re-running (SLSA-VSA).
@@ -4993,11 +5036,14 @@ pub(crate) fn parse_replay_subcommand_args(
 }
 
 /// G-5 — parse `elai review <sub>`. Grammar:
-///   `elai review --cockpit [--session <id>] [--base <ref>]`
+///   `elai review --cockpit [--session <id>] [--base <ref>]
+///                [--demo-anchor] [--trust-model-line-numbers]`
 ///
 /// `--cockpit` is mandatory (it is the only sub-action today; a future
 /// `--summary` / `--export` lands as a sibling flag). `--session` / `--base`
-/// are optional. Unknown flags are a hard error (fail-closed parse).
+/// are optional. `--demo-anchor` drives the H-52 W-1 seeded-fixture trigger.
+/// `--trust-model-line-numbers` drives the broken-arm R2 proof. Unknown flags
+/// are a hard error (fail-closed parse).
 pub(crate) fn parse_review_subcommand_args(
     rest: &[String],
     output_format: CliOutputFormat,
@@ -5005,6 +5051,8 @@ pub(crate) fn parse_review_subcommand_args(
     let mut cockpit = false;
     let mut session: Option<String> = None;
     let mut base: Option<String> = None;
+    let mut demo_anchor = false;
+    let mut trust_model_line = false;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -5034,6 +5082,21 @@ pub(crate) fn parse_review_subcommand_args(
                 base = Some(flag["--base=".len()..].to_string());
                 i += 1;
             }
+            // H-52 W-1 seeded-fixture trigger: injects deterministic snippet-bearing
+            // ReviewFindings over a fixed diff fixture so anchor_finding runs on REAL
+            // snippets and emits genuine FindingAnchored rows for all three observable-
+            // effect cases (Anchored / Ambiguous / Unanchorable). This is the W-1 live-
+            // CLI proof; the deferred model-finding source (E-41/C-40) is the future consumer.
+            "--demo-anchor" => {
+                demo_anchor = true;
+                i += 1;
+            }
+            // H-52 broken-arm flag (R2 proof): forces a model-emitted line for the Ambiguous
+            // case, intentionally mis-anchoring it to prove the resolver is necessary.
+            "--trust-model-line-numbers" => {
+                trust_model_line = true;
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `review` argument: {other}"));
             }
@@ -5045,7 +5108,53 @@ pub(crate) fn parse_review_subcommand_args(
         );
     }
     Ok(CliAction::Review {
-        action: ReviewAction::Cockpit { session, base },
+        action: ReviewAction::Cockpit {
+            session,
+            base,
+            demo_anchor,
+            trust_model_line,
+        },
+        output_format,
+    })
+}
+
+/// H-53 — parse `elai prebind [--demo-prebind] [--allow-freeform-citations]`.
+///
+/// `--demo-prebind` (default if no flags supplied): H-53 W-1 seeded-fixture
+/// trigger. Builds a deterministic evidence set, calls `freeze_anchors`, runs
+/// closed-set check (Bound/Ghost/Stale), emits a genuine
+/// `CitationAnchorsBound` SSB row (off-agent artifact, R4).
+///
+/// `--allow-freeform-citations`: BROKEN-ARM probe (R2 proof). Bypasses the
+/// closed-set check; fires the Blocked arm of `CitationAnchorsBoundKind`.
+///
+/// Unknown flags are a hard error (fail-closed parse).
+pub(crate) fn parse_prebind_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut allow_freeform = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--demo-prebind" => {
+                // H-53 W-1 seeded-fixture trigger. Accepted but redundant (it is the
+                // default behaviour); present so `elai prebind --demo-prebind` reads
+                // naturally and matches the plan's documented CLI surface exactly.
+                i += 1;
+            }
+            // BROKEN-ARM probe: bypasses closed-set check; fires Blocked SSB arm.
+            "--allow-freeform-citations" => {
+                allow_freeform = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `prebind` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::Prebind {
+        allow_freeform,
         output_format,
     })
 }
@@ -6732,6 +6841,7 @@ pub(crate) fn parse_formal_verify_subcommand_args(
         "run" => {
             let mut target: Option<String> = None;
             let mut verifier: Option<String> = None;
+            let mut demo_escape_hatch = false;
             let mut i = 1;
             while i < rest.len() {
                 match rest[i].as_str() {
@@ -6757,6 +6867,11 @@ pub(crate) fn parse_formal_verify_subcommand_args(
                         verifier = Some(flag["--verifier=".len()..].to_string());
                         i += 1;
                     }
+                    // H-54 W-1: seeded-fixture demo trigger.
+                    "--demo-escape-hatch" => {
+                        demo_escape_hatch = true;
+                        i += 1;
+                    }
                     other => {
                         return Err(format!("unknown `formal-verify run` argument: {other}"));
                     }
@@ -6769,7 +6884,7 @@ pub(crate) fn parse_formal_verify_subcommand_args(
                 "`formal-verify run` requires --verifier <z3_smt|dafny|kani|verus>".to_string()
             })?;
             Ok(CliAction::FormalVerify {
-                action: FormalVerifyAction::Run { target, verifier },
+                action: FormalVerifyAction::Run { target, verifier, demo_escape_hatch },
                 output_format,
             })
         }

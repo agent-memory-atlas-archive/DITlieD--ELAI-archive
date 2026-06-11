@@ -10,6 +10,11 @@ use crate::architecture::approval_fatigue_guard::{
 use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
+use crate::compaction_ladder::{
+    compaction_ladder_enabled, run_compaction_ladder, CompactionLadder, LadderEventEmitter,
+    NullEmitter,
+};
+use crate::ssb::{ContextReductionPayload, SsbPayload};
 use crate::output_postprocessor::{self, OutputConfig};
 use crate::config::RuntimeFeatureConfig;
 use crate::hooks::{HookAbortSignal, HookProgressReporter, HookRunResult, HookRunner};
@@ -787,10 +792,28 @@ where
     }
 
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
-        if self.usage_tracker.cumulative_usage().input_tokens
-            < self.auto_compaction_input_tokens_threshold
-        {
+        let input_tokens = self.usage_tracker.cumulative_usage().input_tokens;
+        if input_tokens < self.auto_compaction_input_tokens_threshold {
             return None;
+        }
+
+        // BLOCK-3 fix: run the cheapest-first compaction ladder in the
+        // interactive turn (LOCAL regime).  The ladder is default-ON
+        // (compaction_ladder_enabled()) and sync — use NullEmitter here
+        // (no SSB writer ref in this sync fn; full telemetry emitter is
+        // the autonomous task_runner path).  This accounts for the tier
+        // budget before the actual compact_session trim so the ladder
+        // decision is observed in the token budget log.
+        if compaction_ladder_enabled() {
+            let ladder = CompactionLadder::default_order(
+                u64::from(self.auto_compaction_input_tokens_threshold),
+            );
+            let _ = run_compaction_ladder(
+                &ladder,
+                u64::from(input_tokens),
+                Some(self.session.session_id.clone()),
+                &NullEmitter,
+            );
         }
 
         let result = compact_session(
@@ -806,6 +829,40 @@ where
         }
 
         self.session = result.compacted_session;
+
+        // BLOCK-2 fix: emit a ContextReduction SSB row from the real local
+        // trim path.  The ssb_writer is threaded in via with_ssb_writer;
+        // when absent (legacy / test path) no row is written (best-effort,
+        // never blocks or panics).  Fire-and-forget via std::thread::spawn
+        // (same pattern as approval-fatigue emit above) to keep this fn sync.
+        if let Some(ssb) = self.ssb_writer.clone() {
+            // input_tokens is u32; ContextReductionPayload.before/after_tokens are usize.
+            let before_usize: usize = input_tokens as usize;
+            let after_tokens = self.usage_tracker.cumulative_usage().input_tokens;
+            let after_usize: usize = after_tokens as usize;
+            let slots_affected: Vec<u8> = Vec::new();
+            let payload = SsbPayload::ContextReduction(ContextReductionPayload {
+                // level 0 = FilteredByRelevance (cheapest, mirrors AdaptiveLevel::FilteredByRelevance)
+                level: 0,
+                before_tokens: before_usize,
+                after_tokens: after_usize,
+                slots_affected,
+            });
+            std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    let _ = rt.block_on(ssb.write_payload(
+                        "conversation.maybe_auto_compact",
+                        0,
+                        payload,
+                        Vec::new(),
+                    ));
+                }
+            });
+        }
+
         Some(AutoCompactionEvent {
             removed_message_count: result.removed_message_count,
         })

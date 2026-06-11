@@ -401,6 +401,11 @@ pub enum DetectedKind {
     ExecutionHallucination,
     /// Keyword-grep advisory only (not a behavioral leg).
     KeywordFallback,
+    /// Obligation-closure escape-hatch detected (H-54 formal-lane first leg).
+    /// An unregistered sorry/admit/axiom/assume sits anywhere in the transitive
+    /// dependency closure of a "discharged" goal (arXiv:2605.22763 AlphaProof).
+    /// behavioral_flag=true (this IS a deterministic blocking leg, not advisory).
+    ClosureEscapeHatch,
 }
 
 // ---------------------------------------------------------------------------
@@ -809,6 +814,7 @@ pub fn detected_kind_to_ssb(kind: DetectedKind) -> crate::ssb::TrapBehaviorDetec
         DetectedKind::IsomorphMismatch => TrapBehaviorDetectedKind::IsomorphMismatch,
         DetectedKind::ExecutionHallucination => TrapBehaviorDetectedKind::ExecutionHallucination,
         DetectedKind::KeywordFallback => TrapBehaviorDetectedKind::KeywordFallback,
+        DetectedKind::ClosureEscapeHatch => TrapBehaviorDetectedKind::ClosureEscapeHatch,
     }
 }
 

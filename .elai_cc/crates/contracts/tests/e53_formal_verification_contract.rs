@@ -200,6 +200,7 @@ async fn e4_dafny_route_handles_runpod_pending_or_refuted() {
         target_path: tmp.to_string_lossy().to_string(),
         verifier: VerifierKind::Dafny,
         cost_cap_ms: None,
+        demo_escape_hatch: false,
     };
     let result = run_pipeline(request).await;
     let _ = std::fs::remove_file(&tmp);
@@ -228,6 +229,7 @@ async fn e5_z3_route_returns_inapplicable_stub() {
         target_path: "crates/foo/src/lib.rs".to_string(),
         verifier: VerifierKind::Z3Smt,
         cost_cap_ms: None,
+        demo_escape_hatch: false,
     };
     let result = run_pipeline(request).await;
     match result.outcome {
@@ -244,6 +246,7 @@ async fn e5_kani_route_returns_inapplicable_stub() {
         target_path: "crates/foo/src/lib.rs".to_string(),
         verifier: VerifierKind::Kani,
         cost_cap_ms: None,
+        demo_escape_hatch: false,
     };
     let result = run_pipeline(request).await;
     match result.outcome {
@@ -260,6 +263,7 @@ async fn e5_verus_route_returns_inapplicable_stub() {
         target_path: "crates/foo/src/lib.rs".to_string(),
         verifier: VerifierKind::Verus,
         cost_cap_ms: None,
+        demo_escape_hatch: false,
     };
     let result = run_pipeline(request).await;
     match result.outcome {
@@ -293,6 +297,7 @@ async fn e6_pipeline_emits_contract_before_verifier_dispatch() {
         target_path: "crates/billing/payment.rs".to_string(),
         verifier: VerifierKind::Z3Smt,
         cost_cap_ms: None,
+        demo_escape_hatch: false,
     };
     let result = run_pipeline(request).await;
     assert!(

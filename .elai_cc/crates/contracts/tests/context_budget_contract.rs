@@ -19,7 +19,9 @@ use tempfile::TempDir;
 
 // H-31 (SCHEMA_VERSION 240): bumped 8 -> 9 for ContextSlot::Memory (the user-preference
 // bi-temporal ledger retrieval-into-prompt slot, appended after OutputReserve).
-const _: () = assert!(SLOT_COUNT == 9);
+// H-53 (SCHEMA_VERSION 229): bumped 9 -> 10 for ContextSlot::Evidence (the ranked-evidence
+// pre-binding slot for freeze_anchors; must sit after the last cache breakpoint per HD-2).
+const _: () = assert!(SLOT_COUNT == 10);
 const _: () = assert!(CACHE_BREAKPOINT_COUNT == 2);
 
 // Compile-time size assertions to detect accidental field additions.
@@ -114,9 +116,10 @@ fn budget_infeasible_when_dynamic_too_small() {
 #[test]
 fn update_breakpoints_validity_detection() {
     // Contract: BP0 transitions from invalid (first call) to valid (same content) to invalid (changed slot).
+    // Slots 0-9: sys, rules, spec, repo, code, ssb, grc, out, mem, evidence (H-53: SLOT_COUNT=10).
     let mut budget = ContextBudget::new(131072);
     let contents_a: Vec<&[u8]> = vec![
-        b"sys", b"rules", b"spec", b"repo", b"code", b"ssb", b"grc", b"out",
+        b"sys", b"rules", b"spec", b"repo", b"code", b"ssb", b"grc", b"out", b"mem", b"evidence",
     ];
     budget.update_breakpoints(&contents_a);
     assert!(!budget.cache_breakpoints[0].valid, "first call: BP0 must be invalid");
@@ -130,7 +133,7 @@ fn update_breakpoints_validity_detection() {
 
     // Change slot 2 (PhaseSpec) -> BP0 and BP1 both invalid (slot 2 is in both prefixes).
     let contents_b: Vec<&[u8]> = vec![
-        b"sys", b"rules", b"spec_v2", b"repo", b"code", b"ssb", b"grc", b"out",
+        b"sys", b"rules", b"spec_v2", b"repo", b"code", b"ssb", b"grc", b"out", b"mem", b"evidence",
     ];
     budget.update_breakpoints(&contents_b);
     assert!(!budget.cache_breakpoints[0].valid, "changed slot 2: BP0 must be invalid");
@@ -139,15 +142,17 @@ fn update_breakpoints_validity_detection() {
 
 #[test]
 fn update_breakpoints_bp1_ignores_post_bp1_slots() {
-    // Contract: changing slots 5, 6, 7 does not invalidate BP1 (which covers 0..=4).
+    // Contract: changing slots 5-9 does not invalidate BP1 (which covers 0..=4).
+    // H-53: SLOT_COUNT=10 (added Memory=8 and Evidence=9); both are post-BP1 slots.
     let mut budget = ContextBudget::new(131072);
     let contents_a: Vec<&[u8]> = vec![
-        b"sys", b"rules", b"spec", b"repo", b"code", b"ssb", b"grc", b"out",
+        b"sys", b"rules", b"spec", b"repo", b"code", b"ssb", b"grc", b"out", b"mem", b"evidence",
     ];
     budget.update_breakpoints(&contents_a);
-    // Second call with same 0..=4 but different 5,6,7.
+    // Second call with same 0..=4 but different 5-9.
     let contents_b: Vec<&[u8]> = vec![
-        b"sys", b"rules", b"spec", b"repo", b"code", b"ssb_changed", b"grc_changed", b"out_changed",
+        b"sys", b"rules", b"spec", b"repo", b"code",
+        b"ssb_changed", b"grc_changed", b"out_changed", b"mem_changed", b"evidence_changed",
     ];
     budget.update_breakpoints(&contents_b);
     assert!(budget.cache_breakpoints[0].valid, "BP0 must be valid (slots 0-2 unchanged)");

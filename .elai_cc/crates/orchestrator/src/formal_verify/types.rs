@@ -23,6 +23,8 @@
 //! line is the only mechanism to introduce a dep, and this ship
 //! adds none.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Concrete formal-verifier toolchain dispatched by the pipeline.
@@ -166,6 +168,127 @@ pub struct VerifyRequest {
     pub verifier: VerifierKind,
     /// Optional advisory wall-clock cap. None = use toolchain default.
     pub cost_cap_ms: Option<u32>,
+    /// H-54 seeded-fixture demo trigger (W-1 observable_effect).
+    ///
+    /// When `true`, `orchestrator::run()` substitutes a frozen seeded
+    /// `DischargedGoal` containing an unregistered escape hatch (a
+    /// relocated `sorry` in a renamed helper lemma — the AlphaProof
+    /// failure mode 1:1) in place of the scaffolding-tier
+    /// `DischargedGoal::unavailable`. This makes the scan return
+    /// `EscapeHatchAnywhere`, the pipeline blocks, and the caller can
+    /// emit the `TrapBehaviorDetected(ClosureEscapeHatch)` SSB row.
+    ///
+    /// This is the sanctioned seeded-fixture observable-effect pattern
+    /// (matches H-52 `--demo-anchor` / H-53 `--demo-prebind` precedents).
+    /// The live DAG / GD-4 calibration remain Tier-2 / RunPod deferred.
+    #[serde(default)]
+    pub demo_escape_hatch: bool,
+}
+
+// ---------------------------------------------------------------------------
+// H-54 obligation-closure types
+// ---------------------------------------------------------------------------
+
+/// A single node in a verifier's obligation/lemma dependency DAG.
+///
+/// Each node represents one obligation (lemma, sub-goal, or axiom) that the
+/// verifier exposes as part of the dependency closure of a top-level goal.
+/// The H-54 BFS scan walks these nodes and flags any that are discharged by
+/// an escape hatch (sorry/admit/axiom/assume/external-body).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObligationNode {
+    /// Unique identifier for this obligation within the verifier's scope.
+    /// Format is verifier-specific (e.g. "Dafny:MyLemma", "Verus:inv_holds").
+    pub obligation_id: String,
+    /// Whether this node is discharged by an escape hatch. `None` means the
+    /// verifier reports a clean proof for this node.
+    pub hatch: Option<HatchKind>,
+    /// Child obligation ids this node depends on (the outgoing DAG edges).
+    pub depends_on: Vec<String>,
+}
+
+/// The kind of escape hatch a verifier uses to discharge an obligation
+/// without actually proving it.
+///
+/// Per-verifier token map (H-54 AlphaProof steal arXiv:2605.22763v1):
+///   Lean:   `sorry` / `admit` / non-foundational `axiom`
+///   Verus:  `assume(...)` / `#[verifier::external_body]` / `#[verifier::external]`
+///   Kani:   `kani::assume` used to vacuously discharge a proof harness /
+///           an unconstrained stub
+///   Dafny:  `assume` / `{:axiom}`
+///   Z3:     an `assert`ed assumption that restates the goal
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HatchKind {
+    /// Lean `sorry` — marks an unproven placeholder.
+    Sorry,
+    /// Lean `admit` — same semantics as `sorry`, admits a goal without proof.
+    Admit,
+    /// Non-foundational `axiom` in Lean (not a sound axiom from the core).
+    Axiom,
+    /// Dafny `assume` / Verus `assume(...)` / Z3 goal-restating `assert`.
+    Assume,
+    /// Verus `#[verifier::external_body]` or `#[verifier::external]` — body
+    /// is marked unverified and trusted externally.
+    VerifierExternal,
+    /// `kani::assume` used to vacuously discharge a harness without constraining
+    /// the inputs meaningfully (the obligation is trivially satisfied).
+    KaniAssumeVacuous,
+}
+
+impl HatchKind {
+    /// Stable snake_case label used in SSB rows + UI rendering.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sorry => "sorry",
+            Self::Admit => "admit",
+            Self::Axiom => "axiom",
+            Self::Assume => "assume",
+            Self::VerifierExternal => "verifier_external",
+            Self::KaniAssumeVacuous => "kani_assume_vacuous",
+        }
+    }
+}
+
+/// A "discharged" goal whose full transitive dependency closure H-54 scans.
+///
+/// This is the input to `closure_scan::scan_obligation_closure`. It carries:
+///   - The top-level goal id (the verifier claims this is proved/discharged).
+///   - The per-verifier DAG of all obligations the top goal depends on, as
+///     exposed by the verifier. Each node carries its own hatch status.
+///   - A flat index (obligation_id -> ObligationNode) for O(1) lookup in BFS.
+///
+/// Construction: each E-53 verifier creates a `DischargedGoal` from its own
+/// output format. Where the verifier does NOT expose a dependency DAG
+/// (boolean-only output), the caller passes `dag: None` and the scan returns
+/// `ClosureScanKind::ClosureUnavailable` (labeled unsound per R5 — the
+/// verifier's own machine verdict is the Layer-4 backstop).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DischargedGoal {
+    /// The top-level goal id that the verifier claims is discharged.
+    pub goal_id: String,
+    /// All obligation nodes in the dependency closure, keyed by obligation_id.
+    /// `None` when the verifier does not expose a DAG (boolean-only output).
+    pub dag: Option<HashMap<String, ObligationNode>>,
+}
+
+impl DischargedGoal {
+    /// Construct a `DischargedGoal` where the verifier does not expose a DAG.
+    /// The scan will return `ClosureScanKind::ClosureUnavailable` for this input.
+    #[must_use]
+    pub fn unavailable(goal_id: impl Into<String>) -> Self {
+        Self { goal_id: goal_id.into(), dag: None }
+    }
+
+    /// Construct a `DischargedGoal` with a fully-known DAG exposed by the verifier.
+    #[must_use]
+    pub fn with_dag(
+        goal_id: impl Into<String>,
+        dag: HashMap<String, ObligationNode>,
+    ) -> Self {
+        Self { goal_id: goal_id.into(), dag: Some(dag) }
+    }
 }
 
 #[cfg(test)]
@@ -246,5 +369,44 @@ mod tests {
             // Discriminator label survives the round-trip.
             assert_eq!(o.as_str(), back.as_str());
         }
+    }
+
+    // H-54: HatchKind / DischargedGoal basic sanity checks
+    #[test]
+    fn hatch_kind_wire_tags_are_snake_case() {
+        assert_eq!(HatchKind::Sorry.as_str(), "sorry");
+        assert_eq!(HatchKind::Admit.as_str(), "admit");
+        assert_eq!(HatchKind::Axiom.as_str(), "axiom");
+        assert_eq!(HatchKind::Assume.as_str(), "assume");
+        assert_eq!(HatchKind::VerifierExternal.as_str(), "verifier_external");
+        assert_eq!(HatchKind::KaniAssumeVacuous.as_str(), "kani_assume_vacuous");
+    }
+
+    #[test]
+    fn discharged_goal_unavailable_has_none_dag() {
+        let g = DischargedGoal::unavailable("MyProof");
+        assert_eq!(g.goal_id, "MyProof");
+        assert!(g.dag.is_none());
+    }
+
+    #[test]
+    fn discharged_goal_with_dag_carries_nodes() {
+        let mut dag = HashMap::new();
+        dag.insert(
+            "helper_lemma".to_string(),
+            ObligationNode {
+                obligation_id: "helper_lemma".to_string(),
+                hatch: Some(HatchKind::Sorry),
+                depends_on: vec![],
+            },
+        );
+        let g = DischargedGoal::with_dag("TopGoal", dag);
+        assert_eq!(g.goal_id, "TopGoal");
+        let d = g.dag.expect("dag should be Some");
+        assert!(d.contains_key("helper_lemma"));
+        assert_eq!(
+            d["helper_lemma"].hatch,
+            Some(HatchKind::Sorry)
+        );
     }
 }

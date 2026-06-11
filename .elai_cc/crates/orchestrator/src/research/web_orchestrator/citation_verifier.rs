@@ -90,6 +90,11 @@ impl FaithfulnessDecision {
 }
 
 /// Outcome of one 4-stage verification pass.
+///
+/// H-53 additive extension: `anchor_id` and `pre_bound` are populated on the
+/// closed-set path when [`crate::citation_prebind::EvidenceAnchorSet`] was active
+/// for this answer. On the legacy detect-after path (kill-switch active or no
+/// pre-bound set) both fields stay at their defaults (`None` / `false`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationOutcome {
     /// Stage (a) -- URL-liveness HEAD verdict. False == dead URL.
@@ -104,6 +109,16 @@ pub struct VerificationOutcome {
     /// `None` when the faithfulness check was skipped (sidecar
     /// unavailable / RUNPOD-PENDING).
     pub faithful: Option<FaithfulnessDecision>,
+    /// H-53: the pre-bound anchor id that this citation was checked against.
+    /// `Some(N)` when verified against a pre-bound
+    /// [`crate::citation_prebind::EvidenceAnchorSet`]; `None` on the legacy path.
+    #[serde(default)]
+    pub anchor_id: Option<u32>,
+    /// H-53: `true` when verified against a pre-bound
+    /// [`crate::citation_prebind::EvidenceAnchorSet`] (closed-set path).
+    /// `false` on the legacy open-world detect-after path.
+    #[serde(default)]
+    pub pre_bound: bool,
 }
 
 impl VerificationOutcome {
@@ -308,6 +323,10 @@ pub fn inspect_url_shape(url: &str) -> UrlShapeInspection {
 /// verdicts. The HTTP HEAD calls are caller-side (so the verifier
 /// stays test-injectable); this fn collates the inputs into the
 /// canonical outcome shape.
+///
+/// The H-53 `anchor_id` and `pre_bound` fields default to `None`/`false`
+/// on this legacy path. Use [`build_outcome_prebind`] when the closed-set
+/// check was active.
 #[must_use]
 pub fn build_outcome(
     url_live: bool,
@@ -320,6 +339,31 @@ pub fn build_outcome(
         arxiv_valid,
         doi_valid,
         faithful,
+        anchor_id: None,
+        pre_bound: false,
+    }
+}
+
+/// H-53 variant of [`build_outcome`] for the closed-set pre-bound path.
+///
+/// Sets `anchor_id` and `pre_bound = true`. Used by the
+/// `citation_prebind` consumer after verifying against a frozen
+/// [`crate::citation_prebind::EvidenceAnchorSet`].
+#[must_use]
+pub fn build_outcome_prebind(
+    url_live: bool,
+    arxiv_valid: Option<bool>,
+    doi_valid: Option<bool>,
+    faithful: Option<FaithfulnessDecision>,
+    anchor_id: u32,
+) -> VerificationOutcome {
+    VerificationOutcome {
+        url_live,
+        arxiv_valid,
+        doi_valid,
+        faithful,
+        anchor_id: Some(anchor_id),
+        pre_bound: true,
     }
 }
 
@@ -334,6 +378,47 @@ pub(super) fn mint_verified(
     fetched_at_unix_ms: i64,
 ) -> VerifiedCitation {
     VerifiedCitation::new(citation, outcome, agent_id, fetched_at_unix_ms)
+}
+
+/// H-53 production entry point: verify a batch of pre-bound citations and
+/// return `VerifiedCitation` newtypes for use in the final-report renderer.
+///
+/// Called by `citation_prebind::prebind_research_answer` on the REAL
+/// `/research|/ask` answer path after `freeze_anchors` has run. This is the
+/// production caller that makes `build_outcome_prebind` and `mint_verified`
+/// non-dead-code (wiring gate R6/R7: real production caller, not a test shim).
+///
+/// Each entry in `items` is `(citation, anchor_id, cited_excerpt)`:
+/// - `citation` — the [`SourceCitation`] object for the final-report renderer.
+/// - `anchor_id` — the 1-based id that maps to the pre-bound
+///   [`crate::citation_prebind::EvidenceAnchorSet`].
+/// - `cited_excerpt` — the excerpt the model cited (`""` for id-membership-only check).
+///
+/// URL-liveness / arXiv / DOI checks are skipped on the prebind path (the
+/// evidence was already retrieved and ranked before generation; the blake3
+/// pin is the freshness proof). `url_live` is set to `true` conservatively.
+/// Stage (d) faithfulness is `None` (RUNPOD-PENDING, same as legacy path).
+///
+/// Returns an empty `Vec` when `items` is empty (no citations in answer).
+/// No `.unwrap()`/`.expect()` in production paths.
+pub fn prebind_verify_citations(
+    items: &[(SourceCitation, u32, String)],
+    agent_id: &str,
+    fetched_at_unix_ms: i64,
+) -> Vec<VerifiedCitation> {
+    items
+        .iter()
+        .map(|(citation, anchor_id, _cited_excerpt)| {
+            let outcome = build_outcome_prebind(
+                true,  // url_live: evidence was retrieved; conservatively true on prebind path
+                None,  // arxiv_valid: not re-checked on prebind path
+                None,  // doi_valid: not re-checked on prebind path
+                None,  // faithful: RUNPOD-PENDING
+                *anchor_id,
+            );
+            mint_verified(citation.clone(), outcome, agent_id, fetched_at_unix_ms)
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -147,6 +147,22 @@ pub mod cloud_mode;
 // workflow/reasoning/E-39-decisions.md.
 pub mod cost;
 pub mod context_budget;
+// H-50: regime-aware in-session context management.
+// Single effective_context_window truth + ContextPolicy-by-BackendMode.
+// LOCAL: trim at 75% of real window via compaction ladder; CLOUD: 85% cache-
+// stable prefix policy (unchanged from pre-H-50). Kill-switch:
+// ELAI_CONTEXT_POLICY_DISABLE=1. No new SSB variant (reuses ContextReduction
+// per GD-1). Wire-in points: conversation.rs:789 + live_cli.rs:1185.
+pub mod context_policy;
+// H-51: cross-session sleep-time handoff digest author + open-topic detector.
+// Emits HandoffLifecycleEvent SSB rows (SCHEMA_VERSION 227). Wire-in points:
+//   - LiveCli::drop (DigestWritten)
+//   - repl.rs run_repl startup (ResumeOffered + one-tap ResumeConfirmed)
+//   - handoff.rs continue_from_handoff (TieredLoad)
+// Kill-switch: ELAI_HANDOFF_AUTORESUME_DISABLE=1 (detect only; digest
+// write always runs). Registered in wire-dark-allowlist.toml (R9).
+pub mod handoff_digest;
+pub use handoff_digest::TopicHandle;
 // G-7: per-change confidence PRODUCER (fuses log-prob + self-consistency +
 // oracle-free test execution-agreement into the real claim_score feeding the
 // SHIPPED D-16 conformal abstention layer).
@@ -268,6 +284,10 @@ pub mod attestation;
 // the pinned git-diff + the seq-ASC stream (GD-2). See
 // workflow/reasoning/G-5-decisions.md.
 pub mod review_surface;
+// H-52 (SCHEMA_VERSION 228): deterministic snippet->hunk finding-anchoring.
+// The resolver closes G-5 Open-Question #2 (the hunk_id join risk). Default-ON
+// kill-switch: ELAI_REVIEW_ANCHOR_DISABLE (not a default-OFF enable gate; R9).
+pub mod review_anchor;
 pub mod grounding_client;
 pub mod research_budget;
 pub mod research_pipeline;
@@ -384,6 +404,16 @@ pub use skill_trust::{
     DemotedSkill, LearnedSkill, SkillStore, SkillStoreError, SkillTrustTier,
     SKILL_EXPECTED_LIFETIME_SECS, SKILL_STALE_THRESHOLD, TIER_MAX_FAILURE_RATE,
     TIER_MIN_AGE_SECS, TIER_MIN_INVOCATIONS,
+};
+// H-50: re-export the public policy surface so live_cli.rs + contract tests
+// reach it via `elai_orchestrator::{ContextPolicy, effective_context_window,
+// trim_threshold_for_mode, regime_policy, context_policy_disabled}`.
+pub use context_policy::{
+    context_policy_disabled, effective_context_window, regime_policy,
+    trim_threshold, trim_threshold_for_mode, ContextPolicy,
+    ELAI_CONTEXT_POLICY_DISABLE_VAR, ELAI_LOCAL_MAX_CONTEXT_VAR,
+    LOCAL_DEFAULT_WINDOW, CLOUD_DEFAULT_WINDOW, LEGACY_FLAT_THRESHOLD,
+    LOCAL_TRIM_FRACTION, CLOUD_TRIM_FRACTION,
 };
 pub use session_dag::{
     SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,
@@ -1148,6 +1178,14 @@ pub mod holdout_budget;
 // darwin_admit_loop::run_one_generation. Emits EvalFirewallEvent SSB row.
 // See workflow/reasoning/H-47-decisions.md.
 pub mod eval_firewall;
+// H-53 (SCHEMA_VERSION 229): citation pre-binding + constrained synthesis on the answer
+// path. Freezes ranked evidence into a numbered EvidenceAnchorSet (blake3-pinned,
+// rank-stable under ELAI_SEED) BEFORE synthesis; E-48 CitationVerifier degenerates from
+// open-world ghost-hunting to a closed-set membership + support check. Default-ON
+// kill-switch: ELAI_CITATION_PREBIND_DISABLE (not a default-OFF gate; R9).
+// Tier-2 (constrained-decode grammar via C-26 PER_ROLE_DECODING) DEFERRED.
+// See workflow/reasoning/H-53-decisions.md.
+pub mod citation_prebind;
 // H-29 (SCHEMA_VERSION 238) — the LOCKED fail-closed drift state machine (T-13): the master
 // deployment-trust interlock that gates resuming a live trading strategy. Four closed-form
 // drift axes (PSI on inputs+outputs, blake3 schema-fingerprint mismatch, rolling-14d
@@ -1395,6 +1433,7 @@ pub use prompt::{
 pub use research_pipeline::{
     run_research_pipeline, phase_a_formulate_queries, phase_b_search, phase_c_classify,
     phase_d_extract_facts, phase_e_cross_verify, phase_f_synthesize, phase_g_post_verify,
+    prebind_research_answer, PrebindOutcome,
     ClassifiedResults, CollectedResults, FormulatedQueries, PostVerificationResult,
     SearchBackend, SearchResult, StubSearchBackend,
 };
@@ -1767,6 +1806,15 @@ pub use ssb::{
 pub use review_surface::{
     build_file_signals, hunk_id_for, score_review_surface, FileSignals, FindingKind, HunkVouch,
     ReviewFinding, ReviewSurfaceScore, VouchKind,
+};
+// H-52: deterministic finding-anchoring public surface.
+// ReviewFinding is the UNIFIED struct (review_surface::ReviewFinding) carrying
+// snippet + anchor fields (H-52 line-less schema). review_anchor::ReviewFinding
+// is a type alias pointing to the same struct; AnchoredReviewFinding is a
+// stable alias preserved for call-site compat — both refer to the same type.
+pub use review_anchor::{
+    anchor_disabled, anchor_finding, AnchorKind, AnchorResult, ExcludeReason,
+    ReviewFinding as AnchoredReviewFinding,
 };
 // G-2: Reproducible-Run Artifact public surface. Re-exported so the cli
 // rra_cmd / run_subcommand emit + dashboard-v2 commands_g2.rs + contract tests

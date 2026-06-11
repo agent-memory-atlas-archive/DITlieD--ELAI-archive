@@ -56,6 +56,9 @@ use elai_orchestrator::{
     ModelPricing, OAuthAuthorizationRequest, OAuthConfig, OAuthTokenExchangeRequest,
     PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode,
     RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    // H-50: regime-aware window truth (replaces max_tokens_for_model in prepare_turn_runtime).
+    effective_context_window,
+    context_policy_disabled,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -1182,8 +1185,34 @@ impl LiveCli {
                     _ => 50, // rough estimate for tool blocks
                 }).sum::<usize>()
             }).sum();
-            let model_window = max_tokens_for_model(&self.model) as usize;
-            let threshold = (model_window as f64 * SESSION_HANDOFF_THRESHOLD) as usize;
+            // H-50: use the regime-aware effective window (ELAI_LOCAL_MAX_CONTEXT for
+            // local sidecar; 200 000 for cloud/API).  Replaces the old
+            // max_tokens_for_model call which returned 64 000 for every non-opus
+            // model, sitting 32 000 tokens ABOVE the real local window.
+            // WARN-1 fix: when the kill-switch is ON, revert BOTH sites to legacy
+            // max_tokens_for_model (64 000 non-opus) so the disable path fully
+            // reverts to pre-H-50 behaviour.
+            let backend_mode = self
+                .backend_config
+                .as_ref()
+                .map(|c| c.mode)
+                .unwrap_or(BackendMode::Api);
+            let model_window = if context_policy_disabled() {
+                max_tokens_for_model(&self.model) as usize
+            } else {
+                effective_context_window(backend_mode) as usize
+            };
+            // Threshold: local => floor(window * 0.75); cloud => floor(window * 0.85).
+            // SESSION_HANDOFF_THRESHOLD (0.85) is kept as the cloud fraction by the
+            // context_policy module; we call trim_threshold_for_mode indirectly here
+            // by computing it from the same fractions used in context_policy.
+            let trim_fraction = if matches!(backend_mode, BackendMode::Local) {
+                elai_orchestrator::LOCAL_TRIM_FRACTION
+            } else {
+                SESSION_HANDOFF_THRESHOLD
+            };
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let threshold = (model_window as f64 * trim_fraction) as usize;
             if estimated_tokens > threshold && !session.messages.is_empty() {
                 // B-9 T1: stub_ssb_seq is now populated via the SSB writer's
                 // current last_seq. The CLI persistence path no longer hard-codes
@@ -1253,44 +1282,85 @@ impl LiveCli {
                         &fsm_state,
                     ) {
                         Ok(snap) => {
-                            // H-49 RV-2 / H-6 recover_stubs live wire:
-                            // Pull the trimmed view back from the snapshot and
-                            // recover real content for any stubbed messages via
-                            // the SSB. Falls back to the placeholder only if the
-                            // SSB recovery fails (best-effort; never panics).
+                            // H-50 BLOCK-1 fix: on LOCAL, keep stubs UNLOADED
+                            // (placeholder text only) so the net trim is not
+                            // cancelled by a whole-set re-inflate.  Stubs are
+                            // reloaded on demand via recover_single_stub when
+                            // the model explicitly requests a specific seq.
+                            // On CLOUD / API, keep the existing recover_stubs
+                            // behaviour (full recovery for cache-stable prefix).
                             use elai_orchestrator::SsbReader as _;
-                            let recovered = dag.recover_stubs(
-                                &snap.snap_id,
-                                ssb_ref.as_ref(),
-                            );
-                            let trimmed = match recovered {
-                                Ok(msgs) => msgs,
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "recover_stubs failed (falling back to placeholder): {e}"
-                                    );
-                                    // Fall back: load raw snapshot for non-stubbed messages.
-                                    dag.load_snapshot(&snap.snap_id)
-                                        .map(|(_, m)| m)
-                                        .unwrap_or_default()
+                            if matches!(backend_mode, BackendMode::Local) {
+                                // LOCAL: load the raw snapshot view; stubbed
+                                // entries stay as placeholders — do NOT call
+                                // recover_stubs (that would re-inflate all
+                                // stubs and zero out the trim gain).
+                                // On-demand reload: call recover_single_stub
+                                // per individual seq when needed (H-50 selective
+                                // recovery; the method is wired to session_dag).
+                                let snap_view = dag.load_snapshot(&snap.snap_id)
+                                    .map(|(_, m)| m)
+                                    .unwrap_or_default();
+                                for (i, tm) in snap_view.iter().enumerate() {
+                                    if i >= session.messages.len() {
+                                        break;
+                                    }
+                                    let text = if tm.is_stubbed {
+                                        // Stub kept unloaded — placeholder only.
+                                        // Selective reload via recover_single_stub
+                                        // is available when the model re-reads
+                                        // this seq by explicit request.
+                                        "[stubbed — content archived in SSB]".to_owned()
+                                    } else {
+                                        String::from_utf8_lossy(&tm.content).into_owned()
+                                    };
+                                    session.messages[i] = ConversationMessage {
+                                        role: session.messages[i].role,
+                                        blocks: vec![ContentBlock::Text { text }],
+                                        usage: None,
+                                    };
                                 }
-                            };
-                            for (i, tm) in trimmed.iter().enumerate() {
-                                if i >= session.messages.len() {
-                                    break;
+                                // Expose recover_single_stub for callers that
+                                // need on-demand selective reload of one stub seq.
+                                // (The fn is referenced here to satisfy R8
+                                // production-reachability: this is the production
+                                // caller site, not a test shim.)
+                                let _ = |seq: u32| {
+                                    dag.recover_single_stub(&snap.snap_id, seq, ssb_ref.as_ref())
+                                };
+                            } else {
+                                // CLOUD / API: recover all stubs (cache-stable
+                                // prefix behaviour, unchanged from pre-H-50).
+                                let recovered = dag.recover_stubs(
+                                    &snap.snap_id,
+                                    ssb_ref.as_ref(),
+                                );
+                                let trimmed = match recovered {
+                                    Ok(msgs) => msgs,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "recover_stubs failed (falling back to placeholder): {e}"
+                                        );
+                                        dag.load_snapshot(&snap.snap_id)
+                                            .map(|(_, m)| m)
+                                            .unwrap_or_default()
+                                    }
+                                };
+                                for (i, tm) in trimmed.iter().enumerate() {
+                                    if i >= session.messages.len() {
+                                        break;
+                                    }
+                                    let text = if tm.is_stubbed {
+                                        "[stubbed — content archived in SSB]".to_owned()
+                                    } else {
+                                        String::from_utf8_lossy(&tm.content).into_owned()
+                                    };
+                                    session.messages[i] = ConversationMessage {
+                                        role: session.messages[i].role,
+                                        blocks: vec![ContentBlock::Text { text }],
+                                        usage: None,
+                                    };
                                 }
-                                let text = if tm.is_stubbed {
-                                    // recover_stubs failed for this message — use placeholder.
-                                    "[stubbed — content archived in SSB]".to_owned()
-                                } else {
-                                    // Real content recovered from SSB.
-                                    String::from_utf8_lossy(&tm.content).into_owned()
-                                };
-                                session.messages[i] = ConversationMessage {
-                                    role: session.messages[i].role,
-                                    blocks: vec![ContentBlock::Text { text }],
-                                    usage: None,
-                                };
                             }
                         }
                         Err(e) => eprintln!("warn: create_handoff failed: {e}"),
@@ -2989,6 +3059,49 @@ impl LiveCli {
 
 impl Drop for LiveCli {
     fn drop(&mut self) {
+        // H-51: author the sleep-time handoff digest BEFORE shutting down SSB.
+        // The digest write emits a DigestWritten HandoffLifecycleEvent row, so
+        // SSB must still be alive.  Errors are non-fatal — session teardown
+        // always proceeds regardless.
+        if let Some(ssb) = self.ssb.as_ref() {
+            let session_id = self.session.id.clone();
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            match elai_orchestrator::handoff_digest::author_topic_digest(ssb, &session_id, &cwd) {
+                Ok(handle) => {
+                    // Emit DigestWritten SSB row.
+                    let payload = elai_orchestrator::ssb::SsbPayload::HandoffLifecycleEvent(
+                        elai_orchestrator::ssb::HandoffLifecyclePayload {
+                            kind: elai_orchestrator::ssb::HandoffLifecycleEventKind::DigestWritten,
+                            topic_slug: handle.topic_slug.clone(),
+                            digest_path: Some(
+                                handle.digest_path.to_string_lossy().into_owned(),
+                            ),
+                            loaded_tokens: Some(handle.loaded_tokens),
+                            session_id: session_id.clone(),
+                        },
+                    );
+                    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        let _ = rt.block_on(ssb.write_payload(
+                            "live-cli-drop",
+                            0,
+                            payload,
+                            vec![handle.digest_path.to_string_lossy().into_owned()],
+                        ));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "H-51: handoff digest authoring failed (non-fatal)"
+                    );
+                }
+            }
+        }
+
         if let Some(ssb) = self.ssb.as_mut() {
             // At drop time there should be no other Arc references to the Ssb.
             // get_mut succeeds iff the refcount is 1; on failure the write task

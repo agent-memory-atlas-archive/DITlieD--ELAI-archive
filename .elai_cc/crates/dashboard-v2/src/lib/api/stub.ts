@@ -4660,3 +4660,50 @@ export async function ssb_transcript_paged(
   });
   return live ?? { rows: [], total_count: null, first_seq: null, has_older: false, has_newer: false };
 }
+
+// ---------------------------------------------------------------------------
+// H-51: sleep-time handoff digest resume
+// Cross-lang pair: commands_h51.rs + CommandWindow.svelte
+// ---------------------------------------------------------------------------
+
+/** H-51 topic handle returned by resume_offer. */
+export interface TopicHandleDto {
+  topic_slug: string;
+  digest_path: string;
+  loaded_tokens: number;
+}
+
+/** H-51 tiered load result returned by tiered_load_confirm. */
+export interface TieredLoadResult {
+  topic_slug: string;
+  digest_content: string;
+  loaded_tokens: number;
+}
+
+/**
+ * H-51 — check for an open handoff topic in the active project root.
+ *
+ * Returns a TopicHandleDto when a digest file modified within 8 h is found,
+ * otherwise null.  Respects ELAI_HANDOFF_AUTORESUME_DISABLE kill-switch.
+ *
+ * Cross-lang pair: commands_h51.rs::resume_offer.
+ */
+export async function resume_offer(): Promise<TopicHandleDto | null> {
+  logStub('resume_offer', {});
+  const live = await tryInvoke<TopicHandleDto | null>('resume_offer', {});
+  return live ?? null;
+}
+
+/**
+ * H-51 — confirm tiered load resume for the given topic slug.
+ *
+ * Emits ResumeConfirmed + TieredLoad SSB rows and returns the digest content.
+ * Does NOT check ELAI_HANDOFF_AUTORESUME_DISABLE — this is explicit user intent.
+ *
+ * Cross-lang pair: commands_h51.rs::tiered_load_confirm.
+ */
+export async function tiered_load_confirm(slug: string): Promise<TieredLoadResult | null> {
+  logStub('tiered_load_confirm', { slug });
+  const live = await tryInvoke<TieredLoadResult>('tiered_load_confirm', { slug });
+  return live ?? null;
+}

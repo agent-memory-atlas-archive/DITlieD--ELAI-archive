@@ -47,8 +47,13 @@
 //!                        emission + verifier dispatch + outcome
 //!                        mapping.
 
+pub mod closure_scan;
 pub mod orchestrator;
 pub mod types;
 
+pub use closure_scan::{scan_obligation_closure, ClosureScanKind, ClosureScanResult, EscapeNode};
 pub use orchestrator::{run, PipelineResult};
-pub use types::{VerifierKind, VerifierOutcome, VerifyRequest, ALL_VERIFIER_KINDS};
+pub use types::{
+    DischargedGoal, HatchKind, ObligationNode, VerifierKind, VerifierOutcome, VerifyRequest,
+    ALL_VERIFIER_KINDS,
+};

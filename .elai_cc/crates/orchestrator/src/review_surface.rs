@@ -138,12 +138,27 @@ pub struct HunkVouch {
 
 /// A surfaced finding (silent-by-default, DD7). Backed ONLY by a fired
 /// deterministic gate verdict or a failing test.
+///
+/// H-52 extension: `snippet` carries the verbatim code fragment the finding
+/// refers to (matched against the diff by `anchor_finding`). `anchor` is set
+/// by the CLI driver AFTER scoring via `anchor_finding` — deterministic code
+/// owns it; the model CANNOT set it. `snippet` is empty for pure file-level
+/// findings that have no specific code referent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewFinding {
     /// Project-relative file path the finding applies to.
     pub file_path: String,
     /// Why this file was surfaced.
     pub kind: FindingKind,
+    /// Verbatim code snippet the finding refers to (H-52 line-less schema).
+    /// Empty string = file-level finding with no specific code referent.
+    /// Set by the signal source, NOT by the model.
+    pub snippet: String,
+    /// Anchor resolved by `anchor_finding` (H-52). `None` until the CLI
+    /// driver runs the anchoring pass; `Some` once resolved. The model
+    /// CANNOT set this field — deterministic code (the resolver) owns it.
+    #[serde(default)]
+    pub anchor: Option<crate::review_anchor::AnchorResult>,
 }
 
 /// The full reviewer-cockpit score for one session's working-tree changes.
@@ -248,18 +263,24 @@ pub fn score_review_surface(
             findings.push(ReviewFinding {
                 file_path: file_path.clone(),
                 kind: FindingKind::VibeGateFired,
+                snippet: String::new(),
+                anchor: None,
             });
         }
         if sig.security_rule_fired {
             findings.push(ReviewFinding {
                 file_path: file_path.clone(),
                 kind: FindingKind::SecurityRuleFired,
+                snippet: String::new(),
+                anchor: None,
             });
         }
         if sig.test_failed {
             findings.push(ReviewFinding {
                 file_path: file_path.clone(),
                 kind: FindingKind::TestFailed,
+                snippet: String::new(),
+                anchor: None,
             });
         }
     }

@@ -638,7 +638,28 @@ use elai_orchestrator::ssb::{SkillLibraryEventKind, SsbActionType, TestIntegrity
 // Pattern-2 single-variant 6-arm EditHistoryEventKind:
 // SnapshotCaptured | Deduped | Redo | Branched | Jumped | TooLargeSkipped.
 // 536 -> 537.
-const TOTAL_VARIANTS: usize = 537;
+//
+// H-51 (SCHEMA_VERSION 227, 2026-06-11): HandoffLifecycleEvent -- cross-session
+// sleep-time handoff digest lifecycle beacon. Emitted by Drop hook (DigestWritten),
+// REPL startup detect (ResumeOffered), one-tap confirm (ResumeConfirmed), and
+// /continue tiered load (TieredLoad). Default-ON kill-switch
+// ELAI_HANDOFF_AUTORESUME_DISABLE. Pattern-2 single-variant 4-arm
+// HandoffLifecycleEventKind: DigestWritten | ResumeOffered | ResumeConfirmed |
+// TieredLoad. 537 -> 538.
+//
+// H-52 (SCHEMA_VERSION 228, 2026-06-11): FindingAnchored -- deterministic
+// snippet->hunk finding-anchoring beacon. Emitted by elai review --cockpit via
+// review_cmd::open_score_and_emit. Closes G-5 OQ#2 (hunk_id join risk). Default-ON
+// kill-switch ELAI_REVIEW_ANCHOR_DISABLE (no allowlist row per R9). Pattern-2
+// single-variant 5-arm FindingAnchoredKind:
+// Anchored | FileFallback | Ambiguous | Unanchorable | Relocated. 538 -> 539.
+//
+// H-53 (SCHEMA_VERSION 229, 2026-06-11): CitationAnchorsBound -- citation pre-binding
+// + constrained synthesis beacon. Emitted by elai prebind --demo-prebind (REAL CLI
+// entrypoint) and by the /research|/ask answer path after citation_prebind::freeze_anchors
+// runs. Default-ON kill-switch ELAI_CITATION_PREBIND_DISABLE (no allowlist row per R9).
+// Pattern-2 single-variant 2-arm CitationAnchorsBoundKind: Bound | Blocked. 539 -> 540.
+const TOTAL_VARIANTS: usize = 540;
 
 /// All SsbActionType variants in enum DECLARATION order. Append-only -- new
 /// variants go at the end of this array AND at the end of the enum AND get a
@@ -1836,6 +1857,24 @@ const ALL_VARIANTS: [SsbActionType; TOTAL_VARIANTS] = [
     // Pattern-2 single-variant 6-arm EditHistoryEventKind:
     // SnapshotCaptured | Deduped | Redo | Branched | Jumped | TooLargeSkipped.
     SsbActionType::EditHistoryEvent,
+    // H-51 (SCHEMA_VERSION 227): HandoffLifecycleEvent -- cross-session sleep-time
+    // handoff digest lifecycle beacon. Emitted by Drop hook (DigestWritten), REPL
+    // startup detect (ResumeOffered), one-tap confirm (ResumeConfirmed), and /continue
+    // tiered load (TieredLoad). Default-ON kill-switch ELAI_HANDOFF_AUTORESUME_DISABLE.
+    // Pattern-2 single-variant 4-arm HandoffLifecycleEventKind.
+    SsbActionType::HandoffLifecycleEvent,
+    // H-52 (SCHEMA_VERSION 228): FindingAnchored -- deterministic snippet->hunk
+    // finding-anchoring beacon. Emitted by elai review --cockpit (the real CLI
+    // entrypoint). Closes G-5 OQ#2. Default-ON kill-switch ELAI_REVIEW_ANCHOR_DISABLE.
+    // Pattern-2 single-variant 5-arm FindingAnchoredKind:
+    // Anchored | FileFallback | Ambiguous | Unanchorable | Relocated.
+    SsbActionType::FindingAnchored,
+    // H-53 (SCHEMA_VERSION 229, 2026-06-11): CitationAnchorsBound -- citation pre-binding
+    // beacon. Emitted by elai prebind --demo-prebind (REAL CLI entrypoint) and by the
+    // /research|/ask answer path after citation_prebind::freeze_anchors runs.
+    // Default-ON kill-switch ELAI_CITATION_PREBIND_DISABLE (no allowlist row per R9).
+    // Pattern-2 single-variant 2-arm CitationAnchorsBoundKind: Bound | Blocked. 539 -> 540.
+    SsbActionType::CitationAnchorsBound,
 ];
 
 /// Compile-time exhaustiveness check: if a new variant lands in ssb.rs without
@@ -2513,6 +2552,12 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::EvalFirewallEvent => (),
         // H-49 (SCHEMA_VERSION 226): EditHistoryEvent reversible LLM edits beacon (CAS capture + redo/branch/jump).
         SsbActionType::EditHistoryEvent => (),
+        // H-51 (SCHEMA_VERSION 227): HandoffLifecycleEvent cross-session sleep-time handoff digest lifecycle beacon.
+        SsbActionType::HandoffLifecycleEvent => (),
+        // H-52 (SCHEMA_VERSION 228): FindingAnchored deterministic snippet->hunk anchoring beacon (elai review --cockpit).
+        SsbActionType::FindingAnchored => (),
+        // H-53 (SCHEMA_VERSION 229): CitationAnchorsBound citation pre-binding beacon (elai prebind --demo-prebind).
+        SsbActionType::CitationAnchorsBound => (),
     }
 }
 

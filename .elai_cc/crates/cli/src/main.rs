@@ -92,6 +92,11 @@ mod rewind_cmd;
 // Composes E-25 edit_checkpoints (GD-1) + SessionDag HEAD + H-35 SessionRewound.
 mod timetravel_cmd;
 mod review_cmd;
+// H-53: `elai prebind [--demo-prebind] [--allow-freeform-citations]` — citation
+// pre-binding + constrained synthesis on the /research|/ask answer path.
+// W-1 seeded-fixture trigger emits CitationAnchorsBound SSB row (off-agent
+// artifact, R4). Default-ON kill-switch: ELAI_CITATION_PREBIND_DISABLE.
+mod prebind_cmd;
 mod verify_attestation_cmd;
 // C-45: `elai credit attribute|table|export` — CANTANTE contrastive
 // credit-attribution CLI driver. Wraps elai_orchestrator::credit_attribution.
@@ -656,6 +661,15 @@ fn run() -> Result<(), anyhow::Error> {
         // review_surface_scored row through the live session Arc<Ssb>.
         CliAction::Review { action, output_format } => {
             review_cmd::run_review(action, output_format)?
+        }
+        // H-53 — `elai prebind [--demo-prebind] [--allow-freeform-citations]`.
+        // Citation pre-binding + constrained synthesis on the /research|/ask
+        // answer path. W-1 seeded-fixture trigger builds deterministic evidence,
+        // calls freeze_anchors, runs closed-set check (Bound/Ghost/Stale), and
+        // emits a genuine CitationAnchorsBound SSB row (off-agent artifact, R4).
+        // --allow-freeform-citations fires the Blocked arm (R2 broken-arm proof).
+        CliAction::Prebind { allow_freeform, output_format } => {
+            prebind_cmd::run_demo_prebind(allow_freeform, output_format)?
         }
         // G-8 — `elai verify-attestation <commit>`. Offline in-toto provenance
         // attestation verifier: reads the digest-only ELAI-Provenance-Digest

@@ -33,11 +33,13 @@ use std::sync::Arc;
 
 use elai_core::paths::sessions_dir_path;
 use elai_core::OsClock;
-use elai_orchestrator::focus_tunnel::diff::DiffParser;
+use elai_orchestrator::focus_tunnel::diff::{DiffBodyKind, DiffBodyLine, DiffHunk, DiffParser};
+use elai_orchestrator::review_anchor::{anchor_disabled, anchor_finding, AnchorKind};
 use elai_orchestrator::review_surface::{
-    build_file_signals, score_review_surface, ReviewSurfaceScore,
+    build_file_signals, hunk_id_for, score_review_surface, FindingKind, ReviewFinding,
+    ReviewSurfaceScore,
 };
-use elai_orchestrator::ssb::ReviewSurfaceScoredPayload;
+use elai_orchestrator::ssb::{FindingAnchoredKind, FindingAnchoredPayload, ReviewSurfaceScoredPayload};
 use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
 
 use crate::args::{CliOutputFormat, ReviewAction};
@@ -58,7 +60,321 @@ pub(crate) fn run_review(
     output_format: CliOutputFormat,
 ) -> anyhow::Result<()> {
     match action {
-        ReviewAction::Cockpit { session, base } => run_cockpit(session, base, output_format),
+        ReviewAction::Cockpit {
+            session,
+            base,
+            demo_anchor,
+            trust_model_line,
+        } => {
+            if demo_anchor {
+                // H-52 W-1 seeded-fixture trigger. Runs the resolver over a deterministic
+                // in-memory diff fixture and emits real FindingAnchored rows. This is the
+                // sanctioned observable_effect pattern (mirrors H-21/H-26/H-27 --demo flags).
+                // DEFERRED: the live model-finding source (E-41/C-40) is the future consumer.
+                // This fixture is the W-1 live-CLI proof until E-41/C-40 ship.
+                run_demo_anchor(trust_model_line, output_format)
+            } else {
+                run_cockpit(session, base, output_format)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// H-52 W-1 seeded-fixture anchor demo
+// ---------------------------------------------------------------------------
+
+/// Session id for the anchor demo fixture session.
+const DEMO_ANCHOR_SESSION_ID: &str = "elai-review-anchor-demo";
+
+/// Project id for the anchor demo fixture session.
+const DEMO_ANCHOR_PROJECT_ID: &str = "elai-review-anchor";
+
+/// Seeded fixture file path used for all three demo cases.
+const DEMO_ANCHOR_FILE: &str = "src/review_surface.rs";
+
+/// H-52 W-1 seeded-fixture trigger.
+///
+/// Injects three deterministic snippet-bearing `ReviewFinding`s over a fixed
+/// in-memory diff fixture (not a git diff — the fixture is code-owned and does
+/// NOT require a git repo) and drives `anchor_finding` + `FindingAnchored` SSB
+/// emission through the REAL `Arc<Ssb>` handle. This is the live-CLI proof
+/// (R3/R7 reachability): a real entrypoint ran and left off-agent SSB rows the
+/// test decodes.
+///
+/// Three observable-effect cases (W-1):
+///   (a) snippet occurring ONCE in the hunk => `Anchored` with `hunk_id` + `new_line_range`
+///   (b) snippet occurring TWICE in the hunk => `Ambiguous` + file-fallback (not guessed)
+///   (c) snippet absent from the hunk => `Unanchorable` + file-fallback
+///
+/// `trust_model_line` (broken arm, R2 proof): forces case (b) to be anchored
+/// to the FIRST occurrence without the ambiguity check (i.e., trusts a
+/// model-emitted line number). This intentionally mis-anchors the finding — the
+/// broken arm should be observably wrong (hunk_id is set on what should be
+/// Ambiguous), proving that the correct resolver is necessary.
+///
+/// DEFERRED: the live model-finding source (real snippet-bearing ReviewFindings
+/// from E-41/C-40) stays deferred to E-41/C-40 per the H-52 plan's own deferral.
+/// This seeded fixture IS the W-1 live-CLI proof; the model-finding consumer is
+/// the deferred future activation.
+/// <!-- DEFERRED: E-41/C-40 model-finding source; seeded fixture is W-1 proof now -->
+pub(crate) fn run_demo_anchor(
+    trust_model_line: bool,
+    output_format: CliOutputFormat,
+) -> anyhow::Result<()> {
+    // Build the seeded fixture diff hunk. Contains:
+    //   Line 1 (new): the UNIQUE snippet (case a)
+    //   Line 2 (new): filler line
+    //   Line 3 (new): DUPLICATE snippet first occurrence (case b)
+    //   Line 4 (new): filler line
+    //   Line 5 (new): DUPLICATE snippet second occurrence (case b)
+    //
+    // Case (c): the absent snippet is simply not present in this hunk body.
+    let unique_snippet = "fn compute_dsr(attention: u32, total: u32) -> f64 { attention as f64 / total as f64 }";
+    let duplicate_snippet = "fn placeholder_duplicate() {}";
+    let absent_snippet = "fn this_function_does_not_exist_in_the_fixture() {}";
+
+    let fixture_hunk = make_demo_anchor_hunk(unique_snippet, duplicate_snippet);
+    let fixture_hunks = vec![fixture_hunk.clone()];
+    let hunk_id = hunk_id_for(&fixture_hunk);
+
+    // Three fixture findings — each carries a REAL snippet (not "").
+    // (a) unique_snippet: appears ONCE => Anchored
+    // (b) duplicate_snippet: appears TWICE => Ambiguous (or mis-anchored under broken arm)
+    // (c) absent_snippet: not found => Unanchorable
+    let fixture_findings: Vec<ReviewFinding> = vec![
+        ReviewFinding {
+            file_path: DEMO_ANCHOR_FILE.to_string(),
+            kind: FindingKind::VibeGateFired,
+            snippet: unique_snippet.to_string(),
+            anchor: None,
+        },
+        ReviewFinding {
+            file_path: DEMO_ANCHOR_FILE.to_string(),
+            kind: FindingKind::SecurityRuleFired,
+            snippet: duplicate_snippet.to_string(),
+            anchor: None,
+        },
+        ReviewFinding {
+            file_path: DEMO_ANCHOR_FILE.to_string(),
+            kind: FindingKind::TestFailed,
+            snippet: absent_snippet.to_string(),
+            anchor: None,
+        },
+    ];
+
+    let project_root: PathBuf = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("review --demo-anchor: cannot determine cwd: {e}"))?;
+    let sessions_dir = sessions_dir_path(&project_root);
+    std::fs::create_dir_all(&sessions_dir)
+        .map_err(|e| anyhow::anyhow!("review --demo-anchor: create sessions dir: {e}"))?;
+    let db_path = sessions_dir.join("ssb.db");
+
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: DEMO_ANCHOR_PROJECT_ID.to_string(),
+        session_id: DEMO_ANCHOR_SESSION_ID.to_string(),
+    };
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("review --demo-anchor: build async runtime: {e}"))?;
+
+    let mode = if trust_model_line {
+        "broken-arm (--trust-model-line-numbers)"
+    } else {
+        "resolver (correct)"
+    };
+
+    let results: Vec<(String, AnchorKind, Option<String>, Option<(u32, u32)>, String)> =
+        rt.block_on(async move {
+            let ssb = Ssb::new(cfg, clock)
+                .map_err(|e| anyhow::anyhow!("review --demo-anchor: open SSB: {e}"))?;
+
+            let mut out = Vec::new();
+
+            for mut finding in fixture_findings {
+                let file_hunks: Vec<DiffHunk> = fixture_hunks
+                    .iter()
+                    .filter(|h| h.file_path == finding.file_path)
+                    .cloned()
+                    .collect();
+
+                let anchor_result = if trust_model_line
+                    && finding.snippet == duplicate_snippet
+                {
+                    // BROKEN ARM (R2 proof): for the duplicate snippet, bypass the
+                    // ambiguity check and anchor to the first occurrence as if a model
+                    // emitted a confident line number. This intentionally yields a
+                    // wrong Anchored result for what should be Ambiguous.
+                    // A resolver that stays "right" when handed a model line is a FAIL
+                    // (the resolver's whole job is to catch this case).
+                    elai_orchestrator::review_anchor::AnchorResult {
+                        hunk_id: Some(hunk_id.clone()),
+                        new_line_range: Some((file_hunks.first()
+                            .map(|h| h.new_start as u32 + 2)
+                            .unwrap_or(1),
+                            file_hunks.first()
+                            .map(|h| h.new_start as u32 + 2)
+                            .unwrap_or(1))),
+                        kind: AnchorKind::Anchored,
+                        candidate_match_n: 1,
+                    }
+                } else {
+                    anchor_finding(&finding.snippet, &file_hunks, None)
+                };
+
+                let finding_id = format!(
+                    "{}/{}/{}",
+                    DEMO_ANCHOR_SESSION_ID,
+                    finding.file_path,
+                    finding.kind.label()
+                );
+
+                let snippet_bytes = finding.snippet.as_bytes();
+                let snippet_blake3 = {
+                    let h = blake3::hash(snippet_bytes);
+                    format!("{}", h.to_hex())
+                };
+
+                finding.anchor = Some(anchor_result.clone());
+
+                let anchor_kind_ssb = match anchor_result.kind {
+                    AnchorKind::Anchored => FindingAnchoredKind::Anchored,
+                    AnchorKind::FileFallback => FindingAnchoredKind::FileFallback,
+                    AnchorKind::Ambiguous => FindingAnchoredKind::Ambiguous,
+                    AnchorKind::Unanchorable => FindingAnchoredKind::Unanchorable,
+                    AnchorKind::Relocated => FindingAnchoredKind::Relocated,
+                };
+
+                let payload = SsbPayload::FindingAnchored(FindingAnchoredPayload {
+                    finding_id: finding_id.clone(),
+                    snippet_blake3: snippet_blake3.clone(),
+                    resolved_hunk_id: anchor_result.hunk_id.clone(),
+                    new_line_start: anchor_result.new_line_range.map(|(s, _)| s),
+                    kind: anchor_kind_ssb,
+                    candidate_match_n: anchor_result.candidate_match_n,
+                });
+
+                // Write the off-agent artifact (R4). A write failure is an error (not
+                // a warning) in demo mode — the whole point is to prove the row lands.
+                ssb.write_payload(
+                    "cli:review-anchor-demo",
+                    0,
+                    payload,
+                    Vec::new(),
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "review --demo-anchor: write FindingAnchored row for {}: {e}",
+                        finding.file_path
+                    )
+                })?;
+
+                out.push((
+                    finding_id,
+                    anchor_result.kind,
+                    anchor_result.hunk_id,
+                    anchor_result.new_line_range,
+                    snippet_blake3,
+                ));
+            }
+
+            Ok::<_, anyhow::Error>(out)
+        })?;
+
+    match output_format {
+        CliOutputFormat::Json => {
+            let rows: Vec<serde_json::Value> = results
+                .iter()
+                .map(|(id, kind, hunk_id, line_range, blake3_hex)| {
+                    serde_json::json!({
+                        "finding_id": id,
+                        "kind": kind.as_str(),
+                        "hunk_id": hunk_id,
+                        "new_line_range": line_range.map(|(s, e)| [s, e]),
+                        "snippet_blake3": blake3_hex,
+                    })
+                })
+                .collect();
+            let envelope = serde_json::json!({
+                "demo_anchor": {
+                    "mode": mode,
+                    "session_id": DEMO_ANCHOR_SESSION_ID,
+                    "project_id": DEMO_ANCHOR_PROJECT_ID,
+                    "ssb_action_type": "finding_anchored",
+                    "rows": rows,
+                }
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&envelope)
+                    .map_err(|e| anyhow::anyhow!("review --demo-anchor: serialize json: {e}"))?
+            );
+        }
+        CliOutputFormat::Text | CliOutputFormat::Toml => {
+            println!("elai review --cockpit --demo-anchor (H-52, W-1 live-CLI proof)");
+            println!("  mode:       {mode}");
+            println!("  session_id: {DEMO_ANCHOR_SESSION_ID}");
+            println!("  project_id: {DEMO_ANCHOR_PROJECT_ID}");
+            println!("  ssb_action: finding_anchored");
+            println!();
+            for (id, kind, hunk_id, line_range, blake3_hex) in &results {
+                let hunk_str = hunk_id.as_deref().unwrap_or("(none)");
+                let line_str = line_range
+                    .map(|(s, e)| format!("{s}-{e}"))
+                    .unwrap_or_else(|| "(none)".to_string());
+                println!(
+                    "  [{kind}] {id}  hunk={hunk_str}  lines={line_str}  blake3={blake3_hex}",
+                    kind = kind.as_str()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build the seeded demo anchor hunk used by `run_demo_anchor`.
+///
+/// The hunk contains:
+///   - new line 1: unique_snippet (appears once — case a)
+///   - new line 2: filler context
+///   - new line 3: duplicate_snippet first occurrence (case b)
+///   - new line 4: filler context
+///   - new line 5: duplicate_snippet second occurrence (case b)
+///
+/// The absent snippet (case c) is simply not present in this body.
+fn make_demo_anchor_hunk(unique_snippet: &str, duplicate_snippet: &str) -> DiffHunk {
+    let lines: Vec<DiffBodyLine> = vec![
+        DiffBodyLine { kind: DiffBodyKind::Added, text: format!("+{unique_snippet}") },
+        DiffBodyLine { kind: DiffBodyKind::Context, text: " // fixture context line".to_string() },
+        DiffBodyLine { kind: DiffBodyKind::Added, text: format!("+{duplicate_snippet}") },
+        DiffBodyLine { kind: DiffBodyKind::Context, text: " // fixture context line 2".to_string() },
+        DiffBodyLine { kind: DiffBodyKind::Added, text: format!("+{duplicate_snippet}") },
+    ];
+    let added_lines = vec![
+        unique_snippet.to_string(),
+        duplicate_snippet.to_string(),
+        duplicate_snippet.to_string(),
+    ];
+    let context_lines = vec![
+        " // fixture context line".to_string(),
+        " // fixture context line 2".to_string(),
+    ];
+    DiffHunk {
+        file_path: DEMO_ANCHOR_FILE.to_string(),
+        old_start: 42,
+        old_count: 2,
+        new_start: 42,
+        new_count: 5,
+        context_lines,
+        added_lines,
+        removed_lines: Vec::new(),
+        body_order: lines,
     }
 }
 
@@ -333,7 +649,92 @@ fn open_score_and_emit(
             .map_err(|e| anyhow::anyhow!("review --cockpit: read file junction: {e}"))?;
 
         let signals: BTreeMap<String, _> = build_file_signals(&stream, &files_by_seq);
-        let score = score_review_surface(&hunks_owned, &signals);
+        let mut score = score_review_surface(&hunks_owned, &signals);
+
+        // H-52: deterministic finding-anchoring pass. For each surfaced finding,
+        // call `anchor_finding` with the finding's file-scoped hunks to resolve
+        // the hunk/line deterministically. The resolver uses finding.snippet
+        // (the verbatim code fragment, NOT an empty string) so every
+        // FindingAnchored row carries a snippet_blake3 derived from real content
+        // (GD-2: distinguishable per finding; BLOCK-2 fix). The resolved
+        // AnchorResult is stored back onto finding.anchor, wiring the hunk_id
+        // join into the cockpit score (G-5 OQ#2 / BLOCK-4). Emits ONE
+        // `finding_anchored` SSB row per finding (the off-agent artifact,
+        // R1/R2). Gated by ELAI_REVIEW_ANCHOR_DISABLE kill-switch (DEFAULT-ON;
+        // W-2 / R9). This is the REAL CLI entrypoint (R3/R7 reachability).
+        if !anchor_disabled() {
+            for finding in &mut score.findings {
+                // Scope the hunks to the finding's file for the resolver.
+                let file_hunks: Vec<_> = hunks_owned
+                    .iter()
+                    .filter(|h| h.file_path == finding.file_path)
+                    .cloned()
+                    .collect();
+
+                // Use the REAL snippet from the finding (H-52 line-less schema).
+                // An empty snippet resolves to FileFallback (file-level finding
+                // with no specific code referent). Never pass "" here — that
+                // makes every row FileFallback and the snippet_blake3 constant
+                // (indistinguishable across findings, GD-2 violation).
+                let anchor_result = anchor_finding(&finding.snippet, &file_hunks, None);
+
+                // snake_case finding_id for join (session/file/kind triple).
+                let finding_id = format!(
+                    "{}/{}/{}",
+                    session_owned,
+                    finding.file_path,
+                    finding.kind.label()
+                );
+
+                // blake3 hash of the REAL snippet bytes (GD-2: must prove the
+                // anchor resolved against real content, not the empty-hash
+                // constant). anti-stale: blake3 only per CLAUDE.md hard rule.
+                let snippet_bytes = finding.snippet.as_bytes();
+                let snippet_blake3 = {
+                    let h = blake3::hash(snippet_bytes);
+                    format!("{}", h.to_hex())
+                };
+
+                // Wire the anchor result back into the finding (G-5 OQ#2 /
+                // BLOCK-4): the resolved hunk_id joins this finding to the
+                // correct C-7 ChangeDecision row at hunk granularity. A
+                // FileFallback / Ambiguous / Unanchorable anchor still populates
+                // the field (hunk_id = None) so the cockpit can render at
+                // file-level. This is the only place the anchor is set; the
+                // model cannot reach this field.
+                finding.anchor = Some(anchor_result.clone());
+
+                let anchor_kind = match anchor_result.kind {
+                    AnchorKind::Anchored => FindingAnchoredKind::Anchored,
+                    AnchorKind::FileFallback => FindingAnchoredKind::FileFallback,
+                    AnchorKind::Ambiguous => FindingAnchoredKind::Ambiguous,
+                    AnchorKind::Unanchorable => FindingAnchoredKind::Unanchorable,
+                    AnchorKind::Relocated => FindingAnchoredKind::Relocated,
+                };
+
+                let anchor_payload = SsbPayload::FindingAnchored(FindingAnchoredPayload {
+                    finding_id,
+                    snippet_blake3,
+                    resolved_hunk_id: anchor_result.hunk_id,
+                    new_line_start: anchor_result.new_line_range.map(|(start, _)| start),
+                    kind: anchor_kind,
+                    candidate_match_n: anchor_result.candidate_match_n,
+                });
+
+                // Write the off-agent artifact through the SAME live Ssb handle
+                // (R4). A failure to write is logged as a warning but does NOT
+                // abort the review — the DSR score is the primary product.
+                if let Err(e) = ssb
+                    .write_payload("cli:review-anchor", 0, anchor_payload, Vec::new())
+                    .await
+                {
+                    tracing::warn!(
+                        "review --cockpit: write finding_anchored row for {}: {e}",
+                        finding.file_path
+                    );
+                }
+            }
+        }
 
         // Emit the off-agent beacon row through the SAME live handle (R4): a real
         // CLI entrypoint computed the score and this row landed. The

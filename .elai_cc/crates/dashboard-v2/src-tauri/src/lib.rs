@@ -445,6 +445,11 @@ mod commands_h35;
 // H-49: time-travel undo/redo/history/jump + restore-files-only.
 // cross-lang-pair: BranchTree.svelte + CommandWindow.svelte + stub.ts + generate_handler!.
 mod commands_h49;
+// H-51: resume_offer + tiered_load_confirm -- sleep-time handoff digest resume.
+// cross-lang-pair: CommandWindow.svelte onMount + stub.ts + this mod + generate_handler!.
+// Kill-switch: ELAI_HANDOFF_AUTORESUME_DISABLE=1 (suppress auto-detect; explicit
+// tiered_load_confirm unaffected). See H-51 plan + handoff-protocol.md.
+mod commands_h51;
 // H-36: get_recent_notifications -- poll agent_notification_emitted SSB rows.
 // cross-lang-pair: NotificationManager.svelte poll + stub.ts + this mod + generate_handler!.
 mod commands_h36;
@@ -1382,6 +1387,10 @@ pub fn run() {
             commands_h49::timetravel_jump,
             commands_h49::timetravel_history,
             commands_h49::timetravel_restore_files_only,
+            // H-51: sleep-time handoff digest resume commands.
+            // cross-lang-pair: CommandWindow.svelte onMount + stub.ts.
+            commands_h51::resume_offer,
+            commands_h51::tiered_load_confirm,
             // H-36: poll recent agent_notification_emitted rows.
             // cross-lang-pair: NotificationManager.svelte + stub.ts.
             commands_h36::get_recent_notifications,

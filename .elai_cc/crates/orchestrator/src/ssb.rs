@@ -2985,8 +2985,10 @@ use crate::mast::MastMode;
 // classification (2405.00253, composes H-43 ExecutionFitnessHarness). Also carries
 // TrapRecallReport with measured recall over a frozen TRACE-style corpus
 // (2601.20103). Default-ON under darwinian-evolve feature + ELAI_DARWINIAN_LOOP_ENABLE=1.
-// Pattern-2 single-variant 4-arm TrapBehaviorDetectedKind:
-// ImpossiblePassExploit | IsomorphMismatch | ExecutionHallucination | KeywordFallback.
+// Pattern-2 single-variant 5-arm TrapBehaviorDetectedKind (H-54 adds ClosureEscapeHatch):
+// ImpossiblePassExploit | IsomorphMismatch | ExecutionHallucination | KeywordFallback |
+// ClosureEscapeHatch. Adding a Kind arm does NOT add a new SsbActionType variant;
+// TOTAL_VARIANTS unchanged at H-44's original 532 -> 533 delta.
 // TOTAL_VARIANTS 532 -> 533.
 //
 // H-45 (SCHEMA_VERSION 223): PromotionScoreAggregated -- worst-case/variance-penalized
@@ -3025,7 +3027,43 @@ use crate::mast::MastMode;
 // Default-ON kill-switch: ELAI_TIMETRAVEL_DISABLE (NOT a default-OFF enable gate;
 // no wire-dark-allowlist row required per R9). Wraps E-25 edit_checkpoints (GD-1).
 // TOTAL_VARIANTS 536 -> 537.
-const SCHEMA_VERSION: i64 = 226;
+//
+// H-51 (SCHEMA_VERSION 227): HandoffLifecycleEvent -- cross-session sleep-time
+// grounded-digest author + auto-detect + one-tap confirmed tiered load.
+// Wires the user's handoff-protocol.md rule into the ELAI runtime so that
+// cross-session resume costs ~1-3K tokens instead of ~20-27K (the full trimmed
+// transcript). The digest is authored from SSB journal rows (NOT LLM recollection)
+// via handoff_digest::author_topic_digest at session end / Drop. Detection is
+// automatic; continuation requires one-tap confirm. Kill-switch:
+// ELAI_HANDOFF_AUTORESUME_DISABLE (env var); registered in wire-dark-allowlist.toml.
+// Pattern-2 single-variant 4-arm HandoffLifecycleEventKind:
+// DigestWritten | ResumeOffered | ResumeConfirmed | TieredLoad.
+// TOTAL_VARIANTS 537 -> 538.
+//
+// H-52 (SCHEMA_VERSION 228): FindingAnchored -- deterministic snippet->hunk
+// finding-anchoring + line-less finding schema. Ports alibaba/open-code-review
+// (Apache-2.0) resolver primitive with ELAI-specific fixes: duplicate-snippet
+// Ambiguous guard, hunk-proximity tiebreak, Unanchorable on total miss. Closes
+// G-5 Open-Question #2 (the hunk_id join risk): model emits a VERBATIM snippet,
+// deterministic code resolves the hunk/line; a model-emitted line number is
+// structurally impossible. Default-ON kill-switch: ELAI_REVIEW_ANCHOR_DISABLE
+// (NOT a default-OFF gate; no wire-dark-allowlist row per R9).
+// Pattern-2 single-variant 5-arm FindingAnchoredKind:
+// Anchored | FileFallback | Ambiguous | Unanchorable | Relocated.
+// TOTAL_VARIANTS 538 -> 539.
+//
+// H-53 (SCHEMA_VERSION 229): CitationAnchorsBound -- citation pre-binding
+// + constrained synthesis on the answer path. Emitted by the
+// `prebind_cmd::run_demo_prebind` CLI driver (REAL entrypoint: `elai prebind
+// --demo-prebind`) and by the /research|/ask answer path after
+// citation_prebind::freeze_anchors runs (when ELAI_CITATION_PREBIND_DISABLE
+// is NOT set). Carries the set fingerprint (blake3) + anchor count + seed so
+// the pre-bind step is off-agent-verifiable. Default-ON kill-switch:
+// ELAI_CITATION_PREBIND_DISABLE (not a default-OFF gate; R9).
+// Pattern-2 single-variant 2-arm CitationAnchorsBoundKind:
+// Bound | Blocked.
+// TOTAL_VARIANTS 539 -> 540.
+const SCHEMA_VERSION: i64 = 229;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -4865,7 +4903,27 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- every file pre-edit capture and by undo/redo/branch/jump CLI ops.
         -- 6-arm Kind: SnapshotCaptured | Deduped | Redo | Branched | Jumped | TooLargeSkipped.
         -- Default-ON kill-switch: ELAI_TIMETRAVEL_DISABLE (no allowlist row per R9).
-        'edit_history_event'
+        'edit_history_event',
+        -- H-51 (SCHEMA_VERSION 227): HandoffLifecycleEvent -- cross-session sleep-time
+        -- digest author + auto-detect + one-tap confirmed tiered load. Wires
+        -- handoff-protocol.md into the runtime. Digest is authored from SSB journal rows.
+        -- Kill-switch: ELAI_HANDOFF_AUTORESUME_DISABLE (registered in wire-dark-allowlist.toml).
+        -- 4-arm Kind: DigestWritten | ResumeOffered | ResumeConfirmed | TieredLoad.
+        'handoff_lifecycle_event',
+        -- H-52 (SCHEMA_VERSION 228): FindingAnchored -- deterministic snippet->hunk
+        -- finding-anchoring beacon. Emitted by elai review --cockpit via
+        -- review_cmd::open_score_and_emit (the REAL CLI entrypoint). Off-agent artifact
+        -- (R4): emitted from the CLI driver, not by the agent generating the finding.
+        -- Default-ON kill-switch: ELAI_REVIEW_ANCHOR_DISABLE (no allowlist row per R9).
+        -- 5-arm Kind: Anchored | FileFallback | Ambiguous | Unanchorable | Relocated.
+        'finding_anchored',
+        -- H-53 (SCHEMA_VERSION 229): CitationAnchorsBound -- citation pre-binding beacon.
+        -- Emitted by elai prebind --demo-prebind (REAL CLI entrypoint) and by the
+        -- /research|/ask answer path after citation_prebind::freeze_anchors runs.
+        -- Carries anchor_count + seed + blake3_set_hash_hex for off-agent verification.
+        -- Default-ON kill-switch: ELAI_CITATION_PREBIND_DISABLE (no allowlist row per R9).
+        -- Pattern-2 single-variant 2-arm CitationAnchorsBoundKind: Bound | Blocked.
+        'citation_anchors_bound'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -8824,10 +8882,12 @@ pub enum SsbActionType {
     /// Off-agent artifact (R4): emitted from the guard chain call site.
     /// Carries [`TrapBehaviorDetectedPayload`] with {kind, recall, fp_rate, n,
     /// corpus_hash, candidate_blake3, seed}.
-    /// Pattern-2 single-variant 4-arm [`TrapBehaviorDetectedKind`]:
-    /// ImpossiblePassExploit | IsomorphMismatch | ExecutionHallucination | KeywordFallback.
+    /// Pattern-2 single-variant 5-arm [`TrapBehaviorDetectedKind`]:
+    /// ImpossiblePassExploit | IsomorphMismatch | ExecutionHallucination |
+    /// KeywordFallback | ClosureEscapeHatch (H-54 formal-lane deterministic leg).
     /// Wire-dark under existing `darwinian-evolve` feature + `ELAI_DARWINIAN_LOOP_ENABLE`.
-    /// TOTAL_VARIANTS 532 -> 533.
+    /// TOTAL_VARIANTS 532 -> 533 (H-44 original count; adding a Kind arm does NOT
+    /// add a new SsbActionType variant — no TOTAL_VARIANTS bump at H-54).
     TrapBehaviorDetected,
     /// H-45 (SCHEMA_VERSION 223): worst-case/variance-penalized aggregate over
     /// lineage-diverse promotion verdicts.
@@ -8895,6 +8955,60 @@ pub enum SsbActionType {
     /// row required — this is a kill-switch, not a default-OFF gate; R9).
     /// TOTAL_VARIANTS 536 -> 537.
     EditHistoryEvent,
+    /// H-51 (SCHEMA_VERSION 227): cross-session sleep-time handoff digest beacon.
+    ///
+    /// Emitted by [`handoff_digest::author_topic_digest`] at session end (Drop hook
+    /// on [`LiveCli`]) and by the fresh-REPL auto-detect + tiered-load path.
+    ///
+    /// Off-agent artifact (R4): emitted from the CLI session lifecycle, NOT by the
+    /// agent generating the digest. Missing row = FAIL (R1) on the wiring smoke test.
+    ///
+    /// Carries [`HandoffLifecyclePayload`] with
+    /// `{kind, topic_slug, digest_path, loaded_tokens, session_id}`.
+    /// Pattern-2 single-variant 4-arm [`HandoffLifecycleEventKind`]:
+    /// DigestWritten | ResumeOffered | ResumeConfirmed | TieredLoad.
+    ///
+    /// Kill-switch: `ELAI_HANDOFF_AUTORESUME_DISABLE` (auto-detect ON path)
+    /// registered in `wire-dark-allowlist.toml` per R9.
+    /// TOTAL_VARIANTS 537 -> 538.
+    HandoffLifecycleEvent,
+    /// H-52 (SCHEMA_VERSION 228): deterministic snippet->hunk finding-anchoring beacon.
+    ///
+    /// Emitted by `review_cmd::open_score_and_emit` (the `elai review --cockpit`
+    /// production entrypoint) ONCE per finding anchoring attempt. Off-agent artifact
+    /// (R4): emitted from the CLI driver after `anchor_finding` resolves, NOT by the
+    /// agent that generated the finding. Missing row = FAIL (R1/R2).
+    ///
+    /// Carries [`FindingAnchoredPayload`] with
+    /// `{finding_id, snippet_blake3, resolved_hunk_id?, new_line_start?, kind, candidate_match_n}`.
+    ///
+    /// Pattern-2 single-variant 5-arm [`FindingAnchoredKind`]:
+    /// Anchored | FileFallback | Ambiguous | Unanchorable | Relocated.
+    ///
+    /// Default-ON kill-switch: `ELAI_REVIEW_ANCHOR_DISABLE` (no wire-dark-allowlist
+    /// row required — this is a DISABLE kill-switch, not a default-OFF enable gate; R9).
+    /// TOTAL_VARIANTS 538 -> 539.
+    FindingAnchored,
+    /// H-53 (SCHEMA_VERSION 229): citation pre-binding + constrained synthesis beacon.
+    ///
+    /// Emitted by `prebind_cmd::run_demo_prebind` (the `elai prebind --demo-prebind`
+    /// REAL CLI entrypoint) and by the /research|/ask answer path AFTER
+    /// `citation_prebind::freeze_anchors` runs. Off-agent artifact (R4): emitted from the
+    /// CLI driver, not by the model generating the answer. Missing row = FAIL (R1/R2).
+    ///
+    /// Carries [`CitationAnchorsBoundPayload`] with
+    /// `{kind, anchor_count, seed, blake3_set_hash_hex}`.
+    ///
+    /// Pattern-2 single-variant 2-arm [`CitationAnchorsBoundKind`]:
+    /// - `Bound`: the evidence set was frozen and injected into context; all `[N]` markers
+    ///   must be drawn from the pre-bound id space.
+    /// - `Blocked`: ELAI_CITATION_PREBIND_DISABLE is set (legacy path active); this arm fires
+    ///   in the broken-arm gate smoke test to prove the guard was bypassed.
+    ///
+    /// Default-ON kill-switch: `ELAI_CITATION_PREBIND_DISABLE` (no wire-dark-allowlist
+    /// row required — this is a DISABLE kill-switch, not a default-OFF enable gate; R9).
+    /// TOTAL_VARIANTS 539 -> 540.
+    CitationAnchorsBound,
 }
 
 impl SsbActionType {
@@ -9728,6 +9842,9 @@ impl SsbActionType {
             Self::CladeSelected => "clade_selected",
             Self::EvalFirewallEvent => "eval_firewall_event",
             Self::EditHistoryEvent => "edit_history_event",
+            Self::HandoffLifecycleEvent => "handoff_lifecycle_event",
+            Self::FindingAnchored => "finding_anchored",
+            Self::CitationAnchorsBound => "citation_anchors_bound",
         }
     }
 }
@@ -10466,6 +10583,9 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "clade_selected" => Ok(SsbActionType::CladeSelected),
         "eval_firewall_event" => Ok(SsbActionType::EvalFirewallEvent),
         "edit_history_event" => Ok(SsbActionType::EditHistoryEvent),
+        "handoff_lifecycle_event" => Ok(SsbActionType::HandoffLifecycleEvent),
+        "finding_anchored" => Ok(SsbActionType::FindingAnchored),
+        "citation_anchors_bound" => Ok(SsbActionType::CitationAnchorsBound),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -13949,6 +14069,12 @@ pub enum SsbPayload {
     EvalFirewallEvent(EvalFirewallPayload),
     /// H-49 (SCHEMA_VERSION 226): reversible LLM edits beacon.
     EditHistoryEvent(EditHistoryEventPayload),
+    /// H-51 (SCHEMA_VERSION 227): cross-session sleep-time handoff lifecycle beacon.
+    HandoffLifecycleEvent(HandoffLifecyclePayload),
+    /// H-52 (SCHEMA_VERSION 228): deterministic snippet->hunk finding-anchoring beacon.
+    FindingAnchored(FindingAnchoredPayload),
+    /// H-53 (SCHEMA_VERSION 229): citation pre-binding + constrained synthesis beacon.
+    CitationAnchorsBound(CitationAnchorsBoundPayload),
 }
 
 impl SsbPayload {
@@ -14687,6 +14813,9 @@ impl SsbPayload {
             Self::CladeSelected(_) => SsbActionType::CladeSelected,
             Self::EvalFirewallEvent(_) => SsbActionType::EvalFirewallEvent,
             Self::EditHistoryEvent(_) => SsbActionType::EditHistoryEvent,
+            Self::HandoffLifecycleEvent(_) => SsbActionType::HandoffLifecycleEvent,
+            Self::FindingAnchored(_) => SsbActionType::FindingAnchored,
+            Self::CitationAnchorsBound(_) => SsbActionType::CitationAnchorsBound,
         }
     }
 }
@@ -28227,6 +28356,18 @@ pub enum TrapBehaviorDetectedKind {
     ExecutionHallucination,
     /// Keyword-grep advisory triggered (cheap first-pass only, VD-2).
     KeywordFallback,
+    /// Obligation-closure escape-hatch detected (H-54): an unregistered
+    /// `sorry`/`admit`/`axiom`/`assume`/`#[verifier::external]` token sits
+    /// anywhere in the transitive dependency closure of a "discharged" goal
+    /// (arXiv:2605.22763 AlphaProof Nexus — the relocated-sorry + false-
+    /// known-result evasion classes, the whole-closure defense).
+    ///
+    /// This is the deterministic FIRST leg of the behavioral trap-detection
+    /// stack on the formal-verification lane (E-53). It fires before the
+    /// verifier's own discharge and short-circuits when an unregistered escape
+    /// hatch is found anywhere in the closure, regardless of how deep or
+    /// how renamed the hatch obligation is. NEVER a keyword-only advisory.
+    ClosureEscapeHatch,
 }
 
 impl TrapBehaviorDetectedKind {
@@ -28238,6 +28379,7 @@ impl TrapBehaviorDetectedKind {
             Self::IsomorphMismatch => "isomorph_mismatch",
             Self::ExecutionHallucination => "execution_hallucination",
             Self::KeywordFallback => "keyword_fallback",
+            Self::ClosureEscapeHatch => "closure_escape_hatch",
         }
     }
 }
@@ -28568,6 +28710,209 @@ pub struct EditHistoryEventPayload {
     pub post_hash: Option<String>,
     /// User-selected grain: "edit" | "turn" | "babystep".
     pub grain: String,
+}
+
+/// H-51 — Kind discriminator for [`SsbActionType::HandoffLifecycleEvent`].
+///
+/// - `DigestWritten`: the sleep-time grounded digest was authored and written to
+///   `workflow/handoffs/{slug}.md`. Decisions sourced from SSB intervention rows;
+///   files sourced from SSB FileWrite rows (NOT LLM recollection — stub_ban R4).
+/// - `ResumeOffered`: a fresh REPL detected an open topic and surfaced the one-line
+///   offer ("prior session on <slug> at <fsm_cursor>, N open follow-ups — resume?").
+/// - `ResumeConfirmed`: the user confirmed resume with 'y'. Tiered load begins.
+/// - `TieredLoad`: the tiered load completed. `loaded_tokens` carries the measured
+///   token count; must be <= 5000 for the wiring done-gate to PASS.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffLifecycleEventKind {
+    /// Grounded digest authored and written to workflow/handoffs/{slug}.md.
+    DigestWritten,
+    /// Fresh REPL detected an open topic and surfaced the resume offer.
+    ResumeOffered,
+    /// User confirmed the resume offer. Tiered load begins.
+    ResumeConfirmed,
+    /// Tiered load completed. `loaded_tokens` <= 5000 = PASS.
+    TieredLoad,
+}
+
+impl HandoffLifecycleEventKind {
+    /// Stable snake_case wire string for the SSB kind arm.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::DigestWritten => "digest_written",
+            Self::ResumeOffered => "resume_offered",
+            Self::ResumeConfirmed => "resume_confirmed",
+            Self::TieredLoad => "tiered_load",
+        }
+    }
+}
+
+/// H-51 payload for [`SsbActionType::HandoffLifecycleEvent`].
+///
+/// Emitted from `handoff_digest::author_topic_digest` at session end (Drop hook),
+/// from the fresh-REPL auto-detect path (ResumeOffered), and from the tiered-load
+/// confirm path in `handoff.rs` (ResumeConfirmed + TieredLoad).
+///
+/// `digest_path` carries the resolved path of the written/loaded digest file.
+/// `loaded_tokens` is set only on `TieredLoad` (measured token count; must be
+/// <= 5000 for the wiring smoke gate to PASS per WIRING_CONTRACT).
+/// `session_id` is the SSB session that generated this event.
+///
+/// GD-2: resume token cost recomputable from the journal row under ELAI_SEED.
+/// TOTAL_VARIANTS 537 -> 538.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HandoffLifecyclePayload {
+    /// Which arm fired.
+    pub kind: HandoffLifecycleEventKind,
+    /// Stable topic slug (e.g. "main-feature" — the problem, NOT the session id).
+    pub topic_slug: String,
+    /// Resolved path of the digest file (workflow/handoffs/{slug}.md).
+    pub digest_path: Option<String>,
+    /// Measured loaded-token count (TieredLoad arm only; None otherwise).
+    pub loaded_tokens: Option<u32>,
+    /// SSB session_id that generated this event.
+    pub session_id: String,
+}
+
+/// H-52 — Kind discriminator for [`SsbActionType::FindingAnchored`].
+///
+/// - `Anchored`: snippet found exactly once in the diff's new side (or uniquely on
+///   the removed side when no new-side match). `resolved_hunk_id` + `new_line_start`
+///   are populated. The model-emitted line number is STRUCTURALLY ABSENT from the
+///   finding schema; only deterministic code sets this.
+/// - `FileFallback`: snippet is empty / hunk body unavailable; anchor at file level.
+///   `resolved_hunk_id` and `new_line_start` are None. DSR counts as needs_attention.
+/// - `Ambiguous`: snippet occurs more than once in the search scope; anchoring to a
+///   specific line would be a guess. Falls back to file level. `candidate_match_n > 1`.
+/// - `Unanchorable`: snippet not found anywhere in the diff after normalization.
+///   Falls back to file level. `candidate_match_n == 0`.
+/// - `Relocated`: RESERVED for the Tier-2 LLM re-location retry path (DEFERRED).
+///   Never produced by the current Tier-1 resolver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingAnchoredKind {
+    /// Unique match found; `resolved_hunk_id` + `new_line_start` populated.
+    Anchored,
+    /// Empty snippet or empty hunk body; file-level fallback.
+    FileFallback,
+    /// Multiple matches in scope; first-occurrence-wins guess suppressed.
+    Ambiguous,
+    /// Snippet absent from the diff after normalization.
+    Unanchorable,
+    /// RESERVED: Tier-2 LLM re-location retry (DEFERRED).
+    Relocated,
+}
+
+impl FindingAnchoredKind {
+    /// Stable snake_case wire string for the SSB kind arm.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anchored => "anchored",
+            Self::FileFallback => "file_fallback",
+            Self::Ambiguous => "ambiguous",
+            Self::Unanchorable => "unanchorable",
+            Self::Relocated => "relocated",
+        }
+    }
+}
+
+/// H-52 payload for [`SsbActionType::FindingAnchored`].
+///
+/// Emitted by `review_cmd::open_score_and_emit` (the `elai review --cockpit`
+/// production entrypoint) for each finding anchoring attempt.
+///
+/// `snippet_blake3` is the blake3 hex digest of the normalized snippet bytes
+/// (GD-2: verifiable without re-running the anchor; anti-stale — blake3 only,
+/// never blake2/sha2 per CLAUDE.md HARD RULE Anti-Stale-Training).
+///
+/// `resolved_hunk_id` is the stable hunk identifier (`<path>#<old>-<new>`) from
+/// `crate::review_surface::hunk_id_for` — the SAME hunk-id space as
+/// `C-7 ChangeDecisionPayload.hunk_id` (closes G-5 OQ#2).
+///
+/// `new_line_start` is the 1-based first line on the new side of the matched
+/// run. None when the anchor is file-level (FileFallback / Ambiguous /
+/// Unanchorable).
+///
+/// `finding_id` is a caller-supplied stable identifier for the finding (e.g.
+/// `"<session_id>/<file_path>/<FindingKind>"`) so the dashboard can join rows
+/// without a seq round-trip.
+///
+/// GD-2: the anchor kind + hunk_id re-computes byte-identically from the
+/// snippet + the diff under `ELAI_SEED`.
+/// TOTAL_VARIANTS 538 -> 539.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FindingAnchoredPayload {
+    /// Stable caller-supplied finding identifier.
+    pub finding_id: String,
+    /// blake3 hex digest of the normalized snippet (GD-2 verifiability; blake3
+    /// per CLAUDE.md anti-stale rule — never blake2/sha2).
+    pub snippet_blake3: String,
+    /// Resolved hunk id (C-7 space), or None for file-level anchors.
+    pub resolved_hunk_id: Option<String>,
+    /// 1-based first line on the new side of the matched run. None for file-level.
+    pub new_line_start: Option<u32>,
+    /// Why the anchor was (or was not) resolved.
+    pub kind: FindingAnchoredKind,
+    /// Number of normalized matches found. 0 = Unanchorable, 1 = Anchored,
+    /// >1 = Ambiguous (before tiebreak resolution).
+    pub candidate_match_n: u32,
+}
+
+/// H-53 — Kind discriminator for [`SsbActionType::CitationAnchorsBound`].
+///
+/// - `Bound`: the evidence set was frozen and the pre-binding stage ran.
+///   All `[N]` markers in the answer must be drawn from the pre-bound id space.
+/// - `Blocked`: `ELAI_CITATION_PREBIND_DISABLE` is set; the legacy detect-after
+///   path is active. This arm fires in the broken-arm gate smoke test to prove
+///   the guard was bypassed (R2: a gate that stays "right" when the disable is set
+///   is itself a FAIL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CitationAnchorsBoundKind {
+    /// Evidence set frozen; pre-binding stage ran.
+    Bound,
+    /// ELAI_CITATION_PREBIND_DISABLE set; legacy path active.
+    Blocked,
+}
+
+impl CitationAnchorsBoundKind {
+    /// Stable snake_case wire string for SSB telemetry.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bound => "bound",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+/// H-53 payload for [`SsbActionType::CitationAnchorsBound`].
+///
+/// Emitted by `prebind_cmd::run_demo_prebind` (the `elai prebind --demo-prebind`
+/// REAL CLI entrypoint) and by the /research|/ask answer path AFTER
+/// `citation_prebind::freeze_anchors` runs.
+///
+/// `blake3_set_hash_hex` is the blake3 hex digest of the concatenation of all
+/// per-anchor `excerpt_blake3` values in id order (GD-2: verifiable without
+/// re-fetching evidence; anti-stale — blake3 only, never blake2/sha2 per
+/// CLAUDE.md HARD RULE Anti-Stale-Training).
+///
+/// `seed` is the `ELAI_SEED` value active when the set was frozen (0 when
+/// the env var was absent). Carried for GD-2 reproducibility.
+/// TOTAL_VARIANTS 539 -> 540.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CitationAnchorsBoundPayload {
+    /// Which arm fired.
+    pub kind: CitationAnchorsBoundKind,
+    /// Number of anchors in the pre-bound set. 0 when Blocked.
+    pub anchor_count: u32,
+    /// ELAI_SEED value at freeze time (0 when absent).
+    pub seed: u64,
+    /// blake3 hex digest of the concatenation of all per-anchor excerpt_blake3
+    /// values in id order (set fingerprint; GD-2 verifiability; blake3 only).
+    pub blake3_set_hash_hex: String,
 }
 
 /// D-27.1 payload for [`SsbActionType::DiscoveryRatified`].
@@ -36468,6 +36813,36 @@ mod tests {
                 post_hash: None,
                 grain: "edit".into(),
             }),
+            // H-52 (SCHEMA_VERSION 228): FindingAnchored Pattern-2 5-arm. 1 new entry.
+            SsbPayload::FindingAnchored(FindingAnchoredPayload {
+                finding_id: "test-session/src/main.rs/test_failed".into(),
+                snippet_blake3: {
+                    let h = blake3::hash(b"all_test_payloads_finding_anchored|fn foo() {}");
+                    format!("{}", h.to_hex())
+                },
+                resolved_hunk_id: Some("src/main.rs#10-10".into()),
+                new_line_start: Some(10),
+                kind: FindingAnchoredKind::Anchored,
+                candidate_match_n: 1,
+            }),
+            // H-53 (SCHEMA_VERSION 229): CitationAnchorsBound Pattern-2 2-arm. 1 new entry.
+            SsbPayload::CitationAnchorsBound(CitationAnchorsBoundPayload {
+                kind: CitationAnchorsBoundKind::Bound,
+                anchor_count: 3,
+                seed: 42,
+                blake3_set_hash_hex: {
+                    let h = blake3::hash(b"all_test_payloads_citation_anchors_bound|seed=42|n=3");
+                    format!("{}", h.to_hex())
+                },
+            }),
+            // H-51 (SCHEMA_VERSION 227): HandoffLifecycleEvent Pattern-2 4-arm. 1 new entry.
+            SsbPayload::HandoffLifecycleEvent(HandoffLifecyclePayload {
+                kind: HandoffLifecycleEventKind::DigestWritten,
+                topic_slug: "test-topic".into(),
+                digest_path: Some("workflow/handoffs/test-topic.md".into()),
+                loaded_tokens: None,
+                session_id: "test-session".into(),
+            }),
         ]
     }
 
@@ -36479,8 +36854,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            425,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 1 D-5 closure SCHEMA_208 (BaiPromotionDecision) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused) + 1 E-7 (DarwinianGenerationCompleted single-variant Pattern-2) + 9 batch2-merge-collision recovery (E-3 RuntimeHandoffSignal + E-26 SglangBackendRegistered + E-26 XgrammarSchemaCompiled + E-26 RuntimeColdStartObserved + E-2 StreamingTimingRecorded + E-2 UxPacingVoteRecorded + E-28 StreamingLlmEngaged + E-28 SdpaBackendPinned + E-28 YarnRopeScalingApplied) + 1 E-8 (PromptOptimizationCompleted single-variant Pattern-2) + 1 E-10 (CriticDecisionEvent single-variant Pattern-2) + 1 E-43 (SkillSystemEvent single-variant Pattern-2) + 1 E-9 (BenchmarkRunObserved single-variant Pattern-2) + 1 E-19 (ReasoningQualityProbe single-variant Pattern-2) + 1 E-55 (RewardLadderEvent single-variant Pattern-2 20th application) + 1 E-11 (SaasPriorArtEvent single-variant Pattern-2 21st application) + 1 E-22 (GithubTrendingEvent single-variant Pattern-2 22nd application) + 1 E-23 (DeveloperDiscourseEvent single-variant Pattern-2 23rd application) + 1 E-25 (ClaudeCodeArchitectureEvent single-variant Pattern-2 24th application) + 1 E-29 (AgenticObservabilityEvent single-variant Pattern-2 25th application) + 1 E-31 (CodingModelLeaderboardEvent single-variant Pattern-2 26th application) + 1 E-38 (AiRoadmapSignalEvent single-variant Pattern-2 27th application) + 1 E-39 (CostTokenEvent single-variant Pattern-2 28th application) + 1 E-50 (SaasArchPatternEvent single-variant Pattern-2 29th application) + 1 B-7 triple (TddVerificationEvent single-variant Pattern-2 46th application) + 2 F-4/B-1 (TestIntegrityEvent single-variant Pattern-2 50th application -- Verified + FabricationBlocked) + 2 F-3p1/C1 (ToolFilterEvent single-variant Pattern-2 51st application -- Committed + UntrustedQuarantined) + 1 F-9/D1 (WriteTimeSlopsquatBlocked flat beacon) + 1 F-10/A1 (SecurityClassRegressionBlocked flat beacon) + 1 F-2b/A1 (InsecureRateMeasured flat beacon) + 3 F-6/A1 (SkillLibraryEvent single-variant Pattern-2 -- Acquired + TrustPromoted + DemotedStale) + 1 F-5/A1 (StalenessQuarantineBroadcast flat beacon) + 1 F-8/A1 (SymbolicConflictDetected flat beacon) + 1 F-7/A1 (TemplateUtilityRanked flat beacon) + 1 F-13/A1 (SessionArchived flat beacon) + 1 F-11/A1 (DarwinianAdmit single-variant Pattern-2 -- Admitted + RejectedByGuard + LoopClosed) + 1 G-10 (ModelDriftSuspected flat beacon) + 2 D-27.1 (DiscoveryRatified + DiscoveryRejected flat beacons) + 1 H-32 (FactValidationFailed flat beacon) + 1 H-33 (MemoryGovernanceEvent flat beacon) + 2 H-34 (McpToolDeferred + McpSchemaBudgetMeasured flat beacons) + 1 H-35 (SessionRewound flat beacon) + 1 H-36 (AgentNotificationEmitted single-variant Pattern-2 2-arm) + 1 H-37 (PlanDecisionEvent single-variant Pattern-2 4-arm) + 1 H-38 (StopConfirmationEvent single-variant Pattern-2 3-arm) + 1 H-39 (AbstentionScored flat beacon) + 1 H-41 (CheckerGapDetected flat beacon) + 1 H-42 (ReasoningBudgetScaled single-variant Pattern-2 2-arm) + 1 H-43 (FitnessEvaluated single-variant Pattern-2 3-arm) + 1 H-44 (TrapBehaviorDetected single-variant Pattern-2 4-arm) + 1 H-45 (PromotionScoreAggregated single-variant Pattern-2 3-arm) + 1 H-46 (CladeSelected single-variant Pattern-2 2-arm) + 1 H-47 (EvalFirewallEvent single-variant Pattern-2 3-arm) + 1 H-49 (EditHistoryEvent single-variant Pattern-2 6-arm)",
+            428,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 1 D-5 closure SCHEMA_208 (BaiPromotionDecision) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused) + 1 E-7 (DarwinianGenerationCompleted single-variant Pattern-2) + 9 batch2-merge-collision recovery (E-3 RuntimeHandoffSignal + E-26 SglangBackendRegistered + E-26 XgrammarSchemaCompiled + E-26 RuntimeColdStartObserved + E-2 StreamingTimingRecorded + E-2 UxPacingVoteRecorded + E-28 StreamingLlmEngaged + E-28 SdpaBackendPinned + E-28 YarnRopeScalingApplied) + 1 E-8 (PromptOptimizationCompleted single-variant Pattern-2) + 1 E-10 (CriticDecisionEvent single-variant Pattern-2) + 1 E-43 (SkillSystemEvent single-variant Pattern-2) + 1 E-9 (BenchmarkRunObserved single-variant Pattern-2) + 1 E-19 (ReasoningQualityProbe single-variant Pattern-2) + 1 E-55 (RewardLadderEvent single-variant Pattern-2 20th application) + 1 E-11 (SaasPriorArtEvent single-variant Pattern-2 21st application) + 1 E-22 (GithubTrendingEvent single-variant Pattern-2 22nd application) + 1 E-23 (DeveloperDiscourseEvent single-variant Pattern-2 23rd application) + 1 E-25 (ClaudeCodeArchitectureEvent single-variant Pattern-2 24th application) + 1 E-29 (AgenticObservabilityEvent single-variant Pattern-2 25th application) + 1 E-31 (CodingModelLeaderboardEvent single-variant Pattern-2 26th application) + 1 E-38 (AiRoadmapSignalEvent single-variant Pattern-2 27th application) + 1 E-39 (CostTokenEvent single-variant Pattern-2 28th application) + 1 E-50 (SaasArchPatternEvent single-variant Pattern-2 29th application) + 1 B-7 triple (TddVerificationEvent single-variant Pattern-2 46th application) + 2 F-4/B-1 (TestIntegrityEvent single-variant Pattern-2 50th application -- Verified + FabricationBlocked) + 2 F-3p1/C1 (ToolFilterEvent single-variant Pattern-2 51st application -- Committed + UntrustedQuarantined) + 1 F-9/D1 (WriteTimeSlopsquatBlocked flat beacon) + 1 F-10/A1 (SecurityClassRegressionBlocked flat beacon) + 1 F-2b/A1 (InsecureRateMeasured flat beacon) + 3 F-6/A1 (SkillLibraryEvent single-variant Pattern-2 -- Acquired + TrustPromoted + DemotedStale) + 1 F-5/A1 (StalenessQuarantineBroadcast flat beacon) + 1 F-8/A1 (SymbolicConflictDetected flat beacon) + 1 F-7/A1 (TemplateUtilityRanked flat beacon) + 1 F-13/A1 (SessionArchived flat beacon) + 1 F-11/A1 (DarwinianAdmit single-variant Pattern-2 -- Admitted + RejectedByGuard + LoopClosed) + 1 G-10 (ModelDriftSuspected flat beacon) + 2 D-27.1 (DiscoveryRatified + DiscoveryRejected flat beacons) + 1 H-32 (FactValidationFailed flat beacon) + 1 H-33 (MemoryGovernanceEvent flat beacon) + 2 H-34 (McpToolDeferred + McpSchemaBudgetMeasured flat beacons) + 1 H-35 (SessionRewound flat beacon) + 1 H-36 (AgentNotificationEmitted single-variant Pattern-2 2-arm) + 1 H-37 (PlanDecisionEvent single-variant Pattern-2 4-arm) + 1 H-38 (StopConfirmationEvent single-variant Pattern-2 3-arm) + 1 H-39 (AbstentionScored flat beacon) + 1 H-41 (CheckerGapDetected flat beacon) + 1 H-42 (ReasoningBudgetScaled single-variant Pattern-2 2-arm) + 1 H-43 (FitnessEvaluated single-variant Pattern-2 3-arm) + 1 H-44 (TrapBehaviorDetected single-variant Pattern-2 4-arm) + 1 H-45 (PromotionScoreAggregated single-variant Pattern-2 3-arm) + 1 H-46 (CladeSelected single-variant Pattern-2 2-arm) + 1 H-47 (EvalFirewallEvent single-variant Pattern-2 3-arm) + 1 H-49 (EditHistoryEvent single-variant Pattern-2 6-arm) + 1 H-51 (HandoffLifecycleEvent single-variant Pattern-2 4-arm) + 1 H-52 (FindingAnchored single-variant Pattern-2 5-arm) + 1 H-53 (CitationAnchorsBound single-variant Pattern-2 2-arm)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

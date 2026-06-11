@@ -15,7 +15,10 @@ use crate::ssb::{
 // (k <= 8 user-decisions, one line each) and is populated ONLY for the role allowlist
 // {AgentRole::Executor} AND ELAI_USER_MEMORY_ENABLE=1 (the Personalization-Trap firewall lives in
 // `crate::user_memory_firewall`).
-pub const SLOT_COUNT: usize = 9;
+// H-53 (SCHEMA_VERSION 229): bumped 9 -> 10 for the new ContextSlot::Evidence slot.
+// The Evidence slot holds the pre-bound EvidenceAnchorSet serialized block and
+// MUST land AFTER the last cache breakpoint (after_slot = CodeContext) per HD-2.
+pub const SLOT_COUNT: usize = 10;
 pub const CACHE_BREAKPOINT_COUNT: usize = 2;
 
 // Floor constants — minimum token allocations for critical slots.
@@ -48,6 +51,11 @@ pub const LARGE_SLOT_GRC_HISTORY: usize = 1000;
 pub const LARGE_SLOT_OUTPUT_RESERVE: usize = 4000;
 // H-31: user-memory slot target on larger tiers (still small; one line per surfaced decision).
 pub const LARGE_SLOT_MEMORY: usize = 500;
+// H-53: evidence slot holds the pre-bound ranked evidence excerpts (freeze_anchors input).
+// Sits after the last cache breakpoint (HD-2: must be after CodeContext=4). Bounded to a few
+// sources: Micro keeps it small (3-5 excerpts x ~80 tokens each), Large allows more (up to 10).
+pub const MICRO_SLOT_EVIDENCE: usize = 400;
+pub const LARGE_SLOT_EVIDENCE: usize = 1000;
 
 /// Fixed Slot 3 (PhaseSpec/Telescope) target across all model tiers.
 /// Updated in A-46 to accommodate telescope content (~550-1050 tokens).
@@ -1090,6 +1098,15 @@ pub enum ContextSlot {
     /// the role allowlist {AgentRole::Executor} AND ELAI_USER_MEMORY_ENABLE=1 (the
     /// Personalization-Trap firewall, `crate::user_memory_firewall`); forced EMPTY otherwise.
     Memory = 8,
+    /// H-53 (SCHEMA_VERSION 229): the pre-bound evidence anchor block. Volatile (query-specific);
+    /// MUST land AFTER the last cache breakpoint (after_slot = CodeContext = 4, HD-2) so placing
+    /// it after Memory = 8 preserves the cache prefix on all preceding slots. Populated ONLY on
+    /// the /research|/ask answer path when ELAI_CITATION_PREBIND_DISABLE is NOT set. The slot is
+    /// force-EMPTY otherwise; the ContextBudget allocates 0 tokens for it by default.
+    /// NARROWING-OK: #[repr(u8)] discriminant 9 fits u8; `as usize` array-indexing is safe.
+    /// H-50 (regime-aware context) will budget this slot per backend (smaller on the local lane);
+    /// until H-50 ships the slot is allocated 0 tokens (no-op on local, cloud absorbs it).
+    Evidence = 9,
 }
 
 #[repr(u8)]
@@ -1205,9 +1222,20 @@ impl ContextBudget {
                     actual_tokens: 0,
                     source_truncated: false,
                 },
-                // H-31: the user-memory slot (appended last; ordinal 8).
+                // H-31: the user-memory slot (appended last before H-53; ordinal 8).
                 SlotAllocation {
                     slot: ContextSlot::Memory,
+                    allocated_tokens: 0,
+                    floor_tokens: 0,
+                    actual_tokens: 0,
+                    source_truncated: false,
+                },
+                // H-53: the pre-bound evidence anchor block (ordinal 9). Volatile
+                // (query-specific); allocated 0 tokens by default — the /research
+                // path sets actual_tokens when the slot is populated. HD-2: MUST
+                // land after the last cache breakpoint (CodeContext = 4).
+                SlotAllocation {
+                    slot: ContextSlot::Evidence,
                     allocated_tokens: 0,
                     floor_tokens: 0,
                     actual_tokens: 0,
@@ -1478,7 +1506,7 @@ impl ContextBudget {
     pub fn compute_repair_context() -> Self {
         let mut budget = Self::new(REPAIR_CONTEXT_TOTAL);
 
-        // NARROWING-OK (block): ContextSlot is #[repr(u8)] with values 0..=7; `as usize` is enum-discriminant indexing, structurally safe.
+        // NARROWING-OK (block): ContextSlot is #[repr(u8)] with values 0..=9 (Evidence=9); `as usize` is enum-discriminant indexing, structurally safe.
         budget.slots[ContextSlot::SystemPrompt as usize].allocated_tokens = REPAIR_SLOT_SYSTEM_PROMPT;
         budget.slots[ContextSlot::Rules as usize].allocated_tokens = REPAIR_SLOT_BABY_STEP_SPEC;
         budget.slots[ContextSlot::PhaseSpec as usize].allocated_tokens = REPAIR_SLOT_MISTAKE_BOOK;
@@ -1515,7 +1543,7 @@ impl ContextBudget {
         }
 
         for bp in &mut self.cache_breakpoints {
-            let bound = bp.after_slot as usize; // NARROWING-OK: after_slot is ContextSlot (#[repr(u8)]); discriminant ≤ 7, always fits usize
+            let bound = bp.after_slot as usize; // NARROWING-OK: after_slot is ContextSlot (#[repr(u8)]); discriminant ≤ 9 (Evidence), always fits usize
             let mut hasher = blake3::Hasher::new();
             for slot_bytes in &slot_contents[..=bound] {
                 // Length-prefix each slot to prevent boundary ambiguity:
@@ -1623,9 +1651,10 @@ impl ContextBudget {
         }
     }
 
-    // NARROWING-OK (block for reduce_* helpers): ContextSlot is #[repr(u8)] with values 0..=7;
-    // `slot as usize` is enum-discriminant array indexing (structurally safe, const-asserted).
-    // `slot as u8` produces the on-wire byte for `slots_affected`; same safety guarantee.
+    // NARROWING-OK (block for reduce_* helpers): ContextSlot is #[repr(u8)] with values 0..=9
+    // (Memory=8, Evidence=9); `slot as usize` is enum-discriminant array indexing (structurally
+    // safe, const-asserted). `slot as u8` produces the on-wire byte for `slots_affected`; same
+    // safety guarantee.
 
     /// Apply a single reduction level, returning the list of slot indices affected.
     fn apply_reduction_level(
@@ -2017,6 +2046,14 @@ impl ContextBudget {
                     entry_limit: Some(8),
                     conclusion_only: false,
                 },
+                // H-53: evidence slot -- ranked excerpts for freeze_anchors pre-binding pass.
+                // After last cache breakpoint (HD-2). Micro: up to 5 excerpts.
+                ContextSlot::Evidence => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_EVIDENCE,
+                    skip_content: false,
+                    entry_limit: Some(5),
+                    conclusion_only: false,
+                },
             },
             // Small, Medium, Large, Cloud all use LARGE_SLOT_* assembly targets.
             // Spec section 9 defines only MICRO and LARGE tiers for assembly.
@@ -2076,6 +2113,14 @@ impl ContextBudget {
                         max_tokens: LARGE_SLOT_MEMORY,
                         skip_content: false,
                         entry_limit: Some(8),
+                        conclusion_only: false,
+                    },
+                    // H-53: evidence slot -- ranked excerpts for freeze_anchors pre-binding pass.
+                    // After last cache breakpoint (HD-2). Large: up to 10 excerpts.
+                    ContextSlot::Evidence => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_EVIDENCE,
+                        skip_content: false,
+                        entry_limit: Some(10),
                         conclusion_only: false,
                     },
                 }

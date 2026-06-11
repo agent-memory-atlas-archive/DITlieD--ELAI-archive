@@ -4,6 +4,11 @@
 
 use std::time::Duration;
 
+/// H-51 TieredLoad gate: the CLI inject path must not push a digest that exceeds
+/// this token estimate.  Mirrors the dashboard gate in commands_h51.rs and the
+/// WIRING_CONTRACT stub_ban: "a resume that loads >5K by default = FAIL."
+const MAX_TIERED_LOAD_TOKENS: u32 = 5_000;
+
 use elai_orchestrator::{BackendConfig, BackendMode, PermissionMode};
 
 use crate::commands::SlashCommand;
@@ -31,6 +36,107 @@ pub(crate) fn run_repl(
     let mut editor =
         input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
     println!("{}", cli.startup_banner());
+
+    // H-51: detect an open handoff topic and offer one-tap resume.
+    // Guard: ELAI_HANDOFF_AUTORESUME_DISABLE=1 suppresses this offer.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Some(handle) = elai_orchestrator::handoff_digest::detect_open_topic(&cwd) {
+        println!(
+            "[H-51] Open topic detected: '{}' (digest: {}). Resume? [y/N]",
+            handle.topic_slug,
+            handle.digest_path.display()
+        );
+        // Emit ResumeOffered SSB row (best-effort; non-fatal on failure).
+        if let Some(ssb) = cli.ssb.as_ref() {
+            let payload = elai_orchestrator::ssb::SsbPayload::HandoffLifecycleEvent(
+                elai_orchestrator::ssb::HandoffLifecyclePayload {
+                    kind: elai_orchestrator::ssb::HandoffLifecycleEventKind::ResumeOffered,
+                    topic_slug: handle.topic_slug.clone(),
+                    digest_path: Some(handle.digest_path.to_string_lossy().into_owned()),
+                    loaded_tokens: None,
+                    session_id: cli.session.id.clone(),
+                },
+            );
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                let _ = rt.block_on(ssb.write_payload(
+                    "repl-startup",
+                    0,
+                    payload,
+                    vec![],
+                ));
+            }
+        }
+        // Read one-line y/N response from stdin (non-interactive-safe: if stdin
+        // is not a tty the read returns empty / error and we skip).
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer).is_ok() {
+            if answer.trim().eq_ignore_ascii_case("y") {
+                // Emit ResumeConfirmed + load digest as context preamble.
+                if let Some(ssb) = cli.ssb.as_ref() {
+                    let confirm_payload =
+                        elai_orchestrator::ssb::SsbPayload::HandoffLifecycleEvent(
+                            elai_orchestrator::ssb::HandoffLifecyclePayload {
+                                kind: elai_orchestrator::ssb::HandoffLifecycleEventKind::ResumeConfirmed,
+                                topic_slug: handle.topic_slug.clone(),
+                                digest_path: Some(
+                                    handle.digest_path.to_string_lossy().into_owned(),
+                                ),
+                                loaded_tokens: Some(handle.loaded_tokens),
+                                session_id: cli.session.id.clone(),
+                            },
+                        );
+                    let tiered_payload =
+                        elai_orchestrator::ssb::SsbPayload::HandoffLifecycleEvent(
+                            elai_orchestrator::ssb::HandoffLifecyclePayload {
+                                kind: elai_orchestrator::ssb::HandoffLifecycleEventKind::TieredLoad,
+                                topic_slug: handle.topic_slug.clone(),
+                                digest_path: Some(
+                                    handle.digest_path.to_string_lossy().into_owned(),
+                                ),
+                                loaded_tokens: Some(handle.loaded_tokens),
+                                session_id: cli.session.id.clone(),
+                            },
+                        );
+                    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        let _ = rt.block_on(ssb.write_payload(
+                            "repl-startup",
+                            0,
+                            confirm_payload,
+                            vec![],
+                        ));
+                        let _ = rt.block_on(ssb.write_payload(
+                            "repl-startup",
+                            0,
+                            tiered_payload,
+                            vec![handle.digest_path.to_string_lossy().into_owned()],
+                        ));
+                    }
+                }
+                // Inject digest content as an additional system prompt entry so
+                // the first turn benefits from cross-session context (tiered load).
+                // Guard: skip and warn if the digest has grown beyond the TieredLoad
+                // token cap (5000).  A bloated digest defeats tiered load and violates
+                // the WIRING_CONTRACT stub_ban (R1/R4).
+                if handle.loaded_tokens > MAX_TIERED_LOAD_TOKENS {
+                    eprintln!(
+                        "[H-51] TieredLoad gate: digest for topic '{}' is {} tokens \
+                         (> {MAX_TIERED_LOAD_TOKENS}); skipping CLI inject to preserve \
+                         tiered-load invariant. Use /continue to load on demand.",
+                        handle.topic_slug, handle.loaded_tokens
+                    );
+                } else if let Ok(digest_text) = std::fs::read_to_string(&handle.digest_path) {
+                    let preamble = format!(
+                        "[H-51 Tiered Load] Resuming topic '{}'. Prior session digest follows:\n\n{}",
+                        handle.topic_slug, digest_text
+                    );
+                    cli.system_prompt.push(preamble);
+                }
+            }
+        }
+    }
 
     loop {
         editor.set_completions(cli.repl_completion_candidates().unwrap_or_default());

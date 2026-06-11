@@ -334,6 +334,57 @@ expiry_date       = "2026-09-01"
 promotion_plan_id = "C-22"
 smoke_test        = "crates/contracts/tests/feasibility_probe_contract.rs::contract_env_kill_switch_short_circuits_probe"
 
+# H-50: ELAI_CONTEXT_POLICY_DISABLE gates the regime-aware in-session context
+# policy (crates/orchestrator/src/context_policy.rs: effective_context_window /
+# trim_threshold_for_mode, consumed in cli/src/runtime_builder.rs auto-compaction
+# threshold + cli/src/live_cli.rs prepare_turn_runtime trim gate). The FEATURE is
+# default-ON (regime-aware local/cloud windows active); this is a DISABLE kill_switch
+# (set "1" reverts to the legacy flat max_tokens_for_model window), so default-OFF is
+# the correct terminal posture for a kill_switch, not an experiment that must promote.
+# smoke_test sets the var and asserts the legacy flat threshold is returned. NOTE:
+# added by an executing run -- trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_CONTEXT_POLICY_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "H-50"
+smoke_test        = "crates/orchestrator/src/context_policy.rs::tests::kill_switch_returns_legacy_flat"
+
+# H-52: ELAI_REVIEW_ANCHOR_DISABLE gates the deterministic snippet->hunk finding
+# anchoring pass in the G-5 reviewer cockpit (crates/orchestrator/src/review_anchor.rs
+# anchor_finding, consumed in cli/src/review_cmd.rs open_score_and_emit + the
+# --demo-anchor seeded trigger). FEATURE is default-ON (the resolver runs on every
+# review finding); this is a DISABLE kill_switch (set "1" skips the anchoring pass and
+# falls back to file-level), so default-OFF is the correct terminal posture. The plan
+# W-2/R9 exemption applies (not a default-OFF graveyard flag); row added for allowlist
+# completeness + consistency with the other DISABLE kill_switches. NOTE: added by an
+# executing run -- trips gate_freeze_check.py until re-locked out-of-band.
+[[flag]]
+name              = "ELAI_REVIEW_ANCHOR_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "H-52"
+smoke_test        = "crates/contracts/tests/h52_finding_anchor_contract.rs::d8a_demo_anchor_emits_anchored_row_with_real_blake3"
+
+# H-54: ELAI_CLOSURE_SCAN_DISABLE is the kill-switch for the H-54
+# obligation-closure escape-hatch gate (formal_verify::closure_scan).
+# H-54 is DEFAULT-ON (not an experiment — it is the Layer-2 deterministic
+# first leg of the E-53 formal-verify gate). The kill-switch is registered
+# here per R9 (a new default-ON feature's kill-switch still needs a row).
+# When set, the scan returns ClosureUnavailable (unsound — Layer-4 is then
+# the only backstop per R5). The kill-switch is ops-safety only; it is NOT
+# an experiment gate and has no promotion plan beyond R9 compliance.
+[[flag]]
+name              = "ELAI_CLOSURE_SCAN_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "H-54"
+smoke_test        = "crates/contracts/tests/h54_obligation_closure_contract.rs::relocated_admit_blocked_end_to_end"
+
 # 4J EMPIRE: the `empire` cargo feature (crates/orchestrator/Cargo.toml:220
 # empire = [], forwarded by crates/contracts/Cargo.toml:105) gates the C-34 Empire
 # integration surface (orchestrator::empire::* types: FactoryLineTransport,
@@ -1423,6 +1474,14 @@ owner             = "maintainer"
 expiry_date       = "2027-06-08"
 promotion_plan_id = "H-39"
 smoke_test        = "crates/contracts/tests/h39_abstention_score_contract.rs::h39_f3_abstaining_variant_ranks_above_confident_wrong"
+
+[[flag]]
+name              = "ELAI_HANDOFF_AUTORESUME_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2027-01-01"
+promotion_plan_id = "H-51"
+smoke_test        = "cargo test -p elai-orchestrator handoff_lifecycle"
 
 # ---- CANDIDATES TO TRIAGE ----
 # Known existing default-OFF flags (grounded from CLAUDE.md). Each is wire-dark today.

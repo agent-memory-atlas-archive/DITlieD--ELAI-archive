@@ -93,3 +93,22 @@ plan        = "H-31"
 entrypoint  = "elai remember \"<text>\" (ELAI_USER_MEMORY_ENABLE=1)"
 expect_ssb  = "user_decision_superseded"
 flag_default = "ELAI_USER_MEMORY_ENABLE"
+
+# ---- H-54 obligation-closure escape-hatch gate (session s-10612) ----
+# The formal-verify pipeline's Layer-2 first leg: scan_obligation_closure() runs
+# before the verifier dispatch in formal_verify::orchestrator::run(). A relocated
+# sorry in a renamed helper lemma (AlphaProof arXiv:2605.22763 failure mode) is
+# detected by the BFS and returns EscapeHatchAnywhere -> BLOCK. The contract test
+# drives the REAL scan_obligation_closure + orchestrator::run() path and asserts
+# PipelineResult.closure_scan is populated (off-agent artifact R1/R2).
+# SSB row: TrapBehaviorDetected with kind=ClosureEscapeHatch (H-44 compose path;
+# no new SsbActionType, TOTAL_VARIANTS unchanged at 540).
+# Kill-switch ELAI_CLOSURE_SCAN_DISABLE registered in wire-dark-allowlist.toml (R9).
+# Observable-effect entrypoint: `elai formal-verify run --demo-escape-hatch` feeds
+# a seeded displaced-sorry goal through orchestrator::run(), gets EscapeHatchAnywhere,
+# and writes a decodable TrapBehaviorDetected(ClosureEscapeHatch) row to ssb.db.
+[[feature]]
+plan        = "H-54"
+entrypoint  = "elai formal-verify run --target <path> --verifier dafny --demo-escape-hatch"
+expect_ssb  = "trap_behavior_detected"
+flag_default = "on"

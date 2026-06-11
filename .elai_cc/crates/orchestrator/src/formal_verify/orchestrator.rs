@@ -36,7 +36,10 @@ use std::path::Path;
 use crate::contract_coding::spec::{StructuralContract, TypeSignature};
 use crate::dafny_verify::{invoke_dafny_cli, DafnyCliError};
 
-use super::types::{VerifierKind, VerifierOutcome, VerifyRequest};
+use super::closure_scan::{scan_obligation_closure, ClosureScanResult};
+use super::types::{
+    DischargedGoal, HatchKind, ObligationNode, VerifierKind, VerifierOutcome, VerifyRequest,
+};
 
 /// Outcome of a complete pipeline run. Carries the chosen verifier +
 /// the toolchain outcome + the structural-contract emission hash
@@ -54,6 +57,12 @@ pub struct PipelineResult {
     /// invoked successfully before the verifier dispatch. `false`
     /// when the pipeline short-circuited on a missing binary.
     pub contract_emitted: bool,
+    /// H-54 closure scan result (Layer-2 first leg). Always present when
+    /// the scan ran. `None` only when the scan was bypassed via
+    /// `ELAI_CLOSURE_SCAN_DISABLE` kill-switch (in which case the scan
+    /// returned `ClosureScanKind::Clean` with closure_size=0, but we keep
+    /// `None` here to distinguish "bypassed" from "ran and was clean").
+    pub closure_scan: Option<ClosureScanResult>,
 }
 
 /// Build a minimal [`StructuralContract`] anchored at the target
@@ -80,6 +89,46 @@ fn build_minimal_contract(target_path: &str, verifier: VerifierKind) -> Structur
         signatures: vec![sig],
         state_space: Vec::new(),
     }
+}
+
+/// Build the seeded frozen `DischargedGoal` used by the `--demo-escape-hatch`
+/// observable-effect trigger (H-54 W-1 done-gate, the sanctioned seeded-fixture
+/// pattern matching H-52 `--demo-anchor` / H-53 `--demo-prebind`).
+///
+/// The goal models the AlphaProof failure mode 1:1 (arXiv:2605.22763v1):
+///   root goal: `<verifier>:<target>:top_statement` — looks sorry-free (hatch=None)
+///   helper lemma: `<verifier>:<target>:renamed_helper_lemma` — carries `sorry`
+///     (the RELOCATED escape hatch a top-statement-only scan would miss)
+///
+/// A BFS scan over this goal returns `EscapeHatchAnywhere`, which blocks the
+/// verifier dispatch and lets the CLI emit the `TrapBehaviorDetected(ClosureEscapeHatch)`
+/// SSB row — proving the gate fires through a REAL entrypoint.
+///
+/// This is the ONLY path that makes the orchestrator return a blocked result in
+/// the current scaffolding tier (before live verifier DAGs are available on RunPod).
+fn seeded_escape_hatch_goal(target_path: &str, verifier: VerifierKind) -> DischargedGoal {
+    use std::collections::HashMap;
+    let prefix = format!("{}:{}", verifier.as_str(), target_path);
+    let root_id = format!("{prefix}:top_statement");
+    let helper_id = format!("{prefix}:renamed_helper_lemma");
+    let mut dag = HashMap::new();
+    dag.insert(
+        root_id.clone(),
+        ObligationNode {
+            obligation_id: root_id.clone(),
+            hatch: None, // root looks sorry-free (the AlphaProof failure mode)
+            depends_on: vec![helper_id.clone()],
+        },
+    );
+    dag.insert(
+        helper_id.clone(),
+        ObligationNode {
+            obligation_id: helper_id,
+            hatch: Some(HatchKind::Sorry), // the relocated sorry in the helper
+            depends_on: vec![],
+        },
+    );
+    DischargedGoal::with_dag(root_id, dag)
 }
 
 /// Run the formal-verify pipeline for a single request.
@@ -112,6 +161,74 @@ pub async fn run(request: VerifyRequest) -> PipelineResult {
     let contract = build_minimal_contract(&request.target_path, request.verifier);
     let contract_emitted = !contract.signatures.is_empty();
 
+    // H-54 Layer-2 first leg: scan the obligation closure BEFORE the
+    // verifier dispatch. An EscapeHatchAnywhere result short-circuits the
+    // pipeline without running the verifier (never spend the expensive proof
+    // check on a closure with an admitted hole).
+    //
+    // For the E-53 scaffolding-only tier (all verifiers return RunpodPending
+    // or Inapplicable locally), the scan runs over a `DischargedGoal::unavailable`
+    // placeholder, which immediately returns `ClosureUnavailable` — the Layer-4
+    // verifier verdict is the sound backstop (R5). When a live verifier DAG is
+    // available (Tier-2 / RunPod), the caller should pass a populated
+    // DischargedGoal via the `goal` field added to the request in the follow-up.
+    //
+    // For the `--demo-escape-hatch` seeded-fixture path (W-1 observable_effect),
+    // we substitute a frozen goal containing a relocated sorry in a renamed
+    // helper lemma (the AlphaProof failure mode 1:1). This makes the scan return
+    // EscapeHatchAnywhere so the pipeline blocks and the caller can emit the
+    // TrapBehaviorDetected(ClosureEscapeHatch) SSB row — proving the gate fires
+    // through a REAL entrypoint even before live verifier DAGs are available.
+    //
+    // For now the pipeline constructs an unavailable goal from the request's
+    // target_path (scaffolding posture: DAG not yet exposed). The scan still
+    // fires (Layer-2 runs unconditionally); it returns ClosureUnavailable.
+    let discharged_goal = if request.demo_escape_hatch {
+        seeded_escape_hatch_goal(&request.target_path, request.verifier)
+    } else {
+        DischargedGoal::unavailable(format!(
+            "{}:{}",
+            request.verifier.as_str(),
+            request.target_path
+        ))
+    };
+    let scan_result = scan_obligation_closure(&discharged_goal, request.verifier, None);
+
+    // WARN-1 fix: when ELAI_CLOSURE_SCAN_DISABLE fired, the scan returned a
+    // synthetic Clean result (closure_size=0) that is indistinguishable from
+    // a real clean scan if we wrap it in Some(). Per the PipelineResult doc,
+    // `closure_scan: None` means "bypassed via kill-switch" — the only way to
+    // distinguish bypass from clean. Set None here when the kill-switch is set.
+    let scan_field = if std::env::var("ELAI_CLOSURE_SCAN_DISABLE").is_ok() {
+        None
+    } else {
+        Some(scan_result.clone())
+    };
+
+    // Hard block on unregistered escape hatch anywhere in the closure.
+    // In the scaffolding tier this path is unreachable (ClosureUnavailable),
+    // but the block logic is real for when the verifier exposes a live DAG.
+    // On the --demo-escape-hatch path this IS reachable (seeded goal has
+    // a relocated sorry -> EscapeHatchAnywhere).
+    if scan_result.kind.is_block() {
+        let escape_ids: Vec<&str> = scan_result
+            .escape_nodes
+            .iter()
+            .map(|n| n.obligation_id.as_str())
+            .collect();
+        return PipelineResult {
+            verifier: request.verifier,
+            outcome: VerifierOutcome::Inapplicable {
+                reason: format!(
+                    "closure_escape_hatch_block:{}",
+                    escape_ids.join(",")
+                ),
+            },
+            contract_emitted,
+            closure_scan: scan_field,
+        };
+    }
+
     let outcome = match request.verifier {
         VerifierKind::Dafny => dispatch_dafny(&request.target_path).await,
         VerifierKind::Z3Smt => VerifierOutcome::Inapplicable {
@@ -129,6 +246,7 @@ pub async fn run(request: VerifyRequest) -> PipelineResult {
         verifier: request.verifier,
         outcome,
         contract_emitted,
+        closure_scan: scan_field,
     }
 }
 
@@ -164,6 +282,7 @@ mod tests {
             target_path: "crates/auth/src/lib.rs".to_string(),
             verifier: VerifierKind::Z3Smt,
             cost_cap_ms: None,
+            demo_escape_hatch: false,
         };
         let result = run(req).await;
         assert_eq!(result.verifier, VerifierKind::Z3Smt);
@@ -180,6 +299,7 @@ mod tests {
             target_path: "crates/foo/src/lib.rs".to_string(),
             verifier: VerifierKind::Kani,
             cost_cap_ms: None,
+            demo_escape_hatch: false,
         };
         let result = run(req).await;
         match result.outcome {
@@ -194,6 +314,7 @@ mod tests {
             target_path: "crates/foo/src/lib.rs".to_string(),
             verifier: VerifierKind::Verus,
             cost_cap_ms: None,
+            demo_escape_hatch: false,
         };
         let result = run(req).await;
         match result.outcome {
@@ -217,6 +338,7 @@ mod tests {
             target_path: tmp.to_string_lossy().to_string(),
             verifier: VerifierKind::Dafny,
             cost_cap_ms: None,
+            demo_escape_hatch: false,
         };
         let result = run(req).await;
         let _ = std::fs::remove_file(&tmp);
@@ -235,6 +357,7 @@ mod tests {
             target_path: "crates/billing/payment.rs".to_string(),
             verifier: VerifierKind::Z3Smt,
             cost_cap_ms: None,
+            demo_escape_hatch: false,
         };
         let result = run(req).await;
         assert!(

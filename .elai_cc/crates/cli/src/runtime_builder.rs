@@ -33,6 +33,8 @@ use elai_orchestrator::{
     ModelPricing, OAuthAuthorizationRequest, OAuthConfig, OAuthTokenExchangeRequest,
     PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode,
     RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    // H-50: regime-aware auto-compact threshold (local vs cloud window).
+    trim_threshold_for_mode,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -354,6 +356,15 @@ pub(crate) fn build_runtime_with_plugin_state(
         policy,
         system_prompt,
         &feature_config,
+    );
+    // H-50: override the flat 100 000-token auto-compact threshold with the
+    // regime-aware value: LOCAL => floor(ELAI_LOCAL_MAX_CONTEXT * 0.75),
+    // CLOUD/API => floor(200 000 * 0.85).  The kill-switch
+    // ELAI_CONTEXT_POLICY_DISABLE=1 reverts to the legacy flat threshold.
+    // This is the PRODUCTION wiring point: `backend` carries the resolved
+    // BackendMode (Local for sidecar, Api for cloud) computed above.
+    runtime = runtime.with_auto_compaction_input_tokens_threshold(
+        elai_orchestrator::trim_threshold_for_mode(backend),
     );
     // A-30: wire OutputConfig from elai_cc.toml [output] section.
     runtime = runtime.with_output_config(elai_config.output);
