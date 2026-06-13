@@ -24,7 +24,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use elai_orchestrator::ssb::{
-    BatchLifecycleKind, BatchLifecyclePayload, SsbActionType, SsbPayload,
+    BatchLifecycleKind, BatchLifecyclePayload, SsbActionType, SsbPayload, SCHEMA_VERSION_PUBLIC,
+    SSB_ACTION_TYPES,
 };
 use elai_providers::{half_price_cents, AnthropicBatchClient};
 
@@ -101,7 +102,9 @@ fn batch_spend_is_exactly_half_synchronous() {
 
 #[test]
 fn ssb_sql_check_constraint_includes_batch_lifecycle() {
-    let src = read_src("orchestrator/src/ssb.rs");
+    // Tier-B Move 1 moved the CREATE_SSB_TABLE CHECK(action_type IN (...)) constraint
+    // into the ssb/schema.rs submodule; read it there.
+    let src = read_src("orchestrator/src/ssb/schema.rs");
     // The CHECK(action_type IN (...)) list is the runtime cascade site; a variant
     // missing here causes a SILENT INSERT failure even when the Rust enum compiles.
     assert!(
@@ -110,51 +113,30 @@ fn ssb_sql_check_constraint_includes_batch_lifecycle() {
     );
     // SCHEMA bumped from the LIVE baseline (218 -> 219); floor assertion (>= 219)
     // so subsequent H-N bumps do not break this H-5 contract.
-    // BRITTLE_GLOBAL_SCHEMA_PIN fix: parse the constant and assert >= 219.
-    let schema_ok = {
-        let prefix = "const SCHEMA_VERSION: i64 = ";
-        src.lines().any(|line| {
-            if let Some(rest) = line.trim().strip_prefix(prefix) {
-                rest.trim_end_matches(';')
-                    .parse::<i64>()
-                    .map(|n| n >= 219)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        })
-    };
+    // Tier-B Move 2 made SCHEMA_VERSION a derived expression (no longer a parseable
+    // literal in source), so read the published runtime constant; same >= 219 floor.
     assert!(
-        schema_ok,
-        "SCHEMA_VERSION must be >= 219 (H-5 bumped from 218; floor assertion)"
+        SCHEMA_VERSION_PUBLIC >= 219,
+        "SCHEMA_VERSION must be >= 219 (H-5 bumped from 218; floor assertion); got {SCHEMA_VERSION_PUBLIC}"
     );
 }
 
 #[test]
 fn action_type_lock_counts_the_new_variant() {
-    let src = read_src("orchestrator/tests/action_type_lock.rs");
-    // BRITTLE_GLOBAL_SCHEMA_PIN fix: floor assertion (>= 496) instead of exact pin.
-    // H-5 bumped from 495 -> 496; subsequent H-N bumps legitimately advance further.
-    let tv_ok = {
-        let prefix = "const TOTAL_VARIANTS: usize = ";
-        src.lines().any(|line| {
-            if let Some(rest) = line.trim().strip_prefix(prefix) {
-                rest.trim_end_matches(';')
-                    .parse::<usize>()
-                    .map(|n| n >= 496)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        })
-    };
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated the ALL_VARIANTS array
+    // (now SSB_ACTION_TYPES in ssb.rs), so the source-text parse + grep of
+    // action_type_lock.rs no longer apply. Read the runtime registry directly;
+    // same >= 496 floor, same BatchLifecycle presence guarantee.
     assert!(
-        tv_ok,
-        "TOTAL_VARIANTS must be >= 496 (H-5 added batch_lifecycle, floor assertion)"
+        SSB_ACTION_TYPES.len() >= 496,
+        "TOTAL_VARIANTS must be >= 496 (H-5 added batch_lifecycle, floor assertion); got {}",
+        SSB_ACTION_TYPES.len()
     );
     assert!(
-        src.contains("SsbActionType::BatchLifecycle"),
-        "ALL_VARIANTS must include SsbActionType::BatchLifecycle"
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "batch_lifecycle"),
+        "SSB_ACTION_TYPES must include SsbActionType::BatchLifecycle"
     );
 }
 

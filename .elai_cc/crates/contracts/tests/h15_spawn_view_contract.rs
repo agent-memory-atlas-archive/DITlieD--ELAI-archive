@@ -167,52 +167,26 @@ async fn h15_all_canvas_view_kinds_ssb_round_trip() {
 
 #[test]
 fn h15_canvas_view_event_in_all_variants_and_schema_bumped() {
-    use std::fs;
-
-    // Locate action_type_lock.rs via CARGO_MANIFEST_DIR.
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("orchestrator")
-        .join("tests")
-        .join("action_type_lock.rs");
-    assert!(
-        lock_rs.exists(),
-        "action_type_lock.rs not found at {}",
-        lock_rs.display()
-    );
-
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-
     // TOTAL_VARIANTS >= 499 (floor, not exact pin).
     // H-15 bumped from 498 -> 499; subsequent H-N bumps legitimately advance
-    // this further. Assert the floor: this contract verifies CanvasViewEvent was
-    // added (which it was), not that no variants were added afterward.
+    // this further. Tier-B Move 2 derived TOTAL_VARIANTS and relocated
+    // ALL_VARIANTS (now SSB_ACTION_TYPES in ssb.rs), so read the runtime
+    // registry directly; same floor + same CanvasViewEvent presence guarantee.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
     const H15_TV_FLOOR: usize = 499;
-    let tv_ok = {
-        let prefix = "const TOTAL_VARIANTS: usize = ";
-        body.lines().any(|line| {
-            if let Some(rest) = line.trim().strip_prefix(prefix) {
-                rest.trim_end_matches(';')
-                    .parse::<usize>()
-                    .map(|n| n >= H15_TV_FLOOR)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        })
-    };
     assert!(
-        tv_ok,
-        "TOTAL_VARIANTS must be >= {} after H-15 (CanvasViewEvent added); file: {}",
+        SSB_ACTION_TYPES.len() >= H15_TV_FLOOR,
+        "TOTAL_VARIANTS must be >= {} after H-15 (CanvasViewEvent added); got {}",
         H15_TV_FLOOR,
-        lock_rs.display()
+        SSB_ACTION_TYPES.len()
     );
 
-    // CanvasViewEvent must be in ALL_VARIANTS.
+    // CanvasViewEvent must be in SSB_ACTION_TYPES.
     assert!(
-        body.contains("SsbActionType::CanvasViewEvent"),
-        "SsbActionType::CanvasViewEvent must appear in ALL_VARIANTS; file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "canvas_view_event"),
+        "SsbActionType::CanvasViewEvent must appear in SSB_ACTION_TYPES"
     );
 
     // SCHEMA_VERSION >= 222 (GTE, not exact — BRITTLE_GLOBAL_SCHEMA_PIN fix).

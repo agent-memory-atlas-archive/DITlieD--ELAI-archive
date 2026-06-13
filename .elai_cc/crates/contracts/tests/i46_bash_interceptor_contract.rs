@@ -412,39 +412,15 @@ fn f15_schema_version_floor_is_244() {
 /// Uses parse-then-floor pattern (A117) to avoid stale-anchor cascade on future bumps.
 #[test]
 fn f15_total_variants_is_553() {
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("contracts crate has a parent")
-        .join("orchestrator")
-        .join("tests")
-        .join("action_type_lock.rs");
-    let body = std::fs::read_to_string(&lock_rs).unwrap_or_else(|e| {
-        panic!(
-            "cannot read action_type_lock.rs at {}: {e}",
-            lock_rs.display()
-        )
-    });
-    // Floor check: parse the live TOTAL_VARIANTS value and assert >= 553 (I-46 floor).
-    // Avoids exact-string stale-anchor that breaks on every subsequent TV bump.
+    // Floor check: TOTAL_VARIANTS >= 553 (I-46 floor). Tier-B Move 2 derived
+    // TOTAL_VARIANTS and relocated ALL_VARIANTS (now SSB_ACTION_TYPES in
+    // ssb.rs), so read the runtime registry length instead of parsing
+    // action_type_lock.rs.
     const I46_TV_FLOOR: usize = 553;
-    let tv_ok = {
-        let prefix = "const TOTAL_VARIANTS: usize = ";
-        body.lines().any(|line| {
-            if let Some(rest) = line.trim().strip_prefix(prefix) {
-                rest.trim_end_matches(';')
-                    .parse::<usize>()
-                    .map(|n| n >= I46_TV_FLOOR)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        })
-    };
+    let tv = elai_orchestrator::ssb::SSB_ACTION_TYPES.len();
     assert!(
-        tv_ok,
-        "action_type_lock.rs must declare TOTAL_VARIANTS: usize >= {I46_TV_FLOOR} (I-46 +1 TV floor); \
-         file: {}",
-        lock_rs.display()
+        tv >= I46_TV_FLOOR,
+        "TOTAL_VARIANTS must be >= {I46_TV_FLOOR} (I-46 +1 TV floor); got {tv}"
     );
 }
 

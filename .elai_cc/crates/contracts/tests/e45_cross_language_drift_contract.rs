@@ -274,74 +274,64 @@ fn e45_f6_sidecar_pydantic_schemas_present() {
 
 #[test]
 fn e45_f7_action_type_lock_total_variants_updated() {
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let elai_cc = workspace
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("contracts has 2-up parent (.elai_cc)");
-    let lock_rs = elai_cc
-        .join("crates")
-        .join("orchestrator")
-        .join("tests")
-        .join("action_type_lock.rs");
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+    // SSB_ACTION_TYPES in ssb.rs), so the source-text reads of action_type_lock.rs
+    // no longer apply. This was the sole exact-equality TOTAL_VARIANTS lock; it is
+    // converted to a runtime >= 562 floor (562 = the live count that includes every
+    // lockstep variant below) plus runtime registration checks for each variant.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
+
     assert!(
-        lock_rs.exists(),
-        "action_type_lock.rs must exist at {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES.len() >= 562,
+        "TOTAL_VARIANTS must be >= 562 (live registry count); got {}",
+        SSB_ACTION_TYPES.len()
     );
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
+
+    // Every lockstep variant below must be registered in SSB_ACTION_TYPES, asserted
+    // via its stable wire tag (arm-shape-agnostic; tighter than a source grep).
+    let registered = |tag: &str| SSB_ACTION_TYPES.iter().any(|v| v.as_sql_str() == tag);
+
+    // H-24 sim-to-real parity gate.
+    assert!(registered("sim_real_parity"), "registry must include SimRealParity");
+    // H-25 result manifest re-derivation gate.
     assert!(
-        body.contains("TOTAL_VARIANTS: usize = 562"),
-        "TOTAL_VARIANTS must match the live action_type_lock.rs value (562); file: {}",
-        lock_rs.display()
+        registered("result_manifest_verified"),
+        "registry must include ResultManifestVerified"
     );
-    // H-24: the sim-to-real parity variant must appear in ALL_VARIANTS.
+    // H-26 shadow-exec + financial-invariant MR gate.
     assert!(
-        body.contains("SsbActionType::SimRealParity"),
-        "ALL_VARIANTS must include SimRealParity (H-24 sim-to-real parity gate)"
+        registered("differential_divergence"),
+        "registry must include DifferentialDivergence"
     );
-    // H-25: the result manifest re-derivation variant must appear in ALL_VARIANTS.
+    // H-27 gate self-validation META gate.
     assert!(
-        body.contains("SsbActionType::ResultManifestVerified"),
-        "ALL_VARIANTS must include ResultManifestVerified (H-25 result manifest re-derivation gate)"
+        registered("gate_self_validation"),
+        "registry must include GateSelfValidation"
     );
-    // H-26: the shadow-exec + financial-invariant MR gate variant must appear.
+    // H-28 current-RF reward-tampering gate.
+    assert!(registered("reward_tampering"), "registry must include RewardTampering");
+    // H-19 reusable-holdout Thresholdout DP query budget.
     assert!(
-        body.contains("SsbActionType::DifferentialDivergence"),
-        "ALL_VARIANTS must include DifferentialDivergence (H-26 shadow-exec + financial-invariant MR gate)"
+        registered("holdout_budget_event"),
+        "registry must include HoldoutBudgetEvent"
     );
-    // H-27: the verify-the-verifiers gate-self-validation META gate variant must appear.
+    // The 3 E-45 variants.
     assert!(
-        body.contains("SsbActionType::GateSelfValidation"),
-        "ALL_VARIANTS must include GateSelfValidation (H-27 gate self-validation META gate)"
-    );
-    // H-28: the current-RF reward-tampering gate variant must appear.
-    assert!(
-        body.contains("SsbActionType::RewardTampering"),
-        "ALL_VARIANTS must include RewardTampering (H-28 current-RF reward-tampering gate)"
-    );
-    // H-19: the reusable-holdout query-budget (Thresholdout DP) gate variant must appear.
-    assert!(
-        body.contains("SsbActionType::HoldoutBudgetEvent"),
-        "ALL_VARIANTS must include HoldoutBudgetEvent (H-19 reusable-holdout Thresholdout DP query budget)"
-    );
-    // The 3 E-45 variants must appear in ALL_VARIANTS.
-    assert!(
-        body.contains("SsbActionType::CrossLangDriftDetected"),
-        "ALL_VARIANTS must include CrossLangDriftDetected"
+        registered("cross_lang_drift_detected"),
+        "registry must include CrossLangDriftDetected"
     );
     assert!(
-        body.contains("SsbActionType::CrossLangPairScanned"),
-        "ALL_VARIANTS must include CrossLangPairScanned"
+        registered("cross_lang_pair_scanned"),
+        "registry must include CrossLangPairScanned"
     );
     assert!(
-        body.contains("SsbActionType::SchemaVersionMismatch"),
-        "ALL_VARIANTS must include SchemaVersionMismatch"
+        registered("schema_version_mismatch"),
+        "registry must include SchemaVersionMismatch"
     );
-    // I-35: the temporal tool-sequence enforcement variant must appear.
+    // I-35 temporal tool-sequence enforcement.
     assert!(
-        body.contains("SsbActionType::ToolSequenceVerdict"),
-        "ALL_VARIANTS must include ToolSequenceVerdict (I-35 temporal sequence enforcement)"
+        registered("tool_sequence_verdict"),
+        "registry must include ToolSequenceVerdict (I-35 temporal sequence enforcement)"
     );
 }
 

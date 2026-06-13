@@ -22,8 +22,6 @@
 //! - No `.unwrap()` / `.expect()` in non-helper code.
 //! - tracing-test assertions use assert!(logs_contain(...)) per T-1.
 
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tempfile::TempDir;
@@ -83,35 +81,10 @@ fn h36_f1_ssb_variant_exists_at_schema_215() {
         "from_str round-trip must yield AgentNotificationEmitted"
     );
 
-    // TOTAL_VARIANTS pin: verify action_type_lock.rs holds 526.
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let elai_cc = workspace
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("contracts has 2-up parent (.elai_cc)");
-    let lock_rs = elai_cc
-        .join("crates")
-        .join("orchestrator")
-        .join("tests")
-        .join("action_type_lock.rs");
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-    // Floor check: TOTAL_VARIANTS >= 526 (H-36 authoring floor; exact-pin
-    // converted per F-2 pin doctrine so subsequent SSB bumps do not break this).
-    let total_variants_value: usize = body
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("const TOTAL_VARIANTS: usize = ") {
-                trimmed
-                    .trim_start_matches("const TOTAL_VARIANTS: usize = ")
-                    .trim_end_matches(';')
-                    .parse()
-                    .ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| panic!("could not parse TOTAL_VARIANTS from action_type_lock.rs"));
+    // TOTAL_VARIANTS floor. Tier-B Move 2 derived TOTAL_VARIANTS and relocated
+    // ALL_VARIANTS (now SSB_ACTION_TYPES in ssb.rs), so read the runtime
+    // registry length instead of parsing action_type_lock.rs. Same >= 526 floor.
+    let total_variants_value = elai_orchestrator::ssb::SSB_ACTION_TYPES.len();
     assert!(
         total_variants_value >= 526,
         "TOTAL_VARIANTS must be >= 526 (H-36 floor); got {total_variants_value}"

@@ -324,43 +324,22 @@ fn i35_e_schema_lock() {
          got {SCHEMA_VERSION_PUBLIC}"
     );
 
-    use std::fs;
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| {
-            root.join("crates")
-                .join("orchestrator")
-                .join("tests")
-                .join("action_type_lock.rs")
-        })
-        .expect("resolve action_type_lock.rs path");
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-    // Floor check (A117): parse-then-floor avoids stale-anchor cascade on future TV bumps.
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+    // SSB_ACTION_TYPES in ssb.rs), so read the runtime registry instead of
+    // parsing action_type_lock.rs. Same >= 551 floor + ToolSequenceVerdict
+    // presence guarantee.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
     const I35_TV_FLOOR: usize = 551;
-    let tv_ok = {
-        let prefix = "const TOTAL_VARIANTS: usize = ";
-        body.lines().any(|line| {
-            if let Some(rest) = line.trim().strip_prefix(prefix) {
-                rest.trim_end_matches(';')
-                    .parse::<usize>()
-                    .map(|n| n >= I35_TV_FLOOR)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        })
-    };
     assert!(
-        tv_ok,
-        "action_type_lock.rs must declare TOTAL_VARIANTS: usize >= {I35_TV_FLOOR} (I-35 floor); \
-         file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES.len() >= I35_TV_FLOOR,
+        "TOTAL_VARIANTS must be >= {I35_TV_FLOOR} (I-35 floor); got {}",
+        SSB_ACTION_TYPES.len()
     );
     assert!(
-        body.contains("SsbActionType::ToolSequenceVerdict"),
-        "ALL_VARIANTS must include ToolSequenceVerdict; file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "tool_sequence_verdict"),
+        "SSB_ACTION_TYPES must include ToolSequenceVerdict"
     );
 
     // Wire-tag round-trip via public from_str.

@@ -351,25 +351,10 @@ fn branch_workspace_event_payload_round_trips_and_schema_floor_holds() {
         "SCHEMA_VERSION_PUBLIC must be >= {I2_SCHEMA_FLOOR} (I-2 floor); got {SCHEMA_VERSION_PUBLIC}"
     );
 
-    // TOTAL_VARIANTS floor parsed from the live lock file.
-    use std::fs;
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| {
-            root.join("crates")
-                .join("orchestrator")
-                .join("tests")
-                .join("action_type_lock.rs")
-        })
-        .expect("resolve action_type_lock.rs path");
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-    let tv_value: usize = body
-        .lines()
-        .find(|l| l.contains("TOTAL_VARIANTS") && l.contains("usize"))
-        .and_then(|l| l.split('=').nth(1))
-        .and_then(|rhs| rhs.trim().trim_end_matches(';').parse().ok())
-        .expect("TOTAL_VARIANTS: usize = N line must be present in action_type_lock.rs");
+    // TOTAL_VARIANTS floor from the runtime registry. Tier-B Move 2 derived
+    // TOTAL_VARIANTS and relocated ALL_VARIANTS (now SSB_ACTION_TYPES in
+    // ssb.rs), so read the live registry length. Same I-2 floor.
+    let tv_value = elai_orchestrator::ssb::SSB_ACTION_TYPES.len();
     assert!(
         tv_value >= I2_TOTAL_VARIANTS_FLOOR,
         "TOTAL_VARIANTS must be >= {I2_TOTAL_VARIANTS_FLOOR} (I-2 floor); got {tv_value}"

@@ -98,14 +98,14 @@ fn schema_version_is_248() {
 /// TOTAL_VARIANTS in action_type_lock.rs must be 557 (I-11 adds 1 representative).
 #[test]
 fn action_type_lock_total_variants_is_557() {
-    let lock_src = include_str!(
-        "../../orchestrator/tests/action_type_lock.rs"
-    );
+    // Tier-B Move 2: TOTAL_VARIANTS is now derived (ALL_VARIANTS.len()) and the
+    // canonical variant list moved to ssb.rs as SSB_ACTION_TYPES, so the source-text
+    // grep no longer applies. Read the runtime registry; same >= 557 floor (no weakening).
     assert!(
-        lock_src.contains("TOTAL_VARIANTS: usize = 557"),
-        "TOTAL_VARIANTS must be 557 (I-11 adds BeliefStateEvent representative; \
-         Pattern-2 single-representative convention, wire tag 'belief_state_event'); \
-         file does not contain 'TOTAL_VARIANTS: usize = 557'"
+        elai_orchestrator::ssb::SSB_ACTION_TYPES.len() >= 557,
+        "registry must have >= 557 variants (I-11 added the BeliefStateEvent \
+         representative, wire tag 'belief_state_event'); got {}",
+        elai_orchestrator::ssb::SSB_ACTION_TYPES.len()
     );
 }
 

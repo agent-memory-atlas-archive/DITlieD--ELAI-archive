@@ -415,44 +415,21 @@ fn i41_e_schema_lock() {
          got {SCHEMA_VERSION_PUBLIC}"
     );
 
-    // action_type_lock.rs must declare TOTAL_VARIANTS >= 552 (I-41 floor).
-    // Uses parse-then-floor (A117) to avoid stale-anchor cascade on future TV bumps.
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| {
-            root.join("crates")
-                .join("orchestrator")
-                .join("tests")
-                .join("action_type_lock.rs")
-        })
-        .expect("resolve action_type_lock.rs path");
-    let body = std::fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-
+    // TOTAL_VARIANTS floor >= 552 (I-41) + CritiqueLensFinding registration.
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+    // SSB_ACTION_TYPES in ssb.rs), so read the runtime registry directly.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
     const I41_TV_FLOOR: usize = 552;
-    let tv_ok = {
-        let prefix = "const TOTAL_VARIANTS: usize = ";
-        body.lines().any(|line| {
-            if let Some(rest) = line.trim().strip_prefix(prefix) {
-                rest.trim_end_matches(';')
-                    .parse::<usize>()
-                    .map(|n| n >= I41_TV_FLOOR)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        })
-    };
     assert!(
-        tv_ok,
-        "action_type_lock.rs must declare TOTAL_VARIANTS: usize >= {I41_TV_FLOOR} (I-41 floor); \
-         file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES.len() >= I41_TV_FLOOR,
+        "TOTAL_VARIANTS must be >= {I41_TV_FLOOR} (I-41 floor); got {}",
+        SSB_ACTION_TYPES.len()
     );
     assert!(
-        body.contains("SsbActionType::CritiqueLensFinding"),
-        "ALL_VARIANTS must include CritiqueLensFinding; file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "critique_lens_finding"),
+        "SSB_ACTION_TYPES must include CritiqueLensFinding"
     );
 
     // Wire-tag round-trip: from_str -> as_sql_str.

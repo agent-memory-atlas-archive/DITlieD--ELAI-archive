@@ -203,24 +203,10 @@ fn d2d_topic_handle_exported_at_crate_root() {
 /// The const is declared as `const SCHEMA_VERSION: i64 = <N>;` in ssb.rs.
 #[test]
 fn d3_schema_version_at_least_227() {
-    let src = read_src("orchestrator/src/ssb.rs");
-    // Find the SCHEMA_VERSION const declaration line.
-    // Pattern: `const SCHEMA_VERSION: i64 = NNN;`
-    let line = src
-        .lines()
-        .find(|l| {
-            l.contains("SCHEMA_VERSION") && l.contains("i64") && l.contains("=")
-        })
-        .unwrap_or_else(|| panic!("const SCHEMA_VERSION: i64 = N not found in ssb.rs"));
-
-    // Extract the numeric value (after the last '=' before ';').
-    let value: i64 = line
-        .split('=')
-        .nth(1)
-        .and_then(|s| s.split(';').next())
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or_else(|| panic!("could not parse SCHEMA_VERSION from: {line}"));
-
+    // Tier-B Move 2 made SCHEMA_VERSION a derived expression
+    // (SCHEMA_VERSION_DDL_EPOCH + SSB_ACTION_TYPES.len()), so the source-text
+    // parse panics. Read the published runtime constant; same >= 227 floor.
+    let value = elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC;
     assert!(
         value >= 227,
         "SCHEMA_VERSION must be >= 227 (H-51 bump from 226), got {value}"

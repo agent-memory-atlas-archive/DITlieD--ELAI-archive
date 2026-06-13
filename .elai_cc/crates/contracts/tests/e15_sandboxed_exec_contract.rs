@@ -73,7 +73,8 @@ fn e15_contract_firecracker_pool_wired_into_task_runner() {
 
 #[test]
 fn e15_contract_six_ssb_payload_structs_present() {
-    let ssb_src = include_str!("../../orchestrator/src/ssb.rs");
+    // Tier-B Move 1 moved the typed payload structs into the ssb/payloads.rs submodule.
+    let ssb_src = include_str!("../../orchestrator/src/ssb/payloads.rs");
     let required_payloads = [
         "pub struct FirecrackerRestoreSlowPayload",
         "pub struct SnapshotUniquenessRegeneratedPayload",

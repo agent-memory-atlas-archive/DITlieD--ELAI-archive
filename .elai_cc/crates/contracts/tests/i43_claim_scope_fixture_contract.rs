@@ -75,45 +75,15 @@ fn schema_version_is_236() {
 /// action_type_lock.rs must declare TOTAL_VARIANTS: usize = 545 (543 + I-34 + I-38 + I-43).
 #[test]
 fn total_variants_is_545() {
-    let lock_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("contracts crate has a parent")
-        .join("orchestrator")
-        .join("tests")
-        .join("action_type_lock.rs");
-    let body = std::fs::read_to_string(&lock_path).unwrap_or_else(|e| {
-        panic!(
-            "cannot read action_type_lock.rs at {}: {e}",
-            lock_path.display()
-        )
-    });
     // Floor check: TOTAL_VARIANTS >= 545 (I-43 authoring floor: ClaimScopeMeasured
-    // added at 545; exact-pin converted per F-2 pin doctrine).
-    let total_variants_value: usize = body
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("const TOTAL_VARIANTS: usize = ") {
-                trimmed
-                    .trim_start_matches("const TOTAL_VARIANTS: usize = ")
-                    .trim_end_matches(';')
-                    .parse()
-                    .ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| panic!(
-            "could not parse TOTAL_VARIANTS from action_type_lock.rs at {}",
-            lock_path.display()
-        ));
+    // added at 545). Tier-B Move 2 derived TOTAL_VARIANTS and relocated
+    // ALL_VARIANTS (now SSB_ACTION_TYPES in ssb.rs), so read the runtime
+    // registry length instead of parsing action_type_lock.rs.
+    let total_variants_value = elai_orchestrator::ssb::SSB_ACTION_TYPES.len();
     assert!(
         total_variants_value >= 545,
-        "TOTAL_VARIANTS must be >= 545 (I-43 floor: ClaimScopeMeasured SSB lockstep); \
-         got {} in {}; body snippet: {}",
-        total_variants_value,
-        lock_path.display(),
-        &body[..body.len().min(200)]
+        "TOTAL_VARIANTS must be >= 545 (I-43 floor: ClaimScopeMeasured SSB lockstep); got {}",
+        total_variants_value
     );
 }
 

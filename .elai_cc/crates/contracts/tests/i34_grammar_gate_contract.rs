@@ -229,38 +229,14 @@ fn schema_version_is_234() {
 /// action_type_lock.rs declares TOTAL_VARIANTS >= 543 (floor from I-34; subsequent I-plans bump).
 #[test]
 fn total_variants_is_543() {
-    let lock_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("contracts crate has a parent")
-        .join("orchestrator")
-        .join("tests")
-        .join("action_type_lock.rs");
-    let body = std::fs::read_to_string(&lock_path)
-        .unwrap_or_else(|e| panic!("cannot read action_type_lock.rs at {}: {e}", lock_path.display()));
-    // Use a floor check so this contract stays valid after subsequent I-plan schema bumps.
-    let total_variants_value: usize = body
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("const TOTAL_VARIANTS: usize = ") {
-                trimmed
-                    .trim_start_matches("const TOTAL_VARIANTS: usize = ")
-                    .trim_end_matches(';')
-                    .parse()
-                    .ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| panic!(
-            "could not parse TOTAL_VARIANTS from action_type_lock.rs; file: {}",
-            lock_path.display()
-        ));
+    // Floor check (so this contract stays valid after subsequent I-plan bumps).
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+    // SSB_ACTION_TYPES in ssb.rs), so read the runtime registry length instead
+    // of parsing action_type_lock.rs.
+    let total_variants_value = elai_orchestrator::ssb::SSB_ACTION_TYPES.len();
     assert!(
         total_variants_value >= 543,
-        "TOTAL_VARIANTS must be >= 543 (I-34 floor: GrammarGateEvent added 1 wire tag at 543); \
-         got {} in {}",
-        total_variants_value,
-        lock_path.display()
+        "TOTAL_VARIANTS must be >= 543 (I-34 floor: GrammarGateEvent added 1 wire tag at 543); got {}",
+        total_variants_value
     );
 }

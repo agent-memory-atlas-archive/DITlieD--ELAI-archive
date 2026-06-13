@@ -435,35 +435,21 @@ fn i1_e_schema_lock() {
         "SCHEMA_VERSION_PUBLIC must be >= 239 (I-1 floor: DirectiveExecuted add); got {SCHEMA_VERSION_PUBLIC}"
     );
 
-    use std::fs;
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| {
-            root.join("crates")
-                .join("orchestrator")
-                .join("tests")
-                .join("action_type_lock.rs")
-        })
-        .expect("resolve action_type_lock.rs path");
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-    // Extract the numeric value from "pub const TOTAL_VARIANTS: usize = N;" and verify
-    // it is >= 549 (I-1 shipped the 549th variant; later sessions continue to grow it).
-    let tv_value: usize = body
-        .lines()
-        .find(|l| l.contains("TOTAL_VARIANTS") && l.contains("usize"))
-        .and_then(|l| l.split('=').nth(1))
-        .and_then(|rhs| rhs.trim().trim_end_matches(';').parse().ok())
-        .expect("TOTAL_VARIANTS: usize = N line must be present in action_type_lock.rs");
+    // Verify TOTAL_VARIANTS >= 549 (I-1 shipped the 549th variant; later
+    // sessions continue to grow it) + DirectiveExecuted registration.
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+    // SSB_ACTION_TYPES in ssb.rs), so read the runtime registry directly.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
+    let tv_value = SSB_ACTION_TYPES.len();
     assert!(
         tv_value >= 549,
-        "action_type_lock.rs TOTAL_VARIANTS must be >= 549 (I-1 floor: 547 + DirectiveExecuted + \
-         subsequent sessions continue to grow it); got {tv_value}; file: {}",
-        lock_rs.display()
+        "TOTAL_VARIANTS must be >= 549 (I-1 floor: 547 + DirectiveExecuted + \
+         subsequent sessions continue to grow it); got {tv_value}"
     );
     assert!(
-        body.contains("SsbActionType::DirectiveExecuted"),
-        "ALL_VARIANTS must include DirectiveExecuted; file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "directive_executed"),
+        "SSB_ACTION_TYPES must include DirectiveExecuted"
     );
 }

@@ -27,8 +27,6 @@
 //!   - crates/orchestrator/tests/action_type_lock.rs (TOTAL_VARIANTS pin)
 //!   - .claude/rules/tracing-test-assert.md (T-1: logs_contain MUST be in assert!)
 
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use elai_core::clock::OsClock;
@@ -82,35 +80,10 @@ fn h38_f1_stop_confirmation_event_exists_at_schema_217() {
         "stop_confirmation_event"
     );
 
-    // TOTAL_VARIANTS exact pin (528 = 527 + 1 H-38 variant).
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let elai_cc = workspace
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("contracts has 2-up parent (.elai_cc)");
-    let lock_rs = elai_cc
-        .join("crates")
-        .join("orchestrator")
-        .join("tests")
-        .join("action_type_lock.rs");
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-    // Floor check: TOTAL_VARIANTS >= 528 (H-38 authoring floor; exact-pin
-    // converted per F-2 pin doctrine so subsequent SSB bumps do not break this).
-    let total_variants_value: usize = body
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("const TOTAL_VARIANTS: usize = ") {
-                trimmed
-                    .trim_start_matches("const TOTAL_VARIANTS: usize = ")
-                    .trim_end_matches(';')
-                    .parse()
-                    .ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| panic!("could not parse TOTAL_VARIANTS from action_type_lock.rs"));
+    // TOTAL_VARIANTS floor (528 = 527 + 1 H-38 variant). Tier-B Move 2 derived
+    // TOTAL_VARIANTS and relocated ALL_VARIANTS (now SSB_ACTION_TYPES in
+    // ssb.rs), so read the runtime registry length. Same >= 528 floor.
+    let total_variants_value = elai_orchestrator::ssb::SSB_ACTION_TYPES.len();
     assert!(
         total_variants_value >= 528,
         "TOTAL_VARIANTS must be >= 528 (H-38 floor); got {total_variants_value}"

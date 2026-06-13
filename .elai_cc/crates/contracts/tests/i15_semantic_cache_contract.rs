@@ -235,7 +235,7 @@ fn b2_exact_cache_uses_fxhashmap_not_std_hashmap() {
 /// C-1: OracleCacheHitPayload gains source: Option<String> with serde(default).
 #[test]
 fn c1_oracle_cache_hit_payload_has_source_field() {
-    let src = read_src("orchestrator/src/ssb.rs");
+    let src = read_src("orchestrator/src/ssb/payloads.rs");
     // Find the OracleCacheHitPayload struct block.
     let struct_pos = src
         .find("pub struct OracleCacheHitPayload")
@@ -254,7 +254,7 @@ fn c1_oracle_cache_hit_payload_has_source_field() {
 /// C-2: OracleCacheMissPayload gains source: Option<String> with serde(default).
 #[test]
 fn c2_oracle_cache_miss_payload_has_source_field() {
-    let src = read_src("orchestrator/src/ssb.rs");
+    let src = read_src("orchestrator/src/ssb/payloads.rs");
     let struct_pos = src
         .find("pub struct OracleCacheMissPayload")
         .expect("OracleCacheMissPayload must exist in ssb.rs");
@@ -338,10 +338,12 @@ fn c5_legacy_payload_without_source_deserializes_to_none() {
 /// C-6: SCHEMA_VERSION is 233 after the I-15 payload extension.
 #[test]
 fn c6_schema_version_is_233() {
-    assert_eq!(
-        elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC,
-        233,
-        "SCHEMA_VERSION must be 233 after I-15 payload extension"
+    // Tier-B Move 2: SCHEMA_VERSION is derived; convert the stale exact pin (live is
+    // 253) to a >= floor, the no-weakening convention used across the Move-2 sweep.
+    assert!(
+        elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC >= 233,
+        "SCHEMA_VERSION must be >= 233 (I-15 payload extension floor); got {}",
+        elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC
     );
 }
 

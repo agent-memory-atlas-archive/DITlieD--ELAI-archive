@@ -259,50 +259,23 @@ fn i33_e_schema_lock() {
          got {SCHEMA_VERSION_PUBLIC}"
     );
 
-    use std::fs;
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| {
-            root.join("crates")
-                .join("orchestrator")
-                .join("tests")
-                .join("action_type_lock.rs")
-        })
-        .expect("resolve action_type_lock.rs path");
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
     // I-33 added GovernancePrimitiveFired -> TOTAL_VARIANTS must be >= 549.
-    // (Subsequent I-plans bump the value; we use a floor check so i33's contract
-    // stays valid after future schema bumps.)
-    let total_variants_value: usize = body
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("const TOTAL_VARIANTS: usize = ") {
-                trimmed
-                    .trim_start_matches("const TOTAL_VARIANTS: usize = ")
-                    .trim_end_matches(';')
-                    .parse()
-                    .ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| panic!(
-            "could not parse TOTAL_VARIANTS from action_type_lock.rs; file: {}",
-            lock_rs.display()
-        ));
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+    // SSB_ACTION_TYPES in ssb.rs), so read the runtime registry directly.
+    // Floor check so i33's contract stays valid after future schema bumps.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
+    let total_variants_value = SSB_ACTION_TYPES.len();
     assert!(
         total_variants_value >= 549,
         "TOTAL_VARIANTS must be >= 549 (I-33 floor: GovernancePrimitiveFired added 1 wire tag at 549); \
-         got {} in {}",
-        total_variants_value,
-        lock_rs.display()
+         got {}",
+        total_variants_value
     );
     assert!(
-        body.contains("SsbActionType::GovernancePrimitiveFired"),
-        "ALL_VARIANTS must include GovernancePrimitiveFired; file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "governance_primitive_fired"),
+        "SSB_ACTION_TYPES must include GovernancePrimitiveFired"
     );
 
     // Wire-tag round-trip via public from_str.

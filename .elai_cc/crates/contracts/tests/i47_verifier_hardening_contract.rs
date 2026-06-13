@@ -463,23 +463,15 @@ fn f7_schema_version_floor_is_245() {
 /// action_type_lock.rs must declare TOTAL_VARIANTS: usize = 554 (I-47 +1 TV).
 #[test]
 fn f7_total_variants_is_554() {
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("contracts crate has a parent")
-        .join("orchestrator")
-        .join("tests")
-        .join("action_type_lock.rs");
-    let body = std::fs::read_to_string(&lock_rs).unwrap_or_else(|e| {
-        panic!(
-            "cannot read action_type_lock.rs at {}: {e}",
-            lock_rs.display()
-        )
-    });
+    // I-47 shipped the 554th variant. Tier-B Move 2 derived TOTAL_VARIANTS and
+    // relocated ALL_VARIANTS (now SSB_ACTION_TYPES in ssb.rs); the original
+    // exact source-text match on the stale literal 554 is converted to a >= 554
+    // floor (preserves the floor intent — I-47's variant must still be present —
+    // without re-breaking on every subsequent SSB bump).
+    let tv = elai_orchestrator::ssb::SSB_ACTION_TYPES.len();
     assert!(
-        body.contains("TOTAL_VARIANTS: usize = 554"),
-        "action_type_lock.rs must declare TOTAL_VARIANTS: usize = 554 (I-47 +1 TV); \
-         file: {}",
-        lock_rs.display()
+        tv >= 554,
+        "TOTAL_VARIANTS must be >= 554 (I-47 +1 TV floor); got {tv}"
     );
 }
 

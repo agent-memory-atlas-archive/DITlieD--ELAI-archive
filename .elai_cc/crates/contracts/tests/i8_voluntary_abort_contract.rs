@@ -172,54 +172,22 @@ fn i8_f1_trajectory_aborted_exists_at_schema_238() {
 
 #[test]
 fn i8_f1_total_variants_pin_547() {
-    use std::fs;
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| {
-            root.join("crates")
-                .join("orchestrator")
-                .join("tests")
-                .join("action_type_lock.rs")
-        })
-        .expect("resolve action_type_lock.rs path");
-    assert!(
-        lock_rs.exists(),
-        "action_type_lock.rs must exist at {}",
-        lock_rs.display()
-    );
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-    // Floor check: TOTAL_VARIANTS >= 549 (I-8 authoring floor; I-1 DirectiveExecuted
-    // and later I-plan bumps supersede; exact-pin converted per F-2 pin doctrine).
-    let total_variants_value: usize = body
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("const TOTAL_VARIANTS: usize = ") {
-                trimmed
-                    .trim_start_matches("const TOTAL_VARIANTS: usize = ")
-                    .trim_end_matches(';')
-                    .parse()
-                    .ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| panic!(
-            "could not parse TOTAL_VARIANTS from action_type_lock.rs; file: {}",
-            lock_rs.display()
-        ));
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+    // SSB_ACTION_TYPES in ssb.rs), so read the runtime registry instead of
+    // parsing action_type_lock.rs. Same >= 549 floor + TrajectoryAborted
+    // presence guarantee.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
+    let total_variants_value = SSB_ACTION_TYPES.len();
     assert!(
         total_variants_value >= 549,
-        "TOTAL_VARIANTS must be >= 549 (I-8 floor: TrajectoryAborted bump + I-1 cascade); \
-         got {} in {}",
-        total_variants_value,
-        lock_rs.display()
+        "TOTAL_VARIANTS must be >= 549 (I-8 floor: TrajectoryAborted bump + I-1 cascade); got {}",
+        total_variants_value
     );
     assert!(
-        body.contains("SsbActionType::TrajectoryAborted"),
-        "ALL_VARIANTS must include TrajectoryAborted; file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "trajectory_aborted"),
+        "SSB_ACTION_TYPES must include TrajectoryAborted"
     );
 }
 
@@ -475,35 +443,10 @@ fn i8_f6_schema_lock() {
         "SCHEMA_VERSION_PUBLIC must be >= 238 (I-8 floor; I-1 bumped to 239); got {SCHEMA_VERSION_PUBLIC}"
     );
 
-    use std::fs;
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| {
-            root.join("crates")
-                .join("orchestrator")
-                .join("tests")
-                .join("action_type_lock.rs")
-        })
-        .expect("resolve action_type_lock.rs path");
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-    // Floor check: TOTAL_VARIANTS >= 549 (I-8 authoring floor; exact-pin converted
-    // per F-2 pin doctrine so subsequent I-plan bumps do not re-break this test).
-    let total_variants_value: usize = body
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("const TOTAL_VARIANTS: usize = ") {
-                trimmed
-                    .trim_start_matches("const TOTAL_VARIANTS: usize = ")
-                    .trim_end_matches(';')
-                    .parse()
-                    .ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| panic!("could not parse TOTAL_VARIANTS from action_type_lock.rs"));
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+    // SSB_ACTION_TYPES in ssb.rs), so read the runtime registry length. Same
+    // >= 549 floor.
+    let total_variants_value = elai_orchestrator::ssb::SSB_ACTION_TYPES.len();
     assert!(
         total_variants_value >= 549,
         "TOTAL_VARIANTS must be >= 549 (I-8 floor: TrajectoryAborted + I-1 DirectiveExecuted cascade); \

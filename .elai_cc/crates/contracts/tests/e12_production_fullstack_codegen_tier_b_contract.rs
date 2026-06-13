@@ -222,58 +222,36 @@ fn fifteen_production_checklist_runners_exist() {
 
 #[test]
 fn ssb_action_type_has_e12_variants() {
-    let path = workspace_root()
-        .join(".elai_cc")
-        .join("crates")
-        .join("orchestrator")
-        .join("src")
-        .join("ssb.rs");
-    let body = std::fs::read_to_string(&path).expect("ssb.rs readable");
+    // Tier-B split relocated the SsbActionType enum + as_sql_str out of
+    // src/ssb.rs (the wire-tag strings no longer live in that file), so the
+    // old source-text scan no longer finds them. Assert the variants are
+    // actually registered in SSB_ACTION_TYPES via their wire tags — tighter
+    // than a source grep and arm-shape-agnostic.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
     assert!(
-        body.contains("FrameworkProfileSelected"),
-        "SsbActionType::FrameworkProfileSelected variant required (E-12 Tier-B SCHEMA 128)"
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "framework_profile_selected"),
+        "SsbActionType::FrameworkProfileSelected must be registered (E-12 Tier-B)"
     );
     assert!(
-        body.contains("LegacyConfigStripped"),
-        "SsbActionType::LegacyConfigStripped variant required (E-12 Tier-B SCHEMA 128)"
-    );
-    assert!(
-        body.contains("\"framework_profile_selected\""),
-        "framework_profile_selected wire tag required in CHECK / as_sql_str / from_str"
-    );
-    assert!(
-        body.contains("\"legacy_config_stripped\""),
-        "legacy_config_stripped wire tag required in CHECK / as_sql_str / from_str"
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "legacy_config_stripped"),
+        "SsbActionType::LegacyConfigStripped must be registered (E-12 Tier-B)"
     );
 }
 
 #[test]
 fn ssb_schema_version_at_or_above_128() {
-    let path = workspace_root()
-        .join(".elai_cc")
-        .join("crates")
-        .join("orchestrator")
-        .join("src")
-        .join("ssb.rs");
-    let body = std::fs::read_to_string(&path).expect("ssb.rs readable");
-    // The const decl is `const SCHEMA_VERSION: i64 = NNN;`. Look
-    // for any value >= 128 on that line.
-    let mut found_at_least_128 = false;
-    for line in body.lines() {
-        if let Some(rest) = line.trim().strip_prefix("const SCHEMA_VERSION: i64 = ") {
-            let n: i64 = rest
-                .trim_end_matches(';')
-                .trim()
-                .parse()
-                .expect("SCHEMA_VERSION const must parse as i64");
-            if n >= 128 {
-                found_at_least_128 = true;
-            }
-        }
-    }
+    // Tier-B Move 2 made SCHEMA_VERSION a DERIVED expression
+    // (SCHEMA_VERSION_DDL_EPOCH + SSB_ACTION_TYPES.len()), so the old
+    // source-text strip_prefix + parse panics. Read the published runtime
+    // constant instead — same >= 128 floor, no source-text parse.
     assert!(
-        found_at_least_128,
-        "SCHEMA_VERSION must be >= 128 after E-12 Tier-B cascade"
+        elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC >= 128,
+        "SCHEMA_VERSION must be >= 128 after E-12 Tier-B cascade; got {}",
+        elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC
     );
 }
 

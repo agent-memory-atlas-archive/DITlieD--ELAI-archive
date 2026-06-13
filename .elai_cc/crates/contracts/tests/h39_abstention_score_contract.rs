@@ -86,51 +86,24 @@ fn h39_f1_abstention_scored_exists_at_schema_218() {
     );
 }
 
-// (F1 continued) TOTAL_VARIANTS pin.
-// Read action_type_lock.rs at runtime to avoid importing a private const.
+// (F1 continued) TOTAL_VARIANTS floor + AbstentionScored registration.
+// Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+// SSB_ACTION_TYPES in ssb.rs), so read the runtime registry instead of
+// parsing action_type_lock.rs.
 #[test]
 fn h39_f1_total_variants_pin_529() {
-    use std::fs;
-    let lock_rs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| {
-            root.join("crates")
-                .join("orchestrator")
-                .join("tests")
-                .join("action_type_lock.rs")
-        })
-        .expect("resolve action_type_lock.rs path");
-    assert!(
-        lock_rs.exists(),
-        "action_type_lock.rs must exist at {}",
-        lock_rs.display()
-    );
-    let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
-    // Floor check (A117): parse-then-floor avoids stale-anchor cascade on future TV bumps.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
     const H39_TV_FLOOR: usize = 529;
-    let tv_ok = {
-        let prefix = "const TOTAL_VARIANTS: usize = ";
-        body.lines().any(|line| {
-            if let Some(rest) = line.trim().strip_prefix(prefix) {
-                rest.trim_end_matches(';')
-                    .parse::<usize>()
-                    .map(|n| n >= H39_TV_FLOOR)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        })
-    };
     assert!(
-        tv_ok,
-        "TOTAL_VARIANTS must be >= {H39_TV_FLOOR} (H-39 floor); file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES.len() >= H39_TV_FLOOR,
+        "TOTAL_VARIANTS must be >= {H39_TV_FLOOR} (H-39 floor); got {}",
+        SSB_ACTION_TYPES.len()
     );
     assert!(
-        body.contains("SsbActionType::AbstentionScored"),
-        "ALL_VARIANTS must include AbstentionScored; file: {}",
-        lock_rs.display()
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "abstention_scored"),
+        "SSB_ACTION_TYPES must include AbstentionScored"
     );
 }
 

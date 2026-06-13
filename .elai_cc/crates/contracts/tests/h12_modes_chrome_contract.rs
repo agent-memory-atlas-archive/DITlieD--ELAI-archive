@@ -226,30 +226,18 @@ fn h12_e_schema_version_and_total_variants_unchanged() {
         elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC
     );
 
-    // TOTAL_VARIANTS check via the action_type_lock golden file.
+    // TOTAL_VARIANTS check via the runtime registry.
     // H-11 shipped TOTAL_VARIANTS=497; H-13 added CanvasOpApplied (498).
     // H-12 added nothing. Assert monotonic >= 497 rather than == 497.
-    let lock_path = action_type_lock_path();
-    let lock_content = read_file(&lock_path);
-    let has_497_or_more = lock_content.contains("const TOTAL_VARIANTS: usize = 497")
-        || lock_content.contains("const TOTAL_VARIANTS: usize = 498")
-        || {
-            // Parse the actual value for future bumps beyond 498.
-            let prefix = "const TOTAL_VARIANTS: usize = ";
-            lock_content.lines().any(|line| {
-                if let Some(rest) = line.trim().strip_prefix(prefix) {
-                    let n: usize = rest.trim_end_matches(';').parse().unwrap_or(0);
-                    n >= 497
-                } else {
-                    false
-                }
-            })
-        };
+    // Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS (now
+    // SSB_ACTION_TYPES in ssb.rs), so the source-text scan no longer applies;
+    // read the live registry length. Same >= 497 floor.
+    let has_497_or_more = elai_orchestrator::ssb::SSB_ACTION_TYPES.len() >= 497;
     assert!(
         has_497_or_more,
-        "H-12 (e): action_type_lock.rs TOTAL_VARIANTS must be >= 497 \
-         (H-12 adds no new SSB action_type; H-11 baseline was 497). Lock file: {}",
-        lock_path.display()
+        "H-12 (e): SSB_ACTION_TYPES.len() (TOTAL_VARIANTS) must be >= 497 \
+         (H-12 adds no new SSB action_type; H-11 baseline was 497). Got {}",
+        elai_orchestrator::ssb::SSB_ACTION_TYPES.len()
     );
 }
 

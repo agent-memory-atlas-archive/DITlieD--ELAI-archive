@@ -167,18 +167,10 @@ fn d2_prebind_disabled_kill_switch() {
 /// D3: ssb.rs SCHEMA_VERSION must be >= 229 (H-53 bump from 228).
 #[test]
 fn d3_schema_version_at_least_229() {
-    let ssb_src = read_src("orchestrator/src/ssb.rs");
-
-    let marker = "const SCHEMA_VERSION: i64 = ";
-    let pos = ssb_src
-        .find(marker)
-        .unwrap_or_else(|| panic!("SCHEMA_VERSION constant not found in ssb.rs"));
-    let tail = &ssb_src[pos + marker.len()..];
-    let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let version: i64 = digits
-        .parse()
-        .unwrap_or_else(|_| panic!("could not parse SCHEMA_VERSION number: '{digits}'"));
-
+    // Tier-B Move 2 made SCHEMA_VERSION a derived expression (the chars after
+    // the marker are no longer digits), so the source-text parse panics. Read
+    // the published runtime constant; same >= 229 floor.
+    let version = elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC;
     assert!(
         version >= 229,
         "SCHEMA_VERSION must be >= 229 (H-53 target), got {version}"

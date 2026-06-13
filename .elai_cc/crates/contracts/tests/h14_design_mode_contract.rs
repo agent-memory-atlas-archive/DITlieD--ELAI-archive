@@ -476,58 +476,40 @@ fn h14_no_new_ssb_action_type_schema_unchanged() {
         elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC
     );
 
-    // Source-grep action_type_lock.rs to verify TOTAL_VARIANTS >= 499 and
-    // that no design_*_applied SsbActionType was added.
-    let lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("contracts parent")
-        .join("orchestrator")
-        .join("tests")
-        .join("action_type_lock.rs");
-
-    let body = std::fs::read_to_string(&lock_path)
-        .expect("action_type_lock.rs must be readable");
+    // Verify TOTAL_VARIANTS >= 499 and that no design_*_applied SsbActionType
+    // was added. Tier-B Move 2 derived TOTAL_VARIANTS and relocated ALL_VARIANTS
+    // (now SSB_ACTION_TYPES in ssb.rs), so check the runtime registry directly.
+    use elai_orchestrator::ssb::SSB_ACTION_TYPES;
 
     // TOTAL_VARIANTS >= 499 (H-15 baseline; H-14 adds 0).
-    // BRITTLE_GLOBAL_SCHEMA_PIN fix: pure floor parse — no exact-string branch
-    // that becomes dead code after subsequent H-N bumps (H-17 -> 500, etc.).
     const H14_TV_FLOOR: usize = 499;
-    let tv_ok = {
-        let prefix = "const TOTAL_VARIANTS: usize = ";
-        body.lines().any(|line| {
-            if let Some(rest) = line.trim().strip_prefix(prefix) {
-                rest.trim_end_matches(';')
-                    .parse::<usize>()
-                    .map(|n| n >= H14_TV_FLOOR)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        })
-    };
     assert!(
-        tv_ok,
-        "TOTAL_VARIANTS must be >= {} (H-14 adds 0 new SSB variants; floor assertion)",
-        H14_TV_FLOOR
+        SSB_ACTION_TYPES.len() >= H14_TV_FLOOR,
+        "TOTAL_VARIANTS must be >= {} (H-14 adds 0 new SSB variants; floor assertion); got {}",
+        H14_TV_FLOOR,
+        SSB_ACTION_TYPES.len()
     );
 
     // CanvasOpApplied must be present (the transport H-14 rides).
     assert!(
-        body.contains("CanvasOpApplied"),
-        "CanvasOpApplied must be in ALL_VARIANTS (H-14 design ops ride it per GD-1)"
+        SSB_ACTION_TYPES
+            .iter()
+            .any(|v| v.as_sql_str() == "canvas_op_applied"),
+        "CanvasOpApplied must be in SSB_ACTION_TYPES (H-14 design ops ride it per GD-1)"
     );
 
-    // No design-specific new action_type variants.
-    let forbidden_variants = [
-        "DesignPreviewStarted",
-        "DesignNavEdgeAdded",
-        "DesignOidTagged",
-        "DesignPageNodeCreated",
+    // No design-specific new action_type variants: their would-be wire tags
+    // must be absent from the registry.
+    let forbidden_wire_tags = [
+        "design_preview_started",
+        "design_nav_edge_added",
+        "design_oid_tagged",
+        "design_page_node_created",
     ];
-    for v in &forbidden_variants {
+    for tag in &forbidden_wire_tags {
         assert!(
-            !body.contains(v),
-            "H-14 must NOT add new SsbActionType '{v}' (GD-1: rides canvas_op_applied)"
+            !SSB_ACTION_TYPES.iter().any(|v| v.as_sql_str() == *tag),
+            "H-14 must NOT add new SsbActionType '{tag}' (GD-1: rides canvas_op_applied)"
         );
     }
 }
