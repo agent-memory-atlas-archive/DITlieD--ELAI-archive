@@ -451,6 +451,10 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         interactive_gate: None,
         // F-1 B2: legacy contract path -- seed integrity defaults to ok.
         vibegate_seed_ok: true,
+        // P0-2: legacy contract path -- no reflection client in pre-P0 tests.
+        reflection_client: None,
+        // P0-1: legacy contract path -- no adversary runtime in pre-P0 tests.
+        adversary_runtime: None,
     };
     let cfg_none = apply_task_runner_wiring(root.join("cursor.json"), &wiring_none);
     assert!(
@@ -484,6 +488,10 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         interactive_gate: None,
         // F-1 B2: legacy contract path -- seed integrity defaults to ok.
         vibegate_seed_ok: true,
+        // P0-2: legacy contract path -- no reflection client in pre-P0 tests.
+        reflection_client: None,
+        // P0-1: legacy contract path -- no adversary runtime in pre-P0 tests.
+        adversary_runtime: None,
     };
     let cfg_inter = apply_task_runner_wiring(root.join("cursor.json"), &wiring_inter);
     let gate = cfg_inter
@@ -518,6 +526,10 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         interactive_gate: None,
         // F-1 B2: legacy contract path -- seed integrity defaults to ok.
         vibegate_seed_ok: true,
+        // P0-2: legacy contract path -- no reflection client in pre-P0 tests.
+        reflection_client: None,
+        // P0-1: legacy contract path -- no adversary runtime in pre-P0 tests.
+        adversary_runtime: None,
     };
     let cfg_auto = apply_task_runner_wiring(root.join("cursor.json"), &wiring_auto);
     let gate_auto = cfg_auto

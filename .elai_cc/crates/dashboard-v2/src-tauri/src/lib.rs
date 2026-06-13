@@ -405,6 +405,17 @@ mod commands_g7;
 // entrypoint (W-2, no ELAI_*_ENABLE gate; Tier-2 dynamic arm is RunPod-gated).
 // cross-lang-pair: dashboard/tauri/api.
 mod commands_g6;
+// I-38 / SCHEMA_VERSION 235: QdeltaPanel (get_qdelta_latest command).
+// Reads the most recent qdelta_measured flat-beacon row emitted by
+// `elai bench qdelta`. Surfaces QDELTA + paired 95% CI + corpus_blake3 +
+// runpod_pending. The bench command IS the entrypoint (W-2, no gate).
+// Live-model leg deferred (D-026). cross-lang-pair: dashboard/tauri/api.
+mod commands_i38;
+// I-33 / SCHEMA_VERSION 240: GovernancePrimitiveFired rows from
+// `elai bench governance-probe` or governed_prompt_decision production caller.
+// Surfaces CDL / DIU / FSR governance metrics in GovernanceMetricsChip.
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_i33;
 // G-10 / SCHEMA_VERSION 218: ModelDriftPanel (get_model_drift_status command).
 // Reads the most recent model_drift_suspected Pattern-2 beacon row emitted at
 // `elai run` exit or `elai model-drift check`. Surfaces identity_key + kind +
@@ -1345,6 +1356,14 @@ pub fn run() {
             // Surfaces the derived SAFEDELTA + 95% CI + per-CWE + corpus_blake3 + runpod_pending.
             // cross-lang-pair: dashboard/tauri/api.
             commands_g6::get_safety_delta_latest,
+            // I-38 (SCHEMA_VERSION 235): qdelta_measured rows from `elai bench qdelta`.
+            // Surfaces QDELTA + paired 95% CI + corpus_blake3 + runpod_pending.
+            // Live-model leg deferred (D-026). cross-lang-pair: dashboard/tauri/api.
+            commands_i38::get_qdelta_latest,
+            // I-33 (SCHEMA_VERSION 240): governance_primitive_fired rows.
+            // Aggregates CDL / DIU / FSR governance metrics for GovernanceMetricsChip.
+            // cross-lang-pair: dashboard/tauri/api.
+            commands_i33::get_governance_metrics,
             // G-10 (SCHEMA_VERSION 218): model_drift_suspected rows from `elai run` exit or
             // `elai model-drift check`. Surfaces identity_key + drift kind + signals +
             // per-family delta + affected template ids + fingerprint-confirmed/behavioral badge.

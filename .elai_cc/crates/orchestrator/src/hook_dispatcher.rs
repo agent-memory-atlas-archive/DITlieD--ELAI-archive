@@ -489,6 +489,16 @@ pub trait HookDispatcher: Send + Sync {
     ) -> Option<ShortCoderOutcome> {
         None
     }
+
+    /// I-1: expose the installed directive supervisor so the task_runner can
+    /// route production side effects through `Supervisor::execute_directive`.
+    /// Default returns `None`; `InProcessHookDispatcher` overrides to return
+    /// the supervisor it holds (the same instance that `run_gates` delegates
+    /// to during `dispatch_pre_tool_use`). Callers holding an
+    /// `Arc<dyn HookDispatcher>` can call this without downcasting.
+    fn supervisor(&self) -> Option<Arc<dyn crate::directive::Supervisor>> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +594,16 @@ pub struct InProcessHookDispatcher {
     /// gracefully — a missing ledger is not an error, just means no cloud
     /// spend recorded yet). Pattern mirrors `vibegate_ssb` at :520.
     stop_cost_ssb: Option<(Arc<Ssb>, String)>,
+    /// I-1: optional directive supervisor. When `Some`, the E-30 argv gate AND
+    /// the F-1 VibeGate inside `dispatch_pre_tool_use` are DELEGATED to
+    /// `Supervisor::run_gates` — the inline calls are REPLACED, not stacked, so
+    /// exactly ONE gate path fires per invocation (the double-gate hazard the
+    /// i1 contract pins). The G-3 blast-radius gates run inside the supervisor
+    /// too (an addition; they were never inline). `None` preserves the legacy
+    /// inline E-30 + F-1 path verbatim (every existing caller that has not
+    /// installed a supervisor sees zero behavioral change). The F-9
+    /// dep_writetime_gate is NOT in the supervisor scope and always runs inline.
+    supervisor: Option<Arc<dyn crate::directive::Supervisor>>,
 }
 
 impl InProcessHookDispatcher {
@@ -617,6 +637,7 @@ impl InProcessHookDispatcher {
             dep_writetime_gate: None,
             stop_confirm_gate: None,
             stop_cost_ssb: None,
+            supervisor: None,
         }
     }
 
@@ -722,6 +743,53 @@ impl InProcessHookDispatcher {
     ) -> Self {
         self.stop_cost_ssb = Some((writer, db_path.into()));
         self
+    }
+
+    /// I-1: install the directive supervisor. When installed,
+    /// `dispatch_pre_tool_use` DELEGATES the E-30 argv gate and the F-1
+    /// VibeGate to `Supervisor::run_gates` (replacing the inline calls so
+    /// exactly one gate path fires per op), and the supervisor additionally
+    /// runs the G-3 blast-radius gates. Without it, the legacy inline E-30 +
+    /// F-1 path runs unchanged. Production callers install via
+    /// `build_production_hook_dispatcher`; contract tests pass a fixture
+    /// `InProcessSupervisor`.
+    #[must_use]
+    pub fn with_supervisor(mut self, supervisor: Arc<dyn crate::directive::Supervisor>) -> Self {
+        self.supervisor = Some(supervisor);
+        self
+    }
+
+    /// Returns true when the I-1 directive supervisor is installed.
+    #[must_use]
+    pub fn has_supervisor(&self) -> bool {
+        self.supervisor.is_some()
+    }
+
+    /// I-1: project a [`HookInvocation`] into a [`crate::directive::Directive`]
+    /// for the supervisor gate chain. The hook invocation carries the same
+    /// fields the inline E-30/F-1 gates read (action_type as tool_name, source
+    /// + file_path as args); the directive is the pure value the supervisor
+    /// gate-checks. `intent_id` reuses the invocation's step_id for trace
+    /// correlation; `initiator` is the canonical runner agent id.
+    fn directive_from_invocation(invocation: &HookInvocation<'_>) -> crate::directive::Directive {
+        let mut args = serde_json::Map::new();
+        if let Some(source) = invocation.source {
+            // The bash gate reads args.command; the fs/vibe gates read
+            // args.source / args.path. Populate all three from the single
+            // source string so each gate finds its input (the inline path read
+            // the same `source` for both argv and vibe).
+            args.insert("command".into(), serde_json::Value::String(source.to_owned()));
+            args.insert("source".into(), serde_json::Value::String(source.to_owned()));
+        }
+        if let Some(file_path) = invocation.file_path {
+            args.insert("path".into(), serde_json::Value::String(file_path.to_owned()));
+        }
+        crate::directive::Directive::new(
+            invocation.action_type,
+            serde_json::Value::Object(args),
+            invocation.step_id.clone(),
+            crate::task_runner::RUNNER_AGENT_ID,
+        )
     }
 
     /// Batch 2A — construct with a ShortCoder PostToolUse hook installed.
@@ -1100,12 +1168,23 @@ impl HookDispatcher for InProcessHookDispatcher {
         Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
     > {
         Box::pin(async move {
-            // E-30: Non-LLM argv allowlist check (T1, <1ms).
-            // Runs BEFORE the tiered analysis pass so it cannot be bypassed
-            // by an LLM jailbreak of the prompt-level refusal.
-            // Fires only when the caller signals a shell tool invocation via
-            // the canonical action_type "bash_tool_use".
-            if invocation.action_type == BASH_TOOL_USE_ACTION {
+            // I-1 directive supervisor delegation. When a supervisor is
+            // installed, the E-30 argv gate + the F-1 VibeGate are evaluated
+            // ONCE by `Supervisor::run_gates` (which also adds the G-3
+            // blast-radius gates). The inline E-30 block below and the inline
+            // `evaluate_vibegate` call further down are SKIPPED in that case so
+            // exactly one gate path fires per op (the double-gate hazard). The
+            // supervisor's findings are routed through the SAME seed-integrity
+            // override + VibeGateBlocked SSB emission bookkeeping as the inline
+            // path, so observable behavior is identical save for the single
+            // evaluation. `None` preserves the legacy inline path verbatim.
+            let supervised_gate = match self.supervisor.as_ref() {
+                Some(sup) => Some(sup.run_gates(&Self::directive_from_invocation(&invocation))),
+                None => None,
+            };
+
+            // E-30 inline path: only when NOT delegating to a supervisor.
+            if supervised_gate.is_none() && invocation.action_type == BASH_TOOL_USE_ACTION {
                 if let Some(source) = invocation.source {
                     let argv: Vec<OsString> = source
                         .split_whitespace()
@@ -1161,6 +1240,16 @@ impl HookDispatcher for InProcessHookDispatcher {
                 }
             }
 
+            // I-1 supervised E-30 + G-3 short-circuit. When delegating, a Block
+            // in the supervisor gate output (E-30 Deny or G-3 boundary cross)
+            // early-returns exactly as the inline E-30 Deny did — the side
+            // effect is refused fail-closed before the tiered pass.
+            if let Some(gate) = supervised_gate.as_ref() {
+                if gate.blocked {
+                    return Ok(gate.findings.clone());
+                }
+            }
+
             // F-1 VibeGate: compound security evaluator.
             // Runs AFTER the E-30 argv check (which early-returns on Deny).
             // evaluate_vibegate is infallible; findings are merged into the
@@ -1187,11 +1276,17 @@ impl HookDispatcher for InProcessHookDispatcher {
                 let source = invocation.source.unwrap_or("");
                 let file_path = invocation.file_path.unwrap_or("");
                 let tool_name = invocation.action_type;
-                let vibe_findings = crate::vibegate::evaluate_vibegate(
-                    tool_name,
-                    source,
-                    file_path,
-                );
+                // I-1: when delegating, the supervisor already evaluated F-1
+                // (and E-30 + G-3) in `run_gates`; reuse those findings so
+                // `evaluate_vibegate` is NOT called a second time (single gate
+                // path). The early-return above already consumed any Block, so
+                // the remaining supervised findings are the Warn/info gate
+                // output that feeds the same seed-override + SSB bookkeeping as
+                // the inline `evaluate_vibegate` result. `None` = inline path.
+                let vibe_findings = match supervised_gate.as_ref() {
+                    Some(gate) => gate.findings.clone(),
+                    None => crate::vibegate::evaluate_vibegate(tool_name, source, file_path),
+                };
 
                 // Seed-integrity fail-closed override: if the seed check ran and
                 // failed, inject a synthetic Block regardless of vibe findings.
@@ -1252,6 +1347,31 @@ impl HookDispatcher for InProcessHookDispatcher {
                 }
             }
 
+            // I-35: push a HistoryEntry after each completed dispatch cycle so the
+            // sequence gate sees a complete ordered record of prior tool invocations.
+            // Outcome is "blocked" when any Block finding was produced; "allowed" otherwise.
+            // This is the sole push site — the supervisor trait default is a no-op so
+            // callers without a supervisor installed are unaffected.
+            if let Some(sup) = self.supervisor.as_ref() {
+                let outcome_str = if findings.iter().any(|f| f.is_block()) {
+                    "blocked"
+                } else {
+                    "allowed"
+                };
+                let tool_class =
+                    crate::tool_sequence::tool_class_from_action_type(invocation.action_type);
+                let ts_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let entry = crate::tool_sequence::HistoryEntry::new(
+                    tool_class,
+                    ts_ms,
+                    outcome_str,
+                );
+                sup.push_history_entry(&entry);
+            }
+
             Ok(findings)
         })
     }
@@ -1290,6 +1410,14 @@ impl HookDispatcher for InProcessHookDispatcher {
     ) -> Option<ShortCoderOutcome> {
         // Forward to the inherent method defined on `InProcessHookDispatcher`.
         InProcessHookDispatcher::shortcode(self, source, file_path)
+    }
+
+    /// I-1: expose the installed supervisor so the task_runner can call
+    /// `Supervisor::execute_directive` at the production tool-dispatch seam.
+    /// Mirrors the shape of `shortcode` above — the Arc is cloned so the
+    /// caller gets an owned handle without breaking shared ownership.
+    fn supervisor(&self) -> Option<Arc<dyn crate::directive::Supervisor>> {
+        self.supervisor.clone()
     }
 
     fn dispatch_stop<'a>(

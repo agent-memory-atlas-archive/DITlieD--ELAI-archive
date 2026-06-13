@@ -404,6 +404,27 @@ expiry_date       = "2026-09-01"
 promotion_plan_id = "C-34-activation"
 smoke_test        = "crates/contracts/tests/c34_empire_integration_contract.rs::c34_contract_empire_toml_section_default_shape"
 
+# ---- P0-1 PARITY-P0 WAVE (session A63-PARITY-P0-EXECUTE) ----
+# ELAI_ALLOW_CLOUD_ADVERSARY is the P0-1 boot-time opt-in that lets
+# build_task_runner_wiring construct a CloudAdversary (AnthropicClient-backed).
+# Default-OFF is the CORRECT posture: it requires a second API provider
+# credential (ANTHROPIC_API_KEY in the env) AND a cross-family pool (route_cross_family
+# must succeed). Single-provider deploys (local-only Sidecar) must not see a panic
+# at boot from a missing key. The experiment gate stays OFF until the operator
+# explicitly opts in; promotion to ON-by-default lands in D-13's follow-on ticket
+# once two measured cross-family adversarial validation runs are logged to ssb.db.
+# smoke_test drives the adversary contract tests that verify the wiring landmarks
+# (source-scan that route_cross_family has a production caller AND CloudAdversary
+# impl exists). NOTE: added by an executing run -- trips gate_freeze_check.py
+# until re-locked out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_ALLOW_CLOUD_ADVERSARY"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "D-13-followup"
+smoke_test        = "crates/contracts/tests/adversary_contract.rs::route_cross_family_is_production_callable"
+
 # ---- B-PLAN R9 RECONCILIATION (session s-plan-audit-2026-06-04, B-plan FINISH) ----
 # Registers the default-OFF flags surfaced by the B-plan completion audit
 # (B-plan-FINISH.md "R9 ALLOWLIST GAPS"). Each row carries all six required
@@ -1483,6 +1504,90 @@ expiry_date       = "2027-01-01"
 promotion_plan_id = "H-51"
 smoke_test        = "cargo test -p elai-orchestrator handoff_lifecycle"
 
+# ---- E-PLAN R9 CLOSURE 2026-06-12 (s-107b022a sweep) ----
+# Settles the open R9 gaps surfaced in W-RT-E1/W-RT-E2 for E-27/E-28/E-29/E-32.
+# Method per flag: grep live source -> classify -> active|commented|D-019 comment.
+# R1-honest: commented rows carry explicit "no ON-path smoke" notes; no vapor rows.
+# D-019 VALUE-SELECTOR REGISTRY (R9 N/A-by-design): flags below this note are
+# plain value-selectors or endpoint strings with a sane default — they select
+# behavior among already-wired code paths rather than gate a new feature OFF.
+# Per orchestrator ruling D-019, R9 does not apply to these.
+#
+# D-019: ELAI_YARN_BOOT_FACTOR (E-28) — numeric YaRN scaling factor passed to
+#   apply_yarn_rope_scaling_at_boot; harness-only helper (never runs on live boot;
+#   live boot uses refuse_yarn_at_boot per E-32-decisions.md). Read site:
+#   python/elai_inference/server.py:1492 (docstring; value consumed by caller as fn arg,
+#   not os.getenv — the factor is passed as a Python float). No gate-read fn exists;
+#   not an env-switch, just a documented caller convention. R9 N/A.
+#   NOTE: W-RT-E2 named this "ELAI_YARN_FACTOR"; live shipped name is ELAI_YARN_BOOT_FACTOR
+#   per the rename dictionary in that report.
+#
+# D-019: ELAI_OTEL_TRACE_CONTENT (E-29) — content-privacy toggle; default-OFF suppresses
+#   prompt/completion bodies on OTel surfaces (matches OpenLLMetry TRACELOOP_TRACE_CONTENT).
+#   Read site: crates/orchestrator/src/observability/mod.rs:107 (otel_trace_content_enabled).
+#   The OTLP export feature is always built; this controls redaction, not feature activation.
+#   R9 N/A.
+#
+# D-019: ELAI_OTLP_ENDPOINT (E-29) — OTLP gRPC endpoint URL string (e.g. http://127.0.0.1:4317).
+#   Read site: crates/orchestrator/src/observability/mod.rs:118 (ELAI_OTLP_ENDPOINT_VAR);
+#   crates/ssb-otel-export/src/lib.rs:278. When unset = no-op exporter; when set = exports
+#   to that endpoint. Config string, not a feature gate. R9 N/A.
+#
+# D-019: ELAI_QUANT_BACKEND (E-27) — value-enum nf4|awq|fp16 (default nf4). Read site:
+#   python/elai_inference/server.py:2026. Selects quantization method among already-wired
+#   paths; awq path is RUNPOD-pending but fp16/nf4 are live. R9 N/A. The commented-out row
+#   below (from prior wave) remains correctly deferred; this D-019 note supersedes it.
+
+# E-28: ELAI_YARN_EVAL_GATE — gates the harness-only apply_yarn_rope_scaling_at_boot helper
+# (python/elai_inference/server.py:1520 os.getenv check). The live boot path ALWAYS calls
+# refuse_yarn_at_boot instead (E-32 policy); this gate only allows the factor-sweep test
+# harness to inject rope_scaling for eval. Default-OFF is correct R9 experiment posture;
+# must promote-or-die once the YaRN eval shows sufficient recall uplift on Qwen2.5-7B.
+# smoke_test drives the ELAI_YARN_EVAL_GATE=1 ON-path and asserts the gate is enforced
+# (the refusal path when the gate is unset, and the injection path when set).
+[[flag]]
+name              = "ELAI_YARN_EVAL_GATE"
+type              = "experiment"
+owner             = "s-107b022a-sweep"
+expiry_date       = "2026-09-12"
+promotion_plan_id = "E-28"
+smoke_test        = "python/elai_inference/test_e28_attention_contract.py::test_apply_yarn_rope_scaling_refuses_without_eval_gate"
+
+# E-32: ELAI_FITM_ENABLED — gates the FoundInTheMiddleCalibrator LogitsProcessor for
+# >8K-token prompts (python/elai_inference/server.py:4897 os.getenv check).
+# R1-honest: NO ON-path behavioral smoke exists yet. fitm_ssb_contract.rs tests the
+# SSB schema round-trip only (compile-time, not runtime emission). A live behavioral
+# test that sets ELAI_FITM_ENABLED=1 and asserts a fitm_calibration_applied SSB row
+# lands in ssb.db requires GPU (RUNPOD-pending). Row commented-out per R1 fail-closed.
+# Uncomment when python/elai_inference/tests/test_fitm_on_path.py ships + RunPod lane active.
+# [[flag]]
+# name              = "ELAI_FITM_ENABLED"
+# type              = "experiment"
+# owner             = "s-107b022a-sweep"
+# expiry_date       = "2026-09-12"
+# promotion_plan_id = "E-32"
+# smoke_test        = "python/elai_inference/tests/test_fitm_on_path.py::fitm_calibration_applied_row_lands_in_ssb"
+
+# E-32: ELAI_DEEP_MODE — activates the Qwen2.5-7B-Instruct-1M at 64K ctx cap when
+# VRAM >= 24 GB (python/elai_inference/server.py:1279 os.getenv check). fitm_ssb_contract.rs
+# has deep_mode_activated_round_trips but that is a schema-only test (no live SSB write).
+# R1-honest: NO ON-path behavioral smoke exists. A live behavioral test that sets
+# ELAI_DEEP_MODE=1 on a 24+ GB host and asserts deep_mode_activated SSB row lands requires
+# GPU (RUNPOD-pending). Row commented-out per R1 fail-closed.
+# Uncomment when python/elai_inference/tests/test_deep_mode_on_path.py ships + RunPod lane active.
+# [[flag]]
+# name              = "ELAI_DEEP_MODE"
+# type              = "experiment"
+# owner             = "s-107b022a-sweep"
+# expiry_date       = "2026-09-12"
+# promotion_plan_id = "E-32"
+# smoke_test        = "python/elai_inference/tests/test_deep_mode_on_path.py::deep_mode_activated_row_lands_in_ssb"
+
+# E-28: ELAI_STREAMING_LLM_SINKS — NOT FOUND in live .elai_cc source (searched python/ +
+# crates/; 0 matches). W-RT-E2 listed this name from the plan spec; the shipped code does not
+# contain this env var. No gate-read exists -> no R9 exemption row added. If the flag was
+# renamed or dropped, update the W-RT-E2 RENAMES FOUND block and re-run this sweep.
+
 # ---- CANDIDATES TO TRIAGE ----
 # Known existing default-OFF flags (grounded from CLAUDE.md). Each is wire-dark today.
 # Fill expiry_date + a real ON-path smoke_test, confirm type/owner, then move the row
@@ -1519,3 +1624,65 @@ smoke_test        = "cargo test -p elai-orchestrator handoff_lifecycle"
 # expiry_date       = "TODO"
 # promotion_plan_id = "E-31"
 # smoke_test        = "TODO"
+
+# I-33 (SCHEMA_VERSION 240): production seed injection for CommitRevealRecord.
+# The --seed CLI flag supplies the bench seed; production seed source is PENDING (U-2, D-4).
+# This flag is a kill-switch to bypass governance in an emergency; the ON path (governance
+# active) is the DEFAULT state. Kill-switch only fires when explicitly set.
+[[flag]]
+name              = "ELAI_GOVERNANCE_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "I-33-via-E-25"
+smoke_test        = "crates\\contracts\\tests\\i33_governance_contract.rs::i33_d_governed_prompt_decision_wired_from_bench_entry"
+
+# I-41 (SCHEMA_VERSION 243): spec-time critique lenses (L1-L8). Advisory-only;
+# zero path to any gate/verdict. Finds are emitted as CritiqueLensFinding SSB
+# rows (advisory=true). Default-OFF to avoid LLM calls on every spec; promote
+# once advisory noise is calibrated in production.
+[[flag]]
+name              = "ELAI_CRITIQUE_LENSES_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "I-41"
+smoke_test        = "crates\\contracts\\tests\\i41_critique_lenses_contract.rs::i41_zero_gate_verdict_rows_after_lens_run"
+
+# I-41 framing surface: run_critic_loop is called from frame_idea with runtime=None
+# (frame_idea has no RuntimeAdapter parameter). The advisory LensSet::run therefore
+# never fires on the idea-framing path.  Promote when I-42 wires a runtime into the
+# framing call chain so frame_idea can pass a real adapter.
+[[flag]]
+name              = "WIRE-DARK[i41-framing-surface]"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "I-42"
+smoke_test        = "crates/contracts/tests/i41_critique_lenses_contract.rs::i41_a_planted_assumption_produces_advisory_finding"
+
+# I-13: write-time memory guard (Stage-2 aho-corasick invisible-Unicode + confusable scan).
+# Default-OFF until GD-4 FP-rate bound established on >=3 real runs (I-13 plan constraint).
+# Production write paths: user_memory_capture.rs CHOKEPOINT 1 + memory_cmd.rs CHOKEPOINT 2.
+[[flag]]
+name              = "ELAI_MEMORY_GUARD_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "I-13-gd4-promotion"
+smoke_test        = "crates/contracts/tests/i13_memory_guard_contract.rs::i13_chokepoint1_invisible_unicode_blocked"
+
+# I-17 (SCHEMA_VERSION 252): tri-layer evaluation stack per-branch verdict.
+# The verifier_stack (D-11 + F-1 + F-9 at L1 / I-23 at L2 / D-13 at L3) emits
+# TriLayerVerdict SSB rows and (when enabled) installs the I-8 halting-bound
+# watchdog in drive_task. Default-OFF until the I-4 SearchLadder (Wave-4) is the
+# real per-branch driver; the task-runner hook treats the completed task as a
+# single candidate branch to exercise the wire. Promote when I-4 ships and ranks
+# branches by verifier_stack::run_verdict.
+[[flag]]
+name              = "ELAI_TRI_LAYER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "I-4"
+smoke_test        = "crates/contracts/tests/i17_tri_layer_verdict_contract.rs::i17_f1_hard_veto_l2_call_count_zero"

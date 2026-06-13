@@ -26,7 +26,8 @@
 
 use elai_orchestrator::{
     adversary::{
-        heterogeneous_verifier_check, CounterEvidenceSchema, ModelFamily, SourceTierCitation,
+        heterogeneous_verifier_check, route_cross_family, AdversaryError, CounterEvidenceSchema,
+        ModelFamily, SourceTierCitation,
     },
     agent_role::ConsensusRole,
     claim::{Claim, ClaimType, EvidenceKind, EvidenceRef},
@@ -295,4 +296,113 @@ fn contract_counter_evidence_schema_round_trip() {
     let s = serde_json::to_string(&c).expect("serialize");
     let back: CounterEvidenceSchema = serde_json::from_str(&s).expect("deserialize");
     assert_eq!(c, back);
+}
+
+// ----- Test 10: route_cross_family is a production callable (P0-1) ----------
+
+/// Source-scan contract: two landmarks must be present in the production code.
+///   (a) adversary.rs must call `route_cross_family` from a non-test site
+///       (the production boot path in runtime_setup.rs).
+///   (b) runtime_setup.rs must reference `ELAI_ALLOW_CLOUD_ADVERSARY`
+///       (the env var that gates cloud-adversary construction at boot).
+#[test]
+fn route_cross_family_is_production_callable() {
+    let adversary_src = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/contracts has a parent")
+            .join("orchestrator/src/adversary.rs"),
+    )
+    .expect("read adversary.rs");
+
+    // route_cross_family must be defined as a public fn (not just referenced in tests).
+    assert!(
+        adversary_src.contains("pub fn route_cross_family"),
+        "adversary.rs must export `pub fn route_cross_family` (P0-1 pool-resolution)"
+    );
+
+    let runtime_setup_src = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/contracts has a parent")
+            .join("orchestrator/src/runtime_setup.rs"),
+    )
+    .expect("read runtime_setup.rs");
+
+    assert!(
+        runtime_setup_src.contains("ELAI_ALLOW_CLOUD_ADVERSARY"),
+        "runtime_setup.rs must reference ELAI_ALLOW_CLOUD_ADVERSARY \
+         (the P0-1 boot-time opt-in gate for cross-family adversary construction)"
+    );
+    assert!(
+        runtime_setup_src.contains("route_cross_family"),
+        "runtime_setup.rs must call route_cross_family at boot time \
+         (D-025 pool-resolution: once at boot, never per-dispatch)"
+    );
+}
+
+// ----- Test 11: CloudAdversary impl exists (P0-1) ---------------------------
+
+/// Source-scan contract: cloud_adversary.rs must contain `pub struct CloudAdversary`
+/// (the concrete DynAdversary impl that wraps AnthropicClient for the cloud path).
+/// CloudAdversary was extracted from adversary.rs (MR-1 file-size fix) and is
+/// re-exported via `pub use crate::cloud_adversary::CloudAdversary` so callers
+/// using `crate::adversary::CloudAdversary` remain valid. The assertion is on the
+/// implementation file, not the re-export location.
+#[test]
+fn cloud_adversary_impl_exists() {
+    let src = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/contracts has a parent")
+            .join("orchestrator/src/cloud_adversary.rs"),
+    )
+    .expect("read cloud_adversary.rs");
+
+    assert!(
+        src.contains("pub struct CloudAdversary"),
+        "cloud_adversary.rs must contain `pub struct CloudAdversary` — \
+         the Anthropic-backed DynAdversary for the P0-1 cloud cross-family path"
+    );
+}
+
+// ----- Test 12: single-family pool returns SameFamilyPairing error ----------
+
+/// Unit: route_cross_family with a single-family available slice (executor =
+/// available[0]) and allow_cloud=false must return Err(SameFamilyPairing).
+#[test]
+fn single_family_pool_returns_error() {
+    let result = route_cross_family(&ModelFamily::Local, &[ModelFamily::Local], false);
+    assert!(
+        result.is_err(),
+        "route_cross_family must return Err when only the executor family is available \
+         and allow_cloud=false"
+    );
+    match result.unwrap_err() {
+        AdversaryError::SameFamilyPairing { .. } => {}
+        other => panic!("expected SameFamilyPairing, got {other:?}"),
+    }
+}
+
+// ----- Test 13: all-Anthropic pool is one family (returns error) -------------
+
+/// Unit: route_cross_family with executor=Anthropic and available=[Anthropic, Anthropic]
+/// and allow_cloud=false must return Err(SameFamilyPairing). The pool having more
+/// than one entry does NOT mean cross-family is possible when they are all the same.
+#[test]
+fn all_anthropic_is_one_family() {
+    let result = route_cross_family(
+        &ModelFamily::Anthropic,
+        &[ModelFamily::Anthropic, ModelFamily::Anthropic],
+        false,
+    );
+    assert!(
+        result.is_err(),
+        "route_cross_family must return Err when all available families match the executor \
+         family (all-Anthropic pool with allow_cloud=false)"
+    );
+    match result.unwrap_err() {
+        AdversaryError::SameFamilyPairing { .. } => {}
+        other => panic!("expected SameFamilyPairing, got {other:?}"),
+    }
 }

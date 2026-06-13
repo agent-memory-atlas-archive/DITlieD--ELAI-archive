@@ -707,6 +707,40 @@ impl LiveCli {
                     }
                 }
 
+                // I-12: spawn PlaybookCurator offline tick (1-hour interval).
+                // Gate: only spawns if the rules.db exists at project_root/.elai_cc/rules.db.
+                // Skips first fire (interval.tick().await before loop) per cosmos-tick pattern.
+                if let Some(ref ssb_arc) = ssb {
+                    let rules_db = elai_core::paths::rules_db_path(&project_root);
+                    if rules_db.exists() {
+                        let ssb_for_playbook = ssb_arc.clone();
+                        let rules_db_for_tick = rules_db;
+                        let clock_for_tick = Arc::clone(clock);
+                        tokio::spawn(async move {
+                            let curator = elai_orchestrator::rule_curator::PlaybookCurator::new(
+                                &rules_db_for_tick,
+                                clock_for_tick,
+                            );
+                            let curator = std::sync::Arc::new(curator);
+                            let mut interval = tokio::time::interval(
+                                std::time::Duration::from_secs(
+                                    elai_orchestrator::rule_curator::PLAYBOOK_TICK_INTERVAL_SECS,
+                                ),
+                            );
+                            interval.tick().await; // skip first fire
+                            loop {
+                                interval.tick().await;
+                                if let Err(e) = curator.run_promotion_tick(&ssb_for_playbook).await {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "I-12: PlaybookCurator tick failed"
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+
                 Some(pipeline)
             }
             Err(e) => {

@@ -32,6 +32,16 @@ pub mod string_similarity;
 // orchestration session (see crates/providers/src/runtime/sidecar_xgrammar_hook.rs
 // `followups_for_other_sessions`).
 pub mod search_replace;
+// I-53: recipe runners (just/make/cargo discovery + run), archive reader, JSON tree query.
+pub mod recipe_runners;
+pub mod archive_reader;
+pub mod json_query;
+// I-13: TraceQuery on-demand line-range expansion tool.
+// Registered in production_agent_rpc.rs::build_tool_catalog (IS-14 3-arm pattern).
+pub mod trace_query;
+// I-13: Dual serialization (to_ui_dict / to_llm_content) on ToolResultPayload.
+// Production emit seam: production_agent_rpc.rs file_read arm.
+pub mod tool_result;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -53,6 +63,7 @@ use crate::stale_branch::{check_freshness, BranchFreshness};
 use elai_orchestrator::{
     build_agent_prompt, build_agent_system_preamble, AgentPromptContext, AgentTemplateConfig,
     dedupe_superseded_commit_events, execute_bash,
+    PromptHardeningAppliedKind, PromptHardeningAppliedPayload,
     context_budget::ModelTier,
     mcp_tool_bridge::McpToolRegistry,
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
@@ -1349,6 +1360,113 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
             priority: 2,
             compact_schema: None,
         },
+        // I-53: recipe runners + utility tool pack.
+        ToolSpec {
+            name: "recipe_list",
+            description: "Discover and list build recipes (Make/Just/Cargo targets) in the \
+                           current workspace. Returns all runners detected in the given directory.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cwd": {
+                        "type": "string",
+                        "description": "Workspace directory to probe for build manifests. Defaults to the current workspace root."
+                    }
+                },
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
+            priority: 1,
+            compact_schema: None,
+        },
+        ToolSpec {
+            name: "recipe_run",
+            description: "Run a named build recipe (e.g. `just build`, `make clean`, \
+                           `cargo run --package foo --bin bar`). The command is validated \
+                           through the existing bash validation pipeline before execution; \
+                           blocked commands are never spawned.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The full recipe command to execute (e.g. `just build` or `cargo run --bin foo`)."
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Working directory for the recipe. Defaults to the current workspace root."
+                    }
+                },
+                "required": ["command"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::WorkspaceWrite,
+            priority: 1,
+            compact_schema: None,
+        },
+        ToolSpec {
+            name: "archive_read",
+            description: "List or read entries from a plain .tar archive without extracting \
+                           to disk. Supports `action: list` (returns entry metadata) and \
+                           `action: read` (returns entry content). Path traversal is blocked.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the .tar archive file."
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "read"],
+                        "description": "`list` to enumerate entries; `read` to fetch one entry's content."
+                    },
+                    "entry": {
+                        "type": "string",
+                        "description": "Archive-relative entry path (required when action=read)."
+                    }
+                },
+                "required": ["path", "action"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
+            priority: 1,
+            compact_schema: None,
+        },
+        ToolSpec {
+            name: "json_tree_query",
+            description: "Navigate a JSON file via a dot-path and render a bounded subtree \
+                           (depth-capped, line-capped). Prevents large JSON files from \
+                           flooding the context window.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "Path to the JSON file."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Dot-separated navigation path (e.g. `a.b.c`). Omit to render from root."
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Max render depth (default 2)."
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Max output lines (default 6; use 200 for expanded view)."
+                    }
+                },
+                "required": ["file"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
+            priority: 1,
+            compact_schema: None,
+        },
     ]
 }
 
@@ -1652,6 +1770,74 @@ fn execute_tool_with_enforcer_scoped(
         "list_hidden_paths" => {
             let patterns: Vec<&str> = HIDDEN_PATH_PATTERNS.to_vec();
             Ok(serde_json::json!(patterns).to_string())
+        }
+        // I-53: recipe runners + utility tool pack.
+        "recipe_list" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            let cwd_str = input.get("cwd").and_then(|v| v.as_str());
+            let cwd = cwd_str.map(std::path::Path::new);
+            let workspace = cwd.unwrap_or_else(|| std::path::Path::new("."));
+            recipe_runners::list_recipes(workspace)
+                .map(|v| v.to_string())
+                .map_err(|e| e)
+        }
+        "recipe_run" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            let command = input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "recipe_run: missing required field 'command'".to_string())?
+                .to_string();
+            let cwd_str = input.get("cwd").and_then(|v| v.as_str());
+            let cwd = cwd_str.map(std::path::Path::new);
+            let workspace = cwd.unwrap_or_else(|| std::path::Path::new("."));
+            recipe_runners::run_recipe(&command, workspace, PermissionMode::WorkspaceWrite)
+        }
+        "archive_read" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            let path_str = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "archive_read: missing required field 'path'".to_string())?;
+            let archive_path = std::path::Path::new(path_str);
+            let action = input
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("list");
+            match action {
+                "list" => archive_reader::list_archive(archive_path)
+                    .map(|v| v.to_string()),
+                "read" => {
+                    let entry = input
+                        .get("entry")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            "archive_read: 'entry' field required when action=read".to_string()
+                        })?;
+                    archive_reader::read_archive_entry(archive_path, entry)
+                }
+                other => Err(format!("archive_read: unknown action '{other}'; use 'list' or 'read'")),
+            }
+        }
+        "json_tree_query" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            let file_str = input
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "json_tree_query: missing required field 'file'".to_string())?;
+            let file_path = std::path::Path::new(file_str);
+            let dot_path = input.get("path").and_then(|v| v.as_str());
+            let max_depth = input
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(json_query::MAX_DEPTH_DEFAULT);
+            let max_lines = input
+                .get("max_lines")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(json_query::MAX_LINES_DEFAULT);
+            json_query::query_json_tree(file_path, dot_path, max_depth, max_lines)
         }
         _ => Err(format!("unsupported tool: {name}")),
     }
@@ -2230,7 +2416,65 @@ fn check_bash_blast_radius(command: &str) -> Result<(), String> {
 }
 
 fn run_bash(input: BashCommandInput) -> Result<String, String> {
-    // A-26: Tool routing layer — reject commands that should use dedicated tools.
+    // I-46: Bash interceptor — redirect grep/cat/find/head/tail and kin to
+    // dedicated ELAI tools, apply deterministic fixups, and enforce the
+    // allowed-prefix restriction for agent-scoped calls.
+    //
+    // Order: (1) allowed-prefix check, (2) fixup, (3) redirect.
+    // An intercepted command returns Err(structured_error(...)) and NEVER
+    // reaches execute_bash. The SSB BashRedirected row is emitted by the
+    // orchestrator layer (InProcessDispatch::dispatch_tool) which holds Arc<Ssb>.
+
+    // (1) Allowed-prefix check: if the command starts with a recognized prefix
+    // but contains a banned shell token, classify as PrefixBlocked.
+    // If the command starts with a recognized prefix and is clean, pass through.
+    match bash_interceptor::check_allowed_prefix(
+        &input.command,
+        bash_interceptor::ALLOWED_PREFIXES,
+    ) {
+        bash_interceptor::AllowedPrefixResult::Allowed => {
+            // Command starts with an allowed prefix and is clean.
+            // Skip the redirect + routing layers entirely and let it execute.
+            // Fall through to safety_filter and execute_bash below.
+        }
+        bash_interceptor::AllowedPrefixResult::PrefixBlocked { reason } => {
+            return Err(structured_error(
+                "bash_prefix_blocked",
+                &format!("bash_prefix_blocked: {reason}"),
+            ));
+        }
+        bash_interceptor::AllowedPrefixResult::NotMatched => {
+            // Not an allowed-prefix command — continue to fixup + redirect + routing.
+
+            // (2) Fixup: apply deterministic command rewrites (strip trailing | head,
+            // | tail, 2>&1). Return the fixedup result as a structured error so the
+            // orchestrator layer can emit BashRedirected(FixedUp) and re-route the
+            // rewritten command in a follow-up call.
+            if let Some(fixed) = bash_interceptor::apply_fixup(&input.command) {
+                return Err(structured_error(
+                    "bash_fixedup",
+                    &format!(
+                        "bash_fixedup: command rewritten ({}): {}",
+                        fixed.label, fixed.command
+                    ),
+                ));
+            }
+
+            // (3) Redirect: intercept grep/cat/find/head/tail/less/more/rg/fd and kin.
+            if let Some(decision) = bash_interceptor::classify_redirect(&input.command) {
+                return Err(structured_error(
+                    "bash_redirected",
+                    &format!(
+                        "bash_redirected: {} Use `{}` instead.",
+                        decision.message, decision.target_tool
+                    ),
+                ));
+            }
+        }
+    }
+
+    // A-26: Tool routing layer — reject remaining commands that should use dedicated
+    // tools (rules 1+3 only post-I-46: echo-redirect -> write_file, sed/awk -> edit_file).
     if let Some(rejection) = routing_rules::check_routing(&input.command) {
         return Err(structured_error(
             "tool_routing",
@@ -3553,6 +3797,14 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
 const DEFAULT_AGENT_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
+// I-47: prompt hardening helpers live in prompt_hardening.rs (pub mod below near
+// bash_interceptor). The seam is in execute_agent_with_spawn below.
+use crate::prompt_hardening::{
+    apply_input_tagging, classify_dispatch_role, emit_prompt_hardening_row,
+    worker_rule_block, DispatchRole,
+};
+pub use crate::prompt_hardening::{install_prompt_hardening_ssb, dropped_row_count};
+
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
     execute_agent_with_spawn(input, spawn_agent_job)
 }
@@ -3587,13 +3839,61 @@ where
     let agent_context = AgentPromptContext::from_cwd(&cwd, model_tier, &model)
         .with_active_files(input.active_files.clone())
         .with_active_rules(input.active_rules.clone());
-    let template_config = AgentTemplateConfig::default();
+    // I-47: apply prompt hardening at the single production build_agent_prompt seam.
+    // classify_dispatch_role is keyed on the already-normalized role string.
+    let dispatch_role = classify_dispatch_role(&normalized_subagent_type);
+    let mut template_config = AgentTemplateConfig::default();
+    let prompt_for_build: String;
+    let hardening_rows: Vec<PromptHardeningAppliedPayload>;
+    match dispatch_role {
+        DispatchRole::AuditorLike => {
+            // Mechanism A: wrap untrusted inputs in <ELAI_DATA> boundary tags
+            // with the hardening frame prepended above.
+            let (tagged, attestation_phrase) = apply_input_tagging(&input.prompt);
+            prompt_for_build = tagged;
+            let mut rows = vec![PromptHardeningAppliedPayload {
+                kind: PromptHardeningAppliedKind::InputsTagged,
+                role: normalized_subagent_type.clone(),
+                agent_id: agent_id.clone(),
+                attestation_phrase: None,
+            }];
+            if let Some(phrase) = attestation_phrase {
+                rows.push(PromptHardeningAppliedPayload {
+                    kind: PromptHardeningAppliedKind::SelfAttestationStripped,
+                    role: normalized_subagent_type.clone(),
+                    agent_id: agent_id.clone(),
+                    attestation_phrase: Some(phrase.to_owned()),
+                });
+            }
+            hardening_rows = rows;
+        }
+        DispatchRole::WorkerLike => {
+            // Mechanism B: inject frozen per-role rule block into CONSTRAINTS section.
+            // HD-2: worker_rule_block returns &'static str, never per-task dynamic text.
+            template_config.extra_constraints.push(worker_rule_block(&normalized_subagent_type).to_owned());
+            prompt_for_build = input.prompt.clone();
+            hardening_rows = vec![PromptHardeningAppliedPayload {
+                kind: PromptHardeningAppliedKind::RulesInjected,
+                role: normalized_subagent_type.clone(),
+                agent_id: agent_id.clone(),
+                attestation_phrase: None,
+            }];
+        }
+        DispatchRole::Other => {
+            prompt_for_build = input.prompt.clone();
+            hardening_rows = vec![];
+        }
+    }
     let structured_prompt = build_agent_prompt(
-        &input.prompt,
+        &prompt_for_build,
         &normalized_subagent_type,
         &agent_context,
         &template_config,
     );
+    // Emit SSB rows for all applied hardening mechanisms (fire-and-forget).
+    for row in hardening_rows {
+        emit_prompt_hardening_row(row);
+    }
     let system_prompt = vec![build_agent_system_preamble(&normalized_subagent_type)];
     let allowed_tools = allowed_tools_for_subagent(&normalized_subagent_type);
     // B-18C: derive the sub-agent's filesystem allow-list while the subagent
@@ -5716,6 +6016,12 @@ pub mod git_commit;
 pub mod lane_completion;
 pub mod routing_rules;
 pub mod safety_filter;
+// I-46: bash interceptor -- redirect/fixup/allowed-prefix checks that fire
+// BEFORE routing_rules in run_bash. Intercepts grep/cat/find and kin with
+// a richer structured redirect message. A-26 overlapping rules (cat/head/tail,
+// find+glob, grep/rg) are removed from routing_rules per OPTION A consolidation.
+pub mod bash_interceptor;
+pub mod prompt_hardening;
 
 #[cfg(test)]
 mod tests {

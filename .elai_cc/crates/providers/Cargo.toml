@@ -26,6 +26,9 @@ schemars = { workspace = true }
 getrandom = "0.3"
 sha2 = "0.10"
 thiserror.workspace = true
+# I-51 — model capability catalog (models.toml parsing). Activates the workspace
+# pin (toml = "1" at root Cargo.toml L57) — no new external crate introduced.
+toml.workspace = true
 safetensors = "0.7"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 # B-37A multi-runtime adapter: BoxStream + stream::unfold for the
@@ -34,6 +37,12 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-
 # external crate is introduced.
 futures-util = "0.3"
 nvml-wrapper = { version = "0.11", optional = true }
+
+[dev-dependencies]
+# I-34: grammar_store tests create temp EBNF fixtures + manifests for pin
+# verification. Same version used by orchestrator / contracts / cli (see
+# workspace Cargo.toml — not yet a workspace dep, pinned per-crate at "3").
+tempfile = "3"
 
 [features]
 default = []

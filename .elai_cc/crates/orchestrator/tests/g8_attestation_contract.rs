@@ -209,6 +209,8 @@ async fn build_attestation_verifies_and_rollup_covers_all_gates() {
     assert_eq!(statement.predicate.run_artifact_root, art.root_blake3);
 
     // OFFLINE verify: recompute the Merkle root, compare to the subject digest.
+    // The fixture stream has no IdeaFramingStarted row (objective_hash = None),
+    // so the LEGACY path fires and the verdict is Verified, never ObjectiveUnchecked.
     let verdict = verify_attestation(&statement).expect("verify");
     match verdict {
         AttestationVerdict::Verified { merkle_root } => {
@@ -220,6 +222,11 @@ async fn build_attestation_verifies_and_rollup_covers_all_gates() {
         }
         AttestationVerdict::NotVerified { expected, got } => {
             panic!("expected Verified; got NotVerified (expected={expected}, got={got})");
+        }
+        AttestationVerdict::ReceiptStale { .. } | AttestationVerdict::ObjectiveUnchecked { .. } => {
+            // Should not reach here: the fixture stream has no IdeaFramingStarted
+            // row, so the predicate carries objective_hash = None (LEGACY receipt).
+            panic!("LEGACY receipt must not return ReceiptStale or ObjectiveUnchecked");
         }
     }
 
@@ -333,6 +340,11 @@ async fn tampered_predicate_does_not_verify() {
         AttestationVerdict::Verified { .. } => {
             panic!("a tampered predicate MUST NOT verify (fail-closed, R2)");
         }
+        AttestationVerdict::ReceiptStale { .. } | AttestationVerdict::ObjectiveUnchecked { .. } => {
+            // Objective check only fires after the Merkle tamper check passes.
+            // A tampered predicate must be caught as NotVerified first.
+            panic!("tampered predicate reached objective check -- Merkle tamper detection bypassed");
+        }
     }
 }
 
@@ -351,10 +363,15 @@ async fn trailer_binding_verify_rejects_wrong_digest() {
     let real_digest = statement.subject_digest().expect("subject digest").to_owned();
 
     // Correct trailer digest -> Verified.
+    // The fixture stream has no IdeaFramingStarted row (objective_hash = None),
+    // so the LEGACY path fires and the verdict is Verified, never ObjectiveUnchecked.
     match verify_attestation_against_trailer(&statement, &real_digest).expect("verify") {
         AttestationVerdict::Verified { merkle_root } => assert_eq!(merkle_root, real_digest),
         AttestationVerdict::NotVerified { .. } => {
             panic!("the correct trailer digest must verify")
+        }
+        AttestationVerdict::ReceiptStale { .. } | AttestationVerdict::ObjectiveUnchecked { .. } => {
+            panic!("LEGACY receipt must not return ReceiptStale or ObjectiveUnchecked");
         }
     }
 
@@ -366,6 +383,11 @@ async fn trailer_binding_verify_rejects_wrong_digest() {
         }
         AttestationVerdict::Verified { .. } => {
             panic!("a wrong trailer digest MUST NOT verify (fail-closed)")
+        }
+        AttestationVerdict::ReceiptStale { .. } | AttestationVerdict::ObjectiveUnchecked { .. } => {
+            // Objective check only fires after Merkle + trailer binding passes.
+            // A wrong trailer digest must be caught as NotVerified first.
+            panic!("wrong trailer digest reached objective check -- trailer binding bypassed");
         }
     }
 }

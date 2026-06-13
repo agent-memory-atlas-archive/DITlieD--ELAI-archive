@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use elai_orchestrator::ssb::{SkillLibraryEventKind, SsbActionType, TestIntegrityEventKind, ToolFilterEventKind, VibeGateBlockedKind};
+use elai_orchestrator::ssb::{BashRedirectedKind, BeliefStateEventKind, BranchWorkspaceEventKind, CacheEconomicsEventKind, ClaimScopeMeasuredKind, ContextPrunedKind, ContextTransformKind, CritiqueLensFindingTag, DirectiveExecutedKind, GovernancePrimitiveFiredKind, GrammarGateEventKind, MemoryGuardEventKind, ObjectiveSealedKind, PlaybookEventKind, PromptHardeningAppliedKind, RoleContractAppliedKind, RowChainSealedKind, SkillLibraryEventKind, SsbActionType, TestIntegrityEventKind, ToolFilterEventKind, ToolSequenceVerdictKind, TrajectoryAbortedKind, TriLayerVerdictKind, VibeGateBlockedKind};
 
 /// Total number of SsbActionType variants currently locked. Bumping this
 /// requires regenerating action_type_lock.golden in the SAME commit; the
@@ -73,10 +73,10 @@ use elai_orchestrator::ssb::{SkillLibraryEventKind, SsbActionType, TestIntegrity
 // unless ELAI_SKILL_SYSTEM_ENABLE=1. See workflow/reasoning/E-43-decisions.md.
 // E-9 (SCHEMA_VERSION 165): 437 -> 438 for BenchmarkRunObserved
 // E-19 (SCHEMA_VERSION 166): 438 -> 439 for ReasoningQualityProbe
-// single-variant Pattern-2 (18th application). ProbeKind 5-arm
+// single-variant Pattern-2 (18th application). ProbeKind 6-arm
 // discriminator on payload covers l2_gate_decision / l4_prm_lite_score /
-// l4_lateral_kept / l4_ttc_budget_chosen / l6_verifier_diversity.
-// Wire-dark unless ELAI_REASONING_QUALITY_PROBE_ENABLE=1.
+// l4_lateral_kept / l4_ttc_budget_chosen / l6_verifier_diversity /
+// vividness_probe (I-5 adds 6th arm). Wire-dark unless ELAI_REASONING_QUALITY_PROBE_ENABLE=1.
 // single-variant Pattern-2 (17th application). BenchPhase 5-arm
 // discriminator on payload covers loaded / started / item_evaluated /
 // completed / aborted; suite_name string field discriminates across the
@@ -659,7 +659,96 @@ use elai_orchestrator::ssb::{SkillLibraryEventKind, SsbActionType, TestIntegrity
 // entrypoint) and by the /research|/ask answer path after citation_prebind::freeze_anchors
 // runs. Default-ON kill-switch ELAI_CITATION_PREBIND_DISABLE (no allowlist row per R9).
 // Pattern-2 single-variant 2-arm CitationAnchorsBoundKind: Bound | Blocked. 539 -> 540.
-const TOTAL_VARIANTS: usize = 540;
+//
+// I-39 (SCHEMA_VERSION 230, 2026-06-11): PlanStateDerived -- per-plan state derived
+// beacon. Emitted by elai plan status (REAL CLI entrypoint). Flat beacon; no inner Kind
+// enum. letter + session_id + derived_state + evidence_anchor. Default-ON. 540 -> 541.
+//
+// I-45 (SCHEMA_VERSION 231, 2026-06-11): ObjectiveSealed -- objective-hash sealed-receipt
+// beacon. Pattern-2 single-variant 3-arm ObjectiveSealedKind: Sealed | MutationDetected |
+// ReceiptStale. Emitted from emit_run_artifact (run_subcommand.rs) after build_rra returns.
+// Default-ON kill-switch ELAI_OBJECTIVE_SEAL_DISABLE (no allowlist row per R9). 541 -> 542.
+//
+// I-34 (SCHEMA_VERSION 234, 2026-06-12): GrammarGateEvent -- CRANE hybrid grammar-pin gate
+// beacon. Pattern-2 single-variant 3-arm GrammarGateEventKind: CranePassed / PinViolation /
+// PostParseRejected. Emitted by orchestrator grammar_gate.rs. Default-ON, no kill-switch
+// (mandatory gate per IC-18 + landmine #7/#8). +3 I-34 (GrammarGateEvent Kind: CranePassed/PinViolation/PostParseRejected). 542 -> 543.
+//
+// I-38 (SCHEMA_VERSION 235, 2026-06-12): QdeltaMeasured -- QDELTA defective-diff rate flat
+// beacon. Mirrors SafetyDeltaMeasured shape. Emitted by cli::bench_qdelta::run_inner after
+// floor_check passes (seed_count>=5, paired=true). +1 I-38 (QdeltaMeasured). 543 -> 544.
+//
+// I-43 (SCHEMA_VERSION 236, 2026-06-12): ClaimScopeMeasured -- reproducibility-claim scoper
+// kill-gate. Pattern-2 single-variant 3-arm ClaimScopeMeasuredKind: PilotDelta /
+// CrossLaneDivergence / ClaimScoped. Emitted by cli::bench_claim_scope::run_inner.
+// +1 I-43 (ClaimScopeMeasured). 544 -> 545.
+// I-10 (SCHEMA_VERSION 237, 2026-06-12): CacheEconomicsEvent -- prefix invariance + TTL tiering
+// + cache-hit hard guard. Pattern-2 single-variant 3-arm CacheEconomicsEventKind: TtlPlanned /
+// HitRateGuardTripped / PrefixDiffDumped. Emitted by orchestrator::cache_economics.
+// +1 I-10 (CacheEconomicsEvent). 545 -> 546.
+// I-8 (SCHEMA_VERSION 238, 2026-06-12): TrajectoryAborted -- aletheia voluntary abort + dead-end
+// hash pruning + halting-bound seam. Pattern-2 single-variant 3-arm TrajectoryAbortedKind:
+// Voluntary / DeadEndHash / HaltingBound. Emitted by TOOL_ACKNOWLEDGE_INFEASIBLE arm,
+// dead_end_cache check path, and I-17 watchdog hook (Wave-3 stub).
+// +1 I-8 (TrajectoryAborted). 546 -> 547.
+// I-1 (SCHEMA_VERSION 239, 2026-06-12): DirectiveExecuted -- directive supervisor
+// enforcement-plane outcome beacon. Pattern-2 single-variant 3-arm
+// DirectiveExecutedKind: Executed / Discarded / CompensationFired. Emitted by
+// directive::InProcessSupervisor::execute_directive. Default-ON (enforcement plane
+// is mandatory per CANT-WRECK; no kill-switch). +1 I-1 (DirectiveExecuted). 547 -> 548.
+// I-33 (SCHEMA_VERSION 240, 2026-06-12): GovernancePrimitiveFired -- Pattern-2 single-variant
+// 3-arm GovernancePrimitiveFiredKind: CeflExternalized / I6qRejected / CommitRevealSealed.
+// action_type string: "governance_primitive_fired". CeflExternalized representative in this lock array. 548 -> 549.
+// I-32 (SCHEMA_VERSION 241, 2026-06-12): RoleContractApplied -- Pattern-2 single-variant
+// 3-arm RoleContractAppliedKind: AbDelta / PersonaRetained / PersonaStripped.
+// action_type string: "role_contract_applied". PersonaStripped representative in this lock array. 549 -> 550.
+// I-35 (SCHEMA_VERSION 242, 2026-06-13): ToolSequenceVerdict -- Pattern-2 single-variant
+// 3-arm ToolSequenceVerdictKind: Allowed / HaltEnforced / OrderViolation.
+// action_type string: "tool_sequence_verdict". Allowed representative in this lock array. 550 -> 551.
+// I-41 (SCHEMA_VERSION 243, 2026-06-13): CritiqueLensFinding -- spec-time critique lenses advisory
+// beacon. Pattern-2 single-variant 3-arm CritiqueLensFindingTag: AdvisoryFinding / DroppedNoAnchor /
+// LensRun. action_type string: "critique_lens_finding". AdvisoryFinding representative in this
+// lock array. advisory=true on all arms; zero gate-verdict path. 551 -> 552.
+// I-46 (SCHEMA_VERSION 244, 2026-06-13): BashRedirected -- bash interceptor redirect/fixup/
+// allowed-prefix outcome. Pattern-2 single-variant 3-arm BashRedirectedKind: Redirected / FixedUp /
+// PrefixBlocked. action_type string: "bash_redirected". Redirected representative in this
+// lock array. 552 -> 553.
+// I-47 (SCHEMA_VERSION 245, 2026-06-13): PromptHardeningApplied -- verifier-input XML tagging +
+// worker rule injection + SSB beacon. Pattern-2 single-variant 3-arm PromptHardeningAppliedKind:
+// InputsTagged / RulesInjected / SelfAttestationStripped. action_type string:
+// "prompt_hardening_applied". InputsTagged representative in this lock array. 553 -> 554.
+// I-2 (SCHEMA_VERSION 246, 2026-06-13): BranchWorkspaceEvent -- CoW workspace isolation barrier
+// outcome. Pattern-2 single-variant 4-arm BranchWorkspaceEventKind: Spawned / Merged /
+// EscapeBlocked / ConflictEscalated. action_type string: "branch_workspace_event". Spawned
+// representative in this lock array. 554 -> 555.
+// I-5 (SCHEMA_VERSION 247, 2026-06-13): ContextPruned -- per-branch context rebuild outcome.
+// Pattern-2 single-variant 3-arm ContextPrunedKind: SiblingExcluded / TracebackContrasted /
+// VividnessProbe. action_type string: "context_pruned". SiblingExcluded representative in this
+// lock array. 555 -> 556.
+// I-11 (SCHEMA_VERSION 248, 2026-06-13): BeliefStateEvent -- typed versioned condensate receipt.
+// Pattern-2 single-variant 3-arm BeliefStateEventKind: Condensed / Handoff / HonestyDelta.
+// action_type string: "belief_state_event". Condensed representative in this lock array. 556 -> 557.
+// I-13 (SCHEMA_VERSION 249, 2026-06-13): MemoryGuardEvent -- write-time memory guard outcome.
+// Pattern-2 single-variant 3-arm MemoryGuardEventKind: PoisonBlocked / DualSerialized /
+// TraceQueryExpanded. action_type string: "memory_guard_event". PoisonBlocked representative
+// in this lock array. 557 -> 558.
+// I-14 (SCHEMA_VERSION 250, 2026-06-13): ContextTransformReceipt -- deterministic
+// context-compression middleware receipt. Pattern-2 single-variant 3-arm
+// ContextTransformKind: LspSlice / AstFold / Tier2Compressed. action_type string:
+// "context_transform_receipt". LspSlice representative in this lock array. 558 -> 559.
+// I-12 (SCHEMA_VERSION 251, 2026-06-13): PlaybookEvent -- evidence-gated playbook curator
+// outcome beacon. Pattern-2 single-variant 4-arm PlaybookEventKind: Promoted / Demoted /
+// ValidationRun / Exported. action_type string: "playbook_event". Promoted representative
+// in this lock array. 559 -> 560.
+// I-17 (SCHEMA_VERSION 252, 2026-06-13): TriLayerVerdict -- tri-layer evaluation-stack
+// per-branch verdict. Pattern-2 single-variant 4-arm TriLayerVerdictKind: HardVeto /
+// ScoredSurvivor / DisagreementEscalated / FlakeQuarantined. action_type string:
+// "tri_layer_verdict". HardVeto representative in this lock array. 560 -> 561.
+// I-18 (SCHEMA_VERSION 253, 2026-06-13): RowChainSealed -- per-row rolling blake3
+// chain beacon (uPIP row-chain + AI-BOM). Pattern-2 single-variant 3-arm
+// RowChainSealedKind: ChainAdvanced / AibomEmitted / ChainBroken. action_type string:
+// "row_chain_sealed". ChainAdvanced representative in this lock array. 561 -> 562.
+const TOTAL_VARIANTS: usize = 562;
 
 /// All SsbActionType variants in enum DECLARATION order. Append-only -- new
 /// variants go at the end of this array AND at the end of the enum AND get a
@@ -1875,6 +1964,87 @@ const ALL_VARIANTS: [SsbActionType; TOTAL_VARIANTS] = [
     // Default-ON kill-switch ELAI_CITATION_PREBIND_DISABLE (no allowlist row per R9).
     // Pattern-2 single-variant 2-arm CitationAnchorsBoundKind: Bound | Blocked. 539 -> 540.
     SsbActionType::CitationAnchorsBound,
+    // I-39 (SCHEMA_VERSION 230, 2026-06-11): PlanStateDerived -- per-plan state derived
+    // beacon. Emitted by elai plan status (REAL CLI entrypoint). Flat beacon;
+    // letter + session_id + derived_state + evidence_anchor. Default-ON. 540 -> 541.
+    SsbActionType::PlanStateDerived,
+    // I-45 (SCHEMA_VERSION 231, 2026-06-11): ObjectiveSealed -- Pattern-2 single-variant
+    // 3-arm ObjectiveSealedKind. Sealed representative in this lock array. 541 -> 542.
+    SsbActionType::ObjectiveSealed(ObjectiveSealedKind::Sealed),
+    // I-34 (SCHEMA_VERSION 234, 2026-06-12): GrammarGateEvent -- Pattern-2 single-variant
+    // 3-arm GrammarGateEventKind. CranePassed representative in this lock array. 542 -> 543.
+    SsbActionType::GrammarGateEvent(GrammarGateEventKind::CranePassed),
+    // I-38 (SCHEMA_VERSION 235, 2026-06-12): QdeltaMeasured -- flat beacon. 543 -> 544.
+    SsbActionType::QdeltaMeasured,
+    // I-43 (SCHEMA_VERSION 236, 2026-06-12): ClaimScopeMeasured -- Pattern-2 single-variant
+    // 3-arm ClaimScopeMeasuredKind. PilotDelta representative in this lock array. 544 -> 545.
+    SsbActionType::ClaimScopeMeasured(ClaimScopeMeasuredKind::PilotDelta),
+    // I-10 (SCHEMA_VERSION 237, 2026-06-12): CacheEconomicsEvent -- Pattern-2 single-variant
+    // 3-arm CacheEconomicsEventKind. TtlPlanned representative in this lock array. 545 -> 546.
+    SsbActionType::CacheEconomicsEvent(CacheEconomicsEventKind::TtlPlanned),
+    // I-8 (SCHEMA_VERSION 238, 2026-06-12): TrajectoryAborted -- Pattern-2 single-variant
+    // 3-arm TrajectoryAbortedKind. Voluntary representative in this lock array. 546 -> 547.
+    SsbActionType::TrajectoryAborted(TrajectoryAbortedKind::Voluntary),
+    // I-1 (SCHEMA_VERSION 239, 2026-06-12): DirectiveExecuted -- Pattern-2 single-variant
+    // 3-arm DirectiveExecutedKind. Executed representative in this lock array. 547 -> 548.
+    SsbActionType::DirectiveExecuted(DirectiveExecutedKind::Executed),
+    // I-33 (SCHEMA_VERSION 240, 2026-06-12): GovernancePrimitiveFired -- Pattern-2 single-variant
+    // 3-arm GovernancePrimitiveFiredKind. CeflExternalized representative in this lock array. 548 -> 549.
+    SsbActionType::GovernancePrimitiveFired(GovernancePrimitiveFiredKind::CeflExternalized),
+    // I-32 (SCHEMA_VERSION 241, 2026-06-12): RoleContractApplied -- Pattern-2 single-variant
+    // 3-arm RoleContractAppliedKind. PersonaStripped representative in this lock array. 549 -> 550.
+    SsbActionType::RoleContractApplied(RoleContractAppliedKind::PersonaStripped),
+    // I-35 (SCHEMA_VERSION 242, 2026-06-13): ToolSequenceVerdict -- Pattern-2 single-variant
+    // 3-arm ToolSequenceVerdictKind: Allowed / HaltEnforced / OrderViolation.
+    // Allowed representative in this lock array. 550 -> 551.
+    SsbActionType::ToolSequenceVerdict(ToolSequenceVerdictKind::Allowed),
+    // I-41 (SCHEMA_VERSION 243, 2026-06-13): CritiqueLensFinding -- spec-time critique lenses
+    // advisory beacon. Pattern-2 single-variant 3-arm CritiqueLensFindingTag.
+    // AdvisoryFinding representative in this lock array. 551 -> 552.
+    SsbActionType::CritiqueLensFinding(CritiqueLensFindingTag::AdvisoryFinding),
+    // I-46 (SCHEMA_VERSION 244, 2026-06-13): BashRedirected -- bash interceptor redirect/fixup/
+    // allowed-prefix outcome. Pattern-2 single-variant 3-arm BashRedirectedKind.
+    // Redirected representative in this lock array. 552 -> 553.
+    SsbActionType::BashRedirected(BashRedirectedKind::Redirected),
+    // I-47 (SCHEMA_VERSION 245, 2026-06-13): PromptHardeningApplied -- verifier-input XML tagging +
+    // worker rule injection beacon. Pattern-2 single-variant 3-arm PromptHardeningAppliedKind.
+    // InputsTagged representative in this lock array. 553 -> 554.
+    SsbActionType::PromptHardeningApplied(PromptHardeningAppliedKind::InputsTagged),
+    // I-2 (SCHEMA_VERSION 246, 2026-06-13): BranchWorkspaceEvent -- CoW workspace isolation barrier
+    // outcome. Pattern-2 single-variant 4-arm BranchWorkspaceEventKind. Spawned representative
+    // in this lock array. 554 -> 555.
+    SsbActionType::BranchWorkspaceEvent(BranchWorkspaceEventKind::Spawned),
+    // I-5 (SCHEMA_VERSION 247, 2026-06-13): ContextPruned -- per-branch context rebuild outcome.
+    // Pattern-2 single-variant 3-arm ContextPrunedKind. SiblingExcluded representative
+    // in this lock array. 555 -> 556.
+    SsbActionType::ContextPruned(ContextPrunedKind::SiblingExcluded),
+    // I-11 (SCHEMA_VERSION 248, 2026-06-13): BeliefStateEvent -- typed versioned condensate receipt.
+    // Pattern-2 single-variant 3-arm BeliefStateEventKind: Condensed / Handoff / HonestyDelta.
+    // Condensed is the representative arm (all 3 arms share wire tag "belief_state_event"). 556 -> 557.
+    SsbActionType::BeliefStateEvent(BeliefStateEventKind::Condensed),
+    // I-13 (SCHEMA_VERSION 249, 2026-06-13): MemoryGuardEvent -- write-time memory guard outcome.
+    // Pattern-2 single-variant 3-arm MemoryGuardEventKind: PoisonBlocked / DualSerialized /
+    // TraceQueryExpanded. PoisonBlocked is the representative arm. 557 -> 558.
+    SsbActionType::MemoryGuardEvent(MemoryGuardEventKind::PoisonBlocked),
+    // I-14 (SCHEMA_VERSION 250, 2026-06-13): ContextTransformReceipt -- deterministic
+    // context-compression middleware receipt. Pattern-2 single-variant 3-arm
+    // ContextTransformKind: LspSlice / AstFold / Tier2Compressed. LspSlice is the
+    // representative arm. 558 -> 559.
+    SsbActionType::ContextTransformReceipt(ContextTransformKind::LspSlice),
+    // I-12 (SCHEMA_VERSION 251, 2026-06-13): PlaybookEvent -- evidence-gated playbook curator
+    // outcome beacon. Pattern-2 single-variant 4-arm PlaybookEventKind: Promoted / Demoted /
+    // ValidationRun / Exported. Promoted is the representative arm. 559 -> 560.
+    SsbActionType::PlaybookEvent(PlaybookEventKind::Promoted),
+    // I-17 (SCHEMA_VERSION 252, 2026-06-13): TriLayerVerdict -- tri-layer evaluation-stack
+    // per-branch verdict. Pattern-2 single-variant 4-arm TriLayerVerdictKind: HardVeto /
+    // ScoredSurvivor / DisagreementEscalated / FlakeQuarantined. HardVeto is the
+    // representative arm. 560 -> 561.
+    SsbActionType::TriLayerVerdict(TriLayerVerdictKind::HardVeto),
+    // I-18 (SCHEMA_VERSION 253, 2026-06-13): RowChainSealed -- per-row rolling blake3
+    // chain beacon (uPIP row-chain + AI-BOM). Pattern-2 single-variant 3-arm
+    // RowChainSealedKind: ChainAdvanced / AibomEmitted / ChainBroken. ChainAdvanced
+    // is the representative arm. 561 -> 562.
+    SsbActionType::RowChainSealed(RowChainSealedKind::ChainAdvanced),
 ];
 
 /// Compile-time exhaustiveness check: if a new variant lands in ssb.rs without
@@ -2558,6 +2728,50 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::FindingAnchored => (),
         // H-53 (SCHEMA_VERSION 229): CitationAnchorsBound citation pre-binding beacon (elai prebind --demo-prebind).
         SsbActionType::CitationAnchorsBound => (),
+        // I-39 (SCHEMA_VERSION 230): PlanStateDerived per-plan state derived beacon (elai plan status).
+        SsbActionType::PlanStateDerived => (),
+        // I-45 (SCHEMA_VERSION 231): ObjectiveSealed Pattern-2 3-arm objective hash receipt beacon.
+        SsbActionType::ObjectiveSealed(_) => (),
+        // I-34 (SCHEMA_VERSION 234): GrammarGateEvent Pattern-2 3-arm CRANE grammar-pin gate beacon.
+        SsbActionType::GrammarGateEvent(_) => (),
+        // I-38 (SCHEMA_VERSION 235): QdeltaMeasured flat beacon.
+        SsbActionType::QdeltaMeasured => (),
+        // I-43 (SCHEMA_VERSION 236): ClaimScopeMeasured Pattern-2 3-arm claim-scoper kill-gate.
+        SsbActionType::ClaimScopeMeasured(_) => (),
+        // I-10 (SCHEMA_VERSION 237): CacheEconomicsEvent Pattern-2 3-arm cache-economics guard.
+        SsbActionType::CacheEconomicsEvent(_) => (),
+        // I-8 (SCHEMA_VERSION 238): TrajectoryAborted Pattern-2 3-arm voluntary abort + dead-end + halting.
+        SsbActionType::TrajectoryAborted(_) => (),
+        // I-1 (SCHEMA_VERSION 239): DirectiveExecuted Pattern-2 3-arm directive supervisor outcome.
+        SsbActionType::DirectiveExecuted(_) => (),
+        // I-33 (SCHEMA_VERSION 240): GovernancePrimitiveFired Pattern-2 3-arm CEFL/I6Q/commit-reveal.
+        SsbActionType::GovernancePrimitiveFired(_) => (),
+        // I-32 (SCHEMA_VERSION 241): RoleContractApplied Pattern-2 3-arm persona-strip/retain/AB-delta.
+        SsbActionType::RoleContractApplied(_) => (),
+        // I-35 (SCHEMA_VERSION 242): ToolSequenceVerdict Pattern-2 3-arm temporal sequence enforcement.
+        SsbActionType::ToolSequenceVerdict(_) => (),
+        // I-41 (SCHEMA_VERSION 243): CritiqueLensFinding Pattern-2 3-arm advisory lens beacon.
+        SsbActionType::CritiqueLensFinding(_) => (),
+        // I-46 (SCHEMA_VERSION 244): BashRedirected Pattern-2 3-arm bash interceptor outcome.
+        SsbActionType::BashRedirected(_) => (),
+        // I-47 (SCHEMA_VERSION 245): PromptHardeningApplied Pattern-2 3-arm verifier-input hardening.
+        SsbActionType::PromptHardeningApplied(_) => (),
+        // I-2 (SCHEMA_VERSION 246): BranchWorkspaceEvent Pattern-2 4-arm CoW workspace barrier.
+        SsbActionType::BranchWorkspaceEvent(_) => (),
+        // I-5 (SCHEMA_VERSION 247): ContextPruned Pattern-2 3-arm per-branch context rebuild.
+        SsbActionType::ContextPruned(_) => (),
+        // I-11 (SCHEMA_VERSION 248): BeliefStateEvent Pattern-2 3-arm typed condensate receipt.
+        SsbActionType::BeliefStateEvent(_) => (),
+        // I-13 (SCHEMA_VERSION 249): MemoryGuardEvent Pattern-2 3-arm write-time guard outcome.
+        SsbActionType::MemoryGuardEvent(_) => (),
+        // I-14 (SCHEMA_VERSION 250): ContextTransformReceipt Pattern-2 3-arm compression receipt.
+        SsbActionType::ContextTransformReceipt(_) => (),
+        // I-12 (SCHEMA_VERSION 251): PlaybookEvent Pattern-2 4-arm playbook curator outcome.
+        SsbActionType::PlaybookEvent(_) => (),
+        // I-17 (SCHEMA_VERSION 252): TriLayerVerdict Pattern-2 4-arm per-branch verdict.
+        SsbActionType::TriLayerVerdict(_) => (),
+        // I-18 (SCHEMA_VERSION 253): RowChainSealed Pattern-2 3-arm per-row blake3 chain beacon.
+        SsbActionType::RowChainSealed(_) => (),
     }
 }
 

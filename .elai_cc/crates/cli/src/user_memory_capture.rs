@@ -37,8 +37,10 @@ use elai_memory::{
     FactType, Provenance, Scope, TrustTier,
 };
 use elai_orchestrator::ssb::{
-    Ssb, SsbConfig, SsbPayload, UserDecisionEventKind, UserDecisionSupersededPayload,
+    MemoryGuardEventKind, MemoryGuardEventPayload, Ssb, SsbConfig, SsbPayload,
+    UserDecisionEventKind, UserDecisionSupersededPayload,
 };
+use elai_orchestrator::memory_guard::{MemoryGuardVerdict, MemoryWriteScanner};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -93,6 +95,13 @@ pub(crate) enum CaptureError {
     /// The text matched the secret/PII reject -- NEVER stored.
     #[error("/remember rejected: the text matches a secret/PII pattern ({0}) and was NOT stored")]
     SecretRejected(String),
+    /// Stage-2 guard (aho-corasick invisible-Unicode / confusable) blocked the write.
+    /// Write is REFUSED — never log-and-continue (I-13 stub_ban rule).
+    #[error("/remember blocked by write-time guard: pattern_class={0}")]
+    GuardBlocked(String),
+    /// Stage-2 scanner init failed (static pattern fault — programming error).
+    #[error("/remember: memory guard scanner init failed: {0}")]
+    GuardInitFailed(String),
     /// I/O error creating the store/SSB directory.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -173,6 +182,19 @@ pub(crate) fn capture_remember_with_clock(
         DefenseVerdict::Allow => {}
         DefenseVerdict::Block { reason } | DefenseVerdict::SkipSensitive { reason } => {
             return Err(CaptureError::SecretRejected(reason));
+        }
+    }
+
+    // STEP 1b (I-13 Stage-2): aho-corasick invisible-Unicode + confusable-shell scan.
+    // Runs ONLY after Stage-1 Allow. Gated behind ELAI_MEMORY_GUARD_ENABLE (default-OFF).
+    // PoisonBlocked is a hard Err — write is REFUSED (never log-and-continue per I-13 stub_ban).
+    match MemoryWriteScanner::scan(&candidate) {
+        Ok(MemoryGuardVerdict::Allow) | Ok(MemoryGuardVerdict::GuardDisabled) => {}
+        Ok(MemoryGuardVerdict::PoisonBlocked { pattern_class }) => {
+            return Err(CaptureError::GuardBlocked(pattern_class));
+        }
+        Err(e) => {
+            return Err(CaptureError::GuardInitFailed(e.to_string()));
         }
     }
 

@@ -363,23 +363,13 @@ pub fn warm_start_tau(
             })?;
         }
     }
-    let tmp_path: PathBuf = {
-        let mut p = tau_path.to_path_buf();
-        let new_ext = match tau_path.extension() {
-            Some(ext) => format!("{}.tmp", ext.to_string_lossy()),
-            None => "tmp".to_string(),
-        };
-        p.set_extension(new_ext);
-        p
-    };
+    // Atomic write: tmp + sync_all + rename via shared helper (I-3 Phase-3C hardening).
     let contents = format!("{tau}\n");
-    std::fs::write(&tmp_path, contents.as_bytes()).map_err(|e| BootstrapError::TauPersist {
-        path: tmp_path.display().to_string(),
-        reason: e.to_string(),
-    })?;
-    std::fs::rename(&tmp_path, tau_path).map_err(|e| BootstrapError::TauPersist {
-        path: tau_path.display().to_string(),
-        reason: format!("rename from {}: {}", tmp_path.display(), e),
+    crate::util::atomic_io::atomic_write_sync(tau_path, contents.as_bytes()).map_err(|e| {
+        BootstrapError::TauPersist {
+            path: tau_path.display().to_string(),
+            reason: format!("atomic write: {e}"),
+        }
     })?;
 
     Ok(BootstrapWarmStartOutcome {

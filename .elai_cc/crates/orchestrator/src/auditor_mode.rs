@@ -367,7 +367,9 @@ pub fn persist_verdict(
         .map_err(|e| AuditorModeError::Persistence(format!("mkdir {}: {}", dir.display(), e)))?;
     let path = dir.join(format!("{}.md", v.tier_node_id.raw_id()));
     let body = render_verdict_markdown(v);
-    std::fs::write(&path, body)
+    // Atomic write: tmp + sync_all + rename via shared helper (I-3 Phase-3C hardening).
+    // Converts the prior direct std::fs::write (non-atomic) to the full pattern.
+    crate::util::atomic_io::atomic_write_sync(&path, body.as_bytes())
         .map_err(|e| AuditorModeError::Persistence(format!("write {}: {}", path.display(), e)))?;
     Ok(path)
 }

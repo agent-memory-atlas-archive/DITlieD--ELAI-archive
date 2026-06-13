@@ -41,7 +41,7 @@ use elai_orchestrator::benchmarks::conformal_validation_runner::{
     default_mini_fixture_path, ConformalValidationError, ConformalValidationReport,
     ConformalValidationRunner, VecConformalValidationSsbEmitter,
 };
-use elai_orchestrator::conformal_calibration::{
+use elai_orchestrator::calibration::{
     CalibrationCorpus, CalibrationTuple, ConformalError, CorpusSource,
 };
 use thiserror::Error;

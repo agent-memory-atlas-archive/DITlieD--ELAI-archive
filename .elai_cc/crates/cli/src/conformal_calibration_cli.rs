@@ -27,7 +27,7 @@
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-use elai_orchestrator::conformal_calibration::{
+use elai_orchestrator::calibration::{
     tau_path_default, TauUpdater, DEFAULT_EPSILON,
 };
 

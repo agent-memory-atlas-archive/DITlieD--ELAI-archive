@@ -44,6 +44,24 @@ fn cloud_client_attaches_ssb_writer_in_production() {
     );
 }
 
+/// P0-3 — local backends (Sidecar/Mlx/LlamaCpp/Ollama/Vllm) emit BackendCostAccrued
+/// rows with est_cost_micros=0 so the H-9 cockpit sees local-lane activity.
+/// Two wiring landmarks must be present:
+///   (a) `is_local()` call on the production emit path in runtime_orchestrator.rs
+///   (b) `est_cost_micros: 0` in the local-emit branch (never a fabricated cost)
+#[test]
+fn local_backends_emit_zero_cost_row() {
+    let src = read_src("orchestrator/src/runtime_orchestrator.rs");
+    assert!(
+        src.contains("is_local()"),
+        "runtime_orchestrator.rs must call backend.is_local() to gate the local $0 emit path"
+    );
+    assert!(
+        src.contains("est_cost_micros: 0"),
+        "the local-backend emit branch must set est_cost_micros: 0 (real token count, zero dollars)"
+    );
+}
+
 /// D2: the cost cockpit surfaces the MEASURED cache hit-rate (the believe-the-number
 /// instrument for H-1/H-2), derived from the existing CloudSpendInfo cache fields.
 #[test]

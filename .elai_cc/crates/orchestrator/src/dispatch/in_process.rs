@@ -15,7 +15,9 @@
 use std::sync::Arc;
 
 use super::{Dispatch, DispatchRequest, DispatchResult};
-use crate::ssb::{McpToolCalledPayload, Ssb, SsbPayload};
+use crate::ssb::{
+    BashRedirectedKind, BashRedirectedPayload, McpToolCalledPayload, Ssb, SsbPayload,
+};
 
 /// Closure-based tool runner. The CLI wiring constructs one wrapping
 /// `elai_tools::execute_tool` and passes it to `InProcessDispatch::new`.
@@ -90,6 +92,73 @@ impl InProcessDispatch {
             tracing::warn!(error = %e, "in_process_dispatch: ssb emit failed");
         }
     }
+
+    /// I-46: parse a bash tool structured-error result and emit a BashRedirected
+    /// SSB row when the error code indicates interception. Non-fatal (warn on Err).
+    ///
+    /// The error_code is carried inside the JSON envelope produced by
+    /// `crates/tools/src/lib.rs::structured_error()`:
+    ///   `{"error": "...", "error_code": "bash_redirected"|"bash_fixedup"|"bash_prefix_blocked"}`
+    ///
+    /// This method is called ONLY when `req.tool_name == "bash"` and `result` is Err.
+    fn maybe_emit_bash_redirected(&self, command: &str, err_str: &str) {
+        let Some(ssb) = self.ssb.as_ref() else { return };
+        // Parse the structured_error JSON envelope to extract error_code.
+        let error_code: Option<String> = serde_json::from_str::<serde_json::Value>(err_str)
+            .ok()
+            .and_then(|v| v.get("error_code")?.as_str().map(str::to_owned));
+        let kind = match error_code.as_deref() {
+            Some("bash_redirected") => BashRedirectedKind::Redirected,
+            Some("bash_fixedup") => BashRedirectedKind::FixedUp,
+            Some("bash_prefix_blocked") => BashRedirectedKind::PrefixBlocked,
+            _ => return, // Not a bash interception error; skip.
+        };
+        // Extract optional substitute_call or fixup_applied from the error message.
+        let substitute_call = if kind == BashRedirectedKind::Redirected {
+            // The message contains "Use `<tool_name>` instead." — extract the tool name.
+            serde_json::from_str::<serde_json::Value>(err_str)
+                .ok()
+                .and_then(|v| v.get("error")?.as_str().map(str::to_owned))
+        } else {
+            None
+        };
+        let fixup_applied = if kind == BashRedirectedKind::FixedUp {
+            serde_json::from_str::<serde_json::Value>(err_str)
+                .ok()
+                .and_then(|v| v.get("error")?.as_str().map(str::to_owned))
+        } else {
+            None
+        };
+        let payload = SsbPayload::BashRedirected(BashRedirectedPayload {
+            kind,
+            command: command.to_owned(),
+            substitute_call,
+            fixup_applied,
+            prefix_matched: if kind == BashRedirectedKind::PrefixBlocked {
+                // Extract the prefix from the first word of the command.
+                command.split_whitespace().next().map(str::to_owned)
+            } else {
+                None
+            },
+        });
+        let ssb = ssb.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        let rt = match rt {
+            Ok(rt) => rt,
+            Err(e) => {
+                tracing::warn!(error = %e, "in_process_dispatch: bash_redirected ssb runtime build failed; skipping emit");
+                return;
+            }
+        };
+        let result = rt.block_on(async move {
+            ssb.write_payload("in-process-dispatch", 0, payload, Vec::new()).await
+        });
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "in_process_dispatch: bash_redirected ssb emit failed");
+        }
+    }
 }
 
 impl Default for InProcessDispatch {
@@ -118,6 +187,19 @@ impl Dispatch for InProcessDispatch {
         let start = std::time::Instant::now(); // entropy-allow: benchmark-intrinsic-dispatch-latency-measurement
         let result = runner(&req.tool_name, req.args.clone());
         let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+        // I-46: emit a BashRedirected SSB row when the bash tool intercepted the call.
+        // Parse is non-fatal: a missing or malformed error_code silently skips emit.
+        // Only fires for the "bash" tool on error results (Redirected/FixedUp/PrefixBlocked).
+        if req.tool_name == "bash" {
+            if let Err(ref err_str) = result {
+                let command = req
+                    .args
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                self.maybe_emit_bash_redirected(command, err_str);
+            }
+        }
         // Emit one McpToolCalled row per call regardless of success/error.
         // The parity script unions ("mcp_tool_called", "cli_mcp_dispatch")
         // so the two dispatch legs produce equivalent observable streams.

@@ -794,18 +794,72 @@ async fn emit_run_artifact(
             gate_count,
             seed: artifact.seed,
             session_id: session_id.to_owned(),
+            objective_hash: artifact.objective_hash.clone(),
         },
     );
     ssb.write_payload("cli:run-rra", 0, payload, Vec::new())
         .await
         .map_err(|e| anyhow::anyhow!("writing run_artifact_emitted row: {e}"))?;
 
+    // 5. I-45: emit ObjectiveSealed(Sealed) when objective hash is present AND
+    //    the kill-switch is not set. Default-ON; set ELAI_OBJECTIVE_SEAL_DISABLE=1
+    //    to suppress (no allowlist row required per R9 for default-ON flags).
+    let objective_seal_disabled =
+        std::env::var("ELAI_OBJECTIVE_SEAL_DISABLE").unwrap_or_default() == "1";
+    if !objective_seal_disabled {
+        if let Some(ref obj_hash) = artifact.objective_hash {
+            let seal_payload = elai_orchestrator::ssb::SsbPayload::ObjectiveSealed(
+                elai_orchestrator::ssb::ObjectiveSealedPayload {
+                    kind: elai_orchestrator::ssb::ObjectiveSealedKind::Sealed,
+                    objective_hash: obj_hash.clone(),
+                    current_hash: None,
+                    session_id: session_id.to_owned(),
+                    ts_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64,
+                },
+            );
+            ssb.write_payload("cli:run-objective-seal", 0, seal_payload, Vec::new())
+                .await
+                .map_err(|e| anyhow::anyhow!("writing objective_sealed row: {e}"))?;
+        }
+    }
+
+    // 6. I-18: emit RowChainSealed(ChainAdvanced) to record the per-row rolling
+    //    blake3 chain beacon in the SSB. This is the PRODUCTION CALLER that
+    //    wires chain_prev_hash (computed by build_rra) into the live SSB stream.
+    //    The chain_prev_hash field on the artifact is None when this is the first
+    //    RRA in the session (GENESIS marker); ChainAdvanced is still emitted so
+    //    verifiers have a stable beacon to count and walk.
+    let chain_seq = ssb
+        .query_session_stream_asc(session_id)
+        .map(|s| s.last().map(|e| e.seq).unwrap_or(0))
+        .unwrap_or(0);
+    let chain_payload = elai_orchestrator::ssb::SsbPayload::RowChainSealed(
+        elai_orchestrator::ssb::RowChainSealedPayload {
+            kind: elai_orchestrator::ssb::RowChainSealedKind::ChainAdvanced,
+            seq: chain_seq,
+            session_id: session_id.to_owned(),
+            ts_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64,
+            break_seq: None,
+        },
+    );
+    ssb.write_payload("cli:run-chain-advanced", 0, chain_payload, Vec::new())
+        .await
+        .map_err(|e| anyhow::anyhow!("writing row_chain_sealed(chain_advanced) row: {e}"))?;
+
     tracing::info!(
         rra_path = %rra_path.display(),
         root_blake3 = %artifact.root_blake3,
         guarantee_level = %artifact.guarantee_level.as_sql_str(),
         gate_count,
-        "elai run: G-2 RRA sealed + run_artifact_emitted row written"
+        objective_hash = ?artifact.objective_hash,
+        chain_prev_hash = ?artifact.chain_prev_hash,
+        "elai run: G-2 RRA sealed + run_artifact_emitted + objective_sealed + row_chain_sealed rows written"
     );
     Ok(())
 }
@@ -870,13 +924,36 @@ async fn emit_attestation(
         .await
         .map_err(|e| anyhow::anyhow!("writing provenance_attestation_emitted row: {e}"))?;
 
+    // 6. I-18: emit RowChainSealed(AibomEmitted) after the AI-BOM was emitted
+    //    into the attestation sidecar. This is the PRODUCTION CALLER that wires
+    //    the AibomEntry (built by build_attestation) into the live SSB stream.
+    let aibom_seq = ssb
+        .query_session_stream_asc(session_id)
+        .map(|s| s.last().map(|e| e.seq).unwrap_or(0))
+        .unwrap_or(0);
+    let aibom_payload = elai_orchestrator::ssb::SsbPayload::RowChainSealed(
+        elai_orchestrator::ssb::RowChainSealedPayload {
+            kind: elai_orchestrator::ssb::RowChainSealedKind::AibomEmitted,
+            seq: aibom_seq,
+            session_id: session_id.to_owned(),
+            ts_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64,
+            break_seq: None,
+        },
+    );
+    ssb.write_payload("cli:run-aibom-emitted", 0, aibom_payload, Vec::new())
+        .await
+        .map_err(|e| anyhow::anyhow!("writing row_chain_sealed(aibom_emitted) row: {e}"))?;
+
     tracing::info!(
         attestation_path = %attestation_path.display(),
         subject_blake3 = %subject_blake3,
         run_artifact_root = %artifact.root_blake3,
         verified_levels,
         all_passed,
-        "elai run: G-8 in-toto attestation signed + provenance_attestation_emitted row written"
+        "elai run: G-8 in-toto attestation signed + provenance_attestation_emitted + aibom_emitted rows written"
     );
     Ok(())
 }

@@ -13,8 +13,9 @@ use std::process::Command;
 use std::sync::Arc;
 
 use elai_orchestrator::{
-    ConfigLoader, ConfigSource, ProjectContext, Session, ContentBlock, MessageRole,
-    RuntimeHookConfig, TokenUsage, PermissionMode, load_system_prompt, resolve_sandbox_status,
+    apply_to_system_prompt, ConfigLoader, ConfigSource, ProjectContext, Session, ContentBlock,
+    MessageRole, RoleContractStore, RuntimeHookConfig, TokenUsage, PermissionMode,
+    load_system_prompt, resolve_sandbox_status,
 };
 use elai_plugins::{PluginHooks, PluginManager, PluginManagerConfig};
 use elai_rules::rule_engine::{CompiledPredicate, DefaultRuleEngine, Rule, RuleEngine};
@@ -1134,6 +1135,13 @@ pub(crate) fn build_system_prompt_for_role(
         // that reference loaded config/CLAUDE.md content.
         sections.retain(|s| !s.starts_with("# Claude instructions"));
     }
+    // I-32: strip narrative persona and inject schema-first role contract text for
+    // factual/code roles (Executor, Researcher, ContextCompiler, Designer, MemoryWriter).
+    // Alignment-dependent roles (Auditor, IdeaCritic, InjectionClassifier) retain their
+    // original framing (PersonaRetained). Grounded per IC-17: narrative persona harms
+    // MMLU -3.6..-5.3pp and MT-Bench coding -0.65 for factual/code roles.
+    let store = RoleContractStore::default();
+    apply_to_system_prompt(&mut sections, role, &store);
     // H-31: append the user-memory section iff the firewall allows this role AND the flag is on.
     // No SSB available at construction time — callers that have self.ssb should use
     // assemble_user_memory_section_with_ssb directly when they want SSB emission.

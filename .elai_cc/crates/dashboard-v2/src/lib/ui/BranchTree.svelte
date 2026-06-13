@@ -99,8 +99,8 @@
   }
 
   // Determine if any node in the tree is the HEAD and has children (redo available).
-  $derived: const headNode = timetravelNodes?.find(n => n.is_head);
-  $derived: const redoAvailable = (headNode?.children_count ?? 0) > 0;
+  let headNode = $derived(timetravelNodes?.find(n => n.is_head));
+  let redoAvailable = $derived((headNode?.children_count ?? 0) > 0);
 </script>
 
 {#if timetravelNodes && timetravelNodes.length > 0}

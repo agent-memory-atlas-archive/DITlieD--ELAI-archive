@@ -95,6 +95,7 @@ use crate::per_level_audit_dispatch::{
     emit_goal_drift_for_verdict, emit_started as emit_audit_started,
     record_verdict as record_audit_verdict, CascadeOutcome,
 };
+use crate::directive::Directive;
 use crate::grounding_client::{CloudGroundingClient, SidecarGroundingClient};
 use crate::hook_dispatcher::{
     emit_hook_events_to_ssb, emit_shortcoder_compression_to_ssb, HookFinding, HookInvocation,
@@ -111,16 +112,17 @@ use crate::research_tree::{
     DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS,
 };
 use crate::ssb::{
-    AntiSpiralHitPayload, AuditorRubberStampRejectedPayload, BabyStepReadyPayload,
-    ClaimConfidenceScoredPayload,
+    AbstentionScoredPayload, AntiSpiralHitPayload, AuditorRubberStampRejectedPayload,
+    BabyStepReadyPayload, ClaimConfidenceScoredPayload,
     CsqEvaluatedPayload, DkgQuerierSwappedPayload, DkgReadyPayload, EvidenceGateEvaluatedPayload,
     FindingPayload, GrcStepEmittedPayload, GroundingSweepResultPayload, IndexingProgressPayload,
     PhaseCompletePayload, PhaseNodeReadyPayload, PreviewAvailablePayload, ProviderSignalsPayload,
     ReasoningTracePayload, SearchTriggerFiredPayload, Ssb, SsbActionType, SsbEntry, SsbPayload,
     SsbReader, StepNodeReadyPayload, SupervisionEventPayload, TaskSubmittedPayload,
-    TestIntegrityEventKind, TestIntegrityEventPayload, TestOutcomePayload, VramTierDetectedPayload,
-    WebResearchStepPayload,
+    TestIntegrityEventKind, TestIntegrityEventPayload, TestOutcomePayload, TrajectoryAbortedKind,
+    TrajectoryAbortedPayload, VramTierDetectedPayload, WebResearchStepPayload,
 };
+use crate::sandbox::BranchWorkspace;
 use crate::evidence::{AntiFabricationGate, EvidenceGate, IntegrationTestRowSummary, TransitionContext};
 use crate::supervision::{EscalationAction, SupervisionManager, SupervisionOutcome, SupervisionPolicy};
 use crate::web_research_orchestrator::{
@@ -2989,6 +2991,22 @@ pub struct TaskRunnerConfig {
     /// `ResolvedConfig::from` copy is cheap (all fields are `Copy` or small
     /// scalars with no heap allocation).
     pub planning_config: crate::runtime_config::PlanningConfig,
+    /// P0-1 (adversary resolver) — boot-time cross-family adversary runtime.
+    /// When `Some`, `dispatch_adversarial_pass` routes the completed task's
+    /// claim through the cross-family adversary (typically `CloudAdversary`
+    /// backed by AnthropicClient) and emits the `adversary_generated` +
+    /// `consensus_reevaluated_with_counter` SSB row pair when
+    /// `ELAI_ADVERSARY_ENABLE=1` is set.
+    ///
+    /// Constructed in [`crate::build_task_runner_wiring`] when BOTH:
+    ///   1. `ELAI_ALLOW_CLOUD_ADVERSARY=1` is set, AND
+    ///   2. [`crate::adversary::route_cross_family`] succeeds (two distinct
+    ///      model families are reachable from the pool).
+    ///
+    /// Single-family deploys (local-only, single-cloud) leave this `None`
+    /// (same-family-pairing guard in route_cross_family). `None` keeps the
+    /// row pair dark — pre-P0-1 behaviour.
+    pub adversary_runtime: Option<Arc<crate::runtime_config::AdversaryRuntimeState>>,
 }
 
 impl TaskRunnerConfig {
@@ -3064,6 +3082,11 @@ impl TaskRunnerConfig {
             // E-46 D-8: default matches current module constants exactly.
             // The CLI boot site overwrites this with values from elai_cc.toml.
             planning_config: crate::runtime_config::PlanningConfig::default(),
+            // P0-1 (adversary resolver): default None preserves pre-P0-1
+            // behaviour (adversary row pair stays dark). Production wiring via
+            // apply_task_runner_wiring populates this when
+            // ELAI_ALLOW_CLOUD_ADVERSARY=1 and route_cross_family succeeds.
+            adversary_runtime: None,
         }
     }
 
@@ -3489,9 +3512,8 @@ struct ResolvedConfig {
     /// D-10/D-11/D-12 toggle pattern so the operator surface stays
     /// consistent across producers. `#[allow(dead_code)]` because the
     /// field is consumed via `as_ref()` inside the hook but the
-    /// construction site is wired through `TaskRunnerConfig` in a
-    /// follow-up patch (the wire itself is in place).
-    #[allow(dead_code)]
+    /// construction site is wired through `TaskRunnerConfig` via
+    /// `build_task_runner_wiring` / `apply_task_runner_wiring` (P0-1).
     adversary_runtime: Option<Arc<crate::runtime_config::AdversaryRuntimeState>>,
     /// D-14 closure — sycophancy probe runtime state for the post-task
     /// `dispatch_sycophancy_probe_hook` hook. When `Some` AND
@@ -3828,17 +3850,15 @@ impl ResolvedConfig {
             // for run_operational_check) per D-12-decisions.md
             // DECISION-6.
             operationalization_runtime: None,
-            // D-13 closure: default None — `dispatch_adversarial_pass`
-            // is wired but the runtime construction site lands in the
-            // sidecar/CLI boot path so the `adversary_generated` +
-            // `consensus_reevaluated_with_counter` SSB row pair stays
-            // dark until both the runtime is plumbed AND
-            // ELAI_ADVERSARY_ENABLE=1 is set. Mirrors the
-            // D-10/D-11/D-12 toggle pattern. Closes GAP-1
-            // (production dispatch wire for
-            // `GroundingMode::FalsifiabilityCrossFamily`) per
-            // D-13-decisions.md DECISION-5.
-            adversary_runtime: None,
+            // P0-1: thread the production adversary runtime from TaskRunnerConfig
+            // instead of the previous hardcoded None. When ELAI_ALLOW_CLOUD_ADVERSARY
+            // is set and route_cross_family succeeds at boot time (build_task_runner_wiring),
+            // cfg.adversary_runtime carries the live AdversaryRuntimeState; single-family
+            // deploys or absent ELAI_ALLOW_CLOUD_ADVERSARY leave it None (same-family
+            // guard in route_cross_family). ELAI_ADVERSARY_ENABLE is still required to
+            // activate dispatch_adversarial_pass (two-gate pattern: runtime plumbed
+            // AND env gate flips). Replaces the D-13 hardcoded None.
+            adversary_runtime: cfg.adversary_runtime,
             // D-14 closure: default None —
             // `dispatch_sycophancy_probe_hook` is wired but the
             // runtime construction site lands in the sidecar/CLI boot
@@ -5510,6 +5530,67 @@ async fn run_parallel_phases_via_bsp(
                 .join(format!("task_{}", seq))
                 .join(format!("phase_{}", phase.id.0));
 
+            // I-2: CoW workspace isolation. Resolve the git toplevel (which is
+            // the PARENT workflow root, NOT .elai_cc — the git-toplevel trap, see
+            // sandbox::branch_workspace docs) from the scratch anchor, build a
+            // warm git-worktree pool wired with the run's SSB writer, and spawn
+            // one private workspace root per parallel node. Each `spawn` emits a
+            // `BranchWorkspaceEvent::Spawned` SSB row whose assigned seq is the
+            // deterministic barrier merge order (GD-2). The pool + merge plan are
+            // attached to BspConfig so the BSP barrier runs `barrier_merge` after
+            // the deferred-task phase. Toplevel resolution failing (e.g. not a
+            // git repo) is non-fatal: the workspace stays None and the run keeps
+            // its legacy single-dir behaviour rather than aborting the dispatch.
+            let (workspace, branch_merge) = match crate::sandbox::WorktreePoolImpl::resolve_toplevel(
+                &scratch_root,
+            ) {
+                Ok(toplevel) => {
+                    let pool = crate::sandbox::WorktreePoolImpl::new(toplevel, &session_id)
+                        .with_ssb(Arc::clone(writer));
+                    let mut branches = Vec::with_capacity(node_specs.len());
+                    let mut spawn_failed = false;
+                    for node in &node_specs {
+                        match pool.spawn(&node.id, &session_id).await {
+                            Ok(root) => branches.push(root),
+                            Err(e) => {
+                                emit_finding(
+                                    writer,
+                                    "warn",
+                                    BSP_PHASE_FAILED_CATEGORY,
+                                    &format!(
+                                        "I-2 branch workspace spawn failed for node={} phase={}: {} (continuing without workspace isolation for this phase)",
+                                        node.id, phase.id.0, e,
+                                    ),
+                                )
+                                .await;
+                                spawn_failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if spawn_failed {
+                        // Roll back any partially-created worktrees so a failed
+                        // spawn does not leak scratch worktrees.
+                        pool.prune().await;
+                        (None, None)
+                    } else {
+                        let plan = crate::bsp::BranchMergePlan {
+                            branches,
+                            merge_target: scratch_root.clone(),
+                        };
+                        (Some(pool), Some(plan))
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        phase_id = phase.id.0,
+                        error = %e,
+                        "I-2: git toplevel resolution failed; running phase without CoW workspace isolation"
+                    );
+                    (None, None)
+                }
+            };
+
             let config = crate::bsp::BspConfig {
                 max_superstep_attempts: crate::bsp::MAX_SUPERSTEP_ATTEMPTS,
                 max_supersteps: crate::bsp::MAX_SUPERSTEPS,
@@ -5520,6 +5601,8 @@ async fn run_parallel_phases_via_bsp(
                 session_id,
                 project_id,
                 simulated_agent_work: std::time::Duration::ZERO,
+                workspace: workspace.clone(),
+                branch_merge,
             };
 
             let pool_config = crate::agent_pool::AgentPoolConfig {
@@ -5574,6 +5657,15 @@ async fn run_parallel_phases_via_bsp(
                     )
                     .await;
                 }
+            }
+
+            // I-2: tear down the branch worktrees this phase created (whether the
+            // run succeeded or failed). `prune` is best-effort with a bounded
+            // retry on the Windows handle race; a leaked scratch worktree is
+            // logged, never fatal. `None` when workspace isolation was not wired
+            // for this phase (toplevel-resolve or spawn failed earlier).
+            if let Some(pool) = &workspace {
+                pool.prune().await;
             }
         }
     }
@@ -6167,7 +6259,7 @@ async fn drive_task(
             Some(resolved.model_capability_profile.as_ref()),
             Some(&phase_slot),
         ) {
-            Ok(ctx) => {
+            Ok(mut ctx) => {
                 emit_finding(
                     writer,
                     "info",
@@ -6275,6 +6367,238 @@ async fn drive_task(
                         .await
                     {
                         warn!(seq, error = %e, "task_runner: ConstraintsInjected write failed");
+                    }
+                }
+
+                // I-11: adaptive_reduce + evaluate_handoff production wiring.
+                //
+                // Two functions had zero production callers before I-11:
+                //   (1) context_budget::ContextBudget::adaptive_reduce -- wired here.
+                //   (2) escalation_policy::evaluate_handoff -- wired here.
+                //
+                // Flow:
+                //   a. When a ContextBudget is present and tokens_used >= threshold,
+                //      call adaptive_reduce (DEFAULT overlap_threshold=0.5, ExecutionMode::Cloud).
+                //      This is the IS-6 condensation step. The &mut self borrow releases before
+                //      BeliefState construction.
+                //   b. Build a HandoffContext from the live token tracker (if plumbed) and
+                //      the active budget ceiling. Fall back to FALLBACK_EFFECTIVE_MAX_CONTEXT
+                //      when no tracker is available.
+                //   c. Call evaluate_handoff. On HandoffDecision::Cloud, encode the slot
+                //      snapshot into a BeliefState, emit the ID-3 receipt row (BeliefStateEvent
+                //      Condensed), then emit BeliefStateEvent(Handoff). Inject the encoded bytes
+                //      into the returned decision's belief_state_payload field.
+                //   d. Run the honesty job if the escalation count threshold is met.
+                //
+                // Non-fatal: all errors are logged + swallowed (matches the surrounding
+                // best-effort emit pattern for ContextBudgetComputed, SsbFilteredByOverlap).
+                // This is an observability + payload-enrichment path; it MUST NOT abort dispatch.
+                {
+                    use crate::escalation_policy::{
+                        evaluate_handoff, HandoffContext, HandoffDecision,
+                        FALLBACK_EFFECTIVE_MAX_CONTEXT,
+                    };
+                    use crate::context_budget::ExecutionMode;
+                    use crate::belief_state::{BeliefState, TriedApproach, run_honesty_job_if_due};
+                    use crate::ssb::BeliefStateEventKind;
+
+                    // Step (a): adaptive_reduce on the assembled ContextBudget.
+                    // Only fires when total_used > model_max_context (the function's
+                    // internal guard). Non-blocking: failures are logged and swallowed.
+                    let token_delta_from_reduce: u32 = if let Some(budget) = ctx.budget.as_mut() {
+                        let before = budget.total_used;
+                        match budget
+                            .adaptive_reduce(0.5, ExecutionMode::Autonomous, writer.as_ref())
+                            .await
+                        {
+                            Ok(()) => {
+                                let after = budget.total_used;
+                                u32::try_from(before.saturating_sub(after)).unwrap_or(0)
+                            }
+                            // All AdaptiveError variants (Escalate, SplitTask, SsbWrite) are
+                            // non-fatal at this seam. Escalate = budget still exceeded after
+                            // all reduction levels (proceed with handoff check anyway).
+                            Err(e) => {
+                                tracing::warn!(
+                                    seq,
+                                    error = %e,
+                                    "task_runner: I-11 adaptive_reduce failed (non-fatal)"
+                                );
+                                0
+                            }
+                        }
+                    } else {
+                        0
+                    };
+
+                    // Step (b): build HandoffContext from live tracker or budget ceiling.
+                    let effective_max: u32 = ctx
+                        .budget
+                        .as_ref()
+                        .map(|b| u32::try_from(b.model_max_context).unwrap_or(FALLBACK_EFFECTIVE_MAX_CONTEXT))
+                        .unwrap_or(FALLBACK_EFFECTIVE_MAX_CONTEXT);
+
+                    let tokens_used: u32 = match resolved.token_tracker.as_ref() {
+                        Some(tracker) => {
+                            let guard = tracker.lock().await;
+                            let used = guard.current_session_budget();
+                            drop(guard);
+                            u32::try_from(used).unwrap_or(u32::MAX)
+                        }
+                        None => 0,
+                    };
+
+                    // Conservative: 0 files_referenced at this seam (no per-task
+                    // file-access tracking plumbed at the build_dispatch_context site).
+                    // This keeps deep_mode suppressed (requires > DEEP_MODE_MIN_FILES_REFERENCED).
+                    let files_referenced: u32 = 0;
+
+                    // session_id string -> u64 via hash for the HandoffContext.
+                    let session_id_u64: u64 = {
+                        let bytes = writer.session_id().as_bytes();
+                        let hash = blake3::hash(bytes);
+                        let arr: [u8; 8] = hash.as_bytes()[..8]
+                            .try_into()
+                            .unwrap_or([0u8; 8]);
+                        u64::from_le_bytes(arr)
+                    };
+
+                    let handoff_ctx = HandoffContext {
+                        tokens_used,
+                        effective_max_context: effective_max,
+                        files_referenced,
+                        // conservative: no remote GPU knowledge at this seam.
+                        remote_24gb_reachable: false,
+                        session_id: session_id_u64,
+                    };
+
+                    // Step (c): evaluate_handoff -- the production call site (was ZERO callers).
+                    match evaluate_handoff(&handoff_ctx, &writer).await {
+                        Ok(HandoffDecision::Cloud { reason, .. }) => {
+                            // Encode the BeliefState condensate (ID-3 receipt path).
+                            let bs = BeliefState::new(
+                                vec![TriedApproach {
+                                    label: format!("task_{seq}"),
+                                    token_cost: tokens_used,
+                                }],
+                                Vec::new(),
+                                Vec::new(),
+                                constraints.clone(),
+                                Vec::new(),
+                                token_delta_from_reduce,
+                            );
+
+                            let ts_ms = i64::try_from(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis(),
+                            )
+                            .unwrap_or(0);
+
+                            // Emit ID-3 Condensed receipt.
+                            if let Err(e) = bs
+                                .emit_condensed_receipt(writer.as_ref(), session_id_u64, ts_ms)
+                                .await
+                            {
+                                tracing::warn!(
+                                    seq,
+                                    error = %e,
+                                    "task_runner: I-11 BeliefStateEvent(Condensed) write failed (non-fatal)"
+                                );
+                            }
+
+                            // Encode + emit Handoff receipt.
+                            match bs.encode() {
+                                Ok(encoded) => {
+                                    let payload_bytes =
+                                        u32::try_from(encoded.len()).unwrap_or(u32::MAX);
+                                    if let Err(e) = bs
+                                        .emit_handoff_receipt(
+                                            writer.as_ref(),
+                                            session_id_u64,
+                                            payload_bytes,
+                                            ts_ms,
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            seq,
+                                            error = %e,
+                                            "task_runner: I-11 BeliefStateEvent(Handoff) write failed (non-fatal)"
+                                        );
+                                    }
+                                    tracing::info!(
+                                        seq,
+                                        reason = %reason,
+                                        payload_bytes,
+                                        token_delta = token_delta_from_reduce,
+                                        "task_runner: I-11 cloud escalation -- BeliefState payload ready"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        seq,
+                                        error = %e,
+                                        "task_runner: I-11 BeliefState::encode failed (non-fatal)"
+                                    );
+                                }
+                            }
+
+                            // Step (d): honesty job -- fires if escalation_count threshold met.
+                            // Count prior Handoff BeliefStateEvent rows to determine whether
+                            // the honesty job interval threshold is met.
+                            let escalation_count: u32 = {
+                                writer
+                                    .query_session_stream_asc(writer.session_id())
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .filter(|r| {
+                                        matches!(
+                                            r.action_type,
+                                            crate::ssb::SsbActionType::BeliefStateEvent(
+                                                BeliefStateEventKind::Handoff
+                                            )
+                                        )
+                                    })
+                                    .count()
+                                    .try_into()
+                                    .unwrap_or(0)
+                            };
+
+                            // full_history = tokens_used (pre-reduce);
+                            // belief_state = tokens_used after reduction (saturating).
+                            let belief_state_tokens =
+                                tokens_used.saturating_sub(token_delta_from_reduce);
+                            run_honesty_job_if_due(
+                                writer.as_ref(),
+                                session_id_u64,
+                                escalation_count,
+                                tokens_used,
+                                belief_state_tokens,
+                                ts_ms,
+                                false,
+                            )
+                            .await;
+                        }
+                        Ok(HandoffDecision::DeepMode { ctx_cap, reason }) => {
+                            tracing::info!(
+                                seq,
+                                ctx_cap,
+                                reason = %reason,
+                                "task_runner: I-11 deep-mode selected (no cloud escalation this dispatch)"
+                            );
+                        }
+                        Ok(HandoffDecision::Continue) => {
+                            // Below threshold — no handoff needed this dispatch. No-op.
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                seq,
+                                error = %e,
+                                "task_runner: I-11 evaluate_handoff failed (non-fatal)"
+                            );
+                        }
                     }
                 }
 
@@ -7167,12 +7491,61 @@ async fn drive_task(
     // pattern recurrence without re-suggesting the same persona.
     let mut persona_rotation_idx: usize = 0;
 
+    // I-8: per-task dead-end cache (F-1 wiring — pre-dispatch prune guard).
+    //
+    // Allocated once per drive_task call; lives for the duration of the
+    // baby-step loop and is dropped on return.  No ResolvedConfig field is
+    // needed: the cache is not shared across concurrent tasks (each task's
+    // drive_task call owns its own instance, which is the correct scope —
+    // dead-end detection is per-task, not cross-task).
+    //
+    // Default-ON: the cache is a pure in-memory prune (no I/O, no network).
+    // No kill-switch flag per audit decision: see workflow/reasoning/I-8-decisions.md
+    // D-FIX-1.  The fingerprint uses the top-level task text as the task bytes
+    // and the baby-step task_summary as the approach bytes — the approach
+    // distinguishes baby steps within the same top-level task (two different
+    // baby steps attempting the same strategy fingerprint to the same hash and
+    // the second is pruned; a fresh approach with different task_summary bytes
+    // produces a different fingerprint and is allowed through).
+    // I-8 cache + I-17 halting-bound watchdog (FORK-B companion edit). The
+    // watchdog is wire-dark by default: only when ELAI_TRI_LAYER_ENABLE is set
+    // (verifier_stack::tri_layer_enabled, wire-dark-allowlist row, promotion
+    // plan I-4) do we install the SSB writer + the bound so check_halting_bound
+    // spawns a real timer. With the flag unset the cache is constructed exactly
+    // as before (plain new(), no watchdog, zero behaviour change).
+    let mut dead_end_cache = {
+        let base = crate::dead_end_cache::DeadEndCache::new(
+            crate::dead_end_cache::DEFAULT_DEAD_END_CACHE_CAPACITY,
+        );
+        if crate::verifier_stack::tri_layer_enabled() {
+            crate::dead_end_cache::DeadEndCache::new_with_halting_bound(
+                crate::dead_end_cache::DEFAULT_DEAD_END_CACHE_CAPACITY,
+                crate::dead_end_cache::DEFAULT_HALTING_BOUND_MS_FALLBACK,
+            )
+            .with_ssb_writer(std::sync::Arc::clone(writer))
+        } else {
+            base
+        }
+    };
+    // I-17 watchdog handle for the in-flight baby step. Aborted (cancel-on-
+    // progress) when the next baby step starts; left to fire only if a step
+    // overruns the bound without the loop advancing. `None` when wire-dark.
+    let mut halting_watchdog: Option<tokio::task::JoinHandle<()>> = None;
+
     loop {
         if cancel.is_cancelled() {
+            // Abort any in-flight watchdog on shutdown so it does not outlive
+            // the task and emit a spurious HaltingBound row.
+            if let Some(h) = halting_watchdog.take() {
+                h.abort();
+            }
             return Ok(());
         }
         if steps_executed >= MAX_BABY_STEPS_PER_TASK {
             warn!(seq, "task_runner: hit MAX_BABY_STEPS_PER_TASK cap");
+            if let Some(h) = halting_watchdog.take() {
+                h.abort();
+            }
             break;
         }
         // C-20: measurement-mode batch delay. The double-gated helper
@@ -7191,13 +7564,33 @@ async fn drive_task(
             // Re-check cancellation after the sleep so a shutdown signal
             // does not have to wait for an entire baby-step round-trip.
             if cancel.is_cancelled() {
+                if let Some(h) = halting_watchdog.take() {
+                    h.abort();
+                }
                 return Ok(());
             }
         }
         let Some(bs_id) = nav.next_baby_step(&state) else {
+            // No further baby steps: abort any in-flight watchdog before the
+            // loop exits so it never outlives the task.
+            if let Some(h) = halting_watchdog.take() {
+                h.abort();
+            }
             break;
         };
         steps_executed += 1;
+
+        // I-17 halting-bound watchdog (FORK-B production caller). Cancel the
+        // previous step's watchdog (the prior step completed = made progress),
+        // then arm a fresh one for this step. When wire-dark (flag unset, no SSB
+        // writer installed above) check_halting_bound returns None and this is a
+        // no-op. The watchdog fires a TrajectoryAborted(HaltingBound) SSB row iff
+        // this step overruns DEFAULT_HALTING_BOUND_MS_FALLBACK without the loop
+        // advancing to the next step.
+        if let Some(h) = halting_watchdog.take() {
+            h.abort();
+        }
+        halting_watchdog = dead_end_cache.check_halting_bound();
 
         // C-2: emit PhaseNodeReady / StepNodeReady / BabyStepReady at the
         // baby-step entry point. The navigator has no dedicated enter_phase
@@ -9175,7 +9568,186 @@ async fn drive_task(
                 changed_files: Vec::new(),
             }
         } else {
-            resolved.baby_step_executor.execute(exec_ctx).await
+            // I-8 pre-dispatch dead-end cache guard (F-1 remedy, BLOCK-1).
+            //
+            // Fingerprint the (task, approach) pair BEFORE dispatching to the
+            // model.  If the hash is already present the trajectory is
+            // isomorphic to a previously-aborted one: emit
+            // TrajectoryAborted(DeadEndHash) + AbstentionScored (H-39 GD-1
+            // compose) and skip the model call entirely (ID-1 doctrine: zero
+            // tokens on isomorphic re-attempts).
+            //
+            // `original_task_tokens_text`  = top-level task text  (task bytes).
+            // `task_summary`               = baby-step description (approach bytes).
+            let approach_hash = crate::dead_end_cache::DeadEndCache::fingerprint(
+                original_task_tokens_text.as_bytes(),
+                task_summary.as_bytes(),
+            );
+            if dead_end_cache.check_and_insert(&approach_hash) {
+                // Dead-end collision: prune the branch without model dispatch.
+                let ts_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
+                let abort_payload = SsbPayload::TrajectoryAborted(TrajectoryAbortedPayload {
+                    kind: TrajectoryAbortedKind::DeadEndHash,
+                    session_id: String::new(),
+                    trajectory_id: None,
+                    approach_hash: Some(approach_hash.clone()),
+                    abort_reason_text: Some(
+                        "isomorphic re-attempt pruned by dead-end cache (ID-1)".into(),
+                    ),
+                    ts_ms,
+                });
+                if let Err(e) = writer
+                    .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, abort_payload, Vec::new())
+                    .await
+                {
+                    tracing::warn!(
+                        baby_step = bs_id.0,
+                        approach_hash = %approach_hash,
+                        error = %e,
+                        "task_runner: DeadEndHash TrajectoryAborted SSB write failed (non-fatal)"
+                    );
+                }
+                // H-39 GD-1 compose: credit the abstention.
+                use crate::abstention_score::{
+                    abstention_aware_score, OutcomeTriple, DEFAULT_CONFIDENCE_TARGET,
+                };
+                use crate::calibration::RefusalDecision;
+                let outcome = OutcomeTriple::new(RefusalDecision::Abstain, false);
+                let mean_score = abstention_aware_score(outcome, DEFAULT_CONFIDENCE_TARGET);
+                let abstention_payload = SsbPayload::AbstentionScored(AbstentionScoredPayload {
+                    suite: "voluntary_abort".into(),
+                    mean_score,
+                    abstention_rate: 1.0,
+                    confident_wrong_rate: 0.0,
+                    t: DEFAULT_CONFIDENCE_TARGET,
+                    n: 1,
+                    seed: 0,
+                    corpus_blake3: String::new(),
+                });
+                if let Err(e) = writer
+                    .write_payload(
+                        RUNNER_AGENT_ID,
+                        RUNNER_SUPERSTEP,
+                        abstention_payload,
+                        Vec::new(),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        baby_step = bs_id.0,
+                        error = %e,
+                        "task_runner: DeadEndHash AbstentionScored SSB write failed (non-fatal)"
+                    );
+                }
+                BabyStepExecutionResult {
+                    outcome: BabyStepOutcome::Failed {
+                        reason: format!(
+                            "DEAD_END_PRUNE: isomorphic re-attempt aborted (hash={approach_hash})"
+                        ),
+                    },
+                    duration_ms: 0,
+                    exit_code: None,
+                    stderr_tail: String::new(),
+                    changed_files: Vec::new(),
+                }
+            } else {
+                // I-1: route through Supervisor::execute_directive when a
+                // supervisor is installed on the hook dispatcher. This is the
+                // production tool-dispatch seam that makes Executed /
+                // Discarded / CompensationFired SSB rows fire on real
+                // operations (wiring-enforcement R6/R7: test-file callers
+                // alone do not satisfy production reachability).
+                //
+                // Design (D4 in phase-I1-decisions.md):
+                //   * The op closure wraps the real baby_step_executor.execute
+                //     call and stores its BabyStepExecutionResult in a shared
+                //     slot so the caller can use it after execute_directive
+                //     returns.
+                //   * The compensate closure is a no-op at Tier-1 (in-process
+                //     stub). Binding to e44_run_saga_step is Tier-2 work gated
+                //     behind ELAI_E44_SAGA_ENABLE; the generic-closure seam
+                //     here is the composition point (no task_runner coupling
+                //     inside directive.rs, no visibility leak).
+                //   * Discarded must actually BLOCK the op (fail-closed): if
+                //     run_gates fires here after passing in dispatch_pre_tool_use
+                //     the directive is discarded and a Failed result is returned.
+                let supervisor_opt = resolved
+                    .hook_dispatcher
+                    .as_ref()
+                    .and_then(|d| d.supervisor());
+                if let Some(sup) = supervisor_opt {
+                    use crate::directive::{DirectiveOutcome, Supervisor as _};
+                    use std::sync::{Arc as StdArc, Mutex as StdMutex};
+                    let result_slot: StdArc<StdMutex<Option<BabyStepExecutionResult>>> =
+                        StdArc::new(StdMutex::new(None));
+                    let slot_for_op = StdArc::clone(&result_slot);
+                    let executor = Arc::clone(&resolved.baby_step_executor);
+                    let directive = Directive::new(
+                        BABY_STEP_PRE_GATE_ACTION,
+                        serde_json::json!({ "step_id": format!("baby_step_{}", bs_id.0) }),
+                        format!("baby_step_{}", bs_id.0),
+                        RUNNER_AGENT_ID,
+                    );
+                    // Use execute_directive_dyn (object-safe boxed-closure variant)
+                    // so the call works on Arc<dyn Supervisor> without downcasting.
+                    let dir_outcome = sup
+                        .execute_directive_dyn(
+                            directive,
+                            Box::new(move || {
+                                let slot = StdArc::clone(&slot_for_op);
+                                Box::pin(async move {
+                                    let r = executor.execute(exec_ctx).await;
+                                    let passed = matches!(r.outcome, BabyStepOutcome::Passed);
+                                    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+                                    if passed {
+                                        Ok(())
+                                    } else {
+                                        Err("baby_step_failed".to_string())
+                                    }
+                                }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+                            }),
+                            // Tier-1: no-op compensate. Tier-2 binds
+                            // e44_run_saga_step when ELAI_E44_SAGA_ENABLE fires.
+                            Box::new(|| Box::pin(async {}) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>),
+                        )
+                        .await;
+                    match dir_outcome {
+                        Ok(DirectiveOutcome::Discarded) => {
+                            // Gates re-fired and blocked the op (fail-closed).
+                            BabyStepExecutionResult {
+                                outcome: BabyStepOutcome::Failed {
+                                    reason: "I1_DISCARDED: supervisor gate blocked at execute_directive seam".into(),
+                                },
+                                duration_ms: 0,
+                                exit_code: None,
+                                stderr_tail: String::new(),
+                                changed_files: Vec::new(),
+                            }
+                        }
+                        Ok(_) | Err(_) => {
+                            // Executed or CompensationFired: return the actual
+                            // executor result captured inside the op closure.
+                            // Err(_) = op crashed; result_slot holds the result
+                            // from before the crash (or None if op never ran).
+                            result_slot
+                                .lock()
+                                .ok()
+                                .and_then(|mut g| g.take())
+                                .unwrap_or_else(|| BabyStepExecutionResult {
+                                    outcome: BabyStepOutcome::Failed {
+                                        reason: "I1_EXEC_RESULT_MISSING: no result captured from op closure".into(),
+                                    },
+                                    duration_ms: 0,
+                                    exit_code: None,
+                                    stderr_tail: String::new(),
+                                    changed_files: Vec::new(),
+                                })
+                        }
+                    }
+                } else {
+                    resolved.baby_step_executor.execute(exec_ctx).await
+                }
+            }
         };
         let mut outcome = exec_result.outcome;
         let mut outcome_passed = matches!(outcome, BabyStepOutcome::Passed);
@@ -10757,6 +11329,19 @@ async fn drive_task(
     // AND the env gate flips. See dispatch_constructive_checkers_hook +
     // workflow/reasoning/D-11-decisions.md.
     dispatch_constructive_checkers_hook(seq, &task.project_id, resolved).await;
+    // I-17 closure: post-task tri-layer per-BRANCH verdict dispatch. ADDITIVE,
+    // NOT a replacement for the D-11 hook above (D-11 scores TASKS via the
+    // checker registry; I-17 scores BRANCHES through the L1-veto-supreme stack +
+    // L2 calibrated scorer + L3 disagreement escalation). The veto-supreme
+    // VerdictRow + TriLayerVerdict SSB row are the I-4 (Wave-4) SearchLadder's
+    // ranking input; for the task-runner path the just-completed task is treated
+    // as a single candidate branch so the wire is exercised end-to-end. When
+    // `resolved.tri_layer_runtime` is None (default) or `ELAI_TRI_LAYER_ENABLE`
+    // is unset, this is a strict no-op — the `tri_layer_verdict` row family stays
+    // dark (wire-dark-allowlist row, promotion plan I-4). Mirrors the D-10/D-11
+    // toggle pattern. See dispatch_tri_layer_verdict + verifier_stack +
+    // workflow/reasoning/I-17-decisions.md.
+    dispatch_tri_layer_verdict(writer, seq, &task.project_id, resolved).await;
     // D-12 closure: post-task operationalization-check dispatch. The
     // orchestrator synthesises a per-task BabyStep envelope, calls
     // `agent_pool::run_operational_check`, and emits exactly one
@@ -11934,6 +12519,97 @@ fn build_checker_runtime(
     ))
 }
 
+/// I-17 closure — tri-layer per-branch verdict dispatch hook called once per
+/// completed task by `drive_task`. ADDITIVE to the D-11 checker hook (D-11
+/// scores TASKS; I-17 scores BRANCHES through the veto-supreme tri-layer stack).
+/// Wires [`crate::verifier_stack::TriLayerStack::run_verdict`] into the task
+/// runner so the per-branch scorer has a real production call site ahead of the
+/// I-4 (Wave-4) SearchLadder consumer.
+///
+/// Default behaviour (wire-dark): strict no-op. The `tri_layer_verdict` row
+/// family stays dark until BOTH the D-11 `checker_runtime` is plumbed (the
+/// tri-layer L1 axis reuses its `CheckerRegistry`) AND the operator sets
+/// `ELAI_TRI_LAYER_ENABLE=1` ([`crate::verifier_stack::tri_layer_enabled`],
+/// wire-dark-allowlist row, promotion plan I-4). Mirrors the D-10/D-11 toggle.
+///
+/// Behaviour when plumbed + gated ON: builds a [`crate::verifier_stack::TriLayerStack`]
+/// from the shipped substrate (D-11 registry for L1 checkers, an offline-safe
+/// F-9 dep-gate, L2/L3 degrade gracefully when their corpora/adversary are
+/// absent) and runs ONE verdict treating the just-completed task as a single
+/// candidate branch — exercising the full L1->L2 path end-to-end and emitting a
+/// `tri_layer_verdict` SSB row. ID-4 veto supremacy is structural inside
+/// `run_verdict` (a vetoed branch scores literal 0.0 with `l2_call_count == 0`).
+async fn dispatch_tri_layer_verdict(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    project_id: &str,
+    resolved: &ResolvedConfig,
+) {
+    // Gate 1: env flag (wire-dark default).
+    if !crate::verifier_stack::tri_layer_enabled() {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_tri_layer_verdict: ELAI_TRI_LAYER_ENABLE not set; skipping"
+        );
+        return;
+    }
+    // Gate 2: the D-11 checker runtime must be plumbed (the L1 checker axis
+    // reuses its registry — GD-1 compose, no second registry).
+    let Some(checker_runtime) = resolved.checker_runtime.as_ref() else {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_tri_layer_verdict: checker_runtime not plumbed; skipping"
+        );
+        return;
+    };
+
+    // Build the L1 dep-gate axis. The offline-safe StubRegistryChecker keeps the
+    // task-runner path network-free (the live SubprocessRegistryChecker is the
+    // F-9 production checker; the tri-layer task-runner smoke does not probe the
+    // network — a real dep veto is exercised by the i17 contract fixture).
+    let dep_gate = std::sync::Arc::new(crate::vibesec::dep_writetime_gate::DepWriteTimeGate::new(
+        None,
+        std::sync::Arc::new(crate::vibesec::dep_writetime_gate::StubRegistryChecker),
+    ));
+
+    let stack = crate::verifier_stack::TriLayerStack::new(
+        std::sync::Arc::clone(&checker_runtime.registry),
+        dep_gate,
+        // L2 corpus + L3 adversary are not plumbed on the task-runner smoke path;
+        // L2 degrades to TAU_DEFAULT_FALLBACK and L3 is skipped (single branch
+        // cannot disagree). The I-4 SearchLadder supplies real handles in Wave-4.
+        None,
+        None,
+        crate::adversary::AdversaryConfig::default_for_local_worker(),
+        std::sync::Arc::clone(writer),
+    );
+
+    // Treat the just-completed task as one candidate branch so the wire is
+    // exercised end-to-end. The branch source is empty on this path (the
+    // task-runner has no per-branch generated source to feed the L1 dep/vibe
+    // axes); a real multi-branch run arrives via the I-4 ladder.
+    let branch = crate::verifier_stack::Branch::new(format!("task-{seq}"), String::new());
+    match stack.run_verdict(&branch).await {
+        Ok(row) => tracing::debug!(
+            seq,
+            project_id,
+            branch_id = %row.branch_id,
+            verdict = ?row.verdict,
+            score = row.score,
+            l2_call_count = row.l2_call_count,
+            "task_runner::dispatch_tri_layer_verdict: tri_layer_verdict row emitted"
+        ),
+        Err(e) => tracing::warn!(
+            seq,
+            project_id,
+            error = %e,
+            "task_runner::dispatch_tri_layer_verdict: run_verdict failed (non-fatal)"
+        ),
+    }
+}
+
 /// D-11 closure — constructive-checker dispatch hook called once per
 /// completed task by `drive_task`. Wires
 /// [`crate::agent_pool::dispatch_constructive_checkers`] into the task
@@ -12299,6 +12975,13 @@ async fn run_operational_check_hook(seq: i64, project_id: &str, resolved: &Resol
 ///    the hook layer and traced — the SSB row pair IS the durable
 ///    signal the auditor reads; producer errors do not propagate
 ///    upward.
+/// P0-1 / F-2 — Mode E hint guard. Ensures the eprintln! discovery hint
+/// fires at most once per process, not per task. Uses `OnceLock<()>` as
+/// a set-once flag: `set(())` returns `Err(())` on all calls after the
+/// first, which we ignore. The tracing::info! companion still fires every
+/// time (for the dashboard subscriber that has a real subscriber attached).
+static MODE_E_HINT_EMITTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
 async fn dispatch_adversarial_pass(
     writer: &Arc<Ssb>,
     seq: i64,
@@ -12315,6 +12998,28 @@ async fn dispatch_adversarial_pass(
                 project_id,
                 "task_runner::dispatch_adversarial_pass: adversary_runtime not plumbed; skipping"
             );
+            // D5 / P0-1 — Mode E discovery hint. Emits at info so operators
+            // can see the activation path without opening DEBUG filtering.
+            // "configure ELAI_ALLOW_CLOUD_ADVERSARY=1 and a second provider"
+            // is the exact phrase the adversary_contract source-scan tests pin.
+            tracing::info!(
+                seq,
+                project_id,
+                "task_runner: cross-family adversarial pass skipped (Mode E); \
+                 configure ELAI_ALLOW_CLOUD_ADVERSARY=1 and a second provider \
+                 to enable cross-family adversarial validation"
+            );
+            // F-2 / D-025 WARN-1 fix: also write the hint to stderr so it is
+            // visible at default CLI verbosity (CLI lane has no tracing
+            // subscriber by default). OnceLock gate prevents spamming once
+            // per claim — one hint per process is enough for discovery.
+            if MODE_E_HINT_EMITTED.set(()).is_ok() {
+                eprintln!(
+                    "[elai] Mode E: cross-family adversarial pass is inactive. \
+                     configure a second provider (and ELAI_ALLOW_CLOUD_ADVERSARY=1) \
+                     to enable cross-family adversarial validation"
+                );
+            }
             return;
         }
     };
@@ -12824,7 +13529,7 @@ async fn dispatch_novelty_hook(
 // ---------------------------------------------------------------------------
 
 /// Producer-side adapter that bridges [`crate::ssb::Ssb`] writes into
-/// the [`crate::conformal_calibration::CalibrationCorpusUpdatedEmitter`]
+/// the [`crate::calibration::CalibrationCorpusUpdatedEmitter`]
 /// trait. Mirrors the D-15 novelty emitter shape (private,
 /// task_runner-scoped, single owned Arc<Ssb> clone).
 struct TaskRunnerCalibrationCorpusUpdatedEmitter<'a> {
@@ -12832,7 +13537,7 @@ struct TaskRunnerCalibrationCorpusUpdatedEmitter<'a> {
     seq: i64,
 }
 
-impl<'a> crate::conformal_calibration::CalibrationCorpusUpdatedEmitter
+impl<'a> crate::calibration::CalibrationCorpusUpdatedEmitter
     for TaskRunnerCalibrationCorpusUpdatedEmitter<'a>
 {
     fn emit(
@@ -12861,8 +13566,8 @@ impl<'a> crate::conformal_calibration::CalibrationCorpusUpdatedEmitter
 /// D-16 closure — post-task conformal-refusal corpus-grow + nightly
 /// tau-updater dispatch hook called once per completed task by
 /// `drive_task`. Wires
-/// [`crate::conformal_calibration::TauUpdater`] +
-/// [`crate::conformal_calibration::update_tau_and_emit`] into the task
+/// [`crate::calibration::TauUpdater`] +
+/// [`crate::calibration::update_tau_and_emit`] into the task
 /// runner so the durable threshold has a real producer call site
 /// (closes GAP-6 against D-16).
 ///
@@ -12956,7 +13661,7 @@ async fn dispatch_conformal_corpus_grow_hook(
         ".elai_cc/calibration/seed/corpus.jsonl",
     );
     let tau_path = std::path::PathBuf::from(&validated.tau_path);
-    let updater = crate::conformal_calibration::TauUpdater::new(
+    let updater = crate::calibration::TauUpdater::new(
         corpus_path,
         tau_path,
         validated.alpha,
@@ -12967,9 +13672,9 @@ async fn dispatch_conformal_corpus_grow_hook(
     // CorpusSource label — defaults to `auto` for the live grower
     // path. Operator-curated overrides land via the CLI's
     // `elai conformal-calibration update` surface, not the hook.
-    match crate::conformal_calibration::update_tau_and_emit(
+    match crate::calibration::update_tau_and_emit(
         &updater,
-        crate::conformal_calibration::CorpusSource::Auto.as_str(),
+        crate::calibration::CorpusSource::Auto.as_str(),
         &emitter,
         now_ms,
     )
@@ -13002,7 +13707,7 @@ async fn dispatch_conformal_corpus_grow_hook(
 // ---------------------------------------------------------------------------
 
 /// Producer-side adapter that bridges [`crate::ssb::Ssb`] writes into
-/// the [`crate::conformal_calibration::ConformalTauComputedEmitter`]
+/// the [`crate::calibration::ConformalTauComputedEmitter`]
 /// trait. Mirrors the corpus-grow adapter shape above; single owned
 /// `Arc<Ssb>` clone per emit.
 struct TaskRunnerConformalTauComputedEmitter<'a> {
@@ -13010,7 +13715,7 @@ struct TaskRunnerConformalTauComputedEmitter<'a> {
     seq: i64,
 }
 
-impl<'a> crate::conformal_calibration::ConformalTauComputedEmitter
+impl<'a> crate::calibration::ConformalTauComputedEmitter
     for TaskRunnerConformalTauComputedEmitter<'a>
 {
     fn emit(
@@ -13037,14 +13742,14 @@ impl<'a> crate::conformal_calibration::ConformalTauComputedEmitter
 }
 
 /// Producer-side adapter that bridges [`crate::ssb::Ssb`] writes into
-/// the [`crate::conformal_calibration::ConformalRefusalDecidedEmitter`]
+/// the [`crate::calibration::ConformalRefusalDecidedEmitter`]
 /// trait. Mirrors the corpus-grow adapter shape.
 struct TaskRunnerConformalRefusalDecidedEmitter<'a> {
     writer: &'a Arc<Ssb>,
     seq: i64,
 }
 
-impl<'a> crate::conformal_calibration::ConformalRefusalDecidedEmitter
+impl<'a> crate::calibration::ConformalRefusalDecidedEmitter
     for TaskRunnerConformalRefusalDecidedEmitter<'a>
 {
     fn emit(
@@ -13174,7 +13879,7 @@ async fn dispatch_conformal_refusal_per_claim_hook(
     let seed_path = std::path::PathBuf::from(
         ".elai_cc/calibration/seed/calibration_seed.jsonl",
     );
-    let corpus = match crate::conformal_calibration::CalibrationCorpus::load_seed_jsonl(
+    let corpus = match crate::calibration::CalibrationCorpus::load_seed_jsonl(
         &seed_path,
     ) {
         Ok(c) => c,
@@ -13242,8 +13947,8 @@ async fn dispatch_conformal_refusal_per_claim_hook(
     // the same threshold the consumer used. `dispatch_conformal_refusal`
     // recomputes tau internally from the same corpus + alpha; this is the SAME
     // pure `compute_tau` (no consumer re-implementation — GD-1).
-    let tau_for_row = crate::conformal_calibration::compute_tau(&corpus, validated.alpha)
-        .unwrap_or(crate::conformal_calibration::TAU_DEFAULT_FALLBACK);
+    let tau_for_row = crate::calibration::compute_tau(&corpus, validated.alpha)
+        .unwrap_or(crate::calibration::TAU_DEFAULT_FALLBACK);
 
     let tau_emitter = TaskRunnerConformalTauComputedEmitter { writer, seq };
     let dec_emitter = TaskRunnerConformalRefusalDecidedEmitter { writer, seq };
@@ -13311,11 +14016,11 @@ async fn emit_claim_confidence_scored(
     components: &crate::claim_confidence::ClaimScoreComponents,
     lane: crate::claim_confidence::ConfidenceLane,
     tau: f64,
-    decision: crate::conformal_calibration::RefusalDecision,
+    decision: crate::calibration::RefusalDecision,
 ) {
     let abstained = matches!(
         decision,
-        crate::conformal_calibration::RefusalDecision::Abstain
+        crate::calibration::RefusalDecision::Abstain
     );
     let payload = SsbPayload::ClaimConfidenceScored(ClaimConfidenceScoredPayload {
         claim_id: claim_id.to_owned(),
@@ -16263,7 +16968,7 @@ async fn maybe_warm_start_calibration_once(
         _ => std::env::temp_dir().join("elai_tau_bootstrap.txt"),
     };
 
-    let corpus = match crate::calibration_bootstrap::load_corpus(
+    let corpus = match crate::calibration::load_corpus(
         CALIBRATION_BOOTSTRAP_CORPUS_SLUG,
         &fixture_path,
     ) {
@@ -16283,11 +16988,11 @@ async fn maybe_warm_start_calibration_once(
     )
     .unwrap_or(0);
 
-    let outcome = match crate::calibration_bootstrap::warm_start_tau(
+    let outcome = match crate::calibration::warm_start_tau(
         &corpus,
         &tau_path,
-        crate::calibration_bootstrap::DEFAULT_BOOTSTRAP_EPSILON,
-        crate::calibration_bootstrap::DEFAULT_BOOTSTRAP_MIN_CORPUS_SIZE,
+        crate::calibration::DEFAULT_BOOTSTRAP_EPSILON,
+        crate::calibration::DEFAULT_BOOTSTRAP_MIN_CORPUS_SIZE,
         ts_ms,
     ) {
         Ok(o) => o,
@@ -16301,6 +17006,14 @@ async fn maybe_warm_start_calibration_once(
         }
     };
 
+    // Mint the join key from the same (tau, corpus_size, epsilon) triple used
+    // by compute_tau_and_emit — reuses the identical blake3 derivation so
+    // bootstrap rows can be joined to tau rows in the journal.
+    let calibration_id = Some(crate::calibration::mint_calibration_id(
+        outcome.tau_warm_start,
+        outcome.corpus_size,
+        outcome.alpha,
+    ));
     let payload = SsbPayload::CalibrationBootstrapCompleted(
         crate::ssb::CalibrationBootstrapCompletedPayload {
             corpus_slug: outcome.corpus_slug,
@@ -16314,6 +17027,7 @@ async fn maybe_warm_start_calibration_once(
             bootstrap_ci_high: outcome.bootstrap_ci_high,
             block_length_p: outcome.block_length_p,
             ts_ms: outcome.ts_ms,
+            calibration_id,
         },
     );
     if let Err(e) = writer
@@ -20454,6 +21168,8 @@ mod tests {
                 token_tracker: None,
                 // B-28 WIRING-2: test fixture — no production buffer editor.
                 buffer_editor: None,
+                // P0-1: test fixture — no adversary runtime.
+                adversary_runtime: None,
                 // E-46 D-8: test fixture — module-constant defaults.
                 planning_config: Default::default(),
             },
@@ -20597,6 +21313,8 @@ mod tests {
                 token_tracker: None,
                 // B-28 WIRING-2: test fixture — no production buffer editor.
                 buffer_editor: None,
+                // P0-1: test fixture — no adversary runtime.
+                adversary_runtime: None,
                 // E-46 D-8: test fixture — module-constant defaults.
                 planning_config: Default::default(),
             },
@@ -20811,6 +21529,8 @@ mod tests {
                 token_tracker: None,
                 // B-28 WIRING-2: test fixture — no production buffer editor.
                 buffer_editor: None,
+                // P0-1: test fixture — no adversary runtime.
+                adversary_runtime: None,
                 // E-46 D-8: test fixture — module-constant defaults.
                 planning_config: Default::default(),
             },
@@ -21712,6 +22432,8 @@ mod tests {
             token_tracker: None,
             // B-28 WIRING-2: legacy test fixture — no production buffer editor.
             buffer_editor: None,
+            // P0-1: legacy test fixture — no adversary runtime.
+            adversary_runtime: None,
             // E-46 D-8: test fixture — module-constant defaults.
             planning_config: Default::default(),
         })

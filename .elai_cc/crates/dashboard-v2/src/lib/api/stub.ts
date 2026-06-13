@@ -1928,6 +1928,11 @@ export async function get_cloud_spend(): Promise<CloudSpendInfo> {
     cache_creation_tokens: 0,
     cache_read_tokens: 0,
     redaction_count: 0,
+    // I-10: default to undefined (no-data state); CloudPanel renders "--"
+    // for ttl_tier when undefined.
+    ttl_tier: undefined,
+    breakeven_reads: undefined,
+    guard_trips_today: undefined,
   };
 }
 
@@ -4706,4 +4711,69 @@ export async function tiered_load_confirm(slug: string): Promise<TieredLoadResul
   logStub('tiered_load_confirm', { slug });
   const live = await tryInvoke<TieredLoadResult>('tiered_load_confirm', { slug });
   return live ?? null;
+}
+
+// ------------------------------------------------------------------
+// I-15 — oracle cache source discriminator
+//
+// Returns the source discriminator for the most-recent cache event on
+// the given query hash hex.  "blake3_exact" = in-session exact hit
+// (zero ONNX calls); "semantic_vector" = full pipeline ran; null =
+// no row yet (cold start).
+//
+// Cross-lang pair: commands.rs::get_research_cache_source
+//                  types.ts::OracleCacheSource
+// ------------------------------------------------------------------
+export async function get_research_cache_source(
+  queryHashHex: string,
+): Promise<import('./types').OracleCacheSource> {
+  logStub('get_research_cache_source', { queryHashHex });
+  const live = await tryInvoke<string | null>('get_research_cache_source', { queryHashHex });
+  if (live === 'blake3_exact' || live === 'semantic_vector') return live;
+  return null;
+}
+
+// ------------------------------------------------------------------
+// I-38 (SCHEMA_VERSION 235) — QdeltaPanel
+//
+// Returns the most-recent `qdelta_measured` SSB flat-beacon row,
+// or null when no measurement has been recorded yet (honest empty state).
+//
+// Live-model leg deferred (D-026); fixture-tier rows emitted by
+// `elai bench qdelta --config <PATH>`.
+//
+// Cross-lang pair: commands_i38.rs::get_qdelta_latest
+//                  types.ts::QdeltaLatest
+// ------------------------------------------------------------------
+export async function get_qdelta_latest(): Promise<import('./types').QdeltaLatest | null> {
+  logStub('get_qdelta_latest', {});
+  const live = await tryInvoke<import('./types').QdeltaLatest>('get_qdelta_latest');
+  return live ?? null;
+}
+
+// ------------------------------------------------------------------
+// I-33 (SCHEMA_VERSION 240)
+// Cross-lang pair: commands_i33.rs::get_governance_metrics
+//                  types.ts::GovernanceMetrics
+// ------------------------------------------------------------------
+export async function get_governance_metrics(): Promise<import('./types').GovernanceMetrics | null> {
+  logStub('get_governance_metrics', {});
+  const live = await tryInvoke<import('./types').GovernanceMetrics>('get_governance_metrics');
+  return live ?? null;
+}
+
+// ------------------------------------------------------------------
+// I-12 (SCHEMA_VERSION 251) -- PlaybookEvent panel rows.
+//
+// Returns the most-recent PlaybookEvent SSB rows (RulesDrawer playbook panel).
+// Wire-dark until a RulesDrawer panel is wired; returns empty array in stub.
+//
+// Cross-lang pair: rule_curator.rs::PlaybookEventPayload
+//                  types.ts::PlaybookEventPayload
+// ------------------------------------------------------------------
+// WIRE-DARK[I-12]: RulesDrawer playbook panel rows land in a future dashboard plan (see stubs.md id=I-12-playbook-drawer)
+export async function get_playbook_entries(): Promise<import('./types').PlaybookEventPayload[]> {
+  logStub('get_playbook_entries', {});
+  const live = await tryInvoke<import('./types').PlaybookEventPayload[]>('get_playbook_entries');
+  return live ?? [];
 }

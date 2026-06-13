@@ -156,6 +156,7 @@
             <th class="num">Gates</th>
             <th class="num">Seed</th>
             <th>Root (blake3)</th>
+            <th>Objective</th>
           </tr>
         </thead>
         <tbody>
@@ -172,6 +173,13 @@
               <td class="num">{row.gate_count}</td>
               <td class="num">{row.seed}</td>
               <td class="root-cell" title={row.root_blake3}>{shortHash(row.root_blake3)}</td>
+              <td class="objective-cell">
+                {#if row.objective_hash == null}
+                  <span class="badge badge-legacy" title="Pre-I-45 receipt — no objective hash">LEGACY</span>
+                {:else}
+                  <span class="badge badge-sealed" title={row.objective_hash}>{row.objective_hash.slice(0, 8)}</span>
+                {/if}
+              </td>
             </tr>
           {/each}
         </tbody>
@@ -320,6 +328,33 @@
   .footnote {
     color: var(--text-secondary);
     font-size: 11px;
+  }
+
+  /* I-45: objective hash badge */
+  .objective-cell {
+    white-space: nowrap;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .badge-legacy {
+    background: rgba(120, 120, 120, 0.15);
+    color: var(--text-secondary);
+    border: 1px solid rgba(120, 120, 120, 0.3);
+  }
+
+  .badge-sealed {
+    background: rgba(80, 180, 120, 0.12);
+    color: #5cb87a;
+    border: 1px solid rgba(80, 180, 120, 0.3);
   }
 
   .error-banner {

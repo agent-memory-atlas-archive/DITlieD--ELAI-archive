@@ -86,7 +86,7 @@ fn gate_disabled() -> bool {
         .unwrap_or(false)
 }
 
-const VERIFIER_SYSTEM_PROMPT: &str = "You are an output verifier. Given the user task and the candidate output, decide:\n- `continue`: the output is good enough; downstream may accept it\n- `retry`: one more same-tier attempt is likely to succeed\n- `escalate`: a stronger model is required\nReturn STRICT JSON: {\"verdict\":\"continue\"|\"retry\"|\"escalate\",\"reason\":\"<1-sentence>\"}";
+const VERIFIER_SYSTEM_PROMPT: &str = include_str!("../prompts/automix_verifier.md");
 
 /// Compose the user-side verifier prompt. Pulled into a free function
 /// so tests can assert the wire shape.

@@ -98,6 +98,15 @@ mod review_cmd;
 // artifact, R4). Default-ON kill-switch: ELAI_CITATION_PREBIND_DISABLE.
 mod prebind_cmd;
 mod verify_attestation_cmd;
+// I-39: `elai plan status [--letter <L>] [--json]` — per-plan state derived from
+// FINISH fragments + wiring_contract_check.py + SSB journal. Emits PlanStateDerived
+// SSB row (fail-soft if no ssb.db). Default-ON; no kill-switch (pure read path).
+mod plan_status_cmd;
+// I-41: `elai critique <spec-path> [--lenses L1,...] [--risk simple|heavy] [--mock]`
+// Spec-time critique lenses (L1-L8). Advisory-only; zero path to any gate/verdict.
+// Kill-switch: ELAI_CRITIQUE_LENSES_ENABLE=1. Emits CritiqueLensFinding SSB rows.
+// See workflow/reasoning/phase-I41-decisions.md.
+mod critique_cmd;
 // C-45: `elai credit attribute|table|export` — CANTANTE contrastive
 // credit-attribution CLI driver. Wraps elai_orchestrator::credit_attribution.
 // Paper-grounded against arXiv:2605.13295 (Zehle 2026, Section 3.2 — K
@@ -358,6 +367,34 @@ mod bench_safedelta;
 // timestamped mcp-schema-budget-<ts>.json report under benchmarks/mcp_schema_budget/,
 // and emits one McpSchemaBudgetMeasured SSB beacon. Default-ON; no ELAI_*_ENABLE gate.
 mod bench_mcp_schema_budget;
+// I-34 (SCHEMA_VERSION 234): `elai bench crane [--crane-fixture PATH] [--seed <u64>]`
+// — CRANE hybrid grammar-pin gate deterministic fixture harness. Drives the
+// three-layer gate (eligibility + blake3 pin verify + post-parse re-validation)
+// WITHOUT live inference (W-10 PENDING). Emits 3 GrammarGateEvent SSB rows.
+mod bench_crane;
+// I-38 (SCHEMA_VERSION 235): `elai bench qdelta --config <PATH>` — QDELTA
+// defective-diff rate fixture harness. Statistical floor mechanically enforced
+// (seed_count>=5, paired=true). Emits 1 QdeltaMeasured SSB flat beacon per
+// clean run. Live-model leg deferred (D-026).
+mod bench_qdelta;
+// I-43 (SCHEMA_VERSION 236): `elai bench claim-scope [--suite <SUITE>] [--seed <u64>]`
+// Reproducibility-claim scoper + cheap pre-falsification kill-gate. Runs pilot
+// (reduced-N gate-ON vs gate-OFF + reviewer-reaching trap detector) + divergence
+// scoper (local vs cloud action-stream divergence on security paths). Fixture
+// leg only; live-model leg deferred (D-026). Emits 3 ClaimScopeMeasured SSB beacons.
+mod bench_claim_scope;
+// I-33 (SCHEMA_VERSION 240): `elai bench governance-probe [--seed <u64>]`
+// Mechanical decision governance fixture harness (CEFL / I6Q / commit-reveal).
+// Three GovernancePrimitiveFired arms without live inference. Wiring-enforcement
+// R1 entry point for I-33.
+mod bench_governance;
+// I-35: `elai bench sequence-probe` -- temporal tool-sequence enforcement bench
+// harness. Three ToolSequenceVerdict arms (Allowed / OrderViolation / HaltEnforced)
+// without live inference. Wiring-enforcement R1 entry point for I-35.
+mod bench_sequence_probe;
+// I-32: `elai role-ab-probe` -- role-contract A/B evidence harness. Fixture-driven;
+// no live LLM. Emits RoleContractApplied(AbDelta) SSB rows. Handler below.
+mod role_ab_probe_cmd;
 // G-10 (SCHEMA_VERSION 218): `elai model-drift baseline|check|show` — exogenous
 // model-version behavioral-regression gate CLI driver. DISTINCT from `elai drift`
 // (E-45 cross-language SOURCE drift). Composes D-7 canary.rs (GD-1).
@@ -677,8 +714,8 @@ fn run() -> Result<(), anyhow::Error> {
         // blake3-Merkle root, and confirms it equals both the subject digest and
         // the trailer (F-gate hashes Merkle-bound). READ-ONLY (no Ssb); exits
         // non-zero on not-verified; trust-without-re-running (SLSA-VSA).
-        CliAction::VerifyAttestation { commit, output_format } => {
-            verify_attestation_cmd::run(commit, output_format).map_err(|e| anyhow::anyhow!(e))?
+        CliAction::VerifyAttestation { commit, output_format, chain } => {
+            verify_attestation_cmd::run(commit, output_format, chain).map_err(|e| anyhow::anyhow!(e))?
         }
         // C-45 — `elai credit attribute|table|export`. CANTANTE
         // contrastive credit-attribution surface; paper-grounded against
@@ -1199,6 +1236,19 @@ fn run() -> Result<(), anyhow::Error> {
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             user_memory_capture::print_capture_outcome(&outcome, json);
         }
+        // I-39 — `elai plan status [--letter <L>] [--json]`. Per-plan state derived
+        // from FINISH fragments + wiring_contract_check.py + SSB journal (SsbViewer).
+        // Emits one PlanStateDerived SSB row (fail-soft if no ssb.db). Default-ON.
+        CliAction::PlanStatus { action, output_format } => {
+            plan_status_cmd::run_plan_status(action, output_format)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // I-41 — `elai critique <spec-path>`. Advisory-only spec-time critique lenses.
+        // ELAI_CRITIQUE_LENSES_ENABLE=1 activates live LLM runs. Default-OFF (R9).
+        CliAction::Critique { action, output_format } => {
+            critique_cmd::run_critique(action, output_format)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
         // B-15 tranche J (orchestrate s-22600): the eleven bench / eval /
         // critic dispatch arms (BenchPrmbench D-19, BenchModeRouting D-21,
         // BenchConformal D-22, BenchArc D-20, BenchRag E-17 SP6,
@@ -1272,6 +1322,43 @@ fn run() -> Result<(), anyhow::Error> {
         // Emits ONE SafetyDeltaMeasured SSB beacon. Exits 0/1.
         CliAction::BenchSafedelta { suites, seed, json } => {
             bench_cmd::run_bench_safedelta(suites, seed, json)?;
+        }
+        // I-34 (SCHEMA_VERSION 234): CRANE hybrid grammar-pin gate deterministic
+        // fixture harness. Drives the three-layer gate WITHOUT live inference
+        // (W-10 PENDING). Emits 3 GrammarGateEvent SSB rows. Exits 0/1.
+        CliAction::BenchCrane { crane_fixture, seed } => {
+            bench_crane::run(crane_fixture, seed)?;
+        }
+        // I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate fixture harness.
+        // Statistical floor mechanically enforced (seed_count>=5, paired=true).
+        // Emits 1 QdeltaMeasured SSB flat beacon. Live-model leg deferred (D-026).
+        CliAction::BenchQdelta { config, seed, json } => {
+            bench_qdelta::run(config, seed, json)?;
+        }
+        // I-43 (SCHEMA_VERSION 236): `elai bench claim-scope` — claim scoper kill-gate.
+        // Fixture leg only; live-model leg deferred (D-026). Emits 3 ClaimScopeMeasured
+        // SSB beacons (PilotDelta / CrossLaneDivergence / ClaimScoped).
+        CliAction::BenchClaimScope { suite, seed, json } => {
+            bench_claim_scope::run(suite, seed, json)?;
+        }
+        // I-33 (SCHEMA_VERSION 240): `elai bench governance-probe` — mechanical
+        // decision governance fixture harness (CEFL / I6Q / commit-reveal). Three
+        // GovernancePrimitiveFired arms without live inference. Exits 0/1.
+        CliAction::BenchGovernanceProbe { seed } => {
+            bench_governance::run(seed)?;
+        }
+        // I-35: `elai bench sequence-probe [--seed N]` — tool-sequence enforcement bench.
+        // Replays 3 mock fixtures against the builtin SequenceRuleSet, emits
+        // ToolSequenceVerdict SSB rows, exits non-zero on any mismatch.
+        CliAction::BenchSequenceProbe { seed } => {
+            bench_sequence_probe::run(seed)?;
+        }
+        // I-32: `elai role-ab-probe [--seed N]` — role-contract A/B harness.
+        // Loads fixtures from crates/contracts/tests/fixtures/role_contracts/,
+        // assembles system-prompt sections with/without role contracts, emits
+        // RoleContractApplied(AbDelta) SSB rows, exits non-zero on regression.
+        CliAction::RoleAbProbe { seed } => {
+            role_ab_probe_cmd::run(seed)?;
         }
         // G-10 (SCHEMA_VERSION 218): `elai model-drift baseline|check|show`.
         // Exogenous model-version behavioral-regression gate. DISTINCT from

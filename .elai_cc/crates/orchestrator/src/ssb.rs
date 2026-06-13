@@ -1914,14 +1914,15 @@ use crate::mast::MastMode;
 // DECISION-3: plan's "DS-CP arXiv:2510.05566" + focused.io blog +
 // "MetaMate" (paper-ingestor could not resolve).
 // E-19 (SCHEMA_VERSION 166): SINGLE-VARIANT Pattern-2 (18th application)
-// ReasoningQualityProbe with ProbeKind 5-arm discriminator
+// ReasoningQualityProbe with ProbeKind 6-arm discriminator
 // (l2_gate_decision / l4_prm_lite_score / l4_lateral_kept /
-// l4_ttc_budget_chosen / l6_verifier_diversity). TOTAL_VARIANTS
+// l4_ttc_budget_chosen / l6_verifier_diversity / vividness_probe). TOTAL_VARIANTS
 // 438 -> 439. Wire-dark unless ELAI_REASONING_QUALITY_PROBE_ENABLE=1.
 // Plan-doc named 11 SSB variants (L2SkippedHighConfidence + ...);
 // REJECTED per D-19/D-23/D-24/D-25/D-28/D-29/D-30/E-7/E-8/E-10/E-43/E-9
 // single-variant precedent — E-19 ships exactly ONE new variant with
-// the 5-arm ProbeKind discriminator inside ReasoningQualityProbePayload.
+// the 6-arm ProbeKind discriminator inside ReasoningQualityProbePayload.
+// I-5 adds the 6th arm VividnessProbe (A/B pristine-context outcome delta).
 // Paper grounding: arXiv:2510.08308 First Try Matters (L2 confirmatory
 // reflection), arXiv:2502.18581 Self-Certainty (logit-margin gate),
 // arXiv:2510.01500 LToT (mainline/lateral split), arXiv:2503.04412
@@ -3063,7 +3064,235 @@ use crate::mast::MastMode;
 // Pattern-2 single-variant 2-arm CitationAnchorsBoundKind:
 // Bound | Blocked.
 // TOTAL_VARIANTS 539 -> 540.
-const SCHEMA_VERSION: i64 = 229;
+//
+// I-39 (SCHEMA_VERSION 230): PlanStateDerived -- per-plan state derived from
+// three deterministic sources: wiring_contract_check.py --static verdict,
+// SSB journal presence of observable_effect rows, and s-plan-audit-2026-06-04
+// FINISH fragments. Emitted by `plan_status_cmd::run_plan_status` (REAL CLI
+// entrypoint: `elai plan status`). Flat beacon; no inner Kind enum.
+// Carries letter + session_id + derived_state + evidence_anchor for
+// off-agent-verifiable, byte-identical output (GD-2). Default-ON;
+// no kill-switch (pure read path, never writes to SSB except its own row).
+// TOTAL_VARIANTS 540 -> 541.
+//
+// I-45 (SCHEMA_VERSION 231): ObjectiveSealed -- objective-hash sealed-receipt
+// beacon. Pattern-2 single-variant 3-arm ObjectiveSealedKind: Sealed (emitted
+// at build_rra when objective_hash stamped into RunArtifact) / MutationDetected
+// (emitted when verify_artifact_with_objective detects hash mismatch) /
+// ReceiptStale (emitted when verify_attestation detects stale predicate).
+// Default-ON; kill-switch ELAI_OBJECTIVE_SEAL_DISABLE. Fail-soft (no writable
+// journal = skip emit, never mask the verify verdict). TOTAL_VARIANTS 541 -> 542.
+// I-23: calibration_id Option<String> added to ConformalTauComputedPayload +
+// ConformalRefusalDecidedPayload. Payload extension only; NO new variant.
+// SCHEMA_VERSION 231 -> 232.
+// I-15: source Option<String> discriminator added to OracleCacheHitPayload +
+// OracleCacheMissPayload. Payload extension only; NO new variant. TV unchanged.
+// SCHEMA_VERSION 232 -> 233.
+// I-34: GrammarGateEvent -- CRANE hybrid grammar-pin gate beacon. Pattern-2
+// single-variant 3-arm GrammarGateEventKind: CranePassed / PinViolation /
+// PostParseRejected. Emitted by orchestrator grammar_gate.rs on every constrained
+// decode gate evaluation. Default-ON; no kill-switch (gate is mandatory per IC-18 +
+// landmine #7/#8). TOTAL_VARIANTS 542 -> 543.
+// SCHEMA_VERSION 233 -> 234.
+// I-38: QdeltaMeasured -- QDELTA defective-diff rate gate-ON vs gate-OFF flat beacon.
+// Safedelta-shaped payload (suite/model_id/rates/delta/CI/seed_count/paired/dollar_per_task/
+// contamination_probe_result/surviving_mutants_per_task/corpus_blake3/runpod_pending).
+// Emitted by cli::bench_qdelta::run_inner after floor_check passes.
+// Default-ON via bench entrypoint (W-2); no ELAI_*_ENABLE gate.
+// TOTAL_VARIANTS 543 -> 544.
+// SCHEMA_VERSION 234 -> 235.
+// I-43: ClaimScopeMeasured -- reproducibility-claim scoper + cheap pre-falsification kill-gate.
+// Pattern-2 single-variant 3-arm ClaimScopeMeasuredKind: PilotDelta / CrossLaneDivergence / ClaimScoped.
+// Emitted by cli::bench_claim_scope::run_inner for each fixture scenario.
+// Default-ON via bench entrypoint (W-2); no ELAI_*_ENABLE gate.
+// TOTAL_VARIANTS 544 -> 545.
+// SCHEMA_VERSION 235 -> 236.
+// I-10: CacheEconomicsEvent -- prefix invariance + TTL tiering + cache-hit hard guard.
+// Pattern-2 single-variant 3-arm CacheEconomicsEventKind: TtlPlanned / HitRateGuardTripped /
+// PrefixDiffDumped. Emitted by orchestrator::cache_economics (planner + guard).
+// Default-ON kill-switch ELAI_CACHE_ECONOMICS_DISABLE=1. Cloud-lane only (ContextPolicy::Cloud).
+// Composes on H-1 apply_anthropic_cache_markers + H-2 update_breakpoints / bp.valid.
+// TOTAL_VARIANTS 545 -> 546.
+// SCHEMA_VERSION 236 -> 237.
+// I-8: TrajectoryAborted -- aletheia voluntary abort + dead-end hash pruning + halting bound seam.
+// Pattern-2 single-variant 3-arm TrajectoryAbortedKind: Voluntary / DeadEndHash / HaltingBound.
+// Emitted by production_agent_rpc.rs TOOL_ACKNOWLEDGE_INFEASIBLE arm (Voluntary),
+// dead_end_cache.rs check path after check_and_insert returns true (DeadEndHash),
+// and I-17 check-runner watchdog hook (HaltingBound -- Wave-3 stub registered here).
+// Composes H-39 AbstentionScored (GD-1: scorer invoked, not re-implemented).
+// Composes H-49 timetravel::materialize() rollback (Wave-2: skip+log if no manifest Wave-1).
+// TOTAL_VARIANTS 546 -> 547.
+// SCHEMA_VERSION 237 -> 238.
+// I-1: DirectiveExecuted -- directive supervisor enforcement-plane outcome beacon.
+// Pattern-2 single-variant 3-arm DirectiveExecutedKind: Executed / Discarded /
+// CompensationFired. Emitted by orchestrator::directive::InProcessSupervisor::
+// execute_directive (Executed on clean gate-pass + side-effect-ok, Discarded on
+// gate block, CompensationFired on side-effect crash after E-44 saga rollback).
+// The generator emits pure Directive structs; the Supervisor is the sole sink.
+// Default-ON (no kill-switch; the enforcement plane is mandatory per CANT-WRECK).
+// Composes E-30 check_argv + F-1 evaluate_vibegate + G-3 blast_radius (GD-1).
+// TOTAL_VARIANTS 547 -> 548.
+// SCHEMA_VERSION 238 -> 239.
+// I-33: GovernancePrimitiveFired -- mechanical decision governance primitive beacon.
+// Pattern-2 single-variant 3-arm GovernancePrimitiveFiredKind: CeflExternalized /
+// I6qRejected / CommitRevealSealed. Emitted by decision_governance::emit_governance_fired
+// (governed_prompt_decision call site + bench_governance fixture driver).
+// Default-ON; kill-switch ELAI_GOVERNANCE_DISABLE (R9 allowlist row required).
+// Composes E-25 prompt_decision + D-16 RefusalDecision::Abstain + C-26 DecodingMode::JsonSchema.
+// TOTAL_VARIANTS 548 -> 549.
+// SCHEMA_VERSION 239 -> 240.
+// I-32: RoleContractApplied -- structural role scoping; persona strip/retain/A-B-delta beacon.
+// Pattern-2 single-variant 3-arm RoleContractAppliedKind: PersonaStripped / PersonaRetained /
+// AbDelta. Emitted by crates/cli/src/report_fns.rs::build_system_prompt_for_role via
+// role_contracts::apply_to_system_prompt (PersonaStripped/PersonaRetained) and by the
+// --role-ab-probe CLI harness (AbDelta with fixture pass-rate fields).
+// Default-ON; grounded per IC-17 (factual/code roles only; alignment-dependent roles retain).
+// Composes IC-17 persona-split posture + ID-5 evidence gate + E-6 IsoBudgetMeasured.
+// TOTAL_VARIANTS 549 -> 550.
+// SCHEMA_VERSION 240 -> 241.
+// I-35: ToolSequenceVerdict -- temporal tool-sequence enforcement at the I-1 supervisor plane.
+// Pattern-2 single-variant 3-arm ToolSequenceVerdictKind: Allowed / OrderViolation / HaltEnforced.
+// Emitted by directive::InProcessSupervisor::run_sequence_gate (the 5th supervisor gate arm).
+// Predicates evaluate the ordered tool-call history buffer; CDA-immune (history rows not tokens).
+// Default-ON; rule set R8-frozen in crates/rules/seed/tool_sequence_core.toml.
+// Composes I-1 supervisor dispatch + E-30 argv + F-3 committed tool sets + Phase 3A FSM masks.
+// TOTAL_VARIANTS 550 -> 551.
+// SCHEMA_VERSION 241 -> 242.
+// I-41: CritiqueLensFinding -- spec-time critique lenses advisory beacon.
+// Pattern-2 single-variant 3-arm CritiqueLensFindingKind: AdvisoryFinding / DroppedNoAnchor /
+// LensRun. Emitted by critique::lenses::LensSet::run at the post-convergence advisory wire-in
+// in idea_framing::run_critic_loop and by the `elai critique` CLI command.
+// advisory=true on all arms; ZERO path to any accept/block verdict (§6 ban-LLM-judge hard rule).
+// Default-OFF; kill-switch ELAI_CRITIQUE_LENSES_ENABLE (R9, wire-dark-allowlist.toml I-41 row).
+// Composes B-40 idea-critic loop + B-38 AmbiguityScorer (L3 human map) + E-45 golden lock (L6 mirror).
+// TOTAL_VARIANTS 551 -> 552.
+// SCHEMA_VERSION 242 -> 243.
+// I-46: BashRedirected -- bash interceptor redirect/fixup/allowed-prefix outcome beacon.
+// Pattern-2 single-variant 3-arm BashRedirectedKind: Redirected / FixedUp / PrefixBlocked.
+// Redirected: command matched a redirect rule (grep/cat/find/head/tail) -- no process spawn.
+// FixedUp: command had a trailing output-pipeline suffix stripped (| head / | tail / 2>&1).
+// PrefixBlocked: command starts with an allowed prefix but contains a banned shell token.
+// Default-ON; no kill-switch (the interceptor is not a default-OFF experiment).
+// Emitted by dispatch::in_process::InProcessDispatch::maybe_emit_bash_redirected when
+// run_bash returns Err with error_code bash_redirected / bash_fixedup / bash_prefix_blocked.
+// Composes A-26 routing_rules (rules 1+3 retained) + E-30 argv gate + G-3 blast-radius.
+// TOTAL_VARIANTS 552 -> 553.
+// SCHEMA_VERSION 243 -> 244.
+// I-47: PromptHardeningApplied -- verifier-input XML tagging + worker rule injection + SSB beacon.
+// Pattern-2 single-variant 3-arm PromptHardeningAppliedKind:
+// InputsTagged: auditor/critic dispatch -- untrusted worker output wrapped in <ELAI_DATA> tags
+//   with hardening frame prepended above the data blocks.
+// RulesInjected: worker dispatch -- frozen per-role Karpathy-distillate rule block appended to
+//   CONSTRAINTS section (byte-stable per role; HD-2 cache-prefix safe).
+// SelfAttestationStripped: auditor dispatch -- a self-attestation string ("all tests pass",
+//   "cargo check green") detected in worker output; labelled as claim-not-evidence inside
+//   <ELAI_SELF_ATTESTATION> sub-tag below the main data tag.
+// Default-ON; unconditional on all auditor/critic/worker dispatches (no kill-switch, R3 enforced).
+// Emitted by tools::execute_agent_with_spawn at the build_agent_prompt seam after hardening applied.
+// Composes E-37 PromptArmor (upstream classifier) + H-31/H-32 firewall objective (data-plane leg)
+//   + I-32 role contracts (system-prompt sibling seam; zero file overlap confirmed).
+// TOTAL_VARIANTS 553 -> 554.
+// SCHEMA_VERSION 244 -> 245.
+//
+// I-2: BranchWorkspaceEvent -- CoW workspace isolation barrier outcome beacon.
+// Pattern-2 single-variant 4-arm BranchWorkspaceEventKind:
+// Spawned: a private branch workspace root was created (warm git worktree, Tier-1).
+// Merged: the deterministic SSB-seq-ordered barrier merged all branch roots into trunk (clean).
+// EscapeBlocked: a branch tried to write an absolute path outside its root; blocked before FS
+//   mutation (delegates the containment check to elai_safety::blast_radius::check_fs_target).
+// ConflictEscalated: two branches wrote the same relative path with differing bytes; Tier-1 halts
+//   the merge (no partial write). H-49 materialize() trunk-rollback is the Tier-2 deferred path.
+// Emitted by sandbox::branch_workspace::WorktreePoolImpl (spawn/escape_check) + the BSP barrier
+//   site (bsp/engine.rs barrier_merge). Composes C-11 sandbox / E-15 pool / I-1 Supervisor / H-49.
+// TOTAL_VARIANTS 554 -> 555.
+// SCHEMA_VERSION 245 -> 246.
+//
+// I-5: ContextPruned -- per-branch context rebuild outcome beacon.
+// Pattern-2 single-variant 3-arm ContextPrunedKind:
+// SiblingExcluded: a sibling branch's SSB payloads were excluded from the fresh branch context
+//   (the I-5 pristine-path discipline; ID-1 stateless-generator doctrine).
+// TracebackContrasted: a prior failed branch's raw error traceback was replaced by a <=30-token
+//   contrastive constraint phrase ("attempt A failed at X -- avoid X"). Preserves causal signal
+//   without the attention sink.
+// VividnessProbe: a sampled A/B comparison row emitted when umbrella_enabled() is true. Carries
+//   outcome_delta (pristine_score - accumulated_score, recomputable under ELAI_SEED, GD-2).
+// Emitted by crates/orchestrator/src/pristine_path_filter.rs::PristinePathFilter::build_branch_context.
+// Wire-dark until I-4 SearchLadder ships (Wave 4); Tier-1 coverage via contract test.
+// Composes H-6 adaptive_reduce (orthogonal: pruning vs window compression) + H-50 regime_policy
+//   (pristine rebuild is regime-aware) + E-19 ReasoningQualityProbe (VividnessProbe arm, 6th).
+// TOTAL_VARIANTS 555 -> 556.
+// SCHEMA_VERSION 246 -> 247.
+// I-11: BeliefStateEvent -- typed versioned condensate receipt for cross-model/cross-tier handoffs.
+// Pattern-2 single-variant 3-arm BeliefStateEventKind: Condensed / Handoff / HonestyDelta.
+// Condensed: emitted at every adaptive_reduce condensation (ID-3 JOURNALED-MIDDLEWARE receipt).
+// Handoff: emitted when BeliefState payload is dispatched on the HandoffDecision::Cloud arm.
+// HonestyDelta: emitted by HonestyJob::run after >=10 escalations (or --force-honesty-check).
+// Default-ON (mandatory ID-3 receipt; no kill-switch). Composes I-7/H-51/H-6/CL-1..CL-4.
+// Production callers: task_runner (adaptive_reduce + evaluate_handoff wiring), wired I-11.
+// TOTAL_VARIANTS 556 -> 557 (Pattern-2 single-representative: Condensed in lock array).
+// SCHEMA_VERSION 247 -> 248.
+//
+// I-13: MemoryGuardEvent -- write-time memory guard outcome (aho-corasick dual-path defense).
+// Pattern-2 single-variant 3-arm MemoryGuardEventKind: PoisonBlocked / DualSerialized / TraceQueryExpanded.
+// PoisonBlocked: emitted when MemoryWriteScanner detects invisible-Unicode or confusable-shell pattern.
+// DualSerialized: emitted when ToolResultPayload passes through to_llm_content gate.
+// TraceQueryExpanded: emitted when trace_query tool returns a line-range expansion.
+// Default-OFF (ELAI_MEMORY_GUARD_ENABLE=1, experiment, wire-dark-allowlist.toml row expiry 2026-12-01).
+// Production callers: user_memory_capture (CHOKEPOINT-1), memory_cmd::insert (CHOKEPOINT-2),
+//   production_agent_rpc::translate_tool_request (TraceQuery arm). Wired I-13.
+// TOTAL_VARIANTS 557 -> 558 (Pattern-2 single-representative: PoisonBlocked in lock array).
+// SCHEMA_VERSION 248 -> 249.
+//
+// I-14: ContextTransformReceipt -- deterministic context-compression middleware receipt.
+// Pattern-2 single-variant 3-arm ContextTransformKind: LspSlice / AstFold / Tier2Compressed.
+// LspSlice: compiler-error payload sliced to the located error neighbourhood (rustc panic).
+// AstFold: tree-sitter function-body elision (bodies -> "/* elided */", signatures kept).
+// Tier2Compressed: reserved discriminator for the deferred neural (LLMLingua-2-class) tier.
+// Default-ON; no kill-switch (ID-3 JOURNALED-MIDDLEWARE is mandatory -- every transform,
+// including a graceful skip, journals a reversible receipt; an un-journaled transform is
+// a done-gate FAIL). Production caller: AgentRpcServer::transform_tool_output override in
+// production_agent_rpc.rs, invoked from ipc_accept.rs run_agent_session at the tool-result
+// byte seam. Wired I-14.
+// TOTAL_VARIANTS 558 -> 559 (Pattern-2 single-representative: LspSlice in lock array).
+// SCHEMA_VERSION 249 -> 250.
+//
+// I-12 (SCHEMA_VERSION 251): PlaybookEvent -- evidence-gated playbook curator outcome beacon.
+// Pattern-2 single-variant 4-arm PlaybookEventKind: Promoted / Demoted / ValidationRun / Exported.
+// Promoted: a rule advanced to ACTIVE after >=k SSB-verified outcome links + metric gates pass
+//   + C-28 regression suite reports regression_count=0.
+// Demoted: an ACTIVE rule lost ACTIVE status (stale or regressed; emitted before RETIRED).
+// ValidationRun: the curator ran a promotion-gate check without completing promotion
+//   (evidence_count < k, or regression_count > 0).
+// Exported: PlaybookCurator::export_verified wrote a verified AGENTS.md / skills export block
+//   with embedded outcome_row_ids.
+// Default-ON; no kill-switch (the promotion ledger is mandatory per ID-6 WEIGHTS-ARE-CONFIGS).
+// Evaluator lives OUTSIDE the write boundary (gate-freeze R8).
+// Production callers: (a) offline tick spawn in LiveCli::build_local_knowledge_stack
+//   (knowledge_stack.rs, adjacent to cosmos_tick_emit_loop) and (b) skills_cmd::run
+//   SkillsAction::PlaybookExport arm (`elai skills-mgmt playbook export`).
+// Composes Phase-3F rules lifecycle (transition_to_candidate/shadow/active), IS-16 trial_ledger,
+//   C-28 mutation suite, H-17/H-28 holdout-budget gates, IS-13 CompiledPipelineStore.
+// TOTAL_VARIANTS 559 -> 560 (Pattern-2 single-representative: Promoted in lock array).
+// SCHEMA_VERSION 250 -> 251.
+//
+// I-17: TriLayerVerdict -- tri-layer evaluation-stack per-branch verdict beacon.
+// Pattern-2 single-variant 4-arm TriLayerVerdictKind: HardVeto / ScoredSurvivor /
+// DisagreementEscalated / FlakeQuarantined.
+// Default-OFF (ELAI_TRI_LAYER_ENABLE, R9 experiment, promotion plan I-4).
+// Emitted by verifier_stack::TriLayerStack::run_verdict (one row per branch).
+// TOTAL_VARIANTS 560 -> 561.
+// SCHEMA_VERSION 251 -> 252.
+//
+// I-18: RowChainSealed -- per-row rolling blake3 chain beacon (uPIP row-chain + AI-BOM).
+// Pattern-2 single-variant 3-arm RowChainSealedKind: ChainAdvanced / AibomEmitted / ChainBroken.
+// ChainAdvanced: emitted from run_subcommand::emit_run_artifact after every sealed RRA.
+// AibomEmitted: emitted from run_subcommand::emit_attestation when the AI-BOM entry is sealed.
+// ChainBroken: emitted from rra::build_rra on Cargo.lock mutation detected mid-run (DEPS layer).
+// Default-ON, no kill-switch. Composes G-2/G-8/I-45 (GD-1). DISTINCT from
+// crate::verification_result::GateRejection::ChainBroken (Rust error type in verify path).
+// TOTAL_VARIANTS 561 -> 562.
+// SCHEMA_VERSION 252 -> 253.
+const SCHEMA_VERSION: i64 = 253;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -4411,10 +4640,10 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- ELAI_EVAL_BENCHMARK_ENABLE=1. Live runs RUNPOD-PENDING.
         'benchmark_run_observed',
         -- E-19 (SCHEMA_VERSION 166): reasoning quality probe.
-        -- SINGLE-VARIANT Pattern-2 (18th application); ProbeKind 5-arm
+        -- SINGLE-VARIANT Pattern-2 (18th application); ProbeKind 6-arm
         -- discriminator on payload (l2_gate_decision / l4_prm_lite_score /
-        -- l4_lateral_kept / l4_ttc_budget_chosen / l6_verifier_diversity).
-        -- Wire-dark unless ELAI_REASONING_QUALITY_PROBE_ENABLE=1.
+        -- l4_lateral_kept / l4_ttc_budget_chosen / l6_verifier_diversity /
+        -- vividness_probe [I-5]). Wire-dark unless ELAI_REASONING_QUALITY_PROBE_ENABLE=1.
         'reasoning_quality_probe',
         -- E-54 (SCHEMA_VERSION 167): eval-corpus repair pre-deploy.
         -- SINGLE-VARIANT Pattern-2 (19th application); CorpusEventPhase
@@ -4923,7 +5152,132 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- Carries anchor_count + seed + blake3_set_hash_hex for off-agent verification.
         -- Default-ON kill-switch: ELAI_CITATION_PREBIND_DISABLE (no allowlist row per R9).
         -- Pattern-2 single-variant 2-arm CitationAnchorsBoundKind: Bound | Blocked.
-        'citation_anchors_bound'
+        'citation_anchors_bound',
+        -- I-39 (SCHEMA_VERSION 230): PlanStateDerived -- per-plan state derived
+        -- beacon. Emitted by elai plan status (REAL CLI entrypoint). Flat beacon;
+        -- letter + session_id + derived_state + evidence_anchor.
+        'plan_state_derived',
+        -- I-45 (SCHEMA_VERSION 231): ObjectiveSealed -- objective-hash sealed-receipt
+        -- beacon. Pattern-2 single-variant 3-arm ObjectiveSealedKind.
+        -- Default-ON; kill-switch ELAI_OBJECTIVE_SEAL_DISABLE.
+        'objective_sealed',
+        -- I-34 (SCHEMA_VERSION 234): GrammarGateEvent -- CRANE hybrid grammar-pin gate beacon.
+        -- Pattern-2 single-variant 3-arm GrammarGateEventKind:
+        -- CranePassed / PinViolation / PostParseRejected.
+        -- Default-ON; no kill-switch (mandatory gate per IC-18 + landmine #7/#8).
+        'grammar_gate_event',
+        -- I-38 (SCHEMA_VERSION 235): QdeltaMeasured -- QDELTA defective-diff rate flat beacon.
+        -- Emitted by cli::bench_qdelta::run_inner after floor_check passes.
+        -- Default-ON via bench entrypoint; no ELAI_*_ENABLE gate.
+        'qdelta_measured',
+        -- I-43 (SCHEMA_VERSION 236): ClaimScopeMeasured -- reproducibility-claim scoper kill-gate.
+        -- Pattern-2 single-variant 3-arm ClaimScopeMeasuredKind: PilotDelta / CrossLaneDivergence / ClaimScoped.
+        -- Emitted by cli::bench_claim_scope::run_inner. Default-ON; no ELAI_*_ENABLE gate.
+        'claim_scope_measured',
+        -- I-10 (SCHEMA_VERSION 237): CacheEconomicsEvent -- prefix invariance + TTL tiering +
+        -- cache-hit hard guard. Pattern-2 single-variant 3-arm CacheEconomicsEventKind:
+        -- TtlPlanned / HitRateGuardTripped / PrefixDiffDumped.
+        -- Default-ON kill-switch ELAI_CACHE_ECONOMICS_DISABLE=1. Cloud-lane only.
+        'cache_economics_event',
+        -- I-8 (SCHEMA_VERSION 238): TrajectoryAborted -- aletheia voluntary abort + dead-end hash
+        -- pruning + halting-bound seam. Pattern-2 single-variant 3-arm TrajectoryAbortedKind:
+        -- Voluntary / DeadEndHash / HaltingBound. Emitted by acknowledge_infeasible tool arm,
+        -- dead_end_cache check path, and I-17 watchdog hook (Wave-3 stub registered here).
+        'trajectory_aborted',
+        -- I-1 (SCHEMA_VERSION 239): DirectiveExecuted -- directive supervisor enforcement-plane
+        -- outcome. Pattern-2 single-variant 3-arm DirectiveExecutedKind: Executed / Discarded /
+        -- CompensationFired. Emitted by directive::InProcessSupervisor::execute_directive.
+        -- The generator emits pure Directive structs; the Supervisor is the sole side-effect sink.
+        'directive_executed',
+        -- I-33 (SCHEMA_VERSION 240): GovernancePrimitiveFired -- mechanical decision governance
+        -- primitive beacon. Pattern-2 single-variant 3-arm GovernancePrimitiveFiredKind:
+        -- CeflExternalized / I6qRejected / CommitRevealSealed. Emitted by
+        -- decision_governance::emit_governance_fired (governed_prompt_decision call site).
+        'governance_primitive_fired',
+        -- I-32 (SCHEMA_VERSION 241): RoleContractApplied -- structural role-scope contract applied
+        -- to a system-prompt build. Pattern-2 single-variant 3-arm RoleContractAppliedKind:
+        -- PersonaStripped / PersonaRetained / AbDelta. Emitted by report_fns::build_system_prompt_for_role
+        -- (PersonaStripped/PersonaRetained) and --role-ab-probe CLI harness (AbDelta).
+        'role_contract_applied',
+        -- I-35 (SCHEMA_VERSION 242): ToolSequenceVerdict -- temporal tool-sequence enforcement
+        -- at the I-1 supervisor plane. Pattern-2 single-variant 3-arm ToolSequenceVerdictKind:
+        -- Allowed / OrderViolation / HaltEnforced. Emitted by
+        -- directive::InProcessSupervisor::run_sequence_gate (5th supervisor gate arm).
+        -- Predicates evaluate the ordered tool-call history buffer (CDA-immune).
+        -- R8-frozen: rule set hash in .claude/gate-manifest.txt.
+        'tool_sequence_verdict',
+        -- I-41 (SCHEMA_VERSION 243): CritiqueLensFinding -- spec-time critique lenses advisory
+        -- beacon. Pattern-2 single-variant 3-arm CritiqueLensFindingKind: AdvisoryFinding /
+        -- DroppedNoAnchor / LensRun. advisory=true on all arms; zero gate-verdict path.
+        -- Emitted by critique::lenses::LensSet::run (post-convergence in run_critic_loop +
+        -- `elai critique` CLI). Default-OFF (ELAI_CRITIQUE_LENSES_ENABLE=1 to enable).
+        'critique_lens_finding',
+        -- I-46 (SCHEMA_VERSION 244): BashRedirected -- bash interceptor redirect/fixup/
+        -- allowed-prefix outcome. Pattern-2 single-variant 3-arm BashRedirectedKind:
+        -- Redirected / FixedUp / PrefixBlocked. Default-ON; no kill-switch.
+        -- Emitted by dispatch::in_process::InProcessDispatch::maybe_emit_bash_redirected
+        -- when run_bash returns error_code bash_redirected / bash_fixedup / bash_prefix_blocked.
+        'bash_redirected',
+        -- I-47 (SCHEMA_VERSION 245): PromptHardeningApplied -- verifier-input XML tagging +
+        -- worker rule injection beacon. Pattern-2 single-variant 3-arm
+        -- PromptHardeningAppliedKind: InputsTagged / RulesInjected / SelfAttestationStripped.
+        -- Default-ON; unconditional on auditor/critic/worker dispatches.
+        -- Emitted by tools::execute_agent_with_spawn at build_agent_prompt seam.
+        'prompt_hardening_applied',
+        -- I-2 (SCHEMA_VERSION 246): BranchWorkspaceEvent -- CoW workspace isolation barrier
+        -- outcome. Pattern-2 single-variant 4-arm BranchWorkspaceEventKind:
+        -- Spawned / Merged / EscapeBlocked / ConflictEscalated. Emitted by
+        -- sandbox::branch_workspace::WorktreePoolImpl (spawn/escape_check) + the BSP barrier
+        -- (bsp/engine.rs barrier_merge). Composes C-11/E-15/I-1/H-49.
+        'branch_workspace_event',
+        -- I-5 (SCHEMA_VERSION 247): ContextPruned -- per-branch context rebuild outcome.
+        -- Pattern-2 single-variant 3-arm ContextPrunedKind: SiblingExcluded / TracebackContrasted /
+        -- VividnessProbe. Emitted by pristine_path_filter::PristinePathFilter::build_branch_context.
+        -- Wire-dark until I-4 SearchLadder ships (Wave 4). Composes H-6/H-50/E-19.
+        'context_pruned',
+        -- I-11 (SCHEMA_VERSION 248): BeliefStateEvent -- typed versioned condensate receipt.
+        -- Pattern-2 single-variant 3-arm BeliefStateEventKind: Condensed / Handoff / HonestyDelta.
+        -- Condensed: emitted at every adaptive_reduce condensation (ID-3 JOURNALED-MIDDLEWARE receipt).
+        -- Handoff: emitted when BeliefState payload is dispatched on the cloud escalation arm.
+        -- HonestyDelta: emitted by HonestyJob after >=10 escalations (or --force-honesty-check).
+        -- Default-ON (mandatory ID-3 receipt; no kill-switch). Composes I-7/H-51/H-6/CL-1..CL-4.
+        'belief_state_event',
+        -- I-13 (SCHEMA_VERSION 249): MemoryGuardEvent -- write-time memory guard outcome.
+        -- Pattern-2 single-variant 3-arm MemoryGuardEventKind: PoisonBlocked / DualSerialized /
+        -- TraceQueryExpanded. PoisonBlocked: emitted when Stage-2 aho-corasick scan refuses a write
+        -- (invisible-Unicode or confusable-shell pattern). DualSerialized: emitted when a ToolResult
+        -- is serialized via to_ui_dict + to_llm_content (records token_delta). TraceQueryExpanded:
+        -- emitted when TraceQuery::expand returns exact line ranges on demand. Gated behind
+        -- ELAI_MEMORY_GUARD_ENABLE (default-OFF, R9 experiment). Composes H-31/H-32/E-37/IS-11.
+        'memory_guard_event',
+        -- I-14 (SCHEMA_VERSION 250): ContextTransformReceipt -- deterministic context-compression
+        -- middleware receipt. Pattern-2 single-variant 3-arm ContextTransformKind: LspSlice /
+        -- AstFold / Tier2Compressed. LspSlice: rustc-panic payload sliced to the located error
+        -- neighbourhood. AstFold: tree-sitter function-body elision (bodies elided, signatures
+        -- kept). Tier2Compressed: reserved discriminator for the deferred neural tier. Default-ON
+        -- (ID-3 JOURNALED-MIDDLEWARE; no kill-switch -- every transform journals a reversible
+        -- receipt). Composes E-52/knowledge-tree-sitter/IS-6/H-6.
+        'context_transform_receipt',
+        -- I-12 (SCHEMA_VERSION 251): PlaybookEvent -- evidence-gated playbook curator outcome.
+        -- Pattern-2 single-variant 4-arm PlaybookEventKind: Promoted / Demoted / ValidationRun /
+        -- Exported. Default-ON; no kill-switch (ID-6 WEIGHTS-ARE-CONFIGS promotion ledger).
+        -- Composes Phase-3F lifecycle + IS-16 trial_ledger + C-28 mutation suite.
+        'playbook_event',
+        -- I-17 (SCHEMA_VERSION 252): TriLayerVerdict -- tri-layer evaluation-stack per-branch
+        -- verdict. Pattern-2 single-variant 4-arm TriLayerVerdictKind: HardVeto / ScoredSurvivor /
+        -- DisagreementEscalated / FlakeQuarantined. Default-OFF (ELAI_TRI_LAYER_ENABLE, R9
+        -- experiment, promotion plan I-4). Emitted by verifier_stack::TriLayerStack::run_verdict.
+        -- Composes D-11/F-1/F-9/I-23/D-13 (GD-1, never restates).
+        'tri_layer_verdict',
+        -- I-18 (SCHEMA_VERSION 253): RowChainSealed -- per-row rolling blake3 chain beacon.
+        -- Pattern-2 single-variant 3-arm RowChainSealedKind: ChainAdvanced / AibomEmitted /
+        -- ChainBroken. ChainAdvanced: emitted from run_subcommand::emit_run_artifact after every
+        -- sealed RRA (the rolling prev_hash advanced). AibomEmitted: emitted from
+        -- run_subcommand::emit_attestation when the AI-BOM/CycloneDX-ML entry is sealed.
+        -- ChainBroken: emitted from rra::build_rra when a Cargo.lock mutation is detected
+        -- mid-run at the DEPS layer (halt-with-error path). Default-ON, no kill-switch.
+        -- Composes G-2/G-8/I-45 (GD-1, never restates). TOTAL_VARIANTS 561 -> 562.
+        'row_chain_sealed'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -9009,6 +9363,264 @@ pub enum SsbActionType {
     /// row required — this is a DISABLE kill-switch, not a default-OFF enable gate; R9).
     /// TOTAL_VARIANTS 539 -> 540.
     CitationAnchorsBound,
+    /// I-39 (SCHEMA_VERSION 230): per-plan state derived from three deterministic
+    /// sources: wiring_contract_check.py --static verdict, SSB journal presence
+    /// of observable_effect rows, and s-plan-audit-2026-06-04 FINISH fragments.
+    ///
+    /// Emitted by [`plan_status_cmd::run_plan_status`] (REAL entrypoint:
+    /// `elai plan status [--letter <L>] [--json]`).
+    ///
+    /// Flat beacon. Carries [`PlanStateDerivedPayload`] with fields
+    /// `{letter, session_id, derived_state, evidence_anchor, map_date}`.
+    ///
+    /// Default-ON; no kill-switch required (pure read path).
+    /// TOTAL_VARIANTS 540 -> 541.
+    PlanStateDerived,
+    /// I-45 (SCHEMA_VERSION 231): objective-hash sealed-receipt beacon.
+    ///
+    /// Pattern-2 single-variant 3-arm [`ObjectiveSealedKind`]:
+    /// - `Sealed`: emitted from `rra::build_rra` when the objective_hash is
+    ///   stamped into the [`RunArtifact`]. Carries the 16-hex prefix of the
+    ///   blake3(canonical_objective_bytes) hash.
+    /// - `MutationDetected`: emitted from `rra::verify_artifact_with_objective`
+    ///   when the re-derived hash mismatches the sealed hash (the task was
+    ///   re-defined after PASS). Hard-FAIL verdict.
+    /// - `ReceiptStale`: emitted when the attestation predicate's objective_hash
+    ///   mismatches the presented task. Hard-FAIL verdict.
+    ///
+    /// Default-ON; kill-switch `ELAI_OBJECTIVE_SEAL_DISABLE`. Fail-soft: a missing
+    /// writable journal silently skips the emit; the verify verdict is NEVER
+    /// masked (R2). TOTAL_VARIANTS 541 -> 542.
+    ObjectiveSealed(ObjectiveSealedKind),
+    /// I-34 (SCHEMA_VERSION 234): CRANE hybrid grammar-pin gate beacon. Pattern-2
+    /// single-variant 3-arm [`GrammarGateEventKind`]:
+    /// - `CranePassed`: constrained decode completed, gate eligibility check passed.
+    /// - `PinViolation`: grammar file's blake3 digest mismatches the pinned manifest value.
+    /// - `PostParseRejected`: post-parse re-validation detected silent non-compliance.
+    ///
+    /// Emitted by `orchestrator::grammar_gate::emit_grammar_gate_event`.
+    /// Default-ON; no kill-switch (mandatory per IC-18 + landmine #7/#8).
+    /// TOTAL_VARIANTS 542 -> 543.
+    GrammarGateEvent(GrammarGateEventKind),
+    /// I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate gate-ON vs gate-OFF.
+    /// Flat beacon (no Kind discriminator). Mirrors SafetyDeltaMeasured shape.
+    /// Emitted by `cli::bench_qdelta::run_inner` after `floor_check` passes.
+    /// TOTAL_VARIANTS 543 -> 544.
+    QdeltaMeasured,
+    /// I-43 (SCHEMA_VERSION 236): reproducibility-claim scoper + kill-gate.
+    /// Pattern-2 single-variant 3-arm [`ClaimScopeMeasuredKind`]:
+    /// - `PilotDelta`: reduced-N gate-ON vs gate-OFF pilot signal + trap-detector.
+    /// - `CrossLaneDivergence`: local-vs-cloud action-stream divergence % on security paths.
+    /// - `ClaimScoped`: consolidated go/no-go verdict with honest claim wording.
+    ///
+    /// Emitted by `cli::bench_claim_scope::run_inner`. TOTAL_VARIANTS 544 -> 545.
+    ClaimScopeMeasured(ClaimScopeMeasuredKind),
+    /// I-10 (SCHEMA_VERSION 237): prefix invariance + TTL tiering + cache-hit hard guard.
+    /// Pattern-2 single-variant 3-arm [`CacheEconomicsEventKind`]:
+    /// - `TtlPlanned`: planner selected a TTL tier for a cloud call.
+    /// - `HitRateGuardTripped`: unexplained miss-rate exceeded threshold (>10%).
+    /// - `PrefixDiffDumped`: guard detected a prefix mutation; blake3 byte-range dumped.
+    ///
+    /// Emitted by `orchestrator::cache_economics::emit_cache_economics_event`.
+    /// Default-ON kill-switch `ELAI_CACHE_ECONOMICS_DISABLE=1`. Cloud-lane only.
+    /// Composes on H-1/H-2 shipped substrate. TOTAL_VARIANTS 545 -> 546.
+    CacheEconomicsEvent(CacheEconomicsEventKind),
+    /// I-8 (SCHEMA_VERSION 238): aletheia voluntary abort + dead-end hash pruning + halting bound.
+    /// Pattern-2 single-variant 3-arm [`TrajectoryAbortedKind`]:
+    /// - `Voluntary`: model called `acknowledge_infeasible` explicitly.
+    /// - `DeadEndHash`: pre-dispatch fingerprint match pruned an isomorphic re-attempt (0 tokens).
+    /// - `HaltingBound`: empirical check-runner watchdog fired (I-17 seam; Wave-1 stub registered).
+    ///
+    /// Emitted by `production_agent_rpc.rs` `TOOL_ACKNOWLEDGE_INFEASIBLE` arm (Voluntary),
+    /// `dead_end_cache.rs` check path (DeadEndHash), and I-17 watchdog hook (HaltingBound).
+    /// Composes H-39 AbstentionScored (GD-1) and H-49 rollback (Wave-2 wiring).
+    /// TOTAL_VARIANTS 546 -> 547.
+    TrajectoryAborted(TrajectoryAbortedKind),
+    /// I-1 (SCHEMA_VERSION 239): directive supervisor enforcement-plane outcome.
+    /// Pattern-2 single-variant 3-arm [`DirectiveExecutedKind`]:
+    /// - `Executed`: gates passed and the side effect ran cleanly.
+    /// - `Discarded`: a gate blocked the directive; the side effect never ran.
+    /// - `CompensationFired`: the side effect crashed and E-44 saga compensation
+    ///   restored state.
+    ///
+    /// Emitted by `directive::InProcessSupervisor::execute_directive`. The
+    /// generator emits pure `Directive` structs only; the Supervisor is the
+    /// sole side-effect executor (CANT-WRECK). Composes E-30/F-1/G-3 gates.
+    /// TOTAL_VARIANTS 547 -> 548.
+    DirectiveExecuted(DirectiveExecutedKind),
+    /// I-33 (SCHEMA_VERSION 240): mechanical decision governance primitive fired.
+    /// Pattern-2 single-variant 3-arm [`GovernancePrimitiveFiredKind`]:
+    /// - `CeflExternalized`: CEFL candidate set injected; model-invented options
+    ///   outside the schema are structurally unparseable (selection-by-negation
+    ///   foreclosed at the type level).
+    /// - `I6qRejected`: rationale failed the I6Q length+diversity gate; decision
+    ///   refused; downstream routes to D-16 `RefusalDecision::Abstain`.
+    /// - `CommitRevealSealed`: blake3 commit row written before reveal; ordering
+    ///   integrity verified (commit_row_id < reveal_row_id = PASS).
+    /// Default-ON; kill-switch `ELAI_GOVERNANCE_DISABLE`.
+    /// Composes E-25 prompt_decision + D-16 refusal path + C-26 DecodingMode.
+    /// TOTAL_VARIANTS 548 -> 549.
+    GovernancePrimitiveFired(GovernancePrimitiveFiredKind),
+    /// I-32 (SCHEMA_VERSION 241): structural role-scope contract applied to a
+    /// system-prompt build. Pattern-2 single-variant 3-arm
+    /// [`RoleContractAppliedKind`]:
+    /// - `PersonaStripped`: narrative "You are..." persona removed; schema-first
+    ///   role contract text injected. Emitted for factual/code roles (Executor,
+    ///   Researcher, ContextCompiler, Designer, MemoryWriter).
+    /// - `PersonaRetained`: alignment-dependent role (Auditor*, IdeaCritic,
+    ///   InjectionClassifier) -- contract store has no entry; original framing
+    ///   left intact.
+    /// - `AbDelta`: emitted by `--role-ab-probe` CLI harness; carries before/after
+    ///   fixture pass-rate fields and delta for the evidence gate (ID-5:
+    ///   new_rate >= old_rate required for production flip).
+    /// Default-ON; grounded per IC-17 (MMLU -3.6..-5.3pp / MT-Bench coding -0.65
+    /// for narrative persona in factual/code roles).
+    /// Composes IC-17 persona-split + ID-5 evidence gate + E-6 IsoBudgetMeasured.
+    /// TOTAL_VARIANTS 549 -> 550.
+    RoleContractApplied(RoleContractAppliedKind),
+    /// I-35 (SCHEMA_VERSION 242): temporal tool-sequence enforcement verdict.
+    /// Pattern-2 single-variant 3-arm [`ToolSequenceVerdictKind`]:
+    /// - `Allowed`: all enabled rules that triggered on this tool class were satisfied.
+    /// - `OrderViolation`: a WarnOnly rule's predicate was not satisfied.
+    /// - `HaltEnforced`: a Halt-enforced rule's predicate was not satisfied; the call
+    ///   is refused fail-closed (consistent with the existing Discarded path).
+    /// Emitted by `directive::InProcessSupervisor::run_sequence_gate` (5th supervisor
+    /// gate arm, additive -- does NOT replace E-30/G-3/F-1/I-32).
+    /// Predicates evaluate the ordered tool-call history buffer (CDA-immune: history
+    /// rows are built from real dispatch events, not from token content).
+    /// R8-frozen: rule set hash in `.claude/gate-manifest.txt`.
+    /// TOTAL_VARIANTS 550 -> 551.
+    ToolSequenceVerdict(ToolSequenceVerdictKind),
+    /// I-41 (SCHEMA_VERSION 243): spec-time critique lenses advisory beacon.
+    /// Pattern-2 single-variant 3-arm [`CritiqueLensFindingTag`]:
+    /// - `AdvisoryFinding`: a lens produced a finding with a concrete anchor.
+    /// - `DroppedNoAnchor`: a raw finding was dropped because `location` was empty.
+    /// - `LensRun`: telemetry beacon emitted once per lens pass (finding or not).
+    /// `advisory=true` on all arms; ZERO path to any accept/block verdict.
+    /// Default-OFF (ELAI_CRITIQUE_LENSES_ENABLE=1); kill-switch registered R9.
+    /// TOTAL_VARIANTS 551 -> 552.
+    CritiqueLensFinding(CritiqueLensFindingTag),
+    /// I-46 (SCHEMA_VERSION 244): bash interceptor redirect / fixup / prefix outcome.
+    /// Pattern-2 single-variant 3-arm [`BashRedirectedKind`]:
+    /// - `Redirected`: command matched a redirect rule; no process spawn.
+    /// - `FixedUp`: trailing output-pipeline noise stripped; rewritten command returned.
+    /// - `PrefixBlocked`: command starts with an allowed prefix but body contains a banned
+    ///   shell token (control char, unquoted expansion, newline, backslash).
+    /// Default-ON; no kill-switch (interceptor is not a default-OFF experiment).
+    /// Emitted by `dispatch::in_process::InProcessDispatch::maybe_emit_bash_redirected`.
+    /// TOTAL_VARIANTS 552 -> 553.
+    BashRedirected(BashRedirectedKind),
+    /// I-47 (SCHEMA_VERSION 245): verifier-input hardening + dispatch rule injection beacon.
+    /// Pattern-2 single-variant 3-arm [`PromptHardeningAppliedKind`]:
+    /// - `InputsTagged`: auditor/critic dispatch -- untrusted worker output wrapped in
+    ///   `<ELAI_DATA>` boundary tags with hardening frame prepended above data blocks.
+    /// - `RulesInjected`: worker dispatch -- frozen per-role Karpathy-distillate rule block
+    ///   appended to CONSTRAINTS section (HD-2 byte-stable per role, cache-prefix safe).
+    /// - `SelfAttestationStripped`: auditor/critic dispatch -- a self-attestation phrase
+    ///   detected in worker output; labelled as claim-not-evidence inside sub-tag.
+    /// Default-ON; unconditional on auditor/critic/worker dispatches (no kill-switch, R3).
+    /// Emitted by `tools::execute_agent_with_spawn` after hardening applied at seam.
+    /// TOTAL_VARIANTS 553 -> 554.
+    PromptHardeningApplied(PromptHardeningAppliedKind),
+    /// I-2 (SCHEMA_VERSION 246): CoW workspace isolation barrier outcome.
+    /// Pattern-2 single-variant 4-arm [`BranchWorkspaceEventKind`]:
+    /// - `Spawned`: a private branch workspace root was created (warm git worktree).
+    /// - `Merged`: the deterministic SSB-seq-ordered barrier merged all roots into trunk.
+    /// - `EscapeBlocked`: a branch tried to write outside its root; blocked pre-FS-mutation.
+    /// - `ConflictEscalated`: two branches wrote the same path with differing bytes; merge halted.
+    ///
+    /// Emitted by `sandbox::branch_workspace::WorktreePoolImpl` (spawn/escape_check) and the BSP
+    /// barrier site (`bsp/engine.rs` `barrier_merge`). Composes C-11/E-15/I-1/H-49.
+    /// TOTAL_VARIANTS 554 -> 555.
+    BranchWorkspaceEvent(BranchWorkspaceEventKind),
+    /// I-5 (SCHEMA_VERSION 247): per-branch context rebuild outcome.
+    /// Pattern-2 single-variant 3-arm [`ContextPrunedKind`]:
+    /// - `SiblingExcluded`: sibling branch payloads excluded from fresh branch context (ID-1).
+    /// - `TracebackContrasted`: failed-attempt traceback replaced by <=30-token constraint phrase.
+    /// - `VividnessProbe`: sampled A/B outcome delta (pristine minus accumulated); recomputable
+    ///   under ELAI_SEED (GD-2). Gated by `ELAI_REASONING_QUALITY_PROBE_ENABLE`.
+    ///
+    /// Emitted by `pristine_path_filter::PristinePathFilter::build_branch_context`.
+    /// Wire-dark until I-4 SearchLadder ships (Wave 4). Composes H-6/H-50/E-19.
+    /// TOTAL_VARIANTS 555 -> 556.
+    ContextPruned(ContextPrunedKind),
+    /// I-11 (SCHEMA_VERSION 248): typed versioned condensate receipt for handoffs.
+    /// Pattern-2 single-variant 3-arm [`BeliefStateEventKind`]:
+    /// - `Condensed`: emitted at every `adaptive_reduce` condensation (ID-3 JOURNALED-MIDDLEWARE receipt).
+    /// - `Handoff`: emitted when BeliefState payload dispatched to cloud escalation arm.
+    /// - `HonestyDelta`: emitted by HonestyJob::run after >=10 escalations.
+    ///
+    /// Default-ON; no kill-switch (ID-3 JOURNALED-MIDDLEWARE is mandatory).
+    /// Composes I-7/H-51/H-6/CL-1..CL-4. TOTAL_VARIANTS 556 -> 557.
+    BeliefStateEvent(BeliefStateEventKind),
+    /// I-13 (SCHEMA_VERSION 249): write-time memory guard outcome.
+    /// Pattern-2 single-variant 3-arm [`MemoryGuardEventKind`]:
+    /// - `PoisonBlocked`: Stage-2 aho-corasick scan refused a write (invisible-Unicode or
+    ///   confusable-shell pattern); carries `pattern_class` tag.
+    /// - `DualSerialized`: a ToolResult was serialized via `to_ui_dict` (full) vs
+    ///   `to_llm_content` (condensed); carries `token_delta`.
+    /// - `TraceQueryExpanded`: model called TraceQuery::expand for on-demand line-range
+    ///   expansion; carries `byte_range`.
+    ///
+    /// Gated behind `ELAI_MEMORY_GUARD_ENABLE` (default-OFF, R9 experiment, GD-4).
+    /// Composes H-31/H-32/E-37/IS-11. TOTAL_VARIANTS 557 -> 558.
+    MemoryGuardEvent(MemoryGuardEventKind),
+    /// I-14 (SCHEMA_VERSION 250): deterministic context-compression middleware receipt.
+    /// Pattern-2 single-variant 3-arm [`ContextTransformKind`]:
+    /// - `LspSlice`: a `rustc` panic payload was sliced to the located error neighbourhood.
+    /// - `AstFold`: tree-sitter function-body elision (bodies elided, signatures kept).
+    /// - `Tier2Compressed`: reserved discriminator for the deferred neural (LLMLingua-2-class) tier.
+    ///
+    /// Default-ON; no kill-switch (ID-3 JOURNALED-MIDDLEWARE is mandatory; an un-journaled
+    /// transform is a done-gate FAIL). Composes E-52/knowledge-tree-sitter/IS-6/H-6.
+    /// TOTAL_VARIANTS 558 -> 559.
+    ContextTransformReceipt(ContextTransformKind),
+    /// I-12 (SCHEMA_VERSION 251): evidence-gated playbook curator outcome beacon.
+    /// Pattern-2 single-variant 4-arm [`PlaybookEventKind`]:
+    /// - `Promoted`: rule advanced to ACTIVE (>=k SSB outcome links + metric gates + regression_count==0).
+    /// - `Demoted`: ACTIVE rule lost ACTIVE status (stale or regressed).
+    /// - `ValidationRun`: promotion-gate check without promotion (evidence_count < k, or regression > 0).
+    /// - `Exported`: `export_verified` wrote a verified AGENTS.md / skills export block with outcome_row_ids.
+    ///
+    /// Default-ON; no kill-switch (ID-6 WEIGHTS-ARE-CONFIGS promotion ledger is mandatory).
+    /// Evaluator lives OUTSIDE the write boundary (gate-freeze R8, ID-6).
+    /// Production callers: (a) offline tick in LiveCli::build_local_knowledge_stack (Layer-1A),
+    ///   (b) skills_cmd::run PlaybookExport arm (`elai skills-mgmt playbook export`).
+    /// TOTAL_VARIANTS 559 -> 560.
+    PlaybookEvent(PlaybookEventKind),
+    /// I-17 (SCHEMA_VERSION 252): tri-layer evaluation-stack per-branch verdict.
+    /// Pattern-2 single-variant 4-arm [`TriLayerVerdictKind`]:
+    /// - `HardVeto`: L1 deterministic gate (compile/dep/vibe/checker) returned a veto;
+    ///   score is a LITERAL 0.0 and L2/L3 never ran (l2_call_count == 0). ID-4 supreme.
+    /// - `ScoredSurvivor`: branch cleared L1; L2 calibrated scorer assigned a score.
+    /// - `DisagreementEscalated`: L2 verdict variance among survivors exceeded the
+    ///   [DESIGN] threshold; the D-13 cross-family adversary was routed for a counter.
+    /// - `FlakeQuarantined`: an oracle flipped across seeded reruns and was ledgered
+    ///   out of voting (blake3(oracle-id + seed-range) key).
+    ///
+    /// Emitted by `verifier_stack::TriLayerStack::run_verdict` (one row per branch).
+    /// Default-OFF gate `ELAI_TRI_LAYER_ENABLE` (wire-dark-allowlist; consumer is I-4
+    /// Wave-4 SearchLadder). Composes D-3/D-11/F-1/F-9/D-13/I-23 (GD-1, never restates).
+    /// TOTAL_VARIANTS 560 -> 561.
+    TriLayerVerdict(TriLayerVerdictKind),
+    /// I-18 (SCHEMA_VERSION 253): per-row rolling blake3 chain beacon.
+    ///
+    /// Pattern-2 single-variant 3-arm [`RowChainSealedKind`]:
+    /// - `ChainAdvanced`: emitted from `run_subcommand::emit_run_artifact` after every
+    ///   sealed RRA — the rolling chain_prev_hash advanced to the next position.
+    /// - `AibomEmitted`: emitted from `run_subcommand::emit_attestation` when the
+    ///   AI-BOM/CycloneDX-ML entry is sealed alongside the in-toto Statement.
+    /// - `ChainBroken`: emitted from `rra::build_rra` when a Cargo.lock mutation is
+    ///   detected mid-run at the DEPS layer. Halts the run with an error; the
+    ///   off-agent beacon fires to signal the break (the observable_effect R2 beacon).
+    ///
+    /// NOTE: this is the SSB off-agent beacon kind. It is DISTINCT from
+    /// `crate::verification_result::GateRejection::ChainBroken` (a Rust error type
+    /// in the verify path). Do NOT conflate.
+    ///
+    /// Default-ON, no kill-switch. Composes G-2/G-8/I-45 (GD-1, never restates).
+    /// TOTAL_VARIANTS 561 -> 562.
+    RowChainSealed(RowChainSealedKind),
 }
 
 impl SsbActionType {
@@ -9845,6 +10457,48 @@ impl SsbActionType {
             Self::HandoffLifecycleEvent => "handoff_lifecycle_event",
             Self::FindingAnchored => "finding_anchored",
             Self::CitationAnchorsBound => "citation_anchors_bound",
+            Self::PlanStateDerived => "plan_state_derived",
+            Self::ObjectiveSealed(_) => "objective_sealed",
+            // I-34 (SCHEMA_VERSION 234): CRANE hybrid grammar-pin gate beacon.
+            Self::GrammarGateEvent(_) => "grammar_gate_event",
+            // I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate flat beacon.
+            Self::QdeltaMeasured => "qdelta_measured",
+            // I-43 (SCHEMA_VERSION 236): claim-scoper kill-gate (3-arm Pattern-2).
+            Self::ClaimScopeMeasured(_) => "claim_scope_measured",
+            // I-10 (SCHEMA_VERSION 237): cache economics event (3-arm Pattern-2).
+            Self::CacheEconomicsEvent(_) => "cache_economics_event",
+            // I-8 (SCHEMA_VERSION 238): trajectory aborted (3-arm Pattern-2).
+            Self::TrajectoryAborted(_) => "trajectory_aborted",
+            // I-1 (SCHEMA_VERSION 239): directive supervisor outcome (3-arm Pattern-2).
+            Self::DirectiveExecuted(_) => "directive_executed",
+            // I-33 (SCHEMA_VERSION 240): mechanical decision governance primitive (3-arm Pattern-2).
+            Self::GovernancePrimitiveFired(_) => "governance_primitive_fired",
+            // I-32 (SCHEMA_VERSION 241): structural role-scope contract applied (3-arm Pattern-2).
+            Self::RoleContractApplied(_) => "role_contract_applied",
+            // I-35 (SCHEMA_VERSION 242): temporal tool-sequence enforcement verdict (3-arm Pattern-2).
+            Self::ToolSequenceVerdict(_) => "tool_sequence_verdict",
+            // I-41 (SCHEMA_VERSION 243): spec-time critique lenses advisory beacon (3-arm Pattern-2).
+            Self::CritiqueLensFinding(_) => "critique_lens_finding",
+            // I-46 (SCHEMA_VERSION 244): bash interceptor redirect/fixup/prefix outcome (3-arm Pattern-2).
+            Self::BashRedirected(_) => "bash_redirected",
+            // I-47 (SCHEMA_VERSION 245): verifier-input hardening + dispatch rule injection (3-arm Pattern-2).
+            Self::PromptHardeningApplied(_) => "prompt_hardening_applied",
+            // I-2 (SCHEMA_VERSION 246): CoW workspace isolation barrier outcome (4-arm Pattern-2).
+            Self::BranchWorkspaceEvent(_) => "branch_workspace_event",
+            // I-5 (SCHEMA_VERSION 247): per-branch context rebuild outcome (3-arm Pattern-2).
+            Self::ContextPruned(_) => "context_pruned",
+            // I-11 (SCHEMA_VERSION 248): typed versioned condensate receipt (3-arm Pattern-2).
+            Self::BeliefStateEvent(_) => "belief_state_event",
+            // I-13 (SCHEMA_VERSION 249): write-time memory guard outcome (3-arm Pattern-2).
+            Self::MemoryGuardEvent(_) => "memory_guard_event",
+            // I-14 (SCHEMA_VERSION 250): deterministic context-compression receipt (3-arm Pattern-2).
+            Self::ContextTransformReceipt(_) => "context_transform_receipt",
+            // I-12 (SCHEMA_VERSION 251): evidence-gated playbook curator outcome (4-arm Pattern-2).
+            Self::PlaybookEvent(_) => "playbook_event",
+            // I-17 (SCHEMA_VERSION 252): tri-layer evaluation-stack per-branch verdict (4-arm Pattern-2).
+            Self::TriLayerVerdict(_) => "tri_layer_verdict",
+            // I-18 (SCHEMA_VERSION 253): per-row rolling blake3 chain beacon (3-arm Pattern-2).
+            Self::RowChainSealed(_) => "row_chain_sealed",
         }
     }
 }
@@ -10586,6 +11240,28 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "handoff_lifecycle_event" => Ok(SsbActionType::HandoffLifecycleEvent),
         "finding_anchored" => Ok(SsbActionType::FindingAnchored),
         "citation_anchors_bound" => Ok(SsbActionType::CitationAnchorsBound),
+        "plan_state_derived"     => Ok(SsbActionType::PlanStateDerived),
+        "objective_sealed"       => Ok(SsbActionType::ObjectiveSealed(ObjectiveSealedKind::Sealed)),
+        "grammar_gate_event"     => Ok(SsbActionType::GrammarGateEvent(GrammarGateEventKind::CranePassed)),
+        "qdelta_measured"        => Ok(SsbActionType::QdeltaMeasured),
+        "claim_scope_measured"   => Ok(SsbActionType::ClaimScopeMeasured(ClaimScopeMeasuredKind::PilotDelta)),
+        "cache_economics_event"  => Ok(SsbActionType::CacheEconomicsEvent(CacheEconomicsEventKind::TtlPlanned)),
+        "trajectory_aborted"          => Ok(SsbActionType::TrajectoryAborted(TrajectoryAbortedKind::Voluntary)),
+        "directive_executed"          => Ok(SsbActionType::DirectiveExecuted(DirectiveExecutedKind::Executed)),
+        "governance_primitive_fired"  => Ok(SsbActionType::GovernancePrimitiveFired(GovernancePrimitiveFiredKind::CeflExternalized)),
+        "role_contract_applied"       => Ok(SsbActionType::RoleContractApplied(RoleContractAppliedKind::PersonaStripped)),
+        "tool_sequence_verdict"       => Ok(SsbActionType::ToolSequenceVerdict(ToolSequenceVerdictKind::Allowed)),
+        "critique_lens_finding"       => Ok(SsbActionType::CritiqueLensFinding(CritiqueLensFindingTag::AdvisoryFinding)),
+        "bash_redirected"             => Ok(SsbActionType::BashRedirected(BashRedirectedKind::Redirected)),
+        "prompt_hardening_applied"    => Ok(SsbActionType::PromptHardeningApplied(PromptHardeningAppliedKind::InputsTagged)),
+        "branch_workspace_event"      => Ok(SsbActionType::BranchWorkspaceEvent(BranchWorkspaceEventKind::Spawned)),
+        "context_pruned"              => Ok(SsbActionType::ContextPruned(ContextPrunedKind::SiblingExcluded)),
+        "belief_state_event"          => Ok(SsbActionType::BeliefStateEvent(BeliefStateEventKind::Condensed)),
+        "memory_guard_event"          => Ok(SsbActionType::MemoryGuardEvent(MemoryGuardEventKind::PoisonBlocked)),
+        "context_transform_receipt"   => Ok(SsbActionType::ContextTransformReceipt(ContextTransformKind::LspSlice)),
+        "playbook_event"              => Ok(SsbActionType::PlaybookEvent(PlaybookEventKind::Promoted)),
+        "tri_layer_verdict"           => Ok(SsbActionType::TriLayerVerdict(TriLayerVerdictKind::HardVeto)),
+        "row_chain_sealed"            => Ok(SsbActionType::RowChainSealed(RowChainSealedKind::ChainAdvanced)),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -14075,6 +14751,116 @@ pub enum SsbPayload {
     FindingAnchored(FindingAnchoredPayload),
     /// H-53 (SCHEMA_VERSION 229): citation pre-binding + constrained synthesis beacon.
     CitationAnchorsBound(CitationAnchorsBoundPayload),
+    /// I-39 (SCHEMA_VERSION 230): per-plan state derived from three deterministic sources:
+    /// wiring_contract_check.py verdict, SSB journal presence, and s-plan-audit-2026-06-04
+    /// FINISH fragments. Emitted by `plan_status_cmd::run_plan_status` (REAL CLI entrypoint:
+    /// `elai plan status`). Flat beacon. Carries [`PlanStateDerivedPayload`] with
+    /// letter + session_id + derived_state + evidence_anchor. Default-ON.
+    /// TOTAL_VARIANTS 540 -> 541.
+    PlanStateDerived(PlanStateDerivedPayload),
+    /// I-45 (SCHEMA_VERSION 231): objective-hash sealed-receipt beacon. Pattern-2
+    /// single-variant 3-arm [`ObjectiveSealedKind`]. Emitted from `rra::build_rra`
+    /// (Sealed arm) and from `rra::verify_artifact_with_objective` (MutationDetected arm).
+    /// Default-ON; kill-switch `ELAI_OBJECTIVE_SEAL_DISABLE`. Fail-soft.
+    /// TOTAL_VARIANTS 541 -> 542.
+    ObjectiveSealed(ObjectiveSealedPayload),
+    /// I-34 (SCHEMA_VERSION 234): CRANE hybrid grammar-pin gate beacon. Pattern-2
+    /// single-variant 3-arm [`GrammarGateEventKind`]:
+    /// - `CranePassed`: constrained decode completed, gate eligibility check passed.
+    /// - `PinViolation`: grammar file's blake3 digest mismatches the pinned manifest value.
+    /// - `PostParseRejected`: post-parse re-validation detected silent non-compliance.
+    ///
+    /// Emitted by `orchestrator::grammar_gate::emit_grammar_gate_event`.
+    /// Default-ON; no kill-switch (mandatory per IC-18 + landmine #7/#8).
+    /// TOTAL_VARIANTS 542 -> 543.
+    GrammarGateEvent(GrammarGateEventPayload),
+    /// I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate flat beacon.
+    /// Mirrors [`SafetyDeltaMeasured`] shape. TOTAL_VARIANTS 543 -> 544.
+    QdeltaMeasured(QdeltaMeasuredPayload),
+    /// I-43 (SCHEMA_VERSION 236): reproducibility-claim scoper + kill-gate.
+    /// Pattern-2 single-variant 3-arm [`ClaimScopeMeasuredKind`]:
+    /// - `PilotDelta`: reduced-N pilot signal + reviewer-reaching-rate trap detector.
+    /// - `CrossLaneDivergence`: local-vs-cloud action-stream divergence on security paths.
+    /// - `ClaimScoped`: consolidated go/no-go verdict with honest claim wording.
+    /// TOTAL_VARIANTS 544 -> 545.
+    ClaimScopeMeasured(ClaimScopeMeasuredPayload),
+    /// I-10 (SCHEMA_VERSION 237): prefix invariance + TTL tiering + cache-hit hard guard.
+    /// Pattern-2 single-variant 3-arm [`CacheEconomicsEventKind`]:
+    /// - `TtlPlanned`: planner selected a TTL tier for a cloud call.
+    /// - `HitRateGuardTripped`: unexplained miss-rate exceeded threshold (>10%).
+    /// - `PrefixDiffDumped`: guard detected a prefix mutation; blake3 byte-range dumped.
+    /// TOTAL_VARIANTS 545 -> 546.
+    CacheEconomicsEvent(CacheEconomicsEventPayload),
+    /// I-8 (SCHEMA_VERSION 238): aletheia voluntary abort + dead-end hash pruning + halting bound.
+    /// Pattern-2 single-variant 3-arm [`TrajectoryAbortedKind`]:
+    /// - `Voluntary`: model called `acknowledge_infeasible`.
+    /// - `DeadEndHash`: pre-dispatch fingerprint match pruned isomorphic re-attempt (0 tokens).
+    /// - `HaltingBound`: I-17 watchdog hook (Wave-1 stub registered here).
+    /// TOTAL_VARIANTS 546 -> 547.
+    TrajectoryAborted(TrajectoryAbortedPayload),
+    /// I-1 (SCHEMA_VERSION 239): directive supervisor enforcement-plane outcome.
+    /// Pattern-2 single-variant 3-arm [`DirectiveExecutedKind`]:
+    /// - `Executed`: gates passed; side effect ran cleanly.
+    /// - `Discarded`: a gate blocked the directive; side effect never ran.
+    /// - `CompensationFired`: side effect crashed; E-44 saga rollback fired.
+    /// TOTAL_VARIANTS 547 -> 548.
+    DirectiveExecuted(DirectiveExecutedPayload),
+    /// I-33 (SCHEMA_VERSION 240): mechanical decision governance primitive fired.
+    /// Pattern-2 single-variant 3-arm [`GovernancePrimitiveFiredKind`].
+    /// TOTAL_VARIANTS 548 -> 549.
+    GovernancePrimitiveFired(GovernancePrimitiveFiredPayload),
+    /// I-32 (SCHEMA_VERSION 241): structural role-scope contract applied.
+    /// Pattern-2 single-variant 3-arm [`RoleContractAppliedKind`].
+    /// TOTAL_VARIANTS 549 -> 550.
+    RoleContractApplied(RoleContractAppliedPayload),
+    /// I-35 (SCHEMA_VERSION 242): temporal tool-sequence enforcement verdict.
+    /// Pattern-2 single-variant 3-arm [`ToolSequenceVerdictKind`].
+    /// TOTAL_VARIANTS 550 -> 551.
+    ToolSequenceVerdict(ToolSequenceVerdictPayload),
+    /// I-41 (SCHEMA_VERSION 243): spec-time critique lenses advisory beacon.
+    /// Pattern-2 single-variant 3-arm [`CritiqueLensFindingKind`].
+    /// TOTAL_VARIANTS 551 -> 552. Advisory-only; `advisory=true` invariant.
+    CritiqueLensFinding(CritiqueLensFindingPayload),
+    /// I-46 (SCHEMA_VERSION 244): bash interceptor redirect/fixup/prefix outcome.
+    /// Pattern-2 single-variant 3-arm [`BashRedirectedKind`].
+    /// TOTAL_VARIANTS 552 -> 553.
+    BashRedirected(BashRedirectedPayload),
+    /// I-47 (SCHEMA_VERSION 245): verifier-input hardening + dispatch rule injection beacon.
+    /// Pattern-2 single-variant 3-arm [`PromptHardeningAppliedKind`].
+    /// TOTAL_VARIANTS 553 -> 554.
+    PromptHardeningApplied(PromptHardeningAppliedPayload),
+    /// I-2 (SCHEMA_VERSION 246): CoW workspace isolation barrier outcome.
+    /// Pattern-2 single-variant 4-arm [`BranchWorkspaceEventKind`].
+    /// TOTAL_VARIANTS 554 -> 555.
+    BranchWorkspaceEvent(BranchWorkspaceEventPayload),
+    /// I-5 (SCHEMA_VERSION 247): per-branch context rebuild outcome.
+    /// Pattern-2 single-variant 3-arm [`ContextPrunedKind`].
+    /// TOTAL_VARIANTS 555 -> 556.
+    ContextPruned(ContextPrunedPayload),
+    /// I-11 (SCHEMA_VERSION 248): typed versioned condensate receipt for handoffs.
+    /// Pattern-2 single-variant 3-arm [`BeliefStateEventKind`].
+    /// TOTAL_VARIANTS 556 -> 557.
+    BeliefStateEvent(BeliefStateEventPayload),
+    /// I-13 (SCHEMA_VERSION 249): write-time memory guard outcome.
+    /// Pattern-2 single-variant 3-arm [`MemoryGuardEventKind`].
+    /// TOTAL_VARIANTS 557 -> 558.
+    MemoryGuardEvent(MemoryGuardEventPayload),
+    /// I-14 (SCHEMA_VERSION 250): deterministic context-compression middleware receipt.
+    /// Pattern-2 single-variant 3-arm [`ContextTransformKind`].
+    /// TOTAL_VARIANTS 558 -> 559.
+    ContextTransformReceipt(ContextTransformReceiptPayload),
+    /// I-12 (SCHEMA_VERSION 251): evidence-gated playbook curator outcome beacon.
+    /// Pattern-2 single-variant 4-arm [`PlaybookEventKind`].
+    /// TOTAL_VARIANTS 559 -> 560.
+    PlaybookEvent(PlaybookEventPayload),
+    /// I-17 (SCHEMA_VERSION 252): tri-layer evaluation-stack per-branch verdict.
+    /// Pattern-2 single-variant 4-arm [`TriLayerVerdictKind`].
+    /// TOTAL_VARIANTS 560 -> 561.
+    TriLayerVerdict(TriLayerVerdictPayload),
+    /// I-18 (SCHEMA_VERSION 253): per-row rolling blake3 chain beacon.
+    /// Pattern-2 single-variant 3-arm [`RowChainSealedKind`].
+    /// TOTAL_VARIANTS 561 -> 562.
+    RowChainSealed(RowChainSealedPayload),
 }
 
 impl SsbPayload {
@@ -14816,6 +15602,35 @@ impl SsbPayload {
             Self::HandoffLifecycleEvent(_) => SsbActionType::HandoffLifecycleEvent,
             Self::FindingAnchored(_) => SsbActionType::FindingAnchored,
             Self::CitationAnchorsBound(_) => SsbActionType::CitationAnchorsBound,
+            Self::PlanStateDerived(_) => SsbActionType::PlanStateDerived,
+            Self::ObjectiveSealed(_) => SsbActionType::ObjectiveSealed(ObjectiveSealedKind::Sealed),
+            Self::GrammarGateEvent(_) => SsbActionType::GrammarGateEvent(GrammarGateEventKind::CranePassed),
+            Self::QdeltaMeasured(_) => SsbActionType::QdeltaMeasured,
+            Self::ClaimScopeMeasured(_) => SsbActionType::ClaimScopeMeasured(ClaimScopeMeasuredKind::PilotDelta),
+            Self::CacheEconomicsEvent(_) => SsbActionType::CacheEconomicsEvent(CacheEconomicsEventKind::TtlPlanned),
+            Self::TrajectoryAborted(_) => SsbActionType::TrajectoryAborted(TrajectoryAbortedKind::Voluntary),
+            Self::DirectiveExecuted(_) => SsbActionType::DirectiveExecuted(DirectiveExecutedKind::Executed),
+            Self::GovernancePrimitiveFired(_) => SsbActionType::GovernancePrimitiveFired(GovernancePrimitiveFiredKind::CeflExternalized),
+            Self::RoleContractApplied(_) => SsbActionType::RoleContractApplied(RoleContractAppliedKind::PersonaStripped),
+            Self::ToolSequenceVerdict(_) => SsbActionType::ToolSequenceVerdict(ToolSequenceVerdictKind::Allowed),
+            Self::CritiqueLensFinding(ref p) => SsbActionType::CritiqueLensFinding(match p.kind {
+                CritiqueLensFindingKind::AdvisoryFinding { .. } => CritiqueLensFindingTag::AdvisoryFinding,
+                CritiqueLensFindingKind::DroppedNoAnchor { .. } => CritiqueLensFindingTag::DroppedNoAnchor,
+                CritiqueLensFindingKind::LensRun { .. } => CritiqueLensFindingTag::LensRun,
+            }),
+            Self::BashRedirected(ref p) => SsbActionType::BashRedirected(p.kind),
+            Self::PromptHardeningApplied(ref p) => SsbActionType::PromptHardeningApplied(p.kind),
+            Self::BranchWorkspaceEvent(ref p) => SsbActionType::BranchWorkspaceEvent(p.kind),
+            Self::ContextPruned(ref p) => SsbActionType::ContextPruned(p.kind),
+            Self::BeliefStateEvent(ref p) => SsbActionType::BeliefStateEvent(p.kind),
+            Self::MemoryGuardEvent(ref p) => SsbActionType::MemoryGuardEvent(p.kind),
+            Self::ContextTransformReceipt(ref p) => SsbActionType::ContextTransformReceipt(p.kind),
+            // I-12 (SCHEMA_VERSION 251): evidence-gated playbook curator outcome (4-arm Pattern-2).
+            Self::PlaybookEvent(ref p) => SsbActionType::PlaybookEvent(p.kind),
+            // I-17 (SCHEMA_VERSION 252): tri-layer evaluation-stack per-branch verdict (4-arm Pattern-2).
+            Self::TriLayerVerdict(ref p) => SsbActionType::TriLayerVerdict(p.kind),
+            // I-18 (SCHEMA_VERSION 253): per-row rolling blake3 chain beacon (3-arm Pattern-2).
+            Self::RowChainSealed(ref p) => SsbActionType::RowChainSealed(p.kind),
         }
     }
 }
@@ -17321,6 +18136,10 @@ pub struct OracleCacheHitPayload {
     pub source_tier: String,
     /// Age of the cached entry in seconds at lookup time.
     pub cached_age_secs: u64,
+    /// I-15: cache layer discriminator. `"blake3_exact"` | `"semantic_vector"` |
+    /// `None` (legacy pre-I-15 row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// C-30 — payload for [`SsbActionType::OracleCacheMiss`].
@@ -17333,6 +18152,10 @@ pub struct OracleCacheHitPayload {
 pub struct OracleCacheMissPayload {
     pub query_hash_hex: String,
     pub confidence: String,
+    /// I-15: discriminator — always `"semantic_vector"` on the miss path
+    /// (the full vector pipeline ran).  `None` = legacy C-30 path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// C-30 — payload for [`SsbActionType::ProjectDetectionSignal`].
@@ -19159,6 +19982,14 @@ pub struct CalibrationBootstrapCompletedPayload {
     pub block_length_p: Option<f64>,
     /// Producer-side wall-clock (ClockProvider-sourced).
     pub ts_ms: i64,
+    /// I-23 — same 16-char hex join key as [`ConformalTauComputedPayload`].
+    /// Minted from blake3(tau_le || corpus_size_le || epsilon_le)[..8].
+    /// Enables a journal join between the bootstrap row and the D-16
+    /// tau/refusal rows that share the same calibration run. `None` on
+    /// rows emitted before I-23 shipped (backward-compatible via
+    /// `#[serde(default)]`).
+    #[serde(default)]
+    pub calibration_id: Option<String>,
 }
 
 /// C-50 (SCHEMA_VERSION 125) — payload for
@@ -19907,6 +20738,14 @@ pub struct ConformalTauComputedPayload {
     pub source: String,
     /// Wall-clock UNIX ms at compute-emit time.
     pub ts_ms: i64,
+    /// I-23 — deterministic join key: blake3(tau_le || corpus_size_le ||
+    /// epsilon_le)[..8] formatted as a 16-char lowercase hex string. Shared
+    /// with the `ConformalRefusalDecidedPayload` rows that were decided
+    /// against this tau, enabling a journal join that proves both rows
+    /// derive from the same calibration run. `None` on rows emitted before
+    /// I-23 shipped (backward-compatible via `#[serde(default)]`).
+    #[serde(default)]
+    pub calibration_id: Option<String>,
 }
 
 /// D-16 — payload for [`SsbActionType::ConformalRefusalDecided`].
@@ -19958,6 +20797,12 @@ pub struct ConformalRefusalDecidedPayload {
     /// compatible.
     #[serde(default)]
     pub reason: Option<String>,
+    /// I-23 — same 16-char hex join key as [`ConformalTauComputedPayload`].
+    /// Threads the calibration run identity from `compute_tau_and_emit`
+    /// through `decide_and_emit` so journal consumers can assert both rows
+    /// share one tau. `None` on pre-I-23 rows.
+    #[serde(default)]
+    pub calibration_id: Option<String>,
 }
 
 /// D-16 closure — payload for [`SsbActionType::CalibrationCorpusUpdated`].
@@ -22581,10 +23426,11 @@ pub struct BenchmarkRunObservedPayload {
 /// L2SelfCertaintyScore + L2TokenCapHit + L1ToL3DirectRoute + L4PrmLiteScore +
 /// L4LateralKept + L2TypedCotEmitted + L6VerifierDiversityPass +
 /// L6VerifierDiversityDisagree + L4TtcBudgetChosen + L2SkippedNoCotClass)
-/// into ONE variant + 5-arm discriminator per Pattern-2 (18th application).
+/// into ONE variant + 6-arm discriminator per Pattern-2 (18th application).
 /// The `verdict` and `extras` string fields on the payload carry the
 /// per-kind sub-state (e.g. `skip_high_confidence` / `reflect` /
 /// `l3_direct` / `no_cot_class` for L2 gate decisions).
+/// I-5 adds the 6th arm: `VividnessProbe` (per-branch A/B outcome delta).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeKind {
@@ -22603,6 +23449,11 @@ pub enum ProbeKind {
     /// L3). `verdict` carries pass / disagree; `extras` carries the
     /// reason slug.
     L6VerifierDiversity,
+    /// I-5 -- per-branch pristine-context A/B outcome delta. Emitted on a
+    /// sampled fraction of branch expansions when the umbrella env gate is
+    /// open. `score` carries `outcome_delta` (pristine minus accumulated).
+    /// Recomputable under `ELAI_SEED` (GD-2).
+    VividnessProbe,
 }
 
 impl ProbeKind {
@@ -22615,6 +23466,7 @@ impl ProbeKind {
             Self::L4LateralKept => "l4_lateral_kept",
             Self::L4TtcBudgetChosen => "l4_ttc_budget_chosen",
             Self::L6VerifierDiversity => "l6_verifier_diversity",
+            Self::VividnessProbe => "vividness_probe",
         }
     }
 }
@@ -27082,6 +27934,10 @@ pub struct RunArtifactEmittedPayload {
     pub gate_count: u32,
     pub seed: u64,
     pub session_id: String,
+    /// I-45: 16-hex blake3 objective hash sealed at run time. `None` on LEGACY
+    /// receipts (pre-I-45 runs where no IdeaFramingStarted row was present).
+    #[serde(default)]
+    pub objective_hash: Option<String>,
 }
 
 /// G-5: reviewer-cockpit DSR score.
@@ -27123,6 +27979,951 @@ pub struct SafetyDeltaMeasuredPayload {
     pub gate_recall: f64,
     pub stdout_hash: Option<String>,
     pub runpod_pending: bool,
+}
+
+/// I-38: QDELTA defective-diff rate gate-ON vs gate-OFF measurement.
+///
+/// Flat beacon (no Kind discriminator). Mirrors [`SafetyDeltaMeasuredPayload`] shape.
+/// `delta` = `off_defective_rate` - `on_defective_rate` (positive = gates improve quality).
+/// `runpod_pending = true` for Tier-1 fixture runs (no live inference, D-026).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QdeltaMeasuredPayload {
+    /// Suite label (e.g. "test_qdelta_fixture" for Tier-1).
+    pub suite: String,
+    /// Model/candidate provenance label.
+    pub model_id: String,
+    /// Number of paired tasks evaluated.
+    pub n_tasks: u32,
+    /// Number of independent seeds (floor >= 5).
+    pub seed_count: u32,
+    /// `true` = same tasks measured gates-ON and gates-OFF (paired design, floor = true).
+    pub paired: bool,
+    /// Fraction of tasks where gates-ON produced a defective diff.
+    pub on_defective_rate: f64,
+    /// Fraction of tasks where gates-OFF produced a defective diff.
+    pub off_defective_rate: f64,
+    /// QDELTA = off_defective_rate - on_defective_rate. Positive = gates improve quality.
+    pub delta: f64,
+    /// Seeded bootstrap 95% CI lower bound (GD-2: recomputable from pinned seed).
+    pub ci_low: f64,
+    /// Seeded bootstrap 95% CI upper bound.
+    pub ci_high: f64,
+    /// Cost per task in USD (GD-3 $/task policy).
+    pub dollar_per_task: f64,
+    /// D-20 contamination probe result: "not_run" | "honestly_evaluated" | "game_with_memorization".
+    pub contamination_probe_result: String,
+    /// Per-task surviving mutants from I-20. 0.0 at Tier-1 (I-20 stub, pending I-20 ship).
+    #[serde(default)]
+    pub surviving_mutants_per_task: f64,
+    /// blake3 hex of the config bytes (provenance pin; anti-gaming).
+    pub corpus_blake3: String,
+    /// `true` = Tier-1 fixture only; live-model leg is deferred (D-026).
+    pub runpod_pending: bool,
+}
+
+/// I-43: discriminator arm for [`ClaimScopeMeasuredPayload`].
+///
+/// - `PilotDelta`: reduced-N gate-ON vs gate-OFF pilot; carries `delta`, `reviewer_reaching_rate`,
+///   and `trap_fired` (block-everything trap detector).
+/// - `CrossLaneDivergence`: local-Qwen vs cloud-Claude action-stream divergence on security-critical
+///   paths; carries `divergence_pct` and `claim_wording`.
+/// - `ClaimScoped`: consolidated go/no-go verdict; carries both pilot and divergence results +
+///   the final `claim_wording` the system may honestly use (GD-5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimScopeMeasuredKind {
+    /// Reduced-N pilot signal: delta sign + magnitude + reviewer-reaching trap detector.
+    PilotDelta,
+    /// Cross-lane divergence: local vs cloud action-stream divergence on security paths.
+    CrossLaneDivergence,
+    /// Consolidated go/no-go memo with final honest claim wording (GD-5).
+    ClaimScoped,
+}
+
+impl ClaimScopeMeasuredKind {
+    /// Stable snake_case wire string for the SSB kind arm.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PilotDelta => "pilot_delta",
+            Self::CrossLaneDivergence => "cross_lane_divergence",
+            Self::ClaimScoped => "claim_scoped",
+        }
+    }
+}
+
+/// I-43 payload for [`SsbPayload::ClaimScopeMeasured`].
+///
+/// Emitted by `cli::bench_claim_scope::run_inner` for each fixture scenario.
+/// Three arms driven by [`ClaimScopeMeasuredKind`]; fields unused by a given arm are `None`.
+///
+/// Off-agent artifact (R4): written at the bench call site, not by the logic being measured.
+/// Missing rows = FAIL (R1): absence means the kill-gate never ran.
+///
+/// `reviewer_reaching_rate` is derived as `1.0 - gate_recall` (not a field on any runner report).
+/// It detects the block-everything trap: a gate that wins only by blocking near-everything has
+/// a very low reviewer-reaching rate and fails the pilot.
+///
+/// GD-2: all values recompute byte-identically under the same `seed` and fixture data.
+/// GD-5: `claim_wording` reflects what the system can HONESTLY claim (never "deterministic replay"
+/// on the cloud path if `divergence_pct > 5.0`).
+/// TOTAL_VARIANTS 544 -> 545.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClaimScopeMeasuredPayload {
+    /// Discriminator arm.
+    pub kind: ClaimScopeMeasuredKind,
+    /// Suite label (e.g. "seccodeplt_claim_scope_fixture" for Tier-1).
+    pub suite: String,
+    /// ELAI_SEED value at the time of evaluation (GD-2 reproducibility).
+    pub seed: u64,
+    /// Number of tasks in the pilot run (N, reduced for cheap-first framing).
+    pub n_samples: u32,
+    /// `PilotDelta` arm: residual-insecure-rate delta (gate-ON minus gate-OFF). Positive = gate helps.
+    #[serde(default)]
+    pub delta: Option<f64>,
+    /// `PilotDelta` arm: proportion of candidates that reach a human reviewer under gate-ON.
+    /// Derived as `1.0 - gate_recall`. Near-zero = block-everything trap.
+    #[serde(default)]
+    pub reviewer_reaching_rate: Option<f64>,
+    /// `PilotDelta` arm: `true` if `reviewer_reaching_rate < 0.05` (block-everything trap fired).
+    #[serde(default)]
+    pub trap_fired: bool,
+    /// `CrossLaneDivergence` arm: % of security-path actions that differ between local and cloud lanes.
+    #[serde(default)]
+    pub divergence_pct: Option<f64>,
+    /// `CrossLaneDivergence` / `ClaimScoped` arm: honest claim wording the harness can support (GD-5).
+    #[serde(default)]
+    pub claim_wording: Option<String>,
+    /// `true` = Tier-1 fixture only; live-model leg deferred (D-026).
+    pub runpod_pending: bool,
+    /// blake3 hex of the fixture bytes (provenance pin, GD-2).
+    pub corpus_blake3: String,
+}
+
+// ---------------------------------------------------------------------------
+// I-10: CacheEconomicsEvent payload structs
+// ---------------------------------------------------------------------------
+
+/// I-10: 3-arm discriminator for [`CacheEconomicsEventPayload`].
+///
+/// Mirrors [`crate::cache_economics::CacheEconomicsEventKind`] (same enum,
+/// kept in ssb.rs as the SSB wire type; cache_economics.rs re-exports via
+/// `use crate::ssb::CacheEconomicsEventKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum CacheEconomicsEventKind {
+    /// Planner selected a TTL tier for a cloud call.
+    TtlPlanned,
+    /// Guard detected unexplained miss-rate exceeding threshold (>10%).
+    HitRateGuardTripped,
+    /// Guard detected a prefix mutation; blake3 byte-range offset dumped.
+    PrefixDiffDumped,
+}
+
+/// I-10: SSB payload for prefix invariance + TTL tiering + cache-hit hard guard.
+///
+/// Pattern-2 single-variant; kind discriminator is [`CacheEconomicsEventKind`].
+/// Emitted by `orchestrator::cache_economics::emit_cache_economics_event`.
+/// Default-ON; kill-switch `ELAI_CACHE_ECONOMICS_DISABLE=1`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CacheEconomicsEventPayload {
+    /// Which arm of the event.
+    pub kind: CacheEconomicsEventKind,
+    /// TTL in seconds (3600 = 1h, 300 = 5m, None = no-cache).
+    #[serde(default)]
+    pub ttl_secs: Option<u32>,
+    /// Breakeven read count for the selected tier.
+    pub breakeven_reads: u32,
+    /// Measured miss-rate at guard evaluation (0.0 when N/A).
+    pub miss_rate: f64,
+    /// Blake3 8-byte prefix of the detected mutable byte range (all-zeros when N/A).
+    pub mutation_hash: [u8; 8],
+    /// Call class label (e.g. "scoring", "grounding", "chat").
+    pub call_class: String,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// I-8: TrajectoryAborted payload structs
+// ---------------------------------------------------------------------------
+
+/// I-8: 3-arm discriminator for [`TrajectoryAbortedPayload`].
+///
+/// - `Voluntary`: the model explicitly called `acknowledge_infeasible`.
+/// - `DeadEndHash`: a pre-dispatch fingerprint match pruned an isomorphic
+///   re-attempt before any model call (zero tokens).
+/// - `HaltingBound`: the empirical check-runner watchdog fired after the
+///   configured bound elapsed (I-17 seam; Wave-1 registers the variant,
+///   Wave-3 wires the actual timer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum TrajectoryAbortedKind {
+    /// Model called `acknowledge_infeasible` (explicit voluntary abort).
+    Voluntary,
+    /// Dead-end hash cache collision — isomorphic re-attempt pruned pre-dispatch.
+    DeadEndHash,
+    /// Halting-bound watchdog fired (I-17 watchdog seam; Wave-1 stub).
+    HaltingBound,
+}
+
+/// I-8: SSB payload for a voluntarily-aborted or pruned trajectory.
+///
+/// Pattern-2 single-variant; kind discriminator is [`TrajectoryAbortedKind`].
+/// Emitted by:
+///   - `production_agent_rpc.rs` `TOOL_ACKNOWLEDGE_INFEASIBLE` arm (Voluntary).
+///   - `dead_end_cache.rs` check path after `check_and_insert` returns `true`
+///     (DeadEndHash — Wave-1 wiring in task_runner).
+///   - I-17 check-runner watchdog hook (HaltingBound — Wave-3).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrajectoryAbortedPayload {
+    /// Which arm triggered the abort.
+    pub kind: TrajectoryAbortedKind,
+    /// Session id at abort time (informational; SSB row also carries it).
+    #[serde(default)]
+    pub session_id: String,
+    /// Optional trajectory id for correlation with earlier SSB rows.
+    #[serde(default)]
+    pub trajectory_id: Option<String>,
+    /// blake3 hex digest of the (task, approach) fingerprint.
+    /// `Some` for DeadEndHash; `None` for Voluntary/HaltingBound.
+    #[serde(default)]
+    pub approach_hash: Option<String>,
+    /// Human-readable abort reason from the model's `acknowledge_infeasible` call.
+    /// `Some` for Voluntary; `None` for DeadEndHash/HaltingBound.
+    #[serde(default)]
+    pub abort_reason_text: Option<String>,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// I-1: DirectiveExecuted payload structs
+// ---------------------------------------------------------------------------
+
+/// I-1: 3-arm discriminator for [`DirectiveExecutedPayload`].
+///
+/// - `Executed`: the gate chain passed and the side effect ran cleanly.
+/// - `Discarded`: a gate blocked the directive; the side effect never ran
+///   (the generator cannot reach the sink — fail-closed CANT-WRECK).
+/// - `CompensationFired`: the side effect crashed and E-44 saga compensation
+///   restored the pre-op state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum DirectiveExecutedKind {
+    /// Gates passed; side effect ran cleanly.
+    Executed,
+    /// A gate blocked the directive; side effect never ran.
+    Discarded,
+    /// Side effect crashed; E-44 saga compensation fired to restore state.
+    CompensationFired,
+}
+
+/// I-1: SSB payload for a directive that reached the supervisor.
+///
+/// Pattern-2 single-variant; kind discriminator is [`DirectiveExecutedKind`].
+/// Emitted by `directive::InProcessSupervisor::execute_directive`. The
+/// generator emits pure `Directive` structs; the Supervisor is the sole
+/// side-effect executor and the sole producer of this row.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DirectiveExecutedPayload {
+    /// Which terminal outcome the directive reached.
+    pub kind: DirectiveExecutedKind,
+    /// The tool the directive targeted (e.g. `bash_tool_use`, `file_write`).
+    pub tool_name: String,
+    /// Correlation id linking back to the intent that produced the directive.
+    pub intent_id: String,
+    /// Who authored the intent (agent id / role).
+    pub initiator: String,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// I-33: GovernancePrimitiveFired payload structs
+// ---------------------------------------------------------------------------
+
+/// I-33: 3-arm discriminator for [`GovernancePrimitiveFiredPayload`].
+///
+/// - `CeflExternalized`: CEFL candidate set was injected into the LLM call;
+///   model-invented options outside the schema are structurally unparseable
+///   (selection-by-negation foreclosed at the type level).
+/// - `I6qRejected`: rationale failed the I6Q length+diversity gate; decision
+///   refused; downstream routes to D-16 `RefusalDecision::Abstain`.
+/// - `CommitRevealSealed`: blake3 commit row written before reveal; ordering
+///   integrity verified (commit_row_id < reveal_row_id = PASS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GovernancePrimitiveFiredKind {
+    /// CEFL candidate externalization fired; schema enforces the domain.
+    CeflExternalized,
+    /// I6Q rationale validator rejected the response; routes to Abstain.
+    I6qRejected,
+    /// Commit-reveal sealed; ordering integrity confirmed.
+    CommitRevealSealed,
+}
+
+/// I-33: SSB payload for a mechanical decision governance primitive that fired.
+///
+/// Pattern-2 single-variant; kind discriminator is [`GovernancePrimitiveFiredKind`].
+/// Emitted by `decision_governance::emit_governance_fired` at the
+/// `governed_prompt_decision` call site and by the `bench_governance` fixture driver.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GovernancePrimitiveFiredPayload {
+    /// Which governance primitive fired.
+    pub kind: GovernancePrimitiveFiredKind,
+    /// Session that triggered the primitive (None in fixture runs).
+    pub session_id: Option<String>,
+    /// Primitive-specific details as a JSON string (e.g. candidate list,
+    /// rationale snippet, commit hash hex). Must not exceed 4 KiB.
+    pub details_json: String,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+/// I-32: Discriminator for a structural role-scope contract application event.
+///
+/// Pattern-2 single-variant; 3-arm; alphabetical order maintained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum RoleContractAppliedKind {
+    /// The A/B evidence harness fired (`--role-ab-probe`); before/after fixture
+    /// pass-rate fields + delta are populated in the payload.
+    AbDelta,
+    /// Narrative "You are..." persona was stripped and replaced with schema-first
+    /// role contract text. Emitted for factual/code roles (Executor, Researcher,
+    /// ContextCompiler, Designer, MemoryWriter).
+    PersonaStripped,
+    /// Role is alignment-dependent (Auditor, IdeaCritic, InjectionClassifier) or
+    /// unknown; the contract store has no entry; original framing left intact.
+    PersonaRetained,
+}
+
+/// I-32: SSB payload for a structural role-scope contract application event.
+///
+/// Pattern-2 single-variant; kind discriminator is [`RoleContractAppliedKind`].
+/// Emitted by `report_fns::build_system_prompt_for_role` (PersonaStripped /
+/// PersonaRetained) and by the `--role-ab-probe` CLI harness (AbDelta).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RoleContractAppliedPayload {
+    /// Which outcome occurred.
+    pub kind: RoleContractAppliedKind,
+    /// Snake-case role name that triggered the event (e.g. `"executor"`).
+    pub role: String,
+    /// Fixture pass-rate before role-contract application (AbDelta only; 0.0 otherwise).
+    pub fixture_pass_rate_old: f32,
+    /// Fixture pass-rate after role-contract application (AbDelta only; 0.0 otherwise).
+    pub fixture_pass_rate_new: f32,
+    /// Delta = new - old (negative = regression; evidence gate: must be >= 0.0 for production flip).
+    pub delta: f32,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+/// I-35: discriminator for a temporal tool-sequence enforcement verdict.
+///
+/// Pattern-2 single-variant; 3-arm; alphabetical order maintained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ToolSequenceVerdictKind {
+    /// All enabled rules that triggered on this tool class were satisfied.
+    /// The call proceeds normally.
+    Allowed,
+    /// A Halt-enforced rule's predicate was not satisfied; the call is refused
+    /// fail-closed (consistent with the `Discarded` directive outcome).
+    HaltEnforced,
+    /// A WarnOnly rule's predicate was not satisfied; the call proceeds but
+    /// an advisory finding is recorded.
+    OrderViolation,
+}
+
+/// I-35: SSB payload for a temporal tool-sequence enforcement verdict.
+///
+/// Pattern-2 single-variant; kind discriminator is [`ToolSequenceVerdictKind`].
+/// Emitted by `directive::InProcessSupervisor::run_sequence_gate` (the 5th
+/// supervisor gate arm) for every dispatch cycle where a sequence rule triggers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolSequenceVerdictPayload {
+    /// Which verdict was produced.
+    pub kind: ToolSequenceVerdictKind,
+    /// The logical tool class that triggered the evaluation (e.g. `"git_push"`).
+    pub tool_class: String,
+    /// The `rule_id` of the triggered rule (empty string for `Allowed`).
+    pub rule_id: String,
+    /// Human-readable description of the unsatisfied predicate (empty for `Allowed`).
+    pub unsatisfied_predicate: String,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+/// I-41: discriminant tag for [`SsbActionType::CritiqueLensFinding`].
+///
+/// Copy/Eq/Hash C-like enum used exclusively by `SsbActionType` for routing /
+/// hashing. The full payload (with `String` and `f32` fields) lives in
+/// [`CritiqueLensFindingKind`] inside [`CritiqueLensFindingPayload`].
+/// Pattern-2: one tag enum for `SsbActionType`, one rich enum for `SsbPayload`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum CritiqueLensFindingTag {
+    /// A lens produced a finding with a valid non-empty location anchor.
+    AdvisoryFinding,
+    /// A finding was dropped because the location field was empty.
+    DroppedNoAnchor,
+    /// Emitted once per lens at the start of a run (observability beacon).
+    LensRun,
+}
+
+/// I-41: discriminator for a spec-time critique lens finding (full-payload variant).
+///
+/// Used in [`CritiqueLensFindingPayload`] inside [`SsbPayload`].
+/// Structurally distinct from `idea_framing::Severity` — no `Into<>` impls exist.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum CritiqueLensFindingKind {
+    /// A lens produced a finding with a valid non-empty `location` anchor.
+    AdvisoryFinding {
+        /// Lens identifier (e.g. "L1", "L4").
+        lens: String,
+        /// Severity string ("FLAG", "CONCERN", "NOTE").
+        severity: String,
+        /// Non-empty location anchor from the finding.
+        location: String,
+        /// The claim text.
+        claim: String,
+        /// Confidence in [0.0, 1.0].
+        confidence: f32,
+    },
+    /// A finding was dropped because the `location` field was empty (no anchor).
+    /// The DroppedNoAnchor row is the only evidence; the finding is NOT surfaced.
+    DroppedNoAnchor {
+        /// Lens identifier of the dropped finding.
+        lens: String,
+    },
+    /// Emitted once per lens at the start of a run (observability beacon).
+    LensRun {
+        /// Lens identifier being run.
+        lens: String,
+    },
+}
+
+/// I-41: SSB payload for a spec-time critique lens advisory beacon.
+///
+/// Pattern-2 single-variant; kind discriminator is [`CritiqueLensFindingKind`].
+/// Emitted by `critique::lenses::LensSet::run` on the CLI (`elai critique`) and
+/// as a post-convergence advisory from `idea_framing::run_critic_loop`.
+/// `advisory=true` is invariant (compile-time structural isolation from gate plane).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CritiqueLensFindingPayload {
+    /// Which kind of event this is.
+    pub kind: CritiqueLensFindingKind,
+    /// Always `true`. Advisory rows never affect any gate or verdict.
+    pub advisory: bool,
+    /// Session that triggered the lens run.
+    pub session_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// I-46: BashRedirected payload structs
+// ---------------------------------------------------------------------------
+
+/// I-46: 3-arm discriminator for [`BashRedirectedPayload`].
+///
+/// - `Redirected`: the command matched a redirect rule (grep/cat/find/head/tail/less/more/rg).
+///   The process was NOT spawned; the model receives a redirect hint.
+/// - `FixedUp`: the command had trailing output-pipeline noise stripped (| head / | tail /
+///   redundant 2>&1). The rewritten command is returned in the error for the model to retry.
+/// - `PrefixBlocked`: the command starts with an allowed prefix but its body contains a banned
+///   shell token (control char, unquoted expansion, newline, backslash escape).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum BashRedirectedKind {
+    /// Command matched a redirect rule; directed to a dedicated ELAI tool instead.
+    Redirected,
+    /// Command had trailing noise stripped; rewritten command returned for retry.
+    FixedUp,
+    /// Command starts with an allowed prefix but contains a banned shell token.
+    PrefixBlocked,
+}
+
+/// I-46: SSB payload for a bash interceptor interception event.
+///
+/// Pattern-2 single-variant; kind discriminator is [`BashRedirectedKind`].
+/// Emitted by `dispatch::in_process::InProcessDispatch::maybe_emit_bash_redirected`
+/// when `run_bash` returns `Err` with `error_code` `bash_redirected`,
+/// `bash_fixedup`, or `bash_prefix_blocked`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BashRedirectedPayload {
+    /// Which interception arm fired.
+    pub kind: BashRedirectedKind,
+    /// The original bash command (before any fixup or redirect).
+    pub command: String,
+    /// For `Redirected`: the ELAI tool the model should call instead (e.g. `"grep_search"`).
+    /// `None` for `FixedUp` and `PrefixBlocked`.
+    pub substitute_call: Option<String>,
+    /// For `FixedUp`: the rewritten command that was returned to the caller.
+    /// `None` for `Redirected` and `PrefixBlocked`.
+    pub fixup_applied: Option<String>,
+    /// For `PrefixBlocked`: the matched allowed-prefix (first token of the command).
+    /// `None` for `Redirected` and `FixedUp`.
+    pub prefix_matched: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// I-47: PromptHardeningApplied payload structs
+// ---------------------------------------------------------------------------
+
+/// I-47: 3-arm discriminator for [`PromptHardeningAppliedPayload`].
+///
+/// - `InputsTagged`: auditor/critic dispatch -- untrusted worker output wrapped in
+///   `<ELAI_DATA>` boundary tags with standing hardening frame prepended above.
+/// - `RulesInjected`: worker dispatch -- frozen per-role Karpathy-distillate rule block
+///   appended to CONSTRAINTS section (HD-2 byte-stable per role, cache-prefix safe).
+/// - `SelfAttestationStripped`: auditor/critic dispatch -- a self-attestation phrase detected;
+///   labelled as claim-not-evidence inside `<ELAI_SELF_ATTESTATION>` sub-tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PromptHardeningAppliedKind {
+    /// Auditor/critic dispatch: untrusted inputs wrapped in `<ELAI_DATA>` tags.
+    InputsTagged,
+    /// Worker dispatch: frozen per-role rule block appended to CONSTRAINTS section.
+    RulesInjected,
+    /// Auditor/critic dispatch: self-attestation phrase detected and labelled.
+    SelfAttestationStripped,
+}
+
+/// I-47: SSB payload for a prompt-hardening application event.
+///
+/// Pattern-2 single-variant; kind discriminator is [`PromptHardeningAppliedKind`].
+/// Emitted by `tools::execute_agent_with_spawn` once per dispatch where hardening was applied.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PromptHardeningAppliedPayload {
+    /// Which hardening arm fired.
+    pub kind: PromptHardeningAppliedKind,
+    /// Canonical role string as returned by `normalize_subagent_type`.
+    pub role: String,
+    /// Session-scoped agent id of the dispatch being hardened.
+    pub agent_id: String,
+    /// For `SelfAttestationStripped`: the matched attestation phrase. `None` otherwise.
+    pub attestation_phrase: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// I-2: BranchWorkspaceEvent payload structs
+// ---------------------------------------------------------------------------
+
+/// I-2: 4-arm discriminator for [`BranchWorkspaceEventPayload`].
+///
+/// - `Spawned`: a private branch workspace root was created (Tier-1: warm git worktree).
+/// - `Merged`: the deterministic SSB-seq-ordered barrier merged all branch roots into
+///   trunk cleanly (last-seq-wins on non-overlapping relative paths).
+/// - `EscapeBlocked`: a branch attempted a write whose target resolves OUTSIDE its root;
+///   blocked BEFORE the FS mutation (containment delegated to
+///   `elai_safety::blast_radius::check_fs_target`).
+/// - `ConflictEscalated`: two branches wrote the SAME relative path with differing bytes;
+///   Tier-1 HALTS the merge (no partial write). H-49 trunk-rollback is the Tier-2 deferred path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum BranchWorkspaceEventKind {
+    /// A private branch workspace root was created.
+    Spawned,
+    /// The deterministic barrier merged all branch roots into trunk cleanly.
+    Merged,
+    /// A branch tried to write outside its root; blocked pre-FS-mutation.
+    EscapeBlocked,
+    /// Two branches wrote the same path with differing bytes; merge halted.
+    ConflictEscalated,
+}
+
+/// I-2: SSB payload for a CoW workspace isolation barrier event.
+///
+/// Pattern-2 single-variant; kind discriminator is [`BranchWorkspaceEventKind`].
+/// Emitted by `sandbox::branch_workspace::WorktreePoolImpl` (spawn/escape_check) and the
+/// BSP barrier site (`bsp/engine.rs` `barrier_merge`). The `worktree_root_blake3` field
+/// uses the same `elai_safety::blast_radius::worktree_root_blake3` helper as the
+/// blast-radius SSB adapter so a forensic reader can group rows by root.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BranchWorkspaceEventPayload {
+    /// Which barrier arm fired.
+    pub kind: BranchWorkspaceEventKind,
+    /// Logical branch identifier (also the git worktree branch name).
+    pub branch_id: String,
+    /// Session the branch belongs to (empty for barrier-scoped Merged/Conflict rows
+    /// where the session is implied by the run).
+    pub session_id: String,
+    /// blake3 hex-prefix of the branch (or merge-target) root path. An identifier,
+    /// not a secret; blake3 ONLY per the CLAUDE.md HARD RULE.
+    pub worktree_root_blake3: String,
+    /// For `EscapeBlocked`/`ConflictEscalated`: the offending/conflicting path
+    /// (post-expansion for escapes, relative path for conflicts). `None` otherwise.
+    pub conflict_path: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// I-5: ContextPruned payload structs
+// ---------------------------------------------------------------------------
+
+/// I-5: 3-arm discriminator for [`ContextPrunedPayload`].
+///
+/// - `SiblingExcluded`: sibling branch SSB payloads were hard-excluded from the fresh branch
+///   context per the ID-1 stateless-generator doctrine. The raw `excluded_bytes` carried the
+///   accumulated sibling outputs; after exclusion they are absent from the rebuilt context.
+/// - `TracebackContrasted`: a prior failed branch's raw error traceback (>= threshold bytes) was
+///   replaced by a `<=30-token` contrastive constraint phrase. Preserves the causal signal ("attempt
+///   A failed at line-42 type X -- avoid X") without the attention-sink payload.
+/// - `VividnessProbe`: a sampled A/B comparison arm. Emitted only when
+///   `ELAI_REASONING_QUALITY_PROBE_ENABLE=1` (the E-19 umbrella gate). Carries `outcome_delta`
+///   (pristine_score - accumulated_score). Recomputable under `ELAI_SEED` (GD-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ContextPrunedKind {
+    /// Sibling branch payloads excluded from the fresh branch context (ID-1).
+    SiblingExcluded,
+    /// Failed-attempt traceback replaced by a <=30-token contrastive constraint phrase.
+    TracebackContrasted,
+    /// Sampled A/B outcome delta (pristine minus accumulated); gated by E-19 umbrella.
+    VividnessProbe,
+}
+
+/// I-5: SSB payload for a per-branch context rebuild outcome.
+///
+/// Pattern-2 single-variant; kind discriminator is [`ContextPrunedKind`].
+/// Emitted by `pristine_path_filter::PristinePathFilter::build_branch_context`.
+///
+/// Wire-dark until I-4 `SearchLadder::run_best_of_n` ships (Wave 4).
+/// Tier-1 coverage via `crates/contracts/tests/i5_pristine_context_contract.rs`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ContextPrunedPayload {
+    /// Which pruning arm fired.
+    pub kind: ContextPrunedKind,
+    /// Logical branch identifier for the branch being rebuilt.
+    pub branch_id: String,
+    /// Session the branch belongs to.
+    pub session_id: String,
+    /// For `SiblingExcluded`: total bytes excluded from sibling payloads. 0 otherwise.
+    pub excluded_bytes: u64,
+    /// For `TracebackContrasted`: byte length of the original traceback. 0 otherwise.
+    pub original_traceback_bytes: u64,
+    /// For `TracebackContrasted`: the <=30-token contrastive constraint phrase injected.
+    /// `None` for other kinds.
+    pub constraint_phrase: Option<String>,
+    /// For `VividnessProbe`: outcome delta (pristine_score - accumulated_score). `None` for other
+    /// kinds. Recomputable under `ELAI_SEED` (GD-2).
+    pub outcome_delta: Option<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// I-11: BeliefStateEvent payload structs
+// ---------------------------------------------------------------------------
+
+/// I-11: 3-arm discriminator for [`BeliefStateEventPayload`].
+///
+/// - `Condensed`: emitted for every `adaptive_reduce` condensation (ID-3 JOURNALED-MIDDLEWARE
+///   rule). Un-journaled condensation is a wiring-enforcement FAIL. Carries `token_delta`.
+/// - `Handoff`: emitted when `evaluate_handoff` returns `HandoffDecision::Cloud` and the
+///   BeliefState payload is injected into the cloud call. Carries `payload_bytes`.
+/// - `HonestyDelta`: emitted by the periodic honesty job (every `HONESTY_JOB_INTERVAL`
+///   escalations). Compares full-history token count vs BeliefState-compressed count.
+///   Deterministic under `ELAI_SEED` (GD-2); recomputable from the SSB stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum BeliefStateEventKind {
+    /// Condensation receipt (ID-3): emitted on every `adaptive_reduce` call.
+    Condensed,
+    /// Handoff dispatch receipt: emitted when BeliefState payload is sent to cloud.
+    Handoff,
+    /// Honesty-job delta ledger entry: full-history vs BeliefState delta.
+    HonestyDelta,
+}
+
+/// I-11: SSB payload for PABU belief-state handoff receipts.
+///
+/// Pattern-2 single-variant; kind discriminator is [`BeliefStateEventKind`].
+/// Emitted by `belief_state::{BeliefState::emit_condensed_receipt,
+/// BeliefState::emit_handoff_receipt, HonestyJob::run}`.
+/// Production wiring: `task_runner::drive_task` (I-11 block, post `adaptive_reduce`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BeliefStateEventPayload {
+    /// Which arm of the belief-state event.
+    pub kind: BeliefStateEventKind,
+    /// Wire format version of the BeliefState blob (BELIEF_STATE_SCHEMA_VERSION = 1).
+    pub schema_version: u32,
+    /// Tokens saved by `adaptive_reduce` before encoding (0 for `HonestyDelta`).
+    pub token_delta: u32,
+    /// Size in bytes of the encoded BeliefState payload (0 for `Condensed` and `HonestyDelta`).
+    pub payload_bytes: u32,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+/// I-13: 3-arm discriminator for [`MemoryGuardEventPayload`].
+///
+/// - `PoisonBlocked`: emitted when MemoryWriteScanner detects invisible-Unicode or confusable-shell
+///   pattern in a candidate memory write. The write is REFUSED (fail-closed). Carries `pattern_class`.
+/// - `DualSerialized`: emitted when a ToolResultPayload passes through `to_llm_content` gate before
+///   entering the agent context window. Carries `token_delta` (full - summarized token count).
+/// - `TraceQueryExpanded`: emitted when the `trace_query` tool returns a line-range expansion.
+///   Carries `byte_range` as `"path:start-end"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum MemoryGuardEventKind {
+    /// Write blocked by aho-corasick scan: invisible-Unicode or confusable-shell pattern detected.
+    PoisonBlocked,
+    /// ToolResultPayload serialized through `to_llm_content` dual-serialization gate.
+    DualSerialized,
+    /// TraceQuery line-range expansion completed.
+    TraceQueryExpanded,
+}
+
+/// I-13: SSB payload for write-time memory guard events.
+///
+/// Pattern-2 single-variant; kind discriminator is [`MemoryGuardEventKind`].
+/// Emitted by `user_memory_capture` (CHOKEPOINT-1), `memory_cmd::insert` (CHOKEPOINT-2),
+/// and `production_agent_rpc::translate_tool_request` (TraceQuery arm).
+/// Production wiring: both CLI chokepoints call `MemoryWriteScanner::scan` which triggers
+/// the emit; the TraceQuery arm wires directly in `production_agent_rpc.rs`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MemoryGuardEventPayload {
+    /// Which arm of the memory-guard event.
+    pub kind: MemoryGuardEventKind,
+    /// For `PoisonBlocked`: the matched pattern class ("invisible_unicode" | "confusable_shell").
+    pub pattern_class: Option<String>,
+    /// For `DualSerialized`: tokens saved by `to_llm_content` summarization (full - llm count).
+    pub token_delta: Option<u32>,
+    /// For `TraceQueryExpanded`: the file range as `"<path>:<start>-<end>"`.
+    pub byte_range: Option<String>,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+/// I-14: 3-arm discriminator for [`ContextTransformReceiptPayload`].
+///
+/// - `LspSlice`: a `rustc`/cargo panic payload was sliced to the located error
+///   neighbourhood (the long backtrace tail dropped); the error location is parsed from
+///   the tool-output text, never from the LSP oracle (which only probes toolchain
+///   presence).
+/// - `AstFold`: tree-sitter function-body elision (function bodies collapsed to
+///   `/* elided */`; signatures and types preserved so BPE semantic priors survive).
+/// - `Tier2Compressed`: reserved discriminator for the DEFERRED neural (LLMLingua-2-class)
+///   tier; no Tier-2 encoder ships in the Tier-1 changeset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ContextTransformKind {
+    /// Compiler-error payload sliced to the located error neighbourhood.
+    LspSlice,
+    /// Tree-sitter function-body elision (signatures kept).
+    AstFold,
+    /// Reserved discriminator for the deferred neural tier.
+    Tier2Compressed,
+}
+
+/// I-14: SSB payload for deterministic context-compression middleware events
+/// (ID-3 JOURNALED-MIDDLEWARE: a reversible receipt for every transform).
+///
+/// Pattern-2 single-variant; kind discriminator is [`ContextTransformKind`].
+/// Emitted by `ContextTransformer::transform` (context_transform.rs) on EVERY transform,
+/// including a graceful skip (toolchain absent / non-UTF-8 / nothing to fold). The
+/// `reverse_hash` is the full 32-byte blake3 of the ORIGINAL bytes, hex-encoded: replay
+/// reconstructs what the model saw by matching it against the journaled original.
+/// Production wiring: the `AgentRpcServer::transform_tool_output` override in
+/// `production_agent_rpc.rs`, invoked from `ipc_accept.rs` `run_agent_session` at the
+/// tool-result byte seam.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContextTransformReceiptPayload {
+    /// Which transform strategy produced this receipt.
+    pub kind: ContextTransformKind,
+    /// Estimated token count of the ORIGINAL (pre-transform) payload.
+    pub before_tokens: u32,
+    /// Estimated token count of the payload that entered the context window.
+    pub after_tokens: u32,
+    /// Lowercase-hex full 32-byte blake3 of the original bytes (the reverse pointer).
+    pub reverse_hash: String,
+    /// True when the strategy degraded gracefully and returned the input verbatim.
+    pub skipped: bool,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+/// I-12: 4-arm discriminator for [`PlaybookEventPayload`].
+///
+/// - `Promoted`: a rule was advanced to ACTIVE (evidence gate passed, regression_count==0).
+/// - `Demoted`: an ACTIVE rule lost ACTIVE status (stale FPR or regression detected).
+/// - `ValidationRun`: the curator ran a check without completing promotion
+///   (evidence_count < MIN_EVIDENCE_COUNT, or regression_count > 0).
+/// - `Exported`: `export_verified` wrote a verified AGENTS.md / skills export block with
+///   embedded outcome_row_ids so downstream consumers can grep-verify provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PlaybookEventKind {
+    /// Rule advanced to ACTIVE after evidence gate + metric gates + zero regression.
+    Promoted,
+    /// ACTIVE rule demoted (stale or regressed).
+    Demoted,
+    /// Promotion-gate check ran without completing promotion.
+    ValidationRun,
+    /// Verified export written to AGENTS.md / skills block.
+    Exported,
+}
+
+/// I-12: SSB payload for evidence-gated playbook curator events (ID-6 WEIGHTS-ARE-CONFIGS).
+///
+/// Pattern-2 single-variant; kind discriminator is [`PlaybookEventKind`].
+/// Emitted by `PlaybookCurator::run_promotion_tick` (Promoted/Demoted/ValidationRun)
+/// and `PlaybookCurator::export_verified` (Exported).
+/// The `outcome_row_ids` field embeds the SSB seq IDs of the outcome rows used as
+/// evidence — grep-verifiable and off-agent auditable (R8 gate-freeze).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PlaybookEventPayload {
+    /// Stable identifier of the rule being promoted/demoted/validated/exported.
+    pub rule_id: String,
+    /// Which curator event this row represents.
+    pub kind: PlaybookEventKind,
+    /// SSB seq IDs of the outcome rows counted as evidence.
+    /// Non-empty for Promoted and Exported; may be empty for ValidationRun/Demoted.
+    pub outcome_row_ids: Vec<String>,
+    /// Measured lift from on/off injection (None if not computed this tick).
+    pub lift: Option<f32>,
+    /// Number of C-28 mutation-suite regressions found during the gate check.
+    /// 0 for Promoted/Exported; > 0 when ValidationRun blocks promotion.
+    pub regression_count: u32,
+    /// Number of SSB outcome links counted for this rule at gate time.
+    pub evidence_count: u32,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// I-17: TriLayerVerdict payload structs
+// ---------------------------------------------------------------------------
+
+/// I-17: 4-arm discriminator for [`TriLayerVerdictPayload`].
+///
+/// - `HardVeto`: an L1 deterministic gate (compile / dep-gate / VibeGate / checker /
+///   halting-bound) returned a veto. The branch score is a LITERAL `0.0` and neither
+///   L2 nor L3 ran for it (`l2_call_count == 0`). ID-4: the veto is supreme — no
+///   neural scorer may resurrect a vetoed branch.
+/// - `ScoredSurvivor`: the branch cleared every L1 gate; the L2 calibrated scorer
+///   (I-23 conformal facade) assigned it a `score` in `[0.0, 1.0]`.
+/// - `DisagreementEscalated`: L2 scores among survivors disagreed past the
+///   `[DESIGN]` variance threshold; the D-13 cross-family adversary was routed to
+///   produce a concrete counter-example (not just a score).
+/// - `FlakeQuarantined`: an oracle flipped across seeded reruns and was ledgered out
+///   of voting until rehabilitated (blake3(oracle-id + seed-range) key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum TriLayerVerdictKind {
+    /// L1 deterministic veto fired — score is literal 0.0, L2/L3 never ran.
+    HardVeto,
+    /// Branch cleared L1; L2 calibrated scorer assigned a score.
+    ScoredSurvivor,
+    /// L2 variance among survivors exceeded threshold; D-13 adversary escalated.
+    DisagreementEscalated,
+    /// Flaky oracle ledgered out of voting (seed-variation flip detected).
+    FlakeQuarantined,
+}
+
+/// I-17: which gate produced an L1 [`TriLayerVerdictKind::HardVeto`].
+///
+/// A typed enum (not a magic string) so the dashboard + contract test can group
+/// vetoes by gate without parsing free text. `None` on the [`TriLayerVerdictPayload`]
+/// `gate` field for non-veto verdicts (ScoredSurvivor / DisagreementEscalated /
+/// FlakeQuarantined).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GateId {
+    /// Compile/test checker veto (D-11 CompileRustChecker or equivalent).
+    L1Compile,
+    /// F-9 write-time dependency gate veto (slopsquat / stale dep).
+    L1DepGate,
+    /// F-1 VibeGate veto (secret axis or code-vuln axis Block).
+    L1VibeGate,
+    /// D-11 generic constructive-checker veto (non-compile checker Fail).
+    L1Checker,
+    /// I-8 / I-17 halting-bound watchdog fired (deterministic check overran the bound).
+    HaltingBound,
+}
+
+impl GateId {
+    /// Stable wire string for SSB payloads + dashboard rendering.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::L1Compile => "l1_compile",
+            Self::L1DepGate => "l1_dep_gate",
+            Self::L1VibeGate => "l1_vibe_gate",
+            Self::L1Checker => "l1_checker",
+            Self::HaltingBound => "halting_bound",
+        }
+    }
+}
+
+/// I-17: SSB payload for one tri-layer per-branch verdict (ID-4 veto supremacy).
+///
+/// Pattern-2 single-variant; kind discriminator is [`TriLayerVerdictKind`].
+/// Emitted by `verifier_stack::TriLayerStack::run_verdict`, exactly one row per
+/// branch evaluated. The `l2_call_count` field is the off-agent observable proof of
+/// veto supremacy: for a `HardVeto` row it MUST be `0` (the vetoed branch never
+/// reached the L2 calibrated scorer). The auditor's contract test asserts this.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TriLayerVerdictPayload {
+    /// Stable identifier of the branch this verdict scores.
+    pub branch_id: String,
+    /// Which arm of the tri-layer stack produced this verdict.
+    pub kind: TriLayerVerdictKind,
+    /// The gate that vetoed (`Some` only for `HardVeto`; `None` otherwise).
+    #[serde(default)]
+    pub gate: Option<GateId>,
+    /// Number of times the L2 calibrated scorer was invoked for this branch.
+    /// `0` for `HardVeto` (the load-bearing observable proof L2 never saw a vetoed
+    /// branch); `>= 1` for `ScoredSurvivor` / `DisagreementEscalated`.
+    pub l2_call_count: u32,
+    /// Final branch score in `[0.0, 1.0]`. Literal `0.0` for `HardVeto`
+    /// (no soft-veto penalty weight — ID-4); the calibrated L2 score otherwise.
+    pub score: f64,
+    /// Milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+/// I-18 — Kind discriminator for [`SsbActionType::RowChainSealed`].
+///
+/// - `ChainAdvanced`: the rolling blake3 chain_prev_hash advanced to the next
+///   position after a sealed RRA. Emitted from `run_subcommand::emit_run_artifact`.
+/// - `AibomEmitted`: the AI-BOM/CycloneDX-ML entry was sealed alongside the
+///   in-toto Statement. Emitted from `run_subcommand::emit_attestation`.
+/// - `ChainBroken`: a Cargo.lock mutation was detected mid-run at the DEPS
+///   layer of the 5-layer StackHash. The run is halted with an error; the
+///   off-agent beacon fires to signal the break (observable_effect R2 beacon).
+///
+/// NOTE: DISTINCT from `crate::verification_result::GateRejection::ChainBroken`
+/// (a Rust error type in the verify path). Do NOT conflate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowChainSealedKind {
+    /// Rolling chain_prev_hash advanced after a sealed RRA.
+    ChainAdvanced,
+    /// AI-BOM/CycloneDX-ML entry sealed alongside the in-toto Statement.
+    AibomEmitted,
+    /// Cargo.lock mutation detected mid-run at DEPS layer; run halted.
+    ChainBroken,
+}
+
+impl RowChainSealedKind {
+    /// Stable snake_case wire string.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ChainAdvanced => "chain_advanced",
+            Self::AibomEmitted => "aibom_emitted",
+            Self::ChainBroken => "chain_broken",
+        }
+    }
+}
+
+/// I-18 payload for [`SsbActionType::RowChainSealed`].
+///
+/// Emitted from `run_subcommand::emit_run_artifact` (ChainAdvanced arm) and
+/// from `run_subcommand::emit_attestation` (AibomEmitted arm).
+///
+/// `kind` is the arm discriminator.
+/// `seq` is the SSB row sequence number this chain seal anchors to.
+/// `session_id` is the session that generated this event.
+/// `ts_ms` is the wall-clock unix-ms at emit time.
+/// `break_seq` is the seq of the broken row (`Some` only on ChainBroken arm).
+/// TOTAL_VARIANTS 561 -> 562.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowChainSealedPayload {
+    /// Which arm fired.
+    pub kind: RowChainSealedKind,
+    /// SSB row sequence number this chain seal anchors to.
+    pub seq: i64,
+    /// SSB session_id that generated this event.
+    pub session_id: String,
+    /// Wall-clock unix-ms at emit time.
+    pub ts_ms: i64,
+    /// Seq of the broken row. `Some` only on the ChainBroken arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub break_seq: Option<i64>,
 }
 
 /// G-10: drift signal kind.
@@ -28915,6 +30716,145 @@ pub struct CitationAnchorsBoundPayload {
     pub blake3_set_hash_hex: String,
 }
 
+/// I-39 payload for [`SsbActionType::PlanStateDerived`].
+///
+/// Emitted by `plan_status_cmd::run_plan_status` (REAL CLI entrypoint:
+/// `elai plan status [--letter <L>] [--json]`). Flat beacon; no inner
+/// Kind enum. All three evidence sources are represented so off-agent
+/// verification is possible (GD-2). Output is byte-identical from the
+/// same inputs (deterministic). Default-ON; no kill-switch needed (pure
+/// read path). TOTAL_VARIANTS 540 -> 541.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanStateDerivedPayload {
+    /// Plan letter (e.g. "B", "C", "H"). Empty string when deriving all letters.
+    pub letter: String,
+    /// Session ID of the plan_status_cmd invocation.
+    pub session_id: String,
+    /// Derived state string. One of: "SHIPPED_WIRED", "SHIPPED_PARTIAL",
+    /// "WIRE_DARK", "IN_PROGRESS", "PLANNED", "UNKNOWN".
+    pub derived_state: String,
+    /// Evidence anchor: human-readable pointer to the source that drove
+    /// the final verdict (e.g. "fragments:s-plan-audit-2026-06-04:B-10",
+    /// "wiring_check:PASS", "ssb_journal:0_observable_effect_rows"). Used
+    /// for off-agent verification (GD-2). blake3 only for hashes.
+    pub evidence_anchor: String,
+    /// Wall-clock milliseconds since UNIX epoch at invocation time.
+    pub ts_ms: i64,
+}
+
+/// I-45 — Kind discriminator for [`SsbActionType::ObjectiveSealed`].
+///
+/// - `Sealed`: the blake3 objective hash was stamped into the [`RunArtifact`]
+///   at `build_rra` time. The receipt is fresh.
+/// - `MutationDetected`: at verify time, the re-derived hash from the presented
+///   task text MISMATCHES the sealed hash. The objective was redefined after
+///   PASS. Hard-FAIL verify verdict.
+/// - `ReceiptStale`: the attestation predicate's `objective_hash` mismatches
+///   the presented task text. Hard-FAIL verify verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectiveSealedKind {
+    /// Objective hash stamped into the RunArtifact at seal time.
+    Sealed,
+    /// Hash mismatch at verify time: objective redefined after PASS.
+    MutationDetected,
+    /// Attestation predicate hash mismatch at verify time.
+    ReceiptStale,
+}
+
+impl ObjectiveSealedKind {
+    /// Stable snake_case wire string.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sealed => "sealed",
+            Self::MutationDetected => "mutation_detected",
+            Self::ReceiptStale => "receipt_stale",
+        }
+    }
+}
+
+/// I-45 payload for [`SsbActionType::ObjectiveSealed`].
+///
+/// Emitted from `rra::build_rra` (Sealed arm) and from
+/// `rra::verify_artifact_with_objective` (MutationDetected arm).
+///
+/// `objective_hash` is the 16-hex blake3 prefix sealed into the receipt.
+/// `current_hash` is the re-derived hash at verify time (None on Sealed arm).
+/// `session_id` is the session that generated this event.
+/// `ts_ms` is the wall-clock unix-ms at emit time.
+/// TOTAL_VARIANTS 541 -> 542.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObjectiveSealedPayload {
+    /// Which arm fired.
+    pub kind: ObjectiveSealedKind,
+    /// 16-hex blake3 prefix of blake3(canonical_objective_bytes) sealed into the receipt.
+    pub objective_hash: String,
+    /// Re-derived hash at verify time. None when kind == Sealed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_hash: Option<String>,
+    /// SSB session_id that generated this event.
+    pub session_id: String,
+    /// Wall-clock unix-ms at emit time.
+    pub ts_ms: i64,
+}
+
+/// I-34 — Kind discriminator for [`SsbActionType::GrammarGateEvent`].
+///
+/// Pattern-2 single-variant 3-arm. SCHEMA_VERSION 233 -> 234.
+/// - `CranePassed`: constrained decode completed, gate eligibility check passed.
+/// - `PinViolation`: grammar file's blake3 digest mismatches the pinned manifest value.
+/// - `PostParseRejected`: post-parse re-validation detected silent non-compliance (landmine #7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrammarGateEventKind {
+    /// Constrained decode completed successfully; gate eligibility passed.
+    CranePassed,
+    /// Grammar file's blake3 digest mismatches the pinned manifest value (CDA landmine #8).
+    PinViolation,
+    /// Post-parse schema re-validation detected a silently non-compliant output (landmine #7).
+    PostParseRejected,
+}
+
+impl GrammarGateEventKind {
+    /// Stable snake_case wire string.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CranePassed => "crane_passed",
+            Self::PinViolation => "pin_violation",
+            Self::PostParseRejected => "post_parse_rejected",
+        }
+    }
+}
+
+/// I-34 payload for [`SsbActionType::GrammarGateEvent`].
+///
+/// Emitted from `orchestrator::grammar_gate::emit_grammar_gate_event`.
+/// `grammar_path` is the EBNF grammar path that triggered the event.
+/// `pin_violation_expected` / `pin_violation_actual` carry the pinned vs actual
+/// blake3 hex on a PinViolation arm (None on other arms).
+/// `session_id` is the session that generated this event.
+/// `ts_ms` is the wall-clock unix-ms at emit time.
+/// TOTAL_VARIANTS 542 -> 543.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GrammarGateEventPayload {
+    /// Which arm fired.
+    pub kind: GrammarGateEventKind,
+    /// Path to the EBNF grammar file involved in this event.
+    pub grammar_path: String,
+    /// Pinned blake3 hex at pin time (PinViolation arm only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_violation_expected: Option<String>,
+    /// Freshly-computed blake3 hex at verify time (PinViolation arm only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_violation_actual: Option<String>,
+    /// SSB session_id that generated this event.
+    pub session_id: String,
+    /// Wall-clock unix-ms at emit time.
+    pub ts_ms: i64,
+}
+
 /// D-27.1 payload for [`SsbActionType::DiscoveryRatified`].
 ///
 /// Emitted by the `ratify_discovery` Tauri command when a human reviewer
@@ -30463,10 +32403,12 @@ mod tests {
                 query_hash_hex: "00".repeat(32),
                 source_tier: "t1_authoritative".into(),
                 cached_age_secs: 60,
+                source: None,
             }),
             SsbActionType::OracleCacheMiss => SsbPayload::OracleCacheMiss(OracleCacheMissPayload {
                 query_hash_hex: "00".repeat(32),
                 confidence: "high".into(),
+                source: None,
             }),
             SsbActionType::ProjectDetectionSignal => SsbPayload::ProjectDetectionSignal(
                 ProjectDetectionSignalPayload {
@@ -30868,6 +32810,7 @@ mod tests {
                     corpus_size: 40,
                     source: "held_out".into(),
                     ts_ms: 1_700_000_070_000,
+                    calibration_id: None,
                 },
             ),
             SsbActionType::ConformalRefusalDecided => SsbPayload::ConformalRefusalDecided(
@@ -30879,6 +32822,7 @@ mod tests {
                     confidence: 0.0,
                     ts_ms: 1_700_000_071_000,
                     reason: Some("low_evidence".into()),
+                    calibration_id: None,
                 },
             ),
             // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
@@ -31553,6 +33497,7 @@ mod tests {
                         bootstrap_ci_high: Some(0.84),
                         block_length_p: Some(crate::calibration_bootstrap::default_block_p(50)),
                         ts_ms: 1_700_000_147_000,
+                        calibration_id: None,
                     },
                 )
             }
@@ -32739,6 +34684,35 @@ mod tests {
                     seed: 42,
                 })
             }
+            // I-39 (SCHEMA_VERSION 230): explicit arm so test_payload(PlanStateDerived)
+            // returns a real PlanStateDerivedPayload instead of falling to the wildcard
+            // Finding fallthrough. Mirror the field values used in all_test_payloads().
+            SsbActionType::PlanStateDerived => SsbPayload::PlanStateDerived(PlanStateDerivedPayload {
+                letter: "B".into(),
+                session_id: "s-i39-test".into(),
+                derived_state: "SHIPPED_WIRED".into(),
+                evidence_anchor: "fragments:s-plan-audit-2026-06-04:B-10".into(),
+                ts_ms: 1_700_000_000_000,
+            }),
+            // I-45 (SCHEMA_VERSION 231): explicit arm so test_payload(ObjectiveSealed)
+            // returns a real ObjectiveSealedPayload instead of falling to the wildcard.
+            SsbActionType::ObjectiveSealed(_) => SsbPayload::ObjectiveSealed(ObjectiveSealedPayload {
+                kind: ObjectiveSealedKind::Sealed,
+                objective_hash: "abcd1234abcd1234".into(),
+                current_hash: None,
+                session_id: "s-i45-test".into(),
+                ts_ms: 1_700_000_000_000,
+            }),
+            // I-34 (SCHEMA_VERSION 234): explicit arm so test_payload(GrammarGateEvent)
+            // returns a real GrammarGateEventPayload instead of falling to the wildcard.
+            SsbActionType::GrammarGateEvent(_) => SsbPayload::GrammarGateEvent(GrammarGateEventPayload {
+                kind: GrammarGateEventKind::CranePassed,
+                grammar_path: "fixtures/test_grammar.ebnf".into(),
+                pin_violation_expected: None,
+                pin_violation_actual: None,
+                session_id: "s-i34-test".into(),
+                ts_ms: 1_700_000_000_000,
+            }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload
@@ -34400,10 +36374,12 @@ mod tests {
                 query_hash_hex: "00".repeat(32),
                 source_tier: "t1_authoritative".into(),
                 cached_age_secs: 60,
+                source: None,
             }),
             SsbPayload::OracleCacheMiss(OracleCacheMissPayload {
                 query_hash_hex: "00".repeat(32),
                 confidence: "high".into(),
+                source: None,
             }),
             SsbPayload::ProjectDetectionSignal(ProjectDetectionSignalPayload {
                 signal_name: "cargo_toml".into(),
@@ -34726,6 +36702,7 @@ mod tests {
                 corpus_size: 40,
                 source: "held_out".into(),
                 ts_ms: 1_700_000_070_000,
+                calibration_id: None,
             }),
             SsbPayload::ConformalRefusalDecided(ConformalRefusalDecidedPayload {
                 claim_id: "claim-d16-test".into(),
@@ -34735,6 +36712,7 @@ mod tests {
                 confidence: 0.0,
                 ts_ms: 1_700_000_071_000,
                 reason: Some("low_evidence".into()),
+                calibration_id: None,
             }),
             // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
             // FINAL TRANCHE B4: optional candidate_status field added (None
@@ -35548,6 +37526,7 @@ mod tests {
                     bootstrap_ci_high: Some(0.86),
                     block_length_p: Some(0.1414213562373095),
                     ts_ms: 1_748_044_900_000,
+                    calibration_id: None,
                 },
             ),
             // C-50 (SCHEMA_VERSION 125): Contract-Coding STRUCTURAL
@@ -36129,9 +38108,9 @@ mod tests {
             }),
             // E-19 (SCHEMA_VERSION 166): reasoning quality probe.
             // SINGLE-VARIANT scope-lean per Pattern-2 (18th application);
-            // ProbeKind 5-arm discriminator covers l2_gate_decision /
+            // ProbeKind 6-arm discriminator covers l2_gate_decision /
             // l4_prm_lite_score / l4_lateral_kept / l4_ttc_budget_chosen /
-            // l6_verifier_diversity. See workflow/reasoning/E-19-decisions.md.
+            // l6_verifier_diversity / vividness_probe (I-5). See workflow/reasoning/E-19-decisions.md.
             SsbPayload::ReasoningQualityProbe(ReasoningQualityProbePayload {
                 kind: ProbeKind::L2GateDecision,
                 layer: 2,
@@ -36843,6 +38822,470 @@ mod tests {
                 loaded_tokens: None,
                 session_id: "test-session".into(),
             }),
+            // I-39 (SCHEMA_VERSION 230): PlanStateDerived flat beacon. 1 new entry.
+            SsbPayload::PlanStateDerived(PlanStateDerivedPayload {
+                letter: "B".into(),
+                session_id: "s-i39-test".into(),
+                derived_state: "SHIPPED_WIRED".into(),
+                evidence_anchor: "fragments:s-plan-audit-2026-06-04:B-10".into(),
+                ts_ms: 1_700_000_000_000,
+            }),
+            // I-45 (SCHEMA_VERSION 231): ObjectiveSealed Pattern-2 3-arm. 1 new entry (Sealed representative).
+            SsbPayload::ObjectiveSealed(ObjectiveSealedPayload {
+                kind: ObjectiveSealedKind::Sealed,
+                objective_hash: "abcd1234abcd1234".into(),
+                current_hash: None,
+                session_id: "s-i45-test".into(),
+                ts_ms: 1_700_000_000_000,
+            }),
+            // I-34 (SCHEMA_VERSION 234): GrammarGateEvent Pattern-2 3-arm. 3 new entries.
+            SsbPayload::GrammarGateEvent(GrammarGateEventPayload {
+                kind: GrammarGateEventKind::CranePassed,
+                grammar_path: "fixtures/crane_pass.ebnf".into(),
+                pin_violation_expected: None,
+                pin_violation_actual: None,
+                session_id: "s-i34-test".into(),
+                ts_ms: 1_700_000_000_000,
+            }),
+            SsbPayload::GrammarGateEvent(GrammarGateEventPayload {
+                kind: GrammarGateEventKind::PinViolation,
+                grammar_path: "fixtures/crane_pinviolation.ebnf".into(),
+                pin_violation_expected: Some("aaaa1111aaaa1111".into()),
+                pin_violation_actual: Some("bbbb2222bbbb2222".into()),
+                session_id: "s-i34-test".into(),
+                ts_ms: 1_700_000_000_001,
+            }),
+            SsbPayload::GrammarGateEvent(GrammarGateEventPayload {
+                kind: GrammarGateEventKind::PostParseRejected,
+                grammar_path: "fixtures/crane_postparse.ebnf".into(),
+                pin_violation_expected: None,
+                pin_violation_actual: None,
+                session_id: "s-i34-test".into(),
+                ts_ms: 1_700_000_000_002,
+            }),
+            // I-38 (SCHEMA_VERSION 235): QdeltaMeasured flat beacon. 1 new entry.
+            SsbPayload::QdeltaMeasured(QdeltaMeasuredPayload {
+                suite: "test_qdelta_fixture".into(),
+                model_id: "fixture_corpus_v1".into(),
+                n_tasks: 5,
+                seed_count: 5,
+                paired: true,
+                on_defective_rate: 0.2,
+                off_defective_rate: 0.6,
+                delta: 0.4,
+                ci_low: 0.0,
+                ci_high: 0.8,
+                dollar_per_task: 0.01,
+                contamination_probe_result: "honestly_evaluated".into(),
+                surviving_mutants_per_task: 0.0,
+                corpus_blake3: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".into(),
+                runpod_pending: true,
+            }),
+            // I-43 (SCHEMA_VERSION 236): ClaimScopeMeasured Pattern-2 3-arm. 3 new entries.
+            SsbPayload::ClaimScopeMeasured(ClaimScopeMeasuredPayload {
+                kind: ClaimScopeMeasuredKind::PilotDelta,
+                suite: "seccodeplt_claim_scope_fixture".into(),
+                seed: 42,
+                n_samples: 10,
+                delta: Some(0.5),
+                reviewer_reaching_rate: Some(0.17),
+                trap_fired: false,
+                divergence_pct: None,
+                claim_wording: None,
+                runpod_pending: true,
+                corpus_blake3: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".into(),
+            }),
+            SsbPayload::ClaimScopeMeasured(ClaimScopeMeasuredPayload {
+                kind: ClaimScopeMeasuredKind::CrossLaneDivergence,
+                suite: "seccodeplt_claim_scope_fixture".into(),
+                seed: 42,
+                n_samples: 3,
+                delta: None,
+                reviewer_reaching_rate: None,
+                trap_fired: false,
+                divergence_pct: Some(33.33),
+                claim_wording: Some("trace-authentication only; deterministic replay claim unsupported on cloud path".into()),
+                runpod_pending: true,
+                corpus_blake3: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".into(),
+            }),
+            SsbPayload::ClaimScopeMeasured(ClaimScopeMeasuredPayload {
+                kind: ClaimScopeMeasuredKind::ClaimScoped,
+                suite: "seccodeplt_claim_scope_fixture".into(),
+                seed: 42,
+                n_samples: 10,
+                delta: Some(0.5),
+                reviewer_reaching_rate: Some(0.17),
+                trap_fired: false,
+                divergence_pct: Some(33.33),
+                claim_wording: Some("trace-authentication only; deterministic replay claim unsupported on cloud path".into()),
+                runpod_pending: true,
+                corpus_blake3: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".into(),
+            }),
+            // I-10 (SCHEMA_VERSION 237): CacheEconomicsEvent Pattern-2 3-arm. 3 new entries.
+            SsbPayload::CacheEconomicsEvent(CacheEconomicsEventPayload {
+                kind: CacheEconomicsEventKind::TtlPlanned,
+                ttl_secs: Some(3600),
+                breakeven_reads: 3,
+                miss_rate: 0.0,
+                mutation_hash: [0u8; 8],
+                call_class: "scoring".into(),
+                ts_ms: 1_700_000_000_000,
+            }),
+            SsbPayload::CacheEconomicsEvent(CacheEconomicsEventPayload {
+                kind: CacheEconomicsEventKind::HitRateGuardTripped,
+                ttl_secs: None,
+                breakeven_reads: 1,
+                miss_rate: 0.92,
+                mutation_hash: [0u8; 8],
+                call_class: "generation".into(),
+                ts_ms: 1_700_000_001_000,
+            }),
+            SsbPayload::CacheEconomicsEvent(CacheEconomicsEventPayload {
+                kind: CacheEconomicsEventKind::PrefixDiffDumped,
+                ttl_secs: None,
+                breakeven_reads: 0,
+                miss_rate: 0.0,
+                mutation_hash: [0xde, 0xad, 0xbe, 0xef, 0x00, 0x00, 0x00, 0x01],
+                call_class: "routing".into(),
+                ts_ms: 1_700_000_002_000,
+            }),
+            // I-8 (SCHEMA_VERSION 238): TrajectoryAborted Pattern-2 3-arm. 3 new entries.
+            SsbPayload::TrajectoryAborted(TrajectoryAbortedPayload {
+                kind: TrajectoryAbortedKind::Voluntary,
+                session_id: "i8-fixture".into(),
+                trajectory_id: Some("traj-001".into()),
+                approach_hash: None,
+                abort_reason_text: Some("task is provably infeasible: no valid parse".into()),
+                ts_ms: 1_700_000_010_000,
+            }),
+            SsbPayload::TrajectoryAborted(TrajectoryAbortedPayload {
+                kind: TrajectoryAbortedKind::DeadEndHash,
+                session_id: "i8-fixture".into(),
+                trajectory_id: Some("traj-002".into()),
+                approach_hash: Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".into()),
+                abort_reason_text: None,
+                ts_ms: 1_700_000_011_000,
+            }),
+            SsbPayload::TrajectoryAborted(TrajectoryAbortedPayload {
+                kind: TrajectoryAbortedKind::HaltingBound,
+                session_id: "i8-fixture".into(),
+                trajectory_id: None,
+                approach_hash: None,
+                abort_reason_text: None,
+                ts_ms: 1_700_000_012_000,
+            }),
+            // I-1 (SCHEMA_VERSION 239): DirectiveExecuted Pattern-2 3-arm. 3 new entries.
+            SsbPayload::DirectiveExecuted(DirectiveExecutedPayload {
+                kind: DirectiveExecutedKind::Executed,
+                tool_name: "bash_tool_use".into(),
+                intent_id: "i1-intent-001".into(),
+                initiator: "agent-fixture".into(),
+                ts_ms: 1_700_000_020_000,
+            }),
+            SsbPayload::DirectiveExecuted(DirectiveExecutedPayload {
+                kind: DirectiveExecutedKind::Discarded,
+                tool_name: "bash_tool_use".into(),
+                intent_id: "i1-intent-002".into(),
+                initiator: "agent-fixture".into(),
+                ts_ms: 1_700_000_021_000,
+            }),
+            SsbPayload::DirectiveExecuted(DirectiveExecutedPayload {
+                kind: DirectiveExecutedKind::CompensationFired,
+                tool_name: "file_write".into(),
+                intent_id: "i1-intent-003".into(),
+                initiator: "agent-fixture".into(),
+                ts_ms: 1_700_000_022_000,
+            }),
+            // I-33 (SCHEMA_VERSION 240): GovernancePrimitiveFired Pattern-2 3-arm. 3 new entries.
+            SsbPayload::GovernancePrimitiveFired(GovernancePrimitiveFiredPayload {
+                kind: GovernancePrimitiveFiredKind::CeflExternalized,
+                session_id: Some("i33-fixture".into()),
+                details_json: r#"{"candidates":["option_a","option_b"],"schema_json":"{\"enum\":[\"option_a\",\"option_b\"]}"}"#.into(),
+                ts_ms: 1_700_000_030_000,
+            }),
+            SsbPayload::GovernancePrimitiveFired(GovernancePrimitiveFiredPayload {
+                kind: GovernancePrimitiveFiredKind::I6qRejected,
+                session_id: Some("i33-fixture".into()),
+                details_json: r#"{"rationale_len":12,"unique_words":3,"threshold_len":20,"threshold_words":5}"#.into(),
+                ts_ms: 1_700_000_031_000,
+            }),
+            SsbPayload::GovernancePrimitiveFired(GovernancePrimitiveFiredPayload {
+                kind: GovernancePrimitiveFiredKind::CommitRevealSealed,
+                session_id: Some("i33-fixture".into()),
+                details_json: r#"{"commit_hash_hex":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","commit_row_id":1,"reveal_row_id":2,"order_ok":true}"#.into(),
+                ts_ms: 1_700_000_032_000,
+            }),
+            // I-35 (SCHEMA_VERSION 242): ToolSequenceVerdict Pattern-2 3-arm. 3 new entries.
+            SsbPayload::ToolSequenceVerdict(ToolSequenceVerdictPayload {
+                kind: ToolSequenceVerdictKind::Allowed,
+                tool_class: "bash".into(),
+                rule_id: String::new(),
+                unsatisfied_predicate: String::new(),
+                ts_ms: 1_700_000_040_000,
+            }),
+            SsbPayload::ToolSequenceVerdict(ToolSequenceVerdictPayload {
+                kind: ToolSequenceVerdictKind::OrderViolation,
+                tool_class: "git_push".into(),
+                rule_id: "R1-git-push-requires-auditor-pass".into(),
+                unsatisfied_predicate: "git_push requires at least one auditor_pass entry since the last src_edit".into(),
+                ts_ms: 1_700_000_041_000,
+            }),
+            SsbPayload::ToolSequenceVerdict(ToolSequenceVerdictPayload {
+                kind: ToolSequenceVerdictKind::HaltEnforced,
+                tool_class: "file_write".into(),
+                rule_id: "R2-file-write-after-ingest-requires-taint-check".into(),
+                unsatisfied_predicate: "file_write after untrusted_ingest requires taint_check_pass between them".into(),
+                ts_ms: 1_700_000_042_000,
+            }),
+            // I-41 (SCHEMA_VERSION 243): CritiqueLensFinding Pattern-2 3-arm. 1 representative entry (AdvisoryFinding).
+            SsbPayload::CritiqueLensFinding(CritiqueLensFindingPayload {
+                kind: CritiqueLensFindingKind::AdvisoryFinding {
+                    lens: "L1".into(),
+                    severity: "CONCERN".into(),
+                    location: "spec section: assumptions block".into(),
+                    claim: "i41-fixture: assumed external service availability is unverified".into(),
+                    confidence: 0.75,
+                },
+                advisory: true,
+                session_id: "i41-fixture".into(),
+            }),
+            // I-46: 3 BashRedirected arms (Redirected / FixedUp / PrefixBlocked)
+            SsbPayload::BashRedirected(BashRedirectedPayload {
+                kind: BashRedirectedKind::Redirected,
+                command: "grep -r 'fn main' src/".into(),
+                substitute_call: Some("grep_search".into()),
+                fixup_applied: None,
+                prefix_matched: None,
+            }),
+            SsbPayload::BashRedirected(BashRedirectedPayload {
+                kind: BashRedirectedKind::FixedUp,
+                command: "cat src/main.rs | head -20".into(),
+                substitute_call: None,
+                fixup_applied: Some("cat src/main.rs".into()),
+                prefix_matched: None,
+            }),
+            SsbPayload::BashRedirected(BashRedirectedPayload {
+                kind: BashRedirectedKind::PrefixBlocked,
+                command: "cargo build; rm -rf target/".into(),
+                substitute_call: None,
+                fixup_applied: None,
+                prefix_matched: Some("cargo".into()),
+            }),
+            // I-47 (SCHEMA_VERSION 245): PromptHardeningApplied Pattern-2 3-arm.
+            SsbPayload::PromptHardeningApplied(PromptHardeningAppliedPayload {
+                kind: PromptHardeningAppliedKind::InputsTagged,
+                role: "Verification".into(),
+                agent_id: "i47-fixture-inputs-tagged".into(),
+                attestation_phrase: None,
+            }),
+            SsbPayload::PromptHardeningApplied(PromptHardeningAppliedPayload {
+                kind: PromptHardeningAppliedKind::RulesInjected,
+                role: "executor".into(),
+                agent_id: "i47-fixture-rules-injected".into(),
+                attestation_phrase: None,
+            }),
+            SsbPayload::PromptHardeningApplied(PromptHardeningAppliedPayload {
+                kind: PromptHardeningAppliedKind::SelfAttestationStripped,
+                role: "Verification".into(),
+                agent_id: "i47-fixture-attestation".into(),
+                attestation_phrase: Some("all tests pass".into()),
+            }),
+            // I-2 (SCHEMA_VERSION 246): BranchWorkspaceEvent Pattern-2 4-arm. All 4 arms.
+            SsbPayload::BranchWorkspaceEvent(BranchWorkspaceEventPayload {
+                kind: BranchWorkspaceEventKind::Spawned,
+                branch_id: "i2-fixture-branch-a".into(),
+                session_id: "i2-fixture-session".into(),
+                worktree_root_blake3: "0123456789abcdef".into(),
+                conflict_path: None,
+            }),
+            SsbPayload::BranchWorkspaceEvent(BranchWorkspaceEventPayload {
+                kind: BranchWorkspaceEventKind::Merged,
+                branch_id: "i2-fixture-branch-b".into(),
+                session_id: String::new(),
+                worktree_root_blake3: "fedcba9876543210".into(),
+                conflict_path: None,
+            }),
+            SsbPayload::BranchWorkspaceEvent(BranchWorkspaceEventPayload {
+                kind: BranchWorkspaceEventKind::EscapeBlocked,
+                branch_id: "i2-fixture-branch-c".into(),
+                session_id: "i2-fixture-session".into(),
+                worktree_root_blake3: "00112233445566ff".into(),
+                conflict_path: Some("/etc/passwd".into()),
+            }),
+            SsbPayload::BranchWorkspaceEvent(BranchWorkspaceEventPayload {
+                kind: BranchWorkspaceEventKind::ConflictEscalated,
+                branch_id: "i2-fixture-branch-d".into(),
+                session_id: String::new(),
+                worktree_root_blake3: "ffeeddccbbaa0011".into(),
+                conflict_path: Some("src/shared.rs".into()),
+            }),
+            // I-5 (SCHEMA_VERSION 247): ContextPruned Pattern-2 3-arm. All 3 arms.
+            SsbPayload::ContextPruned(ContextPrunedPayload {
+                kind: ContextPrunedKind::SiblingExcluded,
+                branch_id: "i5-fixture-branch-b2".into(),
+                session_id: "i5-fixture-session".into(),
+                excluded_bytes: 5120,
+                original_traceback_bytes: 0,
+                constraint_phrase: None,
+                outcome_delta: None,
+            }),
+            SsbPayload::ContextPruned(ContextPrunedPayload {
+                kind: ContextPrunedKind::TracebackContrasted,
+                branch_id: "i5-fixture-branch-b2".into(),
+                session_id: "i5-fixture-session".into(),
+                excluded_bytes: 0,
+                original_traceback_bytes: 5120,
+                constraint_phrase: Some("attempt b1 failed at type-mismatch -- avoid raw String cast".into()),
+                outcome_delta: None,
+            }),
+            SsbPayload::ContextPruned(ContextPrunedPayload {
+                kind: ContextPrunedKind::VividnessProbe,
+                branch_id: "i5-fixture-branch-b2".into(),
+                session_id: "i5-fixture-session".into(),
+                excluded_bytes: 0,
+                original_traceback_bytes: 0,
+                constraint_phrase: None,
+                outcome_delta: Some(0.12),
+            }),
+            // I-11 (SCHEMA_VERSION 248): BeliefStateEvent Pattern-2 3-arm. All 3 arms.
+            SsbPayload::BeliefStateEvent(BeliefStateEventPayload {
+                kind: BeliefStateEventKind::Condensed,
+                schema_version: 1,
+                token_delta: 1200,
+                payload_bytes: 0,
+                ts_ms: 1_700_000_001_000,
+            }),
+            SsbPayload::BeliefStateEvent(BeliefStateEventPayload {
+                kind: BeliefStateEventKind::Handoff,
+                schema_version: 1,
+                token_delta: 1200,
+                payload_bytes: 512,
+                ts_ms: 1_700_000_002_000,
+            }),
+            SsbPayload::BeliefStateEvent(BeliefStateEventPayload {
+                kind: BeliefStateEventKind::HonestyDelta,
+                schema_version: 1,
+                token_delta: 800,
+                payload_bytes: 0,
+                ts_ms: 1_700_000_003_000,
+            }),
+            // I-13 (SCHEMA_VERSION 249): MemoryGuardEvent Pattern-2 3-arm. All 3 arms.
+            SsbPayload::MemoryGuardEvent(MemoryGuardEventPayload {
+                kind: MemoryGuardEventKind::PoisonBlocked,
+                pattern_class: Some("invisible_unicode".into()),
+                token_delta: None,
+                byte_range: None,
+                ts_ms: 1_700_000_004_000,
+            }),
+            SsbPayload::MemoryGuardEvent(MemoryGuardEventPayload {
+                kind: MemoryGuardEventKind::DualSerialized,
+                pattern_class: None,
+                token_delta: Some(128),
+                byte_range: None,
+                ts_ms: 1_700_000_005_000,
+            }),
+            SsbPayload::MemoryGuardEvent(MemoryGuardEventPayload {
+                kind: MemoryGuardEventKind::TraceQueryExpanded,
+                pattern_class: None,
+                token_delta: None,
+                byte_range: Some("crates/orchestrator/src/ssb.rs:100-200".into()),
+                ts_ms: 1_700_000_006_000,
+            }),
+            // I-14 (SCHEMA_VERSION 250): ContextTransformReceipt Pattern-2 3-arm. All 3 arms.
+            SsbPayload::ContextTransformReceipt(ContextTransformReceiptPayload {
+                kind: ContextTransformKind::LspSlice,
+                before_tokens: 2500,
+                after_tokens: 120,
+                reverse_hash: "00".repeat(32),
+                skipped: false,
+                ts_ms: 1_700_000_007_000,
+            }),
+            SsbPayload::ContextTransformReceipt(ContextTransformReceiptPayload {
+                kind: ContextTransformKind::AstFold,
+                before_tokens: 4000,
+                after_tokens: 300,
+                reverse_hash: "11".repeat(32),
+                skipped: false,
+                ts_ms: 1_700_000_008_000,
+            }),
+            SsbPayload::ContextTransformReceipt(ContextTransformReceiptPayload {
+                kind: ContextTransformKind::Tier2Compressed,
+                before_tokens: 1000,
+                after_tokens: 1000,
+                reverse_hash: "22".repeat(32),
+                skipped: true,
+                ts_ms: 1_700_000_009_000,
+            }),
+            // I-12 (SCHEMA_VERSION 251): PlaybookEvent Pattern-2 4-arm. All 4 arms.
+            SsbPayload::PlaybookEvent(PlaybookEventPayload {
+                kind: PlaybookEventKind::Promoted,
+                rule_id: "rule-security-001".into(),
+                outcome_row_ids: vec!["ssb-seq-100".into(), "ssb-seq-101".into(), "ssb-seq-102".into()],
+                lift: Some(0.12),
+                regression_count: 0,
+                evidence_count: 5,
+                ts_ms: 1_700_000_010_000,
+            }),
+            SsbPayload::PlaybookEvent(PlaybookEventPayload {
+                kind: PlaybookEventKind::Demoted,
+                rule_id: "rule-security-002".into(),
+                outcome_row_ids: vec![],
+                lift: None,
+                regression_count: 0,
+                evidence_count: 0,
+                ts_ms: 1_700_000_011_000,
+            }),
+            SsbPayload::PlaybookEvent(PlaybookEventPayload {
+                kind: PlaybookEventKind::ValidationRun,
+                rule_id: "rule-security-003".into(),
+                outcome_row_ids: vec!["ssb-seq-200".into()],
+                lift: None,
+                regression_count: 2,
+                evidence_count: 1,
+                ts_ms: 1_700_000_012_000,
+            }),
+            SsbPayload::PlaybookEvent(PlaybookEventPayload {
+                kind: PlaybookEventKind::Exported,
+                rule_id: "rule-security-001".into(),
+                outcome_row_ids: vec!["ssb-seq-100".into(), "ssb-seq-101".into(), "ssb-seq-102".into()],
+                lift: Some(0.12),
+                regression_count: 0,
+                evidence_count: 5,
+                ts_ms: 1_700_000_013_000,
+            }),
+            // I-17 (SCHEMA_VERSION 252): TriLayerVerdict Pattern-2 4-arm. All 4 arms.
+            SsbPayload::TriLayerVerdict(TriLayerVerdictPayload {
+                branch_id: "branch-veto-001".into(),
+                kind: TriLayerVerdictKind::HardVeto,
+                gate: Some(GateId::L1Compile),
+                l2_call_count: 0,
+                score: 0.0,
+                ts_ms: 1_700_000_014_000,
+            }),
+            SsbPayload::TriLayerVerdict(TriLayerVerdictPayload {
+                branch_id: "branch-survivor-002".into(),
+                kind: TriLayerVerdictKind::ScoredSurvivor,
+                gate: None,
+                l2_call_count: 1,
+                score: 0.73,
+                ts_ms: 1_700_000_015_000,
+            }),
+            SsbPayload::TriLayerVerdict(TriLayerVerdictPayload {
+                branch_id: "branch-escalated-003".into(),
+                kind: TriLayerVerdictKind::DisagreementEscalated,
+                gate: None,
+                l2_call_count: 2,
+                score: 0.51,
+                ts_ms: 1_700_000_016_000,
+            }),
+            SsbPayload::TriLayerVerdict(TriLayerVerdictPayload {
+                branch_id: "branch-flaky-004".into(),
+                kind: TriLayerVerdictKind::FlakeQuarantined,
+                gate: None,
+                l2_call_count: 0,
+                score: 0.0,
+                ts_ms: 1_700_000_017_000,
+            }),
         ]
     }
 
@@ -36854,8 +39297,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            428,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 1 D-5 closure SCHEMA_208 (BaiPromotionDecision) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused) + 1 E-7 (DarwinianGenerationCompleted single-variant Pattern-2) + 9 batch2-merge-collision recovery (E-3 RuntimeHandoffSignal + E-26 SglangBackendRegistered + E-26 XgrammarSchemaCompiled + E-26 RuntimeColdStartObserved + E-2 StreamingTimingRecorded + E-2 UxPacingVoteRecorded + E-28 StreamingLlmEngaged + E-28 SdpaBackendPinned + E-28 YarnRopeScalingApplied) + 1 E-8 (PromptOptimizationCompleted single-variant Pattern-2) + 1 E-10 (CriticDecisionEvent single-variant Pattern-2) + 1 E-43 (SkillSystemEvent single-variant Pattern-2) + 1 E-9 (BenchmarkRunObserved single-variant Pattern-2) + 1 E-19 (ReasoningQualityProbe single-variant Pattern-2) + 1 E-55 (RewardLadderEvent single-variant Pattern-2 20th application) + 1 E-11 (SaasPriorArtEvent single-variant Pattern-2 21st application) + 1 E-22 (GithubTrendingEvent single-variant Pattern-2 22nd application) + 1 E-23 (DeveloperDiscourseEvent single-variant Pattern-2 23rd application) + 1 E-25 (ClaudeCodeArchitectureEvent single-variant Pattern-2 24th application) + 1 E-29 (AgenticObservabilityEvent single-variant Pattern-2 25th application) + 1 E-31 (CodingModelLeaderboardEvent single-variant Pattern-2 26th application) + 1 E-38 (AiRoadmapSignalEvent single-variant Pattern-2 27th application) + 1 E-39 (CostTokenEvent single-variant Pattern-2 28th application) + 1 E-50 (SaasArchPatternEvent single-variant Pattern-2 29th application) + 1 B-7 triple (TddVerificationEvent single-variant Pattern-2 46th application) + 2 F-4/B-1 (TestIntegrityEvent single-variant Pattern-2 50th application -- Verified + FabricationBlocked) + 2 F-3p1/C1 (ToolFilterEvent single-variant Pattern-2 51st application -- Committed + UntrustedQuarantined) + 1 F-9/D1 (WriteTimeSlopsquatBlocked flat beacon) + 1 F-10/A1 (SecurityClassRegressionBlocked flat beacon) + 1 F-2b/A1 (InsecureRateMeasured flat beacon) + 3 F-6/A1 (SkillLibraryEvent single-variant Pattern-2 -- Acquired + TrustPromoted + DemotedStale) + 1 F-5/A1 (StalenessQuarantineBroadcast flat beacon) + 1 F-8/A1 (SymbolicConflictDetected flat beacon) + 1 F-7/A1 (TemplateUtilityRanked flat beacon) + 1 F-13/A1 (SessionArchived flat beacon) + 1 F-11/A1 (DarwinianAdmit single-variant Pattern-2 -- Admitted + RejectedByGuard + LoopClosed) + 1 G-10 (ModelDriftSuspected flat beacon) + 2 D-27.1 (DiscoveryRatified + DiscoveryRejected flat beacons) + 1 H-32 (FactValidationFailed flat beacon) + 1 H-33 (MemoryGovernanceEvent flat beacon) + 2 H-34 (McpToolDeferred + McpSchemaBudgetMeasured flat beacons) + 1 H-35 (SessionRewound flat beacon) + 1 H-36 (AgentNotificationEmitted single-variant Pattern-2 2-arm) + 1 H-37 (PlanDecisionEvent single-variant Pattern-2 4-arm) + 1 H-38 (StopConfirmationEvent single-variant Pattern-2 3-arm) + 1 H-39 (AbstentionScored flat beacon) + 1 H-41 (CheckerGapDetected flat beacon) + 1 H-42 (ReasoningBudgetScaled single-variant Pattern-2 2-arm) + 1 H-43 (FitnessEvaluated single-variant Pattern-2 3-arm) + 1 H-44 (TrapBehaviorDetected single-variant Pattern-2 4-arm) + 1 H-45 (PromotionScoreAggregated single-variant Pattern-2 3-arm) + 1 H-46 (CladeSelected single-variant Pattern-2 2-arm) + 1 H-47 (EvalFirewallEvent single-variant Pattern-2 3-arm) + 1 H-49 (EditHistoryEvent single-variant Pattern-2 6-arm) + 1 H-51 (HandoffLifecycleEvent single-variant Pattern-2 4-arm) + 1 H-52 (FindingAnchored single-variant Pattern-2 5-arm) + 1 H-53 (CitationAnchorsBound single-variant Pattern-2 2-arm)",
+            483,
+            "479 prior (thru I-12 PlaybookEvent) + 4 I-17 (TriLayerVerdict: HardVeto / ScoredSurvivor / DisagreementEscalated / FlakeQuarantined)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

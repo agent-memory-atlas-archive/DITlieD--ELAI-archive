@@ -404,9 +404,12 @@ impl IpcToolDispatcherAdapter {
     /// want to register handlers should call [`Self::with_registry`].
     pub fn new(inner: Arc<dyn ToolDispatcher>, ssb: Arc<Ssb>) -> Self {
         let adaptive: Arc<AdaptiveTool<dyn ToolDispatcher>> =
-            Arc::new(AdaptiveTool::new(inner, ssb));
+            Arc::new(AdaptiveTool::new(inner, Arc::clone(&ssb)));
+        // I-13: wire SSB into the registry so IpcToolRegistry::dispatch() emits
+        // DualSerialized rows when ToolResultPayload.output exceeds LLM_OUTPUT_CHAR_LIMIT.
+        let registry = Arc::new(IpcToolRegistry::new().with_ssb(ssb));
         Self {
-            registry: Arc::new(IpcToolRegistry::new()),
+            registry,
             inner: adaptive,
             fsm_state: FsmState::Executing,
         }

@@ -110,6 +110,9 @@ fn _assert_handoff_decision_variants() {
     };
     let _ = HandoffDecision::Cloud {
         reason: "test".to_string(),
+        // I-11: belief_state_payload is None at construction; task_runner injects
+        // the encoded BeliefState after adaptive_reduce returns.
+        belief_state_payload: None,
     };
     let _ = HandoffDecision::Continue;
 }

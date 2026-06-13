@@ -1,0 +1,24 @@
+{
+  "role": "executor",
+  "description": "I-32 A/B fixture: 3 deterministic tasks for the Executor role. Pass criterion: the assembled system-prompt sections contain the contract header '# Role: Executor' and do NOT contain the narrative 'You are an interactive agent'. Evidence gate (ID-5): new_pass_rate >= old_pass_rate required for production flip.",
+  "tasks": [
+    {
+      "id": "executor_ab_1",
+      "prompt": "Write a Rust function that parses a TOML string and returns a HashMap<String, String>.",
+      "expected_in_prompt": "# Role: Executor",
+      "must_not_appear": "You are an interactive agent"
+    },
+    {
+      "id": "executor_ab_2",
+      "prompt": "Add error handling to an existing file_read call that returns Option<String>.",
+      "expected_in_prompt": "Constraints:",
+      "must_not_appear": "You are an interactive agent"
+    },
+    {
+      "id": "executor_ab_3",
+      "prompt": "Produce a shell command to list all .rs files modified in the last 24 hours.",
+      "expected_in_prompt": "Output: Rust/Python/TypeScript code or shell commands",
+      "must_not_appear": "You are an interactive agent"
+    }
+  ]
+}

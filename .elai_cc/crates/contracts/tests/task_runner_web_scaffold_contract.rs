@@ -255,6 +255,8 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             token_tracker: None,
             // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
             buffer_editor: None,
+            // P0-1: legacy contract fixture -- no adversary runtime.
+            adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
         },
@@ -366,6 +368,8 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             token_tracker: None,
             // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
             buffer_editor: None,
+            // P0-1: legacy contract fixture -- no adversary runtime.
+            adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
         },
@@ -473,6 +477,8 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             token_tracker: None,
             // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
             buffer_editor: None,
+            // P0-1: legacy contract fixture -- no adversary runtime.
+            adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
         },

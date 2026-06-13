@@ -36,12 +36,16 @@
     producer_status: 'pending_sidecar_wiring' | 'ready';
     expected_total: number;
     note: string;
+    /** I-34: pin verification status. 'pass' | 'violation' | 'not_applicable' */
+    pin_status: 'pass' | 'violation' | 'not_applicable';
   };
 
   let rows = $state<GrammarCompilationRow[]>([]);
   let producerStatus = $state<string>('pending_sidecar_wiring');
   let expectedTotal = $state<number>(64);
   let note = $state<string>('');
+  /** I-34: pin_status is 'not_applicable' until sidecar wiring lands. */
+  let pinStatus = $state<string>('not_applicable');
   let loadError = $state<string | null>(null);
   let lastRefreshTs = $state<number | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -71,6 +75,7 @@
       producerStatus = data?.producer_status ?? 'pending_sidecar_wiring';
       expectedTotal = typeof data?.expected_total === 'number' ? data.expected_total : 64;
       note = data?.note ?? '';
+      pinStatus = data?.pin_status ?? 'not_applicable';
       loadError = null;
       lastRefreshTs = Date.now();
     } catch (err) {
@@ -117,9 +122,20 @@
 <section class="grammar-compile-panel">
   <header>
     <h3>XGrammar Grammar Cache</h3>
-    <span class="badge {producerStatus === 'ready' ? 'ready' : 'pending'}">
-      {producerStatus}
-    </span>
+    <div class="header-chips">
+      <span class="badge {producerStatus === 'ready' ? 'ready' : 'pending'}">
+        {producerStatus}
+      </span>
+      <!--
+        I-34: Grammar-pin status chip. Reflects the blake3 pin verification
+        outcome from the GrammarGateEvent SSB rows. Honest 'not_applicable'
+        while the sidecar lane is pending (cloud uses Tool API JsonSchema,
+        not EBNF; no manifest in scope per lane-parity D-023).
+      -->
+      <span class="badge pin-{pinStatus}">
+        pin: {pinStatus}
+      </span>
+    </div>
   </header>
 
   <div class="summary">
@@ -219,6 +235,24 @@
   .badge.pending {
     background: #3b321e;
     color: #f0d49c;
+  }
+  .header-chips {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  /* I-34: pin verification status chips */
+  .pin-pass {
+    background: #1e3b1e;
+    color: #9cf09c;
+  }
+  .pin-violation {
+    background: #3b1e1e;
+    color: #f09c9c;
+  }
+  .pin-not_applicable {
+    background: #252530;
+    color: #8080a0;
   }
   .summary {
     display: flex;

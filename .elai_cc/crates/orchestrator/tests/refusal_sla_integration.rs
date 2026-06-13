@@ -19,7 +19,7 @@
 
 use elai_orchestrator::{
     agent_pool::dispatch_refusal_sla_check,
-    conformal_calibration::RefusalDecision,
+    calibration::RefusalDecision,
     refusal_sla::{
         sla_breach, HealthBand, RefusalRateMonitor, VecRefusalRateSnapshotEmitter,
         VecRefusalSlaBreachEmitter,

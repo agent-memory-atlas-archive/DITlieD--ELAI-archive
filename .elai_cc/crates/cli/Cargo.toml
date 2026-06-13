@@ -11,6 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+# I-41: critique_cmd::StubMockRuntime::stream() returns an empty BoxStream.
+# Already transitively resolved in Cargo.lock (via elai-providers 0.3.32).
+futures-util = "0.3"
 # E-17 SP1: `elai doctor knowledge-models` hashes tokenizer.json bytes and
 # the first 256 bytes of each ONNX model. Workspace pin keeps cli, core,
 # and knowledge on the same blake3 version (CLAUDE.md anti-stale: never

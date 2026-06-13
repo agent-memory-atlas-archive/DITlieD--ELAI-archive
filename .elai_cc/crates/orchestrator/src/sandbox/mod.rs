@@ -12,11 +12,15 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agent_pool::AgentRole;
+pub mod branch_workspace;
 pub mod firecracker;
 pub mod gvisor;
 pub mod researcher_net;
 pub mod pyodide_bridge;
 
+pub use branch_workspace::{
+    BranchRoot, BranchWorkspace, BranchWorkspaceError, WorkspaceMergeResult, WorktreePoolImpl,
+};
 pub use firecracker::{FirecrackerHotPool, SnapshotHandle, SnapshotKey};
 pub use gvisor::GvisorBackend;
 pub use researcher_net::ResearcherNetSetup;

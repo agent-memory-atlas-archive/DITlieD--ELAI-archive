@@ -1339,6 +1339,17 @@ export interface BspSuperstep {
 // ------------------------------------------------------------------
 export type BranchStatus = 'active' | 'merged' | 'abandoned';
 
+// I-2: the 4 arms of the BranchWorkspaceEvent SSB action_type
+// ("branch_workspace_event"), mirroring the Rust BranchWorkspaceEventKind
+// (orchestrator/src/ssb.rs). The BranchTree surface badges branches with the
+// latest workspace event. cross_lang_diff.py keeps this in sync with the Rust
+// enum (W-4).
+export type BranchWorkspaceEventKind =
+  | 'Spawned'
+  | 'Merged'
+  | 'EscapeBlocked'
+  | 'ConflictEscalated';
+
 export interface SessionBranch {
   id: string;
   label: string;
@@ -1346,6 +1357,21 @@ export interface SessionBranch {
   created_ts: number;
   last_activity_ts: number;
   parent_branch_id?: string;
+  // I-2: latest CoW workspace barrier event for this branch (badge surface).
+  // Optional + additive: existing consumers of SessionBranch are unaffected and
+  // the existing BranchStatus field is unchanged.
+  workspace_event_kind?: BranchWorkspaceEventKind;
+}
+
+// I-2: one decoded BranchWorkspaceEvent SSB row for the BranchTree workspace
+// badge surface (C-23). Mirrors orchestrator::ssb::BranchWorkspaceEventPayload.
+export interface BranchWorkspaceEventRow {
+  branch_id: string;
+  kind: BranchWorkspaceEventKind;
+  // blake3 hex-prefix of the branch (or merge-target) root path; an identifier.
+  worktree_root_blake3: string;
+  // For EscapeBlocked/ConflictEscalated: the offending/conflicting path.
+  conflict_path?: string;
 }
 
 // ------------------------------------------------------------------
@@ -2112,6 +2138,11 @@ export interface CloudSpendInfo {
   cache_creation_tokens: number;
   cache_read_tokens: number;
   redaction_count: number;
+  // I-10: cache-economics planner fields. Absent (undefined) when no
+  // CacheEconomicsEvent rows exist yet (fresh install / no cloud calls).
+  ttl_tier?: string;
+  breakeven_reads?: number;
+  guard_trips_today?: number;
 }
 
 // C-5 follow-on (SCHEMA_VERSION 103): latest cloud routing status surfaced
@@ -3782,6 +3813,11 @@ export interface RunArtifact {
   seed: number;
   /** The session whose stream was bundled. */
   session_id: string;
+  /**
+   * I-45: 16-hex blake3 objective hash sealed at run time.
+   * null / undefined on LEGACY receipts (pre-I-45 runs without IdeaFramingStarted).
+   */
+  objective_hash?: string | null;
 }
 
 /**
@@ -4027,6 +4063,50 @@ export interface SafetyDeltaLatest {
 }
 
 // ------------------------------------------------------------------
+// I-38 (SCHEMA_VERSION 235) — QdeltaPanel DTO.
+// Mirrors QdeltaLatest in commands_i38.rs (snake_case on the wire).
+// ------------------------------------------------------------------
+
+/** The most recent `qdelta_measured` SSB row surfaced by the QdeltaPanel. */
+export interface QdeltaLatest {
+  /** Suite label (e.g. "qdelta_static_fixture_v1"). */
+  suite: string;
+  /** Candidate-generation provenance label. */
+  model_id: string;
+  /** Number of task pairs evaluated. */
+  n_tasks: number;
+  /** Number of bootstrap seeds used. */
+  seed_count: number;
+  /** Whether the evaluation was paired (always true after floor_check). */
+  paired: boolean;
+  /** Defective-diff rate with gates ON. */
+  on_defective_rate: number;
+  /** Defective-diff rate with gates OFF. */
+  off_defective_rate: number;
+  /** QDELTA = off_defective_rate - on_defective_rate (positive = gates help). */
+  delta: number;
+  /** Paired bootstrap 95% CI lower bound. */
+  ci_low: number;
+  /** Paired bootstrap 95% CI upper bound. */
+  ci_high: number;
+  /** Cost per task in USD (informational). */
+  dollar_per_task: number;
+  /** Contamination probe result string: "not_run" | "honestly_evaluated" | "game_with_memorization". */
+  contamination_probe_result: string;
+  /** Mutation survival rate per task (I-20 stub; 0.0 until I-20 ships). */
+  surviving_mutants_per_task: number;
+  /** blake3 hex of the corpus blob (provenance; anti-gaming). */
+  corpus_blake3: string;
+  /**
+   * `true` = Tier-1 fixture only; live-model leg is RunPod-gated (D-026).
+   * Never claim significance for Tier-1.
+   */
+  runpod_pending: boolean;
+  /** SSB row timestamp (unix milliseconds). */
+  ts: number;
+}
+
+// ------------------------------------------------------------------
 // G-10 (SCHEMA_VERSION 218) -- ModelDriftPanel DTO.
 // Mirrors ModelDriftStatus in commands_g10.rs (camelCase on the wire).
 // ------------------------------------------------------------------
@@ -4101,4 +4181,57 @@ export interface CanvasOpPayload {
   session_id: string;
   /** SSB row timestamp (unix ms). */
   ts: number;
+}
+
+// ---------------------------------------------------------------------------
+// I-15 — oracle cache source discriminator
+// ---------------------------------------------------------------------------
+
+/** I-15: source discriminator surfaced on OracleCacheHit / OracleCacheMiss rows.
+ *  "blake3_exact"   = in-session exact match (zero ONNX embedding calls).
+ *  "semantic_vector" = full vector pipeline ran (miss path).
+ *  null             = legacy C-30 row without I-15 field.
+ */
+export type OracleCacheSource = "blake3_exact" | "semantic_vector" | null;
+
+// ------------------------------------------------------------------
+// I-33 (SCHEMA_VERSION 240) -- GovernanceMetricsChip DTO.
+// Mirrors GovernanceMetricsPayload in commands_i33.rs (snake_case on wire).
+// ------------------------------------------------------------------
+
+/** Governance metrics aggregated from recent governance_primitive_fired SSB rows. */
+export interface GovernanceMetrics {
+  /** CDL: Cosmetic-Deadlock rate = CeflExternalized count / total. */
+  cdl: number;
+  /** DIU: Deferral Info Utilisation = I6qRejected count / total. */
+  diu: number;
+  /** FSR: Framing Success Rate = clean CommitRevealSealed / total CommitRevealSealed. */
+  fsr: number;
+  /** Total number of governance_primitive_fired rows sampled. */
+  row_count: number;
+}
+
+// ------------------------------------------------------------------
+// I-12 (SCHEMA_VERSION 251) -- PlaybookEvent DTO.
+// Mirrors PlaybookEventPayload / PlaybookEventKind in rule_curator.rs.
+// action_type = "playbook_event" (Pattern-2, single SQL variant, 4-arm Kind).
+// ------------------------------------------------------------------
+
+/** I-12: 4-arm kind discriminator for PlaybookEvent SSB rows. */
+export type PlaybookEventKind = "Promoted" | "Demoted" | "ValidationRun" | "Exported";
+
+/** I-12: payload of a playbook_event SSB row. */
+export interface PlaybookEventPayload {
+  rule_id: string;
+  kind: PlaybookEventKind;
+  /** SSB seq IDs of the evidence rows that grounded this event. */
+  outcome_row_ids: string[];
+  /** TPR - FPR lift estimate; null when not yet computed (ValidationRun / Demoted). */
+  lift: number | null;
+  /** Number of regressions detected during this validation run. */
+  regression_count: number;
+  /** Number of SSB evidence rows counted for this rule_id. */
+  evidence_count: number;
+  /** Unix milliseconds of the event. */
+  ts_ms: number;
 }

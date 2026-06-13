@@ -30,18 +30,27 @@ type CmdResult<T> = Result<T, String>;
 ///                     row, or 0 when unused since boot.
 /// * `hit_count`     — number of `xgrammar_mask_applied` rows recorded
 ///                     against this `(schema_id, schema_hash)`.
+/// * `pin_status`    — I-34: `"pass" | "violation" | "not_applicable"`.
+///                     `"not_applicable"` is the honest state for cloud or
+///                     sidecar-pending paths (no EBNF manifest in scope).
+///                     `"pass"` when the blake3 pin verification passed.
+///                     `"violation"` when a pin mismatch was detected.
 #[tauri::command]
 pub fn get_grammar_compilations(_state: State<'_, AppState>) -> CmdResult<Value> {
     // Until the sidecar producer ships, return an empty list + a status
     // flag so the frontend renders the "no data yet" panel state. This is
     // intentionally NOT a mock row — the Svelte component is responsible
     // for the empty-state message.
+    // I-34: pin_status is "not_applicable" for the cloud/sidecar-pending lane
+    // (no EBNF manifest exists yet; the cloud lane uses Tool API JsonSchema,
+    // not EBNF). This is the honest state per decision doc lane-parity D-023.
     Ok(json!({
         "rows": Value::Array(Vec::new()),
         "producer_status": "pending_sidecar_wiring",
         "expected_total": 64,
         "note": "64 grammars = 8 AgentRole values * 8 BabyStepSpec blocks; \
                  wiring in followups_for_other_sessions (E-35).",
+        "pin_status": "not_applicable",
     }))
 }
 
@@ -59,9 +68,15 @@ mod tests {
             "producer_status": "pending_sidecar_wiring",
             "expected_total": 64,
             "note": "",
+            "pin_status": "not_applicable",
         });
         assert!(v.get("rows").is_some());
         assert!(v.get("producer_status").is_some());
         assert_eq!(v.get("expected_total").and_then(Value::as_u64), Some(64));
+        assert_eq!(
+            v.get("pin_status").and_then(Value::as_str),
+            Some("not_applicable"),
+            "I-34: pin_status must be present in the grammar compilations response"
+        );
     }
 }

@@ -1,0 +1,2 @@
+crates/orchestrator/src/prompts/*.md text eol=lf
+crates/cli/src/prompts/*.md text eol=lf

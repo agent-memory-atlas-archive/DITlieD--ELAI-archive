@@ -1495,7 +1495,10 @@ impl Fsm {
     }
 }
 
-/// Write persisted state to disk atomically (write-then-rename).
+/// Write persisted state to disk atomically (tmp + sync_all + rename).
+/// Uses [`crate::util::atomic_io::atomic_write_async`] for I-3 Phase-3C
+/// hardening. Also adds the Windows-safe remove-before-rename guard that
+/// was previously absent from this site (matching checkpoint.rs + bsp/engine.rs).
 async fn persist_state(path: &Path, state: &PersistedFsmState) -> Result<(), FsmError> {
     let bytes =
         rmp_serde::to_vec(state).map_err(|e| FsmError::PersistenceError(format!("encode: {e}")))?;
@@ -1507,14 +1510,9 @@ async fn persist_state(path: &Path, state: &PersistedFsmState) -> Result<(), Fsm
             .map_err(|e| FsmError::PersistenceError(format!("mkdir: {e}")))?;
     }
 
-    // Atomic write: write to .tmp then rename
-    let tmp_path = path.with_extension("msgpack.tmp");
-    tokio::fs::write(&tmp_path, &bytes)
+    crate::util::atomic_io::atomic_write_async(path, &bytes)
         .await
-        .map_err(|e| FsmError::PersistenceError(format!("write: {e}")))?;
-    tokio::fs::rename(&tmp_path, path)
-        .await
-        .map_err(|e| FsmError::PersistenceError(format!("rename: {e}")))?;
+        .map_err(|e| FsmError::PersistenceError(format!("atomic write: {e}")))?;
 
     Ok(())
 }

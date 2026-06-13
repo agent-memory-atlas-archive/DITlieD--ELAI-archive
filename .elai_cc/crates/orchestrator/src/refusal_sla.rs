@@ -57,7 +57,7 @@ use tracing::warn;
 
 use std::sync::Arc;
 
-use crate::conformal_calibration::RefusalDecision;
+use crate::calibration::RefusalDecision;
 use crate::ssb::{RefusalRateSnapshotPayload, RefusalSlaBreachPayload, Ssb, SsbPayload};
 
 // ---------------------------------------------------------------------------

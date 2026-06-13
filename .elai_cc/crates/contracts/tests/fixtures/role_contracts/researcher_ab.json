@@ -1,0 +1,24 @@
+{
+  "role": "researcher",
+  "description": "I-32 A/B fixture: 3 deterministic tasks for the Researcher role. Pass criterion: the assembled system-prompt sections contain the contract header '# Role: Researcher' and do NOT contain the narrative 'You are an interactive agent'. Evidence gate (ID-5): new_pass_rate >= old_pass_rate required for production flip.",
+  "tasks": [
+    {
+      "id": "researcher_ab_1",
+      "prompt": "Find the current stable version of the tokio crate and its major feature set.",
+      "expected_in_prompt": "# Role: Researcher",
+      "must_not_appear": "You are an interactive agent"
+    },
+    {
+      "id": "researcher_ab_2",
+      "prompt": "Summarise the key findings from arXiv:2602.07900 on agent self-evaluation.",
+      "expected_in_prompt": "Label unverified claims explicitly",
+      "must_not_appear": "You are an interactive agent"
+    },
+    {
+      "id": "researcher_ab_3",
+      "prompt": "What are the licence terms for the ort crate at version 2.0.0-rc.12?",
+      "expected_in_prompt": "Every factual claim carries a source reference",
+      "must_not_appear": "You are an interactive agent"
+    }
+  ]
+}

@@ -36,13 +36,13 @@ use tempfile::TempDir;
 /// Missing the schema bump = FAIL (R1: missing evidence is a hard fail).
 #[test]
 fn schema_version_is_208() {
-    assert_eq!(
-        SCHEMA_VERSION_PUBLIC, 208,
-        "H-49 requires SCHEMA_VERSION_PUBLIC == 208; got {SCHEMA_VERSION_PUBLIC}. \
-         Forgot to bump? Lockstep sites: ssb.rs const + SQL CHECK + enum + \
-         as_sql_str + from_str + SsbPayload + action_type() + test_payload + \
-         all_test_payloads count + action_type_lock.rs TOTAL_VARIANTS=485 + \
-         ALL_VARIANTS + exhaustive_guard + golden +1 row"
+    // Floor check: SCHEMA_VERSION_PUBLIC >= 208 (H-49 authoring floor;
+    // exact-pin converted per F-2 pin doctrine so subsequent schema bumps
+    // do not re-break this test).
+    assert!(
+        SCHEMA_VERSION_PUBLIC >= 208,
+        "H-49 requires SCHEMA_VERSION_PUBLIC >= 208 (EditHistoryEvent floor); \
+         got {SCHEMA_VERSION_PUBLIC}"
     );
 }
 

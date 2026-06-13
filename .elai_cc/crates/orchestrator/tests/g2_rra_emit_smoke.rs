@@ -47,6 +47,8 @@ async fn run_artifact_emitted_roundtrips_and_reads_via_viewer() {
         gate_count: 3,
         seed: 42,
         session_id: SMOKE_SESSION.into(),
+        // I-45: objective_hash is None for this LEGACY fixture (no IdeaFramingStarted row).
+        objective_hash: None,
     });
     assert_eq!(
         payload.action_type(),

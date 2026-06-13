@@ -2,14 +2,15 @@
 //
 // Verifies:
 // 1. SCHEMA_VERSION_PUBLIC >= 166 (E-19 atomic bump for the single
-//    ReasoningQualityProbe variant with 5-arm ProbeKind discriminator).
+//    ReasoningQualityProbe variant with 6-arm ProbeKind discriminator;
+//    VividnessProbe added by I-5).
 // 2. ReasoningQualityProbe round-trips via as_sql_str /
 //    ssb_action_type_from_str_public.
 // 3. action_type() on SsbPayload::ReasoningQualityProbe returns the matching
 //    SsbActionType.
 // 4. ReasoningQualityProbePayload serializes via msgpack (rmp_serde) without
 //    loss for every ProbeKind arm.
-// 5. ProbeKind covers all 5 documented fire-points and the snake_case wire
+// 5. ProbeKind covers all 6 documented fire-points and the snake_case wire
 //    labels match the dashboard panel mapping.
 //
 // See workflow/reasoning/E-19-decisions.md.
@@ -40,14 +41,16 @@ fn reasoning_quality_probe_action_type_roundtrip() {
 
 #[test]
 fn probe_kind_wire_labels() {
-    // 5 probe kinds per DECISION-PATTERN2; wire labels match the dashboard
-    // panel mapping and the orchestrator dispatcher emission sites.
+    // 6 probe kinds per DECISION-PATTERN2 (VividnessProbe added by I-5);
+    // wire labels match the dashboard panel mapping and the orchestrator
+    // dispatcher emission sites.
     let cases = [
         (ProbeKind::L2GateDecision, "l2_gate_decision"),
         (ProbeKind::L4PrmLiteScore, "l4_prm_lite_score"),
         (ProbeKind::L4LateralKept, "l4_lateral_kept"),
         (ProbeKind::L4TtcBudgetChosen, "l4_ttc_budget_chosen"),
         (ProbeKind::L6VerifierDiversity, "l6_verifier_diversity"),
+        (ProbeKind::VividnessProbe, "vividness_probe"),
     ];
     for (kind, label) in cases {
         assert_eq!(kind.as_str(), label, "kind wire label mismatch");
@@ -112,6 +115,17 @@ fn reasoning_quality_probe_payload_bijection() {
             None,
             "",
             "fresh_seed=true|rotated_l3=false|reason=rotated_l3_disagreed",
+        ),
+        (
+            ProbeKind::VividnessProbe,
+            5,
+            "sampled",
+            Some(0.12_f32),
+            None,
+            None,
+            None,
+            "",
+            "branch_id=cand-3|outcome_delta=0.12|umbrella=true",
         ),
     ];
 

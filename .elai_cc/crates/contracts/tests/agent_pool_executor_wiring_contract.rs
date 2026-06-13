@@ -266,5 +266,9 @@ fn build_minimal_wiring(root: &std::path::Path) -> RuntimeWiring {
         // F-1 B2: legacy contract fixture -- seed integrity defaults to ok
         // (this fixture does not exercise the vibesec seed path).
         vibegate_seed_ok: true,
+        // P0-2: legacy contract fixture -- no reflection client.
+        reflection_client: None,
+        // P0-1: legacy contract fixture -- no adversary runtime.
+        adversary_runtime: None,
     }
 }

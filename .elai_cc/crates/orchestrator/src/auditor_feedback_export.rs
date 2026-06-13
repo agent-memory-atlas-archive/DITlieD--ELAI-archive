@@ -141,10 +141,8 @@ pub fn export_for_run(
     }
     let json = serde_json::to_vec_pretty(envelope)
         .map_err(|e| FeedbackExportError::SerializeFailed(e.to_string()))?;
-    let tmp = target.with_extension("json.tmp");
-    std::fs::write(&tmp, &json)
-        .map_err(|e| FeedbackExportError::WriteFailed(e.to_string()))?;
-    std::fs::rename(&tmp, &target)
+    // Atomic write: tmp + sync_all + rename via shared helper (I-3 Phase-3C hardening).
+    crate::util::atomic_io::atomic_write_sync(&target, &json)
         .map_err(|e| FeedbackExportError::WriteFailed(e.to_string()))?;
     Ok(target)
 }

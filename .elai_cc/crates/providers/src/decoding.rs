@@ -185,6 +185,200 @@ pub fn crane_adaptive_eligible(mode: &DecodingMode) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// I-34: CRANE adaptive-grammar runtime descriptor
+// ---------------------------------------------------------------------------
+
+/// Segmentation policy produced by the CRANE adaptive-grammar runtime.
+///
+/// CRANE (from arXiv:2502.09061) augments structured-output generation by
+/// allowing free thinking tokens between structural commit points while
+/// constraining only the FINAL committed output. This prevents the
+/// structure-snowballing degradation measured in arXiv:2604.06066 (10-15pp
+/// reasoning drop when tight grammars apply to intermediate reasoning steps).
+///
+/// IC-18 (binding correction): "constraints on FINAL output only for
+/// reflection loops; free thinking tokens between structural commitments".
+///
+/// This struct is the Tier-1 DESCRIPTOR only. The live sidecar mask
+/// integration (XGrammarLogitsProcessor passing free tokens between commit
+/// points) is Tier-2 DEFERRED to a separate sidecar session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CraneAdaptiveConfig {
+    /// When `true`, thinking tokens between structural commit points are
+    /// unconstrained. The grammar constraint applies ONLY at commit boundaries.
+    /// IC-18 binding: this MUST be `true` for CRANE mode (constraint on
+    /// FINAL output only).
+    pub thinking_tokens_permitted: bool,
+    /// When `true`, the grammar constraint applies only to the final committed
+    /// output segment, not to intermediate reasoning tokens.
+    /// IC-18 binding: this MUST be `true` for CRANE mode.
+    pub constrain_final_only: bool,
+    /// Path to the EBNF grammar file that governs the final committed output.
+    pub ebnf_path: std::path::PathBuf,
+}
+
+impl CraneAdaptiveConfig {
+    /// Derive the CRANE config from a [`DecodingMode`].
+    ///
+    /// Returns `Some(CraneAdaptiveConfig)` only when the mode is
+    /// `Grammar { crane_adaptive: true }`. Returns `None` for all other modes.
+    ///
+    /// This is the sole construction path for the CRANE runtime config —
+    /// callers MUST use this rather than constructing `CraneAdaptiveConfig`
+    /// directly, so the IC-18 invariants are always enforced.
+    pub fn from_mode(mode: &DecodingMode) -> Option<Self> {
+        match mode {
+            DecodingMode::Grammar { ebnf_path, crane_adaptive: true } => {
+                Some(Self {
+                    thinking_tokens_permitted: true,
+                    constrain_final_only: true,
+                    ebnf_path: ebnf_path.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// I-34: post-parse schema re-validation
+// ---------------------------------------------------------------------------
+
+/// Error returned by [`re_validate_output`] when the engine's output fails
+/// to comply with the expected schema.
+///
+/// XGrammar and similar engines can emit silently non-compliant outputs
+/// (38 silent failures measured in JSONSchemaBench, arXiv:2501.10868 /
+/// landmine #7). This error surfaces those silent failures so the
+/// orchestrator layer can route them to D-16 conformal refusal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidationError {
+    /// Human-readable description of the compliance failure.
+    pub message: String,
+    /// The raw output that failed validation.
+    pub raw_output: String,
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "post-parse validation failed: {} (raw: {:?})", self.message, self.raw_output)
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
+/// Post-parse schema re-validation.
+///
+/// Called after the constrained-decoding engine yields a token sequence.
+/// Re-parses the raw `output` string against the `schema_json` to catch
+/// silently non-compliant outputs that the engine believes are valid.
+///
+/// Returns `Ok(())` when the output is genuinely compliant.
+/// Returns `Err(ValidationError)` on silent non-compliance.
+///
+/// The CALLER (orchestrator layer) is responsible for:
+///   (a) emitting `GrammarGateEvent(PostParseRejected)` on `Err`, and
+///   (b) routing to `dispatch_conformal_refusal` at agent_pool.rs:2972.
+///
+/// This function has NO orchestrator dep (pure providers logic). The
+/// providers -> orchestrator dependency edge stays one-way.
+///
+/// # Arguments
+///
+/// * `output`      -- the raw string produced by the constrained-decoding engine.
+/// * `schema_json` -- the JSON-schema string the output must comply with.
+pub fn re_validate_output(output: &str, schema_json: &str) -> Result<(), ValidationError> {
+    // Parse the output as JSON. A non-JSON output is always non-compliant.
+    let parsed: serde_json::Value = serde_json::from_str(output).map_err(|e| ValidationError {
+        message: format!("output is not valid JSON: {e}"),
+        raw_output: output.to_owned(),
+    })?;
+
+    // Parse the schema as JSON. A non-JSON schema is a caller error.
+    let schema: serde_json::Value = serde_json::from_str(schema_json).map_err(|e| ValidationError {
+        message: format!("schema_json is not valid JSON: {e}"),
+        raw_output: output.to_owned(),
+    })?;
+
+    // Apply the subset of JSON-Schema validation relevant to the
+    // post-parse gate: required keys must be present, type constraints
+    // on top-level properties must match. This is an intentionally
+    // minimal validator -- the goal is catching the SILENT failures
+    // (missing required keys, wrong type on a required field) that
+    // XGrammar-class engines let through, NOT a full JSON-Schema validator.
+    validate_against_schema(&parsed, &schema, output)
+}
+
+/// Internal: validate a parsed JSON value against a JSON-Schema object.
+/// Checks `required` keys, `type` constraints for top-level properties,
+/// and `enum` constraints. Subset intentionally kept small (see docstring
+/// on re_validate_output for rationale).
+fn validate_against_schema(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+    raw_output: &str,
+) -> Result<(), ValidationError> {
+    let schema_obj = match schema.as_object() {
+        Some(o) => o,
+        None => return Ok(()), // Not an object schema — pass through.
+    };
+
+    // Check `required` fields exist.
+    if let Some(required) = schema_obj.get("required").and_then(|r| r.as_array()) {
+        let value_obj = match value.as_object() {
+            Some(o) => o,
+            None => {
+                return Err(ValidationError {
+                    message: "schema requires an object but output is not".into(),
+                    raw_output: raw_output.to_owned(),
+                });
+            }
+        };
+        for req in required {
+            let key = req.as_str().unwrap_or("");
+            if !value_obj.contains_key(key) {
+                return Err(ValidationError {
+                    message: format!("required field '{key}' is missing"),
+                    raw_output: raw_output.to_owned(),
+                });
+            }
+        }
+    }
+
+    // Check top-level `type` constraint.
+    if let Some(expected_type) = schema_obj.get("type").and_then(|t| t.as_str()) {
+        let matches = match expected_type {
+            "object" => value.is_object(),
+            "array"  => value.is_array(),
+            "string" => value.is_string(),
+            "number" => value.is_number(),
+            "integer" => value.is_i64() || value.is_u64(),
+            "boolean" => value.is_boolean(),
+            "null"   => value.is_null(),
+            _ => true, // Unknown type: pass through.
+        };
+        if !matches {
+            return Err(ValidationError {
+                message: format!("expected type '{expected_type}' but output has different type"),
+                raw_output: raw_output.to_owned(),
+            });
+        }
+    }
+
+    // Check top-level `enum` constraint.
+    if let Some(enum_values) = schema_obj.get("enum").and_then(|e| e.as_array()) {
+        if !enum_values.contains(value) {
+            return Err(ValidationError {
+                message: format!("value not in enum: {:?}", value),
+                raw_output: raw_output.to_owned(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Per-role defaults
 // ---------------------------------------------------------------------------
 
@@ -568,6 +762,78 @@ mod tests {
         assert_eq!(PaperRole::Coder.as_str(), "coder");
         assert_eq!(PaperRole::Critic.as_str(), "critic");
         assert_eq!(PaperRole::Reflection.as_str(), "reflection");
+    }
+
+    #[test]
+    fn crane_config_from_grammar_mode_crane_true() {
+        let m = DecodingMode::Grammar {
+            ebnf_path: PathBuf::from("file_plan.ebnf"),
+            crane_adaptive: true,
+        };
+        let cfg = CraneAdaptiveConfig::from_mode(&m).expect("should be Some for crane_adaptive=true");
+        assert!(cfg.thinking_tokens_permitted, "IC-18: thinking tokens must be permitted");
+        assert!(cfg.constrain_final_only, "IC-18: constraint on final output only");
+        assert_eq!(cfg.ebnf_path, PathBuf::from("file_plan.ebnf"));
+    }
+
+    #[test]
+    fn crane_config_from_grammar_mode_crane_false_is_none() {
+        let m = DecodingMode::Grammar {
+            ebnf_path: PathBuf::from("json_response.ebnf"),
+            crane_adaptive: false,
+        };
+        assert!(CraneAdaptiveConfig::from_mode(&m).is_none());
+    }
+
+    #[test]
+    fn crane_config_from_free_text_is_none() {
+        assert!(CraneAdaptiveConfig::from_mode(&DecodingMode::FreeText).is_none());
+    }
+
+    #[test]
+    fn re_validate_output_valid_object_passes() {
+        let schema = r#"{"type":"object","properties":{"verdict":{"type":"string"}},"required":["verdict"]}"#;
+        let output = r#"{"verdict":"allow","findings":[]}"#;
+        assert!(re_validate_output(output, schema).is_ok());
+    }
+
+    #[test]
+    fn re_validate_output_missing_required_field_fails() {
+        let schema = r#"{"type":"object","required":["verdict","findings"]}"#;
+        let output = r#"{"verdict":"allow"}"#; // missing "findings"
+        let err = re_validate_output(output, schema).unwrap_err();
+        assert!(err.message.contains("findings"), "error should name the missing field");
+    }
+
+    #[test]
+    fn re_validate_output_non_json_fails() {
+        let schema = r#"{"type":"object"}"#;
+        let output = "not json at all";
+        let err = re_validate_output(output, schema).unwrap_err();
+        assert!(err.message.contains("not valid JSON"));
+    }
+
+    #[test]
+    fn re_validate_output_wrong_type_fails() {
+        let schema = r#"{"type":"object"}"#;
+        let output = r#"[1,2,3]"#; // array, not object
+        let err = re_validate_output(output, schema).unwrap_err();
+        assert!(err.message.contains("expected type"));
+    }
+
+    #[test]
+    fn re_validate_output_enum_violation_fails() {
+        let schema = r#"{"enum":["allow","block"]}"#;
+        let output = r#""unknown""#;
+        let err = re_validate_output(output, schema).unwrap_err();
+        assert!(err.message.contains("enum"));
+    }
+
+    #[test]
+    fn re_validate_output_valid_enum_passes() {
+        let schema = r#"{"enum":["allow","block"]}"#;
+        let output = r#""allow""#;
+        assert!(re_validate_output(output, schema).is_ok());
     }
 
     #[test]

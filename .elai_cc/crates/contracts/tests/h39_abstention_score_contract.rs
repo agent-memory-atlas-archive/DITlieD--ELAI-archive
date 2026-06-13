@@ -39,7 +39,7 @@ use elai_orchestrator::abstention_score::{
     abstention_aware_score, abstention_aware_score_with_mode, AbstentionAggregate, OutcomeTriple,
     RewardMode, DEFAULT_CONFIDENCE_TARGET,
 };
-use elai_orchestrator::conformal_calibration::RefusalDecision;
+use elai_orchestrator::calibration::RefusalDecision;
 use elai_orchestrator::SsbReader;
 use tempfile::TempDir;
 
@@ -107,9 +107,24 @@ fn h39_f1_total_variants_pin_529() {
         lock_rs.display()
     );
     let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
+    // Floor check (A117): parse-then-floor avoids stale-anchor cascade on future TV bumps.
+    const H39_TV_FLOOR: usize = 529;
+    let tv_ok = {
+        let prefix = "const TOTAL_VARIANTS: usize = ";
+        body.lines().any(|line| {
+            if let Some(rest) = line.trim().strip_prefix(prefix) {
+                rest.trim_end_matches(';')
+                    .parse::<usize>()
+                    .map(|n| n >= H39_TV_FLOOR)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        })
+    };
     assert!(
-        body.contains("TOTAL_VARIANTS: usize = 529"),
-        "TOTAL_VARIANTS must be 529 (H-39 bump); file: {}",
+        tv_ok,
+        "TOTAL_VARIANTS must be >= {H39_TV_FLOOR} (H-39 floor); file: {}",
         lock_rs.display()
     );
     assert!(

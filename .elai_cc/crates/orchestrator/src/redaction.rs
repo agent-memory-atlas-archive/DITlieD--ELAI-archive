@@ -474,6 +474,16 @@ pub fn redact_payload(payload: &mut SsbPayload) -> PayloadRedaction {
         SsbPayload::VerifierConsensusFail(p) => apply(&mut p.reason, "verifier_consensus_fail.reason"),
         SsbPayload::YarnRefused(p) => apply(&mut p.reason, "yarn_refused.reason"),
 
+        // I-11: BeliefStateEvent has no free-text String field in the SSB payload
+        // (the BeliefState bytes are opaque Vec<u8>, not a String; schema_version /
+        // token_delta / payload_bytes are numeric; ts_ms is numeric). The belief_state
+        // constraints: Vec<String> are carried INSIDE the encoded BeliefState blob
+        // (opaque bytes), not as a top-level String field on BeliefStateEventPayload.
+        // Therefore this variant is a no-op for the top-level redactor.
+        // NOTE: if a future schema version adds a String field to BeliefStateEventPayload,
+        // add an explicit arm here. The reflective test will catch the miss.
+        SsbPayload::BeliefStateEvent(_) => PayloadRedaction::default(),
+
         // Every other variant carries no raw free-text String field
         // (hashes / enums / ints / structured tags / free-form details_json) —
         // quick no-op on the hot path. A NEW free-text variant added without an

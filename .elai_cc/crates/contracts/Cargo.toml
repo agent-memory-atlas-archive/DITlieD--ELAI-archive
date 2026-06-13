@@ -69,6 +69,9 @@ tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 # (tracing-test docs: "integration tests must use no-env-filter to capture logs")
 tracing.workspace = true
 rmp-serde = "1.3"
+# I-41: InlineMockRuntime::stream() in i41_critique_lenses_contract.rs returns
+# an empty BoxStream. futures-util already transitively resolved (via providers 0.3.32).
+futures-util = "0.3"
 # B-29 Phase 1 contract test (symbol_graph_b29_phase1_contract): postcard is
 # the canonical encoder for symbol_graph blob columns; workspace dep already
 # pinned at root Cargo.toml. No new external crate introduced.

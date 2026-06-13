@@ -20,7 +20,7 @@
 use elai_orchestrator::claim_confidence::{
     cloud_lane_logprob, compute_claim_score, PlattParams, SELF_CONSISTENCY_SAMPLES,
 };
-use elai_orchestrator::conformal_calibration::{decide, RefusalDecision};
+use elai_orchestrator::calibration::{decide, RefusalDecision};
 use elai_orchestrator::evidence::IntegrationTestRowSummary;
 use elai_orchestrator::task_runner::passing_stdout_hashes;
 use elai_orchestrator::quarantine::{

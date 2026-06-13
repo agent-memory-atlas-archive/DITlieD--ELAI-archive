@@ -29,7 +29,13 @@ use std::sync::OnceLock;
 // ---------------------------------------------------------------------------
 
 /// Number of built-in routing rules.
-const BUILTIN_RULE_COUNT: usize = 5;
+///
+/// I-46 (OPTION A consolidation): rules 2 (cat/head/tail), 4 (find+glob),
+/// 5 (grep/rg) removed — those verbs are now handled by
+/// `bash_interceptor::classify_redirect` which fires before this layer and
+/// returns a richer structured redirect message. Only rules 1 (echo-redirect/
+/// heredoc -> write_file) and 3 (sed/awk -> edit_file) are retained here.
+const BUILTIN_RULE_COUNT: usize = 2;
 
 /// Override prefix: commands starting with '!' bypass routing checks.
 const OVERRIDE_PREFIX: char = '!';
@@ -93,35 +99,19 @@ fn builtin_rules() -> &'static [RoutingRule; BUILTIN_RULE_COUNT] {
     static RULES: OnceLock<[RoutingRule; BUILTIN_RULE_COUNT]> = OnceLock::new();
     RULES.get_or_init(|| {
         [
-            // echo ... > / cat <<EOF / heredoc -> Write (MUST precede cat/read rule)
+            // Rule 1: echo ... > / cat <<EOF / heredoc -> Write (I-46 OPTION A: cat/head/
+            // tail/less/more and grep/rg and find/ls-glob are handled by bash_interceptor.rs
+            // and removed from this table; the echo-redirect variant is NOT an I-46 target).
             RoutingRule {
                 pattern: Regex::new(r"^(echo\s+.*>\s*\S|cat\s*<<)").expect("write rule regex"),
                 target_tool: "write_file",
                 hint: "Use the Write tool instead of echo/heredoc redirection to create files.",
             },
-            // cat/head/tail + filepath -> Read
-            RoutingRule {
-                pattern: Regex::new(r"^(cat|head|tail)\s+\S").expect("read rule regex"),
-                target_tool: "read_file",
-                hint: "Use the Read tool instead of cat/head/tail to read file contents.",
-            },
-            // sed/awk + filepath -> Edit
+            // Rule 3: sed/awk + filepath -> Edit (retained; not an I-46 intercept target).
             RoutingRule {
                 pattern: Regex::new(r"^(sed|awk)\s+").expect("edit rule regex"),
                 target_tool: "edit_file",
                 hint: "Use the Edit tool instead of sed/awk to modify files.",
-            },
-            // find/ls + glob-like pattern -> Glob
-            RoutingRule {
-                pattern: Regex::new(r"^(find|ls)\s+.*[*?]").expect("glob rule regex"),
-                target_tool: "glob_search",
-                hint: "Use the Glob tool instead of find/ls for file pattern matching.",
-            },
-            // grep/rg + pattern -> Grep
-            RoutingRule {
-                pattern: Regex::new(r"^(grep|rg)\s+").expect("grep rule regex"),
-                target_tool: "grep_search",
-                hint: "Use the Grep tool instead of grep/rg for content search.",
             },
         ]
     })
@@ -272,30 +262,9 @@ fn extract_primary_command(command: &str) -> &str {
 mod tests {
     use super::*;
 
-    // -- Read tool routing --
-
-    #[test]
-    fn cat_file_is_rejected() {
-        let r = check_routing("cat /tmp/foo.txt");
-        assert!(r.is_some());
-        let r = r.unwrap();
-        assert_eq!(r.target_tool, "read_file");
-        assert!(r.hint.contains("Read tool"));
-    }
-
-    #[test]
-    fn head_file_is_rejected() {
-        let r = check_routing("head -n 10 src/main.rs");
-        assert!(r.is_some());
-        assert_eq!(r.unwrap().target_tool, "read_file");
-    }
-
-    #[test]
-    fn tail_file_is_rejected() {
-        let r = check_routing("tail -f /var/log/syslog");
-        assert!(r.is_some());
-        assert_eq!(r.unwrap().target_tool, "read_file");
-    }
+    // NOTE: cat/head/tail, grep/rg, find/ls-glob tests removed (I-46 OPTION A).
+    // Those verbs are now intercepted by bash_interceptor::classify_redirect.
+    // Coverage is preserved in crates/contracts/tests/i46_bash_interceptor_contract.rs.
 
     // -- Edit tool routing --
 
@@ -327,38 +296,6 @@ mod tests {
         let r = check_routing("cat <<EOF > file.txt");
         assert!(r.is_some());
         assert_eq!(r.unwrap().target_tool, "write_file");
-    }
-
-    // -- Glob tool routing --
-
-    #[test]
-    fn find_with_glob_is_rejected() {
-        let r = check_routing("find . -name '*.rs'");
-        assert!(r.is_some());
-        assert_eq!(r.unwrap().target_tool, "glob_search");
-    }
-
-    #[test]
-    fn ls_with_glob_is_rejected() {
-        let r = check_routing("ls src/*.ts");
-        assert!(r.is_some());
-        assert_eq!(r.unwrap().target_tool, "glob_search");
-    }
-
-    // -- Grep tool routing --
-
-    #[test]
-    fn grep_is_rejected() {
-        let r = check_routing("grep -r 'TODO' src/");
-        assert!(r.is_some());
-        assert_eq!(r.unwrap().target_tool, "grep_search");
-    }
-
-    #[test]
-    fn rg_is_rejected() {
-        let r = check_routing("rg 'pattern' --type rust");
-        assert!(r.is_some());
-        assert_eq!(r.unwrap().target_tool, "grep_search");
     }
 
     // -- Override prefix --
@@ -480,14 +417,17 @@ mod tests {
             enabled: false,
             allow_override_prefix: "!".to_string(),
         };
+        // Use sed (rule 3, retained post-I-46 OPTION A) as the representative
+        // "normally-routed command". cat/head/tail/grep/find are no longer routed
+        // by this layer (they were moved to bash_interceptor in I-46).
         // A normally-routed command passes through when the PASSED config
         // disables routing (proves the supplied config's `enabled` governs).
-        assert!(check_routing_with_config("cat /tmp/foo.txt", &disabled).is_none());
+        assert!(check_routing_with_config("sed 's/foo/bar/' file.txt", &disabled).is_none());
         let enabled = RoutingConfig {
             enabled: true,
             allow_override_prefix: "!".to_string(),
         };
-        assert!(check_routing_with_config("cat /tmp/foo.txt", &enabled).is_some());
+        assert!(check_routing_with_config("sed 's/foo/bar/' file.txt", &enabled).is_some());
     }
 
     #[test]
@@ -495,39 +435,43 @@ mod tests {
         // Config supplies a custom override prefix '@' (NOT the OVERRIDE_PREFIX
         // '!' const). The custom prefix must bypass routing, proving the config
         // value takes precedence over the const.
+        // Use sed (rule 3, retained post-I-46 OPTION A) as the representative verb.
         let custom = RoutingConfig {
             enabled: true,
             allow_override_prefix: "@".to_string(),
         };
-        assert!(check_routing_with_config("@cat /tmp/foo.txt", &custom).is_none());
+        assert!(check_routing_with_config("@sed 's/foo/bar/' file.txt", &custom).is_none());
         // The un-prefixed command still routes under the same config (the
         // custom config did not simply disable everything).
-        assert!(check_routing_with_config("cat /tmp/foo.txt", &custom).is_some());
+        assert!(check_routing_with_config("sed 's/foo/bar/' file.txt", &custom).is_some());
     }
 
     #[test]
     fn with_config_empty_prefix_falls_back_to_override_const() {
         // Empty prefix -> chars().next() is None -> unwrap_or(OVERRIDE_PREFIX),
         // so the const '!' is the active bypass char.
+        // Use sed (rule 3, retained post-I-46 OPTION A) as the representative verb.
         let empty = RoutingConfig {
             enabled: true,
             allow_override_prefix: String::new(),
         };
-        assert!(check_routing_with_config("!cat /tmp/foo.txt", &empty).is_none());
+        assert!(check_routing_with_config("!sed 's/foo/bar/' file.txt", &empty).is_none());
     }
 
     #[test]
     fn check_routing_delegates_to_with_config_default() {
         // check_routing must equal check_routing_with_config(_, runtime default).
+        // Use sed (rule 3, retained post-I-46 OPTION A) as the representative verb.
+        // cat/head/tail are now intercepted by bash_interceptor (before routing_rules).
         let default_cfg = RoutingConfig::default();
-        let a = check_routing("cat /tmp/foo.txt");
-        let b = check_routing_with_config("cat /tmp/foo.txt", &default_cfg);
+        let a = check_routing("sed 's/foo/bar/' file.txt");
+        let b = check_routing_with_config("sed 's/foo/bar/' file.txt", &default_cfg);
         assert_eq!(a.is_some(), b.is_some());
         assert_eq!(a.map(|r| r.target_tool), b.map(|r| r.target_tool));
         // A non-routed (piped) command agrees on both paths too.
         assert_eq!(
-            check_routing("ps aux | grep nginx").is_none(),
-            check_routing_with_config("ps aux | grep nginx", &default_cfg).is_none()
+            check_routing("ps aux | awk '{print $1}'").is_none(),
+            check_routing_with_config("ps aux | awk '{print $1}'", &default_cfg).is_none()
         );
     }
 }

@@ -200,6 +200,8 @@ fn task_runner_config_accepts_dkg_querier_swap() {
         token_tracker: None,
         // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
         buffer_editor: None,
+        // P0-1: legacy contract fixture -- no adversary runtime.
+        adversary_runtime: None,
         // E-46 D-8: contract fixture — module-constant defaults.
         planning_config: Default::default(),
     };

@@ -25,7 +25,7 @@
 //! are DISTINCT quantities per D-16-decisions.md DECISION-4 — only
 //! alpha is on the SSB row; rho lives on the runtime config only.
 
-use elai_orchestrator::conformal_calibration::{
+use elai_orchestrator::calibration::{
     compute_tau, decide, decide_and_emit_with_reason, tau_path_default,
     update_tau_and_emit, CalibrationCorpus, CalibrationTuple, CorpusSource,
     RefusalDecision, RefusalReason, TauUpdater, VecCalibrationCorpusUpdatedEmitter,
@@ -74,6 +74,7 @@ fn conformal_refusal_decided_payload_round_trips_with_reason() {
         confidence: 0.0,
         ts_ms: 1_700_000_000_000,
         reason: Some(RefusalReason::LowEvidence.as_str().to_string()),
+        calibration_id: None,
     };
     let s = serde_json::to_string(&payload).expect("serialize");
     assert!(s.contains("\"reason\""), "reason key must appear: {s}");
@@ -226,6 +227,7 @@ async fn decide_and_emit_with_reason_stamps_reason_on_abstain_only() {
         "c-abstain",
         0.01,
         0.5,
+        "aaaaaaaaaaaaaaaa",
         Some(RefusalReason::ToolInconsistency),
         &emitter,
         100,
@@ -235,6 +237,7 @@ async fn decide_and_emit_with_reason_stamps_reason_on_abstain_only() {
         "c-answer",
         0.99,
         0.5,
+        "aaaaaaaaaaaaaaaa",
         Some(RefusalReason::VerifierRejection),
         &emitter,
         200,

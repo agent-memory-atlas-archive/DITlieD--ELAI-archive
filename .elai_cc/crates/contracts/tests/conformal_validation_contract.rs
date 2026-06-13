@@ -24,7 +24,7 @@
 use elai_orchestrator::benchmarks::conformal_validation_runner::{
     ConformalValidationRunner, ValidationFixtureRow, VecConformalValidationSsbEmitter,
 };
-use elai_orchestrator::conformal_calibration::{
+use elai_orchestrator::calibration::{
     compute_tau, decide, CalibrationCorpus, CalibrationTuple, CorpusSource, RefusalDecision,
     DEFAULT_EPSILON,
 };

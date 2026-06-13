@@ -85,7 +85,7 @@ use elai_core::paths::{
     ELAI_DATA_DIR_NAME,
 };
 use elai_rules::stubs::EmptyDkgQuerier;
-use elai_tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
+use elai_tools::{install_prompt_hardening_ssb, GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
 
 use crate::commands::{
     handle_agents_slash_command, handle_mcp_slash_command, handle_mcp_slash_command_json,
@@ -118,6 +118,8 @@ use elai_reasoning::{
 /// loop. 30s matches the C-8 SearchModeChanged / C-16 cosmos refresh
 /// cadence range and keeps the dashboard polling at human reaction time
 /// without flooding the SSB stream during steady-state cold idle.
+const LIVE_CHAT_SYSTEM_PROMPT: &str = include_str!("prompts/live_chat_system.md");
+
 const CASCADE_EVAL_INTERVAL_SECS: u64 = 30;
 
 /// B-4 helper — wall-clock UNIX millis used as the `ts_ms` field on
@@ -762,6 +764,20 @@ impl LiveCli {
         // set_ssb_writer takes &self (OnceLock) — safe to call through Arc.
         if let Some(ref ssb_arc) = ssb {
             fsm.set_ssb_writer(Arc::clone(ssb_arc));
+            // I-47: install the process-global SSB writer for the prompt-hardening
+            // emitter in the tools crate's execute_agent_with_spawn seam.
+            install_prompt_hardening_ssb(Arc::clone(ssb_arc));
+        } else {
+            // I-47 F-1: SSB init failed (SQLite error, disk full, permissions).
+            // The prompt-hardening security mechanisms (XML tagging, rule injection)
+            // still fire on every dispatch — only the SSB observability audit trail
+            // is absent. The emit_prompt_hardening_row scream path (warn_slot_not_installed_once)
+            // will fire on the first agent dispatch and increment dropped_row_count.
+            tracing::warn!(
+                "I-47: prompt-hardening SSB slot not installed (SSB is None at boot). \
+                 Security mechanisms (XML tagging, rule injection) still active. \
+                 PromptHardeningApplied SSB rows will be dropped — observability is OFF."
+            );
         }
         let dag_path = session.path.parent()
             .map(|p| p.join("dag.db"))
@@ -838,10 +854,7 @@ impl LiveCli {
                     .ok()
                     .as_deref() == Some("1")
                 {
-                    vec![
-                        "You are an interactive coding assistant. Use available tools when helpful. \
-                         Reply concisely.".to_string(),
-                    ]
+                    vec![LIVE_CHAT_SYSTEM_PROMPT.to_string()]
                 } else {
                     build_system_prompt(true)?
                 };

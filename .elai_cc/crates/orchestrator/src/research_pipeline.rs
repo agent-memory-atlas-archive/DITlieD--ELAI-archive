@@ -439,15 +439,7 @@ pub async fn phase_f_synthesize<C: GroundingClient>(
         .join("\n");
 
     let prompt = format!(
-        "You are a factual research synthesizer.\n\
-         Question: {question}\n\n\
-         Verified claims:\n\
-         {claims_block}\n\n\
-         Write a 2-4 paragraph answer to the question above. \
-         Every sentence MUST end with a citation marker such as [1] or [2] referencing the claim number above. \
-         Do not invent claims not listed. \
-         If you cannot write a faithful cited answer, output exactly: DETERMINISTIC_FALLBACK\n\n\
-         Output only the answer prose (no JSON, no preamble).",
+        include_str!("prompts/research_synthesizer.md"),
         question = query.question,
         claims_block = claims_block,
     );

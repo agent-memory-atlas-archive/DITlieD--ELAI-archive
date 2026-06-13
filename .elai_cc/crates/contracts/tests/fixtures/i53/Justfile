@@ -1,0 +1,14 @@
+# Build everything
+build:
+	cargo build --release
+
+# Run the test suite
+test arg1="":
+	cargo test {{arg1}}
+
+# Clean build artifacts
+clean:
+	cargo clean
+
+_private_helper:
+	echo "internal helper"

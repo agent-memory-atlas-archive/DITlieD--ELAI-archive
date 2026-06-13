@@ -427,11 +427,13 @@ fn project_detection_signal_round_trips() {
         query_hash_hex: "00".repeat(32),
         source_tier: "t1_authoritative".into(),
         cached_age_secs: 60,
+        source: None,
     }))
     .expect("encode oracle_cache_hit");
     let _ = rmp_serde::to_vec_named(&SsbPayload::OracleCacheMiss(OracleCacheMissPayload {
         query_hash_hex: "00".repeat(32),
         confidence: "high".into(),
+        source: None,
     }))
     .expect("encode oracle_cache_miss");
 }

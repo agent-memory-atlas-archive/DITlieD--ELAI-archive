@@ -22,7 +22,7 @@
 // Policy: no .unwrap()/.expect() in non-test code; no wall-clock; no I/O.
 // Pure deterministic (no RNG). blake3 only where hashing is needed (none here).
 
-use crate::conformal_calibration::RefusalDecision;
+use crate::calibration::RefusalDecision;
 
 // ---------------------------------------------------------------------------
 // LOCKED confidence target (anti-tuning freeze: TD-2 style).
@@ -291,6 +291,48 @@ pub fn parse_eval_log_outcome(eval_log: &str) -> Option<OutcomeTriple> {
         RefusalDecision::Answer { confidence },
         pass,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// I-8 calibration corpus suite filter (F-2 remedy, WARN-1)
+// ---------------------------------------------------------------------------
+
+/// Suite names that MUST be excluded from the conformal calibration corpus.
+///
+/// `voluntary_abort` rows are emitted by the I-8 pre-dispatch dead-end guard
+/// and the `acknowledge_infeasible` abort handler.  They carry synthetic
+/// `mean_score=0.0 / abstention_rate=1.0` values that do not reflect real
+/// task-difficulty distribution; including them would down-bias the corpus
+/// and tighten tau artificially.
+///
+/// I-23 (unified calibration facade) MUST import this constant and apply
+/// `is_suite_excluded_from_calibration` before ingesting any
+/// `AbstentionScored` row into the corpus builder.
+///
+/// Fail-closed policy: any suite NOT in [`CALIBRATION_ALLOWED_SUITES`] is
+/// treated as excluded until an explicit allow decision is made and the
+/// constant is updated.  Unknown suites MUST be excluded, not allowed.
+pub const CALIBRATION_EXCLUDED_SUITES: &[&str] = &["voluntary_abort"];
+
+/// The inverse allow-list: explicitly vetted suites that MAY enter the
+/// calibration corpus.  I-23 MUST gate ingestion on membership here rather
+/// than on `CALIBRATION_EXCLUDED_SUITES` — the allow-list is fail-closed
+/// (unknown = excluded), whereas the block-list is fail-open (unknown = allowed).
+///
+/// Currently covers the SecCodePLT bench suite only.  Extend here when a
+/// new suite's corpus semantics are reviewed and approved.
+pub const CALIBRATION_ALLOWED_SUITES: &[&str] = &["seccodeplt"];
+
+/// Returns `true` when the suite should be EXCLUDED from the conformal
+/// calibration corpus (fail-closed: unknown suites are excluded).
+///
+/// Usage: `if is_suite_excluded_from_calibration(row.suite.as_str()) { continue; }`
+#[must_use]
+pub fn is_suite_excluded_from_calibration(suite: &str) -> bool {
+    // Fail-closed: a suite is allowed only when it is on the explicit allow-list.
+    // This means unknown suites — suites added without a corpus-review decision —
+    // are safely excluded until promoted to CALIBRATION_ALLOWED_SUITES.
+    !CALIBRATION_ALLOWED_SUITES.contains(&suite)
 }
 
 /// Extract the float value from a "score=Y.Z" token in the (already

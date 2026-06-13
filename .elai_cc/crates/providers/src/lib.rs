@@ -1,6 +1,10 @@
 mod client;
 // C-26: constrained-decoding mode + per-role defaults. Re-exports below.
 pub mod decoding;
+// I-34: grammar-pin manifest with blake3 load-time verification.
+pub mod grammar_store;
+// I-51 — unified model capability catalog (models.toml + loader).
+pub mod model_catalog;
 mod error;
 pub mod layer_config;
 pub mod multiplexing;
@@ -33,8 +37,13 @@ pub use oauth::{
 };
 pub use decoding::{
     crane_adaptive_eligible, default_decoding_for, paper_decoding_params_for,
+    CraneAdaptiveConfig, ValidationError, re_validate_output,
     ConstrainedDecodingConfig, DecodingMode, PaperDecodingParams, PaperRole, RoleDecoding,
     PER_ROLE_DECODING_DEFAULTS, PER_ROLE_DECODING_PARAMS_PAPER,
+};
+pub use grammar_store::{
+    default_manifest_path, load_and_verify as load_and_verify_grammar_manifest,
+    GrammarPinError, GrammarPinManifest, GrammarPinRecord,
 };
 pub use error::ApiError;
 pub use prompt_cache::{
@@ -76,6 +85,8 @@ pub use pricing::{
     summary_lines, summary_lines_for_model, ModelPricing, UsageCostEstimate,
 };
 pub use vram_tier::{detect_vram_gb, detect_vram_tier, VramDetectionError};
+// I-51 — model catalog public surface.
+pub use model_catalog::{CatalogVramThresholds, ModelCatalog, ModelCatalogError, ModelEntry};
 pub use types::{
     CacheControl, ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent,
     ContentBlockStopEvent, InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent,

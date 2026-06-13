@@ -51,7 +51,7 @@
 //! snapshot-captured as an `auto:pre-restore` fork first, THEN the restore
 //! proceeds.  A silent clobber is a FAIL.
 
-use std::io::{self, Write as _};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
@@ -393,13 +393,9 @@ pub fn materialize(
                 fs::create_dir_all(parent)?;
             }
         }
-        let tmp = abs_path.with_extension("_tt_tmp");
-        {
-            let mut f = fs::File::create(&tmp)?;
-            f.write_all(&content)?;
-            f.sync_all()?;
-        }
-        fs::rename(&tmp, &abs_path)?;
+        // I-3: adopt shared helper (tmp + sync_all + rename); was the only
+        // site that already had fsync — now unified with the rest of the crate.
+        crate::util::atomic_io::atomic_write_sync(&abs_path, &content)?;
 
         results.push(RestoreResult {
             path: abs_path,

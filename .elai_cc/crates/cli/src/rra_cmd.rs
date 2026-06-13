@@ -161,9 +161,15 @@ fn run_verify(path: &std::path::Path, output_format: CliOutputFormat) -> Result<
     // Exit non-zero on any non-Verified verdict so CI can gate on it. The
     // verdict has already been printed, so a hard exit here is the documented
     // contract (mirrors `elai freeze verify`).
+    // D-016: ObjectiveUnchecked is NON-fatal (exit 0) — the artifact is
+    // cryptographically intact; only the objective-staleness check is skipped
+    // because no current_objective was supplied. ObjectiveHashMismatch remains
+    // exit 1 (objective was redefined after sealing).
     match verdict {
-        ReplayVerdict::Verified => Ok(()),
-        ReplayVerdict::Divergence { .. } | ReplayVerdict::Tampered { .. } => {
+        ReplayVerdict::Verified | ReplayVerdict::ObjectiveUnchecked { .. } => Ok(()),
+        ReplayVerdict::Divergence { .. }
+        | ReplayVerdict::Tampered { .. }
+        | ReplayVerdict::ObjectiveHashMismatch { .. } => {
             std::process::exit(1);
         }
     }
@@ -199,6 +205,24 @@ fn render_verdict_text(path: &std::path::Path, verdict: &ReplayVerdict) {
                 path.display(),
                 expected_root,
                 got_root
+            );
+        }
+        // I-45: objective was redefined after sealing.
+        ReplayVerdict::ObjectiveHashMismatch { sealed_hash, current_hash } => {
+            println!(
+                "OBJECTIVE-MISMATCH {} — sealed objective hash ({sealed_hash}) does not match \
+                 current task objective hash ({current_hash}); objective was redefined after sealing",
+                path.display()
+            );
+        }
+        // I-45: bundle has an objective hash but no current objective was supplied for comparison.
+        // Non-fatal (exit 0, D-016). Instruct the caller how to supply text for a full check.
+        ReplayVerdict::ObjectiveUnchecked { sealed_hash } => {
+            println!(
+                "VERIFIED {} — artifact cryptographically intact. \
+                 objective: UNCHECKED (sealed hash {sealed_hash} present but no current \
+                 objective text supplied; pass --current-objective <text> to enable staleness check)",
+                path.display()
             );
         }
     }

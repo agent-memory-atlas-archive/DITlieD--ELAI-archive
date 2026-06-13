@@ -1,0 +1,28 @@
+{
+  "level0_a": {
+    "level1_x": {
+      "level2_i": { "v": 1, "w": "alpha", "x": true },
+      "level2_j": { "v": 2, "w": "beta", "x": false },
+      "level2_k": [10, 20, 30, 40, 50]
+    },
+    "level1_y": {
+      "level2_m": "a medium-length string value here",
+      "level2_n": 9999,
+      "level2_o": null
+    },
+    "level1_z": "scalar at depth 2"
+  },
+  "level0_b": {
+    "level1_p": "value_p",
+    "level1_q": 42,
+    "level1_r": {
+      "deep_a": { "deeper": { "deepest": "reached depth 4" } }
+    }
+  },
+  "level0_c": [
+    { "id": 1, "name": "item one", "active": true },
+    { "id": 2, "name": "item two", "active": false },
+    { "id": 3, "name": "item three", "active": true }
+  ],
+  "level0_d": "a top-level scalar string for path testing"
+}

@@ -39,6 +39,7 @@ use elai_core::tool_dispatcher::{
     ValidateRequest, ValidationTierResult,
 };
 use elai_ipc_types::{
+    TOOL_ACKNOWLEDGE_INFEASIBLE,
     TOOL_CANVAS_ANNOTATE, TOOL_CANVAS_CONNECT, TOOL_CANVAS_CREATE_NODE, TOOL_CANVAS_FORK,
     TOOL_CANVAS_RENDER_DIAGRAM, TOOL_CANVAS_SCREENSHOT, TOOL_CANVAS_SPAWN_VIEW,
     TOOL_CANVAS_UPDATE_NODE,
@@ -280,9 +281,10 @@ async fn contract_handle_infer_request_publishes_ten_tool_catalog() {
 
     assert_eq!(
         tools.len(),
-        24,
-        "H-15 catalog must publish exactly 24 tools \
-         (R3 6-tool baseline + 4 symbol_* + 4 dkg_* + 2 E-40 DSL + 7 H-13 canvas_* + 1 H-15 canvas_spawn_view); \
+        29,
+        "I-53 catalog must publish exactly 29 tools \
+         (R3 6-tool baseline + 4 symbol_* + 4 dkg_* + 2 E-40 DSL + 7 H-13 canvas_* + 1 H-15 canvas_spawn_view \
+         + 1 I-8 acknowledge_infeasible + 4 I-53 recipe/archive/json tools); \
          got {} -- names={:?}",
         tools.len(),
         names,
@@ -319,13 +321,20 @@ async fn contract_handle_infer_request_publishes_ten_tool_catalog() {
         TOOL_CANVAS_SCREENSHOT,
         // H-15: spawn_view reply-channel tool.
         TOOL_CANVAS_SPAWN_VIEW,
+        // I-8: aletheia voluntary abort (acknowledge_infeasible).
+        TOOL_ACKNOWLEDGE_INFEASIBLE,
+        // I-53: recipe runners + utility tool pack.
+        "recipe_list",
+        "recipe_run",
+        "archive_read",
+        "json_tree_query",
     ]
     .into_iter()
     .collect();
     let actual: std::collections::BTreeSet<&str> = names.iter().copied().collect();
     assert_eq!(
         actual, expected,
-        "catalog names must equal the 24-constant set (no extras, no missing)",
+        "catalog names must equal the 29-tool set (no extras, no missing)",
     );
 }
 

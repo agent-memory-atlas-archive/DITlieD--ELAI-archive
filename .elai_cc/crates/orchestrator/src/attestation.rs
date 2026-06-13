@@ -55,7 +55,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::rra::{GateVerdictHash, RunArtifact, RRA_HEX_PREFIX_LEN};
+use crate::rra::{canonical_objective_bytes, GateVerdictHash, RunArtifact, RRA_HEX_PREFIX_LEN};
 
 /// The in-toto v1 Statement `_type` URI (the in-toto standard envelope type).
 pub const IN_TOTO_STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
@@ -130,6 +130,78 @@ pub struct InTotoPredicate {
     pub run_artifact_root: String,
     /// The honest EU AI Act posture string (DD6, E-38). See [`ARTICLE_50_POSTURE`].
     pub article_50_posture: String,
+    /// I-45: the canonical blake3-16 hex of the task objective at seal time,
+    /// derived from the first IdeaFramingStarted payload. `None` on LEGACY
+    /// receipts (pre-I-45 runs that have no IdeaFramingStarted in the stream).
+    /// Included in the canonical Merkle tuple (element 8) so a post-seal
+    /// objective tamper changes the signed root and is caught by
+    /// [`verify_attestation`] before the staleness check fires.
+    /// `#[serde(default)]` preserves read-back of pre-I-45 sidecars (GD-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_hash: Option<String>,
+    /// I-18: CycloneDX-ML AI-BOM component entry for the primary inference
+    /// model used during this run. `None` on LEGACY receipts (pre-I-18 runs
+    /// that have no model identity recorded). Included as element 9 in
+    /// [`canonical_predicate_bytes`] — a model substitution changes the BOM
+    /// component fields and therefore changes the canonical bytes and the
+    /// signed Merkle root (tamper-evident via `verify_attestation`).
+    /// `#[serde(default)]` preserves read-back of pre-I-18 sidecars (GD-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aibom_entry: Option<AibomEntry>,
+}
+
+/// I-18: CycloneDX-ML AI-BOM component entry for the primary inference model.
+///
+/// Follows the CycloneDX 1.6 ML component schema
+/// (cyclonedx.org/docs/1.6/json/#components_items_type) with the `ml-model`
+/// component type. This is a Tier-1 offline emission — no new deps, no
+/// cosign-rs. Serialized via existing `serde_json` (already a direct dep).
+///
+/// Fields named after CycloneDX 1.6 JSON property names to make offline
+/// verification against the schema straightforward. `type_field` shadows the
+/// reserved `type` keyword.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AibomEntry {
+    /// CycloneDX `bom-ref`: the session-scoped stable identifier for this
+    /// component (format: `elai-model-<session_id-prefix>` for uniqueness).
+    #[serde(rename = "bom-ref")]
+    pub bom_ref: String,
+    /// CycloneDX `type`: always `"ml-model"` for inference models.
+    #[serde(rename = "type")]
+    pub type_field: String,
+    /// CycloneDX `name`: the model identifier (mirrors `model_pin`).
+    pub name: String,
+    /// CycloneDX `version`: the run's blake3 bundle root (the G-2 anchor
+    /// doubles as the version pin; a different model file produces a different
+    /// root). Pre-I-18 sidecars carry an empty string here.
+    pub version: String,
+    /// CycloneDX `hashes`: blake3 of the run's bundle root (the G-2 anchor).
+    /// One entry: `[{ "alg": "BLAKE3", "content": "<root>" }]`.
+    pub hashes: Vec<AibomHash>,
+    /// CycloneDX `externalReferences`: the model registry URL when the model
+    /// is a known Hugging Face model. Empty vec when local/unknown.
+    #[serde(rename = "externalReferences")]
+    pub external_references: Vec<AibomExternalRef>,
+}
+
+/// A single CycloneDX 1.6 hash entry (`{ alg, content }`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AibomHash {
+    /// The hash algorithm identifier (CycloneDX enum). We use `"BLAKE3"`.
+    pub alg: String,
+    /// The hash content (the 16-hex prefix consistent with the rest of the
+    /// codebase; blake3 only per CLAUDE.md hard rule).
+    pub content: String,
+}
+
+/// A single CycloneDX 1.6 external reference entry (`{ type, url }`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AibomExternalRef {
+    /// CycloneDX `type` for the external reference.
+    #[serde(rename = "type")]
+    pub ref_type: String,
+    /// The URL (e.g. `"https://huggingface.co/<org>/<model>"`).
+    pub url: String,
 }
 
 /// One in-toto v1 subject (what the attestation is ABOUT).
@@ -205,6 +277,24 @@ pub enum AttestationVerdict {
         /// The root recomputed over the predicate now.
         got: String,
     },
+    /// I-45: the sealed objective hash in the receipt does not match the hash of
+    /// the current task text — the objective was redefined after sealing. Added
+    /// for match-arm completeness with [`crate::rra::ReplayVerdict::ObjectiveHashMismatch`].
+    ReceiptStale {
+        /// Objective hash sealed in the receipt.
+        sealed_hash: String,
+        /// Objective hash recomputed from current task text.
+        current_hash: String,
+    },
+    /// I-45: the predicate carries a sealed objective hash but no current
+    /// objective text was supplied by the caller — the hash cannot be compared.
+    /// NON-fatal (exit 0) per orchestrator decision D-016: the attestation is
+    /// cryptographically intact; only the objective-staleness check is skipped.
+    /// Mirrors [`crate::rra::ReplayVerdict::ObjectiveUnchecked`].
+    ObjectiveUnchecked {
+        /// The objective hash present in the sealed predicate.
+        sealed_hash: String,
+    },
 }
 
 /// Truncate a full blake3 hex to the workspace 16-hex prefix convention
@@ -232,6 +322,12 @@ fn canonical_predicate_bytes(predicate: &InTotoPredicate) -> Result<Vec<u8>, Att
     // evidence_hashes is sorted for the same stable-ordering reason.
     let mut evidence = predicate.evidence_hashes.clone();
     evidence.sort();
+    // Element 8 (I-45): objective_hash binds the sealed task objective into the
+    // Merkle root. Pre-I-45 sidecars carry None; None serializes as msgpack nil,
+    // producing a stable canonical form for LEGACY receipts (GD-2).
+    // Element 9 (I-18): aibom_entry is the CycloneDX-ML AI-BOM component for
+    // the primary inference model. APPEND-ONLY — never reorder elements 1-8.
+    // Pre-I-18 sidecars carry None; None serializes as msgpack nil (GD-2).
     let canonical = (
         &predicate.model_id,
         predicate.elai_seed,
@@ -240,6 +336,11 @@ fn canonical_predicate_bytes(predicate: &InTotoPredicate) -> Result<Vec<u8>, Att
         &evidence,
         &predicate.run_artifact_root,
         &predicate.article_50_posture,
+        &predicate.objective_hash,
+        // I-18: APPEND-ONLY. aibom_entry is the 9th element.
+        // NEVER reorder: any element position change corrupts the Merkle root
+        // for ALL pre-existing attestations (breaks offline verification).
+        &predicate.aibom_entry,
     );
     rmp_serde::to_vec_named(&canonical).map_err(|e| AttestationError::Msgpack(e.to_string()))
 }
@@ -282,6 +383,40 @@ pub fn build_attestation(art: &RunArtifact) -> Result<InTotoStatement, Attestati
         evidence_hashes.push(gh.verdict_blake3.clone());
     }
 
+    // I-18: build the CycloneDX-ML AI-BOM entry for the primary inference model.
+    // Tier-1 offline: no new deps, no cosign-rs. The bom-ref uses the first 8
+    // chars of the session_id for a stable per-run identifier.
+    let aibom_entry: Option<AibomEntry> = art.model_pin.as_ref().map(|model_name| {
+        let bom_ref_prefix: String = art
+            .session_id
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-')
+            .take(8)
+            .collect();
+        // Heuristically detect a Hugging Face model: local paths contain '/' or
+        // backslash (a local directory like "Qwen2.5-Coder-7B-Instruct-abliterated"
+        // won't start with a well-known org prefix). Cloud / HF models are org/model.
+        let external_references = if model_name.contains('/') && !model_name.contains('\\') {
+            vec![AibomExternalRef {
+                ref_type: "website".to_owned(),
+                url: format!("https://huggingface.co/{}", model_name),
+            }]
+        } else {
+            vec![]
+        };
+        AibomEntry {
+            bom_ref: format!("elai-model-{}", bom_ref_prefix),
+            type_field: "ml-model".to_owned(),
+            name: model_name.clone(),
+            version: art.root_blake3.clone(),
+            hashes: vec![AibomHash {
+                alg: "BLAKE3".to_owned(),
+                content: art.root_blake3.clone(),
+            }],
+            external_references,
+        }
+    });
+
     let predicate = InTotoPredicate {
         model_id: art.model_pin.clone(),
         elai_seed: art.seed,
@@ -290,6 +425,11 @@ pub fn build_attestation(art: &RunArtifact) -> Result<InTotoStatement, Attestati
         evidence_hashes,
         run_artifact_root: art.root_blake3.clone(),
         article_50_posture: ARTICLE_50_POSTURE.to_owned(),
+        // I-45: carry the sealed objective hash into the predicate so an offline
+        // verifier can detect objective staleness without the RunArtifact.
+        objective_hash: art.objective_hash.clone(),
+        // I-18: CycloneDX-ML AI-BOM component entry for the primary inference model.
+        aibom_entry,
     };
 
     // Sign: the subject digest IS the blake3-Merkle root over the predicate.
@@ -356,6 +496,88 @@ pub fn verify_attestation_against_trailer(
             got: recomputed,
         })
     }
+}
+
+/// I-45: verify an attestation OFFLINE AND check objective staleness, mirroring
+/// [`crate::rra::verify_artifact_with_objective`] exactly. Runs the Merkle verify
+/// first (a tampered predicate is caught BEFORE the objective check, so
+/// [`AttestationVerdict::ReceiptStale`] is never returned for a tampered bundle).
+/// When the predicate carries an [`InTotoPredicate::objective_hash`] and
+/// `current_objective` is supplied, re-derives via [`canonical_objective_bytes`]
+/// and returns [`AttestationVerdict::ReceiptStale`] on mismatch or
+/// [`AttestationVerdict::ObjectiveUnchecked`] when no text is supplied (non-fatal,
+/// exit 0 per D-016). LEGACY predicates (`objective_hash = None`) pass through
+/// as [`AttestationVerdict::Verified`].
+// WIRE-DARK[I-45]: no-trailer variant; consumer lands in IPC dispatcher follow-on step.
+pub fn verify_attestation_with_objective(
+    statement: &InTotoStatement,
+    current_objective: Option<&str>,
+) -> Result<AttestationVerdict, AttestationError> {
+    // 1. Merkle tamper check first — same logic as verify_attestation.
+    let recomputed = sign_local_merkle(&statement.predicate)?;
+    let expected = statement.subject_digest().unwrap_or("");
+    if expected.is_empty() || recomputed != expected {
+        return Ok(AttestationVerdict::NotVerified {
+            expected: expected.to_owned(),
+            got: recomputed,
+        });
+    }
+    // 2. Objective staleness check (I-45). Only runs on Merkle-intact predicates.
+    check_objective_staleness(&statement.predicate, current_objective, recomputed)
+}
+
+/// I-45: verify an attestation OFFLINE against an external trailer digest AND
+/// check objective staleness. Combines [`verify_attestation_against_trailer`]
+/// with the staleness check from [`verify_attestation_with_objective`].
+/// Merkle + trailer binding are checked first; a mismatch on either is
+/// [`AttestationVerdict::NotVerified`] before objective staleness is considered.
+pub fn verify_attestation_against_trailer_with_objective(
+    statement: &InTotoStatement,
+    trailer_digest: &str,
+    current_objective: Option<&str>,
+) -> Result<AttestationVerdict, AttestationError> {
+    // 1. Merkle + trailer binding first — same logic as verify_attestation_against_trailer.
+    let recomputed = sign_local_merkle(&statement.predicate)?;
+    let subject = statement.subject_digest().unwrap_or("");
+    if subject.is_empty() || recomputed != subject || recomputed != trailer_digest {
+        return Ok(AttestationVerdict::NotVerified {
+            expected: trailer_digest.to_owned(),
+            got: recomputed,
+        });
+    }
+    // 2. Objective staleness check (I-45). Only runs on Merkle-intact predicates.
+    check_objective_staleness(&statement.predicate, current_objective, recomputed)
+}
+
+/// Shared objective-staleness check used by both `_with_objective` verify fns.
+/// Caller guarantees the Merkle root already verified; `merkle_root` is forwarded
+/// into the `Verified` arm so the caller receives it unmodified.
+fn check_objective_staleness(
+    predicate: &InTotoPredicate,
+    current_objective: Option<&str>,
+    merkle_root: String,
+) -> Result<AttestationVerdict, AttestationError> {
+    if let Some(sealed_hash) = &predicate.objective_hash {
+        match current_objective {
+            None => {
+                // Cryptographically intact but objective not checked (D-016: exit 0).
+                return Ok(AttestationVerdict::ObjectiveUnchecked {
+                    sealed_hash: sealed_hash.clone(),
+                });
+            }
+            Some(text) => {
+                let current_hash = canonical_objective_bytes(text);
+                if &current_hash != sealed_hash {
+                    return Ok(AttestationVerdict::ReceiptStale {
+                        sealed_hash: sealed_hash.clone(),
+                        current_hash,
+                    });
+                }
+            }
+        }
+    }
+    // LEGACY predicate (objective_hash = None) or matching objective — verified.
+    Ok(AttestationVerdict::Verified { merkle_root })
 }
 
 /// Serialize the in-toto Statement to a sidecar `attestation.intoto.json`

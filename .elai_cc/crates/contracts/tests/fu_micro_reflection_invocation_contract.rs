@@ -75,3 +75,33 @@ fn contract_malformed_sidecar_response_produces_parse_error() {
     // Type surfaces via the public re-export; body content not asserted.
     let _ = format!("{err:?}");
 }
+
+/// P0-2 wiring gate — apply_task_runner_wiring must thread SidecarReflectionAdapter
+/// through RuntimeWiring so TaskRunnerConfig::reflection_client is non-None in
+/// production builds (all 5 new_minimal() sites previously left it None).
+///
+/// This test is a source-scan contract; it does not exercise the live HTTP path.
+/// Two wiring landmarks must be present:
+///   (a) runtime_setup.rs must construct `SidecarReflectionAdapter`
+///   (b) runtime_setup.rs must assign `reflection_client`
+#[test]
+fn apply_task_runner_wiring_wires_reflection_client() {
+    let src = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/contracts has a parent")
+            .join("orchestrator/src/runtime_setup.rs"),
+    )
+    .expect("read runtime_setup.rs");
+
+    assert!(
+        src.contains("SidecarReflectionAdapter"),
+        "runtime_setup.rs must construct SidecarReflectionAdapter in build_task_runner_wiring \
+         (P0-2 E-19 reflection regression fix)"
+    );
+    assert!(
+        src.contains("reflection_client"),
+        "runtime_setup.rs must assign reflection_client in apply_task_runner_wiring so the \
+         5 TaskRunnerConfig::new_minimal() sites get a live E-19 reflection client"
+    );
+}

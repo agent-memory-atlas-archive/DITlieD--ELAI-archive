@@ -291,8 +291,8 @@ fn e45_f7_action_type_lock_total_variants_updated() {
     );
     let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
     assert!(
-        body.contains("TOTAL_VARIANTS: usize = 540"),
-        "TOTAL_VARIANTS must match the live action_type_lock.rs value (540); file: {}",
+        body.contains("TOTAL_VARIANTS: usize = 562"),
+        "TOTAL_VARIANTS must match the live action_type_lock.rs value (562); file: {}",
         lock_rs.display()
     );
     // H-24: the sim-to-real parity variant must appear in ALL_VARIANTS.
@@ -337,6 +337,11 @@ fn e45_f7_action_type_lock_total_variants_updated() {
     assert!(
         body.contains("SsbActionType::SchemaVersionMismatch"),
         "ALL_VARIANTS must include SchemaVersionMismatch"
+    );
+    // I-35: the temporal tool-sequence enforcement variant must appear.
+    assert!(
+        body.contains("SsbActionType::ToolSequenceVerdict"),
+        "ALL_VARIANTS must include ToolSequenceVerdict (I-35 temporal sequence enforcement)"
     );
 }
 

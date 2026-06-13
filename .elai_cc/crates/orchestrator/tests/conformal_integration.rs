@@ -20,7 +20,7 @@
 
 use elai_orchestrator::{
     agent_pool::dispatch_conformal_refusal,
-    conformal_calibration::{
+    calibration::{
         CalibrationCorpus, CalibrationTuple, CorpusSource, RefusalDecision,
         VecConformalRefusalDecidedEmitter, VecConformalTauComputedEmitter, DEFAULT_EPSILON,
     },

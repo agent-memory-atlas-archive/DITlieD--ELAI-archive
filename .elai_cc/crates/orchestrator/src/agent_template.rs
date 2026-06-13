@@ -228,9 +228,8 @@ pub fn build_agent_prompt(
 #[must_use]
 pub fn build_agent_system_preamble(agent_type: &str) -> String {
     format!(
-        "You are a background sub-agent of type `{agent_type}`. \
-         Work only on the delegated task, use only the tools available to you, \
-         do not ask the user questions, and finish with a concise result."
+        include_str!("prompts/agent_preamble.md"),
+        agent_type = agent_type,
     )
 }
 

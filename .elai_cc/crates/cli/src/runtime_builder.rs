@@ -329,6 +329,10 @@ pub(crate) fn build_runtime_with_plugin_state(
         // H-34: per-turn MCP tool-set injector. Cloned from the same mcp_state
         // that the CliToolExecutor uses so both share the same McpServerManager.
         mcp_state_for_injector: mcp_state.clone(),
+        // I-10: PrefixInvarianceGuard cumulative hit/miss counters, seeded zero.
+        // Accumulate across turns in this session; guard fires when miss-rate > 10%.
+        cache_guard_hits: 0,
+        cache_guard_misses: 0,
     };
 
     // Load elai_cc.toml from the working directory. Defaults are used when absent.

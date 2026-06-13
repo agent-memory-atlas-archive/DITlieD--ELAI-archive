@@ -50,6 +50,10 @@
     cache_creation_tokens: 0,
     cache_read_tokens: 0,
     redaction_count: 0,
+    // I-10: default undefined (no-data) until CacheEconomicsEvent rows arrive.
+    ttl_tier: undefined,
+    breakeven_reads: undefined,
+    guard_trips_today: undefined,
   });
   // C-5 follow-on (SCHEMA_VERSION 103): latest routing status banners.
   // Each sub-field is null until the runtime emits a row of that type.
@@ -275,6 +279,35 @@
       <span class="cloud-panel__hint mono">measured · cache-read fraction (today)</span>
     </div>
   </div>
+
+  <!-- I-10: cache-economics planner fields. Hidden when no CacheEconomicsEvent rows
+       exist yet (ttl_tier undefined = no cloud calls with economics planner active). -->
+  {#if spend.ttl_tier !== undefined}
+    <div class="cloud-panel__row">
+      <span class="cloud-panel__label mono">TTL tier</span>
+      <div class="cloud-panel__control">
+        <span class="mono cloud-panel__metric">{spend.ttl_tier}</span>
+        <span class="cloud-panel__hint mono">breakeven: {spend.breakeven_reads ?? 0} reads</span>
+      </div>
+    </div>
+    <div class="cloud-panel__row">
+      <span class="cloud-panel__label mono">Guard trips today</span>
+      <div class="cloud-panel__control">
+        <span class="mono cloud-panel__metric" class:is-warn={(spend.guard_trips_today ?? 0) > 0}>
+          {spend.guard_trips_today ?? 0}
+        </span>
+        <span class="cloud-panel__hint mono">unexplained miss-rate &gt;10%</span>
+      </div>
+    </div>
+  {:else}
+    <div class="cloud-panel__row">
+      <span class="cloud-panel__label mono">TTL tier</span>
+      <div class="cloud-panel__control">
+        <span class="mono cloud-panel__metric">--</span>
+        <span class="cloud-panel__hint mono">no cloud calls yet</span>
+      </div>
+    </div>
+  {/if}
 
   {#if loading}
     <div class="cloud-panel__loading mono">loading…</div>

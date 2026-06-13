@@ -639,7 +639,7 @@
             // Inject digest summary as a status card in the stream.
             commands.appendCard('status', {
               kind: 'status',
-              text: `[H-51 Tiered Load] Resumed topic '${result.topic_slug}'. Digest loaded (${result.loaded_tokens} tokens).`,
+              message: `[H-51 Tiered Load] Resumed topic '${result.topic_slug}'. Digest loaded (${result.loaded_tokens} tokens).`,
             });
           }
           handoffDismissed = true;

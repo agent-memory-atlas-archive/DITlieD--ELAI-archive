@@ -533,6 +533,15 @@ impl Adversary for MockAdversary {
 }
 
 // ---------------------------------------------------------------------------
+// CloudAdversary — re-export from dedicated module (P0-1 / MR-1 fix)
+// ---------------------------------------------------------------------------
+//
+// The CloudAdversary struct + impl live in `crate::cloud_adversary` to keep
+// this file under the MR-1 1000-line boundary. Re-exported here so all
+// existing `crate::adversary::CloudAdversary` paths remain valid.
+pub use crate::cloud_adversary::CloudAdversary;
+
+// ---------------------------------------------------------------------------
 // heterogeneous_verifier_check — pure predicate
 // ---------------------------------------------------------------------------
 
@@ -628,16 +637,20 @@ pub fn adversary_verdict_required(phase: &PhaseKind) -> bool {
     phase.requires_cross_family_adversary()
 }
 
-/// E-6 — Pick a [`ModelFamily`] for the adversary backend such that it does
-/// NOT match the executor's family. Returns `Ok(family)` on success;
+/// E-6 / P0-1 — Pick a [`ModelFamily`] for the adversary backend such that it
+/// does NOT match the executor's family. Returns `Ok(family)` on success;
 /// `Err(AdversaryError::SameFamilyPairing)` when only the executor's family
 /// is available AND `allow_cloud=false`. When `allow_cloud=true` AND the
 /// executor is not already on Anthropic, falls through to
 /// [`ModelFamily::Anthropic`] as the cloud-Sonnet route.
 ///
 /// `available` is the slice of locally-mapped families per
-/// [`crate::per_role_runtime::PerRoleRuntime`]. `allow_cloud` reflects
-/// the `ELAI_ALLOW_CLOUD_ADVERSARY` env var resolved by the caller.
+/// [`crate::per_role_runtime::PerRoleRuntime`]. `allow_cloud` reflects the
+/// `ELAI_ALLOW_CLOUD_ADVERSARY` env var, which is resolved at boot time by
+/// `build_task_runner_wiring` (D-025 pool-resolution doctrine: call this
+/// function ONCE at boot, store the result in
+/// `RuntimeWiring::adversary_runtime`, thread onto `TaskRunnerConfig` via
+/// `apply_task_runner_wiring`; never call it per-dispatch).
 pub fn route_cross_family(
     executor_family: &ModelFamily,
     available: &[ModelFamily],

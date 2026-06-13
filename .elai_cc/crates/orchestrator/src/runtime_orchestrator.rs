@@ -362,6 +362,40 @@ impl RuntimeOrchestrator {
                                 "ssb write_payload failed for backend_cost_accrued"
                             );
                         }
+                    } else if let Some(ssb) = self.ssb.as_ref() {
+                        // P0-3 — local backends have zero marginal API cost.
+                        // Emit BackendCostAccrued with est_cost_micros=0 so
+                        // the H-9 cockpit and E-39 CostPanel see local-lane
+                        // activity. Gate on tokens_in > 0 || tokens_out > 0
+                        // to suppress the sidecar parse-error (0,0,0) noise
+                        // rows (sidecar.rs:249 returns usage=(0,0) on error).
+                        let (tokens_in, tokens_out) = response.usage;
+                        if backend.is_local() && (tokens_in > 0 || tokens_out > 0) {
+                            let payload =
+                                SsbPayload::BackendCostAccrued(BackendCostAccruedPayload {
+                                    backend_name_hash: backend_name_hash(backend),
+                                    role_name_hash: role_name_hash(role),
+                                    tokens_in,
+                                    tokens_out,
+                                    est_cost_micros: 0,
+                                    ts_ms: u64::try_from(now_ms()).unwrap_or(0),
+                                });
+                            if let Err(e) = ssb
+                                .write_payload(
+                                    "runtime_orchestrator",
+                                    0,
+                                    payload,
+                                    Vec::new(),
+                                )
+                                .await
+                            {
+                                warn!(
+                                    target = "runtime_orchestrator",
+                                    error = %e,
+                                    "ssb write_payload failed for local backend_cost_accrued"
+                                );
+                            }
+                        }
                     }
                     return Ok(CompleteOutcome {
                         response,

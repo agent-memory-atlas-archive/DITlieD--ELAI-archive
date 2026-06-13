@@ -45,6 +45,10 @@ pub(crate) fn run(action: SkillsAction, output_format: CliOutputFormat) -> Resul
         }
         SkillsAction::LibraryShow { id } => run_library_show(&id, output_format),
         SkillsAction::LibraryTick => run_library_tick(output_format),
+        // I-12: evidence-gated playbook export.
+        SkillsAction::PlaybookExport { out_path, emit_ssb } => {
+            run_playbook_export(out_path, emit_ssb, output_format)
+        }
     }
 }
 
@@ -974,6 +978,77 @@ fn run_library_tick(output_format: CliOutputFormat) -> Result<(), String> {
                     d.staleness_score
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+/// I-12: export verified ACTIVE rules to AGENTS.md-compatible block.
+///
+/// Opens the rules DB from the default project root, runs `PlaybookCurator::export_verified`,
+/// and prints the export path (or JSON with `--json`). Emits PlaybookEvent{Exported} to SSB
+/// when `emit_ssb` is true.
+fn run_playbook_export(
+    out_path: Option<String>,
+    emit_ssb: bool,
+    output_format: CliOutputFormat,
+) -> Result<(), String> {
+    use elai_orchestrator::rule_curator::PlaybookCurator;
+
+    let root = project_root();
+    let export_path: PathBuf = out_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("AGENTS.md"));
+
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    let curator = PlaybookCurator::from_project_root(&root, Arc::clone(&clock));
+
+    let ssb_db = sessions_dir_path(&root).join("ssb.db");
+    if let Some(parent) = ssb_db.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("I-12: cannot create session dir {}: {e}", parent.display()))?;
+    }
+    let ssb_cfg = SsbConfig {
+        db_path: ssb_db,
+        pool_size: None,
+        project_id: "default".to_owned(),
+        session_id: "cli-playbook-export".to_owned(),
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("I-12: tokio runtime: {e}"))?;
+
+    let export_path_for_print = export_path.clone();
+    let (entries_exported, outcome_row_ids) = rt
+        .block_on(async move {
+            let ssb = Ssb::new(ssb_cfg, Arc::clone(&clock))
+                .map_err(|e| format!("I-12: SSB open: {e}"))?;
+            let ssb = Arc::new(ssb);
+            let report = curator
+                .export_verified(&ssb, &export_path, emit_ssb)
+                .await
+                .map_err(|e| format!("I-12: export_verified: {e}"))?;
+            Ok::<_, String>((report.entries_exported, report.outcome_row_ids))
+        })?;
+
+    match output_format {
+        CliOutputFormat::Json => {
+            let json = serde_json::json!({
+                "entries_exported": entries_exported,
+                "path": export_path_for_print.to_string_lossy(),
+                "outcome_row_ids": outcome_row_ids,
+            });
+            println!("{}", serde_json::to_string_pretty(&json).unwrap_or_default());
+        }
+        _ => {
+            println!(
+                "playbook export: {} entries written to {}",
+                entries_exported,
+                export_path_for_print.display()
+            );
         }
     }
     Ok(())

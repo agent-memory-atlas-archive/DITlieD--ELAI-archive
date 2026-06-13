@@ -6,11 +6,18 @@ pub mod agent_role_dispatcher;
 // reviewer/auditor/critic/adversary role gets ZERO user-memory. Consumed by the CLI prompt-
 // assembly path (report_fns::build_system_prompt) and the user_memory_capture producer.
 pub mod user_memory_firewall;
+// I-13: Stage-2 write-time memory guard (aho-corasick invisible-Unicode +
+// confusable-shell scan). Composes the Stage-1 classify() gate in
+// elai_memory::defense. Gated behind ELAI_MEMORY_GUARD_ENABLE (default-OFF).
+// Production callers: user_memory_capture.rs (CHOKEPOINT 1) + memory_cmd.rs (CHOKEPOINT 2).
+pub mod memory_guard;
 pub mod agent_template;
 // D-13: adversary role + cross-family heterogeneous-verifier check.
 // Producer side of the adversarial-verification pass; consumed by
 // `agent_pool::run_adversarial_pass`. Grounding: arxiv:2403.07974 (T1).
 pub mod adversary;
+// P0-1 MR-1 fix: CloudAdversary extracted from adversary.rs; re-exported via adversary.
+pub mod cloud_adversary;
 // E-6: MAST 14-mode failure taxonomy (Cemri et al. 2025 arXiv:2503.13657).
 // Citation correction from plan's bad cite 2406.12624 (ID_COLLISION)
 // documented in workflow/reasoning/E-6-decisions.md DECISION-1 +
@@ -50,6 +57,15 @@ pub mod role_ablation;
 pub mod rag_challenger;
 pub mod cot_proof;
 pub mod cache_check;
+// I-10: prefix invariance + TTL tiering + cache-hit hard guard.
+// Provides CacheEconomicsPlanner (TTL tier selector), PrefixInvarianceGuard
+// (miss-rate monitor + blake3 prefix diff), and max_tokens_clamp (schema-bound
+// helper). Emits CacheEconomicsEvent SSB rows. Composes on H-1/H-2 shipped
+// substrate; never re-implements apply_anthropic_cache_markers or update_breakpoints.
+// Default-ON kill-switch: ELAI_CACHE_ECONOMICS_DISABLE=1.
+pub mod cache_economics;
+// I-8: dead-end fingerprint cache (voluntary abort / spiral prevention).
+pub mod dead_end_cache;
 pub mod grc_blockquote;
 // E-10 P5 wire-on (offline-buildable) -- per-VRAM tier matrix + cloud-default
 // switch test producers. Reuse `CriticTilePhase::TierMatrix` /
@@ -154,6 +170,17 @@ pub mod context_budget;
 // ELAI_CONTEXT_POLICY_DISABLE=1. No new SSB variant (reuses ContextReduction
 // per GD-1). Wire-in points: conversation.rs:789 + live_cli.rs:1185.
 pub mod context_policy;
+// I-14: deterministic context compression middleware (CACHE-INVARIANT ECONOMICS).
+// Tier-1 AstFold (tree-sitter body elision) + LspSlice (compiler-error slicing),
+// each journaled as a reversible ContextTransformReceipt SSB row (ID-3). Wired at
+// the tool-result byte seam via AgentRpcServer::transform_tool_output (ipc_accept.rs).
+pub mod context_transform;
+// I-5: pristine context injector -- per-branch context rebuild excluding failed
+// sibling tracebacks + compressed contrastive constraint (<=30 tokens). Emits
+// ContextPruned SSB rows (SCHEMA_VERSION 247). Wire-dark until I-4 SearchLadder
+// ships (Wave 4). Composes H-6/H-50/E-19. Production caller: I-4
+// search/ladder.rs::SearchLadder::run_best_of_n (WIRE-DARK[I-5]).
+pub mod pristine_path_filter;
 // H-51: cross-session sleep-time handoff digest author + open-topic detector.
 // Emits HandoffLifecycleEvent SSB rows (SCHEMA_VERSION 227). Wire-in points:
 //   - LiveCli::drop (DigestWritten)
@@ -197,8 +224,34 @@ pub mod github_pr;
 // FRAMING substate before Phase 4D Recursive Decomposition. Public surface
 // re-exported below (FramedIdea, ProjectClass, CriticCategory, etc.).
 pub mod idea_framing;
+// I-41: spec-time critique lenses (L1-L8). Advisory-only; zero path to any
+// accept/block verdict. Lens findings are surfaced to humans / plan-improvement
+// and emitted as CritiqueLensFinding SSB rows (advisory=true). Never imported
+// by directive.rs or any gate-plane module. Module-level isolation is
+// compiler-enforced: critique/ does NOT import CriticFinding or Severity.
+pub mod critique;
 pub mod hooks;
 pub mod hook_dispatcher;
+// I-1: directive supervisor enforcement plane. The generator emits pure
+// Directive structs; the Supervisor is the sole side-effect executor, gate-
+// checking (F-1/E-30/G-3) before execution and firing E-44 saga compensation
+// on crash. Tier-1 in-process; OS-process separation is Tier-2 (gated).
+pub mod directive;
+// I-32: schema-first role contracts for factual/code agent roles. Replaces narrative
+// persona blocks in Executor/Researcher/ContextCompiler/Designer/MemoryWriter prompts
+// with typed I/O constraint lists. Alignment-dependent roles (Auditor, IdeaCritic,
+// InjectionClassifier) are unchanged. Evidence-gated per ID-5 via A/B harness.
+pub mod role_contracts;
+// I-35: temporal tool-sequence enforcement — ordered history rules at the I-1 supervisor
+// dispatch plane. TOML-declared rules (R8-frozen) evaluated over an ordered HistoryEntry
+// buffer; CDA-immune (predicates evaluate tool-call history, not token content).
+// Adds ToolSequenceVerdict SSB action_type (Pattern-2 3-arm: Allowed/OrderViolation/HaltEnforced).
+pub mod tool_sequence;
+// I-33: mechanical decision governance primitives -- CEFL (Candidate
+// Externalization for Fair Labelling), I6Q rationale-quality validator,
+// commit-reveal integrity, and the governed_prompt_decision production call
+// site. Emits GovernancePrimitiveFired SSB rows (3-arm Kind).
+pub mod decision_governance;
 // H-36: completion / needs-input dev-event notification dispatcher.
 // Fires terminal escape + optional OS notification + writes agent_notification_emitted SSB row.
 // Mount points: task_runner.rs post-PhaseComplete (Completion) and
@@ -277,6 +330,12 @@ pub mod rra;
 // (trust-without-re-running, SLSA-VSA). CONSUMES the G-2 manifest (GD-1); extends
 // F-4 off-machine. Article-50 honest posture (E-38, DD6).
 pub mod attestation;
+// I-34 (SCHEMA_VERSION 234): CRANE hybrid grammar-pin gate caller. Orchestrator-layer
+// entry point for the three-layer grammar hardening: (1) crane_adaptive_eligible gate
+// eligibility check, (2) blake3 pin manifest verification via providers::grammar_store,
+// (3) post-parse schema re-validation via providers::re_validate_output. Emits
+// GrammarGateEvent SSB rows; routes PostParseRejected to D-16 conformal-refusal seam.
+pub mod grammar_gate;
 // G-5 (SCHEMA_VERSION 212): reviewer-cockpit Diff-Surface-to-Review (DSR)
 // scoring engine. Pure function over parsed git-diff hunks + the per-file
 // deterministic signals decoded from the SSB stream. CONSUMES F-4/F-1/F-2a
@@ -659,6 +718,15 @@ pub mod cross_context;
 // observable smoke drives it with no model. See workflow/reasoning/
 // D-3-decisions.md.
 pub mod verifier_adapters;
+// I-17: tri-layer evaluation stack (the veto-supreme branch scorer). Composes the
+// SHIPPED substrate (D-11 checker registry + F-1 VibeGate + F-9 dep-gate at L1;
+// I-23 conformal calibration at L2; D-13 cross-family adversary at L3) into a
+// per-branch VerdictRow + TriLayerVerdict SSB row (Pattern-2 4-arm:
+// HardVeto/ScoredSurvivor/DisagreementEscalated/FlakeQuarantined). NEVER restates
+// the substrate (GD-1); ID-4 veto supremacy is structural (literal 0.0 early
+// return, l2_call_count==0). Wire-dark via ELAI_TRI_LAYER_ENABLE; consumer is I-4
+// (Wave-4). Production hook: task_runner::dispatch_tri_layer_verdict.
+pub mod verifier_stack;
 // E-45: host-side cross-language drift detector. Diffs Rust orchestrator
 // boundary structs against the Python sidecar + Tauri TS mirror per the
 // pair registry loaded from `.elai_cc/cross-lang-pairs.toml`. Producer
@@ -730,6 +798,10 @@ pub mod rl;
 // the SSB payload's Option fields are flipped by a SECONDARY pass.
 // See workflow/reasoning/D-30-decisions.md.
 pub mod calibration_bootstrap;
+// I-23: unified conformal calibration facade — pure re-export of
+// conformal_calibration + calibration_bootstrap; the single import path
+// for all calibration consumers after the I-23 migration.
+pub mod calibration;
 // D-6: Time-windowed held-out task store + 9-gram contamination filter.
 // LiveCodeBench-style (arxiv:2403.07974, T1) contamination defense for
 // the BAI promotion-gate eval pool. Sibling of `bai.rs`; consumed by
@@ -1027,6 +1099,9 @@ pub mod task_runner;
 pub mod runtime_setup;
 /// C-13 — WIP commit squash helper.
 pub mod wip_squash;
+// I-3 — shared atomic-write helpers (tmp+sync_all+rename) used by all
+// checkpoint write sites in this crate.
+pub mod util;
 // Phase B2 — IPC accept loop: bind/accept/route cycle for orchestrator-side
 // agent session management. Exposes AgentRpcServer trait + InferOutcome +
 // ToolOutcome + bind_session_listener + accept_one + run_agent_session.
@@ -1068,6 +1143,13 @@ pub mod worker_boot;
 // Default-ON; kill-switch ELAI_TRIAL_LEDGER_DISABLE. See
 // workflow/reasoning/H-17-decisions.md.
 pub mod trial_ledger;
+// I-12 (SCHEMA_VERSION 251): evidence-gated playbook curator. Promotes rule entries only
+// when linked to >=k SSB-verified successful outcome rows; carries measured lift; demotes
+// by the same ledger; exports verified content to AGENTS.md / skills formats.
+// Feeds the Phase-3F PROPOSED->CANDIDATE->SHADOW->ACTIVE->RETIRED lifecycle (never replaces it).
+// Production callers: (a) offline tick in LiveCli::build_local_knowledge_stack,
+//   (b) skills_cmd::run SkillsAction::PlaybookExport arm. Default-ON (ID-6 ledger is mandatory).
+pub mod rule_curator;
 // H-18 (SCHEMA_VERSION 224): Deflated Sharpe / PBO / MinBTL promotion gate.
 // The #1 net-new trust gate (T-2). Fail-closed on TrialCountMissing (TD-1)
 // and absent PBO (R1/R2). Thresholds LOCKED in mutable=0 rule seed.
@@ -1204,6 +1286,15 @@ pub mod drift_interlock;
 // the layout + decision-doc workflow/reasoning/phase-4J-decisions.md.
 #[cfg(feature = "empire")]
 pub mod empire;
+
+// I-11: typed, versioned BeliefState for cross-model / cross-tier handoffs.
+// Replaces raw session-history passthrough on the cloud escalation path.
+// Wired into task_runner (adaptive_reduce + evaluate_handoff production callers).
+pub mod belief_state;
+pub use belief_state::{
+    run_honesty_job_if_due, BeliefState, BeliefStateError, HonestyJob, HonestyDeltaPayload,
+    TriedApproach, BELIEF_STATE_SCHEMA_VERSION, HONESTY_JOB_INTERVAL,
+};
 
 // Re-export modules from external crates under their old names so that
 // internal `crate::config::*`, `crate::sandbox::*`, etc. paths still resolve.
@@ -1369,6 +1460,12 @@ pub use hook_dispatcher::{
     HOOK_EVENT_CATEGORY, HOOK_T1_BUDGET_MS, HOOK_T2_BUDGET_MS, HOOK_T3_BUDGET_MS,
     PRE_COMPACT_HANDOFF_FRACTION, SANITIZED_BLOCK_MESSAGE,
 };
+// I-1: directive supervisor enforcement plane. Re-exported so the i1 contract
+// test (and Tier-2 callers) can construct directives + supervisors and assert
+// gate outcomes without reaching into the module path directly.
+pub use directive::{
+    Directive, DirectiveOutcome, GateOutcome, InProcessSupervisor, Supervisor, SupervisorError,
+};
 pub use shortcoder_hook::{
     ShortCoderHook, ShortCoderHookError, ShortCoderOutcome, ELAI_DISABLE_SHORTCODER_ENV,
     SHORTCODER_MAX_RULES_EMITTED,
@@ -1468,6 +1565,14 @@ pub use elai_core::sandbox::{
 pub use sandbox::{
     AgentEnvironment, AgentProcess, AgentSandbox, AppContainerConfig, JobObjectLimits,
     PlatformSandboxHandle, SandboxError, SandboxHandle, SelfModificationLocks, create_sandbox,
+};
+// I-2: CoW workspace isolation surface. Re-exported at crate root so the BSP
+// engine, task_runner dispatch path, and the i2 contract test program against
+// `elai_orchestrator::{BranchWorkspace, WorktreePoolImpl, ...}` without the
+// `::sandbox::branch_workspace::` path. NOT a replacement for `AgentSandbox`
+// (the per-process face) — they compose.
+pub use sandbox::{
+    BranchRoot, BranchWorkspace, BranchWorkspaceError, WorkspaceMergeResult, WorktreePoolImpl,
 };
 // Phase B1 — Tier C Sandbox policy surface. Re-exported at crate root
 // so the in-process ToolDispatcher (lives in `elai-tools`) and contract
@@ -1790,6 +1895,17 @@ pub use ssb::{
     // H-39 (SCHEMA_VERSION 218): AbstentionScored bench beacon.
     // Re-exported so the h39 contract test can construct the payload directly.
     AbstentionScoredPayload,
+    // I-8 (SCHEMA_VERSION 238): TrajectoryAborted voluntary abort + dead-end hash pruning
+    // + halting-bound seam. Re-exported so the i8 contract test can construct / assert
+    // payloads without reaching into `orchestrator::ssb::*` directly.
+    TrajectoryAbortedKind, TrajectoryAbortedPayload,
+    // I-1 (SCHEMA_VERSION 239): DirectiveExecuted directive-supervisor outcome. Re-exported
+    // so the i1 contract test can construct / decode payloads without reaching into
+    // `orchestrator::ssb::*` directly (mirrors the I-8 TrajectoryAborted re-export above).
+    DirectiveExecutedKind, DirectiveExecutedPayload,
+    // I-33 (SCHEMA_VERSION 240): GovernancePrimitiveFired CEFL/I6Q/commit-reveal governance.
+    // Re-exported so the i33 contract test can construct / decode payloads.
+    GovernancePrimitiveFiredKind, GovernancePrimitiveFiredPayload,
     // H-45 (SCHEMA_VERSION 223): PromotionScoreAggregated worst-case/variance-penalized
     // aggregate promotion score. Re-exported so h45 contract test + dashboard can decode.
     PromotionScoreAggregatedKind, PromotionScoreAggregatedPayload,
@@ -1798,6 +1914,32 @@ pub use ssb::{
     // + dashboard get_clade_selections can construct/decode without reaching into
     // `orchestrator::ssb::*` directly.
     CladeSelectedKind, CladeSelectedPayload,
+    // I-32 (SCHEMA_VERSION 241): RoleContractApplied persona-strip / retain / A/B-delta beacon.
+    // Re-exported so the i32 contract test can construct / decode payloads.
+    RoleContractAppliedKind, RoleContractAppliedPayload,
+    // I-35 (SCHEMA_VERSION 242): ToolSequenceVerdict temporal tool-sequence enforcement beacon.
+    // Re-exported so the i35 contract test can construct / decode payloads.
+    ToolSequenceVerdictKind, ToolSequenceVerdictPayload,
+    // I-47 (SCHEMA_VERSION 245): PromptHardeningApplied verifier-input XML tagging +
+    // worker rule injection beacon. Re-exported so the i47 contract test + the
+    // tools crate prompt-hardening module can construct / decode payloads.
+    PromptHardeningAppliedKind, PromptHardeningAppliedPayload,
+};
+// I-32: role_contracts public surface. Re-exported so report_fns (in elai-cli) and
+// the i32 contract test can access RoleContract / RoleContractStore / apply_to_system_prompt
+// without reaching into the orchestrator internals.
+pub use role_contracts::{
+    agent_role_from_snake_case, apply_to_system_prompt, ApplyOutcome, RoleContract,
+    RoleContractStore,
+};
+// I-35: tool_sequence public surface. Re-exported so the i35 contract test and the
+// bench_sequence_probe_cmd.rs CLI driver can construct supervisors with sequence
+// rules, inject HistoryEntry values, and assert on ToolSequenceVerdict without
+// reaching into orchestrator internals.
+pub use tool_sequence::{
+    emit_tool_sequence_verdict, evaluate_sequence_rule, evaluate_sequence_rules,
+    tool_class_from_action_type, EnforcementAction, HistoryBuffer, HistoryEntry,
+    SequencePredicate, SequenceRule, SequenceRuleSet, ToolSequenceVerdict,
 };
 // G-5: reviewer-cockpit DSR scoring engine public surface. Re-exported so the
 // cli review_cmd + dashboard-v2 commands_g5.rs + contract tests can score a
@@ -1821,7 +1963,8 @@ pub use review_anchor::{
 // can build / write / verify a .rra without reaching into `orchestrator::rra`
 // internals.
 pub use rra::{
-    build_rra, compute_root, read_rra, verify_artifact, verify_rra, write_rra,
+    build_rra, canonical_objective_bytes, compute_root, read_rra, verify_artifact,
+    verify_artifact_with_objective, verify_rra, write_rra,
     GateVerdictHash, GuaranteeLevel, ReplayVerdict, RraError, RraEvent, RunArtifact,
     RRA_COMPRESSION_DEFERRED, RRA_FORMAT_VERSION, RRA_HEX_PREFIX_LEN,
 };

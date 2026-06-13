@@ -1,5 +1,8 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use blake3;
+use rustc_hash::FxHashMap;
 
 use crate::error::KnowledgeError;
 use crate::vector::ort_session::OrtSession;
@@ -12,6 +15,11 @@ use crate::vector::ort_session::OrtSession;
 /// candidates, then group by parent chunk and max-pool scores.
 /// Grounded: arag-interface.md L109-113.
 const SEMANTIC_OVERSAMPLE_FACTOR: usize = 3;
+
+/// I-15: TTL in seconds for in-process intermediate-summary cache entries.
+/// Five-minute session-stable window; a live reindex replaces the AragOrchestrator
+/// instance so no stale-chunk hazard exists.
+pub const INTERMEDIATE_SUMMARY_CACHE_TTL_SECS: u64 = 300;
 
 /// Maximum sentences to include in a progressive-disclosure snippet.
 /// Grounded: arag-interface.md L273-280.
@@ -111,6 +119,55 @@ impl ContextTracker {
 // AragOrchestrator
 // ---------------------------------------------------------------------------
 
+/// I-15: An in-memory entry for the blake3-keyed exact semantic-search cache.
+#[derive(Debug, Clone)]
+struct ExactCacheEntry {
+    results: Vec<RetrievalResult>,
+    /// Unix-seconds insertion timestamp for TTL enforcement.
+    cached_at: u64,
+}
+
+/// I-15: In-memory per-query intermediate-summary cache.
+///
+/// Keyed on blake3(query_bytes). Lifetime = AragOrchestrator instance
+/// (a live reindex replaces the orchestrator so no stale-chunk hazard exists).
+/// CONFINEMENT: never persisted to disk; not the OracleAnswerCache disk store.
+/// All code-gen path queries that never reach this function are safe by design:
+/// AragOrchestrator is only used on the `/research|/ask` pipeline, not on the
+/// code-gen path (H-8 confinement rule inherited verbatim).
+type ExactCache = Arc<Mutex<FxHashMap<[u8; 32], ExactCacheEntry>>>;
+
+/// blake3 helper mirroring oracle_cache's pattern; returns a 32-byte digest.
+fn blake3_32_arag(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(bytes);
+    let hash = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hash.as_bytes());
+    out
+}
+
+/// I-15: Look up a cached result set for `query`. Returns `Some` only when
+/// the entry exists AND is fresh (within `INTERMEDIATE_SUMMARY_CACHE_TTL_SECS`).
+/// Returns `None` on lock-poison or a stale entry (stale entries are evicted).
+fn exact_cache_lookup(cache: &ExactCache, query_hash: [u8; 32], now_secs: u64) -> Option<Vec<RetrievalResult>> {
+    let mut guard = cache.lock().ok()?;
+    let entry = guard.get(&query_hash)?.clone();
+    if now_secs.saturating_sub(entry.cached_at) >= INTERMEDIATE_SUMMARY_CACHE_TTL_SECS {
+        guard.remove(&query_hash);
+        return None;
+    }
+    Some(entry.results)
+}
+
+/// I-15: Insert a result set for `query_hash` into the cache.
+/// Silently drops on lock-poison (non-fatal path).
+fn exact_cache_insert(cache: &ExactCache, query_hash: [u8; 32], results: Vec<RetrievalResult>, now_secs: u64) {
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(query_hash, ExactCacheEntry { results, cached_at: now_secs });
+    }
+}
+
 /// Adaptive RAG orchestrator: iteratively selects retrieval tools
 /// based on context and token budget constraints.
 #[derive(Debug, Clone)]
@@ -128,6 +185,12 @@ pub struct AragOrchestrator {
     /// pre-C-8 embedding-norm proxy with a `tracing::warn!` so callers
     /// are not silently degraded.
     embedder: Option<Arc<OrtSession>>,
+    /// I-15: in-memory session-stable blake3-keyed exact-match cache for
+    /// intermediate semantic-search results (DKG chunk summaries).
+    /// Arc<Mutex<...>> so Clone preserves the shared cache across clones
+    /// (QueryPipeline may clone the orchestrator for concurrent calls).
+    /// CONFINEMENT: not persisted; never fed code-gen results.
+    exact_cache: ExactCache,
 }
 
 impl AragOrchestrator {
@@ -136,6 +199,7 @@ impl AragOrchestrator {
             config,
             chunks: Vec::new(),
             embedder: None,
+            exact_cache: Arc::new(Mutex::new(FxHashMap::default())),
         }
     }
 
@@ -147,6 +211,13 @@ impl AragOrchestrator {
     pub fn with_embedder(mut self, embedder: Arc<OrtSession>) -> Self {
         self.embedder = Some(embedder);
         self
+    }
+
+    /// I-15: Return the number of entries currently held in the in-memory
+    /// exact cache.  Used by contract tests and cache-efficiency reporting
+    /// without exposing the inner FxHashMap.
+    pub fn exact_cache_len(&self) -> usize {
+        self.exact_cache.lock().map(|g| g.len()).unwrap_or(0)
     }
 
     /// Add a chunk to the in-memory corpus for keyword and semantic search.
@@ -284,6 +355,30 @@ impl AragOrchestrator {
     /// C-17 contract: when the embedder is present and `embed()` succeeded,
     /// dot-product is the scoring function. The fallback is never the
     /// happy path.
+    /// I-15: intermediate_summary_cache_lookup — public surface for wiring-contract
+    /// verification. Returns a hit and the cached Vec<RetrievalResult> if present
+    /// and fresh, otherwise None.  Delegates to the private exact_cache_lookup helper.
+    pub fn intermediate_summary_cache_lookup(
+        &self,
+        query: &str,
+        now_secs: u64,
+    ) -> Option<Vec<RetrievalResult>> {
+        let key = blake3_32_arag(query.as_bytes());
+        exact_cache_lookup(&self.exact_cache, key, now_secs)
+    }
+
+    /// I-15: intermediate_summary_cache_insert — public surface for wiring-contract
+    /// verification. Inserts a result set keyed on blake3(query_bytes).
+    pub fn intermediate_summary_cache_insert(
+        &self,
+        query: &str,
+        results: Vec<RetrievalResult>,
+        now_secs: u64,
+    ) {
+        let key = blake3_32_arag(query.as_bytes());
+        exact_cache_insert(&self.exact_cache, key, results, now_secs);
+    }
+
     fn semantic_search(
         &self,
         query: &str,
@@ -291,6 +386,22 @@ impl AragOrchestrator {
     ) -> Result<Vec<RetrievalResult>, KnowledgeError> {
         if self.chunks.is_empty() {
             return Ok(Vec::new());
+        }
+
+        // I-15: blake3 exact fast path. O(1) lookup BEFORE any ONNX embedding
+        // call (WIRING_CONTRACT ordering invariant: NO embedder.embed(query) before
+        // this check). Clock is real-time; the cache is session-stable in-memory only.
+        let query_hash = blake3_32_arag(query.as_bytes());
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Some(cached) = exact_cache_lookup(&self.exact_cache, query_hash, now_secs) {
+            tracing::debug!(
+                query_hash_prefix = %format!("{:02x}{:02x}{:02x}{:02x}", query_hash[0], query_hash[1], query_hash[2], query_hash[3]),
+                "arag.semantic_search: blake3 exact cache hit (ONNX embedding skipped)",
+            );
+            return Ok(cached);
         }
 
         let candidate_count = top_k.saturating_mul(SEMANTIC_OVERSAMPLE_FACTOR).min(self.chunks.len());
@@ -337,7 +448,7 @@ impl AragOrchestrator {
         // Max-pool: already at chunk level. Take top_k.
         chunk_scores.truncate(top_k);
 
-        let results = chunk_scores
+        let results: Vec<RetrievalResult> = chunk_scores
             .into_iter()
             .map(|(idx, score)| {
                 let chunk = &self.chunks[idx];
@@ -350,6 +461,13 @@ impl AragOrchestrator {
                 }
             })
             .collect();
+
+        // I-15: insert results into the in-memory intermediate-summary cache
+        // so a repeated identical query short-circuits on the blake3 path above.
+        // Non-empty check avoids caching degraded-mode empty results.
+        if !results.is_empty() {
+            exact_cache_insert(&self.exact_cache, query_hash, results.clone(), now_secs);
+        }
 
         Ok(results)
     }

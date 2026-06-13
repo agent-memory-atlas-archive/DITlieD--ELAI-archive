@@ -61,9 +61,24 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "mcp-schema-budget" {
         return parse_bench_mcp_schema_budget_args(&rest[1..]);
     }
+    if sub == "crane" {
+        return parse_bench_crane_args(&rest[1..]);
+    }
+    if sub == "qdelta" {
+        return parse_bench_qdelta_args(&rest[1..]);
+    }
+    if sub == "claim-scope" {
+        return parse_bench_claim_scope_args(&rest[1..]);
+    }
+    if sub == "governance-probe" {
+        return parse_bench_governance_probe_args(&rest[1..]);
+    }
+    if sub == "sequence-probe" {
+        return parse_bench_sequence_probe_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'safedelta' | 'staleness' | 'mcp-schema-budget')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'safedelta' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -881,6 +896,61 @@ fn parse_bench_mcp_schema_budget_args(rest: &[String]) -> Result<CliAction, Stri
     Ok(CliAction::BenchMcpSchemaBudget { json })
 }
 
+/// I-34 — parse `elai bench crane [--crane-fixture PATH] [--seed <u64>]`.
+///
+/// Deterministic CRANE grammar-pin gate fixture harness. No live inference runs
+/// (W-10 PENDING checkbox). `--crane-fixture` is the path to a `.ebnf` fixture
+/// file used for the blake3 pin verification arms; if omitted the harness uses
+/// a built-in synthetic fixture. `--seed` is passed through to the harness for
+/// reproducible test ordering; defaults to 42. Hand-rolled per the CLAUDE.md
+/// "no new clap dep" rule.
+fn parse_bench_crane_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut crane_fixture: Option<String> = None;
+    let mut seed: Option<u64> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--crane-fixture" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --crane-fixture".to_string())?;
+                crane_fixture = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--crane-fixture=") => {
+                crane_fixture = Some(flag["--crane-fixture=".len()..].to_string());
+                i += 1;
+            }
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|e| format!("invalid --seed value '{value}': {e}"))?,
+                );
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = Some(
+                    raw.parse::<u64>()
+                        .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?,
+                );
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench crane` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchCrane {
+        crane_fixture,
+        seed,
+    })
+}
+
 fn validate_bool_arg(name: &str, value: &str) -> Result<(), String> {
     match value {
         "true" | "false" | "1" | "0" | "TRUE" | "FALSE" | "True" | "False" => Ok(()),
@@ -888,4 +958,187 @@ fn validate_bool_arg(name: &str, value: &str) -> Result<(), String> {
             "invalid {name} {other:?}: expected 'true'|'false'|'1'|'0'"
         )),
     }
+}
+
+// ---------------------------------------------------------------------------
+// I-38: `elai bench qdelta --config <PATH> [--seed <u64>] [--json]`
+// ---------------------------------------------------------------------------
+
+fn parse_bench_qdelta_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut config: Option<String> = None;
+    let mut seed: u64 = 42;
+    let mut json: bool = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--config" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --config".to_string())?;
+                config = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--config=") => {
+                config = Some(flag["--config=".len()..].to_string());
+                i += 1;
+            }
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench qdelta` argument: {other}"));
+            }
+        }
+    }
+    let config = config
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "`bench qdelta` requires --config <PATH>".to_string())?;
+    Ok(crate::args::CliAction::BenchQdelta { config, seed, json })
+}
+
+// ---------------------------------------------------------------------------
+// I-43: `elai bench claim-scope [--suite <SUITE>] [--seed <u64>] [--json]`
+// ---------------------------------------------------------------------------
+
+/// I-43 — parse `elai bench claim-scope [--suite <SUITE>] [--seed <u64>] [--json]`.
+///
+/// `--suite` accepts a fixture suite label (default: "seccodeplt_claim_scope_fixture").
+/// `--seed` accepts a `u64` seed (default: 42).
+/// `--json` prints the full report JSON to stdout after the summary line.
+/// Hand-rolled per the CLAUDE.md "no new clap dep" rule.
+fn parse_bench_claim_scope_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut suite: Option<String> = None;
+    let mut seed: u64 = 42;
+    let mut json: bool = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--suite" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --suite".to_string())?;
+                suite = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--suite=") => {
+                suite = Some(flag["--suite=".len()..].to_string());
+                i += 1;
+            }
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench claim-scope` argument: {other}"));
+            }
+        }
+    }
+    Ok(crate::args::CliAction::BenchClaimScope { suite, seed, json })
+}
+
+// ---------------------------------------------------------------------------
+// I-35: `elai bench sequence-probe [--seed <u64>]`
+// ---------------------------------------------------------------------------
+
+/// Parse args for `elai bench sequence-probe`.
+///
+/// Hand-rolled per the CLAUDE.md "no new clap dep" rule. Only `--seed` is
+/// accepted; defaults to 42.
+fn parse_bench_sequence_probe_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut seed: u64 = 42;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench sequence-probe` argument: {other}"));
+            }
+        }
+    }
+    Ok(crate::args::CliAction::BenchSequenceProbe { seed })
+}
+
+// ---------------------------------------------------------------------------
+// I-33: `elai bench governance-probe [--seed <u64>]`
+// ---------------------------------------------------------------------------
+
+/// Parse args for `elai bench governance-probe`.
+///
+/// Hand-rolled per the CLAUDE.md "no new clap dep" rule. Only `--seed` is
+/// accepted; defaults to 42.
+fn parse_bench_governance_probe_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut seed: u64 = 42;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench governance-probe` argument: {other}"));
+            }
+        }
+    }
+    Ok(crate::args::CliAction::BenchGovernanceProbe { seed })
 }

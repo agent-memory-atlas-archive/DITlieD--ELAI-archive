@@ -325,6 +325,12 @@ pub(super) fn dispatch(
                                         query_hash_hex: oracle_key.query_hash_hex(),
                                         source_tier: elai_orchestrator::oracle_cache::source_tier_str(cached.source_tier).to_string(),
                                         cached_age_secs: cached.age_secs(now_secs),
+                                        // I-15: this is the query-level disk-backed cache hit
+                                        // (C-30 oracle path). The arag-layer blake3_exact path
+                                        // is tracked inside AragOrchestrator and surfaces only
+                                        // via the intermediate_summary_cache_lookup() seam.
+                                        // At this level the hit came from the oracle store.
+                                        source: Some("blake3_exact".to_string()),
                                     },
                                 );
                                 let ssb = ssb.clone();
@@ -508,6 +514,8 @@ pub(super) fn dispatch(
                                         elai_orchestrator::ssb::OracleCacheMissPayload {
                                             query_hash_hex: oracle_key.query_hash_hex(),
                                             confidence: elai_orchestrator::oracle_cache::confidence_str(answer.confidence).to_string(),
+                                            // I-15: full vector pipeline ran; this is always semantic_vector.
+                                            source: Some("semantic_vector".to_string()),
                                         },
                                     );
                                     let ssb = ssb.clone();

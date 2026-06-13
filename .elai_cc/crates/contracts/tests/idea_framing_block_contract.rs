@@ -48,6 +48,7 @@ async fn contract_block_on_unresolved_critic_at_round_3() {
         MAX_CRITIC_ROUNDS,
         None,
         "sess-block-test",
+        None,  // I-41: no advisory runtime in this contract fixture
     )
     .await;
     match result {
@@ -78,7 +79,7 @@ async fn contract_no_auto_advance_when_blocks_remain() {
     // Even if max_rounds is requested higher than MAX_CRITIC_ROUNDS, the
     // loop caps at 3. is_converged() must return false at the end.
     let mut framed = build_framed_with_block_condition();
-    let _ = run_critic_loop(&mut framed, 99, None, "sess-no-aa").await;
+    let _ = run_critic_loop(&mut framed, 99, None, "sess-no-aa", None).await;
     assert!(
         !framed.is_converged(),
         "CONTRACT: framed-idea with persistent BLOCK must NOT report converged"
@@ -119,7 +120,7 @@ async fn contract_critic_loop_emits_at_least_one_round_even_when_zero_findings()
         },
         critic_rounds: Vec::new(),
     };
-    let rounds = run_critic_loop(&mut framed, MAX_CRITIC_ROUNDS, None, "sess-zero-findings")
+    let rounds = run_critic_loop(&mut framed, MAX_CRITIC_ROUNDS, None, "sess-zero-findings", None)
         .await
         .expect("clean idea should converge");
     assert!(

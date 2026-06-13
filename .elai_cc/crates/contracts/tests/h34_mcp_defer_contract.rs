@@ -81,9 +81,26 @@ fn h34_f1_both_ssb_variants_exist_at_schema_213() {
         .join("tests")
         .join("action_type_lock.rs");
     let body = fs::read_to_string(&lock_rs).expect("read action_type_lock.rs");
+    // Floor check: TOTAL_VARIANTS >= 524 (H-34 authoring floor; exact-pin
+    // converted per F-2 pin doctrine so subsequent SSB bumps do not break this).
+    let total_variants_value: usize = body
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("const TOTAL_VARIANTS: usize = ") {
+                trimmed
+                    .trim_start_matches("const TOTAL_VARIANTS: usize = ")
+                    .trim_end_matches(';')
+                    .parse()
+                    .ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| panic!("could not parse TOTAL_VARIANTS from action_type_lock.rs"));
     assert!(
-        body.contains("TOTAL_VARIANTS: usize = 524"),
-        "action_type_lock.rs TOTAL_VARIANTS must be 524 for H-34 (found different value)"
+        total_variants_value >= 524,
+        "TOTAL_VARIANTS must be >= 524 (H-34 floor); got {total_variants_value}"
     );
 }
 

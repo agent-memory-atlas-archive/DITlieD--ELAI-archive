@@ -55,7 +55,7 @@ use elai_orchestrator::abstention_score::{
 use elai_orchestrator::benchmarks::seccodeplt_runner::{
     SecCodePltError, SecCodePltReport, SecCodePltRunner,
 };
-use elai_orchestrator::conformal_calibration::RefusalDecision;
+use elai_orchestrator::calibration::RefusalDecision;
 use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
 use elai_orchestrator::ssb::{AbstentionScoredPayload, InsecureRateMeasuredPayload};
 use elai_core::paths::sessions_dir_path;

@@ -158,6 +158,29 @@ pub trait AgentRpcServer: Send + Sync {
         tool_id: String,
         arguments: Vec<u8>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>>;
+
+    /// I-14: deterministic context-compression middleware seam.
+    ///
+    /// Called by `run_agent_session` on a SUCCESSFUL tool-result's bytes, AFTER
+    /// `handle_tool_request` resolves and BEFORE the `ToolResult` frame is written to
+    /// the agent. This is the only point where tool output is accessible as raw bytes
+    /// before it enters the agent's conversation context (the volatile tail), so it is
+    /// the canonical Tier-1 compression hook.
+    ///
+    /// The default impl is identity (returns `output` unchanged): harness / test RPC
+    /// servers ship no compression and no SSB receipt. The production server
+    /// (`ProductionAgentRpcServer`) overrides it to run `ContextTransformer::transform`
+    /// and journal a reversible `ContextTransformReceipt` SSB row (ID-3).
+    ///
+    /// `superstep` is forwarded onto the receipt row so the dashboard can correlate the
+    /// transform with the superstep it fired in.
+    fn transform_tool_output<'a>(
+        &'a self,
+        output: Vec<u8>,
+        _superstep: i64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<u8>> + Send + 'a>> {
+        Box::pin(async move { output })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +725,17 @@ pub async fn run_agent_session(
                             );
                         }
                     }
+                    // I-14: run the deterministic context-compression middleware on a
+                    // SUCCESSFUL tool result before it enters the agent context window.
+                    // The production RPC override transforms + journals a receipt; the
+                    // default (test/harness) impl is identity. Only successful results
+                    // are compressed -- a failure reason string is passed through so the
+                    // agent sees the error verbatim.
+                    let out = if ok {
+                        rpc.transform_tool_output(out, 0).await
+                    } else {
+                        out
+                    };
                     (out, ok)
                 };
                 let response_msg = IpcMessageType::ToolResult {

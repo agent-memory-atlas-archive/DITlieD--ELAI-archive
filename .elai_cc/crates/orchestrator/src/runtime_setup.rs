@@ -211,6 +211,25 @@ pub struct RuntimeWiring {
     /// [`build_production_hook_dispatcher`] so a tampered seed forces the
     /// VibeGate code-vuln axis to block fail-closed on every write.
     pub vibegate_seed_ok: bool,
+    /// P0-2 (E-19 reflection regression fix) — production reflection client for
+    /// micro-reflection emit on completed tasks (E-19). [`build_task_runner_wiring`]
+    /// constructs a [`SidecarReflectionAdapter`] wrapping a fresh
+    /// [`SidecarGroundingClient::default()`] and stores it here as
+    /// `Arc<dyn DynReflectionClient>`. When `ELAI_DISABLE_MICRO_REFLECTION`
+    /// is set the field is `None` and the reflection call sites short-circuit.
+    /// [`apply_task_runner_wiring`] assigns this directly onto
+    /// `TaskRunnerConfig::reflection_client`; all 5 `new_minimal()` construction
+    /// sites previously left that field at `None`.
+    pub reflection_client: Option<Arc<dyn crate::DynReflectionClient>>,
+    /// P0-1 (adversary resolver) — boot-time cross-family adversary runtime.
+    /// Constructed in [`build_task_runner_wiring`] when BOTH
+    /// `ELAI_ALLOW_CLOUD_ADVERSARY=1` is set AND
+    /// [`crate::adversary::route_cross_family`] succeeds (two distinct model
+    /// families reachable). Single-family or gated-off deploys leave this
+    /// `None`. [`apply_task_runner_wiring`] assigns it onto
+    /// `TaskRunnerConfig::adversary_runtime` so `dispatch_adversarial_pass`
+    /// sees a live `AdversaryRuntimeState` (still gated by `ELAI_ADVERSARY_ENABLE`).
+    pub adversary_runtime: Option<Arc<crate::runtime_config::AdversaryRuntimeState>>,
 }
 
 /// Build the production wiring bundle for `start_task_runner`.
@@ -647,6 +666,96 @@ pub async fn build_task_runner_wiring(
         Some(Arc::new(AsyncMutex::new(PipelineGrc::new_from_default())))
     };
 
+    // P0-1 — boot-time cross-family adversary runtime construction.
+    // Two conditions must both hold:
+    //   (a) ELAI_ALLOW_CLOUD_ADVERSARY=1 is set (opt-in gate; absent = None).
+    //   (b) route_cross_family succeeds — only when the reachable pool has at
+    //       least one family different from the worker family (Local in
+    //       default deploy). Single-family or gated-off deployments yield None,
+    //       preserving the pre-P0-1 dark-row behaviour.
+    // The constructed adversary is a CloudAdversary wrapping AnthropicClient.
+    // If AnthropicClient::from_env fails (no ANTHROPIC_API_KEY), we log a warning
+    // and leave adversary_runtime = None rather than aborting boot.
+    let adversary_runtime = if std::env::var("ELAI_ALLOW_CLOUD_ADVERSARY")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+    {
+        // D-025 pool-resolution (controller correction over D2): derive the
+        // generator family from the executor-role backend in PerRoleRuntime
+        // rather than hardcoding Local. Default PerRoleRuntime maps
+        // AgentRole::Executor -> RuntimeBackend::Sidecar; we map that backend
+        // to a ModelFamily via ModelFamily::from_model_id(canonical_name()),
+        // falling back to Local only when unmapped (Sidecar -> "sidecar" ->
+        // Local by the substring classifier; AnthropicApi -> "anthropic_api"
+        // -> Anthropic). This makes the derivation correct for non-default
+        // deployments (e.g. a cloud-only Executor role) without requiring any
+        // new config surface.
+        let executor_backend = crate::per_role_runtime::PerRoleRuntime::default()
+            .get(crate::agent_pool::AgentRole::Executor);
+        let worker_family = crate::adversary::ModelFamily::from_model_id(
+            executor_backend.canonical_name(),
+        );
+        // F-3 / D-025 pool-resolution: derive the available family pool from
+        // the actual PerRoleRuntime role->backend mapping rather than a
+        // hardcoded [Anthropic, DeepSeek] slice. Iterates all (role, backend)
+        // pairs, maps each backend to its ModelFamily via from_model_id on the
+        // backend's canonical_name(), dedupes by label (owned String), and
+        // builds the pool from the distinct family set. This makes the pool
+        // reflect what is genuinely configured at runtime without requiring a
+        // new config surface or any new dependencies.
+        let prt = crate::per_role_runtime::PerRoleRuntime::default();
+        let mut seen_labels: Vec<String> = Vec::new();
+        let mut available_families: Vec<crate::adversary::ModelFamily> = Vec::new();
+        for (_role, backend) in prt.list() {
+            let fam = crate::adversary::ModelFamily::from_model_id(backend.canonical_name());
+            let label = fam.as_str().to_owned();
+            if !seen_labels.iter().any(|s| s == &label) {
+                seen_labels.push(label);
+                available_families.push(fam);
+            }
+        }
+
+        match crate::adversary::route_cross_family(&worker_family, &available_families, true) {
+            Ok(_chosen_family) => {
+                // Construct the cloud adversary. The model string uses the
+                // canonical Sonnet 4.6 identifier (the current production
+                // cloud workhorse per CLAUDE.md E-31 tier matrix).
+                match crate::adversary::CloudAdversary::from_env("claude-sonnet-4-6") {
+                    Ok(cloud_adv) => {
+                        let dyn_adv: std::sync::Arc<dyn crate::adversary::DynAdversary> =
+                            std::sync::Arc::new(crate::adversary::AdversaryErased::new(cloud_adv));
+                        let adversary_config =
+                            crate::adversary::AdversaryConfig::default_for_local_worker();
+                        let runtime_config =
+                            crate::runtime_config::AdversaryRuntimeConfig::default();
+                        Some(crate::runtime_config::AdversaryRuntimeState::new(
+                            dyn_adv,
+                            adversary_config,
+                            runtime_config,
+                        ))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "build_task_runner_wiring: CloudAdversary::from_env failed; \
+                             adversary_runtime stays None (set ANTHROPIC_API_KEY to enable)"
+                        );
+                        None
+                    }
+                }
+            }
+            Err(_same_family) => {
+                tracing::info!(
+                    "build_task_runner_wiring: route_cross_family returned SameFamilyPairing; \
+                     adversary_runtime stays None (single-family pool)"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(RuntimeWiring {
         ssb,
         feasibility_prober,
@@ -698,6 +807,20 @@ pub async fn build_task_runner_wiring(
         pipeline_grc,
         // F-1 B2 — result of the vibesec seed integrity check computed above.
         vibegate_seed_ok,
+        // P0-2 (E-19 fix) — production reflection client. Constructed here
+        // using SidecarGroundingClient::default() (DEFAULT_SIDECAR_HOST) and
+        // wrapped in SidecarReflectionAdapter. Stays None when the
+        // ELAI_DISABLE_MICRO_REFLECTION kill-switch is set.
+        reflection_client: if crate::micro_reflection_disabled_via_env() {
+            None
+        } else {
+            let grounding = crate::SidecarGroundingClient::default();
+            let adapter = crate::SidecarReflectionAdapter::new(Arc::new(grounding));
+            Some(Arc::new(adapter) as Arc<dyn crate::DynReflectionClient>)
+        },
+        // P0-1 — adversary runtime constructed above; None for single-family
+        // deploys or when ELAI_ALLOW_CLOUD_ADVERSARY is unset.
+        adversary_runtime,
     })
 }
 
@@ -896,6 +1019,20 @@ pub fn apply_task_runner_wiring(
         cfg.plan_interactive_gate = Some(ig);
     }
 
+    // P0-2 (E-19 reflection regression fix) — thread the production
+    // SidecarReflectionAdapter onto TaskRunnerConfig::reflection_client so all
+    // 5 TaskRunnerConfig::new_minimal() construction sites get a live client
+    // instead of the None they carry post-new_minimal. When the kill-switch
+    // ELAI_DISABLE_MICRO_REFLECTION is set, wiring.reflection_client is None
+    // here and the field stays None — preserving the pre-E-19 skip behaviour.
+    cfg.reflection_client = wiring.reflection_client.clone();
+
+    // P0-1 (adversary resolver) — thread the boot-time cross-family adversary
+    // runtime onto TaskRunnerConfig so ResolvedConfig::from can forward it to
+    // dispatch_adversarial_pass. None when ELAI_ALLOW_CLOUD_ADVERSARY is unset
+    // or route_cross_family found no cross-family pool (single-family deploy).
+    cfg.adversary_runtime = wiring.adversary_runtime.clone();
+
     cfg
 }
 
@@ -1090,6 +1227,29 @@ pub fn build_production_hook_dispatcher(
     // H-38: derive db_path from the already-open Ssb so callers do not need to
     // re-plumb SsbConfig. The path is a &Path from the live instance.
     let db_path_str = ssb.db_path().to_string_lossy().into_owned();
+    // I-1: construct the directive supervisor ONCE here — this is the SOLE
+    // bootstrap consolidation fn all 3 production sites (run_subcommand.rs,
+    // task_cmd.rs, dashboard src-tauri/lib.rs) call, so every site inherits an
+    // identical supervisor and the named 3-way-drift risk is structurally
+    // eliminated (there is only one construction point). The supervisor's
+    // run_gates becomes the single E-30/F-1/G-3 gate path inside
+    // dispatch_pre_tool_use (the inline E-30 + F-1 calls are skipped when it is
+    // installed). Worktree root = project_root for the G-3 fs-escape gate; the
+    // SSB writer emits DirectiveExecuted rows from execute_directive.
+    // I-32 (audit fix): install role-contract store so the structural role-scope gate
+    // (run_role_scope_gate, directive.rs:499) actually evaluates directives instead of
+    // short-circuiting on a None store. Without this the gate was vacuous in production.
+    let supervisor: Arc<dyn crate::directive::Supervisor> =
+        Arc::new(crate::directive::InProcessSupervisor::new(project_root)
+            .with_ssb(
+                ssb.clone(),
+                crate::task_runner::RUNNER_AGENT_ID,
+                crate::task_runner::RUNNER_SUPERSTEP,
+            )
+            .with_role_contracts(crate::role_contracts::RoleContractStore::default())
+            .with_sequence_rules(std::sync::Arc::new(
+                crate::tool_sequence::SequenceRuleSet::load_builtin()
+            )));
     let mut dispatcher = InProcessHookDispatcher::new(None)
         .with_ruff_runner(ruff)
         .with_vibegate_ssb(
@@ -1099,6 +1259,7 @@ pub fn build_production_hook_dispatcher(
         )
         .with_vibegate_seed_ok(vibegate_seed_ok)
         .with_dep_writetime_gate(dep_gate)
+        .with_supervisor(supervisor)
         // H-38 BLOCK-1: wire stop-cost SSB so day_usd is read from real CloudSpend
         // rows and StopConfirmationEvent beacons are emitted unconditionally on the
         // blocked path (R1/R4 off-agent artifact, fail-closed).

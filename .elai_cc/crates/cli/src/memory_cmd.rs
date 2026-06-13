@@ -18,7 +18,8 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use elai_core::clock::OsClock;
 use elai_core::paths::{memory_facts_db_path, sessions_dir_path};
-use elai_memory::{FactStore, FactType, MemoryFact, Provenance, Scope, TrustTier};
+use elai_memory::{classify, DefenseVerdict, ExtractedFact, FactStore, FactType, MemoryFact, Provenance, Scope, TrustTier};
+use elai_orchestrator::memory_guard::{MemoryGuardVerdict, MemoryWriteScanner};
 use elai_orchestrator::ssb::{
     MemoryGovernanceEventPayload, MemoryGovernanceKind, SsbPayload,
 };
@@ -267,6 +268,40 @@ async fn run_inner(
                 provenance: Provenance::user_direct("cli"),
                 last_validated_at_ms: None,
             };
+            // I-13 CHOKEPOINT 2: guard the admin CLI insert path.
+            // Stage-1 (defense.rs classify) + Stage-2 (MemoryWriteScanner) must both pass
+            // before store.insert() is called. A PoisonBlocked verdict is a hard Err —
+            // write is REFUSED (never log-and-continue per I-13 stub_ban rule, CHOKEPOINT 2).
+            let guard_candidate = ExtractedFact {
+                fact_type: parsed_ft,
+                key: k.to_owned(),
+                value: fact.value.clone(),
+                confidence: 1.0,
+                evidence: vec!["cli:user_direct".to_owned()],
+            };
+            match classify(&guard_candidate) {
+                DefenseVerdict::Allow => {}
+                DefenseVerdict::Block { reason } | DefenseVerdict::SkipSensitive { reason } => {
+                    return Err(anyhow!(
+                        "elai memory insert: write rejected by Stage-1 defense gate (pattern: {reason})"
+                    ));
+                }
+            }
+            match MemoryWriteScanner::scan(&guard_candidate) {
+                Ok(MemoryGuardVerdict::Allow) | Ok(MemoryGuardVerdict::GuardDisabled) => {}
+                Ok(MemoryGuardVerdict::PoisonBlocked { pattern_class }) => {
+                    return Err(anyhow!(
+                        "elai memory insert: write refused by Stage-2 memory guard \
+                         (pattern_class: {pattern_class}). Write NOT stored."
+                    ));
+                }
+                Err(e) => {
+                    return Err(anyhow!(
+                        "elai memory insert: memory guard scanner init failed: {e}"
+                    ));
+                }
+            }
+
             let (store, store_path) = open_fact_store(project_root)?;
             store.insert(&fact).context("insert")?;
 

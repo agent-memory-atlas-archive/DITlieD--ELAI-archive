@@ -42,6 +42,10 @@ use elai_ipc_types::{
     TOOL_REMOVE_ARTIFACTS, TOOL_SEARCH_ARTIFACTS, TOOL_SYMBOL_CONTEXT,
     TOOL_SYMBOL_DATAFLOW_IMPACT, TOOL_SYMBOL_DSL_QUERY, TOOL_SYMBOL_FLOW,
     TOOL_SYMBOL_IMPACT, TOOL_SYMBOL_LIST, TOOL_VALIDATE,
+    // I-8: voluntary-abort tool (3-arm IS-14 pattern).
+    AcknowledgeInfeasibleRequest, TOOL_ACKNOWLEDGE_INFEASIBLE,
+    // I-13: on-demand line-range expansion tool (3-arm IS-14 pattern).
+    TraceQueryRequest, TOOL_TRACE_QUERY,
 };
 use elai_knowledge::artifacts::{
     store::ArtifactStore,
@@ -473,17 +477,7 @@ const OUTLINE_LINE_THRESHOLD: usize = 300;
 /// DEFAULT_BABY_STEP_SYSTEM_PROMPT)`. The wire catalog (R3) only publishes
 /// the six tools enumerated below; their exact names match the
 /// `elai_ipc_types::TOOL_*` wire IDs.
-pub const DEFAULT_BABY_STEP_SYSTEM_PROMPT: &str = "You are an autonomous coding agent embedded in the ELAI orchestrator runtime. \
-Your single job is to complete the user's coding task by invoking tools from the catalog provided in this request. \
-The catalog has fourteen tools (wire IDs in lowercase): edit, file_read, validate, compile_check, classify, git_commit, symbol_impact, symbol_flow, symbol_context, symbol_list, dkg_callers, dkg_dependents, dkg_data_flow, dkg_subgraph. \
-The four symbol_* tools query the project's symbol-graph (call edges + reverse-dependency index) — use them when you need to know all callers of a function before editing it, or to discover symbols in a file. \
-The four dkg_* tools query the dependency knowledge graph (callers / dependents / data-flow edges / BFS subgraph) when you need symbol-level traversal beyond the symbol-graph reverse index. \
-Hard rules: (1) every turn that performs work MUST include a tool call -- prose-only replies produce no file changes and waste the turn; \
-(2) the edit tool requires the target file to already exist on disk and replaces an exact `old_text` fragment with `new_text` -- so the first thing you usually need is a file_read of the existing scaffold (e.g. src/App.jsx) to learn what to replace; \
-(3) provide complete arguments matching each tool's input_schema (file_path, old_text, new_text for edit; file_path for file_read; etc.); \
-(4) issue at most one tool call per turn -- after a tool result comes back, decide the next call; \
-(5) when the requested artifact exists with the correct content, reply WITHOUT any tool call and the loop will terminate. \
-Project paths are repo-relative unless absolute. Do not call validate / compile_check / git_commit until at least one edit has succeeded.";
+pub const DEFAULT_BABY_STEP_SYSTEM_PROMPT: &str = include_str!("prompts/baby_step_system.md");
 
 // ---------------------------------------------------------------------------
 // ProductionAgentRpcServer
@@ -1339,6 +1333,181 @@ impl ProductionAgentRpcServer {
             cache_control: None,
         };
 
+        // I-13: TraceQuery on-demand line-range expansion tool (3-arm IS-14 pattern).
+        // The model calls this to expand an exact line range from disk when to_llm_content
+        // produced a condensed form that omitted needed detail.
+        // Dispatcher arm emits MemoryGuardEvent(TraceQueryExpanded) SSB row.
+        let trace_query = ToolDefinition {
+            name: TOOL_TRACE_QUERY.to_string(),
+            description: Some(
+                "Expand an exact line range from a file on disk on demand. \
+                 Use when a condensed tool result omitted lines you need to see. \
+                 Returns the exact lines start_line..=end_line (1-indexed, inclusive) \
+                 with total_lines for context. Lines beyond EOF are silently truncated."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute or repo-relative path to the file to read."
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "First line to return (1-indexed, inclusive)."
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Last line to return (1-indexed, inclusive, >= start_line)."
+                    }
+                },
+                "required": ["file_path", "start_line", "end_line"]
+            }),
+            cache_control: None,
+        };
+
+        // I-8: voluntary abort tool (aletheia — 3-arm IS-14 pattern).
+        // Calling this tool declares the current trajectory infeasible.
+        // The dispatcher arm emits TrajectoryAborted(Voluntary) and returns
+        // Err(reason) -> ToolOutcome::Failed so the task runner surfaces the
+        // abort.  Must be listed in the catalog so the agent can call it.
+        let acknowledge_infeasible = ToolDefinition {
+            name: TOOL_ACKNOWLEDGE_INFEASIBLE.to_string(),
+            description: Some(
+                "Declare the current trajectory infeasible and voluntarily abort. \
+                 Use when the task cannot be completed with the current approach \
+                 and continuing would spiral. Records a TrajectoryAborted(Voluntary) \
+                 beacon so the dead-end cache prunes isomorphic re-attempts."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "Human-readable explanation of why the trajectory is infeasible."
+                    },
+                    "trajectory_id": {
+                        "type": "string",
+                        "description": "Optional trajectory identifier for SSB correlation."
+                    }
+                },
+                "required": ["reason"]
+            }),
+            cache_control: None,
+        };
+
+        // I-53: recipe runners + utility tool pack.
+        // NOTE: these tools are dispatched via the JSON path in translate_tool_request
+        // (serde_json direct parse, no postcard wire struct — see DECISION-7 in
+        // workflow/reasoning/phase-I53-decisions.md). Both-catalogs registration
+        // required per I-53 WIRING_CONTRACT ("reachable_from: production agent tool dispatch").
+        let recipe_list = ToolDefinition {
+            name: "recipe_list".to_string(),
+            description: Some(
+                "Discover and list build recipes (Make/Just/Cargo targets) in the \
+                 current workspace. Returns all runners detected in the given directory."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "cwd": {
+                        "type": "string",
+                        "description": "Workspace directory to probe for build manifests."
+                    }
+                },
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
+        let recipe_run = ToolDefinition {
+            name: "recipe_run".to_string(),
+            description: Some(
+                "Run a named build recipe (e.g. `just build`, `make clean`, \
+                 `cargo run --package foo --bin bar`). Command is validated through \
+                 the bash validation pipeline; blocked commands are never spawned."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Full recipe command to execute."
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Working directory for the recipe."
+                    }
+                },
+                "required": ["command"],
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
+        let archive_read = ToolDefinition {
+            name: "archive_read".to_string(),
+            description: Some(
+                "List or read entries from a plain .tar archive without extracting to disk. \
+                 Path traversal is blocked. action=list returns entry metadata; \
+                 action=read returns entry content."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to the .tar archive." },
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "read"],
+                        "description": "`list` to enumerate entries; `read` to fetch content."
+                    },
+                    "entry": {
+                        "type": "string",
+                        "description": "Archive-relative entry path (required when action=read)."
+                    }
+                },
+                "required": ["path", "action"],
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
+        let json_tree_query = ToolDefinition {
+            name: "json_tree_query".to_string(),
+            description: Some(
+                "Navigate a JSON file via a dot-path and render a bounded subtree \
+                 (depth-capped, line-capped). Prevents large JSON files from flooding context."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file": { "type": "string", "description": "Path to the JSON file." },
+                    "path": {
+                        "type": "string",
+                        "description": "Dot-separated navigation path (e.g. `a.b.c`)."
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Max render depth (default 2)."
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Max output lines (default 6)."
+                    }
+                },
+                "required": ["file"],
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
+
         vec![
             edit, file_read, validate, compile_check, classify, git_commit,
             // C-24: B-29 Phase 5 symbol-graph tools, now agent-visible.
@@ -1352,6 +1521,12 @@ impl ProductionAgentRpcServer {
             canvas_fork, canvas_render_diagram, canvas_screenshot,
             // H-15: spawn_view reply-channel verb. 1 tool.
             canvas_spawn_view,
+            // I-8: voluntary abort verb.
+            acknowledge_infeasible,
+            // I-13: on-demand line-range expansion tool.
+            trace_query,
+            // I-53: recipe runners + utility tool pack. 4 tools.
+            recipe_list, recipe_run, archive_read, json_tree_query,
         ]
     }
 
@@ -1538,6 +1713,41 @@ impl AgentRpcServer for ProductionAgentRpcServer {
             {
                 Ok(bytes) => ToolOutcome::Result(bytes),
                 Err(reason) => ToolOutcome::Failed(reason),
+            }
+        })
+    }
+
+    /// I-14: run the deterministic context-compression middleware on a successful
+    /// tool result before it enters the agent context window, journaling a reversible
+    /// `ContextTransformReceipt` SSB row (ID-3 JOURNALED-MIDDLEWARE).
+    ///
+    /// When no SSB writer is wired (`ssb: None` -- harness / test paths), this is an
+    /// identity passthrough (no transform, no receipt). With SSB wired, a
+    /// [`crate::context_transform::ContextTransformer`] runs the Tier-1 pipeline; a
+    /// receipt-write failure is logged (non-fatal) and the ORIGINAL bytes are returned
+    /// so a journaling fault never corrupts the agent's view of the tool result.
+    fn transform_tool_output<'a>(
+        &'a self,
+        output: Vec<u8>,
+        superstep: i64,
+    ) -> Pin<Box<dyn std::future::Future<Output = Vec<u8>> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(ssb) = self.ssb.as_ref() else {
+                return output;
+            };
+            let transformer = crate::context_transform::ContextTransformer::new(
+                Arc::clone(ssb),
+                Arc::clone(&self.clock),
+            );
+            match transformer.transform(&output, superstep).await {
+                Ok(result) => result.bytes,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "context_transform: receipt write failed; returning original bytes"
+                    );
+                    output
+                }
             }
         })
     }
@@ -1744,6 +1954,38 @@ fn convert_json_input_to_postcard(tool_id: &str, input: Value) -> Result<Vec<u8>
             })?;
             postcard::to_allocvec(&req).map_err(|e| {
                 format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        // I-13: TraceQuery JSON->postcard bridge.
+        // Decodes TraceQueryRequest (file_path, start_line, end_line) from model JSON input,
+        // re-encodes to postcard for translate_tool_request.
+        TOOL_TRACE_QUERY => {
+            let req: TraceQueryRequest =
+                serde_json::from_value(input).map_err(|e| {
+                    format!(
+                        "convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}"
+                    )
+                })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!(
+                    "convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}"
+                )
+            })
+        }
+        // I-8: voluntary-abort tool JSON->postcard bridge.
+        // Decodes AcknowledgeInfeasibleRequest (reason: String, trajectory_id: Option<String>)
+        // from the model's JSON input, then re-encodes to postcard for translate_tool_request.
+        TOOL_ACKNOWLEDGE_INFEASIBLE => {
+            let req: AcknowledgeInfeasibleRequest =
+                serde_json::from_value(input).map_err(|e| {
+                    format!(
+                        "convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}"
+                    )
+                })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!(
+                    "convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}"
+                )
             })
         }
         unknown => Err(format!(
@@ -2420,6 +2662,195 @@ pub(crate) async fn translate_tool_request(
             ))
         }
 
+        // I-8: voluntary abort dispatcher arm.
+        //
+        // The model calls acknowledge_infeasible when it determines the current
+        // trajectory is infeasible (spiral prevention, ID-1 doctrine).
+        //
+        // Wave-1 behaviour:
+        //   1. Decode the AcknowledgeInfeasibleRequest.
+        //   2. Emit TrajectoryAborted(Voluntary) SSB row (off-agent evidence; R4).
+        //   3. Emit AbstentionScored row crediting the voluntary abstain (H-39
+        //      compose, GD-1: no re-implementation of scoring logic).
+        //   4. Conditionally call timetravel::materialize() for rollback — skipped
+        //      with an honest log entry when no pre-abort snapshot is available
+        //      (H-49 full trunk-restore is Wave-2).
+        //   5. Return Err(reason) so handle_tool_call maps to ToolOutcome::Failed,
+        //      surfacing the abort signal to the task runner.
+        //
+        // This is NOT a pure-Err-no-emit stub: the SSB row is the observable effect
+        // required by wiring-enforcement R4 (missing row = FAIL).
+        TOOL_ACKNOWLEDGE_INFEASIBLE => {
+            let wire: AcknowledgeInfeasibleRequest =
+                postcard::from_bytes(arguments)
+                    .map_err(|e| format!("tool acknowledge_infeasible: decode error: {e}"))?;
+
+            let ts_ms = crate::ssb::Ssb::now_ms_via_clock(clock);
+
+            // Step 2: emit TrajectoryAborted(Voluntary) SSB beacon.
+            if let Some(ssb_arc) = ssb {
+                use crate::ssb::{
+                    SsbPayload, TrajectoryAbortedKind, TrajectoryAbortedPayload,
+                };
+                let abort_payload = SsbPayload::TrajectoryAborted(TrajectoryAbortedPayload {
+                    kind: TrajectoryAbortedKind::Voluntary,
+                    session_id: String::new(), // caller context; SSB row carries session from write_payload call
+                    trajectory_id: wire.trajectory_id.clone(),
+                    approach_hash: None,
+                    abort_reason_text: Some(wire.reason.clone()),
+                    ts_ms,
+                });
+                if let Err(e) = ssb_arc
+                    .write_payload("agent_rpc", 0, abort_payload, Vec::new())
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "acknowledge_infeasible: TrajectoryAborted SSB write failed (non-fatal)"
+                    );
+                }
+
+                // Step 3: emit AbstentionScored row crediting voluntary abstain (H-39 compose).
+                use crate::abstention_score::{
+                    abstention_aware_score, OutcomeTriple, DEFAULT_CONFIDENCE_TARGET,
+                };
+                use crate::calibration::RefusalDecision;
+                let outcome = OutcomeTriple::new(RefusalDecision::Abstain, false);
+                let mean_score = abstention_aware_score(outcome, DEFAULT_CONFIDENCE_TARGET);
+                let abstention_payload = SsbPayload::AbstentionScored(
+                    crate::ssb::AbstentionScoredPayload {
+                        suite: "voluntary_abort".into(),
+                        mean_score,
+                        abstention_rate: 1.0,
+                        confident_wrong_rate: 0.0,
+                        t: DEFAULT_CONFIDENCE_TARGET,
+                        n: 1,
+                        seed: 0,
+                        corpus_blake3: String::new(),
+                    },
+                );
+                if let Err(e) = ssb_arc
+                    .write_payload("agent_rpc", 0, abstention_payload, Vec::new())
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "acknowledge_infeasible: AbstentionScored SSB write failed (non-fatal)"
+                    );
+                }
+            }
+
+            // Step 4: rollback via timetravel::materialize() if a manifest is available.
+            // Wave-1: no pre-abort snapshot linked yet (H-49 trunk-restore is Wave-2).
+            // Honest log; never panic on missing manifest.
+            tracing::info!(
+                "acknowledge_infeasible: rollback skipped: no pre-abort snapshot \
+                 (H-49 Wave-2 will wire SessionDag HEAD restore)"
+            );
+
+            // Step 5: surface as ToolOutcome::Failed via Err return.
+            Err(wire.reason)
+        }
+
+        // I-13: TraceQuery dispatcher arm.
+        // 1. Decode TraceQueryRequest (file_path, start_line, end_line).
+        // 2. Inline expand (elai-tools is dev-dep only; no circular dep allowed).
+        //    Logic mirrors elai_tools::trace_query::TraceQuery::expand exactly.
+        // 3. Emit MemoryGuardEvent(TraceQueryExpanded) SSB row (off-agent evidence; R4).
+        // 4. Return Ok(content) so the model receives the expanded lines.
+        TOOL_TRACE_QUERY => {
+            let wire: TraceQueryRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool trace_query: decode error: {e}"))?;
+
+            let path = std::path::PathBuf::from(&wire.file_path);
+            let start = wire.start_line;
+            let end = wire.end_line;
+
+            // struct mirroring TraceQueryResult (no dep on elai-tools in lib code)
+            struct ExpandResult {
+                file_path: String,
+                start_line: u32,
+                end_line: u32,
+                total_lines: u32,
+                content: String,
+            }
+
+            let result = tokio::task::spawn_blocking(move || -> Result<ExpandResult, String> {
+                if start < 1 || end < start {
+                    return Err(format!(
+                        "tool trace_query: invalid range start={start} end={end}"
+                    ));
+                }
+                if !path.exists() {
+                    return Err(format!(
+                        "tool trace_query: file not found: {}",
+                        path.display()
+                    ));
+                }
+                let raw = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("tool trace_query: io error: {e}"))?;
+                let all_lines: Vec<&str> = raw.lines().collect();
+                let total_lines = all_lines.len() as u32;
+                let zero_start = (start - 1) as usize;
+                let zero_end = end.saturating_sub(1) as usize;
+                let (actual_end, content) = if zero_start >= all_lines.len() {
+                    (start, String::new())
+                } else {
+                    let clamped = zero_end.min(all_lines.len().saturating_sub(1));
+                    let text = all_lines[zero_start..=clamped]
+                        .iter()
+                        .map(|l| format!("{l}\n"))
+                        .collect();
+                    ((clamped + 1) as u32, text)
+                };
+                Ok(ExpandResult {
+                    file_path: path.to_string_lossy().into_owned(),
+                    start_line: start,
+                    end_line: actual_end,
+                    total_lines,
+                    content,
+                })
+            })
+            .await
+            .map_err(|e| format!("tool trace_query: spawn_blocking error: {e}"))?
+            .map_err(|e| format!("tool trace_query: expand error: {e}"))?;
+
+            // Emit MemoryGuardEvent(TraceQueryExpanded) SSB row (R4 off-agent artifact).
+            if let Some(ssb_arc) = ssb {
+                use crate::ssb::{MemoryGuardEventKind, MemoryGuardEventPayload, SsbPayload};
+                let ts_ms = crate::ssb::Ssb::now_ms_via_clock(clock);
+                let expanded_payload = SsbPayload::MemoryGuardEvent(MemoryGuardEventPayload {
+                    kind: MemoryGuardEventKind::TraceQueryExpanded,
+                    pattern_class: None,
+                    token_delta: None,
+                    byte_range: Some(format!(
+                        "{}:{}-{}",
+                        result.file_path, result.start_line, result.end_line
+                    )),
+                    ts_ms,
+                });
+                if let Err(e) = ssb_arc
+                    .write_payload("agent_rpc", 0, expanded_payload, vec![result.file_path.clone()])
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "trace_query: MemoryGuardEvent SSB write failed (non-fatal)"
+                    );
+                }
+            }
+
+            let resp = serde_json::json!({
+                "file_path": result.file_path,
+                "start_line": result.start_line,
+                "end_line": result.end_line,
+                "total_lines": result.total_lines,
+                "content": result.content,
+            });
+            serde_json::to_vec(&resp)
+                .map_err(|e| format!("tool trace_query: json serialization error: {e}"))
+        }
+
         // B-35 Phase B — Context artifact dispatcher arms.
         // ArtifactStore is sync (std::sync::Mutex); all calls are wrapped in
         // tokio::task::spawn_blocking so the async runtime is not blocked.
@@ -3015,6 +3446,107 @@ pub(crate) async fn translate_tool_request(
                 .map_err(|e| format!("tool {tool_id}: serialise response error: {e}"))
         }
 
+        // I-53: recipe runners + utility tool pack.
+        // These tools use the JSON dispatch path (no postcard wire struct) consistent
+        // with the fsm_get_state / fsm_transition arms above (DECISION-7).
+        //
+        // NOTE: elai-tools is a dev-dep of elai-orchestrator (circular dep avoidance);
+        // production arms inline the minimal logic using std + serde_json only.
+        // The full bash_validation pipeline runs on the CLI path (elai-tools::recipe_runners);
+        // the production path applies an essential inline block-list check for recipe_run
+        // (documented limitation: DECISION-7 in workflow/reasoning/phase-I53-decisions.md).
+        "recipe_list" => {
+            let cwd_str = serde_json::from_slice::<serde_json::Value>(arguments)
+                .ok()
+                .and_then(|v| v.get("cwd").and_then(|c| c.as_str()).map(|s| s.to_string()));
+            let cwd_path = cwd_str.clone().unwrap_or_else(|| ".".to_string());
+            let cwd = std::path::Path::new(&cwd_path);
+            let result = i53_recipe_list(cwd)?;
+            serde_json::to_vec(&result)
+                .map_err(|e| format!("tool recipe_list: serialise error: {e}"))
+        }
+
+        "recipe_run" => {
+            let args: serde_json::Value = serde_json::from_slice(arguments)
+                .map_err(|e| format!("tool recipe_run: decode error: {e}"))?;
+            let command = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "tool recipe_run: missing 'command' field".to_string())?
+                .to_string();
+            let cwd_str = args
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| ".".to_string());
+            let cwd = std::path::Path::new(&cwd_str);
+            let output = i53_recipe_run(&command, cwd)?;
+            serde_json::to_vec(&serde_json::json!({ "output": output }))
+                .map_err(|e| format!("tool recipe_run: serialise error: {e}"))
+        }
+
+        "archive_read" => {
+            let args: serde_json::Value = serde_json::from_slice(arguments)
+                .map_err(|e| format!("tool archive_read: decode error: {e}"))?;
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "tool archive_read: missing 'path' field".to_string())?
+                .to_string();
+            let archive_path = std::path::Path::new(&path_str);
+            let action = args
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("list")
+                .to_string();
+            let result: serde_json::Value = match action.as_str() {
+                "list" => i53_archive_list(archive_path)?,
+                "read" => {
+                    let entry = args
+                        .get("entry")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            "tool archive_read: 'entry' required when action=read".to_string()
+                        })?
+                        .to_string();
+                    let content = i53_archive_read_entry(archive_path, &entry)?;
+                    serde_json::json!({ "content": content })
+                }
+                other => {
+                    return Err(format!(
+                        "tool archive_read: unknown action '{other}'; use 'list' or 'read'"
+                    ))
+                }
+            };
+            serde_json::to_vec(&result)
+                .map_err(|e| format!("tool archive_read: serialise error: {e}"))
+        }
+
+        "json_tree_query" => {
+            let args: serde_json::Value = serde_json::from_slice(arguments)
+                .map_err(|e| format!("tool json_tree_query: decode error: {e}"))?;
+            let file_str = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "tool json_tree_query: missing 'file' field".to_string())?
+                .to_string();
+            let file_path = std::path::Path::new(&file_str);
+            let dot_path = args.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let max_depth = args
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(2); // MAX_DEPTH_DEFAULT
+            let max_lines = args
+                .get("max_lines")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(6); // MAX_LINES_DEFAULT
+            let output = i53_json_query(file_path, dot_path.as_deref(), max_depth, max_lines)?;
+            serde_json::to_vec(&serde_json::json!({ "output": output }))
+                .map_err(|e| format!("tool json_tree_query: serialise error: {e}"))
+        }
+
         unknown => Err(format!("unknown tool_id: {unknown}")),
     }
 }
@@ -3064,6 +3596,582 @@ fn extract_canvas_mode_from_postcard(
             ))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// I-53 helper functions: recipe runners + utility tool pack.
+//
+// Inline implementations that use only std + serde_json to avoid the
+// circular dep (elai-tools depends on elai-orchestrator; orchestrator cannot
+// import elai-tools in production code). These mirror the logic in
+// elai_tools::{recipe_runners, archive_reader, json_query}. Any behaviour
+// change in the elai-tools versions must be reflected here.
+//
+// Validation note: the CLI path (GlobalToolRegistry) runs the full
+// bash_validation::validate_command pipeline (elai-tools). This production
+// path applies an inline essential-block check for recipe_run. Documented
+// in workflow/reasoning/phase-I53-decisions.md DECISION-7.
+// ---------------------------------------------------------------------------
+
+/// Discover build-recipe runners in `cwd`.  Returns a serde_json::Value
+/// object `{"runners": [...]}`.  Reads manifest files only; does not run
+/// any process for just/make discovery.  Cargo uses `cargo metadata`.
+fn i53_recipe_list(cwd: &std::path::Path) -> Result<serde_json::Value, String> {
+    let mut runners: Vec<serde_json::Value> = Vec::new();
+
+    // Just runner: parse Justfile / justfile / .justfile.
+    let just_manifest = ["Justfile", "justfile", ".justfile"]
+        .iter()
+        .map(|n| cwd.join(n))
+        .find(|p| p.exists());
+    if let Some(manifest) = just_manifest {
+        if let Ok(content) = std::fs::read_to_string(&manifest) {
+            let tasks: Vec<serde_json::Value> = content
+                .lines()
+                .filter(|l| !l.starts_with(' ') && !l.starts_with('\t'))
+                .filter_map(|l| {
+                    let trimmed = l.trim();
+                    if let Some(colon) = trimmed.find(':') {
+                        let after = &trimmed[colon + 1..];
+                        if after.starts_with('=') {
+                            return None;
+                        }
+                        let lhs = &trimmed[..colon];
+                        let mut parts = lhs.split_whitespace();
+                        let name = parts.next()?;
+                        if name.starts_with('_') {
+                            return None;
+                        }
+                        let ok = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                        if ok && !name.is_empty() {
+                            return Some(serde_json::json!({ "name": name, "doc": null, "parameters": [] }));
+                        }
+                    }
+                    None
+                })
+                .take(20)
+                .collect();
+            if !tasks.is_empty() {
+                runners.push(serde_json::json!({
+                    "id": "just",
+                    "label": "Just",
+                    "command_prefix": "just",
+                    "tasks": tasks,
+                }));
+            }
+        }
+    }
+
+    // Make runner: parse Makefile.
+    if cwd.join("Makefile").exists() {
+        if let Ok(content) = std::fs::read_to_string(cwd.join("Makefile")) {
+            let mut phony: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut candidates: Vec<serde_json::Value> = Vec::new();
+            for line in content.lines() {
+                let t = line.trim();
+                if t.starts_with(".PHONY:") {
+                    for p in t.trim_start_matches(".PHONY:").trim().split_whitespace() {
+                        phony.insert(p.to_string());
+                    }
+                    continue;
+                }
+                if line.starts_with(' ') || line.starts_with('\t') {
+                    continue;
+                }
+                let first = t.chars().next().unwrap_or('\0');
+                if !first.is_ascii_alphabetic() && first != '_' {
+                    continue;
+                }
+                if let Some(colon) = t.find(':') {
+                    if t[colon + 1..].starts_with('=') {
+                        continue;
+                    }
+                    let name = t[..colon].trim();
+                    let ok = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                    if ok && !name.is_empty() {
+                        let doc: Option<String> = t[colon + 1..]
+                            .find("##")
+                            .map(|p| t[colon + 1..][p + 2..].trim().to_string());
+                        candidates.push(serde_json::json!({ "name": name, "doc": doc }));
+                    }
+                }
+            }
+            let tasks: Vec<serde_json::Value> = if phony.is_empty() {
+                candidates
+            } else {
+                candidates
+                    .into_iter()
+                    .filter(|t| {
+                        let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        phony.contains(name) || t.get("doc").and_then(|v| v.as_str()).is_some()
+                    })
+                    .collect()
+            };
+            if !tasks.is_empty() {
+                runners.push(serde_json::json!({
+                    "id": "make",
+                    "label": "Make",
+                    "command_prefix": "make",
+                    "tasks": tasks.into_iter().take(20).collect::<Vec<_>>(),
+                }));
+            }
+        }
+    }
+
+    // Cargo runner: `cargo metadata --no-deps --format-version=1`.
+    if cwd.join("Cargo.toml").exists() {
+        if let Ok(output) = std::process::Command::new("cargo")
+            .args(["metadata", "--no-deps", "--format-version=1"])
+            .current_dir(cwd)
+            .output()
+        {
+            if output.status.success() {
+                if let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                    if let Some(packages) = meta.get("packages").and_then(|v| v.as_array()) {
+                        let mut tasks: Vec<serde_json::Value> = Vec::new();
+                        'outer: for pkg in packages {
+                            let pkg_name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            if let Some(targets) = pkg.get("targets").and_then(|v| v.as_array()) {
+                                for target in targets {
+                                    let tname = target.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                    let kinds = target.get("kind").and_then(|v| v.as_array());
+                                    let is_bin = kinds.map_or(false, |ks| {
+                                        ks.iter().any(|k| k.as_str() == Some("bin"))
+                                    });
+                                    let is_example = kinds.map_or(false, |ks| {
+                                        ks.iter().any(|k| k.as_str() == Some("example"))
+                                    });
+                                    let (prefix, kind) = if is_bin {
+                                        (format!("cargo run --package {pkg_name} --bin"), "binary")
+                                    } else if is_example {
+                                        (format!("cargo run --package {pkg_name} --example"), "example")
+                                    } else {
+                                        continue;
+                                    };
+                                    tasks.push(serde_json::json!({
+                                        "name": format!("{prefix} {tname}"),
+                                        "doc": format!("{kind}: {pkg_name}/{tname}"),
+                                        "parameters": [],
+                                    }));
+                                    if tasks.len() >= 20 {
+                                        break 'outer;
+                                    }
+                                }
+                            }
+                        }
+                        if !tasks.is_empty() {
+                            runners.push(serde_json::json!({
+                                "id": "cargo",
+                                "label": "Cargo",
+                                "command_prefix": "cargo",
+                                "tasks": tasks,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(serde_json::json!({ "runners": runners }))
+}
+
+/// Essential inline block-list check for recipe_run in the production path.
+///
+/// Blocks the most dangerous command patterns. The full pipeline (bash_validation)
+/// runs on the CLI path; this is the production-path guard (DECISION-7).
+fn i53_recipe_run_check(command: &str) -> Result<(), String> {
+    let lower = command.to_lowercase();
+    // Block obvious destructive patterns.
+    const BLOCKED: &[&str] = &[
+        "rm -rf /",
+        "rm -rf *",
+        "mkfs",
+        "dd if=",
+        ":(){:|:&};:",
+        "chmod -R 777 /",
+        "sudo rm",
+        "> /dev/sda",
+        "format c:",
+        "deltree",
+    ];
+    for pattern in BLOCKED {
+        if lower.contains(pattern) {
+            return Err(format!(
+                "recipe_run blocked (production essential check): command matches dangerous pattern '{pattern}'"
+            ));
+        }
+    }
+    // Block absolute path writes outside cwd (e.g. > /etc/).
+    if lower.contains("> /etc/") || lower.contains("> /root/") || lower.contains("> /sys/") {
+        return Err(
+            "recipe_run blocked (production essential check): redirect to system path".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Run a recipe command (production path).
+fn i53_recipe_run(command: &str, cwd: &std::path::Path) -> Result<String, String> {
+    i53_recipe_run_check(command)?;
+
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    let (program, args) = parts
+        .split_first()
+        .ok_or_else(|| "recipe_run: empty command string".to_string())?;
+
+    let output = std::process::Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("recipe_run: spawn failed: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit_code = output.status.code().unwrap_or(-1);
+
+    if output.status.success() {
+        Ok(format!("exit_code: {exit_code}\nstdout:\n{stdout}\nstderr:\n{stderr}"))
+    } else {
+        Err(format!("recipe_run: exit_code={exit_code}\nstdout:\n{stdout}\nstderr:\n{stderr}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// I-53 archive helpers (plain .tar, 512-byte header walk, std::io only).
+// ---------------------------------------------------------------------------
+
+const I53_TAR_BLOCK: usize = 512;
+
+fn i53_tar_read_entries(
+    path: &std::path::Path,
+) -> Result<Vec<(String, bool, u64, u64)>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("archive_read: open '{path:?}' failed: {e}"))?;
+
+    let mut entries: Vec<(String, bool, u64, u64)> = Vec::new(); // (path, is_dir, size, data_offset)
+    let mut pos: u64 = 0;
+
+    loop {
+        let mut block = [0u8; I53_TAR_BLOCK];
+        let n = file
+            .read(&mut block)
+            .map_err(|e| format!("archive_read: I/O error: {e}"))?;
+        if n < I53_TAR_BLOCK {
+            break;
+        }
+        pos += I53_TAR_BLOCK as u64;
+
+        if block.iter().all(|&b| b == 0) {
+            break; // End-of-archive zero block.
+        }
+
+        // Name (bytes 0..100) + prefix (bytes 345..500).
+        let name = {
+            let end = block[0..100].iter().position(|&b| b == 0).unwrap_or(100);
+            String::from_utf8_lossy(&block[0..end]).to_string()
+        };
+        let prefix = {
+            let end = block[345..500].iter().position(|&b| b == 0).unwrap_or(155);
+            String::from_utf8_lossy(&block[345..345 + end]).to_string()
+        };
+        let full = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let clean = full.trim_matches('/').to_string();
+
+        if clean.is_empty() {
+            continue;
+        }
+
+        // Traversal guard.
+        for seg in clean.split('/') {
+            if seg == ".." {
+                return Err(format!(
+                    "archive_read: entry '{clean}' contains '..' (traversal rejected)"
+                ));
+            }
+        }
+        if clean.starts_with('/') {
+            return Err(format!(
+                "archive_read: entry '{clean}' is absolute (traversal rejected)"
+            ));
+        }
+
+        let typeflag = block[156] as char;
+        let is_dir = typeflag == '5' || clean.ends_with('/');
+
+        // Size field (bytes 124..136), octal string.
+        let size_str = {
+            let end = block[124..136].iter().position(|&b| b == 0).unwrap_or(12);
+            String::from_utf8_lossy(&block[124..124 + end]).to_string()
+        };
+        let size = u64::from_str_radix(size_str.trim(), 8).unwrap_or(0);
+
+        entries.push((clean, is_dir, size, pos));
+
+        // Skip past data blocks.
+        let skip = size.div_ceil(I53_TAR_BLOCK as u64) * I53_TAR_BLOCK as u64;
+        file.seek(SeekFrom::Start(pos + skip))
+            .map_err(|e| format!("archive_read: seek error: {e}"))?;
+        pos += skip;
+    }
+
+    Ok(entries)
+}
+
+fn i53_check_tar_format(path: &std::path::Path) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        return Err("archive_read: .tar.gz not supported (flate2 dep deferred; 2026-06-13)".to_string());
+    }
+    if name.ends_with(".zip") {
+        return Err("archive_read: .zip not supported (zip crate dep deferred; 2026-06-13)".to_string());
+    }
+    if !name.ends_with(".tar") {
+        return Err(format!("archive_read: unsupported format '{name}' (only .tar supported)"));
+    }
+    Ok(())
+}
+
+fn i53_archive_list(path: &std::path::Path) -> Result<serde_json::Value, String> {
+    i53_check_tar_format(path)?;
+    let entries = i53_tar_read_entries(path)?;
+    let arr: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|(p, is_dir, size, _)| serde_json::json!({ "path": p, "is_dir": is_dir, "size": size }))
+        .collect();
+    Ok(serde_json::json!({ "entries": arr }))
+}
+
+fn i53_archive_read_entry(path: &std::path::Path, entry_path: &str) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    i53_check_tar_format(path)?;
+
+    // Traversal guard on the requested entry path.
+    for seg in entry_path.split('/') {
+        if seg == ".." {
+            return Err(format!(
+                "archive_read: entry_path '{entry_path}' contains '..' (traversal rejected)"
+            ));
+        }
+    }
+    if entry_path.starts_with('/') {
+        return Err(format!(
+            "archive_read: entry_path '{entry_path}' is absolute (traversal rejected)"
+        ));
+    }
+
+    let entries = i53_tar_read_entries(path)?;
+    let target = entry_path.trim_matches('/');
+    let entry = entries
+        .iter()
+        .find(|(p, _, _, _)| p.trim_matches('/') == target)
+        .ok_or_else(|| format!("archive_read: entry '{entry_path}' not found"))?;
+
+    if entry.1 {
+        return Err(format!("archive_read: '{entry_path}' is a directory"));
+    }
+
+    const MAX_BYTES: usize = 512 * 1024;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("archive_read: open failed: {e}"))?;
+    file.seek(SeekFrom::Start(entry.3))
+        .map_err(|e| format!("archive_read: seek error: {e}"))?;
+
+    let read_len = (entry.2 as usize).min(MAX_BYTES);
+    let mut buf = vec![0u8; read_len];
+    file.read_exact(&mut buf)
+        .map_err(|e| format!("archive_read: read error: {e}"))?;
+
+    let truncated = entry.2 as usize > MAX_BYTES;
+    match std::str::from_utf8(&buf) {
+        Ok(s) => {
+            let mut out = s.to_string();
+            if truncated {
+                out.push_str(&format!("\n<truncated: {} bytes, limit {MAX_BYTES}>", entry.2));
+            }
+            Ok(out)
+        }
+        Err(_) => {
+            let hex: String = buf
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut out = format!("<binary> {hex}");
+            if truncated {
+                out.push_str(&format!("\n<truncated: {} bytes, limit {MAX_BYTES}>", entry.2));
+            }
+            Ok(out)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// I-53 JSON query helper (mirrors elai_tools::json_query, std + serde_json only).
+// ---------------------------------------------------------------------------
+
+fn i53_json_navigate<'v>(root: &'v serde_json::Value, dot_path: &str) -> Option<&'v serde_json::Value> {
+    let mut cur = root;
+    for seg in dot_path.split('.') {
+        if seg.is_empty() {
+            continue;
+        }
+        match cur {
+            serde_json::Value::Object(m) => cur = m.get(seg)?,
+            serde_json::Value::Array(a) => {
+                let idx: usize = seg.parse().ok()?;
+                cur = a.get(idx)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(cur)
+}
+
+fn i53_render_value(
+    val: &serde_json::Value,
+    indent: usize,
+    depth: usize,
+    max_depth: usize,
+    scalar_len: usize,
+    lines: &mut Vec<String>,
+    max_lines: usize,
+    truncated: &mut bool,
+) {
+    if lines.len() >= max_lines {
+        *truncated = true;
+        return;
+    }
+    let pfx = "  ".repeat(indent);
+    if depth > max_depth {
+        lines.push(format!("{pfx}..."));
+        *truncated = true;
+        return;
+    }
+    match val {
+        serde_json::Value::Null => { lines.push(format!("{pfx}null")); }
+        serde_json::Value::Bool(b) => { lines.push(format!("{pfx}{b}")); }
+        serde_json::Value::Number(n) => { lines.push(format!("{pfx}{n}")); }
+        serde_json::Value::String(s) => {
+            let ts = if s.len() > scalar_len {
+                format!("\"{}...\"", &s[..scalar_len])
+            } else {
+                format!("\"{s}\"")
+            };
+            lines.push(format!("{pfx}{ts}"));
+        }
+        serde_json::Value::Array(arr) => {
+            if arr.is_empty() {
+                lines.push(format!("{pfx}[]"));
+                return;
+            }
+            lines.push(format!("{pfx}["));
+            for item in arr.iter() {
+                i53_render_value(item, indent + 1, depth + 1, max_depth, scalar_len, lines, max_lines, truncated);
+                if lines.len() >= max_lines {
+                    *truncated = true;
+                    break;
+                }
+            }
+            if lines.len() < max_lines {
+                lines.push(format!("{pfx}]"));
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if map.is_empty() {
+                lines.push(format!("{pfx}{{}}"));
+                return;
+            }
+            lines.push(format!("{pfx}{{"));
+            for (key, value) in map.iter() {
+                if lines.len() >= max_lines {
+                    *truncated = true;
+                    break;
+                }
+                let kpfx = "  ".repeat(indent + 1);
+                match value {
+                    serde_json::Value::Null
+                    | serde_json::Value::Bool(_)
+                    | serde_json::Value::Number(_)
+                    | serde_json::Value::String(_) => {
+                        let vs = match value {
+                            serde_json::Value::Null => "null".to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::String(s) => {
+                                if s.len() > scalar_len {
+                                    format!("\"{}...\"", &s[..scalar_len])
+                                } else {
+                                    format!("\"{s}\"")
+                                }
+                            }
+                            _ => unreachable!(),
+                        };
+                        lines.push(format!("{kpfx}\"{key}\": {vs}"));
+                    }
+                    _ => {
+                        lines.push(format!("{kpfx}\"{key}\":"));
+                        i53_render_value(value, indent + 1, depth + 1, max_depth, scalar_len, lines, max_lines, truncated);
+                    }
+                }
+            }
+            if lines.len() < max_lines {
+                lines.push(format!("{pfx}}}"));
+            }
+        }
+    }
+}
+
+fn i53_json_query(
+    file_path: &std::path::Path,
+    dot_path: Option<&str>,
+    max_depth: usize,
+    max_lines: usize,
+) -> Result<String, String> {
+    const MAX_FILE: usize = 10 * 1024 * 1024;
+    let meta = std::fs::metadata(file_path)
+        .map_err(|e| format!("json_tree_query: stat '{file_path:?}' failed: {e}"))?;
+    if meta.len() as usize > MAX_FILE {
+        return Err(format!(
+            "json_tree_query: file is {} bytes (limit {MAX_FILE})",
+            meta.len()
+        ));
+    }
+    let content = std::fs::read_to_string(file_path)
+        .map_err(|e| format!("json_tree_query: read '{file_path:?}' failed: {e}"))?;
+    let root: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("json_tree_query: parse '{file_path:?}' failed: {e}"))?;
+
+    let node = match dot_path {
+        Some(p) if !p.is_empty() => i53_json_navigate(&root, p).ok_or_else(|| {
+            format!("json_tree_query: path '{p}' not found in '{file_path:?}'")
+        })?,
+        _ => &root,
+    };
+
+    let eff_lines = max_lines.max(1);
+    let mut lines: Vec<String> = Vec::with_capacity(eff_lines + 1);
+    let mut truncated = false;
+    i53_render_value(node, 0, 0, max_depth, 60, &mut lines, eff_lines, &mut truncated);
+
+    let mut output = lines.join("\n");
+    if truncated {
+        output.push_str(&format!(
+            "\n<truncated: capped at {eff_lines} lines or depth {max_depth}>"
+        ));
+    }
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------

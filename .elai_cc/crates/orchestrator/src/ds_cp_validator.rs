@@ -43,7 +43,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::conformal_calibration::{
+use crate::calibration::{
     compute_tau_with_min, CalibrationCorpus, CalibrationTuple, ConformalError,
 };
 
@@ -296,7 +296,7 @@ fn empirical_coverage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conformal_calibration::CorpusSource;
+    use crate::calibration::CorpusSource;
 
     fn make_tuple(idx: usize, score: f64, gt: bool) -> CalibrationTuple {
         CalibrationTuple::new(

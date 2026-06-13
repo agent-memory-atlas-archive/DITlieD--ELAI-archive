@@ -120,6 +120,12 @@ pub(crate) struct RuntimeClient {
     /// to floor UNION keyword UNION vector for each turn. None when MCP is not
     /// configured (eager path, existing behavior).
     pub(crate) mcp_state_for_injector: Option<Arc<Mutex<crate::mcp_glue::RuntimeMcpState>>>,
+    /// I-10: cumulative hit count for PrefixInvarianceGuard across turns.
+    /// Incremented when bp.valid=true AND cache_read_input_tokens > 0 (real hit).
+    pub(crate) cache_guard_hits: u64,
+    /// I-10: cumulative miss count for PrefixInvarianceGuard across turns.
+    /// Incremented when bp.valid=true AND cache_read_input_tokens == 0 (unexplained miss).
+    pub(crate) cache_guard_misses: u64,
 }
 
 pub(crate) fn resolve_cli_auth_source() -> Result<AuthSource, anyhow::Error> {
@@ -574,14 +580,28 @@ impl ApiClient for RuntimeClient {
             }
         };
 
-        // H-2: 1h TTL on the verified-byte-stable head prefix only (worth the 2x
-        // write solely when the prefix is reused turn-to-turn). Otherwise the
-        // provider's apply_anthropic_cache_markers stamps the default 5-min
-        // ephemeral; the per-model-id min-cacheable-prefix gate lives there too.
+        // H-2 + I-10 (F-1): TTL tier from CacheEconomicsPlanner drives the cache_control
+        // annotation on the system head before apply_anthropic_cache_markers runs. The
+        // planner composes ON TOP of H-2 (GD-1: never re-implement the stamper). The
+        // is_none guard in apply_anthropic_cache_markers preserves the caller-set TTL.
+        // GapStats::default() (mean_gap_ms=0, sample_count=0) is conservative: yields
+        // TtlTier::Short on an unknown gap, TtlTier::Long only on verified-stable +
+        // sub-10-min gap history. Local backend yields TtlTier::NoCache (no annotation).
+        let ttl_tier = elai_orchestrator::cache_economics::CacheEconomicsPlanner::plan_ttl(
+            elai_orchestrator::cache_economics::GapStats::default(),
+            elai_orchestrator::context_policy::regime_policy(self.backend),
+            cache_head_stable,
+        );
         let system_blocks = (!request.system_prompt.is_empty()).then(|| {
             let mut head = SystemBlock::text(request.system_prompt.join("\n\n"));
-            if cache_head_stable {
-                head.cache_control = Some(CacheControl::ephemeral_1h());
+            match ttl_tier {
+                elai_orchestrator::cache_economics::TtlTier::Long => {
+                    head.cache_control = Some(CacheControl::ephemeral_1h());
+                }
+                elai_orchestrator::cache_economics::TtlTier::Short => {
+                    head.cache_control = Some(CacheControl::ephemeral());
+                }
+                elai_orchestrator::cache_economics::TtlTier::NoCache => {}
             }
             vec![head]
         });
@@ -780,6 +800,8 @@ impl ApiClient for RuntimeClient {
         });
 
         let elapsed_ms = _stream_clock.elapsed_since(stream_start).as_millis();
+        // I-10 (F-2): cache_read_input_tokens extracted here for guard use after the match.
+        let mut i10_cache_read_tokens: u32 = 0;
         match &result {
             Ok(events) => {
                 let text_chars: usize = events.iter().map(|e| match e {
@@ -792,6 +814,7 @@ impl ApiClient for RuntimeClient {
                     _ => None,
                 });
                 if let Some(u) = usage {
+                    i10_cache_read_tokens = u.cache_read_input_tokens;
                     eprintln!(
                         "[pipeline] done: elapsed={elapsed_ms}ms, input_tokens={}, output_tokens={}, \
                          text_chars={text_chars}, tool_uses={tool_uses}",
@@ -808,6 +831,64 @@ impl ApiClient for RuntimeClient {
                 eprintln!("[pipeline] error after {elapsed_ms}ms: {e}");
             }
         }
+
+        // I-10 (F-2): PrefixInvarianceGuard + emit_cache_economics_event on the live path.
+        // Only runs when SSB is available (telemetry enabled) and backend is cloud.
+        // Non-fatal: guard failures and emit errors are logged but do not break the call.
+        if let Some(ssb) = self.streaming_ssb.as_ref() {
+            use elai_orchestrator::cache_economics::{
+                CacheEconomicsPlanner, GapStats, GuardVerdict, PrefixInvarianceGuard,
+                emit_cache_economics_event,
+            };
+            use elai_orchestrator::ssb::CacheEconomicsEventPayload;
+            use elai_orchestrator::cache_check::CacheCheckSnapshot;
+            use elai_orchestrator::context_policy::regime_policy;
+
+            let policy = regime_policy(self.backend);
+
+            // Emit TtlPlanned SSB row for the tier we selected above.
+            let ttl_payload = CacheEconomicsEventPayload::ttl_planned(ttl_tier, "stream");
+            let ssb_clone = Arc::clone(ssb);
+            let _ = self.runtime.block_on(
+                emit_cache_economics_event(&ssb_clone, "cli:stream", 0, ttl_payload)
+            );
+
+            // Update cumulative hit/miss counters for the guard (F-2 seam).
+            // bp.valid=true + cache_read=0 = unexplained miss (the signal the guard watches).
+            if cache_head_stable {
+                if i10_cache_read_tokens > 0 {
+                    self.cache_guard_hits = self.cache_guard_hits.saturating_add(1);
+                } else {
+                    self.cache_guard_misses = self.cache_guard_misses.saturating_add(1);
+                }
+            }
+
+            // Run the guard on the cumulative snapshot.
+            let snap = CacheCheckSnapshot {
+                hits: self.cache_guard_hits,
+                misses: self.cache_guard_misses,
+            };
+            let verdict = PrefixInvarianceGuard::check_miss_rate(snap, policy);
+            if verdict == GuardVerdict::Tripped {
+                let miss_rate = if snap.hits + snap.misses > 0 {
+                    snap.misses as f64 / (snap.hits + snap.misses) as f64
+                } else {
+                    0.0
+                };
+                let guard_payload = CacheEconomicsEventPayload::guard_tripped(miss_rate, "stream");
+                let ssb_clone2 = Arc::clone(ssb);
+                let _ = self.runtime.block_on(
+                    emit_cache_economics_event(&ssb_clone2, "cli:stream", 0, guard_payload)
+                );
+                tracing::warn!(
+                    miss_rate,
+                    hits = snap.hits,
+                    misses = snap.misses,
+                    "I-10 PrefixInvarianceGuard: unexplained cache miss-rate exceeds threshold"
+                );
+            }
+        }
+
         result
     }
 }

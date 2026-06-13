@@ -66,9 +66,7 @@ pub const PROMPT_HANDLER_MAX_TOKENS: u32 = 256;
 /// from emitting prose -- only strict JSON is accepted by
 /// [`parse_decision_payload`].
 pub const PROMPT_HANDLER_SYSTEM_PROMPT: &str =
-    "You are a strict-JSON decision-maker. Reply with EXACTLY one JSON \
-     object: {\"decision\":\"allow\"|\"deny\"|\"ask\",\"reason\":\"...\"}. \
-     No prose, no markdown, no fences.";
+    include_str!("../prompts/hook_prompt_handler.md");
 
 /// NEW 3-arm enum minted for E-25 prompt-handler dispatch. Distinct
 /// from `crate::hook_dispatcher::HookVerdictKind` and
@@ -238,6 +236,7 @@ pub async fn prompt_decision(
         seed: None,
         stop_sequences: Vec::new(),
         system: Some(PROMPT_HANDLER_SYSTEM_PROMPT.to_owned()),
+        decoding_config: None,
     };
     let completion_fut = runtime.complete(messages, config);
     let response =

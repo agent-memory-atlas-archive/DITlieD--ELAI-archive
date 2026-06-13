@@ -1,0 +1,100 @@
+# I-35: safety-core tool-sequence rules (R8-frozen)
+#
+# This file is the canonical source of truth for the Tier-1 sequence rules.
+# It is embedded at compile time via include_str! in tool_sequence.rs.
+# Its blake3 hash is recorded in .claude/gate-manifest.txt (R8 freeze).
+# A session that edits this file is BLOCKED by gate_freeze_check.py.
+#
+# PREDICATE HONESTY DISCLOSURE:
+#   R1 (git_push): DEGRADED — requires "auditor_pass" entry in the history buffer.
+#     Production path: auditor CLI exit does NOT yet push a HistoryEntry.
+#     The bench fixture (elai bench sequence-probe) injects the entry to exercise the gate.
+#     Missing evidence = unsatisfied = OrderViolation fail-closed.
+#     Future evidence source: auditor CLI exit path / bench_sequence_probe_cmd.rs emitter.
+#
+#   R2 (file_write after untrusted_ingest): DEGRADED — same pattern.
+#     "taint_check_pass" not yet emitted by production taint pipeline.
+#     Future evidence source: capability_flow.rs taint pass emitter.
+#
+#   R3 (test_run before git_commit): DISABLED — enabled=false.
+#     "test_run_pass" cannot be made meaningful in degraded form without a production
+#     test-runner push site. Disabled is safer than always-passing.
+#     Future evidence source: cargo test / elai test runner exit path.
+#
+# Rule TOML schema: each [[rules]] entry has:
+#   id           — unique kebab string
+#   trigger      — tool_class that fires this rule (see tool_class_from_action_type)
+#   predicate    — { kind, ...args } deterministic query over the history buffer
+#   enforcement  — "halt" | "warn_only"
+#   description  — human-readable description (also the unsatisfied_predicate message)
+#   enabled      — bool (default true)
+#   predicate_honesty — "full" | "degraded" | "disabled" (informational)
+
+# ---------------------------------------------------------------------------
+# R1: git_push requires auditor_pass since the last src_edit
+# ---------------------------------------------------------------------------
+# CDA rationale: git_push with no auditor pass since the last source change could land
+# un-reviewed code. The predicate window resets on src_edit so a trivial session
+# (no src_edit, no auditor) does not fire.
+# Predicate honesty: DEGRADED — auditor_pass must be pushed by the auditor exit path
+# (not yet wired in production). The bench fixture injects "auditor_pass" entries.
+[[rules]]
+id           = "R1-git-push-requires-auditor-pass"
+trigger      = "git_push"
+description  = "git_push requires at least one auditor_pass entry since the last src_edit (degraded: bench-injected; production push site deferred)"
+enabled      = true
+predicate_honesty = "degraded"
+
+[rules.predicate]
+kind          = "requires_since_last"
+required_class = "auditor_pass"
+reset_on_class = "src_edit"
+
+[rules.enforcement]
+kind = "halt"
+
+# ---------------------------------------------------------------------------
+# R2: file_write after untrusted_ingest requires taint_check_pass
+# ---------------------------------------------------------------------------
+# CDA rationale: writing data that arrived from an untrusted source (web_fetch, MCP
+# tool call) without an intervening taint check allows prompt-injection artefacts to
+# reach the filesystem. The predicate window opens at untrusted_ingest and requires
+# taint_check_pass before file_write proceeds.
+# Predicate honesty: DEGRADED — taint_check_pass not yet emitted by capability_flow.rs.
+# The bench fixture injects the entry. Missing evidence = fail-closed.
+[[rules]]
+id           = "R2-file-write-after-ingest-requires-taint-check"
+trigger      = "file_write"
+description  = "file_write after untrusted_ingest requires taint_check_pass between them (degraded: bench-injected; production push site deferred)"
+enabled      = true
+predicate_honesty = "degraded"
+
+[rules.predicate]
+kind          = "requires_between"
+after_class   = "untrusted_ingest"
+required_class = "taint_check_pass"
+
+[rules.enforcement]
+kind = "halt"
+
+# ---------------------------------------------------------------------------
+# R3: git_commit requires test_run_pass since the last src_edit
+# ---------------------------------------------------------------------------
+# DISABLED: test_run_pass cannot be made meaningful even in degraded form without
+# a production test-runner push site that emits HistoryEntry { tool_class: "test_run_pass" }.
+# A disabled rule is safer than a rule whose predicate always passes (fail-open ban).
+# Future: wire cargo test / elai test exit path to push a HistoryEntry.
+[[rules]]
+id           = "R3-git-commit-requires-test-run-pass"
+trigger      = "git_commit"
+description  = "git_commit requires test_run_pass since last src_edit (DISABLED: production push site not yet wired; enabling without push site would be fail-open)"
+enabled      = false
+predicate_honesty = "disabled"
+
+[rules.predicate]
+kind          = "requires_since_last"
+required_class = "test_run_pass"
+reset_on_class = "src_edit"
+
+[rules.enforcement]
+kind = "halt"

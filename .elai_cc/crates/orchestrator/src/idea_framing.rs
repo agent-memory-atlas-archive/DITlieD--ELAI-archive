@@ -39,10 +39,14 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use elai_core::clock::ClockProvider;
+// I-41: advisory lens runner (spec-time critique, default-OFF via ELAI_CRITIQUE_LENSES_ENABLE).
+// This import carries ZERO gate-plane types; purely additive advisory surface.
+use elai_providers::runtime::types::RuntimeAdapter;
 // Note: AgentRole + NodeId + ConvergenceStatus are re-exported / referenced
 // from sibling modules (lib.rs `pub use`) but the framer body itself does not
 // directly construct any of them — multi-root dispatch uses the integer u64
 // projection via NodeId.0, agent spawn is deferred to the production wire-up.
+use crate::critique::lenses::{LensSet, RiskLevel};
 use crate::research_tree::{ResearchTree, ResearchTreeError};
 use crate::ssb::{
     CriticRoundCompletePayload, IdeaFramedPayload, IdeaFramingStartedPayload,
@@ -867,12 +871,18 @@ pub fn dispatch_multi_root_research(
 ///      [`IdeaFramingError::MaxRoundsReachedWithBlocks`]. Caller emits an
 ///      `idea_framing_block` SSB row and refuses to advance.
 ///
-/// SSB: emits one [`SsbActionType::CriticRoundComplete`] row per round.
+/// SSB: emits one [`SsbActionType::CriticRoundComplete`] row per round, and
+/// (when `runtime` is `Some` and `ELAI_CRITIQUE_LENSES_ENABLE=1`) calls
+/// [`LensSet::run`] as an advisory surfacer AFTER the main loop converges.
+/// The advisory call is additive: it never alters the return type or error path.
 pub async fn run_critic_loop(
     framed: &mut FramedIdea,
     max_rounds: u32,
     ssb: Option<&Arc<Ssb>>,
     session_id: &str,
+    // I-41: optional runtime for advisory LensSet::run.  `None` skips lenses.
+    // Existing callers pass `None`; additive, backwards-compatible.
+    runtime: Option<&dyn RuntimeAdapter>,
 ) -> Result<u32, IdeaFramingError> {
     let cap = max_rounds.min(MAX_CRITIC_ROUNDS).max(1);
 
@@ -921,6 +931,31 @@ pub async fn run_critic_loop(
                 warn_count, info_count,
                 "critic loop converged with zero BLOCK findings"
             );
+
+            // I-41: advisory LensSet run at post-convergence point.
+            // Default-OFF (ELAI_CRITIQUE_LENSES_ENABLE=1 to enable).
+            // advisory=true: this call NEVER alters the return path or error type.
+            // Resolves the stub comment at idea_framing.rs (Real LLM-driven critique
+            // lands when AgentRole::IdeaCritic is wired).
+            if runtime.is_some() {
+                let lens_set = LensSet::from_risk(RiskLevel::Heavy);
+                match lens_set
+                    .run(framed.raw_prompt.as_str(), runtime, ssb, session_id)
+                    .await
+                {
+                    Ok(findings) => {
+                        debug!(
+                            finding_count = findings.len(),
+                            "advisory lens run complete (post-convergence)"
+                        );
+                    }
+                    Err(e) => {
+                        // Advisory errors are always non-fatal.
+                        warn!(err = %e, "advisory lens run failed; framing unaffected");
+                    }
+                }
+            }
+
             return Ok(rounds_used);
         }
 
@@ -954,8 +989,9 @@ pub async fn run_critic_loop(
 
 /// Deterministic per-round critic (no LLM at MVP). Inspects the FramedIdea
 /// for structural gaps + obvious contradictions + missing mandatory streams
-/// and emits CriticFindings. Real LLM-driven critique lands when the agent
-/// dispatch path is wired in via [`AgentRole::IdeaCritic`].
+/// and emits CriticFindings. The LLM-driven advisory lens layer is
+/// [`crate::critique::lenses::LensSet`] (I-41), wired in above via
+/// `run_critic_loop` post-convergence when `ELAI_CRITIQUE_LENSES_ENABLE=1`.
 fn run_one_critic_round_deterministic(framed: &FramedIdea) -> Vec<CriticFinding> {
     let mut findings: Vec<CriticFinding> = Vec::new();
 
@@ -1121,11 +1157,15 @@ pub async fn frame_idea(
     // findings in round 1 the loop still records the round and exits via
     // the `converged` early-return at the bottom of each iteration. That
     // counts as one round used, NOT skip-the-loop.
+    // I-41: runtime=None here; the production `elai critique` CLI path passes
+    // the real runtime. The framing surface advisory call is gated inside
+    // run_critic_loop by ELAI_CRITIQUE_LENSES_ENABLE when runtime is Some.
     let rounds_used = match run_critic_loop(
         &mut framed,
         MAX_CRITIC_ROUNDS,
         ssb,
         session_id,
+        None, // runtime: no RuntimeAdapter at this call site (advisory-absent is fine)
     )
     .await
     {

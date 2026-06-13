@@ -7,9 +7,21 @@
 // `elai_orchestrator`'s umbrella re-export) continue to resolve through the
 // updated re-export chain: `elai_providers::{ModelPricing, ...}` ->
 // `elai_orchestrator::{ModelPricing, ...}` -> cli/*.
+//
+// I-51 — pricing.rs is now a VIEW over the model_catalog. The public API is
+// byte-identical to the pre-I-51 implementation (behavior-neutral transcription,
+// D-018). The DEFAULT_* constants below are kept private for the `const fn`
+// `default_sonnet_tier()` which cannot use runtime catalog lookups. The drift
+// contract test (i51_model_catalog_drift_contract.rs) asserts these constants
+// match the catalog values so any divergence is caught at test time.
 
 use elai_core::TokenUsage;
 
+use crate::model_catalog::ModelCatalog;
+
+// Private fallback constants — kept for the `const fn default_sonnet_tier()`.
+// Source of truth: config/models.toml [models] family="sonnet" entry.
+// I-51 drift contract asserts these == catalog values.
 const DEFAULT_INPUT_COST_PER_MILLION: f64 = 15.0;
 const DEFAULT_OUTPUT_COST_PER_MILLION: f64 = 75.0;
 const DEFAULT_CACHE_CREATION_COST_PER_MILLION: f64 = 18.75;
@@ -56,29 +68,62 @@ impl UsageCostEstimate {
 }
 
 /// Returns pricing metadata for a known model alias or family.
+///
+/// I-51: this function is a VIEW over the model catalog. It reads pricing
+/// from the embedded `config/models.toml` catalog via family-match on the
+/// model id string (same matching logic as before: contains "haiku"/"opus"/
+/// "sonnet"). Return values are byte-identical to the pre-I-51 implementation
+/// (D-018 behavior-neutral transcription). The catalog is loaded once via
+/// `ModelCatalog::load_or_default()` for each call; for high-frequency
+/// callers the catalog is cheap to load (no I/O, embedded string parse).
+/// If the catalog fails to load (malformed embed), falls back to the
+/// inline constant values to preserve behavior neutrality.
 #[must_use]
 pub fn pricing_for_model(model: &str) -> Option<ModelPricing> {
     let normalized = model.to_ascii_lowercase();
-    if normalized.contains("haiku") {
+
+    // Determine the family tag from the model id (same logic as pre-I-51).
+    let family = if normalized.contains("haiku") {
+        "haiku"
+    } else if normalized.contains("opus") {
+        "opus"
+    } else if normalized.contains("sonnet") {
+        "sonnet"
+    } else {
+        return None;
+    };
+
+    // Look up the family in the catalog. On catalog load failure, fall back
+    // to inline constants so behavior is preserved (R9: no panic).
+    let catalog = ModelCatalog::load_or_default();
+    let entries = catalog.get_by_family(family);
+    if let Some(entry) = entries.first() {
         return Some(ModelPricing {
+            input_cost_per_million: entry.input_cost_per_million,
+            output_cost_per_million: entry.output_cost_per_million,
+            cache_creation_cost_per_million: entry.cache_creation_cost_per_million,
+            cache_read_cost_per_million: entry.cache_read_cost_per_million,
+        });
+    }
+
+    // Fallback: catalog has no entry for this family (should not happen with
+    // a well-formed embedded models.toml). Use inline constants to preserve
+    // the pre-I-51 return values exactly.
+    match family {
+        "haiku" => Some(ModelPricing {
             input_cost_per_million: 1.0,
             output_cost_per_million: 5.0,
             cache_creation_cost_per_million: 1.25,
             cache_read_cost_per_million: 0.1,
-        });
+        }),
+        "opus" | "sonnet" => Some(ModelPricing {
+            input_cost_per_million: DEFAULT_INPUT_COST_PER_MILLION,
+            output_cost_per_million: DEFAULT_OUTPUT_COST_PER_MILLION,
+            cache_creation_cost_per_million: DEFAULT_CACHE_CREATION_COST_PER_MILLION,
+            cache_read_cost_per_million: DEFAULT_CACHE_READ_COST_PER_MILLION,
+        }),
+        _ => None,
     }
-    if normalized.contains("opus") {
-        return Some(ModelPricing {
-            input_cost_per_million: 15.0,
-            output_cost_per_million: 75.0,
-            cache_creation_cost_per_million: 18.75,
-            cache_read_cost_per_million: 1.5,
-        });
-    }
-    if normalized.contains("sonnet") {
-        return Some(ModelPricing::default_sonnet_tier());
-    }
-    None
 }
 
 /// Formats a dollar-denominated value for CLI display.

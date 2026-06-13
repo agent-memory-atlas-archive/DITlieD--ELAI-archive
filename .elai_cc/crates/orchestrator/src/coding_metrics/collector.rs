@@ -24,7 +24,7 @@ use thiserror::Error;
 use crate::abstention_score::{
     AbstentionAggregate, OutcomeTriple, DEFAULT_CONFIDENCE_TARGET,
 };
-use crate::conformal_calibration::RefusalDecision;
+use crate::calibration::RefusalDecision;
 use super::types::CodingMetric;
 
 /// Default refine-rate when the collector has zero observations. Matches

@@ -397,9 +397,12 @@ async fn contract_system_prompt_does_not_drop_tool_catalog() {
         .expect("R5: catalog must remain Some when system_prompt is set");
     assert_eq!(
         tools.len(),
-        14,
-        "R5 + C-24 + C-30: catalog must remain 14 tools (R3 6-tool baseline + \
-         4 symbol_* + 4 dkg_*) when system_prompt is set; got {}",
+        25,
+        "R5 + C-24 + C-30: catalog must remain 25 tools (R3 6-tool baseline + \
+         4 symbol_* + 4 dkg_* + 8 canvas_* + 2 git_* + index_artifacts + \
+         list_artifacts + remove_artifacts + search_artifacts + \
+         acknowledge_infeasible (I-8)) when \
+         system_prompt is set; got {}",
         tools.len(),
     );
 }

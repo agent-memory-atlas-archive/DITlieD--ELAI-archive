@@ -29,12 +29,12 @@
 use std::sync::Mutex;
 
 use elai_core::entropy::SeededRng;
-use elai_orchestrator::calibration_bootstrap::{
+use elai_orchestrator::calibration::{
     bootstrap_resample, ci_90_from_sorted, default_block_p, BootstrapError,
     CalibrationBootstrapCorpus, PublishedCalibrationRow, DEFAULT_BOOTSTRAP_EPSILON,
     DEFAULT_BOOTSTRAP_MIN_CORPUS_SIZE, MAX_BOOTSTRAP_REPLICATES, MIN_BOOTSTRAP_REPLICATES,
+    CalibrationTuple, MAX_CLAIM_TEXT_CHARS,
 };
-use elai_orchestrator::conformal_calibration::{CalibrationTuple, MAX_CLAIM_TEXT_CHARS};
 use elai_orchestrator::runtime_config::{
     CalibrationBootstrapMode, ELAI_CALIBRATION_BOOTSTRAP_ENABLE_ENV,
 };
@@ -109,6 +109,7 @@ fn calibration_bootstrap_completed_warmstart_payload_roundtrip() {
         bootstrap_ci_high: None,
         block_length_p: None,
         ts_ms: 1_700_000_147_000,
+        calibration_id: None,
     };
     let payload = SsbPayload::CalibrationBootstrapCompleted(p.clone());
     assert_eq!(
@@ -160,6 +161,7 @@ fn calibration_bootstrap_completed_secondary_ci_payload_roundtrip() {
         bootstrap_ci_high: Some(0.86),
         block_length_p: Some(0.1414213562373095),
         ts_ms: 1_700_000_147_001,
+        calibration_id: None,
     };
     let json = serde_json::to_string(&p).expect("payload json serialize");
     let decoded_p: CalibrationBootstrapCompletedPayload =

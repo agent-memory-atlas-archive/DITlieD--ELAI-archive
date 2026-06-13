@@ -36,6 +36,7 @@ use std::pin::Pin;
 use futures_util::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
+use crate::decoding::ConstrainedDecodingConfig;
 use crate::providers::anthropic::AuthSource as AnthropicAuthSource;
 use crate::ApiError;
 
@@ -186,6 +187,22 @@ impl RuntimeBackend {
         }
     }
 
+    /// P0-3 — true for backends that run on local hardware and have zero
+    /// marginal API cost. Used by `runtime_orchestrator` to emit a
+    /// `BackendCostAccrued` row with `est_cost_micros = 0` so the H-9
+    /// cockpit and E-39 gates see local-lane activity without polluting
+    /// cloud cost totals.
+    ///
+    /// Sglang is intentionally NOT local — it is the cloud-throughput
+    /// adapter from E-26 and may have a marginal cost on hosted endpoints.
+    #[must_use]
+    pub const fn is_local(self) -> bool {
+        matches!(
+            self,
+            Self::Sidecar | Self::Mlx | Self::LlamaCpp | Self::Ollama | Self::Vllm
+        )
+    }
+
     /// Iterator over every canonical name. Order is fixed so error
     /// messages and config dumps stay deterministic.
     #[must_use]
@@ -213,6 +230,31 @@ impl RuntimeBackend {
             Self::CerebrasFree,
             Self::GroqFree,
         ]
+    }
+}
+
+#[cfg(test)]
+mod is_local_tests {
+    use super::RuntimeBackend;
+
+    #[test]
+    fn is_local_true_for_sidecar_mlx_llama_ollama_vllm() {
+        assert!(RuntimeBackend::Sidecar.is_local());
+        assert!(RuntimeBackend::Mlx.is_local());
+        assert!(RuntimeBackend::LlamaCpp.is_local());
+        assert!(RuntimeBackend::Ollama.is_local());
+        assert!(RuntimeBackend::Vllm.is_local());
+    }
+
+    #[test]
+    fn is_local_false_for_cloud_and_cli_backends() {
+        assert!(!RuntimeBackend::AnthropicApi.is_local());
+        assert!(!RuntimeBackend::DeepSeekV4Flash.is_local());
+        assert!(!RuntimeBackend::Composer2.is_local());
+        assert!(!RuntimeBackend::CerebrasFree.is_local());
+        assert!(!RuntimeBackend::GroqFree.is_local());
+        assert!(!RuntimeBackend::Sglang.is_local()); // cloud-throughput, not local
+        assert!(!RuntimeBackend::ClaudeCode.is_local());
     }
 }
 
@@ -441,6 +483,13 @@ pub struct CompletionConfig {
     /// Optional system prompt forwarded to backends that support it
     /// (Anthropic API, sidecar — both speak the same protocol).
     pub system: Option<String>,
+    /// I-33: optional constrained-decoding config for CEFL (Candidate
+    /// Externalization for Fair Labelling). When `Some`, the backend
+    /// applies JSON-Schema decoding so the model output is restricted to
+    /// the CEFL candidate set. `None` leaves decoding unconstrained
+    /// (default). Backwards-compatible: all existing callers need no change.
+    #[serde(default)]
+    pub decoding_config: Option<ConstrainedDecodingConfig>,
 }
 
 impl Default for CompletionConfig {
@@ -452,6 +501,7 @@ impl Default for CompletionConfig {
             seed: None,
             stop_sequences: Vec::new(),
             system: None,
+            decoding_config: None,
         }
     }
 }

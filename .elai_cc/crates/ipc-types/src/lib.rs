@@ -1020,6 +1020,54 @@ pub const TOOL_CANVAS_SCREENSHOT: &str = "canvas_screenshot";
 /// ELAI_CANVAS_SPAWN_ENABLE (default: text-unless-confidence-clears per GD-4).
 pub const TOOL_CANVAS_SPAWN_VIEW: &str = "canvas_spawn_view";
 
+// ---------------------------------------------------------------------------
+// I-8: acknowledge_infeasible tool (aletheia voluntary abort)
+// ---------------------------------------------------------------------------
+
+/// Well-known tool ID for the voluntary abort / infeasibility acknowledgement verb.
+///
+/// When a model calls this tool it explicitly declares the current trajectory
+/// infeasible.  The dispatcher emits a `TrajectoryAborted(Voluntary)` SSB row
+/// and returns `Err(reason)` so the task runner surfaces the abort as a
+/// `ToolOutcome::Failed` message.  The constant must be defined HERE (not as a
+/// literal in the match arm) so the 3-arm IS-14 pattern never silently routes to
+/// the unknown fallback.
+pub const TOOL_ACKNOWLEDGE_INFEASIBLE: &str = "acknowledge_infeasible";
+
+/// Wire struct for `acknowledge_infeasible` tool calls.
+///
+/// Postcard-serialised in `ToolRequest.arguments` and consumed by
+/// `convert_json_input_to_postcard` / `translate_tool_request`.
+/// Field names MUST match the JSON `input_schema` in `build_tool_catalog`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcknowledgeInfeasibleRequest {
+    /// Human-readable reason the model considers this trajectory infeasible.
+    /// Forwarded as the `Err(reason)` text that surfaces to the task runner.
+    pub reason: String,
+    /// Optional trajectory id for correlation with earlier SSB rows.
+    #[serde(default)]
+    pub trajectory_id: Option<String>,
+}
+
+/// I-13: wire constant for the `trace_query` tool (IS-14 3-arm pattern).
+/// Defined here so the convert/dispatch match arms never route to the unknown fallback.
+pub const TOOL_TRACE_QUERY: &str = "trace_query";
+
+/// I-13: wire struct for `trace_query` tool calls.
+///
+/// Postcard-serialised in `ToolRequest.arguments` by `convert_json_input_to_postcard`
+/// and consumed by `translate_tool_request`.
+/// Field names MUST match the JSON `input_schema` in `build_tool_catalog`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceQueryRequest {
+    /// Absolute or repo-relative path to the file to expand.
+    pub file_path: String,
+    /// First line to return (1-indexed, inclusive). Must be >= 1.
+    pub start_line: u32,
+    /// Last line to return (1-indexed, inclusive). Must be >= start_line.
+    pub end_line: u32,
+}
+
 /// Request for `canvas_spawn_view` — spawn a new canvas view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CanvasSpawnViewRequest {

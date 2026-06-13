@@ -22,6 +22,7 @@ use crate::bsp::channels::{
     ChannelId, ChannelRegistry, ChannelSnapshot, ChannelState, InMemoryChannelRegistry,
     UNTRACKED_DEFAULT_LIMIT_BYTES, UNTRACKED_FORCE_CLEAR_MULTIPLIER,
 };
+use crate::sandbox::BranchWorkspace;
 use crate::ssb::{
     AgentLifecyclePayload, AgentStatusChangedPayload, BspSuperstepPayload, CheckpointPayload,
     DeathEventPayload, MemoryMonitoringPayload, Ssb, SsbActionType, SsbPayload, SsbReader,
@@ -89,6 +90,32 @@ pub struct BspConfig {
     /// Phase 3C.2 replaces this with real agent execution futures.
     /// Tests use non-zero values to prove concurrency and timeout reachability.
     pub simulated_agent_work: Duration,
+    /// I-2: optional CoW workspace isolation pool. When `Some`, the superstep
+    /// loop runs the deterministic barrier merge (`barrier_merge`) of all branch
+    /// workspace roots into trunk after the deferred-task phase. `None` (the
+    /// default) = no workspace isolation (single shared working dir, legacy
+    /// behaviour). Concrete (not `dyn`) because the trait uses native-async
+    /// (RPITIT) methods which are not object-safe; there is exactly one Tier-1
+    /// impl, and `WorktreePoolImpl` is `Clone + Debug` so `BspConfig` keeps its
+    /// derives. Tier-2 overlayfs/cloud impls implement the same trait
+    /// (open/closed) and would swap this field's type to a generic if a second
+    /// production impl is ever wired.
+    pub workspace: Option<crate::sandbox::WorktreePoolImpl>,
+    /// I-2: branch roots to merge at the barrier, paired with the trunk
+    /// merge-target. `None` = nothing to merge (no parallel branches spawned for
+    /// this run). Populated by the dispatch path that spawned the branches.
+    pub branch_merge: Option<BranchMergePlan>,
+}
+
+/// I-2: the inputs the BSP barrier needs to run a deterministic workspace merge:
+/// the spawned branch roots (ordered by SSB seq inside `barrier_merge`) and the
+/// trunk directory they merge into.
+#[derive(Debug, Clone)]
+pub struct BranchMergePlan {
+    /// Branch workspace roots spawned for this run.
+    pub branches: Vec<crate::sandbox::BranchRoot>,
+    /// The trunk directory the branch scratch is merged into.
+    pub merge_target: PathBuf,
 }
 
 impl Default for BspConfig {
@@ -101,6 +128,8 @@ impl Default for BspConfig {
             session_id: String::new(),
             project_id: String::new(),
             simulated_agent_work: Duration::ZERO,
+            workspace: None,
+            branch_merge: None,
         }
     }
 }
@@ -424,6 +453,44 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     )
                     .await;
                     node_statuses.insert(node_id.clone(), NodeStatus::TimedOut);
+                }
+            }
+
+            // 5b. I-2 CoW workspace barrier: merge all branch workspace roots
+            // into trunk, ordered deterministically by SSB seq (GD-2). Runs ONLY
+            // when a workspace pool + a merge plan were wired by the dispatch
+            // path (Some). On a clean merge a `BranchWorkspaceEvent::Merged` row
+            // lands; a same-path/differing-bytes overlap escalates to
+            // `ConflictEscalated`, halts the merge (no partial trunk write), and
+            // is surfaced as a Failed marker on the run (the H-49 trunk-rollback
+            // is the Tier-2 deferred path — see I-2-decisions.md). This composes
+            // the barrier; it does NOT replace the aggregation around it.
+            if let (Some(workspace), Some(plan)) =
+                (self.config.workspace.as_ref(), self.config.branch_merge.as_ref())
+            {
+                match workspace
+                    .barrier_merge(&plan.branches, &plan.merge_target, ssb)
+                    .await
+                {
+                    Ok(merge) => {
+                        tracing::info!(
+                            session_id = %self.config.session_id,
+                            files_merged = merge.files_merged,
+                            "bsp_engine: I-2 workspace barrier merge complete (clean)"
+                        );
+                    }
+                    Err(e) => {
+                        // ConflictEscalated (or a merge IO/SSB failure): the
+                        // ConflictEscalated SSB row was already emitted by
+                        // barrier_merge. Halt the merge plane for this run; do
+                        // not write a partial trunk. Surfaced as a warning here
+                        // (the row is the load-bearing forensic artifact).
+                        tracing::warn!(
+                            session_id = %self.config.session_id,
+                            error = %e,
+                            "bsp_engine: I-2 workspace barrier merge halted (conflict or merge error)"
+                        );
+                    }
                 }
             }
 
@@ -922,22 +989,10 @@ async fn save_superstep_checkpoint(
     let filename = format!("superstep_{superstep}.msgpack");
     let path = checkpoint_dir.join(&filename);
 
-    // Atomic write: temp file then rename (same pattern as checkpoint.rs)
-    let tmp_path = path.with_extension("tmp");
-    tokio::fs::write(&tmp_path, &bytes)
+    // Atomic write: tmp + sync_all + rename via shared helper (I-3 Phase-3C hardening).
+    crate::util::atomic_io::atomic_write_async(&path, &bytes)
         .await
-        .map_err(|e| BspError::CheckpointIo(format!("write tmp {filename}: {e}")))?;
-
-    // Remove existing target if present (NTFS requirement)
-    if tokio::fs::metadata(&path).await.is_ok() {
-        tokio::fs::remove_file(&path)
-            .await
-            .map_err(|e| BspError::CheckpointIo(format!("remove existing {filename}: {e}")))?;
-    }
-
-    tokio::fs::rename(&tmp_path, &path)
-        .await
-        .map_err(|e| BspError::CheckpointIo(format!("rename {filename}: {e}")))?;
+        .map_err(|e| BspError::CheckpointIo(format!("atomic write {filename}: {e}")))?;
 
     Ok(())
 }

@@ -33,6 +33,12 @@ indexmap = { version = "2", features = ["serde"] }
 rustc-hash.workspace = true
 toml.workspace = true
 regex = "1"
+# I-13: write-time memory guard Stage-2 invisible-Unicode + confusable scan.
+# aho-corasick v1.1.4 is already in Cargo.lock (transitive via regex); this
+# line promotes it to a direct dep in this crate (same version, BurntSushi
+# canonical crate, verified 2026-06-13). Anti-slopsquat: checksum confirmed in
+# Cargo.lock: ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301.
+aho-corasick = "1.1.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 deadpool = { version = "0.13", features = ["managed", "rt_tokio_1"] }
 # B-24 Phase 4I (Group C1): media-validator skeleton.

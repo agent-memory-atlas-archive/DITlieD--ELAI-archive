@@ -153,6 +153,8 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
         token_tracker: None,
         // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
         buffer_editor: None,
+        // P0-1: legacy contract fixture -- no adversary runtime.
+        adversary_runtime: None,
         // E-46 D-8: contract fixture — module-constant defaults.
         planning_config: Default::default(),
     };
@@ -222,6 +224,8 @@ fn contract_task_runner_config_synthetic_fallback_shape() {
         token_tracker: None,
         // B-28 WIRING-2: legacy contract fixture -- no production buffer editor.
         buffer_editor: None,
+        // P0-1: legacy contract fixture -- no adversary runtime.
+        adversary_runtime: None,
         // E-46 D-8: contract fixture — module-constant defaults.
         planning_config: Default::default(),
     };

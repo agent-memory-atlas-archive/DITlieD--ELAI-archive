@@ -1,0 +1,12 @@
+[package]
+name = "i53-fixture"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone fixture package — explicitly excluded from the workspace so that
+# `cargo metadata` run inside this directory works without workspace resolution errors.
+[workspace]
+
+[[bin]]
+name = "fixture-binary"
+path = "src/main.rs"

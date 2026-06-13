@@ -71,9 +71,18 @@ pub enum HandoffDecision {
     },
     /// Escalate to cloud — emit `EscalateToCloud` SSB row and re-route
     /// to the cloud provider (handled by existing `cloud_mode::CloudModeRouter`).
+    ///
+    /// I-11: `belief_state_payload` carries the MessagePack-encoded [`BeliefState`]
+    /// typed condensate. When `Some`, the cloud receiver decodes it instead of
+    /// replaying raw session history (stub_ban: no raw history passthrough).
     Cloud {
         /// Human-readable reason for choosing cloud over deep mode.
         reason: String,
+        /// I-11: encoded BeliefState payload (rmp_serde / MessagePack).
+        /// `None` when evaluate_handoff returns (the ContextBudget borrow has
+        /// not yet released). Task_runner injects `Some(bytes)` after
+        /// adaptive_reduce returns and BeliefState::encode() runs.
+        belief_state_payload: Option<Vec<u8>>,
     },
     /// Threshold not yet reached — no handoff needed this cycle.
     Continue,
@@ -196,7 +205,15 @@ pub async fn evaluate_handoff(
         "E-32 escalation_policy: cloud escalation selected"
     );
 
-    Ok(HandoffDecision::Cloud { reason })
+    Ok(HandoffDecision::Cloud {
+        reason,
+        // I-11: belief_state_payload is populated by the task_runner caller after
+        // adaptive_reduce runs (the &mut self borrow on ContextBudget releases first).
+        // evaluate_handoff itself does not hold a ContextBudget reference, so the
+        // payload is injected by the caller via the returned HandoffDecision::Cloud arm.
+        // See task_runner wiring for the production injection site.
+        belief_state_payload: None,
+    })
 }
 
 #[cfg(test)]

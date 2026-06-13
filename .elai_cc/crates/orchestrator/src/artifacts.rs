@@ -282,25 +282,22 @@ fn epoch_ms_from(when: std::time::SystemTime) -> Result<i64, ArtifactsError> {
     i64::try_from(ms_u128).map_err(|_| ArtifactsError::ClockOverflow(ms_u128))
 }
 
-/// Write `bytes` to `dest` via a `.tmp` sibling + `rename`. The temp file
-/// lives in the same directory as `dest` so the rename is guaranteed to
-/// stay on a single filesystem.
+/// Write `bytes` to `dest` via a `.tmp` sibling + `sync_all` + rename.
+/// Delegates to [`crate::util::atomic_io::atomic_write_async`] which adds
+/// fsync of the tmp before rename (I-3 Phase-3C hardening).
 async fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<(), ArtifactsError> {
-    let tmp = tmp_path_for(dest);
-    fs::write(&tmp, bytes).await.map_err(|e| ArtifactsError::Io {
-        path: tmp.clone(),
-        source: e,
-    })?;
-    fs::rename(&tmp, dest).await.map_err(|e| ArtifactsError::Io {
-        path: dest.to_path_buf(),
-        source: e,
-    })?;
-    Ok(())
+    crate::util::atomic_io::atomic_write_async(dest, bytes)
+        .await
+        .map_err(|e| ArtifactsError::Io {
+            path: dest.to_path_buf(),
+            source: e,
+        })
 }
 
-/// Build the `.tmp` sibling path used by `atomic_write`. We append a
-/// fixed `.tmp` suffix to the destination's full filename so concurrent
-/// publishes of different artifacts in the same directory cannot collide.
+/// Build the `.tmp` sibling path. We append a fixed `.tmp` suffix to the
+/// destination's full filename so concurrent publishes of different artifacts
+/// in the same directory cannot collide. Used by the inline unit test.
+#[cfg(test)]
 fn tmp_path_for(dest: &Path) -> PathBuf {
     let mut tmp = dest.as_os_str().to_owned();
     tmp.push(".tmp");

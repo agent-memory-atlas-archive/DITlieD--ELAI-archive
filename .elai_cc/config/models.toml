@@ -1,0 +1,139 @@
+# models.toml — unified model capability catalog (I-51)
+#
+# BEHAVIOR-NEUTRAL TRANSCRIPTION (D-018): values transcribed verbatim from
+# scatter sites as of 2026-06-12. Conflicts are documented in-line with
+# a CONFLICT: comment block naming both values + sources. Nothing is corrected.
+# Per-entry last_verified field carries the staleness date. Do not modify
+# without updating last_verified and running the drift contract test.
+#
+# Fields per entry:
+#   model_id            — canonical model identifier string
+#   family              — family tag used by pricing_for_model() family-match view
+#   context_window      — maximum context window in tokens
+#   max_tokens_default  — default max_tokens cap for this model
+#   input_cost_per_million  — USD per 1M input tokens
+#   output_cost_per_million — USD per 1M output tokens
+#   cache_creation_cost_per_million — USD per 1M cache-write tokens
+#   cache_read_cost_per_million     — USD per 1M cache-read tokens
+#   thinking_support    — whether the model supports extended thinking / effort param
+#   effort_mapping      — effort level string ("none"|"budget_tokens") or omitted
+#   vram_tier_min       — minimum VramTier tier string for local inference, or omitted
+#   last_verified       — ISO date of last pricing/spec verification
+#
+# VRAM threshold constants (providers::vram_tier scatter site, kept in-situ per
+# SLC-2 wrap-not-move ruling; reproduced here for drift contract assertions only):
+#   vram_threshold_48gb_gib = 40    # >= 40 GiB -> Vram48Gb
+#   vram_threshold_24gb_gib = 20    # >= 20 GiB -> Vram24Gb
+#   vram_threshold_16gb_gib = 14    # >= 14 GiB -> Vram16Gb
+#   vram_threshold_12gb_gib = 10    # >= 10 GiB -> Vram12Gb
+#   # below 10 GiB -> Vram8Gb
+
+[vram_thresholds]
+# Reproduced for drift-contract verification. Source of truth remains
+# providers::vram_tier (SLC-2: wrap-not-move). Units: GiB (not bytes).
+# Source: crates/providers/src/vram_tier.rs L7-11 (2026-06-12).
+threshold_48gb_gib = 40
+threshold_24gb_gib = 20
+threshold_16gb_gib = 14
+threshold_12gb_gib = 10
+
+[[models]]
+# CONFLICT: pricing.rs "sonnet" family uses $15.00/M input (transcribed here).
+#   Source-A: crates/providers/src/pricing.rs L13-16 + L71-75 DEFAULT_INPUT_COST_PER_MILLION=15.0
+#   Source-B: crates/orchestrator/src/cloud_mode.rs L54-68 CLAUDE_SONNET_4_6_INPUT_PRICE_PER_TOKEN=3.0e-6 => $3.00/M
+#   Resolution: Source-A (pricing.rs) is the family-match view's data source; Source-B is
+#   per-token consts for a specific model version (claude-sonnet-4-6) used by estimate_task_cost_usd
+#   (a different call path, DEFERRED to patch-N). This entry reflects pricing.rs semantics exactly.
+#   last_verified: pricing.rs last changed at C-14; cloud_mode.rs consts verified 2026-05-10
+#   against docs.anthropic.com/en/docs/about-claude/pricing.
+model_id = "claude-sonnet-family"
+family = "sonnet"
+context_window = 200000
+max_tokens_default = 8096
+input_cost_per_million = 15.0
+output_cost_per_million = 75.0
+cache_creation_cost_per_million = 18.75
+cache_read_cost_per_million = 1.5
+thinking_support = true
+effort_mapping = "budget_tokens"
+vram_tier_min = "Cloud"
+last_verified = "2026-06-12"
+
+[[models]]
+# CONFLICT: pricing.rs "opus" family ($15.0/M input, $75.0/M output) is numerically
+#   identical to the sonnet family defaults in pricing.rs. This is not a calculation
+#   error: Claude 3 Opus was priced at $15/M input. Real Claude 3.5/4.x Sonnet is
+#   $3/M input (cloud_mode.rs scatter site). Catalog transcribes pricing.rs values.
+#   Source-A: crates/providers/src/pricing.rs L71-75 (opus branch)
+#   Source-B: n/a (no opus entry in cloud_mode.rs scatter site)
+model_id = "claude-opus-family"
+family = "opus"
+context_window = 200000
+max_tokens_default = 8096
+input_cost_per_million = 15.0
+output_cost_per_million = 75.0
+cache_creation_cost_per_million = 18.75
+cache_read_cost_per_million = 1.5
+thinking_support = true
+effort_mapping = "budget_tokens"
+vram_tier_min = "Cloud"
+last_verified = "2026-06-12"
+
+[[models]]
+# Source: crates/providers/src/pricing.rs L64-67 (haiku branch)
+# No conflict. Verified to be the only haiku-family pricing site in scope.
+model_id = "claude-haiku-family"
+family = "haiku"
+context_window = 200000
+max_tokens_default = 4096
+input_cost_per_million = 1.0
+output_cost_per_million = 5.0
+cache_creation_cost_per_million = 1.25
+cache_read_cost_per_million = 0.1
+thinking_support = false
+effort_mapping = "none"
+vram_tier_min = "Cloud"
+last_verified = "2026-06-12"
+
+[[models]]
+# Qwen2.5-Coder-3B-Instruct-abliterated — local sidecar model (pythondev RTX 3090).
+# Source: CLAUDE.md remote sidecar section + metrics/model_baseline.toml (TOML precedent;
+# Gemma4 row REJECTED per policy; 3B row retained).
+# Pricing: $0.00/M (local compute; no API billing).
+# Context window: 32000 (hard ceiling per CLAUDE.md ELAI_LOCAL_MAX_CONTEXT=32000).
+model_id = "qwen2.5-coder-3b-instruct-abliterated"
+family = "qwen-local"
+context_window = 32000
+max_tokens_default = 4096
+input_cost_per_million = 0.0
+output_cost_per_million = 0.0
+cache_creation_cost_per_million = 0.0
+cache_read_cost_per_million = 0.0
+thinking_support = false
+effort_mapping = "none"
+vram_tier_min = "Vram8Gb"
+last_verified = "2026-06-12"
+
+[[models]]
+# Qwen2.5-Coder-7B-Instruct-abliterated — local sidecar model (primary 7B tier).
+# Source: CLAUDE.md sidecar section + ELAI_LOCAL_MAX_CONTEXT=32000 ceiling.
+# Pricing: $0.00/M (local compute).
+model_id = "qwen2.5-coder-7b-instruct-abliterated"
+family = "qwen-local"
+context_window = 32000
+max_tokens_default = 4096
+input_cost_per_million = 0.0
+output_cost_per_million = 0.0
+cache_creation_cost_per_million = 0.0
+cache_read_cost_per_million = 0.0
+thinking_support = false
+effort_mapping = "none"
+vram_tier_min = "Vram12Gb"
+last_verified = "2026-06-12"
+
+# DEFERRED (cloud_mode.rs scatter site, not in current view scope):
+# claude-sonnet-4-6 per-token consts (CLAUDE_SONNET_4_6_* at cloud_mode.rs L54-68)
+# feed estimate_task_cost_usd (a different shape: per-token not per-million).
+# These will be added as a separate [[models]] entry in patch-N when cloud_mode
+# consts are migrated. The zero-price-constant grep in the drift contract test
+# EXCLUDES cloud_mode.rs from its scope to avoid false-blocking on deferred consts.

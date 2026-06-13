@@ -507,6 +507,12 @@ pub(crate) enum CliAction {
     VerifyAttestation {
         commit: String,
         output_format: CliOutputFormat,
+        /// I-18: `--chain` flag. When set, walks the per-row blake3 chain in
+        /// the SSB alongside the attestation re-verification and reports the
+        /// first broken link (sequence, expected_prev_hash, found_prev_hash).
+        /// Default: false (backward-compatible; existing CI invocations without
+        /// `--chain` continue to work on LEGACY receipts).
+        chain: bool,
     },
     /// C-45: `elai credit <attribute|table|export>` — contrastive
     /// credit-attribution surface driven by
@@ -970,6 +976,60 @@ pub(crate) enum CliAction {
         query: String,
         json: bool,
         project_root: PathBuf,
+    },
+    /// I-34: `elai bench crane [--crane-fixture PATH] [--seed <u64>]`.
+    /// Deterministic CRANE hybrid grammar-pin gate fixture harness. Drives the
+    /// three-layer I-34 gate (eligibility + blake3 pin verify + post-parse
+    /// re-validation) over an embedded fixture without live inference (W-10
+    /// PENDING checkbox). Emits `GrammarGateEvent` SSB rows for each of the
+    /// three Kind arms (CranePassed / PinViolation / PostParseRejected) and
+    /// exits 0 on a clean run or 1 on infrastructure error.
+    BenchCrane {
+        crane_fixture: Option<String>,
+        seed: Option<u64>,
+    },
+    // I-38: `elai bench qdelta --config <PATH> [--seed <u64>] [--json]`
+    // QDELTA defective-diff rate fixture harness. Statistical floor enforced
+    // mechanically (seed_count>=5, paired=true). Emits ONE QdeltaMeasured SSB
+    // flat beacon per clean run. Live-model leg deferred (D-026).
+    BenchQdelta {
+        config: std::path::PathBuf,
+        seed: u64,
+        json: bool,
+    },
+    // I-43: `elai bench claim-scope [--suite <fixture>] [--seed <u64>] [--json]`
+    // Reproducibility-claim scoper + cheap pre-falsification kill-gate.
+    // Runs pilot (gate-ON vs gate-OFF, reviewer-reaching trap detector) and
+    // divergence scoper (local vs cloud action-stream divergence). Fixture leg only;
+    // live-model leg deferred (D-026). Emits ClaimScopeMeasured SSB beacons.
+    BenchClaimScope {
+        suite: Option<String>,
+        seed: u64,
+        json: bool,
+    },
+    // I-33: `elai bench governance-probe [--seed <u64>]`
+    // Mechanical decision governance fixture harness (CEFL / I6Q / commit-reveal).
+    // Exercises all three GovernancePrimitiveFired Kind arms without a live LLM:
+    // framing-inversion (CeflExternalized), vacuous-rationale (I6qRejected),
+    // out-of-order-commit (CommitRevealSealed). Exits 0 on a clean run or 1 on
+    // infrastructure error. Wiring-enforcement R1/R4 entry point for I-33.
+    BenchGovernanceProbe {
+        seed: u64,
+    },
+    /// I-32: `elai role-ab-probe [--seed N]` — run the role-contract A/B harness.
+    /// Loads fixtures from crates/contracts/tests/fixtures/role_contracts/,
+    /// assembles system-prompt sections with and without role contracts for each
+    /// affected role, computes pass-rates, emits `RoleContractApplied(AbDelta)` SSB rows.
+    /// Evidence gate (ID-5): new_rate >= old_rate required; exits non-zero on regression.
+    RoleAbProbe {
+        seed: u64,
+    },
+    /// I-35: `elai bench sequence-probe [--seed N]` — run the tool-sequence enforcement
+    /// bench harness. Replays 3 mock fixtures (compliant / order-violation / halt-enforced)
+    /// against the builtin SequenceRuleSet, verifies expected verdicts, emits
+    /// `ToolSequenceVerdict` SSB rows. Exits 0 on all-pass, non-zero on any mismatch.
+    BenchSequenceProbe {
+        seed: u64,
     },
     // E-30: `elai incident record --title <TITLE> --date <DATE> --url <URL>
     //        [--id <ID>]` — store an incident postmortem entry in the SSB
@@ -1493,6 +1553,46 @@ pub(crate) enum CliAction {
         /// Print JSON summary instead of human text.
         json: bool,
     },
+    /// I-39 — `elai plan status [--letter <L>] [--json]` — derive per-plan state from
+    /// three deterministic sources: (a) s-plan-audit-2026-06-04 FINISH fragment VERDICT
+    /// lines, (b) `wiring_contract_check.py --json` verdicts, (c) SSB journal via
+    /// read-only `SsbViewer::open`. Every output line carries an evidence pointer +
+    /// "verified against <map-date/commit>" anchor. Output is byte-identical from the
+    /// same inputs (deterministic). Emits one `PlanStateDerived` SSB row per invocation
+    /// (fail-soft if no writable ssb.db). Default-ON; no kill-switch (pure read path).
+    ///
+    /// Handler: `crate::plan_status_cmd::run_plan_status`.
+    PlanStatus {
+        action: PlanStatusAction,
+        output_format: CliOutputFormat,
+    },
+    /// I-41 — `elai critique <spec-path> [--lenses L1,L4,L8] [--risk simple|heavy] [--mock]`
+    ///
+    /// Runs spec-time critique lenses (L1-L8) over a plan/spec artifact.
+    /// Advisory only; findings are written to workflow/reasoning/<stem>-critique.md
+    /// and emitted as CritiqueLensFinding SSB rows (advisory=true).
+    ///
+    /// Kill-switch: `ELAI_CRITIQUE_LENSES_ENABLE=1` to activate LLM runs.
+    /// `--mock` uses the inline stub runtime for fixture/demo mode.
+    ///
+    /// Handler: `crate::critique_cmd::run_critique`.
+    Critique {
+        action: CritiqueAction,
+        output_format: CliOutputFormat,
+    },
+}
+
+/// I-41 — parameters for `elai critique`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CritiqueAction {
+    /// Path to the spec/plan artifact to critique.
+    pub spec_path: std::path::PathBuf,
+    /// Which lenses to run (empty = use risk-level default).
+    pub lenses: Vec<elai_orchestrator::critique::lenses::LensId>,
+    /// Risk level determines default lens selection (Simple = L1/L4/L8, Heavy = all 8).
+    pub risk: elai_orchestrator::critique::lenses::RiskLevel,
+    /// Use inline stub runtime instead of a live LLM (fixture/demo mode).
+    pub mock: bool,
 }
 
 /// E-25 Tranche C (C.4) -- `elai checkpoint <sub>` sub-verbs. Mirrors
@@ -1997,6 +2097,10 @@ pub(crate) enum SkillsAction {
     /// staleness-demotion sweep (`SkillStore::demote_if_stale`) and emit one
     /// `SkillLibraryEvent(DemotedStale)` SSB row per demoted skill.
     LibraryTick,
+    /// I-12 -- `elai skills-mgmt playbook export [--out <path>] [--emit-ssb]`
+    /// -- export verified playbook entries to AGENTS.md / skills format with
+    /// embedded evidence row IDs. Emits PlaybookEvent{Exported} SSB row when --emit-ssb.
+    PlaybookExport { out_path: Option<String>, emit_ssb: bool },
 }
 
 /// C-45 — `elai credit <sub>` sub-verb. Paper-grounded against
@@ -3114,6 +3218,22 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // E-5 session-2: `elai memory <sub>` — heuristic-only inspection
         // surface over the per-project memory_facts store.
         "memory" => crate::args_memory::parse_memory_subcommand_args(&rest[1..]),
+        // I-39 — `elai plan status [--letter <L>] [--json]`. Per-plan state derived
+        // from three deterministic sources: FINISH fragments + wiring_contract_check.py
+        // + SSB journal. Emits one PlanStateDerived SSB row (fail-soft if no ssb.db).
+        // Handler at crates/cli/src/plan_status_cmd.rs.
+        "plan" => parse_plan_subcommand_args(&rest[1..], output_format),
+        // I-41 — `elai critique <spec-path> [--lenses L1,...] [--risk simple|heavy] [--mock]`.
+        // Spec-time critique lenses (L1-L8), advisory only, zero gate-verdict path.
+        // Kill-switch: ELAI_CRITIQUE_LENSES_ENABLE=1. Handler at crates/cli/src/critique_cmd.rs.
+        "critique" => parse_critique_args(&rest[1..], output_format),
+        // I-32 — `elai role-ab-probe [--seed N]`. Role-contract A/B harness.
+        // Loads fixtures from crates/contracts/tests/fixtures/role_contracts/,
+        // assembles system-prompt sections with/without role contracts, computes
+        // pass-rates, emits RoleContractApplied(AbDelta) SSB rows. Evidence gate
+        // (ID-5): new_pass_rate >= old_pass_rate required; exits non-zero on regression.
+        // Handler at crates/cli/src/role_ab_probe_cmd.rs.
+        "role-ab-probe" => parse_role_ab_probe_args(&rest[1..]),
         other if other.starts_with('/') => parse_direct_slash_cli_action(&rest, output_format),
         _other => Ok(CliAction::Prompt {
             prompt: rest.join(" "),
@@ -5160,30 +5280,49 @@ pub(crate) fn parse_prebind_subcommand_args(
 }
 
 /// G-8 — parse `elai verify-attestation <commit>`. Grammar:
-///   `elai verify-attestation <commit>`  (positional commit-ish: SHA / ref / HEAD)
+///   `elai verify-attestation <commit> [--chain]`
 ///
-/// The commit is a single positional argument (mirrors `rra show <path>`). A
-/// missing commit is a hard error; an unexpected extra argument is a hard error
-/// (fail-closed parse).
+/// The commit is a single positional argument (mirrors `rra show <path>`).
+/// `--chain` (I-18) is an optional flag that enables the per-row blake3 chain
+/// walk alongside attestation re-verification. A missing commit is a hard
+/// error; an unexpected extra argument (after consuming `--chain`) is a hard
+/// error (fail-closed parse).
 pub(crate) fn parse_verify_attestation_subcommand_args(
     rest: &[String],
     output_format: CliOutputFormat,
 ) -> Result<CliAction, String> {
-    let commit = rest
+    // I-18: strip any `--chain` flag from the positional argument list so it
+    // doesn't break the existing single-positional-arg grammar. The flag is
+    // optional and position-independent relative to <commit>.
+    let mut chain = false;
+    let positional: Vec<&String> = rest
+        .iter()
+        .filter(|a| {
+            if a.as_str() == "--chain" {
+                chain = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    let commit = positional
         .first()
         .ok_or_else(|| {
             "`verify-attestation` requires a <commit> argument (SHA / ref / HEAD)".to_string()
         })?
-        .clone();
-    if rest.len() > 1 {
+        .to_string();
+    if positional.len() > 1 {
         return Err(format!(
             "unexpected argument after `verify-attestation <commit>`: {}",
-            rest[1]
+            positional[1]
         ));
     }
     Ok(CliAction::VerifyAttestation {
         commit,
         output_format,
+        chain,
     })
 }
 
@@ -8592,6 +8731,31 @@ pub(crate) fn parse_checker_gaps_args(rest: &[String]) -> Result<CliAction, Stri
 }
 
 // ---------------------------------------------------------------------------
+// I-32 — role-ab-probe parser
+// ---------------------------------------------------------------------------
+
+/// I-32: parse `elai role-ab-probe [--seed <u64>]`.
+pub(crate) fn parse_role_ab_probe_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut seed: u64 = 42;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--seed" => {
+                i += 1;
+                seed = rest
+                    .get(i)
+                    .ok_or("--seed requires a value")?
+                    .parse::<u64>()
+                    .map_err(|e| format!("--seed: {e}"))?;
+            }
+            other => return Err(format!("role-ab-probe: unknown flag `{other}`")),
+        }
+        i += 1;
+    }
+    Ok(CliAction::RoleAbProbe { seed })
+}
+
+// ---------------------------------------------------------------------------
 // H-49 — time-travel parsers
 // ---------------------------------------------------------------------------
 
@@ -8838,4 +9002,174 @@ pub(crate) fn parse_timetravel_jump_args(
         action: TimeTravelAction::Jump { target, grain, scope, dry_run, session_id },
         output_format,
     })
+}
+
+/// I-39 — parsed plan action from `elai plan status [--letter <L>] [--json]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlanStatusAction {
+    /// Filter to a single plan letter (e.g. "B", "H"). `None` means all letters.
+    pub(crate) letter: Option<String>,
+    /// Override fragments directory (default: workflow/sessions/s-plan-audit-2026-06-04/).
+    pub(crate) fragments_dir: Option<std::path::PathBuf>,
+}
+
+/// I-39 — parse `elai plan status [--letter <L>] [--fragments-dir <path>]`.
+///
+/// `--letter <L>`: filter to one plan letter. Accepts upper/lower; normalised to uppercase.
+/// `--fragments-dir <path>`: override the default FINISH-fragment directory.
+/// Unknown flags are a hard error (fail-closed parse).
+pub(crate) fn parse_plan_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    // `elai plan` requires at least one subverb.
+    let sub = rest
+        .first()
+        .ok_or_else(|| "`plan` requires a subcommand: `status`".to_string())?;
+    match sub.as_str() {
+        "status" => parse_plan_status_args(&rest[1..], output_format),
+        other => Err(format!("unknown `plan` subcommand: {other}; expected `status`")),
+    }
+}
+
+fn parse_plan_status_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut letter: Option<String> = None;
+    let mut fragments_dir: Option<std::path::PathBuf> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--letter" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "`--letter` requires a value (e.g. B or H)".to_string())?;
+                letter = Some(v.to_uppercase());
+                i += 2;
+            }
+            flag if flag.starts_with("--letter=") => {
+                let v = &flag["--letter=".len()..];
+                letter = Some(v.to_uppercase());
+                i += 1;
+            }
+            "--fragments-dir" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "`--fragments-dir` requires a path value".to_string())?;
+                fragments_dir = Some(std::path::PathBuf::from(v));
+                i += 2;
+            }
+            flag if flag.starts_with("--fragments-dir=") => {
+                let v = &flag["--fragments-dir=".len()..];
+                fragments_dir = Some(std::path::PathBuf::from(v));
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `plan status` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::PlanStatus {
+        action: PlanStatusAction { letter, fragments_dir },
+        output_format,
+    })
+}
+
+/// I-41 — parse `elai critique <spec-path> [--lenses L1,...] [--risk simple|heavy] [--mock]`.
+///
+/// `<spec-path>` is positional and required.
+/// `--lenses` accepts a comma-separated list of lens IDs (L1..L8).
+/// `--risk` accepts `simple` (L1/L4/L8 trio) or `heavy` (all 8). Default: heavy.
+/// `--mock` activates the inline stub runtime.
+/// Unknown flags are a hard error (fail-closed parse).
+pub(crate) fn parse_critique_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    use elai_orchestrator::critique::lenses::{LensId, RiskLevel};
+
+    let mut spec_path: Option<std::path::PathBuf> = None;
+    let mut lenses: Vec<LensId> = Vec::new();
+    let mut risk = RiskLevel::Heavy;
+    let mut mock = false;
+    let mut i = 0usize;
+
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--lenses" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "`--lenses` requires a comma-separated list (e.g. L1,L4,L8)".to_string())?;
+                lenses = parse_lens_ids(v)?;
+                i += 2;
+            }
+            flag if flag.starts_with("--lenses=") => {
+                let v = &flag["--lenses=".len()..];
+                lenses = parse_lens_ids(v)?;
+                i += 1;
+            }
+            "--risk" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "`--risk` requires `simple` or `heavy`".to_string())?;
+                risk = parse_risk_level(v)?;
+                i += 2;
+            }
+            flag if flag.starts_with("--risk=") => {
+                let v = &flag["--risk=".len()..];
+                risk = parse_risk_level(v)?;
+                i += 1;
+            }
+            "--mock" => {
+                mock = true;
+                i += 1;
+            }
+            arg if !arg.starts_with('-') && spec_path.is_none() => {
+                spec_path = Some(std::path::PathBuf::from(arg));
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `critique` argument: {other}"));
+            }
+        }
+    }
+
+    let spec_path = spec_path.ok_or_else(|| {
+        "`critique` requires a spec file path (e.g. `elai critique path/to/spec.md`)".to_string()
+    })?;
+
+    Ok(CliAction::Critique {
+        action: crate::args::CritiqueAction { spec_path, lenses, risk, mock },
+        output_format,
+    })
+}
+
+fn parse_lens_ids(s: &str) -> Result<Vec<elai_orchestrator::critique::lenses::LensId>, String> {
+    use elai_orchestrator::critique::lenses::LensId;
+    let mut ids = Vec::new();
+    for part in s.split(',') {
+        let id = match part.trim().to_uppercase().as_str() {
+            "L1" => LensId::L1AssumptionExcavator,
+            "L2" => LensId::L2ImpliedCompleteness,
+            "L3" => LensId::L3AmbiguityMapper,
+            "L4" => LensId::L4GapAnalyzer,
+            "L5" => LensId::L5PreImplArchitect,
+            "L6" => LensId::L6ApiContractValidator,
+            "L7" => LensId::L7DocumentationValidator,
+            "L8" => LensId::L8AnxietyReader,
+            other => return Err(format!("unknown lens id `{other}`; expected L1..L8")),
+        };
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
+fn parse_risk_level(s: &str) -> Result<elai_orchestrator::critique::lenses::RiskLevel, String> {
+    use elai_orchestrator::critique::lenses::RiskLevel;
+    match s.to_lowercase().as_str() {
+        "simple" => Ok(RiskLevel::Simple),
+        "heavy" => Ok(RiskLevel::Heavy),
+        other => Err(format!("unknown risk level `{other}`; expected `simple` or `heavy`")),
+    }
 }

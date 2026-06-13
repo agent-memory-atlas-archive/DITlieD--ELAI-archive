@@ -51,6 +51,30 @@ use tracing::warn;
 use crate::ssb::{ConformalRefusalDecidedPayload, ConformalTauComputedPayload};
 
 // ---------------------------------------------------------------------------
+// I-23 calibration_id minting helpers
+// ---------------------------------------------------------------------------
+
+/// Deterministic 16-hex-char join key:
+///   blake3(tau_le_bytes[8] || corpus_size_le_bytes[4] || epsilon_le_bytes[8])[..8]
+///
+/// Total input = 20 bytes. Recomputable from any journal row that carries
+/// tau, corpus_size, and epsilon. No timestamp / entropy — GD-2 compliant.
+pub fn mint_calibration_id(tau: f64, corpus_size: u32, epsilon: f64) -> String {
+    // 8 (tau f64) + 4 (corpus_size u32) + 8 (epsilon f64) = 20 bytes.
+    let mut input = [0u8; 20];
+    input[..8].copy_from_slice(&tau.to_le_bytes());
+    input[8..12].copy_from_slice(&corpus_size.to_le_bytes());
+    input[12..20].copy_from_slice(&epsilon.to_le_bytes());
+    let hash = blake3::hash(&input);
+    let bytes = hash.as_bytes();
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -410,23 +434,15 @@ impl TauUpdater {
             }
         }
 
-        // Atomic write: write to sibling tmp then rename.
-        let mut tmp = self.tau_path.clone();
-        let fname = tmp
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("conformal_tau.txt")
-            .to_string();
-        tmp.set_file_name(format!(".{fname}.tmp"));
-        std::fs::write(&tmp, format!("{tau:.17}\n")).map_err(|e| {
-            ConformalError::TauPersist {
-                path: tmp.display().to_string(),
-                reason: format!("write tmp: {e}"),
-            }
-        })?;
-        std::fs::rename(&tmp, &self.tau_path).map_err(|e| ConformalError::TauPersist {
+        // Atomic write: tmp + sync_all + rename via shared helper (I-3 Phase-3C hardening).
+        let tau_bytes = format!("{tau:.17}\n");
+        crate::util::atomic_io::atomic_write_sync(
+            &self.tau_path,
+            tau_bytes.as_bytes(),
+        )
+        .map_err(|e| ConformalError::TauPersist {
             path: self.tau_path.display().to_string(),
-            reason: format!("rename: {e}"),
+            reason: format!("atomic write: {e}"),
         })?;
         Ok(tau)
     }
@@ -653,7 +669,7 @@ impl ConformalRefusalDecidedEmitter for VecConformalRefusalDecidedEmitter {
 }
 
 /// Compute tau over `corpus` at `epsilon`, emit one
-/// `conformal_tau_computed` SSB row, and return tau on success.
+/// `conformal_tau_computed` SSB row, and return `(tau, calibration_id)`.
 ///
 /// `now_ms` is injected (no clock read inside the producer) per the
 /// entropy-quarantine rule — matches [`crate::agent_pool::route_claim`]
@@ -662,20 +678,27 @@ impl ConformalRefusalDecidedEmitter for VecConformalRefusalDecidedEmitter {
 /// A failed SSB emission is logged via `tracing::warn` but does NOT
 /// override the tau result — the threshold is the load-bearing piece;
 /// the row is the durable audit signal.
+///
+/// The returned `calibration_id` is a 16-char deterministic blake3 hex
+/// prefix (see [`mint_calibration_id`]) that callers thread through to
+/// [`decide_and_emit`] / [`decide_and_emit_with_reason`] so every
+/// refusal-decided row carries the same join key as its tau row.
 pub async fn compute_tau_and_emit<E: ConformalTauComputedEmitter + ?Sized>(
     corpus: &CalibrationCorpus,
     epsilon: f64,
     emitter: &E,
     now_ms: i64,
-) -> Result<f64, ConformalError> {
+) -> Result<(f64, String), ConformalError> {
     let tau = compute_tau(corpus, epsilon)?;
     let corpus_size_u32 = u32::try_from(corpus.size()).unwrap_or(u32::MAX);
+    let calibration_id = mint_calibration_id(tau, corpus_size_u32, epsilon);
     let payload = ConformalTauComputedPayload {
         tau,
         epsilon,
         corpus_size: corpus_size_u32,
         source: corpus.source.as_str().to_string(),
         ts_ms: now_ms,
+        calibration_id: Some(calibration_id.clone()),
     };
     if let Err(e) = emitter.emit(payload).await {
         warn!(
@@ -686,7 +709,7 @@ pub async fn compute_tau_and_emit<E: ConformalTauComputedEmitter + ?Sized>(
             "compute_tau_and_emit: SSB emission failed (tau still applies)"
         );
     }
-    Ok(tau)
+    Ok((tau, calibration_id))
 }
 
 /// Run the conformal refusal decision for a single claim, emit one
@@ -694,10 +717,15 @@ pub async fn compute_tau_and_emit<E: ConformalTauComputedEmitter + ?Sized>(
 ///
 /// `claim_id` carries through to the SSB row so the dashboard joins
 /// against the `claim_routed` rows D-10 emitted (same claim_id space).
+///
+/// `calibration_id` is the join key returned by [`compute_tau_and_emit`]
+/// for the tau computation that produced `tau`. Threading it here ensures
+/// the refusal-decided row carries the same id as its tau row.
 pub async fn decide_and_emit<E: ConformalRefusalDecidedEmitter + ?Sized>(
     claim_id: &str,
     claim_score: f64,
     tau: f64,
+    calibration_id: &str,
     emitter: &E,
     now_ms: i64,
 ) -> RefusalDecision {
@@ -721,6 +749,7 @@ pub async fn decide_and_emit<E: ConformalRefusalDecidedEmitter + ?Sized>(
         // refusal-reason classifier wire it through
         // `decide_and_emit_with_reason` below.
         reason: None,
+        calibration_id: Some(calibration_id.to_string()),
     };
     if let Err(e) = emitter.emit(payload).await {
         warn!(
@@ -784,10 +813,14 @@ impl RefusalReason {
 /// Production callers building a verifier-aware classifier should use
 /// this in place of [`decide_and_emit`] so the dashboard can render
 /// per-reason histograms.
+///
+/// `calibration_id` is the join key returned by [`compute_tau_and_emit`]
+/// for the tau computation that produced `tau`.
 pub async fn decide_and_emit_with_reason<E: ConformalRefusalDecidedEmitter + ?Sized>(
     claim_id: &str,
     claim_score: f64,
     tau: f64,
+    calibration_id: &str,
     reason_when_abstain: Option<RefusalReason>,
     emitter: &E,
     now_ms: i64,
@@ -809,6 +842,7 @@ pub async fn decide_and_emit_with_reason<E: ConformalRefusalDecidedEmitter + ?Si
         confidence,
         ts_ms: now_ms,
         reason,
+        calibration_id: Some(calibration_id.to_string()),
     };
     if let Err(e) = emitter.emit(payload).await {
         warn!(
@@ -1191,10 +1225,11 @@ mod tests {
     async fn compute_tau_and_emit_emits_one_row() {
         let c = balanced_corpus(20);
         let emitter = VecConformalTauComputedEmitter::new();
-        let tau = compute_tau_and_emit(&c, 0.1, &emitter, 1_700_000_999_000)
+        let (tau, cal_id) = compute_tau_and_emit(&c, 0.1, &emitter, 1_700_000_999_000)
             .await
             .expect("tau");
         assert!((tau - 0.8).abs() < 1e-9);
+        assert_eq!(cal_id.len(), 16, "calibration_id must be 16 hex chars");
         let rows = emitter.rows().await;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].epsilon, 0.1);
@@ -1206,8 +1241,8 @@ mod tests {
     #[tokio::test]
     async fn decide_and_emit_emits_one_row_per_call() {
         let emitter = VecConformalRefusalDecidedEmitter::new();
-        let _ = decide_and_emit("c-low", 0.01, 0.5, &emitter, 100).await;
-        let _ = decide_and_emit("c-high", 0.99, 0.5, &emitter, 200).await;
+        let _ = decide_and_emit("c-low", 0.01, 0.5, "aaaaaaaaaaaaaaaa", &emitter, 100).await;
+        let _ = decide_and_emit("c-high", 0.99, 0.5, "aaaaaaaaaaaaaaaa", &emitter, 200).await;
         let rows = emitter.rows().await;
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].claim_id, "c-low");
@@ -1226,6 +1261,7 @@ mod tests {
             "c-low",
             0.01,
             0.5,
+            "aaaaaaaaaaaaaaaa",
             Some(RefusalReason::LowEvidence),
             &emitter,
             100,
@@ -1236,6 +1272,7 @@ mod tests {
             "c-high",
             0.99,
             0.5,
+            "aaaaaaaaaaaaaaaa",
             Some(RefusalReason::VerifierRejection),
             &emitter,
             200,

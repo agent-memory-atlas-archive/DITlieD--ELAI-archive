@@ -158,36 +158,14 @@ impl<C: ClockProvider> CheckpointManager<C> {
         Ok(())
     }
 
-    /// Write content to a temp file, then atomically rename to the target.
-    /// Windows-safe: removes existing target before rename (NTFS cannot rename over existing).
+    /// Write content to a temp file, fsync, then atomically rename to the target.
+    /// Delegates to [`crate::util::atomic_io::atomic_write_async`] for the
+    /// tmp+sync_all+rename pattern (I-3 Phase-3C hardening). Windows-safe:
+    /// the helper removes existing target before rename.
     async fn atomic_write(target: &Path, content: &[u8]) -> Result<(), CheckpointError> {
-        let tmp_path = target.with_extension("tmp");
-        let target_str = target.display().to_string();
-
-        // Write to temp file
-        if let Err(e) = tokio::fs::write(&tmp_path, content).await {
-            return Err(CheckpointError::Io(e, format!("write tmp for {target_str}")));
-        }
-
-        // Remove existing target if present (NTFS atomic rename requirement)
-        if tokio::fs::metadata(target).await.is_ok() {
-            if let Err(e) = tokio::fs::remove_file(target).await {
-                // Clean up temp file on failure
-                let _ = tokio::fs::remove_file(&tmp_path).await;
-                return Err(CheckpointError::Io(e, format!("remove existing {target_str}")));
-            }
-        }
-
-        // Rename temp to target
-        if let Err(e) = tokio::fs::rename(&tmp_path, target).await {
-            // Clean up temp file on failure
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(CheckpointError::AtomicRenameFailed(
-                format!("{target_str}: {e}"),
-            ));
-        }
-
-        Ok(())
+        crate::util::atomic_io::atomic_write_async(target, content)
+            .await
+            .map_err(|e| CheckpointError::Io(e, target.display().to_string()))
     }
 
     /// Compute BLAKE3 hex digest of a byte slice.

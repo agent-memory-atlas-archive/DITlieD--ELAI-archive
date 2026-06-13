@@ -6,6 +6,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use elai_ipc_types::{FsmState, ToolId, ToolResultPayload};
+use elai_orchestrator::Ssb;
+use elai_orchestrator::ssb::{MemoryGuardEventKind, MemoryGuardEventPayload, SsbPayload};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -76,13 +78,28 @@ pub trait ToolHandler: Send + Sync {
 
 pub struct IpcToolRegistry {
     handlers: FxHashMap<String, Arc<dyn ToolHandler>>,
+    /// I-13: optional SSB writer for `DualSerialized` event emission.
+    /// When `Some`, every `dispatch()` call that returns a condensable payload
+    /// emits a `MemoryGuardEvent(DualSerialized { token_delta })` row.
+    ssb: Option<Arc<Ssb>>,
 }
 
 impl IpcToolRegistry {
     pub fn new() -> Self {
         Self {
             handlers: FxHashMap::default(),
+            ssb: None,
         }
+    }
+
+    /// Attach an SSB writer so `dispatch()` can emit `DualSerialized` rows.
+    ///
+    /// I-13: production callers that hold an `Arc<Ssb>` pass it here so the
+    /// dual-serialization token delta is recorded in the SSB stream.
+    #[must_use]
+    pub fn with_ssb(mut self, ssb: Arc<Ssb>) -> Self {
+        self.ssb = Some(ssb);
+        self
     }
 
     /// Register a tool handler.
@@ -91,6 +108,13 @@ impl IpcToolRegistry {
     }
 
     /// Dispatch a tool request. Checks FSM state filtering before execution.
+    ///
+    /// I-13: when an SSB writer is wired (see [`Self::with_ssb`]), emits a
+    /// `MemoryGuardEvent(DualSerialized { token_delta })` row whenever the
+    /// payload output exceeds [`crate::tool_result::LLM_OUTPUT_CHAR_LIMIT`].
+    /// The `to_llm_content()` condensed form is NOT returned to callers here
+    /// (that is the responsibility of the context-assembly path); the emit
+    /// records the delta for the dashboard DualSerialized badge.
     pub async fn dispatch(
         &self,
         tool_id: &str,
@@ -117,7 +141,43 @@ impl IpcToolRegistry {
             });
         }
 
-        handler.execute(arguments).await
+        let payload = handler.execute(arguments).await?;
+
+        // I-13: emit DualSerialized SSB row when output exceeds LLM_OUTPUT_CHAR_LIMIT.
+        // The token_delta is the character-count difference between the full output
+        // (to_ui_dict) and the condensed output (to_llm_content). This is the
+        // off-agent artifact (R4) proving the dual-serialization gate fired.
+        if let Some(ssb) = self.ssb.as_ref() {
+            let delta = crate::tool_result::dual_serialize_delta(&payload);
+            if delta > 0 {
+                let ts_ms = {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+                        .unwrap_or(0)
+                };
+                let emit_payload = SsbPayload::MemoryGuardEvent(MemoryGuardEventPayload {
+                    kind: MemoryGuardEventKind::DualSerialized,
+                    pattern_class: None,
+                    token_delta: Some(delta),
+                    byte_range: None,
+                    ts_ms,
+                });
+                if let Err(e) = ssb
+                    .write_payload("ipc_registry", 0, emit_payload, vec![tool_id.to_string()])
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        tool_id = %tool_id,
+                        "IpcToolRegistry: DualSerialized SSB write failed (non-fatal)"
+                    );
+                }
+            }
+        }
+
+        Ok(payload)
     }
 
     /// Return tool IDs available in the given FSM state.

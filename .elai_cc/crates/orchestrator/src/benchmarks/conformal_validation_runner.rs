@@ -67,7 +67,7 @@ use tokio::fs;
 use tracing::{debug, info};
 
 use crate::benchmarks::prmbench_runner::GatingVerdict;
-use crate::conformal_calibration::{
+use crate::calibration::{
     compute_tau, decide, CalibrationCorpus, ConformalError, RefusalDecision, DEFAULT_EPSILON,
 };
 use crate::reasoning_template::Domain;
@@ -628,7 +628,7 @@ pub fn default_mini_fixture_path(project_root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conformal_calibration::{CalibrationTuple, CorpusSource};
+    use crate::calibration::{CalibrationTuple, CorpusSource};
     use tempfile::TempDir;
 
     fn balanced_corpus(n_pairs: usize) -> CalibrationCorpus {

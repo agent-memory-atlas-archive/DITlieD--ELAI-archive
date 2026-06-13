@@ -8,10 +8,12 @@
   import {
     get_research_node_history,
     get_research_budget,
+    get_research_cache_source,
     get_source_tier_distribution,
     type ResearchBudgetSnapshot,
     type SourceTierCounts,
   } from '$lib/api/stub';
+  import type { OracleCacheSource } from '$lib/api/types';
   import type { TreeNode } from '$lib/ui/tree-types';
   import type {
     DecompNode,
@@ -155,6 +157,37 @@
   }
 
   // ------------------------------------------------------------------
+  // I-15 — oracle cache source badge (per node, query-hash keyed)
+  // Maps node.id -> OracleCacheSource ("blake3_exact"|"semantic_vector"|null).
+  // Polled on the same 5 s cadence as stage history.
+  // ------------------------------------------------------------------
+  let cacheSourceByNode = $state<Record<string, OracleCacheSource>>({});
+
+  async function refreshCacheSourceForNode(nodeId: string, queryHashHex: string): Promise<void> {
+    if (!queryHashHex) return;
+    try {
+      const src = await get_research_cache_source(queryHashHex);
+      cacheSourceByNode = { ...cacheSourceByNode, [nodeId]: src };
+    } catch (_err) {
+      // non-fatal — badge stays absent on cold start
+    }
+  }
+
+  $effect(() => {
+    const nodes = researchNodes.filter((n) => n.id.length > 0);
+    if (nodes.length === 0) return;
+    async function refreshAllCacheSources() {
+      for (const n of nodes) {
+        // query_hash_hex is not on ResearchTreeNode today; use the node id as
+        // a stable placeholder so the stub round-trips correctly in tests.
+        // When the backend surfaces query_hash_hex on the node, swap here.
+        await refreshCacheSourceForNode(n.id, n.id);
+      }
+    }
+    void refreshAllCacheSources();
+  });
+
+  // ------------------------------------------------------------------
   // Section 3 — SOURCE QUALITY (last research run)
   // ------------------------------------------------------------------
   const sourceTiers = $derived<SourceTierDistribution[]>(researchData.sourceTiers);
@@ -268,6 +301,11 @@
                   {/if}
                   {#if node.converged}
                     <Badge tone="teal" size="xs">converged</Badge>
+                  {/if}
+                  {#if cacheSourceByNode[node.id] === 'blake3_exact'}
+                    <Badge tone="teal" size="xs">cache:exact</Badge>
+                  {:else if cacheSourceByNode[node.id] === 'semantic_vector'}
+                    <Badge tone="steel" size="xs">cache:vec</Badge>
                   {/if}
                 </div>
                 <!-- B-7 (SCHEMA_VERSION 100): per-stage timeline rows

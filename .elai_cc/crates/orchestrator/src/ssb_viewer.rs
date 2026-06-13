@@ -369,6 +369,16 @@ pub struct CloudSpendSummary {
     /// kept on the wire so a future writer side can populate without
     /// breaking the frontend.
     pub redaction_count: u64,
+    /// I-10: most-recent TTL tier label selected by the cache-economics planner
+    /// ("1h" | "5m" | "default"). `None` when no CacheEconomicsEvent row exists.
+    #[serde(default)]
+    pub ttl_tier: Option<String>,
+    /// I-10: breakeven read count for the most-recent TTL tier (3 for 1h, 1 for 5m, 0 otherwise).
+    #[serde(default)]
+    pub breakeven_reads: u32,
+    /// I-10: number of HitRateGuardTripped events emitted today.
+    #[serde(default)]
+    pub guard_trips_today: u32,
 }
 
 impl BabyStepDetail {
@@ -4518,6 +4528,9 @@ impl SsbViewer {
                     gate_count: p.gate_count,
                     seed: p.seed,
                     session_id: p.session_id,
+                    // I-45: carry objective hash to the dashboard feed; None on
+                    // LEGACY receipts that predate this field.
+                    objective_hash: p.objective_hash,
                 });
             }
         }
@@ -5255,7 +5268,92 @@ impl SsbViewer {
             let _ = &p;
         }
 
+        // I-10: query CacheEconomicsEvent rows for TTL tier + guard trips.
+        // ttl_tier = most-recent TtlPlanned row's tier label.
+        // guard_trips_today = count of HitRateGuardTripped rows within the day window.
+        let mut eco_stmt = conn.prepare(
+            "SELECT created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let eco_rows = eco_stmt.query_map(
+            params![SsbActionType::CacheEconomicsEvent(
+                crate::ssb::CacheEconomicsEventKind::TtlPlanned
+            ).as_sql_str(), CLOUD_SPEND_SCAN_LIMIT],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )?;
+        let mut ttl_tier_assigned = false;
+        for row in eco_rows {
+            let (created_at_secs, bytes) = match row {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let SsbPayload::CacheEconomicsEvent(p) = payload else {
+                continue;
+            };
+            // Most-recent TtlPlanned row sets ttl_tier + breakeven_reads.
+            if !ttl_tier_assigned && p.kind == crate::ssb::CacheEconomicsEventKind::TtlPlanned {
+                use crate::cache_economics::TtlTier;
+                let tier_label = match p.ttl_secs {
+                    Some(3600) => TtlTier::Long.label(),
+                    Some(300) => TtlTier::Short.label(),
+                    _ => TtlTier::NoCache.label(),
+                };
+                summary.ttl_tier = Some(tier_label.to_string());
+                summary.breakeven_reads = p.breakeven_reads;
+                ttl_tier_assigned = true;
+            }
+            // Count HitRateGuardTripped events within today's window.
+            if created_at_secs >= day_start_secs
+                && p.kind == crate::ssb::CacheEconomicsEventKind::HitRateGuardTripped
+            {
+                summary.guard_trips_today = summary.guard_trips_today.saturating_add(1);
+            }
+        }
+
         Ok(summary)
+    }
+
+    /// I-18: Query all `row_chain_sealed` rows for a given `session_id`, in
+    /// ascending `seq` order. Returns a `Vec<(seq, payload_bytes)>` so the
+    /// caller can decode and walk the chain without loading the full session
+    /// stream.
+    ///
+    /// Uses `SsbViewer` (read-only SQLite) — no write handle needed.
+    /// The `session_id` comparison is against the decoded payload field, not
+    /// a DB column (the SSB table has no `session_id` column). We load all
+    /// `row_chain_sealed` rows and filter in-process; this is bounded because
+    /// the SSB has a finite row count and `row_chain_sealed` rows are sparse.
+    pub fn query_row_chain_sealed_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(i64, Vec<u8>)>, SsbViewerError> {
+        use crate::ssb::{decode_ssb_payload, RowChainSealedPayload, SsbPayload};
+
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, payload FROM ssb \
+             WHERE action_type = 'row_chain_sealed' \
+             ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            let (seq, bytes) = row?;
+            // Filter by session_id from the decoded payload.
+            if let Ok(SsbPayload::RowChainSealed(p)) = decode_ssb_payload(&bytes) {
+                if p.session_id == session_id {
+                    result.push((seq, bytes));
+                }
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -5393,6 +5491,10 @@ pub struct RunArtifactRow {
     pub seed: u64,
     /// The session whose stream was bundled.
     pub session_id: String,
+    /// I-45: 16-hex blake3 objective hash sealed at run time. `None` on LEGACY
+    /// receipts (pre-I-45).
+    #[serde(default)]
+    pub objective_hash: Option<String>,
 }
 
 /// G-8 — DTO for [`SsbViewer::attestations`]. One row per signed in-toto v1

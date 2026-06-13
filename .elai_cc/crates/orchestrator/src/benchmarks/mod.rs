@@ -87,3 +87,8 @@ pub mod staleness_runner;
 // (INJECTED_CAP_TOKENS named const). Live multi-server measurement (real
 // tokenizer, RunPod) is a benchmark-class deferral tracked under H-34.
 pub mod mcp_schema_budget_runner;
+// I-3: SSB write-loop throughput runner. Drives N sequential write_payload
+// calls against an isolated tempfile Ssb instance, records inserts/sec, and
+// writes metrics/phase_I3.toml (ID-5: non-deterministic timing, not asserted).
+// Runtime: multi_thread (SSB_NEW_MUST_BE_BUILT_INSIDE_BLOCK_ON_MULTI_THREAD_RUNTIME).
+pub mod ssb_throughput_runner;

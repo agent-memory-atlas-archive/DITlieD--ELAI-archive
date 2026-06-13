@@ -2970,31 +2970,32 @@ fn baby_step_dispatched_detail_to_row(
 /// caller should fall back to `GroundingMode::ConservativeFallback`
 /// per the D-10 routing table.
 pub async fn dispatch_conformal_refusal<
-    TE: crate::conformal_calibration::ConformalTauComputedEmitter + ?Sized,
-    RE: crate::conformal_calibration::ConformalRefusalDecidedEmitter + ?Sized,
+    TE: crate::calibration::ConformalTauComputedEmitter + ?Sized,
+    RE: crate::calibration::ConformalRefusalDecidedEmitter + ?Sized,
 >(
     claim_id: &str,
     claim_score: f64,
-    corpus: &crate::conformal_calibration::CalibrationCorpus,
+    corpus: &crate::calibration::CalibrationCorpus,
     epsilon: f64,
     tau_emitter: &TE,
     decision_emitter: &RE,
     now_ms: i64,
 ) -> Result<
-    crate::conformal_calibration::RefusalDecision,
-    crate::conformal_calibration::ConformalError,
+    crate::calibration::RefusalDecision,
+    crate::calibration::ConformalError,
 > {
-    let tau = crate::conformal_calibration::compute_tau_and_emit(
+    let (tau, calibration_id) = crate::calibration::compute_tau_and_emit(
         corpus,
         epsilon,
         tau_emitter,
         now_ms,
     )
     .await?;
-    let decision = crate::conformal_calibration::decide_and_emit(
+    let decision = crate::calibration::decide_and_emit(
         claim_id,
         claim_score,
         tau,
+        &calibration_id,
         decision_emitter,
         now_ms,
     )
@@ -3005,7 +3006,7 @@ pub async fn dispatch_conformal_refusal<
 #[cfg(test)]
 mod d16_conformal_dispatch_tests {
     use super::*;
-    use crate::conformal_calibration::{
+    use crate::calibration::{
         CalibrationCorpus, CalibrationTuple, CorpusSource, RefusalDecision,
         VecConformalRefusalDecidedEmitter, VecConformalTauComputedEmitter,
     };
@@ -3104,7 +3105,7 @@ mod d16_conformal_dispatch_tests {
         .expect_err("must fail on tiny corpus");
         assert!(matches!(
             err,
-            crate::conformal_calibration::ConformalError::InsufficientCorpus { .. }
+            crate::calibration::ConformalError::InsufficientCorpus { .. }
         ));
         // No SSB rows emitted (the tau emit never fired).
         assert_eq!(tau_emitter.len().await, 0);
@@ -3208,7 +3209,7 @@ pub async fn dispatch_refusal_sla_check<
 #[cfg(test)]
 mod d17_refusal_sla_dispatch_tests {
     use super::*;
-    use crate::conformal_calibration::RefusalDecision;
+    use crate::calibration::RefusalDecision;
     use crate::refusal_sla::{
         HealthBand, RefusalRateMonitor, RefusalSlaConfig, VecRefusalRateSnapshotEmitter,
         VecRefusalSlaBreachEmitter,

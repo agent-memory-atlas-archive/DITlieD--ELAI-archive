@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use elai_core::entropy::SeededRng;
-use elai_orchestrator::calibration_bootstrap::{
+use elai_orchestrator::calibration::{
     bootstrap_resample, ci_90_from_sorted, default_block_p, load_corpus, warm_start_tau,
     DEFAULT_BOOTSTRAP_EPSILON, DEFAULT_BOOTSTRAP_MIN_CORPUS_SIZE,
     DEFAULT_BOOTSTRAP_REPLICATES, MIN_BOOTSTRAP_REPLICATES,
@@ -157,8 +157,8 @@ fn warm_start_tau_against_floor_active_flag() {
         0,
     )
     .expect_err("must fail under production floor");
-    use elai_orchestrator::calibration_bootstrap::BootstrapError;
-    use elai_orchestrator::conformal_calibration::ConformalError;
+    use elai_orchestrator::calibration::BootstrapError;
+    use elai_orchestrator::calibration::ConformalError;
     assert!(matches!(
         err,
         BootstrapError::Conformal(ConformalError::InsufficientCorpus { .. })

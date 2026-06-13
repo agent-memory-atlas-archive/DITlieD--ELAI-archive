@@ -1,0 +1,24 @@
+{
+  "role": "context_compiler",
+  "description": "I-32 A/B fixture: 3 deterministic tasks for the ContextCompiler role. Pass criterion: the assembled system-prompt sections contain the contract header '# Role: ContextCompiler' and do NOT contain the narrative 'You are an interactive agent'. Evidence gate (ID-5): new_pass_rate >= old_pass_rate required for production flip.",
+  "tasks": [
+    {
+      "id": "context_compiler_ab_1",
+      "prompt": "Compile a context package for the I-32 deliverables in crates/orchestrator/src/.",
+      "expected_in_prompt": "# Role: ContextCompiler",
+      "must_not_appear": "You are an interactive agent"
+    },
+    {
+      "id": "context_compiler_ab_2",
+      "prompt": "List all public symbols exported from crates/orchestrator/src/lib.rs.",
+      "expected_in_prompt": "Read source files; do not invent symbol names",
+      "must_not_appear": "You are an interactive agent"
+    },
+    {
+      "id": "context_compiler_ab_3",
+      "prompt": "Identify the integration surface between report_fns.rs and the orchestrator crate.",
+      "expected_in_prompt": "Output follows the context-package template",
+      "must_not_appear": "You are an interactive agent"
+    }
+  ]
+}
