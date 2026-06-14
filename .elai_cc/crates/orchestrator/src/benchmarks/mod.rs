@@ -92,3 +92,16 @@ pub mod mcp_schema_budget_runner;
 // writes metrics/phase_I3.toml (ID-5: non-deterministic timing, not asserted).
 // Runtime: multi_thread (SSB_NEW_MUST_BE_BUILT_INSIDE_BLOCK_ON_MULTI_THREAD_RUNTIME).
 pub mod ssb_throughput_runner;
+// I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) telemetry harness.
+// Injects a deterministic byte-perturbation at one step of a frozen
+// include_str! pipeline fixture (IN-HARNESS, NOT C-28 cargo-mutants), walks the
+// downstream window classifying each step RECOVERED vs PROPAGATED, computes
+// alpha_t (the propagated fraction) + recovered_fraction, and consults a CLAMPED
+// C-26 RetryStrategy::temperature_for_attempt when alpha crosses the amplifying
+// threshold mid-run (FORK-2 in-harness annealing; no task_runner caller). The
+// recovery flags are recorded fixture fields so the whole harness is pure-CPU
+// (INFERENCE-FREE; baseline alpha is MEASURED, not D-026 PENDING). The
+// `--no-repair` arm propagates fully (alpha == 1.0) so the instrument can scream
+// (R2). Emits exactly one SsbActionType::ErrorAmplificationMeasured beacon from
+// the CLI bench seam (default-ON; no ELAI_*_ENABLE flag).
+pub mod error_amplification_runner;

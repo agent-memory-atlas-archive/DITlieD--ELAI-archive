@@ -1,0 +1,50 @@
+# I-9: error-amplification (alpha_t) baseline -- ELAI's OWN measured baseline.
+# Generated from the frozen pipeline fixture
+# (crates/orchestrator/src/benchmarks/error_amplification_fixtures/pipeline_v1.json).
+# ID-5: this is the baseline MEASURED before any contraction claim; no literature
+# alpha is carried as a target or gate threshold. The threshold below governs ONLY
+# the in-loop active-annealing side effect, never an acceptance criterion.
+# INFERENCE-FREE: the fixture's recovery flags are recorded fields, so the harness
+# is pure-CPU (no sidecar, no live model). The alpha number is MEASURED here, NOT
+# PENDING D-026.
+# Recomputable: ELAI_SEED=0 cargo run --bin elai -- bench error-amplification --json
+#           or: cargo test -p elai-orchestrator --lib benchmarks::error_amplification_runner
+
+[fixture]
+suite = "error_amplification_pipeline_v1"
+n_steps = 6
+injected_step = 1
+downstream_steps = 4
+recovering_downstream_steps = 3
+seed = 0
+
+[measured.repaired]
+# Canonical arm: each downstream step's `recovers` flag is honoured.
+alpha_t = 0.25
+recovered_fraction = 0.75
+divergence_step = 1
+annealed = false
+note = "contracting regime -- the verification/repair stack recovers 3 of 4 downstream steps"
+
+[measured.no_repair]
+# R2 negative control: recovery disabled (the `--no-repair` arm).
+alpha_t = 1.0
+recovered_fraction = 0.0
+divergence_step = 1
+annealed = true
+note = "amplifying regime -- corruption propagates through every downstream step; fires the C-26 anneal"
+
+[annealing]
+# NOT a gate / acceptance criterion (ID-5). Governs ONLY the in-loop temperature
+# tighten side effect when measured alpha crosses it mid-run.
+alpha_threshold = 0.5
+clamped_temperature = 0.0
+note = "the clamped temperature is the lowest rung of the default C-26 RetryStrategy schedule [0.0, 0.2, 0.5]"
+
+[verdict]
+# The metric DISCRIMINATES (R2): the repaired arm (0.25) strictly contracts below
+# the no-repair arm (1.0). The instrument can scream.
+discriminates = true
+repaired_below_no_repair = true
+buildable = true
+pending_d026 = false

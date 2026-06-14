@@ -212,11 +212,16 @@
 </div>
 
 <style>
+  /* Flat-matte work surface — role tokens only (DESIGN §1/§3). */
   .arch-mode {
     display: flex;
     flex-direction: column;
     gap: 8px;
     padding: 8px;
+    height: 100%;
+    min-height: 0;
+    background: var(--bg);
+    font-family: var(--font-mono);
   }
 
   .arch-mode__header {
@@ -226,56 +231,59 @@
   }
 
   .arch-mode__label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary, #888);
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.16em;
   }
 
   .arch-mode__export-btn,
   .arch-mode__copy-btn {
-    font-size: 11px;
-    padding: 2px 8px;
-    border: 1px solid var(--border, #444);
-    border-radius: 4px;
-    background: var(--bg-secondary, #2a2a2a);
-    color: var(--text, #ccc);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 3px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-xs);
+    background: var(--panel);
+    color: var(--read);
     cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
   }
-
   .arch-mode__export-btn:hover,
   .arch-mode__copy-btn:hover {
-    background: var(--bg-hover, #333);
+    background: var(--raised);
+    color: var(--text);
   }
 
   .arch-mode__export-panel {
-    border: 1px solid var(--border, #444);
-    border-radius: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
     padding: 8px;
-    background: var(--bg-secondary, #1e1e1e);
+    background: var(--panel);
     max-height: 300px;
     overflow-y: auto;
   }
 
   .arch-mode__mermaid-text {
-    font-family: monospace;
+    font-family: var(--font-mono);
     font-size: 11px;
     white-space: pre-wrap;
-    color: var(--text, #ccc);
+    color: var(--read);
     margin: 0 0 8px;
   }
 
   .arch-mode__loading,
   .arch-mode__empty {
-    font-size: 12px;
-    color: var(--text-secondary, #888);
+    font-size: 11px;
+    color: var(--dim);
     margin: 0;
   }
 
+  /* error reads via text + the surrounding state language, not red */
   .arch-mode__error {
-    font-size: 12px;
-    color: var(--color-error, #e05);
+    font-size: 11px;
+    color: var(--text);
     margin: 0;
   }
 
@@ -284,25 +292,29 @@
     min-height: 200px;
     position: relative;
     overflow: hidden;
-    background: var(--bg-base, #161616);
-    border: 1px solid var(--border, #333);
-    border-radius: 4px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
   }
-
-  /* sigma mounts a canvas element inside; ensure it fills the container. */
   .arch-mode__canvas :global(canvas) {
     display: block;
     width: 100% !important;
     height: 100% !important;
   }
 
+  /* rejected-ops health signal — warn reads as a triangle prefix + --text,
+     no amber (DESIGN §6: amber is dead). */
   .arch-mode__rejected {
     font-size: 10px;
-    color: var(--color-warn, #b5860a);
-    background: var(--bg-warn-ghost, #2a2000);
-    border: 1px solid var(--border-warn, #5a4000);
-    border-radius: 4px;
-    padding: 1px 6px;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--line2);
+    border-radius: var(--r-xs);
+    padding: 1px 6px 1px 4px;
     cursor: default;
+  }
+  .arch-mode__rejected::before {
+    content: '▲ ';
+    color: var(--text);
   }
 </style>

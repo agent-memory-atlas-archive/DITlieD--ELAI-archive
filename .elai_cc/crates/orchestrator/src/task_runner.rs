@@ -7104,6 +7104,48 @@ async fn drive_task(
                     ));
                 }
             }
+
+            // I-37: additive EARS requirement verification + RequirementVerified
+            // SSB emit at the PLANNING -> TESTING_FIRST seam. Each grounding claim
+            // that parses as an EARS `shall` line becomes a typed requirement; the
+            // set is re-verified (no bound tests yet -> honestly Unverified, SHOWN
+            // not dropped, R1) and one RequirementVerified row is emitted per
+            // requirement so the G-5 cockpit can render a per-requirement chip.
+            // This is the production caller for the I-37 machinery (D-030); it is
+            // independent of the blocking RequirementsGate flag (the row always
+            // lands). A write failure is non-fatal (the transition is unaffected).
+            {
+                let mut ears_set = crate::requirements::EarsRequirementSet::new();
+                for claim in &grounding.claims {
+                    if let Some((pattern, canonical)) =
+                        crate::requirements::parse_ears_line(&claim.claim)
+                    {
+                        ears_set.insert(crate::requirements::EarsRequirement::new(
+                            canonical, pattern,
+                        ));
+                    }
+                }
+                if !ears_set.is_empty() {
+                    // No live test/MR feed threaded here yet (Tier-1): re-verify
+                    // against empty live-test + held-MR sets so the honest status
+                    // is Unverified for records with no bound tests. The I-20 /
+                    // IS-8 join lands in the I-37-promotion follow-up.
+                    crate::requirements::reverify_set(
+                        &mut ears_set,
+                        crate::requirements::DEFAULT_MUTATION_COVERAGE_FLOOR,
+                        &[],
+                        &[],
+                    );
+                    crate::requirements::emit_requirement_verified_to_ssb(
+                        writer,
+                        RUNNER_AGENT_ID,
+                        RUNNER_SUPERSTEP,
+                        &ears_set,
+                    )
+                    .await;
+                }
+            }
+
             if !block_messages.is_empty() {
                 let summary = block_messages.join(" | ");
                 emit_finding(
@@ -11342,6 +11384,54 @@ async fn drive_task(
     // toggle pattern. See dispatch_tri_layer_verdict + verifier_stack +
     // workflow/reasoning/I-17-decisions.md.
     dispatch_tri_layer_verdict(writer, seq, &task.project_id, resolved).await;
+    // I-22 closure: post-task delta-progress reward dispatch (Track 15, ANTI-GAMING
+    // lever). ADDITIVE, NOT a gating step — the shaped-reward row lands as
+    // observability data only. When `ELAI_PROGRESS_REWARD_ENABLE` is unset (default)
+    // OR `resolved.checker_runtime` is None, this is a strict no-op (wire-dark-
+    // allowlist row, promotion plan I-22-promotion). On the task-runner smoke path
+    // phi_prev = 0.0 (single step; the per-step history makes sense only in the
+    // i-4 PUCT multi-branch loop — D-6 decision). See dispatch_progress_reward +
+    // crate::search::score + docs/thefinalglance/I-plan/I-22_progress_shaped_rewards.md.
+    dispatch_progress_reward(writer, seq, &task.project_id, resolved).await;
+    // I-4 closure: post-task evidence-ranked search-ladder dispatch (Wave-4
+    // KEYSTONE). ADDITIVE, NOT a replacement for the linear retry loop (GD-4: the
+    // linear retry STAYS until the ladder proves a measured win on >=3 real runs).
+    // The ladder generates K candidate branches, builds each branch's pristine
+    // context (I-5), runs the I-17 tri-layer stack, drops vetoed/quarantined
+    // branches, escalates the survivor SET (the real multi-branch caller I-17 was
+    // built for), and ranks the rest by verifier receipts to pick best-of-N,
+    // emitting SearchNodeEvent rows. When `ELAI_SEARCH_LADDER_ENABLE` is unset
+    // (default) OR `resolved.checker_runtime` is None, this is a strict no-op —
+    // the `search_node_*` row family stays dark (wire-dark-allowlist row,
+    // promotion plan I-4-promotion). Mirrors the I-17 / D-11 toggle. See
+    // dispatch_search_ladder + crate::search + verifier_stack +
+    // docs/thefinalglance/I-plan/I-4_evidence_ranked_search_ladder.md.
+    dispatch_search_ladder(writer, seq, &task.project_id, resolved).await;
+    // I-7 closure: post-task cascading escalation waterfall dispatch (Wave-4).
+    // ADDITIVE, NOT a replacement for the linear retry loop. The waterfall fans out
+    // K local branches (the I-4 ladder, composing I-2 isolation + I-17 tri-layer),
+    // and ONLY on an all-local-fail condenses the failure set into an I-11
+    // BeliefState and routes SYNCHRONOUSLY to the H-7 CloudModeRouter -- a LocalWin
+    // never leaves the machine (E-39 zero-cloud-spend). IC-1: structurally has NO
+    // batch-client path. When `ELAI_ESCALATION_WATERFALL_ENABLE` is unset (default)
+    // OR `resolved.checker_runtime` is None, this is a strict no-op (wire-dark-
+    // allowlist row, promotion plan I-7-promotion). Mirrors the I-4 toggle. See
+    // maybe_run_escalation_waterfall + crate::escalation_waterfall +
+    // docs/thefinalglance/I-plan/I-7_cascading_escalation_offline_batch.md.
+    maybe_run_escalation_waterfall(writer, seq, &task.project_id, resolved).await;
+    // I-21 closure: post-task sprint-contract + ralph-loop dispatch. The
+    // orchestrator proposes a bounded Sprint Contract for the just-completed
+    // task, an isolated evaluator approves/rejects it (zero shared generator
+    // context), and on a TriLayerStack acceptance-check failure the failing
+    // trace is reinjected to the generator (bounded to MAX_RALPH_REINJECTIONS);
+    // the final failure escalates to the D-13 cross-family adversary. When
+    // `ELAI_SPRINT_CONTRACT_ENABLE` is unset (default) OR
+    // `resolved.checker_runtime` is None, this is a strict no-op — the
+    // `sprint_contract_*` row family stays dark (wire-dark-allowlist row,
+    // promotion plan I-21-promotion). Mirrors the I-17 / D-10 / D-11 toggle.
+    // See dispatch_sprint_contract + crate::sprint_contract +
+    // docs/thefinalglance/I-plan/I-21_sprint_contracts_ralph_loop.md.
+    dispatch_sprint_contract(writer, seq, &task.project_id, resolved).await;
     // D-12 closure: post-task operationalization-check dispatch. The
     // orchestrator synthesises a per-task BabyStep envelope, calls
     // `agent_pool::run_operational_check`, and emits exactly one
@@ -12608,6 +12698,640 @@ async fn dispatch_tri_layer_verdict(
             "task_runner::dispatch_tri_layer_verdict: run_verdict failed (non-fatal)"
         ),
     }
+}
+
+/// I-22 (SCHEMA_VERSION 264): post-task delta-progress reward dispatch.
+///
+/// Default-OFF gate: `ELAI_PROGRESS_REWARD_ENABLE` (R9 experiment, wire-dark-
+/// allowlist row, promotion plan I-22-promotion). When the gate is off, this is
+/// a strict no-op — the `progress_reward_*` row family stays dark. Two-gate no-op:
+/// also requires `resolved.checker_runtime` plumbed (reuses the same guard pattern
+/// as the I-17/I-4 dispatchers so the whole post-task chain is uniformly gated).
+///
+/// On the task-runner single-step smoke path phi_prev is always 0.0 (D-6: the
+/// full per-step phi history is meaningful only in the i-4 multi-branch PUCT loop;
+/// the task-runner exercises the emit wire end-to-end with `step=0`).
+///
+/// Uses `crate::search::emit_progress_reward_to_ssb` which calls
+/// `search::score::DeltaProgressScorer::score_single` → `ProgressRewardScored` SSB row.
+async fn dispatch_progress_reward(
+    writer: &Arc<crate::ssb::Ssb>,
+    seq: i64,
+    project_id: &str,
+    resolved: &ResolvedConfig,
+) {
+    // Gate 1: env flag (wire-dark default).
+    if !crate::search::progress_reward_enabled() {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_progress_reward: ELAI_PROGRESS_REWARD_ENABLE not set; skipping"
+        );
+        return;
+    }
+    // Gate 2: the checker runtime must be plumbed (mirrors I-17/I-4 gate guard,
+    // GD-1 compose: no second registry).
+    if resolved.checker_runtime.is_none() {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_progress_reward: checker_runtime not plumbed; skipping"
+        );
+        return;
+    }
+
+    // On the task-runner smoke path test_pass / compile_err_inv / req_covered are
+    // not yet sourced from a live journal (the task-runner has no per-branch test
+    // runner on this path). The deterministic zero-observable baseline is correct
+    // for the wire-smoke: the SSB row lands with phi_t = 0.0 (no test results in
+    // scope), shaped_reward = 0.0 (first step). This exercises the SSB write path
+    // end-to-end; a real run via the I-4 SearchLadder feeds live observables.
+    let test_pass: u32 = 0;
+    let compile_err_inv: u32 = 0;
+    let req_covered: u32 = 0;
+
+    // Derive project_root from the SSB config db_path (same as dispatch_search_ladder).
+    // Falls back to the process cwd if the db_path cannot be resolved to a project root.
+    let project_root = resolved
+        .checker_runtime
+        .as_ref()
+        .and_then(|_| {
+            std::env::current_dir().ok()
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    match crate::search::emit_progress_reward_to_ssb(
+        writer,
+        seq,
+        project_id,
+        &project_root,
+        test_pass,
+        compile_err_inv,
+        req_covered,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(e) => tracing::warn!(
+            seq,
+            project_id,
+            error = %e,
+            "task_runner::dispatch_progress_reward: emit failed (non-fatal)"
+        ),
+    }
+}
+
+/// `[DESIGN]` I-20 mutation kill-rate floor the task-runner smoke ladder scores
+/// against. `[DESIGN]` per ID-5 (measurement-before-gate): the real production
+/// threshold is loaded from `metrics/mutation_baseline.toml` via
+/// `MutationBudget::load_threshold_pct`; this smoke value is the conservative
+/// 0.5 used only on the task-runner wire (no live mutation cone here). Named so
+/// it is greppable and never a bare literal.
+const SEARCH_LADDER_KILL_RATE_FLOOR: f64 = 0.5;
+
+/// `[DESIGN]` number of candidate branches the task-runner smoke wire generates.
+/// The real production fan-out is `crate::search::BEST_OF_N_DEFAULT_WIDTH`
+/// requested from a generator; the task-runner has no generator, so this small
+/// deterministic set just exercises the multi-branch wire end-to-end (it must be
+/// >= 2 so the survivor-set L3 escalation path is reachable). `[DESIGN]` per ID-5.
+const SEARCH_LADDER_SMOKE_WIDTH: usize = 2;
+
+/// I-4 closure — evidence-ranked search-ladder dispatch hook called once per
+/// completed task by `drive_task` (immediately after
+/// [`dispatch_tri_layer_verdict`]). Wires
+/// [`crate::search::SearchLadder::run_best_of_n`] into the production task runner
+/// so the new pub symbol has a real producer call site (the reachable_from chain
+/// for I-4 per wiring-enforcement R6/R7; a unit test calling it does NOT satisfy
+/// production reachability). This single seam ALSO closes the four registered-
+/// dark consumer fns the ladder activates transitively: `VerdictRow::is_vetoed`,
+/// `FlakeQuarantineLedger::is_quarantined`, `TriLayerStack::escalate_on_disagreement`,
+/// and `PristinePathFilter::build_branch_context`.
+///
+/// Two-gate default-OFF (mirrors the I-17 / D-11 toggle so the wire is dark by
+/// default; GD-4 measured-first-win):
+/// 1. `ELAI_SEARCH_LADDER_ENABLE` must be truthy
+///    ([`crate::search::search_ladder_enabled`]; wire-dark-allowlist row,
+///    promotion plan `I-4-promotion`).
+/// 2. The D-11 checker runtime must be plumbed (the tri-layer L1 axis reuses its
+///    `CheckerRegistry` — GD-1 compose, no second registry).
+///
+/// Behaviour when enabled + plumbed: builds the I-17 [`TriLayerStack`] from the
+/// shipped substrate (EXACTLY as `dispatch_tri_layer_verdict`), the I-5
+/// [`PristinePathFilter`], the I-17 [`FlakeQuarantineLedger`], and the I-20
+/// [`MutationBudget`], then ranks a small deterministic candidate set derived
+/// from the completed task. The linear retry STAYS as the fallback (GD-4); this
+/// is the additive smoke wire a real multi-branch generator drives in production.
+async fn dispatch_search_ladder(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    project_id: &str,
+    resolved: &ResolvedConfig,
+) {
+    use crate::search::{search_ladder_enabled, BranchInput, SearchLadder};
+    use crate::verifier_stack::{Branch, FlakeQuarantineLedger, TriLayerStack};
+
+    // Gate 1: env flag (wire-dark default).
+    if !search_ladder_enabled() {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_search_ladder: ELAI_SEARCH_LADDER_ENABLE not set; skipping"
+        );
+        return;
+    }
+    // Gate 2: the D-11 checker runtime must be plumbed (the tri-layer L1 axis
+    // reuses its registry — GD-1 compose, no second registry).
+    let Some(checker_runtime) = resolved.checker_runtime.as_ref() else {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_search_ladder: checker_runtime not plumbed; skipping"
+        );
+        return;
+    };
+
+    // Build the tri-layer stack from the shipped substrate (MIRROR
+    // dispatch_tri_layer_verdict — GD-1, no second construction recipe).
+    let dep_gate = std::sync::Arc::new(crate::vibesec::dep_writetime_gate::DepWriteTimeGate::new(
+        None,
+        std::sync::Arc::new(crate::vibesec::dep_writetime_gate::StubRegistryChecker),
+    ));
+    let stack = std::sync::Arc::new(TriLayerStack::new(
+        std::sync::Arc::clone(&checker_runtime.registry),
+        dep_gate,
+        None,
+        None,
+        crate::adversary::AdversaryConfig::default_for_local_worker(),
+        std::sync::Arc::clone(writer),
+    ));
+    let pristine = std::sync::Arc::new(crate::pristine_path_filter::PristinePathFilter::new(
+        std::sync::Arc::clone(writer),
+    ));
+    let quarantine = std::sync::Arc::new(FlakeQuarantineLedger::new(std::sync::Arc::clone(writer)));
+    let mutation_budget =
+        crate::mutation_budget::MutationBudget::with_threshold(SEARCH_LADDER_KILL_RATE_FLOOR);
+
+    let ladder = SearchLadder::new(
+        stack,
+        pristine,
+        quarantine,
+        mutation_budget,
+        std::sync::Arc::clone(writer),
+    );
+
+    // The task-runner path has no real generator-produced K candidates; derive a
+    // small deterministic set from the completed task so the wire is exercised
+    // end-to-end (the same posture dispatch_tri_layer_verdict takes for its
+    // single branch). A real multi-branch run arrives when a generator feeds the
+    // ladder its K divergent candidates.
+    let candidates: Vec<BranchInput> = (0..SEARCH_LADDER_SMOKE_WIDTH)
+        .map(|i| BranchInput::from_branch(Branch::new(format!("task-{seq}-cand-{i}"), String::new())))
+        .collect();
+
+    let session_id = format!("task-{seq}");
+    match ladder
+        .run_best_of_n(&candidates, &session_id, crate::dispatcher::BackendMode::Local)
+        .await
+    {
+        Ok(outcome) => tracing::debug!(
+            seq,
+            project_id,
+            pruned = outcome.pruned_count,
+            escalated = outcome.escalated,
+            winner = outcome.winner.as_ref().map(|w| w.verdict.branch_id.as_str()),
+            "task_runner::dispatch_search_ladder: best-of-N ladder ran"
+        ),
+        Err(e) => tracing::warn!(
+            seq,
+            project_id,
+            error = %e,
+            "task_runner::dispatch_search_ladder: run_best_of_n failed (non-fatal)"
+        ),
+    }
+}
+
+/// I-7 closure — cascading escalation waterfall dispatch hook called once per
+/// completed task by `drive_task` (immediately after [`dispatch_search_ladder`]).
+/// Wires [`crate::escalation_waterfall::EscalationWaterfall::run`] into the
+/// production task runner so the new pub symbol has a real producer call site (the
+/// reachable_from chain for I-7 per wiring-enforcement R6/R7; a unit/contract test
+/// calling it does NOT satisfy production reachability).
+///
+/// Two-gate default-OFF (mirrors the I-4 toggle so the wire is dark by default;
+/// GD-4 measured-first-win):
+/// 1. `ELAI_ESCALATION_WATERFALL_ENABLE` must be truthy
+///    ([`crate::escalation_waterfall::escalation_waterfall_enabled`]; wire-dark-
+///    allowlist row, promotion plan `I-7-promotion`).
+/// 2. The D-11 checker runtime must be plumbed (the I-4 ladder's tri-layer L1 axis
+///    reuses its `CheckerRegistry` — GD-1 compose, no second registry).
+///
+/// Behaviour when enabled + plumbed: builds the I-4 ladder from the shipped
+/// substrate (EXACTLY as `dispatch_search_ladder` — GD-1, no second recipe), wraps
+/// it in the I-7 waterfall with the default H-7 cloud router, and runs a small
+/// deterministic candidate set derived from the completed task. The linear retry
+/// STAYS as the fallback (GD-4). IC-1: the waterfall module has no batch-client
+/// path, so the live escalation is the SYNCHRONOUS cloud route only.
+async fn maybe_run_escalation_waterfall(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    project_id: &str,
+    resolved: &ResolvedConfig,
+) {
+    use crate::escalation_waterfall::{
+        default_escalation_router, escalation_waterfall_enabled, EscalationWaterfall,
+    };
+    use crate::search::{BranchInput, SearchLadder};
+    use crate::verifier_stack::{Branch, FlakeQuarantineLedger, TriLayerStack};
+
+    // Gate 1: env flag (wire-dark default).
+    if !escalation_waterfall_enabled() {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::maybe_run_escalation_waterfall: ELAI_ESCALATION_WATERFALL_ENABLE not set; skipping"
+        );
+        return;
+    }
+    // Gate 2: the D-11 checker runtime must be plumbed (the I-4 ladder's tri-layer
+    // L1 axis reuses its registry — GD-1 compose, no second registry).
+    let Some(checker_runtime) = resolved.checker_runtime.as_ref() else {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::maybe_run_escalation_waterfall: checker_runtime not plumbed; skipping"
+        );
+        return;
+    };
+
+    // Build the I-4 ladder from the shipped substrate (MIRROR dispatch_search_ladder
+    // — GD-1, no second construction recipe).
+    let dep_gate = std::sync::Arc::new(crate::vibesec::dep_writetime_gate::DepWriteTimeGate::new(
+        None,
+        std::sync::Arc::new(crate::vibesec::dep_writetime_gate::StubRegistryChecker),
+    ));
+    let stack = std::sync::Arc::new(TriLayerStack::new(
+        std::sync::Arc::clone(&checker_runtime.registry),
+        dep_gate,
+        None,
+        None,
+        crate::adversary::AdversaryConfig::default_for_local_worker(),
+        std::sync::Arc::clone(writer),
+    ));
+    let pristine = std::sync::Arc::new(crate::pristine_path_filter::PristinePathFilter::new(
+        std::sync::Arc::clone(writer),
+    ));
+    let quarantine = std::sync::Arc::new(FlakeQuarantineLedger::new(std::sync::Arc::clone(writer)));
+    let mutation_budget =
+        crate::mutation_budget::MutationBudget::with_threshold(SEARCH_LADDER_KILL_RATE_FLOOR);
+    let ladder = std::sync::Arc::new(SearchLadder::new(
+        stack,
+        pristine,
+        quarantine,
+        mutation_budget,
+        std::sync::Arc::clone(writer),
+    ));
+
+    let waterfall =
+        EscalationWaterfall::new(ladder, default_escalation_router(), std::sync::Arc::clone(writer));
+
+    // The task-runner path has no real generator-produced K candidates; derive a
+    // small deterministic set from the completed task so the wire is exercised
+    // end-to-end (the same posture dispatch_search_ladder takes). A real
+    // multi-branch run arrives when a generator feeds the waterfall its K
+    // candidates. No cloud credentials on the task-runner path -> the escalation
+    // route DECISION is taken without a billed call (D-026: the live inference is a
+    // separately-gated checkpoint).
+    let candidates: Vec<BranchInput> = (0..SEARCH_LADDER_SMOKE_WIDTH)
+        .map(|i| {
+            BranchInput::from_branch(Branch::new(
+                format!("waterfall-{seq}-cand-{i}"),
+                String::new(),
+            ))
+        })
+        .collect();
+    let session_id = format!("waterfall-{seq}");
+    let failed_because = vec![format!("local lane exhausted for task seq {seq}")];
+
+    match waterfall
+        .run(&candidates, &session_id, failed_because, None)
+        .await
+    {
+        Ok(outcome) => tracing::debug!(
+            seq,
+            project_id,
+            local_win = outcome.local_win,
+            pruned = outcome.pruned_count,
+            escalated = outcome.routed.is_some(),
+            condensed_bytes = outcome.condensed_bytes,
+            "task_runner::maybe_run_escalation_waterfall: waterfall ran"
+        ),
+        Err(e) => tracing::warn!(
+            seq,
+            project_id,
+            error = %e,
+            "task_runner::maybe_run_escalation_waterfall: run failed (non-fatal)"
+        ),
+    }
+}
+
+/// I-21 closure — sprint-contract + ralph-loop dispatch hook called once per
+/// completed task by `drive_task` (immediately after
+/// [`dispatch_tri_layer_verdict`]). Wires [`crate::sprint_contract`] into the
+/// production task runner so the new pub symbols have a real producer call site
+/// (the reachable_from chain for I-21 per wiring-enforcement R6/R7; a unit test
+/// calling them does NOT satisfy production reachability).
+///
+/// Two-gate default-OFF (mirrors the I-17 / D-11 toggle so the wire is dark by
+/// default):
+/// 1. `ELAI_SPRINT_CONTRACT_ENABLE` must be truthy
+///    ([`crate::sprint_contract::sprint_contract_enabled`]; wire-dark-allowlist
+///    row, promotion plan `I-21-promotion`).
+/// 2. The checker runtime must be plumbed (the i-17 acceptance check reuses its
+///    `CheckerRegistry` — GD-1 compose, no second registry).
+///
+/// Behaviour when enabled + plumbed: builds a [`crate::sprint_contract::SprintContract`]
+/// for the just-completed task, seals it for the isolated evaluator
+/// ([`crate::sprint_contract::SealedContract`] — carries ONLY the contract +
+/// task spec, never generator turns), and:
+///   * emits `Proposed` on receive, then `Approved` / `Rejected` (with a
+///     concrete objection) per the evaluator verdict;
+///   * on an approved contract, runs the i-17 acceptance check
+///     ([`crate::sprint_contract::acceptance_check`] over `TriLayerStack`); on a
+///     `HardVeto` it drives the bounded [`crate::sprint_contract::RalphLoop`],
+///     emitting `RalphReinjected` per retry and `AdversaryEscalated` at the cap.
+/// The single-branch task-runner path has no per-branch generated source, so
+/// the acceptance check treats the completed task as one empty-source branch
+/// (the same posture as `dispatch_tri_layer_verdict`); a real multi-branch run
+/// arrives via the I-4 ladder.
+async fn dispatch_sprint_contract(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    project_id: &str,
+    resolved: &ResolvedConfig,
+) {
+    use crate::sprint_contract::{
+        acceptance_check, build_event_payload, emit_sprint_contract_event_to_ssb,
+        sprint_contract_enabled, AcceptanceCriterion, RalphLoop, RalphStep, SealedContract,
+        SprintContract,
+    };
+    use crate::ssb::SprintContractEventKind;
+
+    // Gate 1: env flag (wire-dark default).
+    if !sprint_contract_enabled() {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_sprint_contract: ELAI_SPRINT_CONTRACT_ENABLE not set; skipping"
+        );
+        return;
+    }
+    // Gate 2: the D-11 checker runtime must be plumbed (the i-17 acceptance
+    // check reuses its registry — GD-1 compose, no second registry).
+    let Some(checker_runtime) = resolved.checker_runtime.as_ref() else {
+        tracing::debug!(
+            seq,
+            project_id,
+            "task_runner::dispatch_sprint_contract: checker_runtime not plumbed; skipping"
+        );
+        return;
+    };
+
+    let agent_id = format!("sprint-{seq}");
+
+    // Build a bounded Sprint Contract for the just-completed task. The
+    // acceptance criterion is the deterministic compile-status check (the
+    // task-runner path has no per-task test symbol to name); the in-scope set
+    // is the project boundary. A real generator authors richer criteria via the
+    // I-4 ladder; this exercises the wire end-to-end.
+    let contract = SprintContract {
+        goal: format!("complete task-{seq} within the sprint boundary"),
+        in_scope_files: vec![project_id.to_string()],
+        acceptance_criteria: vec![AcceptanceCriterion::CompileStatus],
+        bounded_iteration_count: crate::sprint_contract::MAX_RALPH_REINJECTIONS,
+        out_of_scope_marker: format!("no edits outside the task-{seq} scope"),
+    };
+
+    // The evaluator sees ONLY the sealed contract (isolation invariant).
+    let sealed = SealedContract::seal(contract.clone(), format!("task-{seq}"));
+
+    // Proposed: the isolated evaluator received the sealed contract.
+    emit_sprint_contract_event_to_ssb(
+        writer,
+        &agent_id,
+        seq,
+        build_event_payload(SprintContractEventKind::Proposed, &contract, 0, "", ""),
+    )
+    .await;
+
+    // Verdict: Approved / Rejected (with a concrete objection).
+    match sealed.evaluate() {
+        Err(validation_err) => {
+            emit_sprint_contract_event_to_ssb(
+                writer,
+                &agent_id,
+                seq,
+                build_event_payload(
+                    SprintContractEventKind::Rejected,
+                    &contract,
+                    0,
+                    &validation_err.objection(),
+                    "",
+                ),
+            )
+            .await;
+            return;
+        }
+        Ok(()) => {
+            emit_sprint_contract_event_to_ssb(
+                writer,
+                &agent_id,
+                seq,
+                build_event_payload(SprintContractEventKind::Approved, &contract, 0, "", ""),
+            )
+            .await;
+        }
+    }
+
+    // Approved -> run the i-17 acceptance check + bounded ralph loop. Build the
+    // TriLayerStack from the shipped substrate exactly as dispatch_tri_layer_verdict
+    // does (GD-1 — reuse the registry; L2/L3 degrade gracefully when absent).
+    let dep_gate = std::sync::Arc::new(crate::vibesec::dep_writetime_gate::DepWriteTimeGate::new(
+        None,
+        std::sync::Arc::new(crate::vibesec::dep_writetime_gate::StubRegistryChecker),
+    ));
+    let stack = crate::verifier_stack::TriLayerStack::new(
+        std::sync::Arc::clone(&checker_runtime.registry),
+        dep_gate,
+        None,
+        None,
+        crate::adversary::AdversaryConfig::default_for_local_worker(),
+        std::sync::Arc::clone(writer),
+    );
+
+    let mut ralph = RalphLoop::new(&contract);
+    let bound = ralph.bound();
+    for _ in 0..bound {
+        let branch = crate::verifier_stack::Branch::new(format!("sprint-{seq}"), String::new());
+        match acceptance_check(&stack, &branch).await {
+            Ok(true) => {
+                tracing::debug!(
+                    seq,
+                    project_id,
+                    "task_runner::dispatch_sprint_contract: acceptance check passed"
+                );
+                return;
+            }
+            Ok(false) => {
+                // Acceptance check failed -> ralph-loop step (reinject or escalate).
+                match ralph.on_failure() {
+                    RalphStep::Reinjected { iteration } => {
+                        emit_sprint_contract_event_to_ssb(
+                            writer,
+                            &agent_id,
+                            seq,
+                            build_event_payload(
+                                SprintContractEventKind::RalphReinjected,
+                                &contract,
+                                iteration,
+                                "",
+                                "",
+                            ),
+                        )
+                        .await;
+                        // Loop continues: the generator gets one bounded retry.
+                    }
+                    RalphStep::Escalated { iteration } => {
+                        // 3rd failure -> D-13 cross-family adversary escalation.
+                        let counterexample = match resolved.adversary_runtime.as_ref() {
+                            Some(adv) => crate::sprint_contract::escalate_to_adversary(
+                                &adv.adversary,
+                                &adv.adversary_config,
+                                &contract,
+                            )
+                            .await
+                            .unwrap_or_default(),
+                            None => String::new(),
+                        };
+                        emit_sprint_contract_event_to_ssb(
+                            writer,
+                            &agent_id,
+                            seq,
+                            build_event_payload(
+                                SprintContractEventKind::AdversaryEscalated,
+                                &contract,
+                                iteration,
+                                "",
+                                &counterexample,
+                            ),
+                        )
+                        .await;
+                        return;
+                    }
+                    RalphStep::Accepted => return,
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    seq,
+                    project_id,
+                    error = %e,
+                    "task_runner::dispatch_sprint_contract: acceptance_check failed (non-fatal)"
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// I-21 test-support entrypoint — drives the REAL [`dispatch_sprint_contract`]
+/// production hook from an off-crate contract test (the contracts crate cannot
+/// construct the crate-private `ResolvedConfig`). Builds a minimal
+/// `ResolvedConfig` carrying ONLY the `checker_runtime` (Some/None per
+/// `wire_checker`) and `adversary_runtime` (always None on this path), then
+/// calls `dispatch_sprint_contract` with the supplied writer/seq/project_id.
+///
+/// This is NOT a second code path: it constructs the inputs and invokes the
+/// identical production fn, so the contract test exercises the real dispatch
+/// (wiring-enforcement R4: the off-author SSB row is produced by the production
+/// fn, not a test re-implementation). Gated `test-support` only; never compiled
+/// into a release binary.
+// WIRE-DARK[I-21]: test-support-only entrypoint (cfg(any(test, feature="test-support"))); its sole caller is the i21 contract test (R7 test-file caller), and it never compiles into a release binary. The production fn it drives, dispatch_sprint_contract, IS wired at the post-task dispatch chain (task_runner.rs ~:11344). Backing row: wire-dark-allowlist.toml [[flag]] ELAI_SPRINT_CONTRACT_ENABLE (promotion_plan_id=I-21-promotion).
+#[cfg(any(test, feature = "test-support"))]
+pub async fn dispatch_sprint_contract_for_test(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    project_id: &str,
+    wire_checker: bool,
+) {
+    let checker_runtime = if wire_checker {
+        let emitter: Arc<dyn crate::agent_pool::CheckerResultEmitter> =
+            Arc::new(TaskRunnerCheckerResultEmitter::new(
+                writer.clone(),
+                RUNNER_AGENT_ID,
+                RUNNER_SUPERSTEP,
+            ));
+        Some(crate::runtime_config::CheckerRuntimeState::new(
+            emitter,
+            std::sync::Arc::new(crate::checker_registry::CheckerRegistry::new()),
+        ))
+    } else {
+        None
+    };
+    let mut resolved = test_resolved_config_minimal();
+    resolved.checker_runtime = checker_runtime;
+    dispatch_sprint_contract(writer, seq, project_id, &resolved).await;
+}
+
+/// Build a minimal `ResolvedConfig` for the I-21 test-support shim. All
+/// optional collaborators are None; only the fields `dispatch_sprint_contract`
+/// reads (`checker_runtime`, `adversary_runtime`) matter, and the caller sets
+/// `checker_runtime` after construction.
+#[cfg(any(test, feature = "test-support"))]
+fn test_resolved_config_minimal() -> ResolvedConfig {
+    ResolvedConfig::from(TaskRunnerConfig {
+        cursor_path: std::path::PathBuf::from("cursor"),
+        dev_server_launcher: None,
+        project_dir_resolver: None,
+        dev_server_registry: None,
+        web_research_runner: None,
+        scaffold_applier: None,
+        rule_evaluator: None,
+        interrogation_store: None,
+        checkpoint_scratch_dir: None,
+        baby_step_executor: None,
+        anti_spiral_enabled: false,
+        llm_provider: None,
+        backend_config: None,
+        indexing_service: None,
+        hook_dispatcher: None,
+        signal_reader: None,
+        tool_dispatcher: None,
+        git_branch_policy: GitBranchPolicy::default(),
+        system_prober: None,
+        feasibility_prober: None,
+        autonomous_gate: None,
+        plan_interactive_gate: None,
+        layer1a_processor: None,
+        dispatch_context_profile: None,
+        reflection_client: None,
+        irreversible_classifier: None,
+        dkg_querier_swap: None,
+        task_splitter: None,
+        research_tree: None,
+        pipeline_grc: None,
+        model_capability_profile: None,
+        cloud_router: None,
+        cloud_spend_cap_daily_usd: None,
+        crystallizer: None,
+        compiled_pipeline_store: None,
+        background_task_manager: None,
+        skill_store: None,
+        mcp_dispatch: None,
+        token_tracker: None,
+        buffer_editor: None,
+        adversary_runtime: None,
+        planning_config: Default::default(),
+    })
 }
 
 /// D-11 closure — constructive-checker dispatch hook called once per

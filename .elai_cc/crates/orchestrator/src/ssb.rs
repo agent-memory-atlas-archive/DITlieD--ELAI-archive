@@ -1115,6 +1115,12 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // beacon (insecure-rate keystone bench). Bench telemetry; not Pattern-2.
     // Single sql_str. Session: s-60824.
     SsbActionType::InsecureRateMeasured,
+    // I-9 (SCHEMA_VERSION 263, 2026-06-14): ErrorAmplificationMeasured flat
+    // beacon (error-amplification alpha_t telemetry). Bench telemetry; not
+    // Pattern-2. Single sql_str "error_amplification_measured". This is the
+    // ONLY counter touch -- SCHEMA_VERSION (=-309+len) + TOTAL_VARIANTS + the
+    // action_type_lock golden all auto-derive from this append.
+    SsbActionType::ErrorAmplificationMeasured,
     // F-6 / Slice A1 (SCHEMA_VERSION 202, 2026-06-02): SkillLibraryEvent
     // Pattern-2 single variant (3-arm SkillLibraryEventKind discriminator;
     // counts as ONE variant here). Acquired arm is the representative arm.
@@ -1347,6 +1353,146 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // RowChainSealedKind: ChainAdvanced / AibomEmitted / ChainBroken. ChainAdvanced
     // is the representative arm. 561 -> 562.
     SsbActionType::RowChainSealed(RowChainSealedKind::ChainAdvanced),
+    // I-19 (SCHEMA_VERSION 254, 2026-06-14): TddPreflightBlocked -- TDD enforcer preflight
+    // gate event. Pattern-2 single-variant 3-arm TddPreflightBlockedKind:
+    // MissingTestDelta / SyntaxDryRunFailed / RefactorExempted.
+    // Wire-dark default (ELAI_TDD_PREFLIGHT_ENABLE=1 required). MissingTestDelta is
+    // the representative arm (primary block reason). 562 -> 563.
+    SsbActionType::TddPreflightBlocked(TddPreflightBlockedKind::MissingTestDelta),
+    // I-20 (SCHEMA_VERSION 255, 2026-06-14): MutationBudgetedRun -- budgeted mutation
+    // scheduler (Track 15 KEYSTONE). Pattern-2 single-variant 4-arm MutationBudgetedRunKind:
+    // CiCleared / CiFailed / SurvivorDirective / CacheHit. Default-ON; kill-switch
+    // ELAI_MUTATION_BUDGET_DISABLE=1. CiCleared is the representative arm. 563 -> 564.
+    SsbActionType::MutationBudgetedRun(MutationBudgetedRunKind::CiCleared),
+    // I-21 (SCHEMA_VERSION 256, 2026-06-14): SprintContractEvent -- sprint-contract +
+    // ralph-loop lifecycle event (Track 15 Wave 3). Pattern-2 single-variant 5-arm
+    // SprintContractEventKind: Proposed / Approved / Rejected / RalphReinjected /
+    // AdversaryEscalated. Wire-dark default (ELAI_SPRINT_CONTRACT_ENABLE=1 required).
+    // Composes H-37/i-1/i-17/D-13 (GD-1). Proposed is the representative arm. 564 -> 565.
+    SsbActionType::SprintContractEvent(SprintContractEventKind::Proposed),
+    // I-37 (SCHEMA_VERSION 257, 2026-06-14): RequirementVerified -- per-EARS-requirement
+    // verified-status event (Track 18 Wave 3). Pattern-2 single-variant 3-arm
+    // RequirementVerifiedKind: Satisfied / Unverified / Regressed. Additive emit (always
+    // lands when an EarsRequirementSet is present); the BLOCKING RequirementsGate is
+    // wire-dark default (ELAI_REQUIREMENTS_GATE_ENABLE=1 required to block).
+    // Composes IS-15/IS-8/I-20 (GD-1). Satisfied is the representative arm. 565 -> 566.
+    SsbActionType::RequirementVerified(RequirementVerifiedKind::Satisfied),
+    // I-44 (SCHEMA_VERSION 258, 2026-06-14): RetentionPurged -- zero-retention-after-
+    // verification export purge receipt (Track 19 Wave 3). Pattern-2 single-variant 3-arm
+    // RetentionPurgedKind: RawInputsPurged / EvidenceRetained / PurgeVerified. Destructive +
+    // opt-in (elai run --zero-retention + ELAI_ZERO_RETENTION_ENABLE default-OFF kill-switch).
+    // Composes G-9 redaction + G-9 TTL purge + F-13 archive + G-2/G-8 evidence (GD-1).
+    // Emitted by crate::retention::purge_after_verify. RawInputsPurged is the representative
+    // arm. 566 -> 567.
+    SsbActionType::RetentionPurged(RetentionPurgedKind::RawInputsPurged),
+    // I-52 (SCHEMA_VERSION 259, 2026-06-14): CheckpointToolEvent -- agent-callable
+    // checkpoint tool outcome (Track 20 Wave 3). Pattern-2 single-variant 4-arm
+    // CheckpointToolEventKind: Saved / Rewound / Diffed / RefusedDiverged. Default-ON
+    // over the H-49 time-travel substrate (ELAI_TIMETRAVEL_DISABLE=1 kill-switch; no
+    // separate I-52 flag). REUSE-vs-NEW resolved NEW (EditHistoryEvent's 6-arm Kind
+    // lacks RefusedDiverged + a user label; R1 requires the refusal observable to land).
+    // Composes H-49 timetravel::{capture_file,materialize} (GD-1). Emitted by the
+    // checkpoint_save/rewind/diff arms of production_agent_rpc::translate_tool_request.
+    // Saved is the representative arm. 567 -> 568.
+    SsbActionType::CheckpointToolEvent(CheckpointToolEventKind::Saved),
+    // I-54 (SCHEMA_VERSION 260, 2026-06-14): StructuralEditApplied -- agent-callable
+    // structural (AST-aware) edit tool outcome (Track 20 Wave 3). Pattern-2 single-
+    // variant 5-arm StructuralEditAppliedKind: Matched / Previewed / Applied /
+    // RefusedStale / ParseFailed. Reuses elai_knowledge::TreeSitterAstEvaluator (one
+    // tree-sitter version source, SLC-3; ast-grep dep BANNED). The taint-sink +
+    // FS-blast-radius edit gates are the safety, so no separate I-54 flag. Composes
+    // the shipped PreToolUse edit gates + dispatch_edit (GD-1). Emitted by the
+    // structural_search/_preview/_apply arms of production_agent_rpc::translate_tool_request.
+    // Matched is the representative arm. 568 -> 569.
+    SsbActionType::StructuralEditApplied(StructuralEditAppliedKind::Matched),
+    // I-4 (SCHEMA_VERSION 261, 2026-06-14): SearchNodeEvent -- evidence-ranked
+    // search ladder branch lifecycle (Wave-4 KEYSTONE). Pattern-2 single-variant
+    // 4-arm SearchNodeEventKind: Expanded / Pruned / Promoted / BudgetCollapsed.
+    // The ladder generates K candidates, builds each branch's pristine context
+    // (I-5 build_branch_context), runs the I-17 tri-layer stack, DROPS vetoed
+    // (VerdictRow::is_vetoed) + flake-quarantined (FlakeQuarantineLedger::
+    // is_quarantined) branches, calls escalate_on_disagreement on the survivor
+    // SET, and ranks the rest by (tri-layer score, mutation kill-rate, progress)
+    // to pick best-of-N. Selection is purely evidence-ranked (ID-4): a Promoted
+    // row MUST carry verifier-derived evidence. Default-OFF
+    // (ELAI_SEARCH_LADDER_ENABLE; GD-4 measured-first-win). Composes I-2/I-5/
+    // I-17/I-20 (GD-1, never re-implemented). Emitted by
+    // crate::search::SearchLadder::run_best_of_n from the
+    // task_runner::dispatch_search_ladder post-task seam.
+    // Expanded is the representative arm. 569 -> 570.
+    SsbActionType::SearchNodeEvent(SearchNodeEventKind::Expanded),
+    // I-7 (SCHEMA_VERSION 262, 2026-06-14): EscalationCascade -- cascading escalation
+    // waterfall lifecycle (Wave-4). Pattern-2 single-variant 4-arm EscalationCascadeKind:
+    // LocalWin / Condensed / Escalated / BatchRouted. Local-first: fan out K branches
+    // (I-4 ladder composes I-2/I-17), condense-on-all-fail into an I-11 BeliefState,
+    // route synchronously to the H-7 CloudModeRouter. IC-1: NO batch-client import
+    // (BatchRouted is offline-journal-only, never fired live). Default-OFF
+    // (ELAI_ESCALATION_WATERFALL_ENABLE; GD-4 measured-first-win). LocalWin is the
+    // representative arm. 570 -> 571.
+    SsbActionType::EscalationCascade(EscalationCascadeKind::LocalWin),
+    // I-22 (SCHEMA_VERSION 264, 2026-06-14): ProgressRewardScored -- delta-progress
+    // shaped-reward scorer (Track 15, lever ANTI-GAMING). Pattern-2 single-variant
+    // 3-arm ProgressRewardScoredKind: Delta / FirstErrorTruncated / DecayApplied.
+    // Delta: phi(h_t)-phi(h_{t-1}) from deterministic observables (test_pass,
+    //   compile_err_inv, req_covered); ID-4 compliance (no LLM-opinion phi component).
+    // FirstErrorTruncated: branch truncated at first i-17 HardVeto (step k-1);
+    //   H-49 CAS fork node id recorded for prefix reinvestment.
+    // DecayApplied: D consecutive zero-delta steps; D and weights from
+    //   metrics/progress_reward_weights.toml (ID-5: measured, not paper-derived).
+    // Wire-dark: ELAI_PROGRESS_REWARD_ENABLE=1 required (GD-4 measured-first-win).
+    // Composes i-17/H-49/i-37 (GD-1). Emitted from task_runner::dispatch_progress_reward
+    // (immediately after dispatch_tri_layer_verdict). Delta is the representative arm.
+    // Counter is derived: TOTAL_VARIANTS = -309 + len(REGISTRY); do not hand-count.
+    SsbActionType::ProgressRewardScored(ProgressRewardScoredKind::Delta),
+    // I-24 (SCHEMA_VERSION 266, 2026-06-14): PrmCanaryEvent -- isomorphic canary
+    // anti-gaming event (Track 15, lever ANTI-GAMING). Pattern-2 single-variant
+    // 3-arm PrmCanaryEventKind: CanaryInjected / StyleBiasDetected / ScorerNeutralized.
+    // CanaryInjected: pair injected, delta below ELAI-measured bias threshold.
+    // StyleBiasDetected: delta >= threshold from metrics/canary_bias_threshold.toml
+    //   (ID-5: ELAI-measured, never a paper constant); scorer flagged for this run.
+    // ScorerNeutralized: N consecutive StyleBiasDetected -> scorer weight zeroed
+    //   for the run (ID-4: L2-only; VETO_SCORE=0.0 for HardVeto still stands).
+    // R8: canary pair set FROZEN in fixtures/canary_pairs.json (gate-manifest entry);
+    //   the running system NEVER generates canaries from the model under test.
+    // Wire-dark: ELAI_CANARY_INJECTOR_ENABLE=1 required (GD-4 measured-first-win).
+    // Composes i-17 TriLayerStack L2 leg (GD-1; does NOT re-implement L2 invocation).
+    // Emitted from canary_injector::emit_prm_canary_to_ssb called inside
+    // TriLayerStack::run_verdict L2 path. CanaryInjected is the representative arm.
+    // 574 -> 575.
+    SsbActionType::PrmCanaryEvent(PrmCanaryEventKind::CanaryInjected),
+    // I-27 (SCHEMA_VERSION 265, 2026-06-14): ConvergenceCurveMeasured -- verified-
+    // outcome-rate vs compute convergence curve flat beacon (Track 16, lever PROVABLE).
+    // Flat beacon (no Kind discriminator): ONE row per `elai bench convergence` run.
+    // Carries curve_points[] (compute_level, mean_rate, ci_low, ci_high), knee_compute_level,
+    // non_monotonic_at[], seed_count (>=5 I-38 floor), fixture_suite.
+    // GD-2: curve_points recomputable under ELAI_SEED. GD-5: non_monotonic_at named,
+    // never smoothed. Default-ON (CLI measurement instrument, no kill-switch).
+    // WIRE-DARK[I-27]: live per-node compute-spend from I-4 SearchNodeEvent PENDING
+    // (I-4 search/ladder.rs UNBUILT at HEAD); fixture leg uses cost_per_task_cents.
+    // Emitted from bench_convergence::run_inner from CliAction::BenchConvergence dispatch.
+    // 575 -> 576.
+    SsbActionType::ConvergenceCurveMeasured,
+    // I-36 (SCHEMA_VERSION 267, 2026-06-14): PromptCompiled -- per-(role,backend)
+    // compiled-prompt artifact event (Track 18, Wave 4, lever CHEAPER-PORTABLE).
+    // Pattern-2 single-variant 3-arm PromptCompiledKind: Compiled / TransferGapMeasured /
+    // Rolledback. Each Kind arm has a distinct sql_str (per-Kind convention, mirrors
+    // TddPreflightBlocked). Default-ON (no-op pass-through when no variant stored).
+    // Kill-switch ELAI_PROMPT_COMPILE_DISABLE=1 (kill_switch type, ops-level exemption).
+    // Deliberative-hygiene contract: NO CoT scaffold in compiled strings (landmine #6).
+    // Composes I-32 role_contracts (compiled substitution applies AFTER) + B-37
+    // PerRoleRuntime (the routing key) + I-12 ledger gates ID-6 (GD-1, never re-impl).
+    // promote_variant WIRE-DARK[I-36] (Tier-2 DEFER — I-36-promotion plan);
+    // run_transfer_gap_fixture WIRE-DARK[I-36] (Tier-2 DEFER — live cloud budget).
+    // Compiled (the representative arm, ONE SSB_ACTION_TYPES entry). 575 -> 576.
+    SsbActionType::PromptCompiled(PromptCompiledKind::Compiled),
+    // I-50 (SCHEMA_VERSION 268, 2026-06-14): AuthBrokerEvent -- subscription auth broker
+    // lifecycle event (Track 20, I-50). Pattern-2 single-variant 4-arm AuthBrokerEventKind:
+    // TokenAcquired / Refreshed / ProviderLinked / RefreshFailed.
+    // Each Kind arm has a distinct sql_str (per-Kind convention).
+    // Default-ON. SSB-emit seam WIRE-DARK[I-50] at runtime_cmd.rs pending Arc<Ssb> threading.
+    // Emit path proven reachable by the i50_auth_broker_contract test (real TempDir SQLite).
+    // TokenAcquired is the representative arm (ONE SSB_ACTION_TYPES entry). 576 -> 577.
+    SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::TokenAcquired),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

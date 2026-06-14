@@ -29,6 +29,10 @@
   } from '$lib/api/types';
   import GraphSidebarPanel from './GraphSidebarPanel.svelte';
   import MermaidExportModal from './MermaidExportModal.svelte';
+  // CODEBASE tab: the 5 LENSES (one question per lens — Structure / Security /
+  // History / Cost / Dead-code). The lens bar chrome sits above the graph.
+  import CodebaseLensBar from '$lib/canvas/CodebaseLensBar.svelte';
+  import type { Lens } from '$lib/canvas/CodebaseLensBar.svelte';
 
   // ----- Config ----------------------------------------------------------
   // 6 layouts per spec D11; dagre + fcose register dynamically.
@@ -48,6 +52,19 @@
   let searchTerm = $state<string>('');
   let mermaidString = $state<string | null>(null);
   let showMermaid = $state<boolean>(false);
+
+  // CODEBASE 5-lens state. 'structure' is the default question (the plain
+  // graph). 'deadcode' maps onto the symbol mode which already classifies
+  // dead code; the other lenses' overlays land with their backends.
+  let activeLens = $state<Lens>('structure');
+  function onLens(l: Lens) {
+    activeLens = l;
+    // Dead-code lens leans on the richest existing view (symbol mode) when
+    // available; otherwise stays on the current mode. No new backend call.
+    if (l === 'deadcode' && !symbolModeDisabled && mode !== 'symbol') {
+      setMode('symbol');
+    }
+  }
 
   // ----- Derived ---------------------------------------------------------
   let mode = $derived<GraphMode>(graph.mode);
@@ -545,6 +562,9 @@
       <button type="button" class:active={mode === 'decomposition'} onclick={() => setMode('decomposition')}>Decomposition</button>
     </div>
   </header>
+
+  <!-- CODEBASE 5-lens bar (one question per lens) -->
+  <CodebaseLensBar active={activeLens} {onLens} />
 
   <div class="body">
     <div class="canvas-wrap">

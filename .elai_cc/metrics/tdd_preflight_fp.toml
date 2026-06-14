@@ -1,0 +1,49 @@
+# tdd_preflight_fp.toml - FP harness fixture scaffold for I-19 TDD enforcer preflight.
+#
+# GD-4 constraint: default-ON flip for ELAI_TDD_PREFLIGHT_ENABLE is gated on
+# FP rate bounded on >=3 real orchestrate runs. This file records the per-run
+# measurements; promotion plan I-19-promotion drives the flip.
+#
+# Each [[run]] entry records one real orchestrate run with the gate enabled
+# (ELAI_TDD_PREFLIGHT_ENABLE=1). Fill in actual numbers AFTER each run.
+# Never fabricate FP measurements (CLAUDE.md: "NO fabricated FP measurements").
+#
+# FP definition: a gate block on an Edit/Write that (a) correctly compiled,
+# (b) had a matching test in the repo that the Tier-1 symbol-grep MISSED because
+# the test symbol did not substring-match the pub symbol name.
+#
+# TP definition: a gate block that correctly prevented a pub symbol from being
+# written without a matching test delta.
+#
+# Schema:
+#   [[run]]
+#   run_id          = "<session-id or plan-id>"
+#   ts_date         = "YYYY-MM-DD"
+#   gate_blocks     = <total TddPreflightBlocked SSB rows emitted>
+#   confirmed_tp    = <blocks that were legitimate (no test delta existed)>
+#   confirmed_fp    = <blocks that were spurious (test existed but missed by grep)>
+#   fp_rate_pct     = <confirmed_fp / gate_blocks * 100; 0.0 if gate_blocks==0>
+#   notes           = "<any relevant context>"
+#
+# Promotion criterion: fp_rate_pct <= 5.0 on ALL completed runs (min 3 runs).
+
+[summary]
+status          = "PENDING"        # "PENDING" | "PROMOTING" | "PROMOTED"
+runs_completed  = 0
+runs_required   = 3
+promotion_plan  = "I-19-promotion"
+gate_env_var    = "ELAI_TDD_PREFLIGHT_ENABLE"
+fp_threshold_pct = 5.0
+last_updated    = "2026-06-14"     # update after each run
+
+# ---- completed runs (append after each real orchestrate run with gate ON) ----
+# NONE YET — all measurements are PENDING.
+# Format:
+# [[run]]
+# run_id          = "s-example-01"
+# ts_date         = "YYYY-MM-DD"
+# gate_blocks     = 0
+# confirmed_tp    = 0
+# confirmed_fp    = 0
+# fp_rate_pct     = 0.0
+# notes           = "first real gate-ON run"

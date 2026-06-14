@@ -708,6 +708,7 @@ mod tests {
             tool_choice: None,
             stream: false,
             seed: None,
+            effort: None,
         }
     }
 

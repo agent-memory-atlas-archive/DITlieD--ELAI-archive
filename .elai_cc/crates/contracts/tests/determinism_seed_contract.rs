@@ -35,6 +35,7 @@ fn fixture(seed: Option<u64>) -> MessageRequest {
         tool_choice: None,
         stream: false,
         seed,
+        effort: None,
     }
 }
 

@@ -1024,6 +1024,7 @@ mod tests {
                 tool_choice: Some(ToolChoice::Auto),
                 stream: false,
                 seed: None,
+                effort: None,
             },
             OpenAiCompatConfig::xai(),
         );
@@ -1047,6 +1048,7 @@ mod tests {
                 tool_choice: None,
                 stream: true,
                 seed: None,
+                effort: None,
             },
             OpenAiCompatConfig::openai(),
         );
@@ -1066,6 +1068,7 @@ mod tests {
                 tool_choice: None,
                 stream: true,
                 seed: None,
+                effort: None,
             },
             OpenAiCompatConfig::xai(),
         );

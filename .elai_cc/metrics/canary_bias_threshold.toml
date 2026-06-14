@@ -1,0 +1,26 @@
+# I-24 canary bias detection threshold (ID-5: ELAI-measured, not paper-derived).
+#
+# This value is the maximum acceptable score delta (in basis points, 1/10000)
+# between the original and isomorphic-obfuscated variant of a canary pair when
+# scored by the current L2 scorer. A delta at or above this threshold triggers
+# a StyleBiasDetected event.
+#
+# BASELINE (2026-06-14, conformal-tau L2 stub):
+#   Measured on the 6-pair frozen fixture corpus (fixtures/canary_pairs.json)
+#   using the conformal-tau scorer (run_l2_score). The conformal-tau scorer
+#   returns a constant tau value for all inputs (it does not read the source
+#   snippet), so the delta is always 0 bp on the current stub. The threshold
+#   is set conservatively at 500 bp (5% score delta) for the CPU-only skeleton;
+#   this will be re-measured once D-026 wires a neural PrmClient into L2.
+#
+# PENDING (D-026): re-run this measurement against the live PpmClient PPM scorer
+#   on the fixture corpus to establish the real unbiased-scorer baseline. Update
+#   this value after the measurement run (ID-5 cadence). Promotion plan: I-24-promotion.
+#
+# LOCK: this file is read at CanaryInjector construction; it is NOT re-read
+#   during a run (the threshold is pinned at boot). The file is NOT in the
+#   gate-manifest (it is a measurement artifact, not a gate evaluator — the
+#   gate evaluator that READS this file is canary_injector.rs, which IS frozen).
+
+[canary]
+bias_threshold_bp = 500

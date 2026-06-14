@@ -1,0 +1,36 @@
+{
+  "suite": "error_amplification_pipeline_v1",
+  "injected_step": 1,
+  "steps": [
+    {
+      "id": "plan-0",
+      "output": "decompose the task into a verifiable plan with explicit acceptance criteria",
+      "recovers": false
+    },
+    {
+      "id": "draft-1",
+      "output": "draft the candidate implementation against the plan's first acceptance criterion",
+      "recovers": false
+    },
+    {
+      "id": "typecheck-2",
+      "output": "run the type checker and resolve any signature or borrow errors before proceeding",
+      "recovers": true
+    },
+    {
+      "id": "selftest-3",
+      "output": "execute the unit test the draft introduced and confirm the assertions pass",
+      "recovers": true
+    },
+    {
+      "id": "integrate-4",
+      "output": "thread the new symbol into its production caller and re-run the affected suite",
+      "recovers": false
+    },
+    {
+      "id": "audit-5",
+      "output": "the auditor re-runs the gate over the changeset and confirms the off-author artifact landed",
+      "recovers": true
+    }
+  ]
+}

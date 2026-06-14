@@ -615,6 +615,9 @@ impl ApiClient for RuntimeClient {
             tools: tool_defs,
             stream: true,
             seed: None,
+            // I-26: effort is not set at the CLI layer; cloud reasoning roles
+            // set this via CompletionConfig at the runtime adapter boundary.
+            effort: None,
         };
 
         let use_prompt_cache = matches!(self.backend, BackendMode::Api);

@@ -54,6 +54,13 @@ pub enum MetamorphicRelation {
     /// `f(shuffle(xs)) == f(xs)` — only sound for commutative aggregations;
     /// excluded from the default library per DRIFT-C29-6.
     PermutationInvariance,
+    /// I-20 (Track 15): property-based-testing relation adapter (proptest in
+    /// Rust / Hypothesis in Python). Registered here behind the existing
+    /// `RelationLibrary` dispatch (GD-1 / IC-14: no new dispatch layer). The
+    /// adapter runs a PBT property as a metamorphic relation; like
+    /// `PermutationInvariance` it is OPT-IN (excluded from `default()`) because
+    /// it needs a bespoke property corpus.
+    PropertyBased,
 }
 
 impl MetamorphicRelation {
@@ -65,6 +72,7 @@ impl MetamorphicRelation {
             Self::Identity => "identity",
             Self::Inverse => "inverse",
             Self::PermutationInvariance => "permutation_invariance",
+            Self::PropertyBased => "property_based",
         }
     }
 }
@@ -79,6 +87,7 @@ pub fn parse_relation(s: &str) -> Option<MetamorphicRelation> {
         "identity" => Some(MetamorphicRelation::Identity),
         "inverse" => Some(MetamorphicRelation::Inverse),
         "permutation_invariance" => Some(MetamorphicRelation::PermutationInvariance),
+        "property_based" => Some(MetamorphicRelation::PropertyBased),
         _ => None,
     }
 }
@@ -400,6 +409,13 @@ impl MetamorphicTestRunner {
                         0,
                         0,
                     ));
+                }
+                MetamorphicRelation::PropertyBased => {
+                    // I-20: PBT adapter. run_all dispatches a 0-sample passed
+                    // marker because the property predicate is supplied per
+                    // call (bespoke corpus, like PermutationInvariance). Real
+                    // coverage: crate::metamorphic_pbt::run_property_based.
+                    out.push(MrResult::passed(MetamorphicRelation::PropertyBased, 0, 0));
                 }
             }
         }

@@ -238,6 +238,9 @@ fn build_minimal_wiring(root: &std::path::Path) -> RuntimeWiring {
         // C-9: AutonomousGate is opt-in via the gate_mode field. The
         // contract here predates C-9 and tests the pre-gate wiring path.
         gate_mode: None,
+        // I-42: critique-only profile is opt-in; None keeps the legacy
+        // autonomous-orchestrate posture (executor installed as resolved).
+        run_profile: None,
         // B-6 #2: CliInteractiveGate is opt-in via the interactive_gate
         // field. The contract here predates B-6 and tests the headless
         // wiring path (no human-prompter installed).

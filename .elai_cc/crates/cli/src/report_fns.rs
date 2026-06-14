@@ -16,6 +16,8 @@ use elai_orchestrator::{
     apply_to_system_prompt, ConfigLoader, ConfigSource, ProjectContext, Session, ContentBlock,
     MessageRole, RoleContractStore, RuntimeHookConfig, TokenUsage, PermissionMode,
     load_system_prompt, resolve_sandbox_status,
+    // I-36: compiled-prompt artifact store for per-(role,backend) variant substitution.
+    CompiledPromptStore,
 };
 use elai_plugins::{PluginHooks, PluginManager, PluginManagerConfig};
 use elai_rules::rule_engine::{CompiledPredicate, DefaultRuleEngine, Rule, RuleEngine};
@@ -1142,6 +1144,35 @@ pub(crate) fn build_system_prompt_for_role(
     // MMLU -3.6..-5.3pp and MT-Bench coding -0.65 for factual/code roles.
     let store = RoleContractStore::default();
     apply_to_system_prompt(&mut sections, role, &store);
+    // I-36: after role_contracts apply, look up a compiled variant for this (role, backend)
+    // pair. The store is loaded from project_root/.elai/cache/compiled_prompts.msgpack.
+    // In Tier-1 the backend is passed as "anthropic_api" (the primary cloud lane per the
+    // observable_effect trigger); the full (role, PerRoleRuntime-derived backend) key is
+    // Tier-2 when PerRoleRuntime is threaded in here. If a promoted variant exists it
+    // replaces sections[0] (the full system-prompt body), which the caller joins and
+    // places in CompletionConfig::system; the adapter then optionally overrides it via
+    // CompletionConfig::compiled_system_override (Option A seam). The kill-switch
+    // ELAI_PROMPT_COMPILE_DISABLE=1 makes lookup() return None, keeping this a no-op.
+    // D-030 / R-8: this call is the production caller for CompiledPromptStore::lookup.
+    if let Ok(project_root) = env::current_dir() {
+        let compiled_store = CompiledPromptStore::load_standard(&project_root);
+        // Use a normalized snake_case role string as the key (consistent with AgentRole::as_str).
+        let role_key = format!("{:?}", role).to_ascii_lowercase();
+        if let Some(variant) = compiled_store.lookup(&role_key, "anthropic_api") {
+            tracing::debug!(
+                target = "compiled_prompt_store",
+                role = %role_key,
+                backend = "anthropic_api",
+                variant_hash = %&variant.variant_hash[..16.min(variant.variant_hash.len())],
+                "I-36: substituting compiled prompt variant"
+            );
+            if sections.is_empty() {
+                sections.push(variant.compiled_text.clone());
+            } else {
+                sections[0] = variant.compiled_text.clone();
+            }
+        }
+    }
     // H-31: append the user-memory section iff the firewall allows this role AND the flag is on.
     // No SSB available at construction time — callers that have self.ssb should use
     // assemble_user_memory_section_with_ssb directly when they want SSB emission.

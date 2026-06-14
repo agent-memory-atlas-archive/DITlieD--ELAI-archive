@@ -110,9 +110,19 @@ impl AnthropicApiRuntime {
             config.max_tokens
         };
 
+        // I-36: prefer compiled_system_override (a promoted per-(role,backend) compiled
+        // variant placed by `report_fns::build_system_prompt_for_role`) over the
+        // assembled `system` string. This is the adapter-boundary substitution seam,
+        // mirroring `apply_anthropic_cache_markers` at line 232 (GD-1 precedent).
+        // When `compiled_system_override` is `None` (no variant stored, or kill-switch
+        // active) the behaviour is identical to the pre-I-36 path.
+        let system_text = config
+            .compiled_system_override
+            .as_deref()
+            .or(config.system.as_deref());
         let mut system = None;
-        if let Some(text) = &config.system {
-            system = Some(vec![SystemBlock::text(text.clone())]);
+        if let Some(text) = system_text {
+            system = Some(vec![SystemBlock::text(text.to_owned())]);
         }
 
         let mut wire_messages = Vec::with_capacity(messages.len());
@@ -139,6 +149,17 @@ impl AnthropicApiRuntime {
             });
         }
 
+        // I-26: forward the effort parameter for cloud reasoning roles.
+        // The effort field is absent (None) for all non-reasoning paths and for
+        // local/sidecar backends. HD-2: effort is placed AFTER the stable cache-prefix
+        // fields (model, max_tokens, messages, system, tools, tool_choice, stream, seed)
+        // so it does not perturb the byte-stable cache prefix on existing requests.
+        // HARD RULE (landmine #6 / I-0): budget_tokens is NEVER set on Opus 4.7+ paths;
+        // the effort field replaces it. The contract test asserts 0 budget_tokens occurrences
+        // in this builder. HD-3: effort is only set for reasoning roles; force-JSON wrapping
+        // of a reasoning response is BANNED regardless of the effort value.
+        let effort = config.effort.clone();
+
         MessageRequest {
             model,
             max_tokens,
@@ -148,6 +169,7 @@ impl AnthropicApiRuntime {
             tool_choice: None,
             stream: false,
             seed: config.seed,
+            effort,
         }
     }
 
@@ -168,6 +190,7 @@ impl AnthropicApiRuntime {
             tool_choice: None,
             stream: false,
             seed: None,
+            effort: None,
         }
     }
 }

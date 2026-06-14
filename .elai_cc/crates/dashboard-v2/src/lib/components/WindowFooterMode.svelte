@@ -50,11 +50,11 @@
     height: 18px;
     min-height: 18px;
     padding: 0 var(--s-3);
-    border-top: 1px solid var(--border-subtle);
-    background: var(--bg-void);
+    border-top: 1px solid var(--line);
+    background: var(--bg);
     font-family: var(--font-mono);
     font-size: 9px;
-    color: var(--text-ghost);
+    color: var(--dim);
     user-select: none;
     flex: 0 0 auto;
   }
@@ -64,16 +64,16 @@
     gap: 4px;
   }
   .ftr-key {
-    color: var(--text-ghost);
+    color: var(--dim);
   }
   .ftr-val {
-    color: var(--text-secondary);
+    color: var(--read);
   }
   .ftr-scope {
-    color: var(--text-secondary);
+    color: var(--read);
     font-weight: 500;
   }
   .ftr-sep {
-    color: var(--text-disabled);
+    color: var(--ghost);
   }
 </style>

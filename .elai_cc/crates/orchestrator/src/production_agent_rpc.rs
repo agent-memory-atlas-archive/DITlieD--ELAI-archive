@@ -46,6 +46,11 @@ use elai_ipc_types::{
     AcknowledgeInfeasibleRequest, TOOL_ACKNOWLEDGE_INFEASIBLE,
     // I-13: on-demand line-range expansion tool (3-arm IS-14 pattern).
     TraceQueryRequest, TOOL_TRACE_QUERY,
+    // I-52: agent-callable checkpoint tool (3-arm save/rewind/diff, JSON dispatch).
+    TOOL_CHECKPOINT_SAVE, TOOL_CHECKPOINT_REWIND, TOOL_CHECKPOINT_DIFF,
+    // I-54: agent-callable structural (AST-aware) edit tool (3-arm search/preview/apply,
+    // JSON dispatch over the shipped tree-sitter grammars).
+    TOOL_STRUCTURAL_SEARCH, TOOL_STRUCTURAL_PREVIEW, TOOL_STRUCTURAL_APPLY,
 };
 use elai_knowledge::artifacts::{
     store::ArtifactStore,
@@ -111,6 +116,40 @@ const TAINT_PROJECT_ROOT_ENV: &str = "ELAI_PROJECT_ROOT";
 
 /// Default trusted-source workspace prefix when `ELAI_PROJECT_ROOT` is unset.
 const TAINT_PROJECT_ROOT_DEFAULT: &str = ".elai_cc";
+
+/// I-52: env var naming the checkpoint-tool session scope. Supplied by the run
+/// context, NEVER by the agent -- the cross-session rewind guard (an agent
+/// cannot reach another session's CAS because it cannot supply session_id, and
+/// the CAS root is physically per-session). Falls back to a fixed default scope
+/// when unset (single-session use).
+const CHECKPOINT_SESSION_ID_ENV: &str = "ELAI_AGENT_SESSION_ID";
+
+/// Default checkpoint session scope when `ELAI_AGENT_SESSION_ID` is unset.
+const CHECKPOINT_SESSION_ID_DEFAULT: &str = "agent_default";
+
+/// Resolve the run-context-supplied checkpoint session id (never agent-supplied).
+fn checkpoint_session_id() -> String {
+    std::env::var(CHECKPOINT_SESSION_ID_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| CHECKPOINT_SESSION_ID_DEFAULT.to_string())
+}
+
+/// I-52: env var overriding the checkpoint CAS root (run-context / test affordance,
+/// never agent-supplied). Defaults to the H-49 `SESSION_CHECKPOINT_ROOT` so the
+/// agent tool reads/writes the SAME store the H-49 capture seam populates.
+const CHECKPOINT_ROOT_ENV: &str = "ELAI_AGENT_CHECKPOINT_ROOT";
+
+/// Resolve the checkpoint CAS root (the H-49 store, or an env override for tests).
+fn checkpoint_root() -> std::path::PathBuf {
+    std::env::var(CHECKPOINT_ROOT_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(crate::architecture::timetravel::SESSION_CHECKPOINT_ROOT)
+        })
+}
 
 /// G-1: resolve the trusted-source workspace root for the file-read path-screen.
 fn taint_project_root() -> PathBuf {
@@ -1507,6 +1546,202 @@ impl ProductionAgentRpcServer {
             }),
             cache_control: None,
         };
+        // I-52: agent-callable checkpoint tool (3-arm save/rewind/diff) over the
+        // H-49 time-travel CAS substrate. JSON dispatch path (no postcard struct),
+        // mirroring the I-53 recipe_* tools. session_id is run-context derived
+        // (never agent-supplied) -- the cross-session rewind guard.
+        let checkpoint_save = ToolDefinition {
+            name: TOOL_CHECKPOINT_SAVE.to_string(),
+            description: Some(
+                "Save a labelled checkpoint of the named files (a cheap content-\
+                 addressed snapshot) so you can speculatively edit and rewind \
+                 inside this task. Scoped to the current session."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Human label to save the checkpoint under (reused later to rewind/diff)."
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Project-relative file paths to capture into the checkpoint."
+                    }
+                },
+                "required": ["label", "paths"],
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
+        let checkpoint_rewind = ToolDefinition {
+            name: TOOL_CHECKPOINT_REWIND.to_string(),
+            description: Some(
+                "Rewind the working tree to a previously saved checkpoint label. \
+                 REFUSES (no file is overwritten) if any covered file changed \
+                 outside the checkpointed set since the save -- the diverged \
+                 paths are named in the response. Scoped to the current session."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "The checkpoint label to rewind to (from a prior checkpoint_save)."
+                    }
+                },
+                "required": ["label"],
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
+        let checkpoint_diff = ToolDefinition {
+            name: TOOL_CHECKPOINT_DIFF.to_string(),
+            description: Some(
+                "List the files that have changed since a saved checkpoint label \
+                 (read-only). Scoped to the current session."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "The checkpoint label to diff the working tree against."
+                    }
+                },
+                "required": ["label"],
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
+
+        // I-54: agent-callable structural (AST-aware) edit tool (search/preview/
+        // apply over the shipped tree-sitter grammars; one version source via
+        // elai_knowledge::TreeSitterAstEvaluator; ast-grep dep BANNED, SLC-3).
+        // JSON dispatch path (no postcard struct), mirroring I-52/I-53. SHIP-NOW
+        // languages: rust / python / typescript. Syntactic only (semantic rename
+        // is E-52's LSP lane). Apply rides the SHIPPED PreToolUse edit gates.
+        let structural_search = ToolDefinition {
+            name: TOOL_STRUCTURAL_SEARCH.to_string(),
+            description: Some(
+                "Search source code structurally with a tree-sitter query (the \
+                 grammar's native pattern language) instead of a text/regex match. \
+                 Returns every matching node with its file line range and the query \
+                 capture it satisfied. Read-only. Languages: rust, python, typescript."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["rust", "python", "typescript"],
+                        "description": "Source language of the file/source."
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "The source code to search."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "A tree-sitter query, e.g. '(function_item name: (identifier) @name)'."
+                    }
+                },
+                "required": ["language", "source", "query"],
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
+        let structural_preview = ToolDefinition {
+            name: TOOL_STRUCTURAL_PREVIEW.to_string(),
+            description: Some(
+                "Preview a structural rewrite: a tree-sitter query selects nodes \
+                 and a rewrite template (referencing query captures by @name) \
+                 produces the would-be edit set. Returns the per-match diff and a \
+                 stable diff hash WITHOUT writing any bytes. A broken query or \
+                 template is reported here (no edit happens)."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["rust", "python", "typescript"],
+                        "description": "Source language of the file."
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "Project-relative path of the file to preview the edit against."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "A tree-sitter query selecting the nodes to rewrite."
+                    },
+                    "rewrite_template": {
+                        "type": "string",
+                        "description": "Replacement text for each matched node; @name substitutes a query capture."
+                    },
+                    "whole_node_capture": {
+                        "type": "string",
+                        "description": "The capture name whose node is the one replaced (e.g. 'name')."
+                    }
+                },
+                "required": ["language", "file", "query", "rewrite_template", "whole_node_capture"],
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
+        let structural_apply = ToolDefinition {
+            name: TOOL_STRUCTURAL_APPLY.to_string(),
+            description: Some(
+                "Apply a structural rewrite previewed with structural_preview. \
+                 REFUSES (no bytes written) if the file changed since the preview: \
+                 pass back the preview's `source_hash` as `expected_source_hash` \
+                 and the apply re-reads the file, re-hashes it, and refuses on any \
+                 difference (a stale match), even an edit that left the matched \
+                 node text intact. Routes every write through the same edit safety \
+                 gates as the Edit tool. Languages: rust, python, typescript."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["rust", "python", "typescript"],
+                        "description": "Source language of the file."
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "Project-relative path of the file to edit."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "The same tree-sitter query used in the preview."
+                    },
+                    "rewrite_template": {
+                        "type": "string",
+                        "description": "The same rewrite template used in the preview."
+                    },
+                    "whole_node_capture": {
+                        "type": "string",
+                        "description": "The same whole-node capture name used in the preview."
+                    },
+                    "expected_source_hash": {
+                        "type": "string",
+                        "description": "The `source_hash` returned by the matching structural_preview. The apply refuses if the file no longer hashes to this (changed since the preview)."
+                    }
+                },
+                "required": ["language", "file", "query", "rewrite_template", "whole_node_capture", "expected_source_hash"],
+                "additionalProperties": false
+            }),
+            cache_control: None,
+        };
 
         vec![
             edit, file_read, validate, compile_check, classify, git_commit,
@@ -1527,6 +1762,11 @@ impl ProductionAgentRpcServer {
             trace_query,
             // I-53: recipe runners + utility tool pack. 4 tools.
             recipe_list, recipe_run, archive_read, json_tree_query,
+            // I-52: agent-callable checkpoint tool. 3 tools (save/rewind/diff).
+            checkpoint_save, checkpoint_rewind, checkpoint_diff,
+            // I-54: agent-callable structural (AST-aware) edit tool. 3 tools
+            // (search/preview/apply over the shipped tree-sitter grammars).
+            structural_search, structural_preview, structural_apply,
         ]
     }
 
@@ -1604,6 +1844,11 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                 tool_choice: Some(ToolChoice::Auto),
                 stream: false,
                 seed: None,
+                // I-26: production agent RPC uses tool-calling mode, not reasoning;
+                // effort is not applicable (HD-3: force-JSON wrapping of reasoning
+                // roles is banned; tool-calling and reasoning are mutually exclusive
+                // on current Anthropic API).
+                effort: None,
             };
 
             match self.client.send_message(&request).await {
@@ -3547,7 +3792,537 @@ pub(crate) async fn translate_tool_request(
                 .map_err(|e| format!("tool json_tree_query: serialise error: {e}"))
         }
 
+        // I-52: agent-callable checkpoint tool (save/rewind/diff) over the H-49
+        // time-travel CAS. JSON dispatch path (no postcard struct). session_id is
+        // run-context derived (checkpoint_session_id), never agent-supplied -- the
+        // cross-session rewind guard. The SSB row is the off-agent observable (R4);
+        // the RefusedDiverged row is the load-bearing safety beacon (R1).
+        TOOL_CHECKPOINT_SAVE => {
+            use crate::architecture::checkpoint_tool;
+            let args: serde_json::Value = serde_json::from_slice(arguments)
+                .map_err(|e| format!("tool checkpoint_save: decode error: {e}"))?;
+            let label = args
+                .get("label")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "tool checkpoint_save: missing 'label' field".to_string())?
+                .to_string();
+            let paths: Vec<String> = args
+                .get("paths")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let session_id = checkpoint_session_id();
+            let root = checkpoint_root();
+            let project_root = taint_project_root();
+            let outcome = checkpoint_tool::save(
+                &root,
+                &session_id,
+                &label,
+                &paths,
+                project_root.as_path(),
+            )
+            .map_err(|e| format!("tool checkpoint_save: {e}"))?;
+            emit_checkpoint_tool_event(
+                ssb,
+                clock,
+                crate::ssb::CheckpointToolEventKind::Saved,
+                &session_id,
+                &outcome.label,
+                outcome.paths.clone(),
+                Vec::new(),
+            )
+            .await;
+            serde_json::to_vec(&serde_json::json!({
+                "saved": true,
+                "label": outcome.label,
+                "paths": outcome.paths,
+            }))
+            .map_err(|e| format!("tool checkpoint_save: serialise error: {e}"))
+        }
+
+        TOOL_CHECKPOINT_REWIND => {
+            use crate::architecture::checkpoint_tool::{self, RewindOutcome};
+            let args: serde_json::Value = serde_json::from_slice(arguments)
+                .map_err(|e| format!("tool checkpoint_rewind: decode error: {e}"))?;
+            let label = args
+                .get("label")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "tool checkpoint_rewind: missing 'label' field".to_string())?
+                .to_string();
+            let session_id = checkpoint_session_id();
+            let root = checkpoint_root();
+            let project_root = taint_project_root();
+            let outcome = checkpoint_tool::rewind(
+                &root,
+                &session_id,
+                &label,
+                project_root.as_path(),
+            )
+            .map_err(|e| format!("tool checkpoint_rewind: {e}"))?;
+            match outcome {
+                RewindOutcome::Rewound { paths } => {
+                    emit_checkpoint_tool_event(
+                        ssb,
+                        clock,
+                        crate::ssb::CheckpointToolEventKind::Rewound,
+                        &session_id,
+                        &label,
+                        paths.clone(),
+                        Vec::new(),
+                    )
+                    .await;
+                    serde_json::to_vec(&serde_json::json!({
+                        "rewound": true,
+                        "label": label,
+                        "paths": paths,
+                    }))
+                    .map_err(|e| format!("tool checkpoint_rewind: serialise error: {e}"))
+                }
+                RewindOutcome::RefusedDiverged { diverged_paths } => {
+                    // Load-bearing safety observable: the refusal MUST land (R1).
+                    emit_checkpoint_tool_event(
+                        ssb,
+                        clock,
+                        crate::ssb::CheckpointToolEventKind::RefusedDiverged,
+                        &session_id,
+                        &label,
+                        Vec::new(),
+                        diverged_paths.clone(),
+                    )
+                    .await;
+                    serde_json::to_vec(&serde_json::json!({
+                        "rewound": false,
+                        "refused": "diverged",
+                        "label": label,
+                        "diverged_paths": diverged_paths,
+                    }))
+                    .map_err(|e| format!("tool checkpoint_rewind: serialise error: {e}"))
+                }
+            }
+        }
+
+        TOOL_CHECKPOINT_DIFF => {
+            use crate::architecture::checkpoint_tool;
+            let args: serde_json::Value = serde_json::from_slice(arguments)
+                .map_err(|e| format!("tool checkpoint_diff: decode error: {e}"))?;
+            let label = args
+                .get("label")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "tool checkpoint_diff: missing 'label' field".to_string())?
+                .to_string();
+            let session_id = checkpoint_session_id();
+            let root = checkpoint_root();
+            let project_root = taint_project_root();
+            let outcome = checkpoint_tool::diff(
+                &root,
+                &session_id,
+                &label,
+                project_root.as_path(),
+            )
+            .map_err(|e| format!("tool checkpoint_diff: {e}"))?;
+            emit_checkpoint_tool_event(
+                ssb,
+                clock,
+                crate::ssb::CheckpointToolEventKind::Diffed,
+                &session_id,
+                &outcome.label,
+                outcome.changed_paths.clone(),
+                Vec::new(),
+            )
+            .await;
+            serde_json::to_vec(&serde_json::json!({
+                "label": outcome.label,
+                "changed_paths": outcome.changed_paths,
+            }))
+            .map_err(|e| format!("tool checkpoint_diff: serialise error: {e}"))
+        }
+
+        // I-54: agent-callable structural (AST-aware) edit tool (search/preview/
+        // apply). JSON dispatch path (no postcard struct), mirroring I-52/I-53.
+        // The engine lives in crate::structural_edit (reuses the shipped
+        // TreeSitterAstEvaluator; one tree-sitter version source, SLC-3). The
+        // apply arm runs the SHIPPED PreToolUse edit gates + dispatch_edit per
+        // rewrite (controller decision 3); it never writes bytes itself.
+        TOOL_STRUCTURAL_SEARCH => {
+            let args: serde_json::Value = serde_json::from_slice(arguments)
+                .map_err(|e| format!("tool structural_search: decode error: {e}"))?;
+            let language = args
+                .get("language")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "tool structural_search: missing 'language' field".to_string())?
+                .to_string();
+            let source = args
+                .get("source")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "tool structural_search: missing 'source' field".to_string())?
+                .to_string();
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "tool structural_search: missing 'query' field".to_string())?
+                .to_string();
+            match crate::structural_edit::structural_search(&language, &source, &query) {
+                Ok(res) => {
+                    let match_count =
+                        u32::try_from(res.matches.len()).unwrap_or(u32::MAX);
+                    emit_structural_edit_event(
+                        ssb,
+                        clock,
+                        crate::ssb::StructuralEditAppliedKind::Matched,
+                        &language,
+                        match_count,
+                        String::new(),
+                        Vec::new(),
+                    )
+                    .await;
+                    let matches: Vec<serde_json::Value> = res
+                        .matches
+                        .iter()
+                        .map(|m| {
+                            serde_json::json!({
+                                "node_text": m.node_text,
+                                "start_line": m.start_line,
+                                "end_line": m.end_line,
+                                "capture_name": m.capture_name,
+                            })
+                        })
+                        .collect();
+                    serde_json::to_vec(&serde_json::json!({
+                        "match_count": match_count,
+                        "matches": matches,
+                    }))
+                    .map_err(|e| format!("tool structural_search: serialise error: {e}"))
+                }
+                Err(e @ crate::structural_edit::StructuralEditError::InvalidQuery(_)) => {
+                    // Typed ParseFailed: ZERO bytes, the off-agent observable lands.
+                    emit_structural_edit_event(
+                        ssb,
+                        clock,
+                        crate::ssb::StructuralEditAppliedKind::ParseFailed,
+                        &language,
+                        0,
+                        String::new(),
+                        Vec::new(),
+                    )
+                    .await;
+                    Err(format!("tool structural_search: {e}"))
+                }
+                Err(e) => Err(format!("tool structural_search: {e}")),
+            }
+        }
+
+        TOOL_STRUCTURAL_PREVIEW => {
+            let (language, file, query, template, whole_node) =
+                decode_structural_edit_args("structural_preview", arguments)?;
+            let source = std::fs::read_to_string(&file)
+                .map_err(|e| format!("tool structural_preview: read '{file}': {e}"))?;
+            match crate::structural_edit::structural_preview(
+                &language,
+                &source,
+                &query,
+                &template,
+                &whole_node,
+            ) {
+                Ok(prev) => {
+                    let match_count =
+                        u32::try_from(prev.rewrites.len()).unwrap_or(u32::MAX);
+                    emit_structural_edit_event(
+                        ssb,
+                        clock,
+                        crate::ssb::StructuralEditAppliedKind::Previewed,
+                        &language,
+                        match_count,
+                        prev.diff_hash.clone(),
+                        Vec::new(),
+                    )
+                    .await;
+                    let rewrites: Vec<serde_json::Value> = prev
+                        .rewrites
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "start_line": r.start_line,
+                                "old_text": r.old_text,
+                                "new_text": r.new_text,
+                            })
+                        })
+                        .collect();
+                    serde_json::to_vec(&serde_json::json!({
+                        "match_count": match_count,
+                        "diff_hash": prev.diff_hash,
+                        // The staleness anchor the agent passes back as
+                        // `expected_source_hash` on the matching structural_apply.
+                        "source_hash": prev.source_hash,
+                        "rewrites": rewrites,
+                    }))
+                    .map_err(|e| format!("tool structural_preview: serialise error: {e}"))
+                }
+                Err(
+                    e @ (crate::structural_edit::StructuralEditError::InvalidQuery(_)
+                    | crate::structural_edit::StructuralEditError::UnknownCapture(_)),
+                ) => {
+                    emit_structural_edit_event(
+                        ssb,
+                        clock,
+                        crate::ssb::StructuralEditAppliedKind::ParseFailed,
+                        &language,
+                        0,
+                        String::new(),
+                        Vec::new(),
+                    )
+                    .await;
+                    Err(format!("tool structural_preview: {e}"))
+                }
+                Err(e) => Err(format!("tool structural_preview: {e}")),
+            }
+        }
+
+        TOOL_STRUCTURAL_APPLY => {
+            let (language, file, query, template, whole_node) =
+                decode_structural_edit_args("structural_apply", arguments)?;
+            // The whole-file hash the agent saw at preview. apply refuses if the
+            // file changed since then (the real "changed since the preview" guard,
+            // threaded across the preview -> apply boundary).
+            let expected_source_hash = decode_structural_apply_expected_hash(arguments)?;
+            // Re-resolve the preview against the CURRENT file (the agent supplies
+            // the same query+template; we re-run rather than trust agent-passed
+            // spans -- the staleness guard is re-derived here).
+            let source = std::fs::read_to_string(&file)
+                .map_err(|e| format!("tool structural_apply: read '{file}': {e}"))?;
+            // PREVIEW-STALENESS: refuse BEFORE any work if the file no longer
+            // hashes to what the agent previewed. This is the load-bearing
+            // production RefusedStale path -- it catches an external edit even
+            // when the matched node's own text is unchanged (a reposition), which
+            // the in-node re-hash cannot. Emit the RefusedStale row + Err, no write.
+            if let Err(e) = crate::structural_edit::verify_source_unchanged(
+                &file,
+                &source,
+                &expected_source_hash,
+            ) {
+                emit_structural_edit_event(
+                    ssb,
+                    clock,
+                    crate::ssb::StructuralEditAppliedKind::RefusedStale,
+                    &language,
+                    0,
+                    String::new(),
+                    vec![file.clone()],
+                )
+                .await;
+                return Err(format!("tool structural_apply: {e}"));
+            }
+            let prev = match crate::structural_edit::structural_preview(
+                &language,
+                &source,
+                &query,
+                &template,
+                &whole_node,
+            ) {
+                Ok(p) => p,
+                Err(
+                    e @ (crate::structural_edit::StructuralEditError::InvalidQuery(_)
+                    | crate::structural_edit::StructuralEditError::UnknownCapture(_)),
+                ) => {
+                    emit_structural_edit_event(
+                        ssb,
+                        clock,
+                        crate::ssb::StructuralEditAppliedKind::ParseFailed,
+                        &language,
+                        0,
+                        String::new(),
+                        Vec::new(),
+                    )
+                    .await;
+                    return Err(format!("tool structural_apply: {e}"));
+                }
+                Err(e) => return Err(format!("tool structural_apply: {e}")),
+            };
+            // Staleness + ambiguity guard. A stale/ambiguous match REFUSES the
+            // whole apply (no partial corruption) and lands the RefusedStale row.
+            if let Err(e) =
+                crate::structural_edit::verify_apply_safe(&file, &source, &prev.rewrites)
+            {
+                emit_structural_edit_event(
+                    ssb,
+                    clock,
+                    crate::ssb::StructuralEditAppliedKind::RefusedStale,
+                    &language,
+                    u32::try_from(prev.rewrites.len()).unwrap_or(u32::MAX),
+                    prev.diff_hash.clone(),
+                    vec![file.clone()],
+                )
+                .await;
+                return Err(format!("tool structural_apply: {e}"));
+            }
+            // Gate + write each rewrite through the SHIPPED edit path. The gates
+            // run BEFORE any byte lands (fail-closed), exactly as TOOL_EDIT does.
+            let mut total_bytes: u64 = 0;
+            for r in &prev.rewrites {
+                enforce_taint_sink_gate(
+                    "fs_write",
+                    "structural_edit_apply",
+                    &[file.as_str(), r.new_text.as_str()],
+                    ssb,
+                )?;
+                enforce_fs_blast_radius(
+                    &[file.as_str()],
+                    taint_project_root().as_path(),
+                    &format!("structural_apply {file}"),
+                    ssb,
+                    i64::try_from(clock.now_ms()).unwrap_or(i64::MAX),
+                )?;
+                let req = EditRequest {
+                    file_path: PathBuf::from(&file),
+                    old_text: r.old_text.clone(),
+                    new_text: r.new_text.clone(),
+                };
+                let outcome = dispatcher
+                    .dispatch_edit(req)
+                    .await
+                    .map_err(|e| format!("tool structural_apply: dispatch error: {e:?}"))?;
+                total_bytes += u64::from(outcome.bytes_written);
+            }
+            let applied_count = u32::try_from(prev.rewrites.len()).unwrap_or(u32::MAX);
+            emit_structural_edit_event(
+                ssb,
+                clock,
+                crate::ssb::StructuralEditAppliedKind::Applied,
+                &language,
+                applied_count,
+                prev.diff_hash.clone(),
+                vec![file.clone()],
+            )
+            .await;
+            serde_json::to_vec(&serde_json::json!({
+                "applied": true,
+                "file": file,
+                "rewrites_applied": applied_count,
+                "bytes_written": total_bytes,
+                "diff_hash": prev.diff_hash,
+            }))
+            .map_err(|e| format!("tool structural_apply: serialise error: {e}"))
+        }
+
         unknown => Err(format!("unknown tool_id: {unknown}")),
+    }
+}
+
+/// I-54: decode the shared (language, file, query, rewrite_template,
+/// whole_node_capture) arg shape for the structural_preview / structural_apply
+/// JSON-path tool arms.
+#[allow(clippy::type_complexity)]
+fn decode_structural_edit_args(
+    tool: &str,
+    arguments: &[u8],
+) -> Result<(String, String, String, String, String), String> {
+    let args: serde_json::Value = serde_json::from_slice(arguments)
+        .map_err(|e| format!("tool {tool}: decode error: {e}"))?;
+    structural_edit_string_field(tool, &args, "language").and_then(|language| {
+        Ok((
+            language,
+            structural_edit_string_field(tool, &args, "file")?,
+            structural_edit_string_field(tool, &args, "query")?,
+            structural_edit_string_field(tool, &args, "rewrite_template")?,
+            structural_edit_string_field(tool, &args, "whole_node_capture")?,
+        ))
+    })
+}
+
+/// I-54: pull one required string field from a decoded structural-edit arg blob.
+fn structural_edit_string_field(
+    tool: &str,
+    args: &serde_json::Value,
+    key: &str,
+) -> Result<String, String> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("tool {tool}: missing '{key}' field"))
+}
+
+/// I-54: the structural_apply-only `expected_source_hash` arg -- the whole-file
+/// blake3 hash the agent received from its prior `structural_preview` call. It is
+/// the staleness anchor threaded across the preview -> apply boundary; apply
+/// refuses (`RefusedStale`) if the file no longer hashes to it.
+fn decode_structural_apply_expected_hash(arguments: &[u8]) -> Result<String, String> {
+    let args: serde_json::Value = serde_json::from_slice(arguments)
+        .map_err(|e| format!("tool structural_apply: decode error: {e}"))?;
+    structural_edit_string_field("structural_apply", &args, "expected_source_hash")
+}
+
+/// I-54: emit one `StructuralEditApplied` SSB row (off-agent observable, R4).
+/// Non-fatal: a write failure is logged, never propagated (mirrors the
+/// checkpoint_tool / trace_query emit discipline).
+async fn emit_structural_edit_event(
+    ssb: Option<&Arc<crate::ssb::Ssb>>,
+    clock: &Arc<dyn ClockProvider>,
+    kind: crate::ssb::StructuralEditAppliedKind,
+    language: &str,
+    match_count: u32,
+    diff_hash: String,
+    paths: Vec<String>,
+) {
+    if let Some(ssb_arc) = ssb {
+        let ts_ms = crate::ssb::Ssb::now_ms_via_clock(clock);
+        let payload = crate::ssb::SsbPayload::StructuralEditApplied(
+            crate::ssb::StructuralEditAppliedPayload {
+                kind,
+                language: language.to_owned(),
+                match_count,
+                diff_hash,
+                paths,
+                ts_ms,
+            },
+        );
+        if let Err(e) = ssb_arc
+            .write_payload("agent_rpc", 0, payload, Vec::new())
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "structural_edit: StructuralEditApplied SSB write failed (non-fatal)"
+            );
+        }
+    }
+}
+
+/// I-52: emit one `CheckpointToolEvent` SSB row (off-agent observable, R4).
+/// Non-fatal: a write failure is logged, never propagated (mirrors the
+/// acknowledge_infeasible / trace_query emit discipline).
+async fn emit_checkpoint_tool_event(
+    ssb: Option<&Arc<crate::ssb::Ssb>>,
+    clock: &Arc<dyn ClockProvider>,
+    kind: crate::ssb::CheckpointToolEventKind,
+    session_id: &str,
+    label: &str,
+    paths: Vec<String>,
+    diverged_paths: Vec<String>,
+) {
+    if let Some(ssb_arc) = ssb {
+        let ts_ms = crate::ssb::Ssb::now_ms_via_clock(clock);
+        let payload = crate::ssb::SsbPayload::CheckpointToolEvent(
+            crate::ssb::CheckpointToolEventPayload {
+                kind,
+                session_id: session_id.to_owned(),
+                label: label.to_owned(),
+                paths,
+                diverged_paths,
+                ts_ms,
+            },
+        );
+        if let Err(e) = ssb_arc
+            .write_payload("agent_rpc", 0, payload, Vec::new())
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "checkpoint_tool: CheckpointToolEvent SSB write failed (non-fatal)"
+            );
+        }
     }
 }
 

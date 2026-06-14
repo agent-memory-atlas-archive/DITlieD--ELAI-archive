@@ -481,6 +481,7 @@ impl DeterministicAuditor {
                 checks_run: 0,
                 passed: true,
                 mutation: None,
+                mutation_budget: None,
             };
         }
 
@@ -500,6 +501,7 @@ impl DeterministicAuditor {
                 checks_run: 1,
                 passed: false,
                 mutation: None,
+                mutation_budget: None,
             };
         }
 
@@ -540,6 +542,7 @@ impl DeterministicAuditor {
                             checks_run: 1,
                             passed: false,
                             mutation: None,
+                            mutation_budget: None,
                         };
                     }
                     Ok(out) => {
@@ -564,6 +567,7 @@ impl DeterministicAuditor {
                                 checks_run: 1,
                                 passed: false,
                                 mutation: None,
+                                mutation_budget: None,
                             };
                         }
                         tracing::info!(cmd = %build_cmd.cmd, "deterministic_auditor: build command OK");
@@ -580,6 +584,7 @@ impl DeterministicAuditor {
                 checks_run: 2,
                 passed: false,
                 mutation: None,
+                mutation_budget: None,
             };
         }
 
@@ -591,6 +596,7 @@ impl DeterministicAuditor {
                 checks_run: 3,
                 passed: false,
                 mutation: None,
+                mutation_budget: None,
             };
         }
 
@@ -602,6 +608,7 @@ impl DeterministicAuditor {
                 checks_run: 4,
                 passed: false,
                 mutation: None,
+                mutation_budget: None,
             };
         }
 
@@ -623,13 +630,15 @@ impl DeterministicAuditor {
         // returns no MutationResult. See workflow/reasoning/C-28-decisions.md
         // DECISION-D3 (DRIFT-C28-2).
         let mut mutation_result: Option<MutationResult> = None;
+        let mut mutation_budget: Option<crate::mutation_budget::MutationBudgetSummary> = None;
         let mut checks_run: u8 = 5;
         if self.config.mutation.enabled && !prior_block {
             checks_run = 6;
             match self.check_mutation(changed_files) {
-                Ok(Some((mut_findings, result))) => {
+                Ok(Some((mut_findings, result, budget))) => {
                     findings.extend(mut_findings);
                     mutation_result = Some(result);
+                    mutation_budget = Some(budget);
                 }
                 Ok(None) => {
                     findings.push(DeterministicFinding {
@@ -681,6 +690,7 @@ impl DeterministicAuditor {
             checks_run,
             passed,
             mutation: mutation_result,
+            mutation_budget,
         }
     }
 
@@ -723,10 +733,21 @@ impl DeterministicAuditor {
     // -- Check 6 (C-28): MUTATION --
 
     /// Run the T-1 mutation gate on `changed_files`. Returns:
-    ///   * `Ok(Some((findings, result)))` — runner executed; emits one
-    ///     Block finding when `result.mutation_score_pct < threshold_pct`.
+    ///   * `Ok(Some((findings, result, budget)))` — runner executed; emits one
+    ///     Block finding when the measured kill rate falls below the ID-5
+    ///     TOML-read threshold, plus the I-20 [`MutationBudgetSummary`].
     ///   * `Ok(None)` — no tokio runtime available; caller emits a Warn.
     ///   * `Err(_)` — runner failure (subprocess spawn / parse error etc).
+    ///
+    /// I-20 budgeting (Track 15 KEYSTONE):
+    ///   * `changed_files` are diff-cone-selected via
+    ///     [`crate::mutation_budget::MutationBudget::select_cone`] BEFORE the
+    ///     runner `.run` calls (the runner only mutates the data-flow cone).
+    ///   * the kill-rate gate threshold is READ FROM
+    ///     `metrics/mutation_baseline.toml` (ID-5), never a hard-coded paper
+    ///     constant; first deploy writes the baseline from the measured rate.
+    ///   * a [`MutationBudgetSummary`] (Wilson-CI + survivor directives) is
+    ///     returned for the writer-owning gate to emit as `MutationBudgetedRun`.
     ///
     /// The runner is dispatched by file extension: `.rs` files go to
     /// [`RustMutationRunner`]; `.py` files to [`PythonMutationRunner`].
@@ -737,26 +758,41 @@ impl DeterministicAuditor {
         &self,
         changed_files: &[PathBuf],
     ) -> Result<
-        Option<(Vec<DeterministicFinding>, MutationResult)>,
+        Option<(
+            Vec<DeterministicFinding>,
+            MutationResult,
+            crate::mutation_budget::MutationBudgetSummary,
+        )>,
         crate::mutation_testing::MutationError,
     > {
+        use crate::mutation_budget::MutationBudget;
+
         let handle = match tokio::runtime::Handle::try_current() {
             Ok(h) => h,
             Err(_) => return Ok(None),
         };
 
+        let started = std::time::Instant::now();
         let project_root = self.config.project_root.clone();
         let cache_path = project_root.join(".elai").join("mutation_cache.sqlite3");
         let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
         let cache = EquivalentMutantCache::open(&cache_path, clock)?;
         let cfg = self.config.mutation.clone();
 
-        let rust_files: Vec<PathBuf> = changed_files
+        // I-20 diff-cone selection: mutate only the data-flow cone reachable
+        // from the changed surface, not the full changed set. No SymbolGraphCache
+        // is threaded into this gate today, so select_cone degrades to identity
+        // (never panics, never fabricates a cone). The cone is the basis for
+        // `n_total_cone` in the budget summary.
+        let cone_files = MutationBudget::select_cone(None, changed_files);
+        let n_total_cone = u32::try_from(cone_files.len()).unwrap_or(u32::MAX);
+
+        let rust_files: Vec<PathBuf> = cone_files
             .iter()
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
             .cloned()
             .collect();
-        let py_files: Vec<PathBuf> = changed_files
+        let py_files: Vec<PathBuf> = cone_files
             .iter()
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("py"))
             .cloned()
@@ -797,25 +833,52 @@ impl DeterministicAuditor {
             r
         };
 
+        // I-20 / ID-5: resolve the kill-rate gate threshold (proportion
+        // 0.0..=1.0) from metrics/mutation_baseline.toml. On first deploy the
+        // baseline is absent: write it from the measured kill rate and use the
+        // measured rate itself as the bootstrap threshold for THIS run (so the
+        // first run never blocks on a not-yet-measured baseline). NEVER
+        // substitute a hard-coded paper constant for the gate.
+        let measured_rate = aggregate_result.mutation_score_pct / 100.0;
+        let threshold = match MutationBudget::load_threshold_pct(&project_root) {
+            Ok(t) => t,
+            Err(_) => {
+                // First deploy: record the measured baseline (best-effort; a
+                // write failure is logged, not fatal to the audit).
+                if let Err(e) =
+                    MutationBudget::write_baseline_if_absent(&project_root, measured_rate)
+                {
+                    tracing::warn!(error = %e, "I-20: mutation baseline write failed");
+                }
+                measured_rate
+            }
+        };
+
+        let budget = MutationBudget::with_threshold(threshold).summarize(
+            &aggregate_result,
+            n_total_cone,
+            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
+
         let mut findings = Vec::new();
-        // Block when score < threshold AND we actually ran something.
-        if aggregate_result.total_run > 0
-            && aggregate_result.mutation_score_pct < self.config.mutation.threshold_pct
-        {
+        // Block when the measured kill rate < the ID-5 TOML-read threshold AND
+        // we actually ran something. The threshold is the measured-baseline
+        // proportion, NOT the literal config percentage (ID-5).
+        if aggregate_result.total_run > 0 && measured_rate < threshold {
             findings.push(DeterministicFinding {
                 check: CheckKind::Mutation,
                 severity: DeterministicSeverity::Block,
                 file: None,
                 line: None,
                 message: format!(
-                    "mutation_score {:.1}% < threshold {:.1}%",
-                    aggregate_result.mutation_score_pct,
-                    self.config.mutation.threshold_pct,
+                    "mutation kill rate {:.1}% < baseline threshold {:.1}% (ID-5: metrics/mutation_baseline.toml)",
+                    measured_rate * 100.0,
+                    threshold * 100.0,
                 ),
             });
         }
 
-        Ok(Some((findings, aggregate_result)))
+        Ok(Some((findings, aggregate_result, budget)))
     }
 
     // -- Check 1: Build commands --
@@ -1450,6 +1513,12 @@ pub struct DeterministicAuditResult {
     /// caller iterates `mutation.records` to emit one
     /// `SsbActionType::MutationSurvived` row per `MutantOutcome::Survived`.
     pub mutation: Option<MutationResult>,
+    /// I-20: Step 6 budgeted-mutation summary (diff-cone + Wilson-CI +
+    /// survivor directives), when the mutation check ran. `None` when mutation
+    /// is disabled OR the audit short-circuited before Step 6. The
+    /// writer-owning gate (`deterministic_audit_gate`) reads this to emit the
+    /// `MutationBudgetedRun` SSB row(s) off the audit hot path.
+    pub mutation_budget: Option<crate::mutation_budget::MutationBudgetSummary>,
 }
 
 impl DeterministicAuditResult {
@@ -1729,6 +1798,7 @@ mod tests {
             checks_run: 5,
             passed: false,
             mutation: None,
+            mutation_budget: None,
         };
         let audit_findings = result.to_audit_findings();
         assert_eq!(audit_findings.len(), 2);

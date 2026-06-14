@@ -162,6 +162,8 @@ impl MlxAdapter {
             tool_choice: None,
             stream: false,
             seed: config.seed,
+            // I-26: effort is a cloud-only field; MLX backend never uses it.
+            effort: None,
         }
     }
 }

@@ -1,4 +1,7 @@
 mod client;
+// I-50 (SCHEMA_VERSION 268): subscription auth broker (credential-resolve layer;
+// SSB-emit wrapper lives in elai-orchestrator::auth_broker_emit to avoid circular dep).
+pub mod auth_broker;
 // C-26: constrained-decoding mode + per-role defaults. Re-exports below.
 pub mod decoding;
 // I-34: grammar-pin manifest with blake3 load-time verification.
@@ -108,6 +111,11 @@ pub mod model_placer;
 pub use model_placer::{
     GpuDiscoveryError, GpuSpec, GreedyModelPlacer, ModelSpec, PlacementResult,
     discover_gpus,
+};
+// I-50 (SCHEMA_VERSION 268): re-export auth broker public surface.
+pub use auth_broker::{
+    AnthropicAuthProvider, AuthBroker, AuthProvider, ResolveOutcome,
+    broker_resolve_anthropic_auth,
 };
 
 #[cfg(test)]

@@ -359,6 +359,7 @@ mod tests {
             tool_choice: Some(ToolChoice::Auto),
             stream: true,
             seed: None,
+            effort: None,
         };
 
         let error = preflight_message_request(&request)
@@ -399,6 +400,7 @@ mod tests {
             tool_choice: None,
             stream: false,
             seed: None,
+            effort: None,
         };
 
         preflight_message_request(&request)

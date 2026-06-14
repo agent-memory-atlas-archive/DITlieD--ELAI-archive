@@ -189,30 +189,33 @@
 </div>
 
 <style>
+  /* Role tokens only; blue REMOVED (DESIGN §10) — fork arm reads via the
+     one teal accent. */
   .comparison-board {
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
     font-size: 0.85rem;
     padding: 0.5rem;
     overflow-x: auto;
+    background: var(--bg);
   }
   .cb-status,
   .cb-error {
-    color: var(--text-muted, #888);
+    color: var(--dim);
     padding: 0.5rem;
   }
-  .cb-error {
-    color: var(--color-error, #e74c3c);
-  }
+  .cb-error { color: var(--text); }
   .cb-columns {
     display: grid;
     gap: 0.5rem;
     min-width: max-content;
   }
   .cb-col-head {
-    font-weight: 600;
-    border-bottom: 1px solid var(--border-color, #333);
+    font-weight: 500;
+    color: var(--read);
+    border-bottom: 1px solid var(--line);
     padding-bottom: 0.25rem;
     margin-bottom: 0.25rem;
+    letter-spacing: 0.04em;
   }
   .cb-col {
     display: flex;
@@ -221,22 +224,20 @@
   }
   .cb-cell {
     padding: 0.25rem 0.5rem;
-    border: 1px solid var(--border-color, #333);
-    border-radius: 3px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-xs);
+    background: var(--panel);
+    color: var(--read);
     cursor: pointer;
-    transition: background-color 0.1s;
+    transition: background var(--dur-fast) var(--ease-out);
   }
-  .cb-cell:hover {
-    background-color: var(--hover-bg, #1a1a2e);
-  }
+  .cb-cell:hover { background: var(--raised); }
   .cb-cell.forked {
-    border-left: 3px solid var(--color-accent, #4a9eff);
+    border-left: 3px solid var(--d-teal);
   }
-  .cb-cell-label {
-    display: block;
-  }
+  .cb-cell-label { display: block; color: var(--text); }
   .cb-cell-fork-tag {
     font-size: 0.7rem;
-    color: var(--text-muted, #888);
+    color: var(--dim);
   }
 </style>

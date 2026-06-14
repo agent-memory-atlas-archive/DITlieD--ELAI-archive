@@ -260,6 +260,7 @@ impl LlmProvider for AnthropicLlmProviderAdapter {
                 tool_choice: None,
                 stream: false,
                 seed: None,
+                effort: None,
             };
             let response = self.client.send_message(&request).await?;
             match Self::extract_text(&response.content) {

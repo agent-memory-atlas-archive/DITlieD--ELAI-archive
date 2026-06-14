@@ -115,7 +115,10 @@ function saveRecents(list: ProjectSummary[]) {
 }
 
 function createSession() {
-  let screen = $state<'selector' | 'workspace'>('selector');
+  // 'intro' is the FIRST screen on launch (DESIGN.md §13 cosmic brand
+  // entrance) — START advances to 'selector', a project open advances
+  // to 'workspace'.
+  let screen = $state<'intro' | 'selector' | 'workspace'>('intro');
   let currentProject = $state<ProjectSummary | null>(null);
   let mode = $state<ExecutionMode>(loadMode());
   let gateMode = $state<GateMode>('INTERACTIVE');
@@ -141,10 +144,27 @@ function createSession() {
     get thinkingEnabled() { return thinkingEnabled; },
     get effortLevel() { return effortLevel; },
 
+    /** Return to the brand entrance (intro/boot) screen.
+     *  Used by the ProjectSelector back button (DESIGN §13: every
+     *  non-workspace screen must be reachable from the others). */
+    openIntro() {
+      screen = 'intro';
+      logStub('session.openIntro');
+    },
+
     openSelector() {
       screen = 'selector';
       currentProject = null;
       logStub('session.openSelector');
+    },
+
+    /** §13 brand entrance: START on the Intro screen advances to the
+     *  project-selection screen. The runtime-mode + theme choices made
+     *  on Intro already persisted via session.setMode / theme.set, so
+     *  they carry into the selector with no extra plumbing. */
+    enterSelector() {
+      screen = 'selector';
+      logStub('session.enterSelector');
     },
 
     openWorkspace(project: ProjectSummary) {

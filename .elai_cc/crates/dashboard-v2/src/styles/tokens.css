@@ -279,6 +279,83 @@
 
   /* Motion duration default — overridden under prefers-reduced-motion. */
   --motion-scale: 1;
+
+  /* ----------------------------------------------------------
+     DESIGN.md v1.2 role ramp (ADDITIVE — new role-named source of
+     truth for the brand/entry screens; the old --bg-void/--text-*
+     family above is retained untouched for the rest of the app).
+     §3 palette, PINNED to the ledger mockup's real ramp. Components
+     on the two new screens reference ONLY these tokens.
+
+     oklch note: emitted as hex this pass (the §3 anchors). oklch()
+     conversion is a §11/§14 open item; hex degrades cleanly on the
+     Chromium webview and keeps a single source of truth. The light
+     VALUES below are §12-provisional (toggle SCOPE is locked, the
+     VALUES are not — maintainer retunes later).
+  ---------------------------------------------------------- */
+  --void:        #030404;   /* BRAND cosmos black — entrance/hero ONLY */
+  --bg:          #0a0f0e;   /* THE app background — every work/chrome surface */
+  --panel:       #0e1413;   /* raised panel / card lifted one step off --bg */
+  --raised:      #151c1a;   /* hover / lift (the one lighter direction) */
+  --sink:        #070b0a;   /* deeper inset, below --bg */
+  --row:         #0c1211;   /* list / table row background */
+  --text:        #f2f5f4;   /* primary text, strong white */
+  --read:        #c9cecb;   /* secondary reading text */
+  --dim:         #79827e;   /* labels / captions (teal-tinted gray) */
+  --ghost:       #3a423f;   /* disabled / skeleton strokes */
+  --line:        rgba(255, 255, 255, 0.17);   /* hairline border */
+  --line2:       rgba(255, 255, 255, 0.17);   /* stronger hairline / divider */
+  --d-teal:        #2BBBA4;   /* THE accent — interactive, active, focus, PASS */
+  --d-teal-bright: #34C2AA;   /* hover / hot stop */
+  --d-teal-deep:   #1B7A6E;   /* filled shapes / brand rings */
+  --d-teal-soft:   rgba(43, 187, 164, 0.40);   /* outlines / rings */
+  --d-teal-ghost:  rgba(43, 187, 164, 0.10);   /* tinted hover washes */
+  --d-teal-faint:  rgba(43, 187, 164, 0.05);   /* faintest wash / zebra */
+  /* brand ring + bloom vars (§13 entrance) */
+  --ring-teal:       rgba(43, 187, 164, 0.07);
+  --ring-teal-faint: rgba(43, 187, 164, 0.045);
+  /* hairline DISPLAY voice (§4): the face is unchosen (§14 open item).
+     Degrades to JetBrains Mono — NEVER a system-default-only stack. */
+  --font-disp: 'JetBrains Mono', ui-monospace, monospace;
+  --ease-draw: cubic-bezier(0.3, 0, 0.2, 1);   /* §5 stroke-draw curve */
+
+  /* Workflow-shell semantic z-scale (DESIGN §8: named, no magic 9999).
+     base < chrome < overlay (scrim) < flyout < modal. */
+  --z-shell-chrome:  10;
+  --z-shell-overlay: 40;
+  --z-shell-flyout:  50;
+  --z-shell-modal:   80;
+}
+
+/* ----------------------------------------------------------
+   DESIGN.md §12 LIGHT THEME (PROVISIONAL values, locked scope).
+   Applied when documentElement carries data-theme="light".
+   Mirrors the ledger mockup [data-theme="light"] ramp. Inverts
+   ONLY the new DESIGN role tokens; the legacy token family is
+   intentionally left dark (the rest of the app has no light theme).
+---------------------------------------------------------- */
+:root[data-theme="light"] {
+  --void:    #e9ede9;
+  --bg:      #eef1ef;
+  --panel:   #ffffff;
+  --raised:  #f4f6f4;
+  --sink:    #e6eae7;
+  --row:     #f7f9f7;
+  --text:    #0b0f0e;
+  --read:    #2d342f;
+  --dim:     #646b66;
+  --ghost:   #aab1ac;
+  --line:    rgba(0, 0, 0, 0.30);
+  --line2:   rgba(0, 0, 0, 0.30);
+  --d-teal:        #138a78;
+  --d-teal-bright: #0f7e6f;
+  --d-teal-deep:   #0c6256;
+  --d-teal-soft:   rgba(19, 138, 120, 0.40);
+  --d-teal-ghost:  rgba(19, 138, 120, 0.12);
+  --d-teal-faint:  rgba(19, 138, 120, 0.06);
+  /* brand rings keep the dark-mode --teal-deep family per §12 */
+  --ring-teal:       rgba(27, 122, 110, 0.24);
+  --ring-teal-faint: rgba(27, 122, 110, 0.14);
 }
 
 /* ----------------------------------------------------------

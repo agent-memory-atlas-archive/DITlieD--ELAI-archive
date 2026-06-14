@@ -10,9 +10,9 @@
 //! existing E-19 `ReasoningQualityProbe` / `VividnessProbe` arm and ledgered so
 //! the claim is recomputable under `ELAI_SEED` (GD-2, ID-5).
 //!
-//! Wire-dark until I-4 `SearchLadder::run_best_of_n` ships (Wave 4).
-//! Production caller: `I-4 search/ladder.rs::SearchLadder::run_best_of_n`
-//! (WIRE-DARK[I-5]: I-4 not yet shipped; Tier-1 coverage via contract test).
+//! WIRED (I-4, Wave 4): `crate::search::SearchLadder::run_best_of_n` calls
+//! `build_branch_context` per branch, reached from
+//! `task_runner::dispatch_search_ladder` (default-OFF ELAI_SEARCH_LADDER_ENABLE).
 //!
 //! ## Composites
 //! - H-6 `adaptive_reduce`: orthogonal (window compression); I-5 is per-branch
@@ -64,7 +64,7 @@ pub enum PristineFilterError {
 /// Per-branch context rebuilder that enforces the ID-1 stateless-generator
 /// doctrine: failed-sibling outputs are excluded; tracebacks are compressed.
 ///
-/// Production caller: I-4 `SearchLadder::run_best_of_n` (WIRE-DARK[I-5]).
+/// Production caller (WIRED I-4): `crate::search::SearchLadder::run_best_of_n`.
 pub struct PristinePathFilter {
     ssb: Arc<Ssb>,
 }
@@ -97,9 +97,9 @@ impl PristinePathFilter {
     /// `outcome_delta` placeholder (`0.0` until I-4 wires in real scoring).
     ///
     /// ## Production caller
-    // WIRE-DARK[I-5]: I-4 SearchLadder::run_best_of_n is the intended caller.
-    // I-4 does not exist yet (Wave 4). Tier-1: contract test calls this fn
-    // directly. Test callers do NOT satisfy R7 production reachability.
+    /// WIRED (I-4): `crate::search::SearchLadder::build_pristine_context` calls
+    /// this per branch via `run_best_of_n`, reached from
+    /// `task_runner::dispatch_search_ladder`. (Was WIRE-DARK[I-5] until I-4 shipped.)
     pub async fn build_branch_context(
         &self,
         budget: &mut ContextBudget,

@@ -818,6 +818,11 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                                 scaled_calls: grc_config.budget.max_calls,
                                 ceiling,
                                 seed: 0,
+                                // I-26 payload extension fields — None on GRC-dispatch rows;
+                                // populated only by the I-26 BudgetController search-node path.
+                                depth_level: None,
+                                budget_pct: None,
+                                plateau_fired: None,
                             },
                         );
                         if let Err(e) = ssb

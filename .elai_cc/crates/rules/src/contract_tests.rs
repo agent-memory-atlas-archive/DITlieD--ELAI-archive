@@ -31,6 +31,9 @@ mod static_tests {
                 node_text: "match".into(),
                 start_line: 1,
                 end_line: 1,
+                byte_start: 0,
+                byte_end: 5,
+                capture_name: "match".into(),
             }])
         }
         fn validate_query(&self, _lang: &str, _query: &str) -> Result<(), AstError> {

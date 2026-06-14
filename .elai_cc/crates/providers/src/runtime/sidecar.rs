@@ -142,6 +142,8 @@ impl SidecarRuntime {
             tool_choice: None,
             stream: false,
             seed: config.seed,
+            // I-26: effort is a cloud-only field; sidecar never uses it.
+            effort: None,
         }
     }
 

@@ -4976,6 +4976,10 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- beacon. Emitted once per static-gate insecure-rate benchmark run over
         -- the SeCodePLT-structured CWE corpus. Bench telemetry, not a gate.
         'insecure_rate_measured',
+        -- I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) telemetry
+        -- beacon. Emitted once per `elai bench error-amplification` run over the
+        -- frozen pipeline fixture. Bench telemetry, not a gate.
+        'error_amplification_measured',
         -- F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2
         -- single variant. 3-arm SkillLibraryEventKind discriminator:
         -- Acquired / TrustPromoted / DemotedStale. Carries the skill id, the
@@ -5264,7 +5268,199 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- ChainBroken: emitted from rra::build_rra when a Cargo.lock mutation is detected
         -- mid-run at the DEPS layer (halt-with-error path). Default-ON, no kill-switch.
         -- Composes G-2/G-8/I-45 (GD-1, never restates). TOTAL_VARIANTS 561 -> 562.
-        'row_chain_sealed'
+        'row_chain_sealed',
+        -- I-19 (SCHEMA_VERSION 254): TddPreflightBlocked -- TDD enforcer preflight gate.
+        -- Pattern-2 single-variant 3-arm TddPreflightBlockedKind; 3 distinct sql_str values.
+        -- MissingTestDelta: new pub symbol in diff, no test symbol substring-matches it.
+        -- SyntaxDryRunFailed: staged content fails cargo check --tests / pytest --collect-only
+        --   compile-only dry-run (syntax error detected before the test-match step).
+        -- RefactorExempted: diff introduces NO new pub symbol (pure refactor/rename), gate
+        --   is skipped; this arm is advisory-only (SSB row emitted but no block returned).
+        -- Wire-dark default: ELAI_TDD_PREFLIGHT_ENABLE=1 required to emit.
+        -- GD-4: default-ON flip gated on FP rate bounded on >=3 real orchestrate runs.
+        -- Promotion plan: I-19-promotion. TOTAL_VARIANTS 562 -> 563.
+        'tdd_preflight_missing_test_delta',
+        'tdd_preflight_syntax_dry_run_failed',
+        'tdd_preflight_refactor_exempted',
+        -- I-20 (SCHEMA_VERSION 255): MutationBudgetedRun -- budgeted mutation scheduler.
+        -- Pattern-2 single-variant 4-arm MutationBudgetedRunKind; 4 distinct sql_str values.
+        -- CiCleared: Wilson-CI lower bound cleared the (TOML-measured) kill-rate threshold.
+        -- CiFailed: Wilson-CI upper bound already failed the threshold (fail-early).
+        -- SurvivorDirective: a mutant survived; row names operator + line + surviving mutation.
+        -- CacheHit: unchanged (fn-content, bound-test-set) blake3 key returned with ZERO runs.
+        -- Default-ON; kill-switch ELAI_MUTATION_BUDGET_DISABLE=1. The 5 CI params are
+        -- recomputable under ELAI_SEED (GD-2). ID-5: threshold read from
+        -- metrics/mutation_baseline.toml, never a paper constant. TOTAL_VARIANTS 563 -> 564.
+        'mutation_budgeted_run_ci_cleared',
+        'mutation_budgeted_run_ci_failed',
+        'mutation_budgeted_run_survivor_directive',
+        'mutation_budgeted_run_cache_hit',
+        -- I-21 (SCHEMA_VERSION 256): SprintContractEvent -- sprint-contract + ralph-loop.
+        -- Pattern-2 single-variant 5-arm SprintContractEventKind; 5 distinct sql_str values.
+        -- Proposed: isolated evaluator received the generator's sealed Sprint Contract.
+        -- Approved: evaluator approved (acceptance criteria deterministically checkable).
+        -- Rejected: evaluator rejected with a concrete structured objection (vague-criterion).
+        -- RalphReinjected: a TriLayerStack failure reinjected the trace (bounded, cap = 3).
+        -- AdversaryEscalated: 3rd failure escalated to the D-13 cross-family adversary.
+        -- Wire-dark default: ELAI_SPRINT_CONTRACT_ENABLE=1 required to emit.
+        -- Composes H-37/i-1/i-17/D-13 (GD-1). Promotion plan: I-21-promotion.
+        -- TOTAL_VARIANTS 564 -> 565.
+        'sprint_contract_proposed',
+        'sprint_contract_approved',
+        'sprint_contract_rejected',
+        'sprint_contract_ralph_reinjected',
+        'sprint_contract_adversary_escalated',
+        -- I-37 (SCHEMA_VERSION 257): RequirementVerified -- per-EARS-requirement status.
+        -- Pattern-2 single-variant 3-arm RequirementVerifiedKind; 3 distinct sql_str values.
+        -- Satisfied: mutation coverage >= floor AND all bound MRs held AND >=1 bound test.
+        -- Unverified: no bound tests -- shown in the cockpit, never dropped (R1).
+        -- Regressed: a bound test deleted, an MR failed, or coverage fell below floor.
+        -- Additive emit (always lands when an EarsRequirementSet is present). The BLOCKING
+        -- RequirementsGate is default-OFF (ELAI_REQUIREMENTS_GATE_ENABLE=1 required to block).
+        -- Composes IS-15/IS-8/I-20 (GD-1). Promotion plan: I-37-promotion.
+        -- TOTAL_VARIANTS 565 -> 566.
+        'requirement_verified_satisfied',
+        'requirement_verified_unverified',
+        'requirement_verified_regressed',
+        -- I-44 (SCHEMA_VERSION 258): RetentionPurged -- zero-retention-after-verify purge.
+        -- Pattern-2 single-variant 3-arm RetentionPurgedKind; 3 distinct sql_str values.
+        -- RawInputsPurged: the active session's raw transcript files deleted post-verdict.
+        -- EvidenceRetained: blake3 over the redacted retained evidence set (survives).
+        -- PurgeVerified: post-purge beacon -- raw bytes gone, redacted evidence verifies.
+        -- Destructive + opt-in (--zero-retention + ELAI_ZERO_RETENTION_ENABLE default-OFF).
+        -- Composes G-9 redaction + G-9 TTL purge + F-13 archive + G-2/G-8 (GD-1).
+        -- Promotion plan: I-44-promotion. TOTAL_VARIANTS 566 -> 567.
+        'retention_raw_inputs_purged',
+        'retention_evidence_retained',
+        'retention_purge_verified',
+        -- I-52 (SCHEMA_VERSION 259): CheckpointToolEvent -- agent-callable checkpoint
+        -- tool outcome (save/rewind/diff over the H-49 time-travel CAS substrate).
+        -- Pattern-2 single-variant 4-arm CheckpointToolEventKind; 4 distinct sql_str values.
+        -- Saved: agent created a labelled checkpoint (tagged CAS manifest).
+        -- Rewound: agent rewound to a saved label via timetravel::materialize (only writer).
+        -- Diffed: agent diffed the working tree against a saved label (read-only).
+        -- RefusedDiverged: rewind REFUSED because the tree diverged since save (RV-1; no
+        --                  silent overwrite) -- the load-bearing safety observable (R1).
+        -- Default-ON over H-49 (ELAI_TIMETRAVEL_DISABLE=1 kill-switch; no separate flag).
+        -- Composes H-49 timetravel::{capture_file,materialize} (GD-1). TOTAL_VARIANTS 567 -> 568.
+        'checkpoint_tool_saved',
+        'checkpoint_tool_rewound',
+        'checkpoint_tool_diffed',
+        'checkpoint_tool_refused_diverged',
+        -- I-54 (SCHEMA_VERSION 260): StructuralEditApplied -- agent-callable
+        -- structural (AST-aware) edit tool outcome (search/preview/apply over the
+        -- shipped tree-sitter grammars; one version source via
+        -- elai_knowledge::TreeSitterAstEvaluator; ast-grep dep BANNED, SLC-3).
+        -- Pattern-2 single-variant 5-arm StructuralEditAppliedKind; 5 distinct sql_str.
+        -- Matched: query ran, match set returned. Previewed: query+template resolved
+        --   to a would-be diff (blake3 diff hash), ZERO bytes.
+        -- Applied: rewrite set applied through the SHIPPED edit gates + dispatch_edit.
+        -- RefusedStale: a matched node's bytes changed between preview and apply (the
+        --   AST moved); apply REFUSED -- load-bearing safety observable (R1).
+        -- ParseFailed: broken query/template caught at preview, ZERO bytes (no regex
+        --   degrade, stub_ban). The taint-sink + FS-blast-radius gates are the safety;
+        --   no separate I-54 flag. TOTAL_VARIANTS 568 -> 569.
+        'structural_edit_matched',
+        'structural_edit_previewed',
+        'structural_edit_applied',
+        'structural_edit_refused_stale',
+        'structural_edit_parse_failed',
+        -- I-4 (SCHEMA_VERSION 261): SearchNodeEvent -- evidence-ranked search-ladder
+        -- branch lifecycle (Wave-4 KEYSTONE). Pattern-2 single-variant 4-arm
+        -- SearchNodeEventKind; 4 distinct sql_str values.
+        -- Expanded: candidate branch generated + pristine context (I-5) + tri-layer
+        --   verdict (I-17). Pruned: branch DROPPED (hard-veto or flake-quarantine);
+        --   terminal (ID-4), never Promoted. Promoted: best-of-N winner, row carries
+        --   verifier-derived evidence (tri-layer score + mutation kill-rate +
+        --   progress). BudgetCollapsed: no survivor; fell back to linear retry.
+        -- Default-OFF: ELAI_SEARCH_LADDER_ENABLE=1 required (GD-4 measured-first-win).
+        -- Composes I-2/I-5/I-17/I-20 (GD-1). Promotion plan: I-4-promotion.
+        -- TOTAL_VARIANTS 569 -> 570.
+        'search_node_expanded',
+        'search_node_pruned',
+        'search_node_promoted',
+        'search_node_budget_collapsed',
+        -- I-7 (SCHEMA_VERSION 262): EscalationCascade -- cascading escalation waterfall
+        -- lifecycle (Wave-4). Pattern-2 single-variant 4-arm EscalationCascadeKind; 4
+        -- distinct sql_str values. LocalWin: a local branch survived the I-17 tri-layer
+        -- check (task solved locally; cloud arm never ran -- E-39 zero-cloud-spend).
+        -- Condensed: all local branches failed; failure set condensed into the typed
+        --   I-11 BeliefState (<=2K, NO raw history -- ID-3/stub_ban).
+        -- Escalated: condensate routed SYNCHRONOUSLY to the H-7 cloud seam
+        --   (CloudModeRouter::route); billed inference is D-026 PENDING (never fired).
+        -- BatchRouted: journal-completeness ONLY for the OFFLINE H-5 batch lane; the
+        --   LIVE waterfall NEVER emits it (IC-1: no batch-client import).
+        -- Default-OFF: ELAI_ESCALATION_WATERFALL_ENABLE=1 required (GD-4). Composes
+        -- I-4/I-11/H-7 (GD-1). Promotion plan: I-7-promotion. TOTAL_VARIANTS 570 -> 571.
+        'escalation_cascade_local_win',
+        'escalation_cascade_condensed',
+        'escalation_cascade_escalated',
+        'escalation_cascade_batch_routed',
+        -- I-22 (SCHEMA_VERSION 264): ProgressRewardScored -- delta-progress shaped-reward
+        -- scorer event. Pattern-2 single-variant 3-arm ProgressRewardScoredKind; 3 distinct
+        -- sql_str values.
+        -- Delta: shaped reward phi(h_t) - phi(h_{t-1}) scored for one branch step; all phi
+        --   components are deterministic observables from the journal (ID-4 compliance).
+        -- FirstErrorTruncated: branch truncated at first i-17 HardVeto (step k-1); H-49 CAS
+        --   fork node id at step k-1 is recorded so the salvaged prefix can be reused.
+        -- DecayApplied: D consecutive zero-delta steps triggered the no-progress decay
+        --   multiplier; D and weights are read from metrics/progress_reward_weights.toml
+        --   (ID-5: measured, never a paper-derived constant).
+        -- Wire-dark default: ELAI_PROGRESS_REWARD_ENABLE=1 required to emit.
+        -- Composes i-17 TriLayerStack / H-49 timetravel / i-37 EarsRequirementSet (GD-1).
+        -- Promotion plan: I-22-promotion. TOTAL_VARIANTS 572 -> 573.
+        'progress_reward_delta',
+        'progress_reward_first_error_truncated',
+        'progress_reward_decay_applied',
+        -- I-24 (SCHEMA_VERSION 266): PrmCanaryEvent -- isomorphic canary anti-gaming event.
+        -- Pattern-2 single-variant 3-arm PrmCanaryEventKind; 3 distinct sql_str values.
+        -- CanaryInjected: pair injected, delta below threshold (no bias detected).
+        -- StyleBiasDetected: delta exceeded ELAI-measured threshold (ID-5, metrics/
+        --   canary_bias_threshold.toml); scorer flagged as style-biased.
+        -- ScorerNeutralized: N consecutive StyleBiasDetected -> scorer weight zeroed
+        --   for the run (ID-4: L2-only; CANNOT override L1 HardVeto).
+        -- R8: canary pair set FROZEN in fixtures/canary_pairs.json (gate-manifest entry).
+        -- Wire-dark default: ELAI_CANARY_INJECTOR_ENABLE=1 required to emit.
+        -- Composes i-17 TriLayerStack L2 leg (GD-1). Promotion plan: I-24-promotion.
+        -- TOTAL_VARIANTS 573 -> 574.
+        'prm_canary_injected',
+        'prm_canary_style_bias_detected',
+        'prm_canary_scorer_neutralized',
+        -- I-27 (SCHEMA_VERSION 265): ConvergenceCurveMeasured -- verified-outcome-rate
+        -- vs compute convergence curve flat beacon.
+        -- Flat beacon (no Kind discriminator); one sql_str value.
+        -- Emitted by bench_convergence::run_inner from CliAction::BenchConvergence.
+        -- Default-ON (CLI measurement instrument, no kill-switch).
+        -- Composes E-49 ($/CTS), I-38 (bootstrap CI floor), H-9 (cockpit tile) (GD-1).
+        -- WIRE-DARK[I-27]: live per-node compute-spend from I-4 SearchNodeEvent PENDING.
+        -- TOTAL_VARIANTS 574 -> 575.
+        'convergence_curve_measured',
+        -- I-36 (SCHEMA_VERSION 267): PromptCompiled -- per-(role,backend) compiled-prompt
+        -- artifact event. Pattern-2 single-variant 3-arm PromptCompiledKind; 3 distinct
+        -- sql_str values so each Kind arm is distinguishable on the wire.
+        -- Compiled: a promoted compiled variant substituted at the adapter boundary;
+        --   variant hash + backend named in the payload.
+        -- TransferGapMeasured: source-vs-compiled fixture pass-rate delta recorded;
+        --   recomputable under ELAI_SEED (GD-2). Tier-2 DEFER (live model budget).
+        -- Rolledback: variant regressed fixture floor; removed from store; substitution
+        --   reverts to base assembled prompt.
+        -- Default-ON (no-op pass-through when no variant stored).
+        -- Kill-switch: ELAI_PROMPT_COMPILE_DISABLE=1 (kill_switch type, ops-level).
+        -- Compiler output contract: NO CoT scaffold in compiled strings (landmine #6).
+        -- Composes I-32 role_contracts + B-37 PerRoleRuntime + I-12 ledger gates (GD-1).
+        -- promote_variant WIRE-DARK[I-36] (Tier-2 DEFER, I-36-promotion plan).
+        -- TOTAL_VARIANTS 575 -> 576.
+        'prompt_compiled',
+        'transfer_gap_measured',
+        'prompt_compiled_rolledback',
+        -- I-50 (SCHEMA_VERSION 268): AuthBrokerEvent -- subscription auth broker lifecycle.
+        -- 4-arm Pattern-2; each arm has a distinct sql_str for wire disambiguation.
+        -- Default-ON. SSB-emit seam WIRE-DARK[I-50] pending Arc<Ssb> threading.
+        -- TOTAL_VARIANTS 576 -> 577.
+        'auth_broker_token_acquired',
+        'auth_broker_refreshed',
+        'auth_broker_provider_linked',
+        'auth_broker_refresh_failed'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

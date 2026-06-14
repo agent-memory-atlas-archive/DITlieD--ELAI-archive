@@ -58,6 +58,18 @@ pub struct RunArgs {
     /// operator pin a custom output path. `None` => default
     /// `<sessions>/<sid>/run.rra`.
     pub emit_rra: Option<PathBuf>,
+    /// I-42 — `--profile orchestrate|critique-only`. Resolved to a
+    /// [`elai_orchestrator::RunProfile`] via `RunProfile::from_cli_args` at
+    /// the wiring site; `critique-only` structurally refuses the executor/
+    /// fixer spawn. `None` => default orchestrate. Unknown values are
+    /// rejected at parse time in [`crate::args::parse_run_subcommand_args`].
+    pub profile: Option<String>,
+    /// I-44 — `--zero-retention`. When set (AND `ELAI_ZERO_RETENTION_ENABLE` is
+    /// truthy) the run purges its own raw managed-transcript files after the
+    /// sealed verdict commits, via
+    /// [`elai_orchestrator::retention::purge_after_verify`] at the seal seam.
+    /// `false` (default) retains everything (fail-safe). Destructive when on.
+    pub zero_retention: bool,
 }
 
 /// Synchronous entry consumed by the `CliAction::Run` match arm. Owns its
@@ -101,6 +113,20 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
     tracing::info!(
         gate_mode = ?wiring.gate_mode,
         "elai run: autonomous-gate mode resolved"
+    );
+
+    // I-42 — resolve the run profile from the parsed `--profile` flag.
+    // `RunProfile::from_cli_args(None)` returns Orchestrate so omitting the
+    // flag preserves the autonomous-orchestrate default. With this assignment
+    // the `apply_task_runner_wiring` chokepoint forces
+    // `baby_step_executor = None` when the resolved profile is CritiqueOnly,
+    // structurally refusing the executor/fixer spawn (one gate, both agents).
+    wiring.run_profile = Some(elai_orchestrator::RunProfile::from_cli_args(
+        args.profile.as_deref(),
+    ));
+    tracing::info!(
+        run_profile = ?wiring.run_profile,
+        "elai run: run profile resolved"
     );
 
     // B-6 #2: install CliInteractiveGate in production when the resolved
@@ -509,6 +535,38 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
         tracing::info!(
             "elai run: G-8 attestation emit suppressed by ELAI_ATTESTATION_DISABLE kill-switch"
         );
+    }
+
+    // I-44 -- zero-retention-after-verification purge. Runs AFTER the G-2 RRA +
+    // G-8 attestation seal (the verdict + evidence are committed and survive),
+    // using the SAME live `rra_ssb` handle so the RetentionPurged rows land on
+    // the run's stream. FAIL-SAFE: the purge fires ONLY when the operator passed
+    // `--zero-retention` (resolved to ZeroAfterVerify) AND the default-OFF
+    // `ELAI_ZERO_RETENTION_ENABLE` master kill-switch is truthy (checked inside
+    // purge_after_verify). In the default Full mode this performs ZERO filesystem
+    // mutation. Best-effort: a purge failure is logged and never masks the runner
+    // outcome. `now_ms` is the injected OsClock wall-clock at the entrypoint
+    // boundary (the lib path takes it as a parameter; never calls SystemTime).
+    {
+        use elai_core::clock::ClockProvider as _;
+        let mode = elai_orchestrator::retention::ExportRetentionMode::from_cli_flag(
+            args.zero_retention,
+        );
+        let now_ms = elai_core::clock::OsClock.now_ms();
+        if let Err(e) = elai_orchestrator::retention::purge_after_verify(
+            &rra_ssb,
+            &session_id,
+            &project_root,
+            mode,
+            now_ms,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %e,
+                "elai run: I-44 zero-retention purge failed (best-effort); run outcome unaffected"
+            );
+        }
     }
 
     // G-10 -- run the exogenous model-version behavioral-regression check at

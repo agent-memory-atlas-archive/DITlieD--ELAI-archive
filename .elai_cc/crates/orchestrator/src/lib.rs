@@ -215,6 +215,10 @@ pub mod gate;
 // H-38 — cost-confirmation gate predicate for TaskStop / pod_stop.
 // Reads the H-9 CloudSpend ledger at dispatch_stop time; pure + sync predicate.
 pub mod stop_cost_gate;
+// I-21 — sprint contracts + ralph loop. Structured Sprint Contract + isolated
+// evaluator + bounded trace reinjection + D-13 adversary escalation. Composes
+// H-37/i-1/i-17/D-13 (GD-1). Wire-dark unless ELAI_SPRINT_CONTRACT_ENABLE=1.
+pub mod sprint_contract;
 // C-40 — GitHub PR adapter (gh CLI shell-out). Producer of the four
 // SCHEMA_VERSION 109 SsbActionType::GithubPr* rows. Cross-language
 // pair: dashboard-v2/src-tauri/src/commands_c40.rs +
@@ -247,6 +251,26 @@ pub mod role_contracts;
 // buffer; CDA-immune (predicates evaluate tool-call history, not token content).
 // Adds ToolSequenceVerdict SSB action_type (Pattern-2 3-arm: Allowed/OrderViolation/HaltEnforced).
 pub mod tool_sequence;
+// I-19: TDD enforcer preflight gate. Pure-sync AST predicate (tree-sitter) that checks
+// every Edit/Write invocation for a matching test-symbol delta before allowing the write.
+// Wire-dark default (ELAI_TDD_PREFLIGHT_ENABLE=1 required to activate). Default-ON flip
+// gated on GD-4 FP rate bounded on >=3 real orchestrate runs (promotion plan: I-19-promotion).
+// Emits TddPreflightBlocked SSB rows (Pattern-2 3-arm: MissingTestDelta/SyntaxDryRunFailed/
+// RefactorExempted). Wired into hook_dispatcher::InProcessHookDispatcher::dispatch_pre_tool_use.
+// See docs/thefinalglance/I-plan/I-19_tdd_enforcer_preflight.md.
+pub mod tdd_preflight;
+// I-50 (SCHEMA_VERSION 268): auth broker SSB-emit wrapper.
+// Thin orchestrator-layer shim that maps elai-providers::auth_broker::ResolveOutcome →
+// AuthBrokerEventKind, emits the SSB row, and exposes the production entry point
+// broker_resolve_anthropic_auth_with_ssb (PRODUCTION_HOOK: runtime_cmd.rs:387).
+// WIRE-DARK[I-50] at the writer=None call site until Arc<Ssb> is threaded.
+pub mod auth_broker_emit;
+// I-54: structural (AST-aware) search/preview/apply engine over the shipped
+// tree-sitter grammars (reuses elai_knowledge::TreeSitterAstEvaluator; one
+// version source, SLC-3). Wired into production_agent_rpc::translate_tool_request
+// (structural_search/_preview/_apply tool arms) + build_tool_catalog.
+// See docs/thefinalglance/I-plan/I-54_structural_ast_edit_tool.md.
+pub mod structural_edit;
 // I-33: mechanical decision governance primitives -- CEFL (Candidate
 // Externalization for Fair Labelling), I6Q rationale-quality validator,
 // commit-reveal integrity, and the governed_prompt_decision production call
@@ -291,6 +315,10 @@ pub mod indexing_service;
 // C-29: Testing-Trust Tier T-2 (IntentPair) — per-BabyStep intent
 // formalization. See workflow/reasoning/C-29-decisions.md.
 pub mod intent_pair;
+// I-37: EARS requirement objects — typed, hash-keyed, mutation-covered EARS
+// requirement records with a deterministic verified status + RequirementsGate +
+// RequirementVerified SSB emit. See docs/thefinalglance/I-plan/I-37_ears_requirement_objects.md.
+pub mod requirements;
 // B-31 Phase 3 (Cycle B): cross-process IndexLock primitive (lock.rs) and
 // startup auto-resume + graceful_shutdown (startup.rs). Both are free
 // functions/types with no dependency on `ssb.rs` (SSB variant emission is
@@ -392,6 +420,8 @@ mod session;
 mod session_control;
 pub mod plan_skeleton;
 pub mod session_archive;
+// I-44 — zero-retention-after-verification export mode (post-seal raw-input purge).
+pub mod retention;
 pub mod session_dag;
 pub mod workload_profiling;
 // C-32 — Code-Completeness Layer 2: skeleton-first + MiniCritic +
@@ -727,6 +757,12 @@ pub mod verifier_adapters;
 // return, l2_call_count==0). Wire-dark via ELAI_TRI_LAYER_ENABLE; consumer is I-4
 // (Wave-4). Production hook: task_runner::dispatch_tri_layer_verdict.
 pub mod verifier_stack;
+// I-4 (Wave-4 KEYSTONE): evidence-ranked search ladder. Consumes the I-17
+// tri-layer stack, the I-5 pristine context filter, and the I-20 mutation
+// receipts to rank K candidate branches by verifier evidence (best-of-N v1) and
+// emit SearchNodeEvent rows. Default-OFF via ELAI_SEARCH_LADDER_ENABLE (GD-4
+// measured-first-win). Production hook: task_runner::dispatch_search_ladder.
+pub mod search;
 // E-45: host-side cross-language drift detector. Diffs Rust orchestrator
 // boundary structs against the Python sidecar + Tauri TS mirror per the
 // pair registry loaded from `.elai_cc/cross-lang-pairs.toml`. Producer
@@ -817,6 +853,14 @@ pub mod held_out;
 // `canary::emit_canary_run`. Consumed by `agent_pool::recent_canary_status`
 // (read surface for BAI gate + dashboard).
 pub mod canary;
+// I-24 (SCHEMA_VERSION 266): isomorphic canary anti-gaming (scorer-side bias
+// detection). Injects AST-preserving code-pair canaries into the i-17 L2 scoring
+// path; a scorer whose delta exceeds the ELAI-measured threshold is flagged and
+// (after N consecutive detections) neutralized for the run. R8: pair set FROZEN
+// in fixtures/canary_pairs.json. Composes i-17 TriLayerStack L2 leg (GD-1).
+// Wire-dark: ELAI_CANARY_INJECTOR_ENABLE=1 required. See
+// workflow/reasoning/I-24-decisions.md.
+pub mod canary_injector;
 // G-10 (SCHEMA_VERSION 218): exogenous model-version behavioral-regression gate.
 // Composes D-7 canary.rs (GD-1: re-implements NONE of it) + G-2 RunArtifact
 // identity tuple to detect per-family regression across an identity change.
@@ -950,6 +994,20 @@ pub mod mutation_testing;
 // deterministic_auditor as Step 7 (post-Mutation). See
 // workflow/reasoning/C-29-decisions.md.
 pub mod metamorphic_testing;
+// I-20 — property-based-testing relation adapter (proptest/Hypothesis as a
+// MetamorphicRelation::PropertyBased). Extracted from metamorphic_testing.rs
+// to keep that file under the 1000-line maintainability boundary; registered
+// behind the existing RelationLibrary dispatch (GD-1, no new dispatch layer).
+pub mod metamorphic_pbt;
+// I-20 (Track 15 KEYSTONE) — budgeted mutation scheduler: diff-cone selector
+// + Wilson-CI adaptive sampler + early-stop + SurvivorDirective emitter +
+// EquivalentMutantCache key extension + ID-5 baseline TOML. EXTENSION on
+// C-28 (mutation_testing) + C-29 (metamorphic_testing); composes via their
+// interfaces, never re-implements. Cone-select wired into
+// deterministic_auditor::check_mutation; MutationBudgetedRun SSB rows emitted
+// from deterministic_audit_gate::evaluate. See
+// workflow/reasoning/I-20-decisions.md.
+pub mod mutation_budget;
 // E-13 — TDD verification agents module (Red/Green/Refactor cycle +
 // anti-mock heuristic + cargo-mutants subprocess wrapper +
 // D-3-aggregator adapter). Composes with `verification_result`'s
@@ -994,6 +1052,13 @@ pub mod runtime_orchestrator;
 // cloud escalation when context budget approaches 85% of effective_max_context.
 // Source: E-32-decisions.md DECISION 3 + 4; arxiv:2407.16833 Self-Route.
 pub mod escalation_policy;
+// I-7: cascading escalation waterfall — local-first fan-out (I-4 ladder) ->
+// per-branch I-17 tri-layer check -> condense-on-all-fail into an I-11 BeliefState
+// -> synchronous H-7 CloudModeRouter::route decision. IC-1: structurally has NO
+// path to the H-5 batch client (the batch racing design is dead). Wired into the
+// drive_task `maybe_run_escalation_waterfall` hook (default-OFF
+// ELAI_ESCALATION_WATERFALL_ENABLE). See docs/thefinalglance/I-plan/I-7_*.md.
+pub mod escalation_waterfall;
 // C-1: orchestrator-side adapter that bridges
 // `elai_knowledge::knowledge_ssb_sink::KnowledgeSsbSink` into
 // `Ssb::write_payload`. Lives here (not in `knowledge`) so the
@@ -1097,6 +1162,10 @@ pub mod task_runner;
 // Phase A1b — production task_runner wiring helpers (build/apply chokepoint
 // bundle). Used by `elai run` CLI and the dashboard-v2 Tauri setup() callback.
 pub mod runtime_setup;
+// I-42 — critique-only operating profile (RunProfile { Orchestrate,
+// CritiqueOnly }). Threaded through the `elai run` CLI surface and consulted
+// at the executor-install chokepoint in `runtime_setup::apply_task_runner_wiring`.
+pub mod run_profile;
 /// C-13 — WIP commit squash helper.
 pub mod wip_squash;
 // I-3 — shared atomic-write helpers (tmp+sync_all+rename) used by all
@@ -1388,6 +1457,8 @@ pub use autonomous_gate::{
     EscalationTrigger, Evidence as AutonomousEvidence, GateContext as AutonomousGateContext,
     GateMode, PipelineLevel, TreeAutoAdvancePolicy, ELAI_DISABLE_AUTONOMOUS_GATE_ENV,
 };
+// I-42 — critique-only operating profile surface.
+pub use run_profile::{RunProfile, RUN_PROFILE_CRITIQUE_ONLY, RUN_PROFILE_ORCHESTRATE};
 // C-9 (Autonomous Mode Core Infrastructure) — additional surface.
 pub use autonomous_gate::{
     AutoAdvanceEvaluator, EscalationPolicy, EvidenceCheck, EvidenceVerdict, FsmTransition,
@@ -2370,6 +2441,18 @@ pub use supervision::{
 // three spec-mandated entry types are re-exported here; the deeper
 // surface lives under `elai_orchestrator::media_validator::*`.
 pub use media_validator::{MediaValidationRequest, MediaValidationResult, Verdict};
+// I-36 (SCHEMA_VERSION 268): per-(role,backend) compiled-prompt artifact store.
+// Re-exported so report_fns (elai-cli) + dashboard commands_i36 + i36 contract tests
+// can use CompiledPromptStore / CompiledPromptVariant / VariantStatus without reaching
+// into orchestrator internals. promote_variant and run_transfer_gap_fixture are exported
+// but WIRE-DARK[I-36] (Tier-2 DEFER; see wire-dark-allowlist.toml + stubs.md).
+pub mod prompt_artifacts;
+pub use prompt_artifacts::{
+    CompiledPromptStore, CompiledPromptStoreError, CompiledPromptVariant,
+    VariantStatus as CompiledVariantStatus,
+    PromoteError, RollbackOutcome,
+    promote_variant, rollback_on_regression, run_transfer_gap_fixture, TransferGapResult,
+};
 
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {

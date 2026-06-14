@@ -83,6 +83,18 @@ mod freeze_cmd;
 // Reproducible-Run Artifact viewer + offline verifier. Wraps
 // elai_orchestrator::rra. See workflow/reasoning/G-2-decisions.md.
 mod rra_cmd;
+// I-40: `elai rra verify <path>` — rra-spec-v1 spec-conformance checker.
+// DISTINCT from `elai replay --verify` (content-hash re-derivation; rra_cmd.rs).
+// Checks C1-C6 structural requirements from docs/spec/rra-spec-v1.md.
+// Exits nonzero on any failure so CI can gate on it. Called from rra_cmd::run_rra.
+mod rra_verify_cmd;
+// I-40: `elai wrap [--output <path>] [--fixture] -- <agent-cmd...>` — trust-layer
+// wrapper proxy. Spins up taint + write-gate trust substrate around an external
+// agent command and emits a .rra bundle (G-2 build_rra + G-9 redaction; reuses
+// TaintFlow + RunArtifactEmitted SSB types -- NO new action_type, GD-1). FORK-1:
+// new top-level CliAction::Wrap with its own Arc<Ssb>. Kill-switch:
+// ELAI_WRAP_RRA_DISABLE=1 (default-ON emit).
+mod wrap_cmd;
 // H-35: `elai rewind <target>` — session-state restore to a prior SSB seq.
 // Composes compact_session + recover_stubs + ssb_resume_from into a user-facing
 // restore affordance; emits one session_rewound SSB beacon per successful rewind.
@@ -348,6 +360,11 @@ mod bench_tamper;
 // CWE corpus OFFLINE, writes a timestamped seccodeplt-<ts>.json report under
 // benchmarks/seccodeplt/, and emits one InsecureRateMeasured SSB beacon.
 mod bench_seccodeplt;
+// I-9 (SCHEMA_VERSION 263): `elai bench error-amplification`. Error-amplification
+// (alpha_t) telemetry harness over a frozen pipeline fixture; writes a timestamped
+// JSON report under benchmarks/error_amplification/ and emits one
+// ErrorAmplificationMeasured SSB beacon.
+mod bench_error_amplification;
 // H-30 (SCHEMA_VERSION 239): `elai bench staleness [--json] [--broken-retrieval]`
 // — the staleness / intent-drift INSTRUMENT. Drives the SHIPPED bi-temporal
 // memory substrate (FactStore + audit_conflicts + get_relevant_facts) over a
@@ -372,6 +389,12 @@ mod bench_mcp_schema_budget;
 // three-layer gate (eligibility + blake3 pin verify + post-parse re-validation)
 // WITHOUT live inference (W-10 PENDING). Emits 3 GrammarGateEvent SSB rows.
 mod bench_crane;
+// I-27 (SCHEMA_VERSION 265): `elai bench convergence --suite <PATH>` —
+// verified-outcome-rate vs compute convergence curve fixture harness. Statistical
+// floor mechanically enforced (seed_count>=5, paired=true). Emits 1
+// ConvergenceCurveMeasured SSB flat beacon per clean run. Live per-node
+// compute-spend leg pending I-4 (WIRE-DARK[I-27]).
+mod bench_convergence;
 // I-38 (SCHEMA_VERSION 235): `elai bench qdelta --config <PATH>` — QDELTA
 // defective-diff rate fixture harness. Statistical floor mechanically enforced
 // (seed_count>=5, paired=true). Emits 1 QdeltaMeasured SSB flat beacon per
@@ -680,6 +703,14 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Replay { action, output_format } => {
             rra_cmd::run_replay(action, output_format).map_err(|e| anyhow::anyhow!(e))?
         }
+        // I-40 — `elai wrap [--output <path>] [--fixture] -- <agent-cmd...>`.
+        // Trust-layer wrapper proxy: taint + write-gate trust substrate around an
+        // external agent command. Emits a .rra bundle (G-2 build_rra + G-9
+        // redaction). FORK-1: new top-level CliAction::Wrap with its own Arc<Ssb>.
+        CliAction::Wrap { agent_cmd, output_path, output_format } => {
+            wrap_cmd::run(agent_cmd, output_path, output_format)
+                .map_err(|e| anyhow::anyhow!(e))?
+        }
         // H-35 — `elai rewind <target>`. Session-state restore to a prior SSB seq.
         // Emits one session_rewound beacon; idempotent on target==head (zero rows).
         CliAction::Rewind { action, output_format } => {
@@ -912,7 +943,7 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Dashboard => dashboard::run_dashboard()?,
         // Phase A1a: production caller of `start_task_runner`. Pinned by
         // `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
-        CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb, emit_rra } => {
+        CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb, emit_rra, profile, zero_retention } => {
             // C-17 (DRIFT-D/E): auto-resume + process-wide signal observer
             // for the long-lived `elai run` task_runner scope. Runs BEFORE
             // run_subcommand builds its own tokio runtime so the resume
@@ -930,6 +961,8 @@ fn run() -> Result<(), anyhow::Error> {
                 empire,
                 export_ssb,
                 emit_rra,
+                profile,
+                zero_retention,
             })?
         }
         // E-49 SWE-Bench Pro v5 driver — non-interactive task surface.
@@ -1308,6 +1341,20 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::BenchSeccodeplt { json } => {
             bench_cmd::run_bench_seccodeplt(json)?;
         }
+        // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) telemetry
+        // harness. Injects a deterministic byte-perturbation at one step of a
+        // frozen pipeline fixture, computes alpha_t + recovered fraction +
+        // active-annealing temperature, writes a timestamped report, emits one
+        // ErrorAmplificationMeasured SSB beacon. --no-repair runs the R2
+        // negative control (alpha == 1.0). Exits 0/1.
+        CliAction::BenchErrorAmplification {
+            fixture,
+            seed,
+            json,
+            no_repair,
+        } => {
+            bench_cmd::run_bench_error_amplification(fixture, seed, json, no_repair)?;
+        }
         // H-30 (SCHEMA_VERSION 239): staleness / intent-drift INSTRUMENT. Drives
         // the SHIPPED bi-temporal memory substrate over a labeled supersession
         // fixture in an ISOLATED in-memory store, writes a timestamped report,
@@ -1328,6 +1375,13 @@ fn run() -> Result<(), anyhow::Error> {
         // (W-10 PENDING). Emits 3 GrammarGateEvent SSB rows. Exits 0/1.
         CliAction::BenchCrane { crane_fixture, seed } => {
             bench_crane::run(crane_fixture, seed)?;
+        }
+        // I-27 (SCHEMA_VERSION 265): convergence curve fixture harness.
+        // Statistical floor mechanically enforced (seed_count>=5, paired=true).
+        // Emits 1 ConvergenceCurveMeasured SSB flat beacon. Live per-node
+        // compute-spend leg pending I-4 (WIRE-DARK[I-27]). Exits 0/1.
+        CliAction::BenchConvergence { suite, seeds, json } => {
+            bench_convergence::run(suite, seeds, json)?;
         }
         // I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate fixture harness.
         // Statistical floor mechanically enforced (seed_count>=5, paired=true).

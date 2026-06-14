@@ -316,11 +316,20 @@ pub struct Verdict {
 // ---------------------------------------------------------------------------
 
 /// Result of an AST query match.
+///
+/// `byte_start`/`byte_end` are the matched node's byte range in the source
+/// (from the tree-sitter `Node::byte_range()`), required by structural-edit
+/// consumers (I-54) for byte-exact preview/apply and the staleness guard.
+/// `capture_name` is the tree-sitter query capture this node satisfied
+/// (e.g. `name` for `@name`), required for capture-template rewrites.
 #[derive(Debug, Clone)]
 pub struct AstMatch {
     pub node_text: String,
     pub start_line: u32,
     pub end_line: u32,
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub capture_name: String,
 }
 
 /// Error from AST evaluation.

@@ -399,6 +399,7 @@ async fn e2e_full_pipeline_local() {
             tool_choice: None,
             stream: false,
             seed: None,
+            effort: None,
         };
         let response = health_client
             .send_message(&health_req)
@@ -427,6 +428,7 @@ async fn e2e_full_pipeline_local() {
             tool_choice: None,
             stream: false,
             seed: None,
+            effort: None,
         };
         health_client
             .send_message(&health_req)

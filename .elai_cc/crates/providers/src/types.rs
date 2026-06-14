@@ -30,6 +30,18 @@ pub struct MessageRequest {
     /// Type is `u64` so the full transformers seed range is representable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    /// I-26 cloud effort level for extended-thinking models (Opus 4.7+ reasoning roles).
+    ///
+    /// Wire key: `"effort"`. Absent (`None`) for all non-reasoning-role requests and
+    /// for local/sidecar backends (HD-2: skip_serializing_if preserves the byte-stable
+    /// cache prefix for requests that do not use the effort parameter).
+    ///
+    /// Valid Anthropic API values: "auto" | "expert".
+    /// HARD RULE (landmine #6 / I-0): `budget_tokens` MUST NEVER appear on Opus 4.7+ paths;
+    /// only `effort` is accepted. The contract test `i26_dynamic_thinking_budgets_contract`
+    /// asserts budget_tokens count == 0 in the request builder for Opus 4.7+ branches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 impl MessageRequest {
@@ -53,6 +65,7 @@ impl MessageRequest {
         self.seed = Some(u64::from(seed));
         self
     }
+
 }
 
 /// Anthropic-compatible cache_control marker for prompt-prefix caching.

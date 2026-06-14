@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use elai_orchestrator::ssb::{BashRedirectedKind, BeliefStateEventKind, BranchWorkspaceEventKind, CacheEconomicsEventKind, ClaimScopeMeasuredKind, ContextPrunedKind, ContextTransformKind, CritiqueLensFindingTag, DirectiveExecutedKind, GovernancePrimitiveFiredKind, GrammarGateEventKind, MemoryGuardEventKind, ObjectiveSealedKind, PlaybookEventKind, PromptHardeningAppliedKind, RoleContractAppliedKind, RowChainSealedKind, SkillLibraryEventKind, SsbActionType, TestIntegrityEventKind, ToolFilterEventKind, ToolSequenceVerdictKind, TrajectoryAbortedKind, TriLayerVerdictKind, VibeGateBlockedKind};
+use elai_orchestrator::ssb::{BashRedirectedKind, BeliefStateEventKind, BranchWorkspaceEventKind, CacheEconomicsEventKind, ClaimScopeMeasuredKind, ContextPrunedKind, ContextTransformKind, CritiqueLensFindingTag, DirectiveExecutedKind, GovernancePrimitiveFiredKind, GrammarGateEventKind, MemoryGuardEventKind, MutationBudgetedRunKind, ObjectiveSealedKind, PlaybookEventKind, PromptCompiledKind, PromptHardeningAppliedKind, RoleContractAppliedKind, RowChainSealedKind, SkillLibraryEventKind, SsbActionType, TddPreflightBlockedKind, TestIntegrityEventKind, ToolFilterEventKind, ToolSequenceVerdictKind, TrajectoryAbortedKind, TriLayerVerdictKind, VibeGateBlockedKind};
 
 /// Total number of SsbActionType variants currently locked. Bumping this
 /// requires regenerating action_type_lock.golden in the SAME commit; the
@@ -748,6 +748,30 @@ use elai_orchestrator::ssb::{BashRedirectedKind, BeliefStateEventKind, BranchWor
 // chain beacon (uPIP row-chain + AI-BOM). Pattern-2 single-variant 3-arm
 // RowChainSealedKind: ChainAdvanced / AibomEmitted / ChainBroken. action_type string:
 // "row_chain_sealed". ChainAdvanced representative in this lock array. 561 -> 562.
+// I-19 (SCHEMA_VERSION 254, 2026-06-14): TddPreflightBlocked -- TDD enforcer preflight
+// gate. Pattern-2 single-variant 3-arm TddPreflightBlockedKind:
+// MissingTestDelta / SyntaxDryRunFailed / RefactorExempted. 3 distinct sql_str values:
+// "tdd_preflight_missing_test_delta" / "tdd_preflight_syntax_dry_run_failed" /
+// "tdd_preflight_refactor_exempted". Wire-dark: ELAI_TDD_PREFLIGHT_ENABLE=1 required.
+// MissingTestDelta is the single representative arm in SSB_ACTION_TYPES (Pattern-2
+// single-variant convention). action_type string: "tdd_preflight_missing_test_delta"
+// (representative). TOTAL_VARIANTS 562 -> 563.
+// I-20 (SCHEMA_VERSION 255, 2026-06-14): MutationBudgetedRun -- budgeted mutation
+// scheduler (Track 15 KEYSTONE). Pattern-2 single-variant 4-arm MutationBudgetedRunKind:
+// CiCleared / CiFailed / SurvivorDirective / CacheHit. 4 distinct sql_str values:
+// "mutation_budgeted_run_ci_cleared" / "..._ci_failed" / "..._survivor_directive" /
+// "..._cache_hit". Default-ON; kill-switch ELAI_MUTATION_BUDGET_DISABLE=1. CiCleared is
+// the single representative arm in SSB_ACTION_TYPES. TOTAL_VARIANTS 563 -> 564.
+// I-9 (SCHEMA_VERSION 263, 2026-06-14): ErrorAmplificationMeasured -- error-amplification
+// (alpha_t) telemetry beacon (Track 13, lever PROVABLE). FLAT beacon (InsecureRateMeasured
+// shape; NOT Pattern-2), one sql_str "error_amplification_measured". Bench telemetry, not a
+// gate (no ELAI_*_ENABLE flag). Emitted from the `elai bench error-amplification` CLI seam.
+// SSB_ACTION_TYPES len 571 -> 572; SCHEMA_VERSION derives -309 + 572 = 263; TOTAL_VARIANTS
+// + the golden auto-follow (no hand-edited literal; regen the golden by mechanism).
+// I-36 (SCHEMA_VERSION 267, 2026-06-14): PromptCompiled Pattern-2 single-variant 3-arm
+// (PromptCompiledKind: Compiled/TransferGapMeasured/Rolledback). SSB_ACTION_TYPES adds one
+// representative arm: PromptCompiled(PromptCompiledKind::Compiled). len 575 -> 576;
+// SCHEMA = -309 + 576 = 267. TOTAL_VARIANTS + golden auto-follow (regen the golden).
 const TOTAL_VARIANTS: usize = ALL_VARIANTS.len();
 
 /// All `SsbActionType` variants, DERIVED from the lib's canonical list
@@ -1350,6 +1374,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::SecurityClassRegressionBlocked => (),
         // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
         SsbActionType::InsecureRateMeasured => (),
+        // I-9 (SCHEMA_VERSION 263): ErrorAmplificationMeasured flat beacon.
+        SsbActionType::ErrorAmplificationMeasured => (),
         // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
         SsbActionType::SkillLibraryEvent(_) => (),
         // F-5 / Slice A1 (SCHEMA_VERSION 203): staleness-quarantine broadcast.
@@ -1483,6 +1509,34 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::TriLayerVerdict(_) => (),
         // I-18 (SCHEMA_VERSION 253): RowChainSealed Pattern-2 3-arm per-row blake3 chain beacon.
         SsbActionType::RowChainSealed(_) => (),
+        // I-19 (SCHEMA_VERSION 254): TddPreflightBlocked Pattern-2 3-arm TDD enforcer preflight gate.
+        SsbActionType::TddPreflightBlocked(_) => (),
+        SsbActionType::MutationBudgetedRun(_) => (),
+        // I-21 (SCHEMA_VERSION 256): SprintContractEvent Pattern-2 5-arm sprint-contract + ralph-loop.
+        SsbActionType::SprintContractEvent(_) => (),
+        // I-37 (SCHEMA_VERSION 257): RequirementVerified Pattern-2 3-arm per-EARS-requirement status.
+        SsbActionType::RequirementVerified(_) => (),
+        // I-44 (SCHEMA_VERSION 258): RetentionPurged Pattern-2 3-arm zero-retention purge receipt.
+        SsbActionType::RetentionPurged(_) => (),
+        // I-52 (SCHEMA_VERSION 259): CheckpointToolEvent Pattern-2 4-arm agent checkpoint tool.
+        SsbActionType::CheckpointToolEvent(_) => (),
+        // I-54 (SCHEMA_VERSION 260): StructuralEditApplied Pattern-2 5-arm agent structural-edit tool.
+        SsbActionType::StructuralEditApplied(_) => (),
+        // I-4 (SCHEMA_VERSION 261): SearchNodeEvent Pattern-2 4-arm evidence-ranked search ladder.
+        SsbActionType::SearchNodeEvent(_) => (),
+        SsbActionType::EscalationCascade(_) => (),
+        // I-22 (SCHEMA_VERSION 264): ProgressRewardScored Pattern-2 3-arm delta-progress reward scorer.
+        SsbActionType::ProgressRewardScored(_) => (),
+        // I-24 (SCHEMA_VERSION 266): PrmCanaryEvent Pattern-2 3-arm isomorphic canary anti-gaming.
+        SsbActionType::PrmCanaryEvent(_) => (),
+        // I-27 (SCHEMA_VERSION 265): ConvergenceCurveMeasured flat beacon.
+        SsbActionType::ConvergenceCurveMeasured => (),
+        // I-36 (SCHEMA_VERSION 268): PromptCompiled Pattern-2 3-arm (Compiled/TransferGapMeasured/Rolledback).
+        // SSB_ACTION_TYPES carries the single representative PromptCompiled(PromptCompiledKind::Compiled) arm.
+        SsbActionType::PromptCompiled(_) => (),
+        // I-50 (SCHEMA_VERSION 268): AuthBrokerEvent Pattern-2 4-arm (TokenAcquired/Refreshed/ProviderLinked/RefreshFailed).
+        // SSB_ACTION_TYPES carries the single representative AuthBrokerEvent(AuthBrokerEventKind::TokenAcquired) arm.
+        SsbActionType::AuthBrokerEvent(_) => (),
     }
 }
 

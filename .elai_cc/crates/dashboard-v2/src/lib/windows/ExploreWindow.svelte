@@ -15,6 +15,14 @@
   import { Button, Empty, Scrollbar } from '$lib/ui';
   import * as stub from '$lib/api/stub';
   import SkeletonList from '$lib/components/SkeletonList.svelte';
+  // KNOWLEDGE tab: the notes/ideas "brain" canvas (LLM drafts, user connects,
+  // research accrues). Lives alongside the Q&A oracle behind a view toggle.
+  import KnowledgeBrain from '$lib/canvas/KnowledgeBrain.svelte';
+
+  // Two views on the KNOWLEDGE surface: the notes BRAIN (default — the
+  // curatable concept graph) and the Q&A oracle (ask the codebase).
+  type KnowledgeView = 'brain' | 'qa';
+  let view = $state<KnowledgeView>('brain');
 
   interface OracleRow {
     id: string;
@@ -86,10 +94,24 @@
 
 <div class="explore" data-testid="explore-window">
   <div class="explore__header">
-    <span class="explore__title">explore</span>
-    <span class="explore__hint">ask the codebase oracle — Enter to submit</span>
+    <span class="explore__title">knowledge</span>
+    <!-- view toggle — center->out underline idiom (DESIGN §13) -->
+    <div class="explore__views" role="tablist" aria-label="Knowledge view">
+      <button class="vbtn" class:on={view === 'brain'} role="tab" aria-selected={view === 'brain'} onclick={() => { view = 'brain'; }}>
+        BRAIN<span class="vu" aria-hidden="true"></span>
+      </button>
+      <button class="vbtn" class:on={view === 'qa'} role="tab" aria-selected={view === 'qa'} onclick={() => { view = 'qa'; }}>
+        Q&amp;A<span class="vu" aria-hidden="true"></span>
+      </button>
+    </div>
+    {#if view === 'qa'}
+      <span class="explore__hint">ask the codebase oracle — Enter to submit</span>
+    {/if}
   </div>
 
+  {#if view === 'brain'}
+    <KnowledgeBrain />
+  {:else}
   <div class="explore__body">
     {#if rows.length === 0 && !loading}
       <div class="explore__empty">
@@ -134,6 +156,7 @@
       Ask
     </Button>
   </div>
+  {/if}
 </div>
 
 <style>
@@ -141,32 +164,60 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: var(--bg-base);
+    background: var(--bg);
     overflow: hidden;
   }
 
   .explore__header {
     display: flex;
-    align-items: baseline;
-    gap: var(--s-3);
+    align-items: center;
+    gap: 14px;
     padding: var(--s-2) var(--s-3);
-    background: var(--bg-surface);
-    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
     flex-shrink: 0;
   }
 
   .explore__title {
     font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--teal);
+    font-size: 10px;
+    color: var(--text);
     text-transform: uppercase;
-    letter-spacing: 0.15em;
+    letter-spacing: 0.16em;
   }
+
+  /* view toggle — center->out underline idiom */
+  .explore__views { display: flex; gap: 2px; }
+  .vbtn {
+    position: relative;
+    padding: 4px 9px 6px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    background: none;
+    border: none;
+    color: var(--dim);
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease-out);
+  }
+  .vbtn:hover:not(.on) { color: var(--text); }
+  .vbtn.on { color: var(--d-teal-bright); }
+  .vu {
+    position: absolute;
+    left: 7px; right: 7px; bottom: 1px;
+    height: 1.5px;
+    background: var(--d-teal-bright);
+    transform: scaleX(0);
+    transform-origin: center;
+    transition: transform var(--dur-base) var(--ease-out);
+  }
+  .vbtn:hover .vu, .vbtn.on .vu { transform: scaleX(1); }
 
   .explore__hint {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
+    margin-left: auto;
   }
 
   .explore__body {
@@ -194,18 +245,18 @@
     flex-direction: column;
     gap: 4px;
     padding: var(--s-2);
-    border-radius: var(--r-xs);
-    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    border: 1px solid var(--line);
   }
 
   .explore-row--query {
-    background: var(--bg-input);
-    border-left: 2px solid var(--teal-line);
+    background: var(--panel);
+    border-left: 2px solid var(--d-teal-soft);
   }
 
   .explore-row--response {
-    background: var(--bg-surface);
-    border-left: 2px solid var(--border-subtle);
+    background: var(--row);
+    border-left: 2px solid var(--line2);
   }
 
   .explore-row__meta {
@@ -217,7 +268,7 @@
   .explore-row__kind {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--teal);
+    color: var(--d-teal-bright);
     text-transform: uppercase;
     letter-spacing: 0.1em;
   }
@@ -225,13 +276,13 @@
   .explore-row__ts {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
 
   .explore-row__text {
     font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-primary);
+    color: var(--read);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -240,8 +291,8 @@
     display: flex;
     gap: var(--s-2);
     padding: var(--s-2) var(--s-3);
-    background: var(--bg-surface);
-    border-top: 1px solid var(--border-subtle);
+    background: var(--bg);
+    border-top: 1px solid var(--line);
     align-items: flex-end;
     flex-shrink: 0;
   }
@@ -250,23 +301,27 @@
     flex: 1;
     min-height: 32px;
     max-height: 96px;
-    background: var(--bg-input);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-xs);
-    color: var(--text-primary);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    color: var(--text);
     font-family: var(--font-mono);
     font-size: 12px;
     padding: 6px 8px;
     resize: vertical;
     outline: none;
-    transition: border-color var(--dur-fast) var(--ease-std);
+    transition: border-color var(--dur-fast) var(--ease-out);
   }
 
   .explore__input:focus {
-    border-color: var(--teal-line);
+    border-color: var(--d-teal-soft);
   }
 
   .explore__input::placeholder {
-    color: var(--text-ghost);
+    color: var(--dim);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .vu { transition: none; }
   }
 </style>

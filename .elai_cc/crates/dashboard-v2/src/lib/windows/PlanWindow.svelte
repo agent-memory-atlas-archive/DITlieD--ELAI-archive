@@ -9,6 +9,8 @@
   import { get_bubble_up_events, get_package_verifications } from '$lib/api/stub';
   import { Tree, Badge, Button, Empty, Card, Scrollbar } from '$lib/ui';
   import SkeletonList from '$lib/components/SkeletonList.svelte';
+  import NodeStateGlyph from '$lib/canvas/NodeStateGlyph.svelte';
+  import { toQuinary } from '$lib/canvas/canvas_state';
   import type { TreeNode } from '$lib/ui';
   import type {
     DecompNode,
@@ -409,13 +411,6 @@
     },
   ];
 
-  function blockStatusColor(s: string): string {
-    if (s === 'done') return 'var(--teal)';
-    if (s === 'active') return 'var(--teal-bright)';
-    if (s === 'failed') return 'var(--fail)';
-    return 'var(--text-ghost)';
-  }
-
   function blockStatusLabel(s: string): string {
     return s.toUpperCase();
   }
@@ -427,15 +422,12 @@
     return node.children?.length ?? 0;
   }
 
-  // ----------------------------------------------------------------
-  // BubbleUp event color
-  // ----------------------------------------------------------------
-  function bubbleColor(event: BubbleUpEvent): string {
-    if (event.escalated) return 'var(--fail)';
-    if (event.level === 'baby-step') return 'var(--steel)';
-    if (event.level === 'step') return 'var(--steel)';
-    if (event.level === 'phase') return 'var(--warn)';
-    return 'var(--text-ghost)';
+  // BubbleUp state (§6: shape carries state, no foreign hue). Escalation is
+  // the loud one (fail); phase-level lift is warn; lower levels stay quiet.
+  function bubbleState(event: BubbleUpEvent): 'fail' | 'warn' | 'pending' {
+    if (event.escalated) return 'fail';
+    if (event.level === 'phase') return 'warn';
+    return 'pending';
   }
 
   function levelLabel(l: DecompLevel): string {
@@ -458,12 +450,12 @@
     <div class="toolbar-center">
       <div class="bubble-strip">
         {#each bubbleUpEvents as ev (ev.ts)}
-          <div
-            class="bubble-chip"
-            title="{ev.message}"
-            style="border-color:{bubbleColor(ev)};"
-          >
-            <span class="bubble-level" style="color:{bubbleColor(ev)};">{levelLabel(ev.level)}</span>
+          {@const bs = bubbleState(ev)}
+          <div class="bubble-chip" class:is-escalated={bs === 'fail'} title="{ev.message}">
+            {#if bs !== 'pending'}
+              <NodeStateGlyph state={bs} size={11} />
+            {/if}
+            <span class="bubble-level">{levelLabel(ev.level)}</span>
             <span class="bubble-node">{ev.node_id}</span>
           </div>
         {/each}
@@ -527,10 +519,10 @@
             <div class="detail-section">
               <div class="meta-row">
                 <span class="meta-label">STATUS</span>
-                <span
-                  class="meta-value"
-                  style="color:{selectedNode.status === 'done' ? 'var(--teal)' : selectedNode.status === 'active' ? 'var(--teal-bright)' : selectedNode.status === 'failed' ? 'var(--fail)' : 'var(--text-ghost)'};"
-                >{selectedNode.status.toUpperCase()}</span>
+                <span class="meta-value meta-status">
+                  <NodeStateGlyph state={toQuinary(selectedNode.status)} size={12} />
+                  <span class="meta-status-text">{selectedNode.status.toUpperCase()}</span>
+                </span>
               </div>
               {#if childCount(selectedNode) > 0}
                 <div class="meta-row">
@@ -556,7 +548,7 @@
                   <span class="meta-label">PACKAGES VERIFIED</span>
                   <span
                     class="meta-value"
-                    style="color:{packageVerifyStats.verified === packageVerifyStats.total ? 'var(--teal)' : 'var(--warn)'};"
+                    class:all-verified={packageVerifyStats.verified === packageVerifyStats.total}
                   >{packageVerifyStats.verified}/{packageVerifyStats.total}</span>
                 </div>
               {/if}
@@ -566,10 +558,7 @@
               <div class="children-list">
                 {#each selectedNode.children as child (child.id)}
                   <div class="child-row">
-                    <span
-                      class="child-dot"
-                      style="background:{child.status === 'done' ? 'var(--teal)' : child.status === 'active' ? 'var(--teal-bright)' : child.status === 'failed' ? 'var(--fail)' : 'var(--text-ghost)'};"
-                    ></span>
+                    <NodeStateGlyph state={toQuinary(child.status)} size={11} />
                     <span class="child-label">{child.label}</span>
                     {#if child.elapsed_ms && child.elapsed_ms > 0}
                       <span class="child-elapsed">{formatElapsed(child.elapsed_ms)}</span>
@@ -681,13 +670,13 @@
               {#each SAMPLE_BLOCKS as spec (spec.block)}
                 {@const liveBlock = blocks.find(b => b.block === spec.block)}
                 {@const status = liveBlock?.status ?? 'pending'}
-                <div class="block-section">
+                <div class="block-section" class:is-done={status === 'done'}>
                   <div class="block-header">
                     <span class="block-name">{spec.block}</span>
-                    <span
-                      class="block-status"
-                      style="color:{blockStatusColor(status)};"
-                    >{blockStatusLabel(status)}</span>
+                    <span class="block-status">
+                      <NodeStateGlyph state={toQuinary(status)} size={11} />
+                      <span class="block-status-text">{blockStatusLabel(status)}</span>
+                    </span>
                   </div>
                   <p class="block-detail">{spec.detail}</p>
                 </div>
@@ -706,7 +695,7 @@
     flex-direction: column;
     height: 100%;
     overflow: hidden;
-    background: var(--bg-base);
+    background: var(--bg);
   }
 
   /* ---- Toolbar ---- */
@@ -717,8 +706,8 @@
     align-items: center;
     gap: var(--s-3);
     padding: 0 var(--s-3);
-    background: var(--bg-surface);
-    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
     flex-shrink: 0;
     overflow: hidden;
   }
@@ -732,10 +721,10 @@
   }
 
   .task-name {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 12px;
     font-weight: 500;
-    color: var(--text-primary);
+    color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -767,9 +756,14 @@
     height: 18px;
     padding: 0 6px;
     border-radius: var(--r-xs);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--line);
     flex-shrink: 0;
     cursor: default;
+  }
+
+  /* escalation framed by a stronger hairline; the loud signal is the glyph */
+  .bubble-chip.is-escalated {
+    border-color: var(--line2);
   }
 
   .bubble-level {
@@ -777,12 +771,13 @@
     font-size: 9px;
     font-weight: 600;
     letter-spacing: 0.06em;
+    color: var(--dim);
   }
 
   .bubble-node {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--read);
   }
 
   .toolbar-right {
@@ -792,24 +787,47 @@
     flex-shrink: 0;
   }
 
+  /* Interactive controls = §13/§14 center->out underline idiom (no box). */
   .text-btn {
+    position: relative;
     background: transparent;
     border: none;
-    color: var(--text-ghost);
+    color: var(--dim);
     font-family: var(--font-mono);
     font-size: 10px;
     cursor: pointer;
-    padding: 2px 4px;
-    border-radius: var(--r-xs);
-    transition: color var(--dur-fast) var(--ease-std);
+    padding: 2px 4px 3px;
+    transition: color var(--dur-fast) var(--ease-out);
+  }
+
+  .text-btn::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    bottom: 1px;
+    height: 1px;
+    background: var(--d-teal);
+    transform: scaleX(0);
+    transform-origin: center;
+    transition: transform var(--dur-base) var(--ease-out);
   }
 
   .text-btn:hover {
-    color: var(--text-primary);
+    color: var(--text);
+  }
+
+  .text-btn:hover::after,
+  .text-btn:focus-visible::after {
+    transform: scaleX(1);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .text-btn::after { transition: none; }
   }
 
   .divider-char {
-    color: var(--text-ghost);
+    color: var(--ghost);
     font-family: var(--font-mono);
     font-size: 10px;
     user-select: none;
@@ -836,7 +854,7 @@
     overflow-y: auto;
     padding: var(--s-2);
     scrollbar-width: thin;
-    scrollbar-color: var(--bg-hover) transparent;
+    scrollbar-color: var(--raised) transparent;
   }
 
   .tree-scroll::-webkit-scrollbar {
@@ -844,14 +862,14 @@
   }
 
   .tree-scroll::-webkit-scrollbar-thumb {
-    background: var(--bg-hover);
+    background: var(--raised);
     border-radius: 2px;
   }
 
   /* ---- Column divider ---- */
   .col-divider {
     width: 1px;
-    background: var(--border-subtle);
+    background: var(--line);
     flex-shrink: 0;
   }
 
@@ -874,7 +892,7 @@
   .detail-hint {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
 
   .detail-scroll {
@@ -882,7 +900,7 @@
     overflow-y: auto;
     padding: var(--s-3);
     scrollbar-width: thin;
-    scrollbar-color: var(--bg-hover) transparent;
+    scrollbar-color: var(--raised) transparent;
     display: flex;
     flex-direction: column;
     gap: var(--s-2);
@@ -893,7 +911,7 @@
   }
 
   .detail-scroll::-webkit-scrollbar-thumb {
-    background: var(--bg-hover);
+    background: var(--raised);
     border-radius: 2px;
   }
 
@@ -909,14 +927,14 @@
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.08em;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
 
   .detail-title {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 14px;
     font-weight: 500;
-    color: var(--text-primary);
+    color: var(--text);
     margin: 0;
     line-height: 1.3;
   }
@@ -924,13 +942,14 @@
   .detail-elapsed {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
     margin-top: 2px;
   }
 
-  /* ---- Concept/Phase/Step detail section ---- */
+  /* ---- Concept/Phase/Step detail section (inset well below --bg) ---- */
   .detail-section {
-    background: var(--bg-surface);
+    background: var(--panel);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
     padding: var(--s-2) var(--s-3);
     display: flex;
@@ -948,7 +967,7 @@
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.08em;
-    color: var(--text-ghost);
+    color: var(--dim);
     min-width: 64px;
     flex-shrink: 0;
   }
@@ -956,9 +975,25 @@
   .meta-value {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-secondary);
+    color: var(--read);
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+
+  .meta-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .meta-status-text {
+    color: var(--read);
+    letter-spacing: 0.04em;
+  }
+
+  /* all-verified reads in the one accent; partial stays neutral (not alarm) */
+  .meta-value.all-verified {
+    color: var(--d-teal);
   }
 
   .children-list {
@@ -975,17 +1010,10 @@
     padding: 2px 0;
   }
 
-  .child-dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
   .child-label {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-secondary);
+    color: var(--read);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -995,7 +1023,7 @@
   .child-elapsed {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
     flex-shrink: 0;
   }
 
@@ -1013,7 +1041,7 @@
     gap: 4px;
     padding: 2px 6px;
     border-radius: var(--r-xs);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--line);
     background: transparent;
     font-family: var(--font-mono);
     font-size: 10px;
@@ -1021,22 +1049,18 @@
   }
 
   .chip-label {
-    color: var(--text-ghost);
+    color: var(--dim);
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
 
   .chip-value {
-    color: var(--text-secondary);
+    color: var(--read);
     font-weight: 500;
   }
 
-  .chip-mode-fim .chip-value { color: var(--teal); }
-  .chip-mode-diff .chip-value { color: var(--warn); }
-  .chip-mode-structured .chip-value { color: var(--teal-bright); }
-  .chip-term .chip-value { color: var(--warn); }
-  .chip-micro .chip-value { color: var(--teal); }
-  .chip-deps .chip-value { color: var(--text-secondary); }
+  /* the focus mode carries the one teal accent; other values stay neutral */
+  .chip-mode .chip-value { color: var(--d-teal); }
 
   /* ---- BabyStep blocks ---- */
   .blocks-list {
@@ -1046,9 +1070,16 @@
   }
 
   .block-section {
-    background: var(--bg-surface);
+    background: var(--panel);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
     padding: var(--s-2) var(--s-3);
+  }
+
+  /* §6 done: content RECEDES — slight fade + a teal-deep left bar. */
+  .block-section.is-done {
+    opacity: 0.8;
+    border-left: 2px solid var(--d-teal-deep);
   }
 
   .block-header {
@@ -1063,31 +1094,38 @@
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.08em;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
 
   .block-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.06em;
   }
 
+  .block-status-text {
+    color: var(--read);
+  }
+
   .block-detail {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-secondary);
+    color: var(--read);
     line-height: 1.5;
     margin: 0;
     word-break: break-word;
   }
 
-  /* ---- C-29 IntentPairEditor ---- */
+  /* ---- C-29 IntentPairEditor (inset well below --bg, hairline edge) ---- */
   .intent-pair-editor {
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
     padding: var(--s-3);
     margin-bottom: var(--s-3);
-    background: var(--bg-surface);
+    background: var(--panel);
   }
   .ipe-header {
     display: flex;
@@ -1100,15 +1138,15 @@
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.08em;
-    color: var(--text-secondary);
+    color: var(--read);
   }
   .ipe-count {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
   .ipe-confirmed {
-    color: var(--teal);
+    color: var(--d-teal);
     margin-left: 4px;
   }
   .ipe-list {
@@ -1120,23 +1158,23 @@
     gap: var(--s-1);
   }
   .ipe-row {
-    border-left: 2px solid var(--border-subtle);
+    border-left: 2px solid var(--line);
     padding-left: 6px;
   }
   .ipe-row-intent {
     font-size: 11px;
-    color: var(--text-primary);
+    color: var(--text);
     line-height: 1.4;
   }
   .ipe-row-assertion {
     font-size: 11px;
-    color: var(--text-ghost);
+    color: var(--dim);
     font-family: var(--font-mono);
     line-height: 1.4;
   }
   .ipe-empty {
     font-size: 11px;
-    color: var(--text-ghost);
+    color: var(--dim);
     margin: 0 0 var(--s-2) 0;
   }
   .ipe-form {
@@ -1146,14 +1184,17 @@
   }
   .ipe-input {
     width: 100%;
-    background: var(--bg-base);
-    border: 1px solid var(--border-subtle);
+    background: var(--sink);
+    border: 1px solid var(--line);
     border-radius: var(--r-xs);
     padding: 6px;
     font-family: var(--font-mono);
     font-size: 11px;
-    color: var(--text-primary);
+    color: var(--text);
     resize: vertical;
+  }
+  .ipe-input:focus-visible {
+    border-color: var(--d-teal-soft);
   }
   .ipe-actions {
     display: flex;
@@ -1161,25 +1202,37 @@
   }
   .ipe-btn {
     padding: 4px 8px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-subtle);
+    background: var(--sink);
+    border: 1px solid var(--line);
     border-radius: var(--r-xs);
-    color: var(--text-primary);
+    color: var(--text);
     font-family: var(--font-mono);
     font-size: 11px;
     cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
+  }
+  .ipe-btn:hover:not(:disabled) {
+    background: var(--raised);
+    border-color: var(--line2);
   }
   .ipe-btn:disabled {
-    color: var(--text-ghost);
+    color: var(--ghost);
     cursor: not-allowed;
   }
   .ipe-btn-confirm:not(:disabled) {
-    border-color: var(--teal);
-    color: var(--teal);
+    border-color: var(--d-teal);
+    color: var(--d-teal);
   }
+  /* §6 error language: mono-inversion, never a foreign red. */
   .ipe-error {
     font-size: 11px;
-    color: var(--fail);
+    color: var(--void, #030404);
+    background: var(--text);
+    border-radius: 2px;
+    padding: 3px 6px;
     margin: 0;
+    align-self: flex-start;
+    font-weight: 600;
   }
 </style>

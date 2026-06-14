@@ -361,6 +361,8 @@
 </div>
 
 <style>
+  /* Flat-matte work surface, role tokens only. Blue REMOVED (DESIGN §10
+     ban) — the one accent is teal. */
   .design-mode {
     display: flex;
     flex-direction: column;
@@ -368,9 +370,10 @@
     min-height: 0;
     padding: 0.75rem;
     gap: 0.75rem;
-    color: var(--color-text, #e2e8f0);
-    font-family: var(--font-mono, 'JetBrains Mono Variable', monospace);
+    color: var(--read);
+    font-family: var(--font-mono);
     font-size: 0.75rem;
+    background: var(--bg);
   }
 
   .design-mode__header {
@@ -378,25 +381,27 @@
     align-items: center;
     gap: 0.75rem;
     padding-bottom: 0.5rem;
-    border-bottom: 1px solid var(--color-border, #334155);
+    border-bottom: 1px solid var(--line);
   }
 
   .design-mode__label {
-    font-weight: 600;
-    color: var(--color-accent, #38bdf8);
-    letter-spacing: 0.04em;
+    font-weight: 500;
+    color: var(--text);
+    letter-spacing: 0.16em;
     text-transform: uppercase;
     font-size: 0.7rem;
   }
 
+  /* warn reads via triangle + --text, no amber */
   .design-mode__rejected {
-    color: var(--color-warn, #f59e0b);
+    color: var(--text);
     font-size: 0.65rem;
   }
+  .design-mode__rejected::before { content: '▲ '; }
 
   .design-mode__tier-note {
     margin-left: auto;
-    color: var(--color-muted, #64748b);
+    color: var(--dim);
     font-size: 0.65rem;
     font-style: italic;
   }
@@ -404,9 +409,9 @@
   .design-mode__section-label {
     display: block;
     font-size: 0.65rem;
-    color: var(--color-muted, #64748b);
+    color: var(--dim);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.12em;
     margin-bottom: 0.25rem;
   }
 
@@ -420,34 +425,34 @@
     gap: 0.25rem;
   }
 
+  /* nodes are inset wells (--panel below --bg), rising to --raised on hover */
   .design-mode__node-item {
     display: flex;
     flex-direction: column;
     padding: 0.35rem 0.5rem;
-    border-radius: 0.25rem;
-    border: 1px solid var(--color-border, #334155);
+    border-radius: var(--r-sm);
+    border: 1px solid var(--line);
     cursor: pointer;
-    background: var(--color-surface, #1e293b);
-    transition: border-color 0.1s;
+    background: var(--panel);
+    transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
   }
-
   .design-mode__node-item:hover {
-    border-color: var(--color-accent, #38bdf8);
+    border-color: var(--d-teal-soft);
+    background: var(--raised);
   }
-
   .design-mode__node-item--selected {
-    border-color: var(--color-accent, #38bdf8);
-    background: var(--color-surface-active, #1e3a5f);
+    border-color: var(--d-teal);
+    background: var(--d-teal-faint);
   }
 
   .design-mode__node-label {
     font-weight: 500;
-    color: var(--color-text, #e2e8f0);
+    color: var(--text);
   }
 
   .design-mode__node-url,
   .design-mode__node-oid {
-    color: var(--color-muted, #64748b);
+    color: var(--dim);
     font-size: 0.65rem;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -456,11 +461,11 @@
 
   .design-mode__edge-item {
     padding: 0.2rem 0.4rem;
-    color: var(--color-muted, #64748b);
+    color: var(--dim);
   }
 
   .design-mode__edge-label {
-    color: var(--color-text-secondary, #94a3b8);
+    color: var(--read);
   }
 
   .design-mode__empty {
@@ -471,7 +476,7 @@
   }
 
   .design-mode__empty-text {
-    color: var(--color-muted, #64748b);
+    color: var(--dim);
     text-align: center;
     line-height: 1.6;
     max-width: 32rem;
@@ -479,14 +484,14 @@
 
   .design-mode__empty-text code {
     font-family: inherit;
-    background: var(--color-surface, #1e293b);
+    background: var(--sink);
     padding: 0.1rem 0.3rem;
-    border-radius: 0.2rem;
-    color: var(--color-accent, #38bdf8);
+    border-radius: var(--r-xs);
+    color: var(--d-teal-bright);
   }
 
   .design-mode__resolve-status {
-    color: var(--color-muted, #64748b);
+    color: var(--dim);
     font-style: italic;
     font-size: 0.7rem;
   }
@@ -496,27 +501,23 @@
     flex-direction: column;
     gap: 0.15rem;
     padding: 0.4rem 0.5rem;
-    border: 1px solid var(--color-accent, #38bdf8);
-    border-radius: 0.25rem;
-    background: var(--color-surface, #1e293b);
+    border: 1px solid var(--d-teal-soft);
+    border-radius: var(--r-sm);
+    background: var(--panel);
     font-size: 0.7rem;
   }
 
   .design-mode__resolve-file {
-    color: var(--color-text, #e2e8f0);
+    color: var(--text);
     font-weight: 500;
   }
 
-  .design-mode__resolve-range {
-    color: var(--color-muted, #64748b);
-  }
+  .design-mode__resolve-range { color: var(--dim); }
+  .design-mode__resolve-scope { color: var(--read); }
 
-  .design-mode__resolve-scope {
-    color: var(--color-text-secondary, #94a3b8);
-  }
-
+  /* resolve error reads via text (mono-inversion lives at the glyph layer) */
   .design-mode__resolve-error {
-    color: var(--color-error, #f87171);
+    color: var(--text);
     font-size: 0.7rem;
   }
 
@@ -526,14 +527,14 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px dashed var(--color-border, #334155);
-    border-radius: 0.35rem;
-    background: var(--color-surface, #1e293b);
+    border: 1px dashed var(--line2);
+    border-radius: var(--r-md);
+    background: var(--sink);
   }
 
   .design-mode__preview-placeholder-text {
     text-align: center;
-    color: var(--color-muted, #64748b);
+    color: var(--dim);
     line-height: 1.8;
     font-style: italic;
   }

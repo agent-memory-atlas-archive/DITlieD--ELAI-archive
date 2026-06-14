@@ -131,7 +131,7 @@
     position: relative;
     width: 100%;
     height: 100%;
-    background: var(--bg-base);
+    background: var(--bg);
     overflow: hidden;
   }
 
@@ -159,33 +159,33 @@
     align-items: baseline;
     gap: var(--s-2);
     background: transparent;
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--line);
     border-radius: var(--r-pill);
     padding: 3px var(--s-3);
     cursor: pointer;
-    color: var(--text-secondary);
+    color: var(--read);
     font-family: var(--font-mono);
     opacity: 0;
     transition:
-      opacity 240ms var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std),
-      color var(--dur-fast) var(--ease-std);
+      opacity var(--dur-slow) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
   }
   .activity-host:hover .mode-toggle { opacity: 1; }
   .mode-toggle:focus-visible { opacity: 1; }
   .mode-toggle:hover {
-    border-color: var(--teal-line);
-    color: var(--text-primary);
+    border-color: var(--d-teal-soft);
+    color: var(--text);
   }
   .mt-prefix {
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.12em;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
   .mt-key {
     font-size: 10px;
-    color: var(--teal);
+    color: var(--d-teal);
     text-transform: lowercase;
   }
 </style>

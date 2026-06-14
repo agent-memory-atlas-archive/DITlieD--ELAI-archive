@@ -4417,6 +4417,9 @@ impl ApiClient for ProviderRuntimeClient {
             tool_choice: (!self.allowed_tools.is_empty()).then_some(ToolChoice::Auto),
             stream: true,
             seed: None,
+            // I-26: effort is not set at the tools layer; cloud reasoning roles
+            // set this via CompletionConfig before reaching the request builder.
+            effort: None,
         };
 
         self.runtime.block_on(async {

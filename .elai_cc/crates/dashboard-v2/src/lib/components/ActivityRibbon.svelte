@@ -12,7 +12,14 @@
   // Live FSM state — re-rendered on every fsm.svelte.ts poll (5s default).
   let fsmState = $derived(fsm.state);
   let agentSubstate = $derived(fsm.agentSubstate);
-  let progressPct = $derived(Math.round(fsm.progress * 100));
+  // DESIGN §6: progress is an explicit fraction on a segmented bar, never a
+  // lone percentage. The store exposes only a normalized 0..1 proportion (no
+  // backend n/m step counts), so the denominator is the visible segment count
+  // of the bar itself — the mission-control segmented form. filled/total IS
+  // the fraction shown; no fabricated step data.
+  const PROGRESS_SEGMENTS = 8;
+  let progress01 = $derived(Math.max(0, Math.min(1, fsm.progress)));
+  let segFilled = $derived(Math.round(progress01 * PROGRESS_SEGMENTS));
   let stepId = $derived(fsm.currentStepId);
   let mode = $derived(session.mode);
   let model = $derived(session.model);
@@ -36,13 +43,13 @@
     RESEARCHING: 'var(--state-researching)',
   };
 
-  let stateColor = $derived(STATE_TOKEN_MAP[fsmState] ?? 'var(--text-secondary)');
+  let stateColor = $derived(STATE_TOKEN_MAP[fsmState] ?? 'var(--read)');
 
   // Visually hide the ribbon when the FSM is fully idle and there's nothing
   // to report — avoids permanent dead-pixel chrome. The mount stays so the
   // a11y region "polite" announcement still fires on first activity.
   let visible = $derived(
-    userEnabled && (fsmState !== 'IDLE' || agentSubstate !== '' || progressPct > 0),
+    userEnabled && (fsmState !== 'IDLE' || agentSubstate !== '' || progress01 > 0),
   );
 </script>
 
@@ -70,12 +77,17 @@
       <span class="ribbon-val">{stepId}</span>
     </span>
   {/if}
-  {#if progressPct > 0}
-    <span class="ribbon-cell ribbon-progress" title="step progress">
-      <span class="ribbon-progress-track">
-        <span class="ribbon-progress-fill" style="width: {progressPct}%;"></span>
+  {#if progress01 > 0}
+    <span
+      class="ribbon-cell ribbon-progress"
+      title="step progress {segFilled}/{PROGRESS_SEGMENTS}"
+    >
+      <span class="ribbon-progress-track" aria-hidden="true">
+        {#each { length: PROGRESS_SEGMENTS } as _, i (i)}
+          <span class="ribbon-seg" class:is-filled={i < segFilled}></span>
+        {/each}
       </span>
-      <span class="ribbon-val">{progressPct}%</span>
+      <span class="ribbon-val">{segFilled}/{PROGRESS_SEGMENTS}</span>
     </span>
   {/if}
   <span class="ribbon-spacer"></span>
@@ -97,11 +109,11 @@
     padding: 4px var(--s-3);
     height: 22px;
     min-height: 22px;
-    border-bottom: 1px solid var(--border-subtle);
-    background: var(--bg-base);
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-secondary);
+    color: var(--read);
     user-select: none;
     flex: 0 0 auto;
   }
@@ -123,16 +135,23 @@
     color: var(--state-color);
     font-weight: 500;
   }
+  /* §6 active glyph: a teal-family state dot with the single sanctioned
+     pulse (the only moving thing). No glow — stars/glow are banned on work
+     surfaces (§10); the hairline ring + pulse carry the live signal. */
   .ribbon-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     background: var(--state-color);
-    box-shadow: 0 0 4px var(--state-color);
+    animation: ribbon-pulse 1.6s var(--ease-std) infinite;
+  }
+  @keyframes ribbon-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.45; }
   }
   @media (prefers-reduced-motion: reduce) {
     .ribbon-dot {
-      box-shadow: none;
+      animation: none;
     }
   }
   .ribbon-state-label {
@@ -140,31 +159,36 @@
     letter-spacing: 0.04em;
   }
   .ribbon-arrow {
-    color: var(--text-ghost);
+    color: var(--dim);
   }
   .ribbon-key {
-    color: var(--text-ghost);
+    color: var(--dim);
   }
   .ribbon-val {
-    color: var(--text-primary);
+    color: var(--text);
   }
+  /* §6 segmented progress bar: discrete cells, filled count == fraction. */
   .ribbon-progress-track {
-    width: 60px;
-    height: 4px;
-    background: var(--bg-input);
-    border-radius: var(--r-pill);
-    overflow: hidden;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
   }
-  .ribbon-progress-fill {
-    display: block;
-    height: 100%;
-    background: var(--teal-bright);
-    transition: width var(--dur-base) var(--ease-out);
+  .ribbon-seg {
+    width: 6px;
+    height: 4px;
+    background: var(--sink);
+    border: 1px solid var(--line);
+    border-radius: 1px;
+    transition: background var(--dur-base) var(--ease-out);
+  }
+  .ribbon-seg.is-filled {
+    background: var(--d-teal-deep);
+    border-color: var(--d-teal-soft);
   }
   .ribbon-spacer {
     flex: 1 1 auto;
   }
   .ribbon-substate {
-    color: var(--text-primary);
+    color: var(--text);
   }
 </style>

@@ -4777,3 +4777,21 @@ export async function get_playbook_entries(): Promise<import('./types').Playbook
   const live = await tryInvoke<import('./types').PlaybookEventPayload[]>('get_playbook_entries');
   return live ?? [];
 }
+
+// ------------------------------------------------------------------
+// I-36 (SCHEMA_VERSION 268) -- CompiledVariant badge chip rows.
+//
+// Returns up to 20 most-recent prompt_compiled SSB rows emitted when
+// CompiledPromptStore::lookup returns a promoted variant and it is
+// placed into CompletionConfig::compiled_system_override.
+// Returns empty array when no substitution has occurred or
+// ELAI_PROMPT_COMPILE_DISABLE=1.
+//
+// Cross-lang pair: commands_i36.rs::get_compiled_variants
+//                  types.ts::CompiledVariantRow
+// ------------------------------------------------------------------
+export async function get_compiled_variants(): Promise<import('./types').CompiledVariantRow[]> {
+  logStub('get_compiled_variants', {});
+  const live = await tryInvoke<import('./types').CompiledVariantRow[]>('get_compiled_variants');
+  return live ?? [];
+}

@@ -237,6 +237,11 @@ pub async fn prompt_decision(
         stop_sequences: Vec::new(),
         system: Some(PROMPT_HANDLER_SYSTEM_PROMPT.to_owned()),
         decoding_config: None,
+        // I-26: hook_prompt is a non-reasoning call; effort is not applicable.
+        effort: None,
+        // I-36: hook_prompt bypasses compiled-variant substitution (this is a
+        // hook call for the automation pipeline, not an agent-role completion).
+        compiled_system_override: None,
     };
     let completion_fut = runtime.complete(messages, config);
     let response =

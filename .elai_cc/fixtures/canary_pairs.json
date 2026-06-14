@@ -1,0 +1,48 @@
+{
+  "_comment": "I-24 frozen canary pair set (R8). Authored once, never regenerated at runtime. Gate-manifest entry required. Pairs authored using MuCoCo operators (for_to_while, rename_idempotent, constant_unfolding) applied to short Python/Rust snippets that represent realistic L2 scorer inputs. Each pair is semantically identical (same control flow, data flow, type constraints); a style-biased scorer will rate them differently, a correct scorer will not. Locked: gate_freeze_check.py + gate-manifest.txt list this file.",
+  "_schema_version": 1,
+  "pairs": [
+    {
+      "label": "for_to_while_python_01",
+      "_operator": "for_to_while",
+      "_language": "python",
+      "original":   "def sum_range(n):\n    total = 0\n    for i in range(n):\n        total += i\n    return total",
+      "obfuscated": "def sum_range(n):\n    total = 0\n    i = 0\n    while i < n:\n        total += i\n        i += 1\n    return total"
+    },
+    {
+      "label": "rename_idempotent_python_01",
+      "_operator": "rename_idempotent",
+      "_language": "python",
+      "original":   "def compute(x, y):\n    result = x + y\n    return result",
+      "obfuscated": "def compute(a, b):\n    val = a + b\n    return val"
+    },
+    {
+      "label": "constant_unfolding_python_01",
+      "_operator": "constant_unfolding",
+      "_language": "python",
+      "original":   "MAX_SIZE = 100\n\ndef is_valid(n):\n    return n < MAX_SIZE",
+      "obfuscated": "def is_valid(n):\n    return n < 100"
+    },
+    {
+      "label": "for_to_while_rust_01",
+      "_operator": "for_to_while",
+      "_language": "rust",
+      "original":   "fn sum_range(n: u32) -> u32 {\n    let mut total: u32 = 0;\n    for i in 0..n {\n        total += i;\n    }\n    total\n}",
+      "obfuscated": "fn sum_range(n: u32) -> u32 {\n    let mut total: u32 = 0;\n    let mut i: u32 = 0;\n    while i < n {\n        total += i;\n        i += 1;\n    }\n    total\n}"
+    },
+    {
+      "label": "rename_idempotent_rust_01",
+      "_operator": "rename_idempotent",
+      "_language": "rust",
+      "original":   "fn add(x: i64, y: i64) -> i64 {\n    let result = x + y;\n    result\n}",
+      "obfuscated": "fn add(a: i64, b: i64) -> i64 {\n    let sum = a + b;\n    sum\n}"
+    },
+    {
+      "label": "constant_unfolding_rust_01",
+      "_operator": "constant_unfolding",
+      "_language": "rust",
+      "original":   "const LIMIT: usize = 256;\n\nfn within_limit(n: usize) -> bool {\n    n < LIMIT\n}",
+      "obfuscated": "fn within_limit(n: usize) -> bool {\n    n < 256\n}"
+    }
+  ]
+}

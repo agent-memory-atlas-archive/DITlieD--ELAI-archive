@@ -45,6 +45,7 @@
 //! `BTreeMap<AgentRole, f32>` for deterministic iteration order, per
 //! CLAUDE.md anti-stale-training (BTreeMap-for-iteration) rule.
 
+pub mod budget_controller;
 pub mod difficulty;
 pub mod invariants;
 pub mod policy;

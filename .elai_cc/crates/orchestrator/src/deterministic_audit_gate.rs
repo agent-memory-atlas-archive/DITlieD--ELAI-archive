@@ -38,8 +38,12 @@ use crate::deterministic_auditor::{
     CheckKind, DeterministicAuditResult, DeterministicAuditor, DeterministicAuditorConfig,
     DeterministicFinding, DeterministicSeverity,
 };
+use crate::mutation_budget::{BudgetVerdict, MutationBudgetSummary};
 use crate::mutation_testing::{MutantOutcome, MutationConfig};
-use crate::ssb::{FindingPayload, MutationSurvivedPayload, Ssb, SsbPayload};
+use crate::ssb::{
+    env_gate_truthy, FindingPayload, MutationBudgetedRunKind, MutationBudgetedRunPayload,
+    MutationSurvivedPayload, Ssb, SsbPayload, ELAI_MUTATION_BUDGET_DISABLE_ENV,
+};
 
 /// Agent id used on Finding rows emitted by the deterministic audit gate.
 pub const GATE_AGENT_ID: &str = "deterministic_audit_gate";
@@ -193,12 +197,19 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
                     .collect()
             })
             .unwrap_or_default();
+        // I-20: budgeted-mutation summary (Wilson-CI + survivor directives),
+        // emitted as MutationBudgetedRun SSB rows from this writer-owning seam
+        // (the deterministic_auditor stays SSB-agnostic, mirroring C-28/C-29).
+        let budget_summary = result.mutation_budget.clone();
         tokio::spawn(async move {
             emit_findings(writer.as_ref(), &findings).await;
             if let Some(lang) = tool_missing_language {
                 emit_audit_skipped(writer.as_ref(), &lang).await;
             }
             emit_mutation_survivors(writer.as_ref(), &survivors).await;
+            if let Some(summary) = budget_summary {
+                emit_mutation_budgeted_runs(writer.as_ref(), &summary).await;
+            }
         });
         result
     }
@@ -322,6 +333,92 @@ pub async fn emit_mutation_survivors(writer: &Ssb, survivors: &[MutationSurvived
     }
 }
 
+/// I-20: emit `MutationBudgetedRun` SSB row(s) for a budgeted-mutation run.
+///
+/// One row carries the cone verdict + the 5 CI params (`CiCleared` /
+/// `CiFailed` / `CacheHit`); one additional `SurvivorDirective` row is emitted
+/// per surviving mutant (the structured counterexample feeding the generator;
+/// the consumer retry loop is OUT of I-20 scope).
+///
+/// Default-ON; the kill-switch `ELAI_MUTATION_BUDGET_DISABLE=1` suppresses
+/// emission (the gate verdict is unaffected — SSB is an off-agent beacon).
+pub async fn emit_mutation_budgeted_runs(writer: &Ssb, summary: &MutationBudgetSummary) {
+    if env_gate_truthy(ELAI_MUTATION_BUDGET_DISABLE_ENV) {
+        return;
+    }
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let verdict_kind = match summary.verdict {
+        BudgetVerdict::CiCleared => MutationBudgetedRunKind::CiCleared,
+        BudgetVerdict::CiFailed => MutationBudgetedRunKind::CiFailed,
+        BudgetVerdict::CacheHit => MutationBudgetedRunKind::CacheHit,
+    };
+
+    // (1) the cone verdict row (the 5 CI params).
+    let verdict_payload = MutationBudgetedRunPayload {
+        kind: verdict_kind,
+        n_sampled: summary.n_sampled,
+        n_total_cone: summary.n_total_cone,
+        ci_lower: summary.ci_lower,
+        ci_upper: summary.ci_upper,
+        threshold: summary.threshold,
+        time_ms: summary.time_ms,
+        operator: String::new(),
+        survivor_file: String::new(),
+        survivor_line: 0,
+        survivor_mutation: String::new(),
+        ts_ms,
+    };
+    if let Err(e) = writer
+        .write_payload(
+            GATE_AGENT_ID,
+            GATE_SUPERSTEP,
+            SsbPayload::MutationBudgetedRun(verdict_payload),
+            Vec::new(),
+        )
+        .await
+    {
+        tracing::error!(error = %e, "deterministic_audit_gate: write MutationBudgetedRun verdict failed");
+    }
+
+    // (2) one SurvivorDirective row per surviving mutant.
+    for directive in &summary.survivors {
+        let payload = MutationBudgetedRunPayload {
+            kind: MutationBudgetedRunKind::SurvivorDirective,
+            n_sampled: summary.n_sampled,
+            n_total_cone: summary.n_total_cone,
+            ci_lower: summary.ci_lower,
+            ci_upper: summary.ci_upper,
+            threshold: summary.threshold,
+            time_ms: summary.time_ms,
+            operator: directive.operator.clone(),
+            survivor_file: directive.file.clone(),
+            survivor_line: directive.line,
+            survivor_mutation: directive.survivor_mutation.clone(),
+            ts_ms,
+        };
+        if let Err(e) = writer
+            .write_payload(
+                GATE_AGENT_ID,
+                GATE_SUPERSTEP,
+                SsbPayload::MutationBudgetedRun(payload),
+                Vec::new(),
+            )
+            .await
+        {
+            tracing::error!(
+                error = %e,
+                file = %directive.file,
+                line = directive.line,
+                "deterministic_audit_gate: write MutationBudgetedRun(SurvivorDirective) failed"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -359,6 +456,7 @@ mod tests {
                 checks_run: 1,
                 passed: true,
                 mutation: None,
+                mutation_budget: None,
             },
         };
         let r = gate.evaluate(crate::fsm::FsmState::Executing, crate::fsm::FsmState::Auditing);

@@ -223,6 +223,17 @@ pub struct TransitionContext {
     // left no off-agent row). Only `Some(true)` passes the Layer-4 leg (R4).
     #[serde(default)]
     pub layer4_trace_present: Option<bool>,
+
+    // I-37: the active task's EARS requirement set (PLANNING -> TESTING_FIRST).
+    // `RequirementsGate` default-degrades to pass when this is `None` (back-compat
+    // with callers that have not threaded the set) AND when the
+    // `ELAI_REQUIREMENTS_GATE_ENABLE` flag is absent. When the flag is on and the
+    // set is present, a requirement that is not Satisfied blocks the transition.
+    // The per-requirement status is computed by the caller (via
+    // `requirements::reverify_set`) before the gate runs; the gate reads the
+    // stored status (compute is separated from gate dispatch).
+    #[serde(default)]
+    pub ears_requirements: Option<crate::requirements::EarsRequirementSet>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,6 +1026,10 @@ pub fn all_gates() -> Vec<Box<dyn EvidenceGate>> {
         // TestFlippedGate + DiagnosticProbeGate. Slot 11 — order-stable
         // append so existing index-based gate tests keep working.
         Box::new(EntrypointAndTraceGate),
+        // I-37: EARS RequirementsGate (PLANNING -> TESTING_FIRST). Co-fires with
+        // GroundingSweepGate + IntentPairsGate. Default-OFF blocking (env-gated)
+        // + None-degrades. Slot 12 — order-stable append.
+        Box::new(crate::requirements::RequirementsGate),
     ]
 }
 
@@ -1509,6 +1524,15 @@ mod tests {
             if gate.name() == "intent_pairs" {
                 continue;
             }
+            // I-37: RequirementsGate has the same documented pass-through
+            // semantics on empty context — it returns Ok when the
+            // `ELAI_REQUIREMENTS_GATE_ENABLE` flag is absent (default-OFF) OR
+            // when `ears_requirements` is None. The adversarial empty-context
+            // contract only applies to the mandatory always-on gates.
+            // Source: RequirementsGate::check, requirements.rs.
+            if gate.name() == "ears_requirements" {
+                continue;
+            }
             // SP5 wiring-fix: DiagnosticProbeGate and AntiFabricationGate are
             // now FAIL-CLOSED on empty context (None outcome / None rows ->
             // Err), so they are no longer exempted here — they MUST reject
@@ -1601,8 +1625,9 @@ mod tests {
     #[test]
     fn test_gated_transitions_have_gate() {
         assert_eq!(gates_for_transition(FsmState::Idle, FsmState::Planning).len(), 1);
-        // C-29: PLANNING -> TESTING_FIRST has 2 gates (GroundingSweep + IntentPairs).
-        assert_eq!(gates_for_transition(FsmState::Planning, FsmState::TestingFirst).len(), 2);
+        // C-29 + I-37: PLANNING -> TESTING_FIRST has 3 gates
+        // (GroundingSweep + IntentPairs + EARS RequirementsGate).
+        assert_eq!(gates_for_transition(FsmState::Planning, FsmState::TestingFirst).len(), 3);
         assert_eq!(gates_for_transition(FsmState::TestingFirst, FsmState::Executing).len(), 1);
         // E-52 Tranche B-3 + SP5 wiring-fix: EXECUTING -> AUDITING has 3 gates
         // (TestFlipped + DiagnosticProbe + EntrypointAndTrace).
@@ -1758,11 +1783,11 @@ mod tests {
         // C-29 appended IntentPairsGate (8th gate). E-52 Tranche B-3
         // appended DiagnosticProbeGate (9th). F-plan B2 appended
         // AntiFabricationGate (10th). SP5 wiring-fix appended
-        // EntrypointAndTraceGate (11th). Assertion follows the live registry
-        // length so future appends do not silently regress the uniqueness
-        // contract.
+        // EntrypointAndTraceGate (11th). I-37 appended the EARS RequirementsGate
+        // (12th). Assertion follows the live registry length so future appends
+        // do not silently regress the uniqueness contract.
         assert_eq!(names.len(), total);
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 12);
     }
 
     // -----------------------------------------------------------------------

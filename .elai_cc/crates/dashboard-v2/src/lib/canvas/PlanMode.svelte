@@ -20,6 +20,9 @@
 
   import { plan } from '../state/plan.svelte';
   import type { DecompNode } from '../api/types';
+  import NodeStateGlyph from './NodeStateGlyph.svelte';
+  import { toQuinary } from './canvas_state';
+  import { nodeStory } from './node_story_store.svelte';
 
   // ---------------------------------------------------------------------------
   // Named constants (no magic numbers)
@@ -118,23 +121,23 @@
       <!-- Node label -->
       <span class="node-label">{node.label}</span>
 
-      <!-- Status indicator -->
-      <span class="node-status" aria-label="status: {node.status}">
-        {#if node.status === STATUS_ACTIVE}
-          <span class="status-dot status-active" title="active"></span>
-        {:else if node.status === STATUS_DONE}
-          <span class="status-dot status-done" title="done"></span>
-        {:else if node.status === STATUS_FAILED}
-          <span class="status-dot status-failed" title="failed"></span>
-        {:else}
-          <span class="status-dot status-pending" title="pending"></span>
-        {/if}
+      <!-- Status indicator — shared quinary glyph (DESIGN §6) -->
+      <span class="node-status">
+        <NodeStateGlyph state={toQuinary(node.status)} size={13} />
       </span>
 
       <!-- Elapsed (if non-zero) -->
       {#if (node.elapsed_ms ?? 0) > 0}
         <span class="node-elapsed">{Math.round((node.elapsed_ms ?? 0) / 1000)}s</span>
       {/if}
+
+      <!-- node-story affordance (the NEW DIFF centerpiece) -->
+      <button
+        class="node-story-btn"
+        title="Open the node story (history / explain / wiring / receipts / cost)"
+        aria-label="Node story"
+        onclick={(e) => { e.stopPropagation(); nodeStory.openFor(node.id); }}
+      >story</button>
     </div>
 
     <!-- Recurse into children -->
@@ -145,6 +148,8 @@
 {/snippet}
 
 <style>
+  /* Flat-matte work surface (DESIGN §1): galaxy/glow is brand-only; the
+     plan graph is a still instrument on --bg. */
   .plan-mode {
     display: flex;
     flex-direction: column;
@@ -153,7 +158,7 @@
     overflow: hidden;
     font-family: var(--font-mono);
     font-size: 11px;
-    background: var(--bg-base);
+    background: var(--bg);
   }
 
   .plan-header {
@@ -161,27 +166,27 @@
     align-items: center;
     gap: 10px;
     padding: 6px 12px;
-    border-bottom: 1px solid var(--border-subtle);
-    background: var(--bg-surface);
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
     flex-shrink: 0;
   }
 
   .plan-title {
-    font-weight: 600;
-    font-size: 11px;
+    font-weight: 500;
+    font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-primary);
+    letter-spacing: 0.16em;
+    color: var(--text);
   }
 
   .plan-meta {
-    color: var(--text-secondary);
+    color: var(--dim);
     font-size: 10px;
   }
 
   .active-label {
-    color: var(--teal-bright, #14b8a6);
-    font-weight: 600;
+    color: var(--d-teal-bright);
+    font-weight: 500;
   }
 
   .plan-body {
@@ -193,90 +198,97 @@
 
   .plan-empty {
     padding: 24px 16px;
-    color: var(--text-ghost);
+    color: var(--dim);
     font-size: 10px;
     text-align: center;
   }
 
-  /* Node rows */
+  /* Node rows — inset-well feel via the left bar + hover to --raised */
   .plan-node {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     padding: 3px 8px;
     min-height: 22px;
     border-left: 2px solid transparent;
-    transition: background 80ms, border-color 80ms;
+    transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
   }
+  .plan-node:hover { background: var(--raised); }
 
-  .plan-node:hover {
-    background: var(--bg-hover);
-  }
-
-  /* Active node highlight (status === 'active') */
+  /* active — the only lit row; teal left bar + faint wash + marching edge */
   .plan-node.active {
-    background: var(--teal-ghost, rgba(20, 184, 166, 0.1));
-    border-left-color: var(--teal-bright, #14b8a6);
+    background: var(--d-teal-faint);
+    border-left-color: var(--d-teal-bright);
+    border-left-style: solid;
+    background-image: linear-gradient(var(--d-teal-bright), var(--d-teal-bright));
+    background-size: 2px 8px;
+    background-repeat: repeat-y;
+    background-position: left top;
+    animation: marchedge 0.9s linear infinite;
   }
 
+  /* done — content RECEDES (DESIGN §6), teal-deep left bar */
   .plan-node.done {
-    opacity: 0.55;
+    opacity: 0.65;
+    border-left-color: var(--d-teal-deep);
   }
 
-  .plan-node.failed {
-    border-left-color: var(--red, #e05252);
-    background: rgba(224, 82, 82, 0.05);
-  }
+  /* failed — the loud row reads via the mono-inversion glyph, not a hue */
+  .plan-node.failed { border-left-color: var(--text); }
 
-  .plan-node.pending {
-    opacity: 0.75;
-  }
+  .plan-node.pending { opacity: 0.85; }
 
-  /* Level badge */
   .node-level {
     font-size: 8px;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--text-ghost);
+    letter-spacing: 0.12em;
+    color: var(--ghost);
     min-width: 46px;
     flex-shrink: 0;
   }
 
-  /* Node label */
   .node-label {
     flex: 1 1 auto;
-    color: var(--text-primary);
+    color: var(--read);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-
   .plan-node.active .node-label {
-    color: var(--teal-bright, #14b8a6);
-    font-weight: 600;
+    color: var(--d-teal-bright);
+    font-weight: 500;
   }
 
-  /* Status dot */
-  .node-status {
-    flex-shrink: 0;
-  }
+  .node-status { flex-shrink: 0; display: inline-flex; }
 
-  .status-dot {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-  }
-
-  .status-active  { background: var(--teal-bright, #14b8a6); box-shadow: 0 0 4px var(--teal-bright, #14b8a6); }
-  .status-done    { background: var(--text-ghost); }
-  .status-failed  { background: var(--red, #e05252); }
-  .status-pending { background: var(--border-subtle); }
-
-  /* Elapsed */
   .node-elapsed {
     font-size: 9px;
-    color: var(--text-ghost);
+    color: var(--ghost);
     flex-shrink: 0;
+  }
+
+  /* story affordance — hidden until the row is hovered (silence-means-safe) */
+  .node-story-btn {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    letter-spacing: 0.06em;
+    padding: 1px 5px;
+    background: none;
+    border: 1px solid var(--line2);
+    border-radius: var(--r-xs);
+    color: var(--dim);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+  }
+  .plan-node:hover .node-story-btn { opacity: 1; }
+  .node-story-btn:hover { color: var(--text); border-color: var(--d-teal); }
+
+  @keyframes marchedge {
+    to { background-position: left 8px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .plan-node.active { animation: none; }
   }
 </style>

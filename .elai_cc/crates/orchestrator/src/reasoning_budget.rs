@@ -387,6 +387,11 @@ pub async fn scale_and_emit<E: ReasoningBudgetScaledEmitter>(
             scaled_calls: scaled.budget.max_calls,
             ceiling: base.budget.max_calls.saturating_mul(LOCKED_BUDGET_CEILING),
             seed,
+            // I-26 payload extension fields — None on GRC-dispatch rows (H-42 path);
+            // populated only by the I-26 BudgetController search-node collapse path.
+            depth_level: None,
+            budget_pct: None,
+            plateau_fired: None,
         };
 
         if let Err(e) = emitter.emit_scaled(payload).await {
@@ -579,6 +584,10 @@ mod tests {
             scaled_calls: 14,
             ceiling: 24,
             seed: 42,
+            // I-26 extension fields — None on GRC-dispatch rows (H-42 path).
+            depth_level: None,
+            budget_pct: None,
+            plateau_fired: None,
         };
         emitter.emit_scaled(payload.clone()).await.expect("emit ok");
         let rows = emitter.rows().await;

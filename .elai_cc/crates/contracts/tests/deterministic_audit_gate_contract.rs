@@ -72,6 +72,7 @@ fn passing_result() -> DeterministicAuditResult {
         checks_run: 1,
         passed: true,
         mutation: None,
+        mutation_budget: None,
     }
 }
 
@@ -96,6 +97,7 @@ fn blocking_result() -> DeterministicAuditResult {
         checks_run: 4,
         passed: false,
         mutation: None,
+        mutation_budget: None,
     }
 }
 

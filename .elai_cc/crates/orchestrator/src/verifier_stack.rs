@@ -36,11 +36,15 @@
 //! `workflow/reasoning/I-17-decisions.md`.
 
 use std::sync::Arc;
+use tokio::sync::Mutex as TokioMutex;
 
 use elai_core::clock::{ClockProvider, OsClock};
 
 use crate::adversary::{AdversaryConfig, AdversaryError, DynAdversary};
 use crate::calibration::{compute_tau, CalibrationCorpus, DEFAULT_EPSILON, TAU_DEFAULT_FALLBACK};
+use crate::canary_injector::{
+    canary_injector_enabled, CanaryInjector, CanaryInjectorConfig, SCORER_ID_CONFORMAL_TAU,
+};
 use crate::checker_registry::{CheckerRegistry, CheckerResult};
 use crate::claim::{Claim, ClaimType};
 use crate::ssb::{GateId, Ssb, SsbPayload, TriLayerVerdictKind, TriLayerVerdictPayload};
@@ -138,8 +142,9 @@ pub struct VerdictRow {
 impl VerdictRow {
     /// True iff this branch was hard-vetoed at L1 (score is [`VETO_SCORE`] and
     /// neither L2 nor L3 ran). Read-side VerdictRow predicate the I-4 (Wave-4)
-    /// SearchLadder ranker consumes; allowlist ELAI_TRI_LAYER_ENABLE (plan I-4).
-    // WIRE-DARK[I-17]: no production caller until I-4 ships; i17 contract exercises it.
+    /// SearchLadder ranker consumes to drop hard-vetoed branches from selection.
+    /// WIRED (I-4): `crate::search::SearchLadder::is_pruned` calls it per branch
+    /// via `run_best_of_n`, reached from `task_runner::dispatch_search_ladder`.
     #[must_use]
     pub fn is_vetoed(&self) -> bool {
         matches!(self.verdict, TriLayerVerdictKind::HardVeto)
@@ -202,9 +207,9 @@ impl FlakeQuarantineLedger {
     }
 
     /// True iff the `(oracle_id, seed_range)` is currently quarantined. Read-side
-    /// check the I-4 (Wave-4) SearchLadder vote consults before every oracle read;
-    /// allowlist ELAI_TRI_LAYER_ENABLE (plan I-4).
-    // WIRE-DARK[I-17]: no production caller until I-4 ships; i17 contract (i17_f6) exercises it.
+    /// check the I-4 (Wave-4) SearchLadder vote consults before ranking a branch.
+    /// WIRED (I-4): `crate::search::SearchLadder::is_pruned` calls it per branch
+    /// via `run_best_of_n`, reached from `task_runner::dispatch_search_ladder`.
     #[must_use]
     pub fn is_quarantined(&self, oracle_id: &str, seed_range: (u64, u64)) -> bool {
         let key = Self::quarantine_key(oracle_id, seed_range);
@@ -262,12 +267,26 @@ pub struct TriLayerStack {
     adversary_config: AdversaryConfig,
     /// Shared SSB writer for the per-branch verdict rows.
     ssb: Arc<Ssb>,
+    /// I-24 isomorphic canary injector. `None` when
+    /// `ELAI_CANARY_INJECTOR_ENABLE` is not set or the fixture file is absent.
+    /// Wrapped in a `TokioMutex` so `run_verdict` (which takes `&self`) can
+    /// mutate the injector's consecutive-detection counter.
+    canary_injector: TokioMutex<Option<CanaryInjector>>,
 }
 
 impl TriLayerStack {
     /// Construct the stack from the shipped substrate handles. `adversary` and
     /// `calibration_corpus` are optional (L3 / L2 degrade gracefully when
     /// absent); the checker registry, dep-gate, and SSB writer are mandatory.
+    /// Construct the stack from the shipped substrate handles. `adversary` and
+    /// `calibration_corpus` are optional (L3 / L2 degrade gracefully when
+    /// absent); the checker registry, dep-gate, and SSB writer are mandatory.
+    ///
+    /// `fixture_dir` is the directory that contains `canary_pairs.json` (the
+    /// `fixtures/` subdirectory of the project root). When `None` or when the
+    /// file is absent, the I-24 canary injector is disabled for this stack.
+    /// The injector is also disabled when `ELAI_CANARY_INJECTOR_ENABLE` is not
+    /// set (default-OFF, R9 gate — see `ELAI_CANARY_INJECTOR_ENABLE_ENV`).
     #[must_use]
     pub fn new(
         checker_registry: Arc<CheckerRegistry>,
@@ -277,6 +296,51 @@ impl TriLayerStack {
         adversary_config: AdversaryConfig,
         ssb: Arc<Ssb>,
     ) -> Self {
+        Self::new_with_fixture_dir(
+            checker_registry,
+            dep_gate,
+            calibration_corpus,
+            adversary,
+            adversary_config,
+            ssb,
+            None::<&std::path::Path>,
+        )
+    }
+
+    /// Extended constructor that accepts a fixture directory path for the I-24
+    /// canary injector. Prefer [`Self::new`] in production code; this variant
+    /// is used by the task-runner bootstrap (which knows the project root) and
+    /// by integration tests that supply a temp-dir fixture.
+    pub fn new_with_fixture_dir(
+        checker_registry: Arc<CheckerRegistry>,
+        dep_gate: Arc<DepWriteTimeGate>,
+        calibration_corpus: Option<Arc<CalibrationCorpus>>,
+        adversary: Option<Arc<dyn DynAdversary>>,
+        adversary_config: AdversaryConfig,
+        ssb: Arc<Ssb>,
+        project_root: Option<&std::path::Path>,
+    ) -> Self {
+        // I-24: build the canary injector when the gate is enabled AND a
+        // project_root is supplied. Falls back gracefully to None on any error.
+        let canary = if canary_injector_enabled() {
+            project_root.and_then(|root| {
+                let fixture_path = root.join("fixtures").join("canary_pairs.json");
+                let seed = elai_seed_from_env();
+                let config = CanaryInjectorConfig::load(root, 0.05, seed);
+                match CanaryInjector::new(&fixture_path, config, Arc::clone(&ssb)) {
+                    Ok(inj) => inj,
+                    Err(e) => {
+                        tracing::warn!(
+                            canary.err = %e,
+                            "I-24 canary injector failed to load fixture; canary disabled"
+                        );
+                        None
+                    }
+                }
+            })
+        } else {
+            None
+        };
         Self {
             checker_registry,
             dep_gate,
@@ -284,6 +348,7 @@ impl TriLayerStack {
             adversary,
             adversary_config,
             ssb,
+            canary_injector: TokioMutex::new(canary),
         }
     }
 
@@ -313,6 +378,39 @@ impl TriLayerStack {
         let score = self.run_l2_score();
         let l2_call_count: u32 = 1;
 
+        // ---- I-24 canary injection (L2 anti-gaming, fire-and-forget).
+        // The injector wraps the same run_l2_score closure so it uses the
+        // IDENTICAL scorer path (GD-1). The wire-dark gate (ELAI_CANARY_INJECTOR_ENABLE)
+        // is checked inside maybe_inject; no-op when the gate is off or the
+        // injector is absent.
+        //
+        // WIRE-DARK[I-24]: the live dual-score through PpmClient is PENDING until
+        // D-026 wires PpmClient into run_l2_score. This call validates SSB plumbing,
+        // threshold logic, and neutralize state machine against the conformal-tau stub.
+        {
+            let mut guard = self.canary_injector.lock().await;
+            if let Some(ref mut inj) = *guard {
+                let corpus_clone = self.calibration_corpus.clone();
+                inj.maybe_inject(
+                    |_source| {
+                        // Scorer closure: run the same conformal-tau path.
+                        // The `_source` parameter is provided for future D-026 wiring
+                        // where the neural scorer uses the branch source.
+                        match corpus_clone.as_ref() {
+                            Some(c) => compute_tau(c, DEFAULT_EPSILON)
+                                .unwrap_or(TAU_DEFAULT_FALLBACK)
+                                .clamp(0.0, 1.0),
+                            None => TAU_DEFAULT_FALLBACK,
+                        }
+                    },
+                    SCORER_ID_CONFORMAL_TAU,
+                    "",      // agent_id: not tracked at stack level
+                    0_i64,   // superstep: not tracked at stack level
+                )
+                .await;
+            }
+        }
+
         // ---- L3: disagreement escalation. A single-branch run cannot disagree;
         // the variance gate is evaluated by the multi-branch caller via
         // [`Self::needs_l3_escalation`]. For the per-branch path we surface the
@@ -340,7 +438,9 @@ impl TriLayerStack {
     /// The task-runner production hook scores ONE candidate branch, which cannot
     /// disagree (needs >=2 survivors); the real caller is the I-4 (Wave-4)
     /// SearchLadder ranking a survivor SET. Allowlist ELAI_TRI_LAYER_ENABLE (I-4).
-    // WIRE-DARK[I-17]: no production caller until I-4 ships; i17 contract (i17_f3) exercises it.
+    /// WIRED (I-4): `crate::search::SearchLadder::finish` calls it over the ranked
+    /// survivor set via `run_best_of_n`, reached from
+    /// `task_runner::dispatch_search_ladder`.
     pub async fn escalate_on_disagreement(
         &self,
         survivors: &[VerdictRow],
@@ -538,6 +638,16 @@ async fn emit_row(ssb: &Arc<Ssb>, payload: SsbPayload) {
     {
         tracing::warn!(error = %e, "verifier_stack: TriLayerVerdict SSB emit failed (verdict unaffected)");
     }
+}
+
+/// Parse `ELAI_SEED` from the environment as a `u64`. Returns `0` when the
+/// var is absent or non-numeric. Used by the I-24 canary injector for GD-2
+/// (deterministic pair selection + injection probability under the same seed).
+fn elai_seed_from_env() -> u64 {
+    std::env::var("ELAI_SEED")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

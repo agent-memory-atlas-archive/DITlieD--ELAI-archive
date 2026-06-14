@@ -27,7 +27,8 @@ use elai_providers::runtime::{
     create_runtime, resolve_backend, AuthSource as RuntimeAuthSource, RuntimeBackend,
     RuntimeFactoryConfig, RuntimeHealth, SecretString,
 };
-use elai_providers::{resolve_auth_with_auto_refresh, AuthSource as ProviderAuthSource};
+use elai_orchestrator::auth_broker_emit::broker_resolve_anthropic_auth_with_ssb;
+use elai_providers::AuthSource as ProviderAuthSource;
 use thiserror::Error;
 use tokio::time::timeout;
 
@@ -384,7 +385,14 @@ async fn handle_runtime_test(candidate: &str) -> Result<String, RuntimeCmdError>
 /// On total absence, returns a user-facing reason string so the caller
 /// can surface a `[FAIL]` row pointing at `elai login anthropic`.
 fn resolve_anthropic_auth_for_factory() -> Result<RuntimeAuthSource, String> {
-    let provider_auth = resolve_auth_with_auto_refresh().map_err(|e| {
+    // I-50 (SCHEMA_VERSION 268): credential resolution goes through the auth broker.
+    // The broker calls resolve_startup_auth_source (byte-compat with the prior direct call)
+    // and emits an AuthBrokerEvent SSB row when a writer is present.
+    //
+    // WIRE-DARK[I-50]: writer=None because this function has no Arc<Ssb> in scope.
+    // Threading Arc<Ssb> through the CLI dispatch path is deferred per I-50 fork A183.
+    // The emit path is proven reachable by the i50_auth_broker_contract test.
+    let provider_auth = broker_resolve_anthropic_auth_with_ssb(None).map_err(|e| {
         format!(
             "no ANTHROPIC_API_KEY env var and no usable OAuth fixture ({e}). Run `elai login anthropic`."
         )

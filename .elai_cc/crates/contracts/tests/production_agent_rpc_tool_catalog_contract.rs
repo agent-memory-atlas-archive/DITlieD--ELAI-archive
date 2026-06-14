@@ -40,6 +40,7 @@ use elai_core::tool_dispatcher::{
 };
 use elai_ipc_types::{
     TOOL_ACKNOWLEDGE_INFEASIBLE,
+    TOOL_CHECKPOINT_DIFF, TOOL_CHECKPOINT_REWIND, TOOL_CHECKPOINT_SAVE, TOOL_TRACE_QUERY,
     TOOL_CANVAS_ANNOTATE, TOOL_CANVAS_CONNECT, TOOL_CANVAS_CREATE_NODE, TOOL_CANVAS_FORK,
     TOOL_CANVAS_RENDER_DIAGRAM, TOOL_CANVAS_SCREENSHOT, TOOL_CANVAS_SPAWN_VIEW,
     TOOL_CANVAS_UPDATE_NODE,
@@ -48,6 +49,8 @@ use elai_ipc_types::{
     TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_INDEX_ARTIFACTS, TOOL_LIST_ARTIFACTS, TOOL_REMOVE_ARTIFACTS,
     TOOL_SEARCH_ARTIFACTS, TOOL_SYMBOL_CONTEXT, TOOL_SYMBOL_DATAFLOW_IMPACT, TOOL_SYMBOL_DSL_QUERY,
     TOOL_SYMBOL_FLOW, TOOL_SYMBOL_IMPACT, TOOL_SYMBOL_LIST, TOOL_VALIDATE,
+    // I-54: agent-callable structural (AST-aware) edit tool (search/preview/apply).
+    TOOL_STRUCTURAL_SEARCH, TOOL_STRUCTURAL_PREVIEW, TOOL_STRUCTURAL_APPLY,
 };
 use elai_orchestrator::ipc_accept::AgentRpcServer;
 use elai_orchestrator::ProductionAgentRpcServer;
@@ -281,10 +284,11 @@ async fn contract_handle_infer_request_publishes_ten_tool_catalog() {
 
     assert_eq!(
         tools.len(),
-        29,
-        "I-53 catalog must publish exactly 29 tools \
+        36,
+        "I-54 catalog must publish exactly 36 tools \
          (R3 6-tool baseline + 4 symbol_* + 4 dkg_* + 2 E-40 DSL + 7 H-13 canvas_* + 1 H-15 canvas_spawn_view \
-         + 1 I-8 acknowledge_infeasible + 4 I-53 recipe/archive/json tools); \
+         + 1 I-8 acknowledge_infeasible + 1 I-13 trace_query + 4 I-53 recipe/archive/json tools \
+         + 3 I-52 checkpoint save/rewind/diff + 3 I-54 structural search/preview/apply); \
          got {} -- names={:?}",
         tools.len(),
         names,
@@ -323,18 +327,30 @@ async fn contract_handle_infer_request_publishes_ten_tool_catalog() {
         TOOL_CANVAS_SPAWN_VIEW,
         // I-8: aletheia voluntary abort (acknowledge_infeasible).
         TOOL_ACKNOWLEDGE_INFEASIBLE,
+        // I-13: on-demand line-range expansion tool. (Reconciled: the live
+        // catalog has shipped trace_query since I-13; this contract previously
+        // omitted it -- the I-52 changeset reconciles the pre-existing drift.)
+        TOOL_TRACE_QUERY,
         // I-53: recipe runners + utility tool pack.
         "recipe_list",
         "recipe_run",
         "archive_read",
         "json_tree_query",
+        // I-52: agent-callable checkpoint tool (save/rewind/diff).
+        TOOL_CHECKPOINT_SAVE,
+        TOOL_CHECKPOINT_REWIND,
+        TOOL_CHECKPOINT_DIFF,
+        // I-54: agent-callable structural (AST-aware) edit tool (search/preview/apply).
+        TOOL_STRUCTURAL_SEARCH,
+        TOOL_STRUCTURAL_PREVIEW,
+        TOOL_STRUCTURAL_APPLY,
     ]
     .into_iter()
     .collect();
     let actual: std::collections::BTreeSet<&str> = names.iter().copied().collect();
     assert_eq!(
         actual, expected,
-        "catalog names must equal the 29-tool set (no extras, no missing)",
+        "catalog names must equal the 33-tool set (no extras, no missing)",
     );
 }
 

@@ -3612,6 +3612,28 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                     },
                 })
             }
+            // I-9 (SCHEMA_VERSION 263): ErrorAmplificationMeasured flat beacon.
+            // Explicit arm so write-time validation resolves the payload type.
+            // The alpha/recovered numbers here are arbitrary fixtures (the real
+            // numbers are COMPUTED by the bench, never hard-coded).
+            SsbActionType::ErrorAmplificationMeasured => {
+                SsbPayload::ErrorAmplificationMeasured(ErrorAmplificationMeasuredPayload {
+                    suite: "error_amplification_test".into(),
+                    model_id: "test-fixture-0".into(),
+                    n_steps: 6,
+                    injected_step: 1,
+                    divergence_step: Some(1),
+                    alpha_t: 0.25,
+                    recovered_fraction: 0.75,
+                    repaired: true,
+                    annealed_temperature: None,
+                    seed: 7,
+                    fixture_blake3: {
+                        let h = blake3::hash(b"test_payload_error_amplification_measured");
+                        format!("{:.16}", h.to_hex())
+                    },
+                })
+            }
             // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2
             // single variant. Explicit arm so write-time validation resolves the
             // payload type correctly. Uses the Acquired arm (prior_tier None).
@@ -7510,6 +7532,25 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                     format!("{:.16}", h.to_hex())
                 },
             }),
+            // I-9 (SCHEMA_VERSION 263): ErrorAmplificationMeasured flat beacon.
+            // 1 entry (not Pattern-2; single sql_str). The numbers are arbitrary
+            // fixtures -- the real numbers are COMPUTED by the bench.
+            SsbPayload::ErrorAmplificationMeasured(ErrorAmplificationMeasuredPayload {
+                suite: "error_amplification_all".into(),
+                model_id: "error_amplification_frozen_fixture".into(),
+                n_steps: 6,
+                injected_step: 1,
+                divergence_step: Some(1),
+                alpha_t: 1.0,
+                recovered_fraction: 0.0,
+                repaired: false,
+                annealed_temperature: Some(0.0),
+                seed: 11,
+                fixture_blake3: {
+                    let h = blake3::hash(b"all_test_payloads_error_amplification_measured");
+                    format!("{:.16}", h.to_hex())
+                },
+            }),
             // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent SINGLE-VARIANT
             // Pattern-2; 3-arm SkillLibraryEventKind discriminator covers Acquired
             // / TrustPromoted / DemotedStale. Three entries cover all arms.
@@ -7758,6 +7799,10 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 scaled_calls: 14,
                 ceiling: 24,
                 seed: 42,
+                // I-26 extension fields — None on GRC-dispatch rows (H-42 path).
+                depth_level: None,
+                budget_pct: None,
+                plateau_fired: None,
             }),
             // H-43 (SCHEMA_VERSION 221): FitnessEvaluated Pattern-2 3-arm. 1 new entry.
             SsbPayload::FitnessEvaluated(FitnessEvaluatedPayload {
@@ -8317,6 +8362,55 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 score: 0.0,
                 ts_ms: 1_700_000_017_000,
             }),
+            // I-22 (SCHEMA_VERSION 264): ProgressRewardScored Pattern-2 3-arm. All 3 arms.
+            SsbPayload::ProgressRewardScored(ProgressRewardScoredPayload {
+                kind: ProgressRewardScoredKind::Delta,
+                branch_id: "branch-reward-delta-001".into(),
+                step: 3,
+                phi_t: 0.75,
+                phi_t_prev: 0.60,
+                shaped_reward: 0.15,
+                test_pass: 12,
+                compile_err_inv: 8,
+                req_covered: 4,
+                fork_node_id: String::new(),
+                truncated_at_step: 0,
+                decay_factor: 1.0,
+                no_progress_window: 0,
+                ts_ms: 1_700_000_018_000,
+            }),
+            SsbPayload::ProgressRewardScored(ProgressRewardScoredPayload {
+                kind: ProgressRewardScoredKind::FirstErrorTruncated,
+                branch_id: "branch-reward-trunc-002".into(),
+                step: 5,
+                phi_t: 0.0,
+                phi_t_prev: 0.0,
+                shaped_reward: 0.0,
+                test_pass: 0,
+                compile_err_inv: 0,
+                req_covered: 0,
+                fork_node_id: "fork-cas-node-abc123".into(),
+                truncated_at_step: 4,
+                decay_factor: 1.0,
+                no_progress_window: 0,
+                ts_ms: 1_700_000_019_000,
+            }),
+            SsbPayload::ProgressRewardScored(ProgressRewardScoredPayload {
+                kind: ProgressRewardScoredKind::DecayApplied,
+                branch_id: "branch-reward-decay-003".into(),
+                step: 10,
+                phi_t: 0.0,
+                phi_t_prev: 0.0,
+                shaped_reward: 0.0,
+                test_pass: 0,
+                compile_err_inv: 0,
+                req_covered: 0,
+                fork_node_id: String::new(),
+                truncated_at_step: 0,
+                decay_factor: 0.9,
+                no_progress_window: 5,
+                ts_ms: 1_700_000_020_000,
+            }),
         ]
     }
 
@@ -8328,8 +8422,8 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            483,
-            "479 prior (thru I-12 PlaybookEvent) + 4 I-17 (TriLayerVerdict: HardVeto / ScoredSurvivor / DisagreementEscalated / FlakeQuarantined)",
+            486,
+            "483 prior (thru I-17 TriLayerVerdict) + 3 I-22 (ProgressRewardScored: Delta / FirstErrorTruncated / DecayApplied)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

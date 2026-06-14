@@ -146,6 +146,22 @@ pub(crate) fn run_bench_seccodeplt(json: bool) -> anyhow::Result<()> {
     crate::bench_seccodeplt::run(json)
 }
 
+pub(crate) fn run_bench_error_amplification(
+    fixture: Option<String>,
+    seed: Option<u64>,
+    json: bool,
+    no_repair: bool,
+) -> anyhow::Result<()> {
+    // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) telemetry harness.
+    // Injects a deterministic byte-perturbation at one step of a frozen pipeline
+    // fixture OFFLINE (INFERENCE-FREE), writes a timestamped
+    // error-amplification-<ts>.json report under benchmarks/error_amplification/,
+    // and emits exactly one SsbActionType::ErrorAmplificationMeasured row
+    // (default-ON bench beacon; no ELAI_*_ENABLE gate). --no-repair is the R2
+    // negative control. Exits 0 on a clean run, 1 on infrastructural error.
+    crate::bench_error_amplification::run(fixture, seed, json, no_repair)
+}
+
 pub(crate) fn run_bench_staleness(json: bool, broken_retrieval: bool) -> anyhow::Result<()> {
     // H-30 (SCHEMA_VERSION 239): staleness / intent-drift INSTRUMENT. Drives the
     // SHIPPED bi-temporal memory substrate (FactStore + audit_conflicts +

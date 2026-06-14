@@ -36,6 +36,7 @@ artifacts_indexed
 audit_mast_tagged
 auditor_lineage_collision
 auditor_rubber_stamp_rejected
+auth_broker_token_acquired
 awq_checkpoint_built
 baby_step_dispatched
 baby_step_ready
@@ -85,6 +86,7 @@ checker_result_emitted
 checkpoint
 checkpoint_migrated
 checkpoint_resumed
+checkpoint_tool_saved
 checkpoint_written
 circuit_breaker_state_change
 citation_anchors_bound
@@ -122,6 +124,7 @@ context_transform_receipt
 contract_coding_event
 contract_test_scaffolded
 contract_violation_detected
+convergence_curve_measured
 convergence_stagnant
 core_block_replaced
 cosmos_artifact_decayed
@@ -183,7 +186,9 @@ empire_disconnected
 empire_event_received
 empire_repair_proposed
 entry_points_detected
+error_amplification_measured
 escalate_to_cloud
+escalation_cascade_local_win
 escalation_fired
 eval_corpus_event
 eval_firewall_event
@@ -330,6 +335,7 @@ msi_update
 mucoco_inconsistency_detected
 mucoco_mutation_applied
 mucoco_skip_reason
+mutation_budgeted_run_ci_cleared
 mutation_survived
 novel_step_detected
 novelty_classified
@@ -365,13 +371,16 @@ pr_package_verify_result
 pr_review_composed
 pr_semgrep_gate_result
 preview_available
+prm_canary_injected
 prmbench_run_completed
 production_observation_proposal
 profile_selected
+progress_reward_delta
 project_class_classified
 project_detection_signal
 promotion_score_aggregated
 prompt_armor_verdict
+prompt_compiled
 prompt_fragment_discarded
 prompt_fragment_selected
 prompt_hardening_applied
@@ -402,12 +411,14 @@ refusal_sla_breach
 regression_detected
 render_complete
 replan_request
+requirement_verified_satisfied
 rerun_hash_equality
 research_decompose_level
 research_path_chosen
 research_step
 researcher_net_egress_blocked
 result_manifest_verified
+retention_raw_inputs_purged
 review_surface_scored
 reward_ladder_event
 reward_tampering
@@ -437,6 +448,7 @@ scope_freeze_ratified
 scope_freeze_violated
 sdpa_backend_pinned
 search_mode_changed
+search_node_expanded
 search_replace_collision_fallback
 search_replace_tier1_hit
 search_trigger_fired
@@ -462,6 +474,7 @@ snapshot_uniqueness_regenerated
 spiral_detected
 spotlight_breached
 spotlight_wrapped
+sprint_contract_proposed
 ssb_filtered_by_overlap
 stagnation_oscillation_detected
 stagnation_spinning_detected
@@ -475,6 +488,7 @@ stop_confirmation_event
 streaming_early_terminated
 streaming_llm_engaged
 streaming_timing_recorded
+structural_edit_matched
 structural_retry_stage_attempt
 structured_engine_rejected
 stub_reference
@@ -500,6 +514,7 @@ task_advanced
 task_split
 task_submitted
 tdd_cycle_started
+tdd_preflight_missing_test_delta
 tdd_test_failed
 tdd_test_passed
 tdd_verification_event

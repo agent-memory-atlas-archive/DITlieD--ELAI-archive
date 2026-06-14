@@ -3375,6 +3375,9 @@ pub enum SsbPayload {
     // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
     // See `InsecureRateMeasuredPayload`. Flat beacon (no Kind discriminator).
     InsecureRateMeasured(InsecureRateMeasuredPayload),
+    // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) telemetry beacon.
+    // See `ErrorAmplificationMeasuredPayload`. Flat beacon (no Kind discriminator).
+    ErrorAmplificationMeasured(ErrorAmplificationMeasuredPayload),
     // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
     // See `SkillLibraryEventPayload` + `SkillLibraryEventKind`. Pattern-2
     // (single variant; SkillLibraryEventKind 3-arm discriminator).
@@ -3589,6 +3592,95 @@ pub enum SsbPayload {
     /// Pattern-2 single-variant 3-arm [`RowChainSealedKind`].
     /// TOTAL_VARIANTS 561 -> 562.
     RowChainSealed(RowChainSealedPayload),
+    /// I-19 (SCHEMA_VERSION 254): TDD enforcer preflight gate event.
+    /// Pattern-2 single-variant 3-arm [`TddPreflightBlockedKind`].
+    /// Wire-dark unless `ELAI_TDD_PREFLIGHT_ENABLE=1`.
+    /// TOTAL_VARIANTS 562 -> 563.
+    TddPreflightBlocked(TddPreflightBlockedPayload),
+    /// I-20 (SCHEMA_VERSION 255): budgeted mutation scheduler per-cone outcome.
+    /// Pattern-2 single-variant 4-arm [`MutationBudgetedRunKind`].
+    /// Default-ON; kill-switch `ELAI_MUTATION_BUDGET_DISABLE=1`.
+    /// TOTAL_VARIANTS 563 -> 564.
+    MutationBudgetedRun(MutationBudgetedRunPayload),
+
+    /// I-37 (SCHEMA_VERSION 257): per-EARS-requirement verified-status event.
+    /// Pattern-2 single-variant 3-arm [`RequirementVerifiedKind`].
+    /// Additive emit (independent of the blocking gate flag).
+    /// TOTAL_VARIANTS 565 -> 566.
+    RequirementVerified(RequirementVerifiedPayload),
+
+    /// I-21 (SCHEMA_VERSION 256) -- sprint-contract + ralph-loop lifecycle event.
+    /// Pattern-2 single-variant 5-arm [`SprintContractEventKind`].
+    SprintContractEvent(SprintContractEventPayload),
+
+    /// I-44 (SCHEMA_VERSION 258): zero-retention-after-verification purge receipt.
+    /// Pattern-2 single-variant 3-arm [`RetentionPurgedKind`].
+    /// Destructive + opt-in (`--zero-retention` + `ELAI_ZERO_RETENTION_ENABLE`).
+    /// TOTAL_VARIANTS 566 -> 567.
+    RetentionPurged(RetentionPurgedPayload),
+    /// I-52 (SCHEMA_VERSION 259): agent-callable checkpoint tool outcome event.
+    /// Pattern-2 single-variant 4-arm [`CheckpointToolEventKind`].
+    /// Default-ON over H-49 (`ELAI_TIMETRAVEL_DISABLE=1` kill-switch).
+    /// TOTAL_VARIANTS 567 -> 568.
+    CheckpointToolEvent(CheckpointToolEventPayload),
+    /// I-54 (SCHEMA_VERSION 260): agent-callable structural (AST-aware) edit tool
+    /// outcome event. Pattern-2 single-variant 5-arm [`StructuralEditAppliedKind`].
+    /// Reuses the shipped tree-sitter grammars (one version source; ast-grep
+    /// BANNED). TOTAL_VARIANTS 568 -> 569.
+    StructuralEditApplied(StructuralEditAppliedPayload),
+    /// I-4 (SCHEMA_VERSION 261): evidence-ranked search-ladder branch lifecycle
+    /// event (Wave-4 KEYSTONE). Pattern-2 single-variant 4-arm
+    /// [`SearchNodeEventKind`]. Default-OFF (`ELAI_SEARCH_LADDER_ENABLE`, R9
+    /// experiment). TOTAL_VARIANTS 569 -> 570.
+    SearchNodeEvent(SearchNodeEventPayload),
+    /// I-7 (SCHEMA_VERSION 262): cascading escalation waterfall lifecycle event
+    /// (Wave-4). Pattern-2 single-variant 4-arm [`EscalationCascadeKind`].
+    /// Default-OFF (`ELAI_ESCALATION_WATERFALL_ENABLE`, R9 experiment).
+    /// TOTAL_VARIANTS 570 -> 571.
+    EscalationCascade(EscalationCascadePayload),
+    /// I-22 (SCHEMA_VERSION 264): delta-progress shaped-reward scorer event.
+    /// Pattern-2 single-variant 3-arm [`ProgressRewardScoredKind`]:
+    /// Delta / FirstErrorTruncated / DecayApplied.
+    /// Wire-dark unless `ELAI_PROGRESS_REWARD_ENABLE=1`.
+    /// TOTAL_VARIANTS 572 -> 573.
+    ProgressRewardScored(ProgressRewardScoredPayload),
+    /// I-24 (SCHEMA_VERSION 266): isomorphic canary anti-gaming event.
+    /// Pattern-2 single-variant 3-arm [`PrmCanaryEventKind`]:
+    /// CanaryInjected / StyleBiasDetected / ScorerNeutralized.
+    /// Wire-dark unless `ELAI_CANARY_INJECTOR_ENABLE=1`.
+    /// R8: canary pairs frozen in `fixtures/canary_pairs.json`.
+    /// TOTAL_VARIANTS 573 -> 574.
+    PrmCanaryEvent(PrmCanaryEventPayload),
+    /// I-27 (SCHEMA_VERSION 265): verified-outcome-rate vs compute convergence
+    /// curve measurement flat beacon. Emitted by `bench_convergence::run_inner`
+    /// from `CliAction::BenchConvergence` dispatch.
+    /// TOTAL_VARIANTS 574 -> 575.
+    ConvergenceCurveMeasured(ConvergenceCurveMeasuredPayload),
+    /// I-36 (SCHEMA_VERSION 268): per-(role,backend) compiled-prompt artifact event.
+    /// Pattern-2 single-variant 3-arm [`PromptCompiledKind`]:
+    /// - `Compiled`: a promoted compiled variant substituted at the adapter boundary.
+    /// - `TransferGapMeasured`: source-vs-compiled fixture pass-rate delta ledgered (GD-2).
+    /// - `Rolledback`: compiled variant regressed fixture floor; variant removed from store.
+    ///
+    /// Default-ON (no-op pass-through when no variant is stored).
+    /// Kill-switch: ELAI_PROMPT_COMPILE_DISABLE=1.
+    /// TOTAL_VARIANTS 575 -> 576.
+    PromptCompiled(PromptCompiledPayload),
+    /// I-50 (SCHEMA_VERSION 268): subscription auth broker lifecycle event.
+    ///
+    /// Pattern-2 single-variant 4-arm [`AuthBrokerEventKind`]:
+    /// - `TokenAcquired`: a valid credential was resolved (env-key, saved token, or new
+    ///   OAuth exchange). The row names `provider_id` only -- no token material logged.
+    /// - `Refreshed`: an expired saved token was refreshed and re-persisted.
+    /// - `ProviderLinked`: a new provider credential was registered with the broker.
+    /// - `RefreshFailed`: a refresh attempt failed; the typed error is surfaced to the
+    ///   caller as `ApiError`, never swallowed silently.
+    ///
+    /// Default-ON. Wire-dark at the SSB-emit seam in `runtime_cmd.rs` until
+    /// `Arc<Ssb>` is threaded through (WIRE-DARK[I-50]). The emit path is proven
+    /// reachable via the i50 contract test (real TempDir SQLite).
+    /// TOTAL_VARIANTS 576 -> 577.
+    AuthBrokerEvent(AuthBrokerEventPayload),
 }
 
 impl SsbPayload {
@@ -4261,6 +4353,8 @@ impl SsbPayload {
             }
             // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
             Self::InsecureRateMeasured(_) => SsbActionType::InsecureRateMeasured,
+            // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) telemetry beacon.
+            Self::ErrorAmplificationMeasured(_) => SsbActionType::ErrorAmplificationMeasured,
             // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
             Self::SkillLibraryEvent(p) => SsbActionType::SkillLibraryEvent(p.kind),
             // F-5 / Slice A1 (SCHEMA_VERSION 203): staleness-quarantine broadcast.
@@ -4359,6 +4453,41 @@ impl SsbPayload {
             Self::TriLayerVerdict(ref p) => SsbActionType::TriLayerVerdict(p.kind),
             // I-18 (SCHEMA_VERSION 253): per-row rolling blake3 chain beacon (3-arm Pattern-2).
             Self::RowChainSealed(ref p) => SsbActionType::RowChainSealed(p.kind),
+            // I-19 (SCHEMA_VERSION 254): TDD enforcer preflight gate (3-arm Pattern-2).
+            // Default arm uses MissingTestDelta (the primary block reason); the concrete kind
+            // is stored in the payload's `kind` field, not recovered from the action_type.
+            Self::TddPreflightBlocked(ref p) => SsbActionType::TddPreflightBlocked(p.kind),
+            // I-20 (SCHEMA_VERSION 255): budgeted mutation scheduler (4-arm Pattern-2).
+            // The concrete kind is stored on the payload's `kind` field; the
+            // action_type carries it through so per-arm sql_str round-trips.
+            Self::MutationBudgetedRun(ref p) => SsbActionType::MutationBudgetedRun(p.kind),
+            Self::SprintContractEvent(ref p) => SsbActionType::SprintContractEvent(p.kind),
+            // I-37 (SCHEMA_VERSION 257): per-EARS-requirement verified status (3-arm Pattern-2).
+            Self::RequirementVerified(ref p) => SsbActionType::RequirementVerified(p.kind),
+            // I-44 (SCHEMA_VERSION 258): zero-retention purge receipt (3-arm Pattern-2).
+            Self::RetentionPurged(ref p) => SsbActionType::RetentionPurged(p.kind),
+            // I-52 (SCHEMA_VERSION 259): agent checkpoint tool event (4-arm Pattern-2).
+            Self::CheckpointToolEvent(ref p) => SsbActionType::CheckpointToolEvent(p.kind),
+            // I-54 (SCHEMA_VERSION 260): structural edit tool event (5-arm Pattern-2).
+            Self::StructuralEditApplied(ref p) => SsbActionType::StructuralEditApplied(p.kind),
+            // I-4 (SCHEMA_VERSION 261): search-ladder branch lifecycle (4-arm Pattern-2).
+            Self::SearchNodeEvent(ref p) => SsbActionType::SearchNodeEvent(p.kind),
+            // I-7 (SCHEMA_VERSION 262): escalation-cascade lifecycle (4-arm Pattern-2).
+            Self::EscalationCascade(ref p) => SsbActionType::EscalationCascade(p.kind),
+            // I-22 (SCHEMA_VERSION 264): delta-progress shaped-reward scorer (3-arm Pattern-2).
+            Self::ProgressRewardScored(ref p) => SsbActionType::ProgressRewardScored(p.kind),
+            // I-24 (SCHEMA_VERSION 266): isomorphic canary anti-gaming event (3-arm Pattern-2).
+            Self::PrmCanaryEvent(ref p) => SsbActionType::PrmCanaryEvent(p.kind),
+            // I-27 (SCHEMA_VERSION 265): convergence curve flat beacon.
+            Self::ConvergenceCurveMeasured(_) => SsbActionType::ConvergenceCurveMeasured,
+            // I-36 (SCHEMA_VERSION 268): compiled-prompt artifact event (3-arm Pattern-2).
+            // The representative arm is Compiled; action_type carries the concrete kind
+            // so per-arm sql_str round-trips via PromptCompiledKind::as_sql_str.
+            Self::PromptCompiled(ref p) => SsbActionType::PromptCompiled(p.kind),
+            // I-50 (SCHEMA_VERSION 268): subscription auth broker lifecycle event (4-arm Pattern-2).
+            // The representative arm is TokenAcquired; kind carries the concrete arm so
+            // per-arm sql_str round-trips via AuthBrokerEventKind::as_sql_str.
+            Self::AuthBrokerEvent(ref p) => SsbActionType::AuthBrokerEvent(p.kind),
         }
     }
 }
@@ -14986,6 +15115,69 @@ pub struct InsecureRateMeasuredPayload {
     pub corpus_blake3: String,
 }
 
+// === I-9 (SCHEMA_VERSION 263) -- ErrorAmplificationMeasured substrate ========
+
+/// I-9 (SCHEMA_VERSION 263) -- payload for
+/// [`SsbActionType::ErrorAmplificationMeasured`].
+///
+/// Emitted ONCE per `elai bench error-amplification` run. The harness injects
+/// a deterministic byte-perturbation at one step of a frozen pipeline fixture
+/// and measures whether the verification/repair stack contracts the error
+/// (low `alpha_t`) or amplifies it (high `alpha_t`). Flat beacon (no Kind
+/// discriminator), mirroring [`InsecureRateMeasuredPayload`].
+///
+/// `alpha_t` is the fraction of downstream steps that still carry the error
+/// after the repair stack acts; `recovered_fraction = 1.0 - alpha_t`. Both are
+/// COMPUTED from the fixture walk, never literals. The `--no-repair` arm
+/// (`repaired = false`) propagates fully (`alpha_t == 1.0`) so the instrument
+/// can scream (R2). ID-5: this is ELAI's OWN measured baseline; no literature
+/// alpha is carried as a target.
+///
+/// Fields:
+///   * `suite`               -- benchmark suite label.
+///   * `model_id`            -- fixture provenance id (the harness is
+///     model-independent; this records the fixture source).
+///   * `n_steps`             -- total pipeline steps in the fixture.
+///   * `injected_step`       -- 0-indexed step where corruption was injected.
+///   * `divergence_step`     -- 0-indexed step where the corrupted output first
+///     diverges from canonical (mirrors the DriftComparator first-divergence
+///     shape, H-23); `None` on a degenerate empty-output fixture.
+///   * `alpha_t`             -- the amplification factor (propagated fraction).
+///   * `recovered_fraction`  -- downstream fraction the repair stack recovered.
+///   * `repaired`            -- `true` = canonical arm; `false` = no-repair R2
+///     negative control.
+///   * `annealed_temperature`-- the clamped C-26 temperature the harness drove
+///     toward when `alpha_t` crossed the amplifying threshold mid-run; `None`
+///     when no tighten fired.
+///   * `seed`                -- deterministic RNG seed (`ELAI_SEED`).
+///   * `fixture_blake3`      -- blake3 hex of the canonical fixture bytes
+///     (provenance; never the full fixture text).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ErrorAmplificationMeasuredPayload {
+    /// Benchmark suite / harness label.
+    pub suite: String,
+    /// Fixture provenance id.
+    pub model_id: String,
+    /// Total pipeline steps in the fixture.
+    pub n_steps: u32,
+    /// 0-indexed step where corruption was injected.
+    pub injected_step: u32,
+    /// 0-indexed first-divergence step (`None` on a degenerate fixture).
+    pub divergence_step: Option<u32>,
+    /// The amplification factor (downstream propagated fraction), `[0,1]`.
+    pub alpha_t: f64,
+    /// Downstream fraction the repair stack recovered, `[0,1]`.
+    pub recovered_fraction: f64,
+    /// `true` = canonical (repaired) arm; `false` = no-repair R2 control.
+    pub repaired: bool,
+    /// Clamped C-26 annealing temperature when alpha crossed the threshold.
+    pub annealed_temperature: Option<f64>,
+    /// Deterministic RNG seed used for the byte-perturbation.
+    pub seed: u64,
+    /// blake3 hex of the canonical fixture bytes (provenance).
+    pub fixture_blake3: String,
+}
+
 // === F-6 / Slice A1 (SCHEMA_VERSION 202) -- SkillLibraryEvent substrate ======
 
 /// F-6 / Slice A1 (SCHEMA_VERSION 202) -- 3-arm kind discriminator carried by
@@ -16434,6 +16626,777 @@ pub struct RowChainSealedPayload {
     pub break_seq: Option<i64>,
 }
 
+// === I-19 (SCHEMA_VERSION 254) -- TddPreflightBlocked substrate ===========
+
+/// I-19 (SCHEMA_VERSION 254) -- discriminator for [`SsbActionType::TddPreflightBlocked`].
+///
+/// Pattern-2 single-variant 3-arm; each arm maps to its own sql_str.
+/// Wire-dark unless `ELAI_TDD_PREFLIGHT_ENABLE=1` (R9 experiment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TddPreflightBlockedKind {
+    /// An Edit introduced a new pub symbol but the test-file set contains no
+    /// test symbol whose name substring-matches the new pub symbol. The gate
+    /// blocks the write to enforce the "no new pub fn without a test delta" rule.
+    MissingTestDelta,
+    /// Staged content fails `cargo check --tests` (Rust) or `pytest --collect-only`
+    /// (Python) on the compile-only dry-run. The gate blocks the write because even
+    /// a symbolically-matched test would fail to compile.
+    SyntaxDryRunFailed,
+    /// The diff introduces NO new pub symbol (pure refactor/rename/reformat).
+    /// Gate is skipped; this arm is emitted as an advisory SSB row only.
+    RefactorExempted,
+}
+
+impl TddPreflightBlockedKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::MissingTestDelta   => "tdd_preflight_missing_test_delta",
+            Self::SyntaxDryRunFailed => "tdd_preflight_syntax_dry_run_failed",
+            Self::RefactorExempted   => "tdd_preflight_refactor_exempted",
+        }
+    }
+}
+
+/// I-19 (SCHEMA_VERSION 254) -- payload for [`SsbActionType::TddPreflightBlocked`].
+///
+/// Wire-dark default; emission gated by `ELAI_TDD_PREFLIGHT_ENABLE` env var.
+///
+/// Fields:
+///   * `kind`           -- 3-arm fire-point discriminator.
+///   * `file_path`      -- project-relative path of the file being edited.
+///   * `pub_symbols`    -- comma-separated new pub symbols extracted by tree-sitter
+///     (empty string for RefactorExempted arm).
+///   * `fsm_state`      -- optional snake-case FSM state label at emission time.
+///   * `dry_run_stderr` -- first 256 bytes of stderr from `cargo check --tests`
+///     (SyntaxDryRunFailed arm only; empty string on other arms).
+///   * `ts_ms`          -- wall-clock unix-ms at emission time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TddPreflightBlockedPayload {
+    /// Fire-point discriminator. See [`TddPreflightBlockedKind`].
+    pub kind: TddPreflightBlockedKind,
+    /// Project-relative path of the file being gated.
+    pub file_path: String,
+    /// Comma-separated new pub symbol names extracted by tree-sitter parse.
+    /// Empty string for RefactorExempted arm.
+    pub pub_symbols: String,
+    /// Optional snake-case FSM state label at emission time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fsm_state: Option<String>,
+    /// First 256 bytes of `cargo check --tests` stderr (SyntaxDryRunFailed arm only).
+    pub dry_run_stderr: String,
+    /// Wall-clock unix-ms at emission time.
+    pub ts_ms: i64,
+}
+
+/// I-19 (SCHEMA_VERSION 254) -- env var name gating `TddPreflightBlockedPayload` emission.
+/// Wire-dark default: gate is OFF until GD-4 FP rate bounded on >=3 real orchestrate runs.
+/// Set to `"1"` / `"true"` / `"yes"` / `"on"` to activate.
+pub const ELAI_TDD_PREFLIGHT_ENABLE_ENV: &str = "ELAI_TDD_PREFLIGHT_ENABLE";
+
+// === I-20 (SCHEMA_VERSION 255) -- MutationBudgetedRun substrate =============
+
+/// I-20 (SCHEMA_VERSION 255) -- discriminator for [`SsbActionType::MutationBudgetedRun`].
+///
+/// Pattern-2 single-variant 4-arm; each arm maps to its own sql_str. The
+/// budgeted mutation scheduler (Track 15 KEYSTONE) emits one row per cone
+/// scoring outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationBudgetedRunKind {
+    /// The Wilson-CI lower bound cleared the session's (TOML-measured)
+    /// kill-rate threshold -- pass (early or full).
+    CiCleared,
+    /// The Wilson-CI upper bound already failed the threshold -- fail-early.
+    CiFailed,
+    /// A mutant survived; the row carries the structured SurvivorDirective
+    /// (operator + line + surviving mutation) fed to the generator.
+    SurvivorDirective,
+    /// An unchanged (fn-content, bound-test-set) blake3 key returned from the
+    /// EquivalentMutantCache with ZERO mutant runs.
+    CacheHit,
+}
+
+impl MutationBudgetedRunKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::CiCleared => "mutation_budgeted_run_ci_cleared",
+            Self::CiFailed => "mutation_budgeted_run_ci_failed",
+            Self::SurvivorDirective => "mutation_budgeted_run_survivor_directive",
+            Self::CacheHit => "mutation_budgeted_run_cache_hit",
+        }
+    }
+}
+
+/// I-20 (SCHEMA_VERSION 255) -- payload for [`SsbActionType::MutationBudgetedRun`].
+///
+/// The 5 CI params (`n_sampled`, `n_total_cone`, `ci_lower`, `ci_upper`,
+/// `time_ms`) are recomputable under `ELAI_SEED` (GD-2). For the
+/// `SurvivorDirective` arm the `operator` / `survivor_file` / `survivor_line`
+/// / `survivor_mutation` fields carry the structured counterexample; for the
+/// `CacheHit` arm `n_sampled == 0` and the CI bounds are `0.0`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MutationBudgetedRunPayload {
+    /// Fire-point discriminator. See [`MutationBudgetedRunKind`].
+    pub kind: MutationBudgetedRunKind,
+    /// Number of mutants actually sampled (0 on a pure cache hit).
+    pub n_sampled: u32,
+    /// Size of the full diff-cone-selected mutant set.
+    pub n_total_cone: u32,
+    /// Wilson-CI lower bound on the kill rate (0.0..=1.0).
+    pub ci_lower: f64,
+    /// Wilson-CI upper bound on the kill rate (0.0..=1.0).
+    pub ci_upper: f64,
+    /// The (TOML-measured, ID-5) kill-rate threshold the run was scored against.
+    pub threshold: f64,
+    /// Wall-clock duration of the budgeted run in milliseconds.
+    pub time_ms: u64,
+    /// SurvivorDirective arm: the surviving operator (empty on other arms).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub operator: String,
+    /// SurvivorDirective arm: project-relative source file (empty on other arms).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub survivor_file: String,
+    /// SurvivorDirective arm: 1-based source line (0 on other arms).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub survivor_line: u32,
+    /// SurvivorDirective arm: human-readable surviving-mutation description
+    /// (empty on other arms).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub survivor_mutation: String,
+    /// Wall-clock unix-ms at emission time.
+    pub ts_ms: i64,
+}
+
+/// serde skip helper for the optional `survivor_line` field.
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+/// I-20 (SCHEMA_VERSION 255) -- env var name gating `MutationBudgetedRun`
+/// emission. Default-ON kill-switch posture: the budget scheduler is the
+/// mutation hot-path optimization, so it runs by default; set to `"1"` /
+/// `"true"` to DISABLE emission (the gate verdict is unaffected either way).
+pub const ELAI_MUTATION_BUDGET_DISABLE_ENV: &str = "ELAI_MUTATION_BUDGET_DISABLE";
+
+// === I-21 (SCHEMA_VERSION 256) -- SprintContractEvent substrate =============
+
+/// I-21 (SCHEMA_VERSION 256) -- discriminator for [`SsbActionType::SprintContractEvent`].
+///
+/// Pattern-2 single-variant 5-arm; each arm maps to its own sql_str. The
+/// sprint-contract + ralph-loop machinery emits one row per lifecycle event:
+/// the isolated evaluator's receive/verdict, each bounded reinjection, and the
+/// 3rd-failure cross-family adversary escalation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SprintContractEventKind {
+    /// The isolated evaluator received the generator's sealed Sprint Contract
+    /// (zero shared generator context).
+    Proposed,
+    /// The evaluator approved the contract (acceptance criteria are
+    /// deterministically checkable; scope is bounded).
+    Approved,
+    /// The evaluator rejected the contract; the payload's `objection` field
+    /// carries the concrete, structured reason (the vague-criterion path).
+    Rejected,
+    /// A TriLayerStack failure reinjected the failing trace to the generator
+    /// for one bounded retry (loop cap = 3 total iterations).
+    RalphReinjected,
+    /// The 3rd consecutive failure escalated to the D-13 cross-family adversary,
+    /// which produced a concrete counterexample rather than a bare score.
+    AdversaryEscalated,
+}
+
+impl SprintContractEventKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::Proposed => "sprint_contract_proposed",
+            Self::Approved => "sprint_contract_approved",
+            Self::Rejected => "sprint_contract_rejected",
+            Self::RalphReinjected => "sprint_contract_ralph_reinjected",
+            Self::AdversaryEscalated => "sprint_contract_adversary_escalated",
+        }
+    }
+}
+
+/// I-21 (SCHEMA_VERSION 256) -- payload for [`SsbActionType::SprintContractEvent`].
+///
+/// One row per sprint-contract lifecycle event. The `iteration` field carries
+/// the ralph-loop counter (0 at Proposed/Approved/Rejected, 1..=3 on the
+/// reinjection/escalation arms); `objection` carries the evaluator's concrete
+/// structured rejection reason (empty on non-Rejected arms); `counterexample`
+/// carries the D-13 adversary counter text (empty unless AdversaryEscalated).
+/// All free-text fields are bounded by the caller before construction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SprintContractEventPayload {
+    /// Fire-point discriminator. See [`SprintContractEventKind`].
+    pub kind: SprintContractEventKind,
+    /// Stable per-contract identifier (blake3-derived by the producer so rows
+    /// recompute under `ELAI_SEED`, GD-2).
+    pub contract_id: String,
+    /// The contract goal (bounded plaintext).
+    pub goal: String,
+    /// Ralph-loop iteration counter: 0 on Proposed/Approved/Rejected,
+    /// 1..=`MAX_RALPH_REINJECTIONS` on RalphReinjected/AdversaryEscalated.
+    pub iteration: u32,
+    /// Rejected arm: the concrete structured objection (empty on other arms).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub objection: String,
+    /// AdversaryEscalated arm: the D-13 counterexample text (empty on others).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub counterexample: String,
+    /// Wall-clock unix-ms at emission time.
+    pub ts_ms: i64,
+}
+
+/// I-21 (SCHEMA_VERSION 256) -- env var name gating `SprintContractEvent`
+/// emission. Default-OFF (R9 experiment): set to a truthy literal (`"1"` /
+/// `"true"` / `"yes"` / `"on"`) to enable the sprint-contract dispatch path.
+/// Promotion plan: `I-21-promotion`. See `wire-dark-allowlist.toml`.
+pub const ELAI_SPRINT_CONTRACT_ENABLE_ENV: &str = "ELAI_SPRINT_CONTRACT_ENABLE";
+
+// === I-4 (SCHEMA_VERSION 261) -- SearchNodeEvent substrate ==================
+
+/// I-4 (SCHEMA_VERSION 261) -- discriminator for [`SsbActionType::SearchNodeEvent`].
+///
+/// Pattern-2 single-variant 4-arm; each arm maps to its own sql_str. The
+/// evidence-ranked search ladder emits one row per branch lifecycle transition
+/// so the SSB records WHY each branch won or lost (the dashboard branch-board,
+/// H-15, is the intended consumer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchNodeEventKind {
+    /// A candidate branch was generated, its pristine per-branch context built
+    /// (I-5), and run through the I-17 tri-layer stack. The row carries the
+    /// branch's tri-layer verdict + score.
+    Expanded,
+    /// A branch was DROPPED from selection: the tri-layer stack hard-vetoed it
+    /// (`VerdictRow::is_vetoed`) or its oracle was flake-quarantined
+    /// (`FlakeQuarantineLedger::is_quarantined`). Terminal (ID-4) -- a pruned
+    /// branch is never Promoted.
+    Pruned,
+    /// The best-of-N winner. Carries verifier-derived evidence (tri-layer score
+    /// + mutation kill-rate + progress score); a branch promoted on neural score
+    /// alone is the ID-4 stub_ban the broken `--llm-judge-only` arm FAILS on.
+    Promoted,
+    /// Every candidate was vetoed/quarantined; the ladder produced no survivor
+    /// and fell back to the linear-retry path (the honest no-winner beacon).
+    BudgetCollapsed,
+}
+
+impl SearchNodeEventKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::Expanded => "search_node_expanded",
+            Self::Pruned => "search_node_pruned",
+            Self::Promoted => "search_node_promoted",
+            Self::BudgetCollapsed => "search_node_budget_collapsed",
+        }
+    }
+}
+
+/// I-4 (SCHEMA_VERSION 261) -- payload for [`SsbActionType::SearchNodeEvent`].
+///
+/// One row per search-ladder branch lifecycle transition. The verifier-receipt
+/// fields are the load-bearing evidence: a `Promoted` row with a neutral
+/// `tri_layer_score` and a zero `mutation_kill_rate` is the ID-4 stub_ban the
+/// `--llm-judge-only` broken arm produces (no verifier-derived selection). All
+/// fields recompute under `ELAI_SEED` (GD-2): `mutation_kill_rate` is the
+/// Wilson-CI point estimate, `progress_score` the rank-3 tie-breaker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchNodeEventPayload {
+    /// Fire-point discriminator. See [`SearchNodeEventKind`].
+    pub kind: SearchNodeEventKind,
+    /// The branch this row scores (the I-17 `Branch::branch_id` / `VerdictRow`
+    /// key, so the row joins to its `tri_layer_verdict` row).
+    pub branch_id: String,
+    /// The wire tag of the branch's tri-layer verdict (e.g. `hard_veto`,
+    /// `scored_survivor`); the rank-1 selection signal. Empty on
+    /// `BudgetCollapsed` (no survivor to rank).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tri_layer_verdict: String,
+    /// The branch's tri-layer score in `[0.0, 1.0]` (rank-1). Literal `0.0` for
+    /// a vetoed (Pruned) branch.
+    pub tri_layer_score: f64,
+    /// The branch's I-20 mutation kill-rate (Wilson-CI point estimate, rank-2).
+    /// `0.0` when no mutation receipt was supplied for the branch.
+    pub mutation_kill_rate: f64,
+    /// The branch's progress score (rank-3 tie-breaker) in `[0.0, 1.0]`.
+    pub progress_score: f64,
+    /// Wall-clock unix-ms at emission time.
+    pub ts_ms: i64,
+}
+
+/// I-4 (SCHEMA_VERSION 261) -- env var name gating `SearchNodeEvent` emission
+/// AND the multi-branch ladder dispatch. Default-OFF (R9 experiment): the
+/// multi-branch ladder consumes more compute + changes search to best-of-N, so
+/// it ships behind a GD-4 measured-first-win gate. Set to a truthy literal
+/// (`"1"` / `"true"` / `"yes"` / `"on"`) to enable. Promotion plan:
+/// `I-4-promotion`. See `wire-dark-allowlist.toml`.
+pub const ELAI_SEARCH_LADDER_ENABLE_ENV: &str = "ELAI_SEARCH_LADDER_ENABLE";
+
+// === I-7 (SCHEMA_VERSION 262) -- EscalationCascade substrate =================
+
+/// I-7 (SCHEMA_VERSION 262) -- discriminator for [`SsbActionType::EscalationCascade`].
+///
+/// Pattern-2 single-variant 4-arm; each arm maps to its own sql_str. The
+/// local-first escalation waterfall emits one row per lifecycle transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationCascadeKind {
+    /// At least one local branch survived the I-17 tri-layer check; the task
+    /// solved on the local lane and the cloud arm NEVER ran (E-39 zero-cloud-spend).
+    LocalWin,
+    /// Every local branch failed; the failure set was condensed into the typed
+    /// I-11 BeliefState (<=2K, NO raw history -- ID-3 / stub_ban). The row carries
+    /// the condensed payload byte size.
+    Condensed,
+    /// The condensate was routed SYNCHRONOUSLY to the H-7 cloud seam
+    /// (`CloudModeRouter::route`). The billed cloud architect inference that
+    /// consumes the condensate is D-026 PENDING (never fired from the buildable
+    /// path). The row carries the condensed payload byte size.
+    Escalated,
+    /// Journal-completeness ONLY for the OFFLINE H-5 batch lane; the LIVE waterfall
+    /// NEVER emits this arm (IC-1: the batch lane is structurally unreachable from
+    /// `escalation_waterfall.rs` -- it has no batch-client import). Present so the
+    /// offline scheduler has a wire tag without a second action_type.
+    BatchRouted,
+}
+
+impl EscalationCascadeKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::LocalWin    => "escalation_cascade_local_win",
+            Self::Condensed   => "escalation_cascade_condensed",
+            Self::Escalated   => "escalation_cascade_escalated",
+            Self::BatchRouted => "escalation_cascade_batch_routed",
+        }
+    }
+}
+
+/// I-7 (SCHEMA_VERSION 262) -- payload for [`SsbActionType::EscalationCascade`].
+///
+/// Wire-dark default; emission gated by `ELAI_ESCALATION_WATERFALL_ENABLE`.
+///
+/// Fields:
+///   * `kind`            -- 4-arm lifecycle discriminator.
+///   * `condensed_bytes` -- byte length of the condensed I-11 BeliefState wire
+///     payload sent on escalation (`0` for the `LocalWin` arm; `<=` the module's
+///     `CONDENSED_PAYLOAD_MAX_BYTES` ceiling on `Condensed`/`Escalated`).
+///   * `ts_ms`           -- wall-clock unix-ms at emission time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EscalationCascadePayload {
+    /// Fire-point discriminator. See [`EscalationCascadeKind`].
+    pub kind: EscalationCascadeKind,
+    /// Byte length of the condensed BeliefState wire payload (`0` on `LocalWin`).
+    pub condensed_bytes: u32,
+    /// Wall-clock unix-ms at emission time.
+    pub ts_ms: i64,
+}
+
+/// I-7 (SCHEMA_VERSION 262) -- env var name gating `EscalationCascade` emission AND
+/// the `maybe_run_escalation_waterfall` drive_task hook. Default-OFF (R9
+/// experiment): the local-first waterfall changes the local->cloud transition
+/// path, so it ships behind a GD-4 measured-first-win gate. Set to a truthy literal
+/// (`"1"` / `"true"` / `"yes"` / `"on"`) to enable. Promotion plan: `I-7-promotion`.
+/// See `wire-dark-allowlist.toml`.
+pub const ELAI_ESCALATION_WATERFALL_ENABLE_ENV: &str = "ELAI_ESCALATION_WATERFALL_ENABLE";
+
+// === I-22 (SCHEMA_VERSION 264) -- ProgressRewardScored substrate =============
+
+/// I-22 (SCHEMA_VERSION 264) -- discriminator for [`SsbActionType::ProgressRewardScored`].
+///
+/// Pattern-2 single-variant 3-arm; each arm maps to its own sql_str. Emitted by
+/// `crate::search::score::DeltaProgressScorer` from the
+/// `task_runner::dispatch_progress_reward` post-task seam.
+///
+/// - `Delta`: a scored step; carries the shaped reward phi(h_t) - phi(h_{t-1}) and
+///   the full phi-component breakdown (test_pass, compile_err_inv, req_covered) so
+///   the review is reproducible under `ELAI_SEED` (GD-2 / ID-4).
+/// - `FirstErrorTruncated`: a branch was truncated at the first HardVeto (step k-1);
+///   the H-49 fork node id at step k-1 is visible in the `fork_node_id` field.
+/// - `DecayApplied`: D consecutive zero-delta steps triggered the no-progress decay
+///   multiplier; the `decay_factor` field carries the applied multiplier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressRewardScoredKind {
+    /// Shaped reward phi(h_t) - phi(h_{t-1}) scored for one branch step.
+    Delta,
+    /// Branch truncated at first HardVeto (step k-1); H-49 fork point recorded.
+    FirstErrorTruncated,
+    /// No-progress decay multiplier applied after D consecutive zero-delta steps.
+    DecayApplied,
+}
+
+impl ProgressRewardScoredKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(self) -> &'static str {
+        match self {
+            Self::Delta              => "progress_reward_delta",
+            Self::FirstErrorTruncated => "progress_reward_first_error_truncated",
+            Self::DecayApplied      => "progress_reward_decay_applied",
+        }
+    }
+}
+
+/// I-22 (SCHEMA_VERSION 264) -- payload for [`SsbActionType::ProgressRewardScored`].
+///
+/// Wire-dark default; emission gated by `ELAI_PROGRESS_REWARD_ENABLE` env var.
+///
+/// Fields (all arms):
+///   * `kind`           -- 3-arm fire-point discriminator.
+///   * `branch_id`      -- stable identifier of the branch being scored.
+///   * `step`           -- 0-indexed step index within the branch trajectory.
+///   * `ts_ms`          -- wall-clock unix-ms at emission time.
+///
+/// Fields (Delta arm only):
+///   * `phi_t`          -- current phi(h_t) value (weighted sum of deterministic observables).
+///   * `phi_t_prev`     -- previous phi(h_{t-1}) value (0.0 at step 0).
+///   * `shaped_reward`  -- phi_t - phi_t_prev (the actual shaped reward fed to the PUCT value fn).
+///   * `test_pass`      -- count of passing tests at step t (deterministic, from SSB TestOutcome rows).
+///   * `compile_err_inv` -- inverted compile-error count (higher = fewer errors). Deterministic.
+///   * `req_covered`    -- count of EARS requirements that are Satisfied at step t (from i-37).
+///
+/// Fields (FirstErrorTruncated arm only):
+///   * `fork_node_id`   -- H-49 CAS fork node id at step k-1 (empty string on other arms).
+///   * `truncated_at_step` -- the step k where the HardVeto fired (0 on other arms).
+///
+/// Fields (DecayApplied arm only):
+///   * `decay_factor`   -- the multiplier applied (< 1.0); 1.0 on other arms.
+///   * `no_progress_window` -- the D parameter from metrics/progress_reward_weights.toml (0 on other arms).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProgressRewardScoredPayload {
+    /// Fire-point discriminator. See [`ProgressRewardScoredKind`].
+    pub kind: ProgressRewardScoredKind,
+    /// Stable identifier of the branch this scored step belongs to.
+    pub branch_id: String,
+    /// 0-indexed step index within the branch trajectory.
+    pub step: u32,
+    // --- Delta arm fields ---
+    /// Current phi(h_t). Deterministic observable sum; 0.0 on non-Delta arms.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub phi_t: f64,
+    /// Previous phi(h_{t-1}). 0.0 at step 0 and on non-Delta arms.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub phi_t_prev: f64,
+    /// Shaped reward = phi_t - phi_t_prev. 0.0 on non-Delta arms.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub shaped_reward: f64,
+    /// Count of passing tests at step t (deterministic, ID-4). 0 on non-Delta arms.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub test_pass: u32,
+    /// Inverted compile-error count at step t (higher = cleaner). 0 on non-Delta arms.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub compile_err_inv: u32,
+    /// Count of Satisfied EARS requirements at step t. 0 on non-Delta arms.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub req_covered: u32,
+    // --- FirstErrorTruncated arm fields ---
+    /// H-49 CAS fork node id recorded at step k-1. Empty on non-truncation arms.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fork_node_id: String,
+    /// The step k where the HardVeto fired (branch truncated at k-1). 0 on other arms.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub truncated_at_step: u32,
+    // --- DecayApplied arm fields ---
+    /// The decay multiplier applied (< 1.0). 1.0 on non-decay arms.
+    #[serde(default, skip_serializing_if = "is_one_f64")]
+    pub decay_factor: f64,
+    /// The no-progress window D (from metrics/progress_reward_weights.toml). 0 on other arms.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub no_progress_window: u32,
+    /// Wall-clock unix-ms at emission time.
+    pub ts_ms: i64,
+}
+
+/// serde skip helper: true when the f64 is exactly 0.0.
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// serde skip helper: true when the f64 is exactly 1.0.
+fn is_one_f64(v: &f64) -> bool {
+    *v == 1.0
+}
+
+/// I-22 (SCHEMA_VERSION 264) -- env var name gating `ProgressRewardScored` emission
+/// and the `dispatch_progress_reward` drive_task hook. Default-OFF (R9 experiment):
+/// the progress-shaped reward scorer changes how the search ladder values branches,
+/// so it ships behind a GD-4 measured-first-win gate. Set to a truthy literal
+/// (`"1"` / `"true"` / `"yes"` / `"on"`) to enable. Promotion plan: `I-22-promotion`
+/// (FORWARD). See `wire-dark-allowlist.toml`.
+pub const ELAI_PROGRESS_REWARD_ENABLE_ENV: &str = "ELAI_PROGRESS_REWARD_ENABLE";
+
+// === I-37 (SCHEMA_VERSION 257) -- RequirementVerified substrate =============
+
+/// I-37 (SCHEMA_VERSION 257) -- discriminator for [`SsbActionType::RequirementVerified`].
+///
+/// Pattern-2 single-variant 3-arm; each arm maps to its own sql_str. One row is
+/// emitted per EARS requirement at the PLANNING -> TESTING_FIRST audit so the
+/// G-5 cockpit can render a per-requirement verified-status chip. The emit is
+/// additive (independent of the blocking gate flag) so an `Unverified`
+/// requirement is always SHOWN, never silently dropped (R1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementVerifiedKind {
+    /// Mutation coverage cleared the (I-20-measured) floor AND every bound
+    /// metamorphic relation held AND the requirement has >=1 bound test.
+    Satisfied,
+    /// The requirement has NO bound tests -- it is unverifiable and is shown as
+    /// such in the cockpit (R1: missing evidence is a hard, visible state, never
+    /// a silent drop).
+    Unverified,
+    /// A previously-bound test was deleted (the re-audit status flip), or a
+    /// bound MR no longer holds, or coverage fell below the floor.
+    Regressed,
+}
+
+impl RequirementVerifiedKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::Satisfied => "requirement_verified_satisfied",
+            Self::Unverified => "requirement_verified_unverified",
+            Self::Regressed => "requirement_verified_regressed",
+        }
+    }
+}
+
+/// I-37 (SCHEMA_VERSION 257) -- payload for [`SsbActionType::RequirementVerified`].
+///
+/// One row per EARS requirement per audit. `content_hash` is the blake3 of the
+/// canonical requirement text (the idempotent join key for the cockpit chip);
+/// `mutation_coverage` is the I-20 sampled score (`None` until a scoring audit
+/// runs; recomputable under `ELAI_SEED`, GD-2 -- never fabricated).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RequirementVerifiedPayload {
+    /// Fire-point discriminator. See [`RequirementVerifiedKind`].
+    pub kind: RequirementVerifiedKind,
+    /// blake3 hex of the canonical requirement text (drift detector + chip key).
+    pub content_hash: String,
+    /// The EARS stereotype label (snake_case: ubiquitous / event_driven / ...).
+    pub pattern: String,
+    /// Number of bound tests on this requirement.
+    pub bound_test_count: u32,
+    /// I-20 sampled mutation score on the bound tests (`None` until scored).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_coverage: Option<f64>,
+    /// Number of bound metamorphic relations.
+    pub mr_count: u32,
+    /// Wall-clock unix-ms at emission time.
+    pub ts_ms: i64,
+}
+
+/// I-37 (SCHEMA_VERSION 257) -- env var name gating the blocking `RequirementsGate`.
+/// Default-OFF (R9 experiment): with the flag absent the gate degrades to pass
+/// and changes no production gate behaviour (only the additive
+/// `RequirementVerified` SSB emit runs). Set to a truthy literal (`"1"` /
+/// `"true"` / `"yes"` / `"on"`) to enable blocking. Promotion plan:
+/// `I-37-promotion`. See `wire-dark-allowlist.toml`.
+pub const ELAI_REQUIREMENTS_GATE_ENABLE_ENV: &str = "ELAI_REQUIREMENTS_GATE_ENABLE";
+
+// === I-44 (SCHEMA_VERSION 258) -- RetentionPurged substrate ==================
+
+/// I-44 (SCHEMA_VERSION 258) -- discriminator for [`SsbActionType::RetentionPurged`].
+///
+/// Pattern-2 single-variant 3-arm; each arm maps to its own sql_str. Emitted by
+/// `crate::retention::purge_after_verify` from the `elai run` post-attestation
+/// seal seam once a zero-retention purge runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionPurgedKind {
+    /// The active session's raw managed-transcript files were deleted after the
+    /// sealed verdict; the payload's `purged_classes` names the file classes.
+    RawInputsPurged,
+    /// A blake3 over the redacted retained evidence set -- the survivable digest
+    /// the verdict still verifies against (carried in `retained_blake3`).
+    EvidenceRetained,
+    /// Post-purge beacon: the raw bytes are gone and the redacted evidence
+    /// digest survives + verifies (the auditable proof of the purge).
+    PurgeVerified,
+}
+
+impl RetentionPurgedKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::RawInputsPurged => "retention_raw_inputs_purged",
+            Self::EvidenceRetained => "retention_evidence_retained",
+            Self::PurgeVerified => "retention_purge_verified",
+        }
+    }
+}
+
+/// I-44 (SCHEMA_VERSION 258) -- payload for [`SsbActionType::RetentionPurged`].
+///
+/// Records WHAT was purged + WHAT was retained so the purge itself is auditable:
+/// you can prove the raw bytes are gone AND the verdict still verifies. Secret-
+/// free by construction (only file-class extensions + a hash, never raw bytes).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetentionPurgedPayload {
+    /// Fire-point discriminator. See [`RetentionPurgedKind`].
+    pub kind: RetentionPurgedKind,
+    /// Purged file-class extensions (`jsonl` / `json`, ...). Empty on the
+    /// EvidenceRetained / PurgeVerified arms.
+    pub purged_classes: Vec<String>,
+    /// blake3 hex over the redacted retained evidence set (the survivable
+    /// digest). Empty only when nothing was retained.
+    pub retained_blake3: String,
+    /// The session whose raw inputs were purged.
+    pub session_id: String,
+    /// Wall-clock unix-ms at emission time (injected; never `SystemTime::now`).
+    pub ts_ms: i64,
+}
+
+/// I-44 (SCHEMA_VERSION 258) -- env var name gating the destructive zero-
+/// retention purge. Default-OFF (R9 experiment, GD-4): with the flag absent the
+/// purge performs ZERO filesystem mutation even when `--zero-retention` is
+/// passed (defence in depth on an irreversible op). Truthy literals (`"1"` /
+/// `"true"` / `"yes"` / `"on"`) enable. Promotion plan: `I-44-promotion`. See
+/// `wire-dark-allowlist.toml`. Mirrored by `crate::retention::ZERO_RETENTION_ENV`.
+pub const ELAI_ZERO_RETENTION_ENABLE_ENV: &str = "ELAI_ZERO_RETENTION_ENABLE";
+
+// === I-52 (SCHEMA_VERSION 259) -- CheckpointToolEvent substrate =============
+
+/// I-52 (SCHEMA_VERSION 259) -- discriminator for [`SsbActionType::CheckpointToolEvent`].
+///
+/// Pattern-2 single-variant 4-arm; each arm maps to its own sql_str. Emitted by
+/// the agent-callable `checkpoint_save/rewind/diff` tool arms over the H-49
+/// time-travel CAS substrate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointToolEventKind {
+    /// The agent created a labelled checkpoint: a tagged manifest of the named
+    /// files captured into the H-49 CAS (`timetravel::capture_file`).
+    Saved,
+    /// The agent rewound the working tree to a saved label; the restore routed
+    /// through `timetravel::materialize` (the only writer; no raw-write bypass).
+    Rewound,
+    /// The agent diffed the working tree against a saved label (read-only).
+    Diffed,
+    /// The rewind was REFUSED because the working tree diverged from the
+    /// checkpoint since save (RV-1 safety; no silent overwrite over diverged
+    /// files). The payload's `diverged_paths` names the diverged set.
+    RefusedDiverged,
+}
+
+impl CheckpointToolEventKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::Saved => "checkpoint_tool_saved",
+            Self::Rewound => "checkpoint_tool_rewound",
+            Self::Diffed => "checkpoint_tool_diffed",
+            Self::RefusedDiverged => "checkpoint_tool_refused_diverged",
+        }
+    }
+}
+
+/// I-52 (SCHEMA_VERSION 259) -- payload for [`SsbActionType::CheckpointToolEvent`].
+///
+/// One row per agent checkpoint-tool call. The `RefusedDiverged` arm is the
+/// load-bearing safety observable (R1: the divergence-refusal must LAND so the
+/// auditor can prove the rewind was refused, not silently applied).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointToolEventPayload {
+    /// Fire-point discriminator. See [`CheckpointToolEventKind`].
+    pub kind: CheckpointToolEventKind,
+    /// The session this checkpoint is scoped to (derived from run context, never
+    /// agent-supplied -- the cross-session rewind guard).
+    pub session_id: String,
+    /// User-supplied checkpoint label (the `tag` the save/rewind/diff resolves).
+    pub label: String,
+    /// Project-relative paths covered by this checkpoint (the manifest file set).
+    pub paths: Vec<String>,
+    /// On `RefusedDiverged`: the project-relative paths that diverged since save.
+    /// Empty on the Saved / Rewound / Diffed arms.
+    pub diverged_paths: Vec<String>,
+    /// Wall-clock unix-ms at emission time (injected via the clock; never
+    /// `SystemTime::now`).
+    pub ts_ms: i64,
+}
+
+// === I-54 (SCHEMA_VERSION 260) -- StructuralEditApplied substrate ============
+
+/// I-54 (SCHEMA_VERSION 260) -- discriminator for
+/// [`SsbActionType::StructuralEditApplied`].
+///
+/// Pattern-2 single-variant 5-arm; each arm maps to its own sql_str. Emitted by
+/// the agent-callable `structural_search/_preview/_apply` tool arms over the
+/// shipped tree-sitter grammars (one version source via
+/// `elai_knowledge::TreeSitterAstEvaluator`; ast-grep dep BANNED, SLC-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StructuralEditAppliedKind {
+    /// The search arm ran a tree-sitter query and returned a match set.
+    Matched,
+    /// The preview arm resolved a query + rewrite template into the would-be
+    /// diff (the row carries the blake3 diff hash). ZERO bytes written.
+    Previewed,
+    /// The previewed rewrite set was applied through the SHIPPED PreToolUse edit
+    /// gates + `dispatch_edit`.
+    Applied,
+    /// A matched node's bytes changed between preview and apply (the AST moved);
+    /// the apply was REFUSED. The load-bearing safety observable (R1; no silent
+    /// corruption).
+    RefusedStale,
+    /// A broken tree-sitter query / rewrite template was caught at preview; ZERO
+    /// bytes (no regex degrade -- stub_ban).
+    ParseFailed,
+}
+
+impl StructuralEditAppliedKind {
+    /// Snake-case wire label used as the sql_str for each arm.
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        match self {
+            Self::Matched => "structural_edit_matched",
+            Self::Previewed => "structural_edit_previewed",
+            Self::Applied => "structural_edit_applied",
+            Self::RefusedStale => "structural_edit_refused_stale",
+            Self::ParseFailed => "structural_edit_parse_failed",
+        }
+    }
+}
+
+/// I-54 (SCHEMA_VERSION 260) -- payload for
+/// [`SsbActionType::StructuralEditApplied`].
+///
+/// One row per agent structural-edit tool call. The `RefusedStale` arm is the
+/// load-bearing safety observable (R1: a stale-match refusal must LAND so the
+/// auditor can prove the apply was refused, not silently corrupting the file).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuralEditAppliedPayload {
+    /// Fire-point discriminator. See [`StructuralEditAppliedKind`].
+    pub kind: StructuralEditAppliedKind,
+    /// Source language the query ran against (rust / python / typescript).
+    pub language: String,
+    /// Number of nodes the tree-sitter query matched (Matched/Previewed/Applied).
+    pub match_count: u32,
+    /// blake3 hex of the would-be diff (Previewed/Applied); empty otherwise.
+    pub diff_hash: String,
+    /// Project-relative file paths the edit covered (Applied), or the stale path
+    /// (RefusedStale). Empty on Matched/Previewed/ParseFailed.
+    pub paths: Vec<String>,
+    /// Wall-clock unix-ms at emission time (injected via the clock; never
+    /// `SystemTime::now`).
+    pub ts_ms: i64,
+}
+
 /// G-10: drift signal kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DriftSignalKind {
@@ -17549,6 +18512,20 @@ pub struct ReasoningBudgetScaledPayload {
     /// ELAI_SEED value at the time of dispatch (GD-2 reproducibility).
     /// Recomputed identically from (base_calls, serial_depth) under the same seed.
     pub seed: u64,
+    // --- I-26 payload extension (serde(default) + skip_serializing_if preserves HD-2 byte-stability
+    //     for all rows emitted before I-26 shipped; old rows decode with None on these fields).
+    /// Search-DAG node depth when emitted from the I-26 BudgetController.
+    /// None on GRC-dispatch rows (H-42 agent_pool / bsp path); populated only by the I-26 search path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth_level: Option<u32>,
+    /// Budget consumed as a fraction 0.0–1.0 across all active siblings.
+    /// None on GRC-dispatch rows. Set when the BudgetController's collapse check runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_pct: Option<f32>,
+    /// True when the plateau detector fired (top-L2 score flat across 5 supersteps).
+    /// None on GRC-dispatch rows. Populated only by the I-26 BudgetController collapse path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plateau_fired: Option<bool>,
 }
 
 // === H-43 (SCHEMA_VERSION 221) -- FitnessEvaluated substrate
@@ -18398,3 +19375,300 @@ pub struct DiscoveryRejectedPayload {
     pub ts_ms: i64,
 }
 
+// === I-24 (SCHEMA_VERSION 266) -- PrmCanaryEvent substrate ===================
+
+/// I-24 (SCHEMA_VERSION 266) -- discriminator for [`SsbActionType::PrmCanaryEvent`].
+///
+/// Scorer-side anti-gaming canary: isomorphic code pairs are injected into the
+/// L2 scoring path; a scorer that rates semantically-identical variants differently
+/// is style-biased and (after N consecutive detections) neutralized.
+///
+/// R8 compliance: the canary pair set is FROZEN in `fixtures/canary_pairs.json`;
+/// the running system NEVER generates new canaries from the model under test.
+///
+/// Emitted from `crate::canary_injector::emit_prm_canary_to_ssb` at the
+/// `TriLayerStack::run_verdict` L2 injection site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrmCanaryEventKind {
+    /// A canary pair was injected and the score delta was below the bias
+    /// threshold; no style bias detected on this injection.
+    CanaryInjected,
+    /// The score delta between the isomorphic pair exceeded the ELAI-measured
+    /// threshold (`metrics/canary_bias_threshold.toml`, ID-5); the scorer is
+    /// flagged as style-biased for this detection.
+    StyleBiasDetected,
+    /// N consecutive `StyleBiasDetected` events within one run caused the scorer
+    /// weight to be zeroed for the remainder of the run. ID-4: this is an L2-only
+    /// effect; it CANNOT override an L1 HardVeto (`VETO_SCORE = 0.0` stands).
+    ScorerNeutralized,
+}
+
+impl PrmCanaryEventKind {
+    /// SQL-compatible string for the CHECK constraint and SSB payload `kind` field.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CanaryInjected    => "prm_canary_injected",
+            Self::StyleBiasDetected => "prm_canary_style_bias_detected",
+            Self::ScorerNeutralized => "prm_canary_scorer_neutralized",
+        }
+    }
+
+    /// Alias required by `SsbActionType::as_sql_str()` dispatch convention.
+    /// Returns the same string as [`as_str`].
+    #[must_use]
+    pub fn as_sql_str(&self) -> &'static str {
+        self.as_str()
+    }
+}
+
+/// I-24 (SCHEMA_VERSION 266) -- payload for [`SsbActionType::PrmCanaryEvent`].
+///
+/// Carries the canary injection result: which pair was selected, the scores for
+/// both variants, the computed delta, the bias threshold, and (on ScorerNeutralized)
+/// the consecutive-detection count that triggered neutralization.
+///
+/// `score_original` and `score_obfuscated` are in `[0.0, 1.0]` (the L2 calibrated
+/// score range). `delta_bp` and `threshold_bp` are in basis points (1/10000) so
+/// small differences remain representable as integers. `delta_bp` is ALWAYS
+/// non-negative (`|score_original - score_obfuscated| * 10_000` rounded).
+///
+/// ID-4 invariant: `ScorerNeutralized` zeroes the scorer WEIGHT for the run; it
+/// does NOT modify any L1-veto decision or resurrect a HardVeto branch.
+///
+/// GD-2: results are recomputable under the same `ELAI_SEED` + frozen fixture set.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PrmCanaryEventPayload {
+    /// Fire-point discriminator. See [`PrmCanaryEventKind`].
+    pub kind: PrmCanaryEventKind,
+    /// Opaque scorer identifier (e.g. `"conformal_tau"` for the current L2 stub,
+    /// `"ppm_client"` when the neural scorer is wired in post-D-026).
+    pub scorer_id: String,
+    /// Index of the selected canary pair within `fixtures/canary_pairs.json`.
+    pub pair_index: u32,
+    /// L2 score of the original (unobfuscated) variant, in `[0.0, 1.0]`.
+    pub score_original: f64,
+    /// L2 score of the isomorphic (AST-preserving obfuscated) variant, in `[0.0, 1.0]`.
+    pub score_obfuscated: f64,
+    /// Absolute score delta in basis points: `round(|score_original - score_obfuscated| * 10_000)`.
+    pub delta_bp: u32,
+    /// Bias detection threshold in basis points (from `metrics/canary_bias_threshold.toml`,
+    /// ID-5: ELAI-measured, never a paper-derived constant).
+    pub threshold_bp: u32,
+    /// Number of consecutive `StyleBiasDetected` events in this run at the time of
+    /// emission. `0` on `CanaryInjected` (no bias), `N >= 1` on `StyleBiasDetected`,
+    /// equals the neutralization threshold on `ScorerNeutralized`.
+    pub consecutive_count: u32,
+    /// Wall-clock milliseconds since UNIX epoch at the moment of emission.
+    pub ts_ms: i64,
+}
+
+/// I-24 (SCHEMA_VERSION 266) -- env var name gating `PrmCanaryEvent` emission
+/// and the `CanaryInjector::maybe_inject` hook inside `TriLayerStack::run_verdict`.
+/// Default-OFF (R9 experiment): the canary injector adds a second L2 scoring call
+/// per sampled branch; ships behind a measured-first-win gate. Promotion plan:
+/// `I-24-promotion` (FORWARD). See `wire-dark-allowlist.toml`.
+pub const ELAI_CANARY_INJECTOR_ENABLE_ENV: &str = "ELAI_CANARY_INJECTOR_ENABLE";
+
+// === I-27 (SCHEMA_VERSION 265) -- ConvergenceCurveMeasured substrate =========
+
+/// I-27 (SCHEMA_VERSION 265) -- one compute-level point on the convergence curve.
+///
+/// `compute_level` is an opaque label (e.g. "1x", "2x", "4x", "8x") naming the
+/// compute envelope (task_count * seeds multiplier, or a cost-cents ceiling).
+/// `mean_rate` is the fraction of tasks that produced a verified outcome at this
+/// level, averaged over all seeds. `ci_low`/`ci_high` are the seeded bootstrap
+/// 95% CI bounds (GD-2: recomputable under `ELAI_SEED`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConvergenceCurvePoint {
+    /// Human-readable compute level label (e.g. "1x", "2x", "4x", "8x").
+    pub compute_level: String,
+    /// Mean verified-outcome rate over all seeds at this compute level, in [0.0, 1.0].
+    pub mean_rate: f64,
+    /// Seeded bootstrap 95% CI lower bound (GD-2: recomputable under ELAI_SEED).
+    pub ci_low: f64,
+    /// Seeded bootstrap 95% CI upper bound (GD-2: recomputable under ELAI_SEED).
+    pub ci_high: f64,
+    /// Cost per additional verified task at this level (None if cost data absent).
+    /// Pareto view: cost_per_verified_task = dollar_per_task / mean_rate when mean_rate > 0.
+    pub cost_per_verified_task: Option<f64>,
+}
+
+/// I-27 (SCHEMA_VERSION 265) -- payload for [`SsbActionType::ConvergenceCurveMeasured`].
+///
+/// Flat beacon (no Kind discriminator). ONE row per `elai bench convergence` run,
+/// carrying the full curve inline. The payload is bounded: at Tier-1 fixture leg,
+/// task_count and seed_count are both small.
+///
+/// GD-2: `curve_points` recompute byte-identically from the fixture under `ELAI_SEED`.
+/// GD-5: `non_monotonic_at` names every compute level where the rate dipped; NOTHING
+/// is smoothed. The instrument is the honest signal for the search bet (NOT a promise
+/// of monotonicity beyond the measured sample).
+///
+/// Composes E-49 (cost_per_task_cents denominator), I-38 (bootstrap CI + seed floor),
+/// H-9 (cost cockpit family reads this row for the convergence tile) (GD-1).
+///
+/// WIRE-DARK[I-27]: the live per-node compute-spend axis sourced from I-4 SearchNodeEvent
+/// rows is PENDING-on-I-4 (search/ladder.rs UNBUILT at HEAD). The Tier-1 fixture leg
+/// uses cost_per_task_cents as the cost axis and task_count*seeds as the compute proxy.
+/// When I-4 ships, the compute_level field will carry per-node spend from SearchNodeEvent;
+/// the payload shape is forward-compatible (compute_level is an opaque label).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConvergenceCurveMeasuredPayload {
+    /// Fixture suite label (e.g. "convergence_fixture_v1").
+    pub fixture_suite: String,
+    /// Number of independent seeds used per compute level (floor >= 5, I-38).
+    pub seed_count: u32,
+    /// Number of tasks in the fixture.
+    pub task_count: u32,
+    /// The convergence curve: one point per compute level, ordered by compute_level.
+    pub curve_points: Vec<ConvergenceCurvePoint>,
+    /// The compute level at or before which the marginal gain collapses (the "knee").
+    /// Set to the last level's label if no knee is detected.
+    pub knee_compute_level: String,
+    /// Compute levels where the verified-outcome rate DIPPED compared to the prior level.
+    /// Empty if the curve is monotonically non-decreasing (GD-5: report, never smooth).
+    pub non_monotonic_at: Vec<String>,
+    /// ELAI_SEED used for the bootstrap CI resampling (GD-2: recomputable).
+    pub seed: u64,
+    /// blake3 hex of the fixture bytes (provenance pin; anti-gaming, GD-2).
+    pub fixture_blake3: String,
+    /// `true` = Tier-1 fixture only; live per-node leg pending I-4 (D-026).
+    pub runpod_pending: bool,
+    /// Wall-clock milliseconds since UNIX epoch at the moment of emission.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// I-36 (SCHEMA_VERSION 267): PromptCompiled substrate
+// ---------------------------------------------------------------------------
+
+/// I-36 (SCHEMA_VERSION 267): 3-arm discriminator for [`SsbPayload::PromptCompiled`].
+///
+/// Pattern-2 single-variant, 3 distinct sql_str values (per-Kind convention).
+/// Alphabetical arm order maintained per codebase convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PromptCompiledKind {
+    /// A promoted compiled variant was substituted at the adapter boundary. The payload
+    /// names the variant hash + backend. Emitted when `CompiledPromptStore::lookup` returns
+    /// `Some` and the string is placed into `CompletionConfig::compiled_system_override`.
+    Compiled,
+    /// Source-vs-compiled fixture pass-rate delta was measured and ledgered.
+    /// Recomputable under `ELAI_SEED` (GD-2). Tier-2 DEFER (live model budget).
+    TransferGapMeasured,
+    /// The compiled variant regressed its fixture floor; variant removed from the store
+    /// and substitution reverts to the base assembled prompt.
+    Rolledback,
+}
+
+impl PromptCompiledKind {
+    /// Per-Kind sql_str for the SSB CHECK constraint.
+    ///
+    /// Three distinct values so Compiled / TransferGapMeasured / Rolledback are
+    /// distinguishable on the wire (mirrors TddPreflightBlockedKind convention).
+    pub fn as_sql_str(self) -> &'static str {
+        match self {
+            Self::Compiled => "prompt_compiled",
+            Self::TransferGapMeasured => "transfer_gap_measured",
+            Self::Rolledback => "prompt_compiled_rolledback",
+        }
+    }
+}
+
+/// I-36: SSB payload for a compiled-prompt artifact event.
+///
+/// Pattern-2 single-variant; kind discriminator is [`PromptCompiledKind`].
+///
+/// Emitted by:
+///   - the `report_fns::build_system_prompt_for_role` seam (Compiled arm) when
+///     `CompiledPromptStore::lookup` returns a variant and it is placed into
+///     `CompletionConfig::compiled_system_override`.
+///   - `prompt_artifacts::run_transfer_gap_fixture` (TransferGapMeasured arm, Tier-2 DEFER).
+///   - `prompt_artifacts::rollback_on_regression` (Rolledback arm).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PromptCompiledPayload {
+    /// Which event occurred.
+    pub kind: PromptCompiledKind,
+    /// Snake-case role name (e.g. `"executor"`, `"researcher"`).
+    pub role: String,
+    /// Backend name (e.g. `"anthropic_api"`, `"sidecar"`).
+    pub backend: String,
+    /// First 16 hex chars of the blake3 variant hash (truncated for log brevity).
+    /// Full hash lives in the stored `CompiledPromptVariant::variant_hash`.
+    pub variant_hash: String,
+    /// `compiled_pass_rate - source_pass_rate` (positive = improvement).
+    /// `0.0` for `Compiled` rows (not yet measured); measured value for
+    /// `TransferGapMeasured` and negative-and-below-floor for `Rolledback`.
+    pub fixture_delta: f32,
+    /// Wall-clock milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// I-50 (SCHEMA_VERSION 268): AuthBrokerEvent substrate
+// ---------------------------------------------------------------------------
+
+/// I-50 (SCHEMA_VERSION 268): 4-arm discriminator for [`SsbPayload::AuthBrokerEvent`].
+///
+/// Pattern-2 single-variant, 4 distinct sql_str values (per-Kind convention).
+/// Arms ordered by lifecycle: acquisition → refresh → link → failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum AuthBrokerEventKind {
+    /// A valid credential was resolved (env-key, saved OAuth token, or new OAuth exchange).
+    /// No token material is logged; only `provider_id` and event timing are recorded.
+    TokenAcquired,
+    /// An expired saved token was refreshed and re-persisted to the credential store.
+    /// Emitted only on a successful refresh; failed refresh emits `RefreshFailed`.
+    Refreshed,
+    /// A new provider credential was registered with the broker for the first time.
+    /// Used by the `AuthBroker::register_provider` path (future multi-provider flow).
+    ProviderLinked,
+    /// A token-refresh attempt failed with a typed error.
+    /// The error kind is recorded in `error_kind`; the error is surfaced as `ApiError`
+    /// to the caller -- never silently swallowed.
+    RefreshFailed,
+}
+
+impl AuthBrokerEventKind {
+    /// Per-Kind sql_str for the SSB CHECK constraint.
+    ///
+    /// Four distinct values so each lifecycle arm is distinguishable on the wire
+    /// (mirrors `TddPreflightBlockedKind` and `PromptCompiledKind` conventions).
+    pub fn as_sql_str(self) -> &'static str {
+        match self {
+            Self::TokenAcquired => "auth_broker_token_acquired",
+            Self::Refreshed => "auth_broker_refreshed",
+            Self::ProviderLinked => "auth_broker_provider_linked",
+            Self::RefreshFailed => "auth_broker_refresh_failed",
+        }
+    }
+}
+
+/// I-50: SSB payload for a subscription auth broker lifecycle event.
+///
+/// Pattern-2 single-variant; kind discriminator is [`AuthBrokerEventKind`].
+///
+/// SECURITY: this payload deliberately omits token material. `provider_id` names
+/// the provider (e.g. `"anthropic"`); no access token, refresh token, or key bytes
+/// are included. The `stub_ban` observable_effect from the I-50 WIRING_CONTRACT
+/// is structurally enforced here: there is no field for token material.
+///
+/// Emitted by:
+///   - `AuthBroker::resolve()` → `TokenAcquired` arm (happy path).
+///   - `AuthBroker::refresh()` → `Refreshed` arm (on successful re-exchange).
+///   - `AuthBroker::register_provider()` → `ProviderLinked` arm (future multi-provider).
+///   - `AuthBroker::refresh()` error path → `RefreshFailed` arm.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AuthBrokerEventPayload {
+    /// Which auth broker lifecycle event occurred.
+    pub kind: AuthBrokerEventKind,
+    /// Opaque provider identifier (e.g. `"anthropic"`, `"aws_bedrock"` in future).
+    /// Used to correlate rows; never contains token material.
+    pub provider_id: String,
+    /// For `RefreshFailed`: a short classifier for the error kind (e.g. `"network"`,
+    /// `"token_expired_no_refresh"`, `"http_401"`). Empty string for other arms.
+    pub error_kind: String,
+    /// Wall-clock milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}

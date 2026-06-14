@@ -145,6 +145,8 @@ impl LlamaCppAdapter {
             tool_choice: None,
             stream: false,
             seed: config.seed,
+            // I-26: effort is a cloud-only field; llama.cpp backend never uses it.
+            effort: None,
         }
     }
 }

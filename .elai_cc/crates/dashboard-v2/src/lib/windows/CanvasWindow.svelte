@@ -49,6 +49,11 @@
   import { resolveRenderer, registerRenderer } from '$lib/canvas/renderer_registry';
   // H-15: ComparisonBoard — registered renderer for view_type='comparison_board'.
   import ComparisonBoard from '$lib/canvas/ComparisonBoard.svelte';
+  // J-31: system-composition mode — UI shell + mock fixtures (backend pending).
+  import SystemMode from '$lib/canvas/SystemMode.svelte';
+  // "NEW DIFF" node-story overlay (the user's centerpiece) + its open/close store.
+  import NodeStoryPanel from '$lib/canvas/NodeStoryPanel.svelte';
+  import { nodeStory } from '$lib/canvas/node_story_store.svelte';
   // Register ComparisonBoard as renderer for 'comparison_board' view_type.
   // Idempotent (renderer_registry.ts:47); called at module init so any
   // ViewSpawned event with view_type='comparison_board' resolves immediately.
@@ -76,14 +81,18 @@
   // Dead-code visual treatment (HD-5 substrate-honesty)
   // ---------------------------------------------------------------------------
 
-  /** Hex colour for a topology-only SUSPECTED dead node (amber-neutral ring, lighter). */
-  const COLOR_SUSPECTED_DEAD = '#b5860a';
-  /** Hex colour for a coverage-CONFIRMED dead node (amber-ghost + strong border). */
-  const COLOR_CONFIRMED_DEAD = '#7a3b00';
-  /** Hex colour for a PageRank hub node (teal highlight). */
-  const COLOR_HUB = '#14b8a6';
-  /** Default node colour. */
-  const COLOR_DEFAULT = '#6e7480';
+  // DESIGN §10: the work surface carries ONE teal accent and no amber/red.
+  // Dead-code distinction reads via LIGHTNESS on the monochrome ramp (the
+  // graph legend names each tier); the live hub is the single teal signal.
+  // These mirror the dark role-token ramp (anchors, sigma needs literal hex).
+  /** Topology-only SUSPECTED dead node — dim ghost grey. */
+  const COLOR_SUSPECTED_DEAD = '#3a423f'; // --ghost
+  /** Coverage-CONFIRMED dead node — deeper sink (the most receded). */
+  const COLOR_CONFIRMED_DEAD = '#070b0a'; // --sink
+  /** PageRank hub node — the one teal signal. */
+  const COLOR_HUB = '#2BBBA4'; // --d-teal
+  /** Default node colour — secondary reading grey. */
+  const COLOR_DEFAULT = '#79827e'; // --dim
 
   // ---------------------------------------------------------------------------
   // State
@@ -297,8 +306,10 @@
       if (!g.hasEdge(edgeId)) {
         g.addEdgeWithKey(edgeId, edge.source, edge.target, {
           cyclic: edge.cyclic,
-          color: edge.cyclic ? '#e05252' : '#374151',
-          size: 0.5,
+          // cyclic edge reads via near-white (the loud signal on the dark
+          // surface); ordinary edge is a hairline grey (DESIGN §6: no red).
+          color: edge.cyclic ? '#f2f5f4' : '#2a302e',
+          size: edge.cyclic ? 0.8 : 0.5,
         });
         edgeIdx += 1;
       }
@@ -399,6 +410,12 @@
          R6 wiring: both are mounted here so the drain is LIVE (not a comment). -->
     <CanvasPanel mode={canvas.mode} />
     <DesignPageNode />
+  {:else if canvas.mode === 'system'}
+    <!-- J-31: SYSTEM-COMPOSITION mode — nodes are bound buildable units,
+         edges are wiring contracts whose verdict (declared->wired->verified->
+         broken) is DERIVED. UI shell + mock fixtures only; the orchestrator
+         backend (system_canvas.rs + SystemContractEvent SSB) is not built. -->
+    <SystemMode />
   {:else}
     <!-- CODE mode (default). The {:else} branch now only catches 'code' — arch/design
          have an explicit stub above so no unexpected mode silently renders the code graph. -->
@@ -462,18 +479,58 @@
       </div>
     {/if}
   {/each}
+
+  <!-- "NEW DIFF" node-story overlay — opened from a node (PlanMode / SystemMode)
+       via the nodeStory store. The raw diff is collapsed inside; the story
+       (HISTORY/EXPLAIN/WIRING/RECEIPTS/COST/ACTIVITY) leads. -->
+  {#if nodeStory.open}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="story-scrim" onclick={() => nodeStory.close()}></div>
+    <aside class="story-overlay">
+      <NodeStoryPanel onClose={() => nodeStory.close()} />
+    </aside>
+  {/if}
 </div>
 
 <style>
+  /* Flat-matte work surface on --bg (DESIGN §1): no galaxy/glow/stars on
+     the graph — those are brand-only. Role tokens only. */
   .canvas-window {
     display: flex;
     flex-direction: column;
     height: 100%;
     width: 100%;
     overflow: hidden;
-    background: var(--bg-base);
+    position: relative;
+    background: var(--bg);
     font-family: var(--font-mono);
     font-size: 11px;
+  }
+
+  /* node-story overlay — slides in from the right over the work surface */
+  .story-scrim {
+    position: absolute;
+    inset: 0;
+    background: var(--bg-overlay, rgba(10, 14, 18, 0.72));
+    z-index: var(--z-shell-overlay, 40);
+  }
+  .story-overlay {
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    width: 420px;
+    max-width: 90%;
+    border-left: 1px solid var(--line);
+    background: var(--bg);
+    z-index: var(--z-shell-flyout, 50);
+    animation: storyIn var(--dur-base) var(--ease-out);
+  }
+  @keyframes storyIn {
+    from { transform: translateX(12px); opacity: 0; }
+    to   { transform: translateX(0); opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .story-overlay { animation: none; }
   }
 
   .canvas-header {
@@ -482,56 +539,56 @@
     gap: 12px;
     padding: 6px 12px;
     flex-shrink: 0;
-    border-bottom: 1px solid var(--border-subtle);
-    background: var(--bg-surface);
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
     flex-wrap: wrap;
   }
 
   .canvas-title {
-    font-weight: 600;
-    color: var(--text-primary);
-    letter-spacing: 0.04em;
+    font-weight: 500;
+    color: var(--text);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-size: 10px;
   }
 
   .canvas-meta {
-    color: var(--text-secondary);
+    color: var(--dim);
     flex: 1 1 auto;
   }
 
-  .canvas-error {
-    color: var(--red, #e05252);
-  }
+  /* error reads via near-white text; the loud state lives at the glyph layer */
+  .canvas-error { color: var(--text); }
 
   .canvas-fps {
-    background: var(--teal-ghost);
-    color: var(--teal-bright);
-    border: 1px solid var(--teal-line);
+    background: var(--d-teal-ghost);
+    color: var(--d-teal-bright);
+    border: 1px solid var(--d-teal-soft);
     border-radius: var(--r-xs);
     padding: 1px 6px;
     font-size: 10px;
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
   }
 
   .canvas-hint {
-    color: var(--text-secondary);
+    color: var(--dim);
     font-size: 10px;
-    opacity: 0.7;
   }
-
   .canvas-hint code {
     font-family: var(--font-mono);
-    background: var(--bg-hover);
+    background: var(--sink);
     padding: 0 3px;
     border-radius: var(--r-xs);
+    color: var(--read);
   }
 
   .canvas-legend {
     display: flex;
-    gap: 12px;
+    gap: 14px;
     padding: 4px 12px;
     flex-shrink: 0;
-    border-bottom: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--line);
     flex-wrap: wrap;
   }
 
@@ -539,63 +596,55 @@
     font-size: 10px;
     display: flex;
     align-items: center;
-    gap: 4px;
-    color: var(--text-secondary);
+    gap: 5px;
+    color: var(--dim);
   }
-
   .legend-item::before {
     content: '';
     display: inline-block;
-    width: 10px;
-    height: 10px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
+    border: 1px solid var(--line2);
   }
-
-  .legend-hub::before      { background: #14b8a6; }
-  .legend-suspected::before { background: #b5860a; }
-  .legend-confirmed::before { background: #7a3b00; border: 1px solid #7a3b00; }
-  .legend-normal::before   { background: #6e7480; }
+  /* mirror the JS node-color ramp (monochrome + one teal; no amber/red) */
+  .legend-hub::before       { background: var(--d-teal); border-color: var(--d-teal); }
+  .legend-suspected::before { background: var(--ghost); }
+  .legend-confirmed::before { background: var(--sink); }
+  .legend-normal::before    { background: var(--dim); }
 
   .canvas-body {
     flex: 1 1 auto;
     min-height: 0;
     position: relative;
     overflow: hidden;
-    background: var(--bg-base);
+    background: var(--bg);
   }
-
-  /* sigma mounts a canvas element inside; ensure it fills. */
   .canvas-body :global(canvas) {
     display: block;
     width: 100% !important;
     height: 100% !important;
   }
 
-  /* H-12/H-14: mode placeholder selectors removed (design mode now wired in H-14;
-     DesignPageNode.svelte + CanvasPanel replace the placeholder div). */
-
   /* H-15: spawned view panel (render drain from ViewSpawned SSB events). */
   .canvas-spawned-view {
     flex-shrink: 0;
-    border-top: 1px solid var(--border-subtle);
-    background: var(--bg-surface);
+    border-top: 1px solid var(--line);
+    background: var(--panel);
     min-height: 180px;
     max-height: 400px;
     overflow: auto;
   }
-
   .canvas-spawned-view--unknown {
     display: flex;
     align-items: center;
     justify-content: center;
     min-height: 48px;
-    background: var(--bg-hover);
+    background: var(--raised);
   }
-
   .canvas-spawned-view-label {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--red, #e05252);
-    opacity: 0.8;
+    color: var(--text);
   }
 </style>

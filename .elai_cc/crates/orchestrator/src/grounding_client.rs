@@ -761,6 +761,8 @@ impl CloudGroundingClient {
             tool_choice: None,
             stream: false,
             seed: None,
+            // I-26: effort is not set at the grounding layer.
+            effort: None,
         };
 
         if let Some(cfg) = decoding {

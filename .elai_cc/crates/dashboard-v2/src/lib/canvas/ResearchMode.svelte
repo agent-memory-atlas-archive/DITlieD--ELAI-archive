@@ -37,6 +37,7 @@
   import { researchData } from '../state/drawers.svelte';
   import { canvas } from '../state/canvas.svelte';
   import type { ResearchTreeNode } from '../api/types';
+  import NodeStateGlyph from './NodeStateGlyph.svelte';
 
   // ---------------------------------------------------------------------------
   // Named constants (no magic numbers / strings)
@@ -200,10 +201,10 @@
         </span>
       {/if}
 
-      <!-- Convergence marker -->
-      {#if node.converged}
-        <span class="converge-mark" title="Converged">✓</span>
-      {/if}
+      <!-- Convergence marker — quinary glyph (done = converged) -->
+      <span class="converge-mark">
+        <NodeStateGlyph state={node.converged ? 'done' : 'active'} size={12} label={node.converged ? 'converged' : 'researching'} />
+      </span>
 
       <!-- phi/psi if present -->
       {#if node.phi !== undefined}
@@ -227,7 +228,7 @@
     overflow: hidden;
     font-family: var(--font-mono);
     font-size: 11px;
-    background: var(--bg-base);
+    background: var(--bg);
   }
 
   .research-header {
@@ -235,34 +236,34 @@
     align-items: center;
     gap: 10px;
     padding: 6px 12px;
-    border-bottom: 1px solid var(--border-subtle);
-    background: var(--bg-surface);
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
     flex-shrink: 0;
   }
 
   .research-title {
-    font-weight: 600;
-    font-size: 11px;
+    font-weight: 500;
+    font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-primary);
+    letter-spacing: 0.16em;
+    color: var(--text);
   }
 
   .research-meta {
-    color: var(--text-secondary);
+    color: var(--dim);
     font-size: 10px;
   }
 
   .converged-badge {
-    color: var(--teal-bright, #14b8a6);
-    font-weight: 600;
+    color: var(--d-teal-bright);
+    font-weight: 500;
   }
 
   .stage-badge {
-    color: var(--text-secondary);
+    color: var(--dim);
     font-size: 9px;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.12em;
   }
 
   .research-body {
@@ -274,7 +275,7 @@
 
   .research-empty {
     padding: 24px 16px;
-    color: var(--text-ghost);
+    color: var(--dim);
     font-size: 10px;
     text-align: center;
     line-height: 1.6;
@@ -284,31 +285,29 @@
     display: block;
     margin-top: 8px;
     font-size: 9px;
-    color: var(--text-ghost);
-    opacity: 0.7;
+    color: var(--ghost);
     font-style: italic;
   }
 
   .research-error {
     padding: 12px 16px;
-    color: var(--red, #e05252);
+    color: var(--text);
     font-size: 10px;
   }
 
-  /* Root query row */
   .research-root {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 5px 12px;
-    border-bottom: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--line);
     margin-bottom: 4px;
     font-size: 11px;
-    color: var(--text-primary);
+    color: var(--text);
   }
 
   .root-icon {
-    color: var(--teal-bright, #14b8a6);
+    color: var(--d-teal-bright);
     flex-shrink: 0;
   }
 
@@ -322,68 +321,57 @@
 
   .root-sources {
     font-size: 9px;
-    color: var(--text-ghost);
+    color: var(--dim);
     flex-shrink: 0;
   }
 
-  /* Research node rows */
   .research-node {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     padding: 3px 8px;
     min-height: 22px;
     border-left: 2px solid transparent;
-    transition: background 80ms;
+    transition: background var(--dur-fast) var(--ease-out);
   }
-
-  .research-node:hover {
-    background: var(--bg-hover);
-  }
-
+  .research-node:hover { background: var(--raised); }
   .research-node.converged {
-    border-left-color: var(--teal-bright, #14b8a6);
+    border-left-color: var(--d-teal-deep);
+    opacity: 0.7;
   }
 
-  /* Stage badge */
   .node-stage {
     font-size: 8px;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--text-ghost);
+    letter-spacing: 0.12em;
+    color: var(--ghost);
     min-width: 50px;
     flex-shrink: 0;
   }
 
-  /* Query label */
   .node-query {
     flex: 1 1 auto;
-    color: var(--text-primary);
+    color: var(--read);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     font-size: 10px;
   }
 
-  /* Source count */
   .node-sources {
     font-size: 9px;
-    color: var(--text-ghost);
+    color: var(--dim);
     flex-shrink: 0;
   }
 
-  /* Convergence checkmark */
   .converge-mark {
-    color: var(--teal-bright, #14b8a6);
-    font-size: 9px;
     flex-shrink: 0;
+    display: inline-flex;
   }
 
-  /* phi metric */
   .node-phi {
     font-size: 8px;
-    color: var(--text-ghost);
-    opacity: 0.7;
+    color: var(--ghost);
     flex-shrink: 0;
   }
 </style>

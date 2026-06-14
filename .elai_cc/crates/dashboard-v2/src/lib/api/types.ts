@@ -4235,3 +4235,25 @@ export interface PlaybookEventPayload {
   /** Unix milliseconds of the event. */
   ts_ms: number;
 }
+
+// ------------------------------------------------------------------
+// I-36 (SCHEMA_VERSION 268) -- CompiledVariant badge chip DTO.
+// Mirrors CompiledVariantRow in commands_i36.rs (snake_case on wire).
+// action_type = "prompt_compiled" (Pattern-2, 3-arm Kind).
+// ------------------------------------------------------------------
+
+/** I-36: one row of the compiled-prompt badge in SettingsWindow. */
+export interface CompiledVariantRow {
+  /** Event kind: "prompt_compiled" | "transfer_gap_measured" | "prompt_compiled_rolledback". */
+  kind: string;
+  /** Snake-case role name (e.g. "executor", "researcher"). */
+  role: string;
+  /** Backend name (e.g. "anthropic_api", "sidecar"). */
+  backend: string;
+  /** First 16 hex chars of the blake3 variant hash. */
+  variant_hash: string;
+  /** compiled_pass_rate - source_pass_rate delta (0.0 for Compiled rows). */
+  fixture_delta: number;
+  /** SSB row timestamp (unix milliseconds). */
+  ts: number;
+}

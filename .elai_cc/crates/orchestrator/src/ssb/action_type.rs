@@ -3725,6 +3725,14 @@ pub enum SsbActionType {
     /// `ELAI_*_ENABLE` flag and is emitted only inside the benchmark itself.
     /// Carries [`InsecureRateMeasuredPayload`].
     InsecureRateMeasured,
+    /// I-9 (SCHEMA_VERSION 263) -- error-amplification (alpha_t) telemetry
+    /// beacon. Emitted once when `elai bench error-amplification` runs the
+    /// frozen pipeline fixture, recording the measured amplification factor
+    /// (downstream propagated fraction) + recovered fraction + the active-
+    /// annealing temperature. Flat beacon (no Kind discriminator); a bench-run
+    /// telemetry beacon, NOT a wire-dark gate (no `ELAI_*_ENABLE` flag).
+    /// Carries [`ErrorAmplificationMeasuredPayload`].
+    ErrorAmplificationMeasured,
     /// F-6 / Slice A1 (SCHEMA_VERSION 202) -- learned-skill library event.
     /// Pattern-2 single variant with 3-arm [`SkillLibraryEventKind`]
     /// discriminator (Acquired / TrustPromoted / DemotedStale). The sql_str
@@ -4357,6 +4365,298 @@ pub enum SsbActionType {
     /// Default-ON, no kill-switch. Composes G-2/G-8/I-45 (GD-1, never restates).
     /// TOTAL_VARIANTS 561 -> 562.
     RowChainSealed(RowChainSealedKind),
+    /// I-19 (SCHEMA_VERSION 254): TDD enforcer pre-flight gate blocked event.
+    ///
+    /// Pattern-2 single-variant 3-arm [`TddPreflightBlockedKind`]:
+    /// - `MissingTestDelta`: an Edit introduces a new pub symbol but the test-file set
+    ///   contains no symbol whose name substring-matches the new symbol.
+    /// - `SyntaxDryRunFailed`: staged content fails `cargo check --tests` / `pytest --collect-only`
+    ///   (compile-only dry-run; no test execution — auditor runs tests).
+    /// - `RefactorExempted`: the diff introduces NO new pub symbol; gate skipped.
+    ///
+    /// Wire-dark unless `ELAI_TDD_PREFLIGHT_ENABLE=1` (default-OFF, R9 experiment, GD-4).
+    /// Gate stays default-OFF until FP rate bounded on >=3 real orchestrate runs.
+    /// Composes F-1 VibeGate compound seam (GD-1, additive predicate not a fork).
+    /// Emitted by `crate::tdd_preflight::emit_tdd_preflight_blocked_to_ssb`.
+    /// TOTAL_VARIANTS 562 -> 563.
+    TddPreflightBlocked(TddPreflightBlockedKind),
+    /// I-20 (SCHEMA_VERSION 255): budgeted mutation scheduler per-cone outcome.
+    ///
+    /// Pattern-2 single-variant 4-arm [`MutationBudgetedRunKind`]:
+    /// - `CiCleared`: the Wilson-CI lower bound cleared the (TOML-measured)
+    ///   kill-rate threshold -- pass (early or full).
+    /// - `CiFailed`: the Wilson-CI upper bound already failed the threshold
+    ///   -- fail-early.
+    /// - `SurvivorDirective`: a mutant survived; the row names operator + line
+    ///   + surviving mutation (the structured counterexample fed to the generator).
+    /// - `CacheHit`: an unchanged (fn-content, bound-test-set) blake3 key
+    ///   returned from EquivalentMutantCache with ZERO mutant runs.
+    ///
+    /// Default-ON (the budget scheduler is the mutation hot-path optimization);
+    /// kill-switch `ELAI_MUTATION_BUDGET_DISABLE=1`. The 5 CI params are
+    /// recomputable under `ELAI_SEED` (GD-2). Emitted by
+    /// `crate::deterministic_audit_gate::emit_mutation_budgeted_runs` from the
+    /// writer-owning gate seam; cone-select wired into
+    /// `crate::deterministic_auditor::DeterministicAuditor::check_mutation`.
+    /// TOTAL_VARIANTS 563 -> 564.
+    MutationBudgetedRun(MutationBudgetedRunKind),
+    /// I-21 (SCHEMA_VERSION 256): sprint-contract + ralph-loop lifecycle event.
+    ///
+    /// Pattern-2 single-variant 5-arm [`SprintContractEventKind`]:
+    /// - `Proposed`: the generator's structured Sprint Contract was received by
+    ///   the isolated evaluator (zero shared generator context).
+    /// - `Approved`: the evaluator approved the contract (acceptance criteria
+    ///   are deterministically checkable; scope is bounded).
+    /// - `Rejected`: the evaluator rejected the contract with a concrete,
+    ///   structured objection (the vague-criterion path).
+    /// - `RalphReinjected`: a TriLayerStack failure reinjected the failing
+    ///   trace to the generator for one bounded retry (cap = 3 iterations).
+    /// - `AdversaryEscalated`: the 3rd consecutive failure escalated to the
+    ///   D-13 cross-family adversary, which produced a concrete counterexample.
+    ///
+    /// Wire-dark unless `ELAI_SPRINT_CONTRACT_ENABLE=1` (default-OFF, R9
+    /// experiment). Composes H-37 gate / i-1 supervisor / i-17 TriLayerStack /
+    /// D-13 adversary (GD-1 compose, never re-implement). Emitted by
+    /// `crate::sprint_contract::emit_sprint_contract_event_to_ssb` from the
+    /// `task_runner::dispatch_sprint_contract` post-task seam.
+    /// TOTAL_VARIANTS 564 -> 565.
+    SprintContractEvent(SprintContractEventKind),
+    /// I-37 (SCHEMA_VERSION 257): per-EARS-requirement verified-status event.
+    ///
+    /// Pattern-2 single-variant 3-arm [`RequirementVerifiedKind`]:
+    /// - `Satisfied`: mutation coverage >= floor AND all bound MRs held AND >=1 bound test.
+    /// - `Unverified`: no bound tests -- shown in the cockpit, never dropped (R1).
+    /// - `Regressed`: a bound test was deleted, an MR failed, or coverage fell below floor.
+    ///
+    /// Additive emit (always lands when an `EarsRequirementSet` is present);
+    /// the BLOCKING `RequirementsGate` is wire-dark unless
+    /// `ELAI_REQUIREMENTS_GATE_ENABLE=1` (default-OFF, R9 experiment).
+    /// Emitted by `crate::requirements::emit_requirement_verified_to_ssb` from
+    /// the `task_runner` PLANNING -> TESTING_FIRST gate seam.
+    /// TOTAL_VARIANTS 565 -> 566.
+    RequirementVerified(RequirementVerifiedKind),
+    /// I-44 (SCHEMA_VERSION 258): zero-retention-after-verification purge receipt.
+    ///
+    /// Pattern-2 single-variant 3-arm [`RetentionPurgedKind`]:
+    /// - `RawInputsPurged`: the active session's raw managed-transcript files
+    ///   were deleted after the sealed verdict; the row names the purged classes.
+    /// - `EvidenceRetained`: a blake3 over the redacted retained evidence set
+    ///   (the survivable digest the verdict still verifies against).
+    /// - `PurgeVerified`: the post-purge beacon — raw bytes gone, redacted
+    ///   evidence digest survives.
+    ///
+    /// Destructive + opt-in: fires only on `elai run --zero-retention` AND when
+    /// the default-OFF `ELAI_ZERO_RETENTION_ENABLE` master kill-switch is set
+    /// (R9 experiment, GD-4). Composes G-9 redaction + the G-9 TTL purge + the
+    /// F-13 archive shape + the G-2/G-8 evidence that survives (GD-1, never
+    /// re-implemented). Emitted by `crate::retention::purge_after_verify` from
+    /// the `elai run` post-attestation seal seam.
+    /// TOTAL_VARIANTS 566 -> 567.
+    RetentionPurged(RetentionPurgedKind),
+    /// I-52 (SCHEMA_VERSION 259): agent-callable checkpoint tool outcome event.
+    ///
+    /// Pattern-2 single-variant 4-arm [`CheckpointToolEventKind`]:
+    /// - `Saved`: the agent created a labelled checkpoint (a tagged manifest of
+    ///   the named files captured into the H-49 CAS).
+    /// - `Rewound`: the agent rewound the working tree to a saved label; the
+    ///   restore routed through `timetravel::materialize` (the only writer).
+    /// - `Diffed`: the agent diffed the working tree against a saved label.
+    /// - `RefusedDiverged`: the rewind was REFUSED because the working tree
+    ///   diverged from the checkpoint since save (RV-1 safety; no silent
+    ///   overwrite). The row names the diverged path set.
+    ///
+    /// Default-ON over the H-49 time-travel substrate (kill-switch
+    /// `ELAI_TIMETRAVEL_DISABLE=1` disables the underlying store; no separate
+    /// I-52 flag). REUSE-vs-NEW resolved to NEW per controller decision: the
+    /// existing `EditHistoryEvent` 6-arm Kind lacks `RefusedDiverged` + a user
+    /// label, and R1 requires the divergence-refusal observable to LAND.
+    /// Composes H-49 `timetravel::{capture_file,materialize}` (GD-1, never
+    /// re-implemented). Emitted by the `checkpoint_save/rewind/diff` arms of
+    /// `crate::production_agent_rpc::translate_tool_request`.
+    /// TOTAL_VARIANTS 567 -> 568.
+    CheckpointToolEvent(CheckpointToolEventKind),
+    /// I-54 (Track 20 Wave 3): agent-callable structural (AST-aware) edit tool
+    /// outcome event.
+    ///
+    /// Pattern-2 single-variant 5-arm [`StructuralEditAppliedKind`]:
+    /// - `Matched`: the search arm ran a tree-sitter query and returned a match
+    ///   set (the row carries the match count).
+    /// - `Previewed`: the preview arm resolved a query + rewrite template into
+    ///   the would-be diff (the row carries the blake3 diff hash); ZERO bytes.
+    /// - `Applied`: the previewed rewrite set was applied through the SHIPPED
+    ///   PreToolUse edit gates + `dispatch_edit` (per-file results).
+    /// - `RefusedStale`: a matched node's bytes changed between preview and
+    ///   apply (the AST moved); the apply was REFUSED -- the load-bearing safety
+    ///   observable (R1; no silent corruption).
+    /// - `ParseFailed`: a broken tree-sitter query / rewrite template was caught
+    ///   at preview; ZERO bytes (no regex degrade, stub_ban).
+    ///
+    /// Reuses `elai_knowledge::TreeSitterAstEvaluator` (one tree-sitter version
+    /// source, SLC-3; ast-grep dep BANNED). The taint-sink + FS-blast-radius edit
+    /// gates are the safety, so no separate I-54 flag. Emitted by the
+    /// `structural_search/_preview/_apply` arms of
+    /// `crate::production_agent_rpc::translate_tool_request`.
+    /// Matched is the representative arm. TOTAL_VARIANTS 568 -> 569.
+    StructuralEditApplied(StructuralEditAppliedKind),
+    /// I-4 (SCHEMA_VERSION 261): evidence-ranked search-ladder branch lifecycle
+    /// event (Wave-4 KEYSTONE).
+    ///
+    /// Pattern-2 single-variant 4-arm [`SearchNodeEventKind`]:
+    /// - `Expanded`: a candidate branch was generated, its pristine per-branch
+    ///   context built (I-5 `build_branch_context`), and run through the I-17
+    ///   tri-layer stack; the row carries the branch's verifier receipt.
+    /// - `Pruned`: a branch was DROPPED from selection because the tri-layer
+    ///   stack hard-vetoed it (`VerdictRow::is_vetoed`) or its oracle was
+    ///   flake-quarantined (`FlakeQuarantineLedger::is_quarantined`). A pruned
+    ///   branch is terminal (ID-4) -- it can never be Promoted.
+    /// - `Promoted`: the best-of-N winner. The row MUST carry verifier-derived
+    ///   evidence (tri-layer score + mutation kill-rate + progress score); a
+    ///   branch promoted on neural score alone is the ID-4 stub_ban the broken
+    ///   `--llm-judge-only` arm FAILS against.
+    /// - `BudgetCollapsed`: every candidate was vetoed/quarantined, so the
+    ///   ladder produced no survivor and fell back to the linear-retry path (the
+    ///   honest no-winner beacon).
+    ///
+    /// Default-OFF (R9 experiment): emitted only when `ELAI_SEARCH_LADDER_ENABLE`
+    /// is truthy AND the D-11 checker runtime is plumbed (the ladder reuses its
+    /// registry -- GD-1, no second registry). Composes I-2 workspace isolation /
+    /// I-5 pristine context / I-17 tri-layer stack / I-20 mutation receipts
+    /// (GD-1, never re-implemented). Emitted by
+    /// `crate::search::SearchLadder::run_best_of_n` from the
+    /// `task_runner::dispatch_search_ladder` post-task seam.
+    /// Expanded is the representative arm. TOTAL_VARIANTS 569 -> 570.
+    SearchNodeEvent(SearchNodeEventKind),
+    /// I-7 (SCHEMA_VERSION 262): cascading escalation waterfall lifecycle event
+    /// (Wave-4). The local-first waterfall fans out K branches (I-2 isolation),
+    /// runs the I-17 tri-layer check per branch (via the I-4 ladder), and ONLY on
+    /// an all-local-fail condenses the failure set into an I-11 BeliefState and
+    /// escalates SYNCHRONOUSLY to the H-7 cloud routing seam.
+    ///
+    /// Pattern-2 single-variant 4-arm [`EscalationCascadeKind`]:
+    /// - `LocalWin`: at least one local branch survived the tri-layer check; the
+    ///   task solved on the local lane and the cloud arm NEVER ran (the E-39
+    ///   zero-cloud-spend observable).
+    /// - `Condensed`: every local branch failed; the failure set was condensed into
+    ///   the typed I-11 BeliefState (<=2K, NO raw history — ID-3 / stub_ban).
+    /// - `Escalated`: the condensate was routed SYNCHRONOUSLY to the cloud seam
+    ///   ([`crate::cloud_mode::CloudModeRouter::route`]); the row carries the
+    ///   condensed payload byte size. The billed cloud architect inference is
+    ///   D-026 PENDING (never fired from the buildable path).
+    /// - `BatchRouted`: journal-completeness ONLY for the OFFLINE H-5 batch lane;
+    ///   the live waterfall NEVER emits it (IC-1: the batch lane is structurally
+    ///   unreachable from this module — no batch-client import).
+    ///
+    /// Wire-dark unless `ELAI_ESCALATION_WATERFALL_ENABLE=1` (default-OFF, R9
+    /// experiment, GD-4 measured-first-win). Composes I-4 ladder / I-11 BeliefState
+    /// / H-7 CloudModeRouter (GD-1, never re-implemented). Emitted by
+    /// `crate::escalation_waterfall::EscalationWaterfall::run` from the
+    /// `task_runner::maybe_run_escalation_waterfall` drive_task hook.
+    /// LocalWin is the representative arm. TOTAL_VARIANTS 570 -> 571.
+    EscalationCascade(EscalationCascadeKind),
+    /// I-22 (SCHEMA_VERSION 264): delta-progress shaped-reward scorer event.
+    ///
+    /// Pattern-2 single-variant 3-arm [`ProgressRewardScoredKind`]:
+    /// - `Delta`: shaped reward phi(h_t) - phi(h_{t-1}) scored for one branch step
+    ///   from deterministic SSB observables (test_pass, compile_err_inv, req_covered).
+    ///   Every phi component is deterministic and enumerable from the journal (ID-4).
+    /// - `FirstErrorTruncated`: branch truncated at first i-17 HardVeto (step k-1);
+    ///   the H-49 CAS fork node id at step k-1 is recorded in the payload.
+    /// - `DecayApplied`: D consecutive zero-delta steps triggered the no-progress decay
+    ///   multiplier (D and weights read from `metrics/progress_reward_weights.toml`,
+    ///   ID-5: measured, not paper-derived constants).
+    ///
+    /// Wire-dark unless `ELAI_PROGRESS_REWARD_ENABLE=1` (default-OFF, R9 experiment,
+    /// GD-4 measured-first-win). Composes i-17 TriLayerStack / H-49 timetravel /
+    /// i-37 EarsRequirementSet (GD-1, never re-implemented). Emitted by
+    /// `crate::search::score::DeltaProgressScorer::score_step` from the
+    /// `task_runner::dispatch_progress_reward` drive_task hook (immediately after
+    /// `dispatch_tri_layer_verdict`). Delta is the representative arm.
+    /// TOTAL_VARIANTS 572 -> 573.
+    ProgressRewardScored(ProgressRewardScoredKind),
+    /// I-24 (SCHEMA_VERSION 266): isomorphic canary anti-gaming event.
+    ///
+    /// Pattern-2 single-variant 3-arm [`PrmCanaryEventKind`]:
+    /// - `CanaryInjected`: a canary pair (original + AST-preserving isomorphic variant)
+    ///   was selected and both variants sent through the L2 scorer; score delta is
+    ///   below the bias threshold (no divergence detected this injection).
+    /// - `StyleBiasDetected`: the score delta between the pair exceeded the threshold
+    ///   from `metrics/canary_bias_threshold.toml` (ID-5: ELAI-measured, not paper-
+    ///   derived); the scorer is flagged as style-biased for this run.
+    /// - `ScorerNeutralized`: N consecutive `StyleBiasDetected` events within one run
+    ///   caused the scorer weight to be zeroed for the remainder of the run (ID-4:
+    ///   ScorerNeutralized is an L2-only effect; it CANNOT override an L1 HardVeto).
+    ///
+    /// Wire-dark unless `ELAI_CANARY_INJECTOR_ENABLE=1` (default-OFF, R9 experiment).
+    /// R8 compliance: the canary pair set is FROZEN in
+    /// `fixtures/canary_pairs.json` (gate-manifest.txt entry); the running system
+    /// NEVER generates new canaries from the model under test at runtime.
+    /// Composes i-17 TriLayerStack L2 leg (GD-1, never re-implements L2 invocation).
+    /// Emitted by `crate::canary_injector::emit_prm_canary_to_ssb` from
+    /// `crate::canary_injector::CanaryInjector::maybe_inject`, called at the
+    /// `TriLayerStack::run_verdict` L2 injection site. CanaryInjected is the
+    /// representative arm.
+    /// TOTAL_VARIANTS 573 -> 574.
+    PrmCanaryEvent(PrmCanaryEventKind),
+    /// I-27 (SCHEMA_VERSION 265): verified-outcome-rate vs compute convergence
+    /// curve measurement beacon.
+    ///
+    /// Flat beacon (no Kind discriminator). Emitted by
+    /// `crates/cli/src/bench_convergence.rs::run_inner` from the
+    /// `CliAction::BenchConvergence` dispatch arm in `crates/cli/src/main.rs`.
+    ///
+    /// The row carries `curve_points[]` (compute_level, mean_rate, ci_low,
+    /// ci_high), `knee_compute_level`, `non_monotonic_at[]`, `seed_count` (>=5
+    /// per I-38 statistical floor), and `fixture_suite`. Results are
+    /// recomputable byte-identically under `ELAI_SEED` (GD-2). Monotonicity is
+    /// REPORTED, not guaranteed: if rate dips between adjacent compute levels,
+    /// `non_monotonic_at` names the level (GD-5 honesty, stub_ban).
+    ///
+    /// Live per-node compute-spend resolution from I-4 `SearchNodeEvent` rows is
+    /// PENDING-on-I-4 (I-4 SearchLadder/search/ladder.rs UNBUILT at HEAD). The
+    /// Tier-1 fixture leg uses cost_per_task_cents as the cost axis (E-49 live).
+    ///
+    /// Default-ON for the fixture leg (CLI entrypoint, always available).
+    /// No kill-switch needed (measurement instrument, not a runtime gate).
+    /// Composes E-49 ($/CTS denominator), I-38 (bootstrap CI floor), H-9
+    /// (cost cockpit family) (GD-1, never re-implements).
+    /// TOTAL_VARIANTS 574 -> 575.
+    ConvergenceCurveMeasured,
+    /// I-36 (SCHEMA_VERSION 267): per-(role,backend) compiled-prompt artifact event.
+    /// Pattern-2 single-variant 3-arm [`PromptCompiledKind`]:
+    /// - `Compiled`: a promoted compiled variant was substituted at the adapter boundary;
+    ///   the row names the variant hash + backend.
+    /// - `TransferGapMeasured`: source-vs-compiled fixture pass-rate delta recorded;
+    ///   recomputable under ELAI_SEED (GD-2).
+    /// - `Rolledback`: compiled variant regressed its fixture floor; variant removed from
+    ///   store and substitution reverts to the base assembled prompt.
+    ///
+    /// Default-ON (substitution is a no-op pass-through when no compiled variant is stored).
+    /// Kill-switch: `ELAI_PROMPT_COMPILE_DISABLE=1` suppresses all substitution and emission.
+    /// Offline optimizer (GEPA / MIPROv2-class) is Tier-2 DEFER (cloud optimizer budget).
+    /// Compiler output contract: no explicit step-by-step CoT scaffold in compiled strings
+    /// (landmine #6: Opus 4.7+ extended thinking auto-interleaves; scaffolds suppress it).
+    /// Composes I-32 role_contracts (compiled substitution applies AFTER) + B-37 PerRoleRuntime
+    /// (the routing key) + E-8 GEPA (the offline compilation lane, Tier-2) + I-12 ledger gates
+    /// (the ID-6 promotion machinery, promote_variant WIRE-DARK[I-36]).
+    /// TOTAL_VARIANTS 575 -> 576.
+    PromptCompiled(PromptCompiledKind),
+    /// I-50 (SCHEMA_VERSION 268): subscription auth broker lifecycle event.
+    /// Pattern-2 single-variant 4-arm [`AuthBrokerEventKind`]:
+    /// - `TokenAcquired`: a valid credential was resolved (env-key, saved token, or new
+    ///   exchange); the row names provider_id only, never token material.
+    /// - `Refreshed`: an expired saved token was refreshed and persisted; the row records
+    ///   provider_id + whether refresh succeeded.
+    /// - `ProviderLinked`: a new provider credential was registered with the broker.
+    /// - `RefreshFailed`: refresh was attempted but failed with a typed error; request is
+    ///   surfaced to caller as ApiError, never silently swallowed.
+    ///
+    /// Default-ON (the broker is the mandatory credential resolution path once wired).
+    /// Wire-dark at the SSB-emit seam until Arc<Ssb> is threaded through runtime_cmd.rs
+    /// (WIRE-DARK[I-50]); the emit path is proven reachable in the contract test.
+    /// Composes oauth.rs (storage facade) + anthropic.rs::resolve_startup_auth_source
+    /// (Anthropic impl) + B-37 RuntimeFactoryConfig.auth_source (consumer).
+    /// TOTAL_VARIANTS 576 -> 577.
+    AuthBrokerEvent(AuthBrokerEventKind),
 }
 
 impl SsbActionType {
@@ -5116,6 +5416,8 @@ impl SsbActionType {
             Self::SecurityClassRegressionBlocked => "security_class_regression_blocked",
             // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
             Self::InsecureRateMeasured => "insecure_rate_measured",
+            // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) bench beacon.
+            Self::ErrorAmplificationMeasured => "error_amplification_measured",
             // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2.
             // Each Kind arm maps to its own sql_str via the Kind's as_sql_str().
             Self::SkillLibraryEvent(kind) => kind.as_sql_str(),
@@ -5235,6 +5537,37 @@ impl SsbActionType {
             Self::TriLayerVerdict(_) => "tri_layer_verdict",
             // I-18 (SCHEMA_VERSION 253): per-row rolling blake3 chain beacon (3-arm Pattern-2).
             Self::RowChainSealed(_) => "row_chain_sealed",
+            // I-19 (SCHEMA_VERSION 254): TDD enforcer pre-flight gate blocked event (3-arm Pattern-2).
+            Self::TddPreflightBlocked(kind) => kind.as_sql_str(),
+            // I-20 (SCHEMA_VERSION 255): budgeted mutation scheduler (4-arm Pattern-2).
+            Self::MutationBudgetedRun(kind) => kind.as_sql_str(),
+            // I-21 (SCHEMA_VERSION 256): SprintContractEvent Pattern-2 5-arm.
+            Self::SprintContractEvent(kind) => kind.as_sql_str(),
+            // I-37 (SCHEMA_VERSION 257): RequirementVerified Pattern-2 3-arm.
+            Self::RequirementVerified(kind) => kind.as_sql_str(),
+            // I-44 (SCHEMA_VERSION 258): RetentionPurged Pattern-2 3-arm.
+            Self::RetentionPurged(kind) => kind.as_sql_str(),
+            // I-52 (SCHEMA_VERSION 259): CheckpointToolEvent Pattern-2 4-arm.
+            Self::CheckpointToolEvent(kind) => kind.as_sql_str(),
+            // I-54 (SCHEMA_VERSION 260): StructuralEditApplied Pattern-2 5-arm.
+            Self::StructuralEditApplied(kind) => kind.as_sql_str(),
+            // I-4 (SCHEMA_VERSION 261): SearchNodeEvent Pattern-2 4-arm.
+            Self::SearchNodeEvent(kind) => kind.as_sql_str(),
+            // I-7 (SCHEMA_VERSION 262): EscalationCascade Pattern-2 4-arm.
+            Self::EscalationCascade(kind) => kind.as_sql_str(),
+            // I-22 (SCHEMA_VERSION 264): ProgressRewardScored Pattern-2 3-arm.
+            Self::ProgressRewardScored(kind) => kind.as_sql_str(),
+            // I-24 (SCHEMA_VERSION 266): PrmCanaryEvent Pattern-2 3-arm.
+            Self::PrmCanaryEvent(kind) => kind.as_sql_str(),
+            // I-27 (SCHEMA_VERSION 265): ConvergenceCurveMeasured flat beacon.
+            Self::ConvergenceCurveMeasured => "convergence_curve_measured",
+            // I-36 (SCHEMA_VERSION 267): PromptCompiled -- per-(role,backend) compiled-prompt
+            // artifact event (3-arm Pattern-2). Each Kind arm maps to its own sql_str so
+            // Compiled / TransferGapMeasured / Rolledback are distinguishable on the wire.
+            Self::PromptCompiled(kind) => kind.as_sql_str(),
+            // I-50 (SCHEMA_VERSION 268): AuthBrokerEvent -- subscription auth broker lifecycle.
+            // 4-arm Pattern-2; each arm maps to its own sql_str.
+            Self::AuthBrokerEvent(kind) => kind.as_sql_str(),
         }
     }
 }
@@ -5904,6 +6237,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "security_class_regression_blocked" => Ok(SsbActionType::SecurityClassRegressionBlocked),
         // F-2b / Slice A1 (SCHEMA_VERSION 201): insecure-rate keystone bench beacon.
         "insecure_rate_measured" => Ok(SsbActionType::InsecureRateMeasured),
+        // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) bench beacon.
+        "error_amplification_measured" => Ok(SsbActionType::ErrorAmplificationMeasured),
         // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2 (3 arms).
         "skill_acquired"        => Ok(SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::Acquired)),
         "skill_trust_promoted"  => Ok(SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::TrustPromoted)),
@@ -5998,6 +6333,71 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "playbook_event"              => Ok(SsbActionType::PlaybookEvent(PlaybookEventKind::Promoted)),
         "tri_layer_verdict"           => Ok(SsbActionType::TriLayerVerdict(TriLayerVerdictKind::HardVeto)),
         "row_chain_sealed"            => Ok(SsbActionType::RowChainSealed(RowChainSealedKind::ChainAdvanced)),
+        // I-19 (SCHEMA_VERSION 254): TddPreflightBlocked Pattern-2 3-arm. Representative arm.
+        "tdd_preflight_missing_test_delta" => Ok(SsbActionType::TddPreflightBlocked(TddPreflightBlockedKind::MissingTestDelta)),
+        "tdd_preflight_syntax_dry_run_failed" => Ok(SsbActionType::TddPreflightBlocked(TddPreflightBlockedKind::SyntaxDryRunFailed)),
+        "tdd_preflight_refactor_exempted" => Ok(SsbActionType::TddPreflightBlocked(TddPreflightBlockedKind::RefactorExempted)),
+        // I-20 (SCHEMA_VERSION 255): MutationBudgetedRun Pattern-2 4-arm. Representative arm CiCleared.
+        "mutation_budgeted_run_ci_cleared" => Ok(SsbActionType::MutationBudgetedRun(MutationBudgetedRunKind::CiCleared)),
+        "mutation_budgeted_run_ci_failed" => Ok(SsbActionType::MutationBudgetedRun(MutationBudgetedRunKind::CiFailed)),
+        "mutation_budgeted_run_survivor_directive" => Ok(SsbActionType::MutationBudgetedRun(MutationBudgetedRunKind::SurvivorDirective)),
+        "mutation_budgeted_run_cache_hit" => Ok(SsbActionType::MutationBudgetedRun(MutationBudgetedRunKind::CacheHit)),
+        // I-21 (SCHEMA_VERSION 256): SprintContractEvent Pattern-2 5-arm. Representative arm Proposed.
+        "sprint_contract_proposed" => Ok(SsbActionType::SprintContractEvent(SprintContractEventKind::Proposed)),
+        "sprint_contract_approved" => Ok(SsbActionType::SprintContractEvent(SprintContractEventKind::Approved)),
+        "sprint_contract_rejected" => Ok(SsbActionType::SprintContractEvent(SprintContractEventKind::Rejected)),
+        "sprint_contract_ralph_reinjected" => Ok(SsbActionType::SprintContractEvent(SprintContractEventKind::RalphReinjected)),
+        "sprint_contract_adversary_escalated" => Ok(SsbActionType::SprintContractEvent(SprintContractEventKind::AdversaryEscalated)),
+        // I-37 (SCHEMA_VERSION 257): RequirementVerified Pattern-2 3-arm.
+        "requirement_verified_satisfied" => Ok(SsbActionType::RequirementVerified(RequirementVerifiedKind::Satisfied)),
+        "requirement_verified_unverified" => Ok(SsbActionType::RequirementVerified(RequirementVerifiedKind::Unverified)),
+        "requirement_verified_regressed" => Ok(SsbActionType::RequirementVerified(RequirementVerifiedKind::Regressed)),
+        // I-44 (SCHEMA_VERSION 258): RetentionPurged Pattern-2 3-arm.
+        "retention_raw_inputs_purged" => Ok(SsbActionType::RetentionPurged(RetentionPurgedKind::RawInputsPurged)),
+        "retention_evidence_retained" => Ok(SsbActionType::RetentionPurged(RetentionPurgedKind::EvidenceRetained)),
+        "retention_purge_verified" => Ok(SsbActionType::RetentionPurged(RetentionPurgedKind::PurgeVerified)),
+        // I-52 (SCHEMA_VERSION 259): CheckpointToolEvent Pattern-2 4-arm.
+        "checkpoint_tool_saved" => Ok(SsbActionType::CheckpointToolEvent(CheckpointToolEventKind::Saved)),
+        "checkpoint_tool_rewound" => Ok(SsbActionType::CheckpointToolEvent(CheckpointToolEventKind::Rewound)),
+        "checkpoint_tool_diffed" => Ok(SsbActionType::CheckpointToolEvent(CheckpointToolEventKind::Diffed)),
+        "checkpoint_tool_refused_diverged" => Ok(SsbActionType::CheckpointToolEvent(CheckpointToolEventKind::RefusedDiverged)),
+        // I-54 (SCHEMA_VERSION 260): StructuralEditApplied Pattern-2 5-arm.
+        "structural_edit_matched" => Ok(SsbActionType::StructuralEditApplied(StructuralEditAppliedKind::Matched)),
+        "structural_edit_previewed" => Ok(SsbActionType::StructuralEditApplied(StructuralEditAppliedKind::Previewed)),
+        "structural_edit_applied" => Ok(SsbActionType::StructuralEditApplied(StructuralEditAppliedKind::Applied)),
+        "structural_edit_refused_stale" => Ok(SsbActionType::StructuralEditApplied(StructuralEditAppliedKind::RefusedStale)),
+        "structural_edit_parse_failed" => Ok(SsbActionType::StructuralEditApplied(StructuralEditAppliedKind::ParseFailed)),
+        // I-4 (SCHEMA_VERSION 261): SearchNodeEvent Pattern-2 4-arm.
+        "search_node_expanded" => Ok(SsbActionType::SearchNodeEvent(SearchNodeEventKind::Expanded)),
+        "search_node_pruned" => Ok(SsbActionType::SearchNodeEvent(SearchNodeEventKind::Pruned)),
+        "search_node_promoted" => Ok(SsbActionType::SearchNodeEvent(SearchNodeEventKind::Promoted)),
+        "search_node_budget_collapsed" => Ok(SsbActionType::SearchNodeEvent(SearchNodeEventKind::BudgetCollapsed)),
+        // I-7 (SCHEMA_VERSION 262): EscalationCascade Pattern-2 4-arm. Representative arm LocalWin.
+        "escalation_cascade_local_win" => Ok(SsbActionType::EscalationCascade(EscalationCascadeKind::LocalWin)),
+        "escalation_cascade_condensed" => Ok(SsbActionType::EscalationCascade(EscalationCascadeKind::Condensed)),
+        "escalation_cascade_escalated" => Ok(SsbActionType::EscalationCascade(EscalationCascadeKind::Escalated)),
+        "escalation_cascade_batch_routed" => Ok(SsbActionType::EscalationCascade(EscalationCascadeKind::BatchRouted)),
+        // I-22 (SCHEMA_VERSION 264): ProgressRewardScored Pattern-2 3-arm. Representative arm Delta.
+        "progress_reward_delta" => Ok(SsbActionType::ProgressRewardScored(ProgressRewardScoredKind::Delta)),
+        "progress_reward_first_error_truncated" => Ok(SsbActionType::ProgressRewardScored(ProgressRewardScoredKind::FirstErrorTruncated)),
+        "progress_reward_decay_applied" => Ok(SsbActionType::ProgressRewardScored(ProgressRewardScoredKind::DecayApplied)),
+        // I-24 (SCHEMA_VERSION 266): PrmCanaryEvent Pattern-2 3-arm. Representative arm CanaryInjected.
+        "prm_canary_injected"         => Ok(SsbActionType::PrmCanaryEvent(PrmCanaryEventKind::CanaryInjected)),
+        "prm_canary_style_bias_detected" => Ok(SsbActionType::PrmCanaryEvent(PrmCanaryEventKind::StyleBiasDetected)),
+        "prm_canary_scorer_neutralized"  => Ok(SsbActionType::PrmCanaryEvent(PrmCanaryEventKind::ScorerNeutralized)),
+        // I-27 (SCHEMA_VERSION 265): ConvergenceCurveMeasured flat beacon.
+        "convergence_curve_measured" => Ok(SsbActionType::ConvergenceCurveMeasured),
+        // I-36 (SCHEMA_VERSION 267): PromptCompiled -- per-(role,backend) compiled-prompt
+        // artifact event. 3 distinct sql_str values per-Kind arm.
+        "prompt_compiled" => Ok(SsbActionType::PromptCompiled(PromptCompiledKind::Compiled)),
+        "transfer_gap_measured" => Ok(SsbActionType::PromptCompiled(PromptCompiledKind::TransferGapMeasured)),
+        "prompt_compiled_rolledback" => Ok(SsbActionType::PromptCompiled(PromptCompiledKind::Rolledback)),
+        // I-50 (SCHEMA_VERSION 268): AuthBrokerEvent -- subscription auth broker lifecycle.
+        // 4-arm Pattern-2; each arm has its own sql_str.
+        "auth_broker_token_acquired" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::TokenAcquired)),
+        "auth_broker_refreshed" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::Refreshed)),
+        "auth_broker_provider_linked" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::ProviderLinked)),
+        "auth_broker_refresh_failed" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::RefreshFailed)),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

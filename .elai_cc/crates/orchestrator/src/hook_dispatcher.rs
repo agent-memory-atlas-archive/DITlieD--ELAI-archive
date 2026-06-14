@@ -604,6 +604,13 @@ pub struct InProcessHookDispatcher {
     /// installed a supervisor sees zero behavioral change). The F-9
     /// dep_writetime_gate is NOT in the supervisor scope and always runs inline.
     supervisor: Option<Arc<dyn crate::directive::Supervisor>>,
+    /// I-19 TDD preflight gate: optional SSB writer + agent metadata used to
+    /// emit [`crate::ssb::SsbPayload::TddPreflightBlocked`] rows from
+    /// `dispatch_pre_tool_use`. `None` = gate still blocks (fail-closed) but
+    /// no dedicated SSB row is emitted. Pattern mirrors `vibegate_ssb` at :573.
+    ///
+    /// Tuple: `(writer, agent_id, superstep)`.
+    tdd_preflight_ssb: Option<(Arc<crate::ssb::Ssb>, String, i64)>,
 }
 
 impl InProcessHookDispatcher {
@@ -638,6 +645,7 @@ impl InProcessHookDispatcher {
             stop_confirm_gate: None,
             stop_cost_ssb: None,
             supervisor: None,
+            tdd_preflight_ssb: None,
         }
     }
 
@@ -763,6 +771,57 @@ impl InProcessHookDispatcher {
     #[must_use]
     pub fn has_supervisor(&self) -> bool {
         self.supervisor.is_some()
+    }
+
+    /// I-19 TDD preflight gate: install the SSB writer used to emit
+    /// [`crate::ssb::SsbPayload::TddPreflightBlocked`] rows from
+    /// `dispatch_pre_tool_use`. Without this, the gate still blocks
+    /// (fail-closed via the `HookFinding` path) but no dedicated SSB row is
+    /// emitted. Pattern mirrors `with_vibegate_ssb`.
+    ///
+    /// `agent_id` and `superstep` are written onto every emitted row; pass
+    /// `crate::task_runner::RUNNER_AGENT_ID` / `RUNNER_SUPERSTEP` from the
+    /// production bootstrap path.
+    #[must_use]
+    pub fn with_tdd_preflight_ssb(
+        mut self,
+        writer: Arc<crate::ssb::Ssb>,
+        agent_id: impl Into<String>,
+        superstep: i64,
+    ) -> Self {
+        self.tdd_preflight_ssb = Some((writer, agent_id.into(), superstep));
+        self
+    }
+
+    /// I-19: Run the TDD preflight gate against the current invocation and
+    /// return any findings. Constructs a [`crate::tdd_preflight::TddPreflight`]
+    /// with the optional SSB writer threaded from `self.tdd_preflight_ssb` so
+    /// `check_with_emit` actually writes a `TddPreflightBlocked` row when the
+    /// gate fires AND the flag is ON. Without `tdd_preflight_ssb` the gate
+    /// still blocks (fail-closed) but emits no SSB row.
+    ///
+    /// Extracted from `dispatch_pre_tool_use` to keep that function below the
+    /// MR-3 80-line bound (maintainability-review WARN-5).
+    async fn run_tdd_preflight_check(
+        &self,
+        invocation: &HookInvocation<'_>,
+    ) -> Vec<HookFinding> {
+        // No test-symbol injection in the hook-dispatcher layer (I-19 Tier-1
+        // deliverable); the gate uses an empty test_symbols slice, meaning it
+        // will only ever produce Unmatched or NoPubSymbols results here.
+        // A richer test-symbol feed (e.g. from the repository index) is a
+        // Tier-2 / I-19-promotion deliverable.
+        let mut gate = crate::tdd_preflight::TddPreflight::new();
+        if let Some((writer, agent_id, superstep)) = self.tdd_preflight_ssb.as_ref() {
+            gate = gate.with_ssb(writer.clone(), agent_id.clone(), *superstep);
+        }
+        gate.check_with_emit(
+            invocation.file_path,
+            invocation.source,
+            &[], // Tier-1: no test-symbol index yet
+            &invocation.fsm_state,
+        )
+        .await
     }
 
     /// I-1: project a [`HookInvocation`] into a [`crate::directive::Directive`]
@@ -1344,6 +1403,16 @@ impl HookDispatcher for InProcessHookDispatcher {
                         .await;
                     }
                     findings.extend(vibe_findings);
+                }
+            }
+
+            // I-19: TDD enforcer preflight gate. Default-OFF (ELAI_TDD_PREFLIGHT_ENABLE=1).
+            // Fires only on Edit/Write-class invocations with a file_path we can parse.
+            // GD-4: default-ON flip gated on FP rate bounded on >=3 real orchestrate runs.
+            if crate::tdd_preflight::tdd_preflight_enabled() {
+                let tdd_findings = self.run_tdd_preflight_check(&invocation).await;
+                if !tdd_findings.is_empty() {
+                    findings.extend(tdd_findings);
                 }
             }
 

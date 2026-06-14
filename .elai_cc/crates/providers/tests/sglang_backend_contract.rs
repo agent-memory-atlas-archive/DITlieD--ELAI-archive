@@ -149,9 +149,9 @@ fn runtime_backend_all_includes_sglang() {
     );
     // E-26 bumped the count to 17; E-39 (commit 929148e) added 3 more
     // cloud-floor backends: DeepSeekV4Flash, CerebrasFree, GroqFree.
-    // All three are in RuntimeBackend::all() (types.rs:212-214) with
-    // create_runtime returning NotImplemented until RUNPOD-PENDING resolves.
-    assert_eq!(all.len(), 20);
+    // I-49 added 2 more: Bedrock + AzureOpenAi (Tier-1 protocol logic,
+    // live calls D-026 PENDING).
+    assert_eq!(all.len(), 22);
 }
 
 #[test]

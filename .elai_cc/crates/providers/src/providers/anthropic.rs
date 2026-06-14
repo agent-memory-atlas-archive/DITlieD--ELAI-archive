@@ -1709,6 +1709,7 @@ use elai_core::config::OAuthConfig;
             tool_choice: None,
             stream: false,
             seed: None,
+            effort: None,
         };
 
         assert!(request.with_streaming().stream);
@@ -1812,6 +1813,7 @@ use elai_core::config::OAuthConfig;
             tool_choice: None,
             stream: false,
             seed: None,
+            effort: None,
         }
     }
 

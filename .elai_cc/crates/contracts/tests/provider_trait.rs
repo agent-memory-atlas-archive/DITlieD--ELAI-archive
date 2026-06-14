@@ -22,6 +22,7 @@ fn provider_has_llm_provider_contract() {
         tool_choice: None,
         stream: false,
         seed: None,
+        effort: None,
     };
     let streamed = req.with_streaming();
     assert!(streamed.stream, "with_streaming must set stream=true");

@@ -216,13 +216,29 @@
   <!-- File tree -->
   <div class="tree-scroll">
     {#if fileTree.loading}
-      <div class="tree-loading">Loading…</div>
+      <!-- loading: skeleton rows (nothing under ~200ms is the host's job) -->
+      <div class="tree-skeleton" aria-busy="true" aria-label="loading file tree">
+        {#each Array(6) as _, i}
+          <div class="skeleton-row" style="width: {72 - i * 7}%"></div>
+        {/each}
+      </div>
     {:else if fileTree.error}
-      <div class="tree-error">{fileTree.error}</div>
+      <!-- error: mono-inversion fail chip + recovery path (§6) -->
+      <div class="tree-error" role="alert">
+        <span class="fail-chip">✕</span>
+        <span class="tree-error__msg">{fileTree.error}</span>
+        <button class="tree-error__retry" onclick={() => fileTree.loadRoot(rootPath)}>
+          retry
+        </button>
+      </div>
     {:else if fileTree.root}
       {@render renderTree(fileTree.root.children ?? [], 0)}
     {:else}
-      <div class="tree-empty">No folder open</div>
+      <!-- empty: focal next action, not a bare "no data" (§9) -->
+      <div class="tree-empty">
+        <span class="tree-empty__glyph">○</span>
+        <span class="tree-empty__msg">no folder open</span>
+      </div>
     {/if}
   </div>
 
@@ -282,8 +298,9 @@
     height: 100%;
     position: relative;
     overflow: hidden;
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-secondary, #9da5b4);
+    color: var(--read);
     user-select: none;
   }
 
@@ -292,30 +309,46 @@
     align-items: center;
     justify-content: space-between;
     padding: 6px 8px;
-    border-bottom: 1px solid var(--border-subtle, #2d2d2d);
+    border-bottom: 1px solid var(--line);
     flex-shrink: 0;
   }
 
+  /* static section label — §4 dot-prefix */
   .explorer-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font-size: 10px;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.2em;
     text-transform: uppercase;
-    color: var(--text-ghost, #5c6370);
+    color: var(--dim);
+  }
+  .explorer-title::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--d-teal);
+    flex-shrink: 0;
   }
 
   .explorer-btn {
     background: none;
     border: none;
-    color: var(--text-secondary, #9da5b4);
+    color: var(--read);
     cursor: pointer;
     padding: 2px 4px;
+    font-family: var(--font-mono);
     font-size: 14px;
     line-height: 1;
-    border-radius: 3px;
+    border-radius: var(--r-sm);
+    transition: color var(--dur-fast) var(--ease-out),
+      background-color var(--dur-fast) var(--ease-out);
   }
 
   .explorer-btn:hover {
-    background: var(--bg-hover, #2c313a);
+    background: var(--raised);
+    color: var(--text);
   }
 
   .new-project-row {
@@ -327,21 +360,26 @@
 
   .new-project-input {
     flex: 1;
-    background: var(--bg-input, #1d1f23);
-    border: 1px solid var(--border-subtle, #2d2d2d);
-    color: var(--text-primary, #abb2bf);
+    background: var(--sink);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--font-mono);
     padding: 3px 6px;
     font-size: 11px;
-    border-radius: 3px;
+    border-radius: var(--r-sm);
     outline: none;
+    transition: border-color var(--dur-fast) var(--ease-out);
   }
+  .new-project-input:focus { border-color: var(--d-teal); }
+  .new-project-input::placeholder { color: var(--dim); }
 
   .project-list {
-    border-bottom: 1px solid var(--border-subtle, #2d2d2d);
+    border-bottom: 1px solid var(--line);
     flex-shrink: 0;
   }
 
   .project-item {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -349,26 +387,33 @@
     padding: 4px 8px;
     background: none;
     border: none;
-    color: var(--text-secondary, #9da5b4);
+    color: var(--read);
     cursor: pointer;
     text-align: left;
+    font-family: var(--font-mono);
     font-size: 11px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    transition: background-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
   }
 
   .project-item:hover {
-    background: var(--bg-hover, #2c313a);
+    background: var(--raised);
+    color: var(--text);
   }
 
+  /* active project: one teal accent as text, no fill */
   .project-item--active {
-    color: var(--teal, #14b8a6);
+    color: var(--d-teal);
   }
+  .project-item--active .project-icon { color: var(--d-teal); }
 
   .project-icon {
     font-size: 10px;
     flex-shrink: 0;
+    color: var(--dim);
   }
 
   .project-name {
@@ -384,6 +429,7 @@
   }
 
   .tree-node {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 4px;
@@ -391,15 +437,34 @@
     cursor: pointer;
     white-space: nowrap;
     overflow: hidden;
+    background: var(--row);
+    transition: background-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
   }
+
+  /* hairline guides between rows */
+  .tree-node + .tree-node { box-shadow: inset 0 1px 0 var(--line); }
 
   .tree-node:hover {
-    background: var(--bg-hover, #2c313a);
+    background: var(--raised);
   }
 
+  /* selected: teal name + left teal bar, no flat fill */
   .tree-node--selected {
-    background: var(--bg-selected, #2c313a);
-    color: var(--text-primary, #abb2bf);
+    color: var(--d-teal);
+  }
+  .tree-node--selected::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--d-teal);
+  }
+  .tree-node--selected .tree-node-label,
+  .tree-node--selected .tree-node-label--dir {
+    color: var(--d-teal);
   }
 
   .tree-node-icon {
@@ -407,30 +472,95 @@
     width: 14px;
     flex-shrink: 0;
     text-align: center;
-    color: var(--text-ghost, #5c6370);
+    color: var(--dim);
   }
 
+  /* file names read brighter than meta; dirs strongest */
   .tree-node-label {
     overflow: hidden;
     text-overflow: ellipsis;
     flex: 1;
+    color: var(--read);
   }
 
   .tree-node-label--dir {
-    color: var(--text-primary, #abb2bf);
+    color: var(--text);
   }
 
-  .tree-loading,
-  .tree-empty,
-  .tree-error {
+  /* ---- state surfaces (§9) ---- */
+  .tree-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     padding: 12px 8px;
-    color: var(--text-ghost, #5c6370);
+  }
+  .skeleton-row {
+    height: 12px;
+    border-radius: var(--r-sm);
+    background: var(--raised);
+    border: 1px solid var(--line);
+    opacity: 0.55;
+    animation: skeleton-pulse 1.2s var(--ease-out) infinite alternate;
+  }
+  @keyframes skeleton-pulse {
+    from { opacity: 0.35; }
+    to   { opacity: 0.7; }
+  }
+
+  .tree-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 24px 8px;
+    color: var(--dim);
     font-size: 11px;
   }
+  .tree-empty__glyph {
+    font-size: 16px;
+    color: var(--ghost);
+  }
 
   .tree-error {
-    color: var(--fail, #e06c75);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 8px;
+    font-size: 11px;
+    color: var(--read);
   }
+  /* §6 fail = mono-inversion chip, never red */
+  .fail-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    background: var(--text);
+    color: var(--void);
+    border-radius: var(--r-xs);
+    font-size: 10px;
+    line-height: 1;
+  }
+  .tree-error__msg {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tree-error__retry {
+    background: transparent;
+    border: 1px solid var(--d-teal-soft);
+    border-radius: var(--r-xs);
+    color: var(--d-teal);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 1px 8px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color var(--dur-fast) var(--ease-out);
+  }
+  .tree-error__retry:hover { background: var(--d-teal-ghost); }
 
   /* Resize handle: right edge drag strip */
   .resize-handle {
@@ -441,10 +571,14 @@
     height: 100%;
     cursor: col-resize;
     background: transparent;
-    z-index: 10;
+    z-index: var(--z-shell-chrome);
   }
 
   .resize-handle:hover {
-    background: var(--teal-line, rgba(20, 184, 166, 0.3));
+    background: var(--d-teal-soft);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton-row { animation: none; opacity: 0.5; }
   }
 </style>

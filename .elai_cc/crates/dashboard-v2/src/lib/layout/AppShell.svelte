@@ -5,6 +5,7 @@
   import { commands } from '../state/commands.svelte';
   import { installShortcuts } from '../state/shortcuts';
   import type { WindowType } from '../api/types';
+  import WindowControls from '../chrome/WindowControls.svelte';
 
   interface Props {
     sidebar: Snippet;
@@ -141,6 +142,18 @@
   bind:this={shellEl}
   style="--panel-split: 50%; --explorer-width: {workspace.explorerWidth}px"
 >
+  <!-- Frameless titlebar chrome (decorations:false). Window controls
+       float in the top-right corner with a guaranteed-free drag zone to
+       their left; a second short drag strip sits over the top-left
+       sidebar header gap. These two zones keep the window movable +
+       closable on the workspace WITHOUT overlapping the 32px panel
+       tab-bars (which own their own clicks). Renders nothing outside
+       the Tauri shell. -->
+  <div class="winctl-host">
+    <span class="winctl-drag" data-tauri-drag-region aria-hidden="true"></span>
+    <WindowControls />
+  </div>
+
   <div class="sidebar-col">
     {@render sidebar()}
   </div>
@@ -298,6 +311,25 @@
     inset: 0;
     pointer-events: none;
     z-index: 100;
+  }
+
+  /* Frameless window controls cluster — top-right corner, above the
+     32px panel tab-bars. The drag strip to the controls' left is a
+     reliably-free grab zone for moving the window on the workspace. */
+  .winctl-host {
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    z-index: 60; /* above tabbars (panels-area content) + sidebar (10) */
+  }
+  .winctl-drag {
+    /* ~120px guaranteed-draggable gutter left of the controls */
+    width: 120px;
+    height: 32px;
+    align-self: stretch;
   }
 
 </style>

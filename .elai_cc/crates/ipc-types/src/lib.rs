@@ -1068,6 +1068,30 @@ pub struct TraceQueryRequest {
     pub end_line: u32,
 }
 
+/// I-52: wire constants for the agent-callable checkpoint tool (3-arm
+/// save/rewind/diff over the H-49 time-travel CAS substrate). Defined here so
+/// the JSON-path dispatch match arms never route to the unknown fallback.
+/// These tools use the JSON dispatch path (no postcard wire struct), mirroring
+/// the I-53 recipe_* / archive_read / json_tree_query tools.
+pub const TOOL_CHECKPOINT_SAVE: &str = "checkpoint_save";
+/// I-52: rewind to a saved checkpoint label (refuses on RV-1 divergence).
+pub const TOOL_CHECKPOINT_REWIND: &str = "checkpoint_rewind";
+/// I-52: diff the working tree against a saved checkpoint label.
+pub const TOOL_CHECKPOINT_DIFF: &str = "checkpoint_diff";
+
+/// I-54: wire constants for the agent-callable structural (AST-aware) edit tool
+/// (3-arm search/preview/apply over the shipped tree-sitter grammars; one version
+/// source via elai_knowledge::TreeSitterAstEvaluator; ast-grep dep BANNED, SLC-3).
+/// Defined here so the JSON-path dispatch match arms never route to the unknown
+/// fallback. These tools use the JSON dispatch path (no postcard wire struct),
+/// mirroring the I-52 checkpoint_* / I-53 recipe_* tools.
+pub const TOOL_STRUCTURAL_SEARCH: &str = "structural_search";
+/// I-54: preview the would-be diff of a query + rewrite template (ZERO bytes).
+pub const TOOL_STRUCTURAL_PREVIEW: &str = "structural_preview";
+/// I-54: apply a previewed structural edit (rides the SHIPPED edit gates;
+/// refuses on a stale match -- the file changed since preview).
+pub const TOOL_STRUCTURAL_APPLY: &str = "structural_apply";
+
 /// Request for `canvas_spawn_view` — spawn a new canvas view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CanvasSpawnViewRequest {

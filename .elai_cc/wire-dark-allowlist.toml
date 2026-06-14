@@ -176,6 +176,31 @@ expiry_date       = "2026-09-01"
 promotion_plan_id = "G-9-followup"
 smoke_test        = "crates/orchestrator/tests/g9_redaction_ttl_contract.rs::purge_deletes_expired_keeps_active_and_grace"
 
+# I-44: ELAI_ZERO_RETENTION_ENABLE is the master kill-switch for the zero-
+# retention-after-verification purge (crates/orchestrator/src/retention.rs
+# ::zero_retention_enabled, consumed in retention.rs::purge_after_verify which is
+# wired into the `elai run` post-attestation seal seam at cli/src/run_subcommand.rs).
+# This is a DESTRUCTIVE, irreversible file-deletion op: after the sealed verdict
+# (G-2 RRA + G-8 attestation) commits, the active session's raw managed-transcript
+# files are purged, keeping only the redacted, hash-checkable evidence. R9 default-
+# off is the JUSTIFIED kill_switch posture (defence in depth on an irreversible op,
+# GD-4): the purge fires ONLY when the operator passes the user-facing
+# --zero-retention run flag AND this master switch is truthy. It is tightly scoped
+# (only the active session's own staging dir; every path canonicalized + in-scope-
+# validated before unlink; out-of-scope = REFUSED) and NEVER touches ssb.db (the
+# append-only WAL). G-9 redact_payload is invoked on retained summaries first
+# (precondition). promotion_plan_id points at the I-44 follow-up that flips it on
+# after the delete-safety is bounded on >=3 live runs. NOTE: added by an executing
+# run -- trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_ZERO_RETENTION_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "I-44-promotion"
+smoke_test        = "crates/contracts/tests/i44_zero_retention_contract.rs::i44_production_purge_after_verify_emits_retention_purged_row"
+
 # ---- BASE-PHASE-1 RECONCILIATION (session s-plan-audit-2026-06-04, base-phase-1) ----
 # 1C-R1: ELAI_CODE_VEC gates the secondary GraphCodeBERT code-space index that
 # joins BM25 + text_vector as the 3rd (and, with E-40, alongside the 4th/5th)
@@ -1686,3 +1711,279 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "I-4"
 smoke_test        = "crates/contracts/tests/i17_tri_layer_verdict_contract.rs::i17_f1_hard_veto_l2_call_count_zero"
+
+# I-19 (SCHEMA_VERSION 254): TDD enforcer preflight gate.
+# PROPOSED-PENDING-RELOCK (executor does NOT run gate_freeze_check.py --lock per R-8).
+# Controller re-locks out-of-band after review.
+#
+# Gate logic: tree-sitter AST parse of Edit/Write source -> extract new pub symbols ->
+# require >=1 test-symbol substring match (test_symbols feed is Tier-2 / empty in Tier-1).
+# Default-OFF per GD-4: must bound FP rate on >=3 real orchestrate runs before default-ON.
+# NOTE on effective FP rate in Tier-1: the test-symbol feed passed to check_with_emit is
+# empty (&[]) in hook_dispatcher.rs (I-19 Tier-1 deliverable). This means the gate fires
+# a Block on EVERY Edit that introduces any new pub symbol (Unmatched arm), regardless of
+# whether a test actually exists. The effective FP rate is therefore ~100% when enabled on
+# a real codebase until the I-19-promotion test-symbol index feed lands. Keep default-OFF
+# until I-19-promotion measures FP rate <=5% on >=3 real orchestrate runs.
+# Pattern-2 3-arm SSB event: MissingTestDelta / SyntaxDryRunFailed / RefactorExempted.
+# Wire: tdd_preflight::TddPreflight::check_with_emit from
+#   crates/orchestrator/src/hook_dispatcher.rs::InProcessHookDispatcher::run_tdd_preflight_check
+#   (called from dispatch_pre_tool_use). SSB writer threaded via with_tdd_preflight_ssb()
+#   in build_production_hook_dispatcher (runtime_setup.rs). D-030 fix: the emit path is now
+#   reachable from the production constructor; previously TddPreflight::new() without
+#   .with_ssb() made emit_tdd_preflight_blocked_to_ssb structurally unreachable.
+# Promotion condition: I-19-promotion session measures FP rate <=5% on the run corpus
+#   AND ships the test-symbol index feed (the missing Tier-2 input).
+[[flag]]
+name              = "ELAI_TDD_PREFLIGHT_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-31"
+promotion_plan_id = "I-19-promotion"
+smoke_test        = "crates/contracts/tests/i19_tdd_preflight_contract.rs::i19_missing_test_delta_blocked"
+
+# I-21: ELAI_SPRINT_CONTRACT_ENABLE gates the sprint-contract + ralph-loop post-task
+# dispatch (crates/orchestrator/src/sprint_contract.rs::sprint_contract_enabled, consumed
+# in task_runner.rs::dispatch_sprint_contract at the post-task hook chain immediately after
+# dispatch_tri_layer_verdict). Default-OFF experiment: the generator proposes a bounded
+# Sprint Contract, an isolated evaluator (zero shared generator context, i-1 SealedContract
+# substrate) approves/rejects it, a TriLayerStack acceptance failure reinjects the trace to
+# the generator (bounded to MAX_RALPH_REINJECTIONS=3), and the 3rd failure escalates to the
+# D-13 cross-family adversary. Composes H-37/i-1/i-17/D-13 (GD-1). Two-gate no-op: also
+# requires resolved.checker_runtime plumbed (the i-17 acceptance check reuses its registry).
+# Promotion plan I-21-promotion flips it on once the evaluator FP/objection quality is
+# bounded on >=3 real orchestrate runs. smoke_test drives the production dispatch ON path
+# (ENABLE=1 + plumbed checker_runtime) and asserts a SprintContractEvent row lands in a real
+# temp ssb.db. NOTE: added by an executing run -- trips gate_freeze_check.py until re-locked
+# out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_SPRINT_CONTRACT_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-12"
+promotion_plan_id = "I-21-promotion"
+smoke_test        = "crates/contracts/tests/i21_sprint_contract.rs::i21_production_dispatch_ssb_row_lands"
+
+# I-4 (SCHEMA_VERSION 261, Wave-4 KEYSTONE): ELAI_SEARCH_LADDER_ENABLE gates the
+# evidence-ranked search ladder's multi-branch best-of-N dispatch + its SearchNodeEvent
+# emission (crates/orchestrator/src/search/ladder.rs::search_ladder_enabled, consumed in
+# task_runner.rs::dispatch_search_ladder at the post-task hook chain immediately after
+# dispatch_tri_layer_verdict). Default-OFF (GD-4 measured-first-win): the multi-branch
+# ladder changes search to best-of-N + consumes more compute, so the linear retry STAYS as
+# the fallback until the ladder proves a measured win on >=3 real runs. Two-gate no-op:
+# also requires resolved.checker_runtime plumbed (the I-17 L1 axis reuses its registry,
+# GD-1). The ladder is the real multi-branch caller that activates the I-17 is_vetoed /
+# is_quarantined / escalate_on_disagreement + the I-5 build_branch_context consumers.
+# Promotion plan I-4-promotion (FORWARD) flips it on once the best-of-N pass-rate delta is
+# measured on >=3 real runs. smoke_test drives the production dispatch ON path
+# (ENABLE=1 + plumbed checker_runtime) and asserts SearchNodeEvent rows land in a real
+# temp ssb.db. NOTE: added by an executing run -- trips gate_freeze_check.py until re-locked
+# out-of-band by the controller (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_SEARCH_LADDER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-12"
+promotion_plan_id = "I-4-promotion"
+smoke_test        = "crates/contracts/tests/i4_search_ladder_contract.rs::i4_a_production_dispatch_search_node_rows_land"
+
+# I-37: ELAI_REQUIREMENTS_GATE_ENABLE gates the blocking RequirementsGate (EARS requirement
+# verification) in evidence.rs::all_gates() (requirements.rs::RequirementsGate, consumed via
+# check_transition). Default-OFF experiment: the gate parses EARS requirement objects and can
+# BLOCK a PLANNING->TESTING_FIRST transition when a SHALL-requirement is unverified; the
+# RequirementVerified SSB emit is ungated (Unverified shown, never dropped, R1). Also backs the
+# two WIRE-DARK[I-37] fn markers (from_intent_pair IS-15 bridge, parse_speckit_file import) whose
+# production consumers land in I-37-promotion.
+[[flag]]
+name              = "ELAI_REQUIREMENTS_GATE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-13"
+promotion_plan_id = "I-37-promotion"
+smoke_test        = "crates/contracts/tests/i37_requirements_contract.rs::i37_real_db_requirement_verified_rows_land"
+
+# I-7: cascading escalation waterfall. ELAI_ESCALATION_WATERFALL_ENABLE gates the
+# local-first waterfall (escalation_waterfall.rs::escalation_waterfall_enabled,
+# consumed in task_runner.rs::maybe_run_escalation_waterfall drive_task hook).
+# Default-OFF (GD-4): changes the local->cloud transition path. The live billed
+# cloud call is D-026 PENDING; this gate only enables the buildable fan-out/
+# condense/route-DECISION machinery. IC-1: the module has NO batch-client path.
+[[flag]]
+name              = "ELAI_ESCALATION_WATERFALL_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-12"
+promotion_plan_id = "I-7-promotion"
+smoke_test        = "crates/contracts/tests/i7_escalation_cascade_contract.rs::i7_a_all_fail_condenses_then_escalates"
+
+# I-24: isomorphic canary anti-gaming injector. ELAI_CANARY_INJECTOR_ENABLE gates
+# CanaryInjector::maybe_inject inside TriLayerStack::run_verdict (L2 injection site).
+# Default-OFF (GD-4 measured-first-win, R9 experiment): the canary injector adds a
+# second L2 scoring call per sampled branch; ships behind a measured-first-win gate.
+# R8: pair set FROZEN in fixtures/canary_pairs.json (gate-manifest.txt entry); the
+# running system NEVER generates canaries from the model under test at runtime.
+# The live dual-score through PpmClient is PENDING (D-026) until PpmClient is wired
+# into run_l2_score; the skeleton tests SSB plumbing + threshold logic + neutralize
+# state machine against the conformal-tau stub. Promotion plan: I-24-promotion
+# (FORWARD -- re-measure bias threshold post-D-026, then flip default-ON or narrow
+# threshold to the measured unbiased-scorer baseline per ID-5).
+[[flag]]
+name              = "ELAI_CANARY_INJECTOR_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-31"
+promotion_plan_id = "I-24-promotion"
+smoke_test        = "crates/contracts/tests/i24_canary_antigaming_contract.rs::i24_c_real_db_prm_canary_event_row_lands"
+
+# I-22: delta-progress shaped-reward scorer. ELAI_PROGRESS_REWARD_ENABLE gates
+# task_runner::dispatch_progress_reward (drive_task hook, called immediately after
+# dispatch_tri_layer_verdict) and crate::search::score::emit_progress_reward_to_ssb.
+# Default-OFF (GD-4 measured-first-win, R9 experiment): the scorer changes how the
+# SearchLadder values branches; ships behind a measured-first-win gate. Promotion
+# plan I-22-promotion (FORWARD) is the follow-up that wires score_step into the
+# i-4 PUCT value function after >=3 real measurement runs validate the reward signal.
+# Also backs the WIRE-DARK[I-22] marker on DeltaProgressScorer::score_step (the
+# PUCT consumer is PENDING; backing stubs.md row: workflow/sessions/s-107b022a/stubs.md).
+[[flag]]
+name              = "ELAI_PROGRESS_REWARD_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-31"
+promotion_plan_id = "I-22-promotion"
+smoke_test        = "crates/contracts/tests/i22_progress_reward_contract.rs::i22_c_real_db_progress_reward_scored_row_lands"
+
+# I-26: dynamic thinking budgets. ELAI_DYNAMIC_BUDGET_ENABLE gates the 85%-collapse
+# and plateau-detector machinery in crates/orchestrator/src/routing/budget_controller.rs
+# (BudgetController, node_budget, should_collapse, record_score_and_check_plateau).
+# The effort-parameter plumbing (CompletionConfig::effort forwarded by build_request in
+# providers/src/runtime/anthropic_api.rs) is NOT gated — it is always active for cloud
+# completions and is controlled by the caller setting config.effort.
+# Default-OFF (ID-5 measured-first-win, R9 experiment): the budget controller changes
+# how search nodes allocate compute; ships behind a gate until I-4 SearchLadder exists
+# and >= 3 real measurement runs validate the depth-scaling constants (DEPTH_FACTOR_*,
+# PLATEAU_DELTA_MIN). These are starter values only (DEPTH_FACTOR_CALIBRATION_PENDING).
+# Promotion plan I-26-promotion (FORWARD) wires BudgetController into SearchLadder and
+# re-tunes the constants from I-27 measured convergence curves before flipping default-ON.
+# Also backs the WIRE-DARK[I-26] marker on cloud_effort_for_node and BudgetController's
+# search-node methods (production host SearchLadder in search/ladder.rs is PENDING I-4).
+[[flag]]
+name              = "ELAI_DYNAMIC_BUDGET_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-31"
+promotion_plan_id = "I-26-promotion"
+smoke_test        = "crates/contracts/tests/i26_dynamic_thinking_budgets_contract.rs::i26_f_real_db_reasoning_budget_scaled_with_i26_fields_lands"
+
+# I-27 (SCHEMA_VERSION 265, 2026-06-14): ConvergenceCurveMeasured live SearchNodeEvent leg.
+#
+# The convergence bench (crates/cli/src/bench_convergence.rs) measures verified-outcome-rate
+# vs compute-spend. Tier-1 uses cost_per_task_cents from the fixture TOML (E-49 live proxy).
+# The Tier-2 leg: sourcing per-node compute-spend from I-4 SearchNodeEvent rows
+# (search/ladder.rs) is PENDING-on-I-4 (ladder UNBUILT at HEAD). The payload struct
+# (ConvergenceCurveMeasuredPayload.compute_level) is forward-compatible: today it carries
+# the fixture-supplied label string; after I-4 ships it carries per-node spend.
+# The WIRE-DARK[I-27] comment in bench_convergence.rs:~23 marks this forward hook.
+# No new dark pub fn: emit_beacon IS wired from CliAction::BenchConvergence dispatch in main.rs.
+# This allowlist row covers the informational WIRE-DARK marker per R9 + plan requirement.
+[[flag]]
+name              = "WIRE_DARK_I27_SEARCH_NODE_COMPUTE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-31"
+promotion_plan_id = "I-4-promotion"
+smoke_test        = "crates/contracts/tests/i27_convergence_instrumentation_contract.rs::i27_a_action_type_roundtrip"
+
+# ---- I-36 (SCHEMA_VERSION 268): cross-model prompt compilation kill-switch ----
+# ELAI_PROMPT_COMPILE_DISABLE=1 suppresses CompiledPromptStore::lookup substitution
+# (crates/orchestrator/src/prompt_artifacts.rs::kill_switch_active, consumed in
+# cli/src/report_fns.rs::build_system_prompt_for_role). The FEATURE is default-ON
+# (variant substitution is active whenever the offline optimizer has promoted a
+# variant into the store). This is a kill_switch (ops escape hatch to revert to
+# assembled-prompt path if a compiled variant causes regression), so default-OFF
+# = substitution-active is the correct operational posture (DISABLE=0 = feature
+# fires as intended). The offline optimizer (Tier-2 DEFER: promote_variant +
+# run_transfer_gap_fixture are WIRE-DARK[I-36]) has not yet run, so the store is
+# empty at HEAD and lookup() always returns None, making the kill-switch a no-op
+# today. When the optimizer ships, the kill-switch lets operators instantly revert
+# without a deploy. smoke_test: the prompt_artifacts::tests::kill_switch_suppresses
+# _lookup unit test (in crates/orchestrator/src/prompt_artifacts.rs #[cfg(test)])
+# verifies that kill_switch_active() returns true with ELAI_PROMPT_COMPILE_DISABLE=1
+# and that lookup() returns None even when the store has a matching variant.
+# NOTE: added by an I-36 executing run -- trips gate_freeze_check.py until
+# re-locked out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_PROMPT_COMPILE_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "I-36-optimizer-tier2"
+smoke_test        = "crates/orchestrator/src/prompt_artifacts.rs::tests::kill_switch_suppresses_lookup"
+
+# ---- I-49 WIRE-DARK ENTRIES (Bedrock + Azure live-call legs, D-026 PENDING) ----
+# I-49: BedrockRuntime::complete() / stream() — live billed Bedrock Converse /
+# InvokeModelWithResponseStream call. The adapter structure + SigV4 signing
+# + EventStream decode is BUILT and tested via offline replay fixtures (Tier-1).
+# The live billed network call is gated on D-026 (requires real AWS credentials
+# + a configured Bedrock deployment). The WIRE-DARK[I-49] marker sits on the
+# `complete()` and `stream()` method bodies in crates/providers/src/runtime/bedrock.rs.
+# promotion_plan_id = D-026 (live billed call checkbox). This is an experiment
+# gate (the live call lands once AWS creds are provisioned + checkbox is run).
+[[flag]]
+name              = "WIRE-DARK[I-49]-bedrock-live-call"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "I-49-promotion"
+smoke_test        = "crates/providers/tests/i49_replay_fixtures.rs::create_runtime_bedrock_missing_creds_returns_missing_field_not_not_implemented"
+
+# I-49: AzureOpenAiRuntime::complete() / stream() — live billed Azure OpenAI
+# chat-completions call. The adapter structure + request-build + response-
+# normalise (openai_compat shim reuse) is BUILT and tested via offline replay
+# fixtures (Tier-1). The live billed network call is gated on I-49-promotion (requires
+# real Azure OpenAI deployment endpoint + API key). The WIRE-DARK[I-49] marker
+# sits on the `complete()` and `stream()` method bodies in
+# crates/providers/src/runtime/azure_openai.rs.
+# promotion_plan_id = I-49-promotion (live billed call checkpoint).
+[[flag]]
+name              = "WIRE-DARK[I-49]-azure-live-call"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "I-49-promotion"
+smoke_test        = "crates/providers/tests/i49_replay_fixtures.rs::create_runtime_azure_missing_creds_returns_missing_field_not_not_implemented"
+
+# ---- I-50 WIRE-DARK SSB-EMIT SEAM (session I-50-exec, 2026-06-15) ----
+# WIRE-DARK[I-50]: the SSB-emit call inside
+# `elai_orchestrator::auth_broker_emit::broker_resolve_anthropic_auth_with_ssb`
+# receives `writer=None` at the PRODUCTION_HOOK seam
+# (`cli/src/runtime_cmd.rs:387 resolve_anthropic_auth_for_factory`), because
+# `runtime_cmd.rs` has no `Arc<Ssb>` in scope today. The broker itself IS
+# called from a real production entrypoint (runtime_cmd.rs:387); only the SSB
+# EMIT leg is dark (the `if let Some(ref ssb) = writer` branch is skipped when
+# writer=None). This is the single I-50 fork resolution A183 deferral. The
+# emit path is proven reachable by `i50_auth_broker_contract` (real TempDir
+# SQLite, non-None writer, TokenAcquired row observed). Threading `Arc<Ssb>`
+# through the CLI dispatch path is the promotion task.
+# promotion_plan_id = I-50-ssb-threading (wire Arc<Ssb> into runtime_cmd.rs
+# dispatch path so writer is non-None at the call site).
+[[flag]]
+name              = "WIRE-DARK[I-50]"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "I-50-ssb-threading"
+smoke_test        = "crates/contracts/tests/i50_auth_broker_contract.rs::i50_token_acquired_row_emitted_with_real_ssb"
+
+# ---- I-40 (trust-layer wrapper + RRA spec) ----
+# ELAI_WRAP_RRA_DISABLE: kill-switch for the elai wrap RRA emit (default-ON).
+# Set to "1" to suppress .rra bundle emission without suppressing taint + gate rows.
+# type=kill_switch because this is ops-safety (disable the bundle emit in envs that
+# cannot write to disk), not an experiment — the ON path is the correct default.
+# Promotion: the kill-switch persists as long as wrap exists; no flip-default path.
+[[flag]]
+name              = "ELAI_WRAP_RRA_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2027-12-01"
+promotion_plan_id = "I-40-wrap-rra-kill-switch-review"
+smoke_test        = "crates/contracts/tests/i40_trust_wrapper_contract.rs::wrap_fixture_emits_taint_flow_and_rra_bundle"

@@ -79,6 +79,12 @@ const RESULT_MANIFEST_DEMO_RUN_ID: &str = "run-demo-001";
 pub(crate) fn run_rra(action: RraAction, output_format: CliOutputFormat) -> Result<(), String> {
     match action {
         RraAction::Show { path } => run_show(&path, output_format),
+        // I-40 — spec-conformance check (FORK-2: DISTINCT from replay --verify which
+        // re-derives content hashes; this checks C1-C6 structural requirements from
+        // docs/spec/rra-spec-v1.md). Handler: crate::rra_verify_cmd.
+        RraAction::Verify { path } => {
+            crate::rra_verify_cmd::run_verify_conformance(path, output_format)
+        }
     }
 }
 

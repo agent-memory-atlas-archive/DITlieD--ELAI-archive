@@ -225,6 +225,23 @@ pub(crate) enum CliAction {
         /// lets the operator pin a custom output path. `None` => default
         /// `<sessions>/<sid>/run.rra`.
         emit_rra: Option<PathBuf>,
+        /// I-42 — `--profile orchestrate|critique-only`. Distinct axis from
+        /// `--mode` (gate autonomy) and `--provider` (where work runs):
+        /// `--profile` controls WHO writes and whether executor/fixer agents
+        /// are spawned at all. Resolved to a
+        /// [`elai_orchestrator::RunProfile`] by
+        /// [`elai_orchestrator::RunProfile::from_cli_args`] at the production
+        /// wiring point; in `critique-only` the executor/fixer spawn is
+        /// structurally refused. `None` => default `orchestrate`.
+        profile: Option<String>,
+        /// I-44 — `--zero-retention`. When set (AND the default-OFF
+        /// `ELAI_ZERO_RETENTION_ENABLE` master kill-switch is truthy), the run
+        /// purges its own raw managed-transcript files after the sealed verdict
+        /// (G-2 RRA + G-8 attestation) commits, keeping only the redacted,
+        /// hash-checkable evidence. Destructive + irreversible; `false` (flag
+        /// absent) is the fail-safe default (retain everything). Resolved to an
+        /// [`elai_orchestrator::retention::ExportRetentionMode`] at the seal seam.
+        zero_retention: bool,
     },
     /// --remote-sidecar: SSH-boot the GPU box sidecar, start the local tunnel,
     /// health-poll until ready, then launch the V2 dashboard with
@@ -900,6 +917,28 @@ pub(crate) enum CliAction {
     BenchSeccodeplt {
         json: bool,
     },
+    /// I-9 (SCHEMA_VERSION 263): `elai bench error-amplification [--fixture PATH]
+    /// [--seed <u64>] [--json] [--no-repair]`. The error-amplification (alpha_t)
+    /// telemetry harness. Injects a deterministic byte-perturbation at one step
+    /// of a frozen pipeline fixture (IN-HARNESS, NOT C-28 cargo-mutants), walks
+    /// the downstream window classifying each step RECOVERED vs PROPAGATED,
+    /// computes alpha_t (the downstream propagated fraction) + recovered fraction
+    /// + the active-annealing temperature, writes a timestamped
+    /// `error-amplification-<unix_ms>.json` report under
+    /// `<cwd>/benchmarks/error_amplification/`, and emits exactly one
+    /// `SsbActionType::ErrorAmplificationMeasured` beacon (default-ON; no
+    /// `ELAI_*_ENABLE` gate). `--fixture` overrides the embedded fixture (default:
+    /// the compile-time `pipeline_v1.json`); `--seed` pins the perturbation seed
+    /// (default: the `ELAI_SEED` path); `--no-repair` runs the R2 negative control
+    /// (recovery disabled => alpha == 1.0). With `--json` the full report JSON is
+    /// also printed. Exits 0 on a clean run, 1 on infrastructural error. Owns its
+    /// own tokio runtime (`Ssb::new` inside `block_on` per the F-2b playbook).
+    BenchErrorAmplification {
+        fixture: Option<String>,
+        seed: Option<u64>,
+        json: bool,
+        no_repair: bool,
+    },
     /// H-30 (SCHEMA_VERSION 239): `elai bench staleness [--json]
     /// [--broken-retrieval]`. The staleness / intent-drift INSTRUMENT. Drives
     /// the SHIPPED bi-temporal memory substrate (FactStore + audit_conflicts +
@@ -987,6 +1026,16 @@ pub(crate) enum CliAction {
     BenchCrane {
         crane_fixture: Option<String>,
         seed: Option<u64>,
+    },
+    // I-27: `elai bench convergence --suite <PATH> [--seeds <u32>] [--seed <u64>] [--json]`
+    // Verified-outcome-rate vs compute convergence curve fixture harness. Statistical
+    // floor enforced mechanically (seed_count>=5, paired=true). Emits ONE
+    // ConvergenceCurveMeasured SSB flat beacon per clean run. Live per-node
+    // compute-spend leg pending I-4 (WIRE-DARK[I-27]).
+    BenchConvergence {
+        suite: std::path::PathBuf,
+        seeds: u32,
+        json: bool,
     },
     // I-38: `elai bench qdelta --config <PATH> [--seed <u64>] [--json]`
     // QDELTA defective-diff rate fixture harness. Statistical floor enforced
@@ -1580,6 +1629,32 @@ pub(crate) enum CliAction {
         action: CritiqueAction,
         output_format: CliOutputFormat,
     },
+    /// I-40 — `elai wrap [--out <path>] -- <agent cmd...>` or
+    /// `elai wrap --fixture [--out <path>]` — minimal trust-layer proxy.
+    ///
+    /// Wraps an external agent's stdio MCP tool traffic with the ELAI trust
+    /// substrate (G-1 taint + F-2/G-3 write-gate + G-2 RRA emit + G-9
+    /// redaction). Composes SHIPPED substrate (GD-1 — no new trust primitives).
+    /// ONE controllable fixture agent tested Tier-1; full external-agent matrix
+    /// is Tier-2 (user-approval gated, new-network-dep).
+    ///
+    /// `--fixture` runs the deterministic seeded fixture (GPU-free; W-1 trigger):
+    ///   (1) untrusted ingest -> TaintFlow row (kind=Web, blocked=false)
+    ///   (2) seeded destructive write -> evaluate_vibegate Block -> TaintFlow row
+    ///       (kind=File, blocked=true, sink_tool=write_file)
+    ///   (3) RRA bundle emitted (G-2 build_rra + write_rra + G-9 redaction;
+    ///       reuses run_artifact_emitted SSB type -- NO new action_type, GD-1).
+    ///
+    /// Default-ON RRA emit; kill-switch: ELAI_WRAP_RRA_DISABLE=1 (R9).
+    /// Handler: `crate::wrap_cmd::run`.
+    Wrap {
+        /// The external agent command and its arguments (everything after `--`).
+        /// When `--fixture` is the first element, runs the deterministic fixture.
+        agent_cmd: Vec<String>,
+        /// Optional output path for the emitted `.rra` bundle.
+        output_path: Option<PathBuf>,
+        output_format: CliOutputFormat,
+    },
 }
 
 /// I-41 — parameters for `elai critique`.
@@ -1843,6 +1918,12 @@ pub(crate) enum ModelDriftAction {
 pub(crate) enum RraAction {
     /// `elai rra show <path>` — render the `.rra` summary.
     Show { path: PathBuf },
+    /// I-40 — `elai rra verify <path>` — spec-conformance check against
+    /// rra-spec-v1 (docs/spec/rra-spec-v1.md, C1-C6 required + I1-I4
+    /// informational). DISTINCT from `elai replay --verify` (which re-derives
+    /// content hashes; GD-5). Exits nonzero on any C1-C6 failure so CI can
+    /// gate on it. Handler: `crate::rra_verify_cmd::run_verify_conformance`.
+    Verify { path: PathBuf },
 }
 
 /// G-2 — `elai replay <sub>` sub-verb. The top-level `replay` verb is new; it
@@ -3234,6 +3315,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // (ID-5): new_pass_rate >= old_pass_rate required; exits non-zero on regression.
         // Handler at crates/cli/src/role_ab_probe_cmd.rs.
         "role-ab-probe" => parse_role_ab_probe_args(&rest[1..]),
+        // I-40 — `elai wrap [--output <path>] [--json] -- <agent-cmd...>` is the
+        // trust-layer wrapper proxy. Spins up the taint + write-gate trust substrate
+        // for an external agent command and emits a .rra bundle. FORK-1: this is a
+        // NEW top-level CliAction::Wrap with its own Arc<Ssb>; it does NOT extend
+        // run_subcommand. Kill-switch: ELAI_WRAP_RRA_DISABLE=1.
+        "wrap" => parse_wrap_subcommand_args(&rest[1..], output_format),
         other if other.starts_with('/') => parse_direct_slash_cli_action(&rest, output_format),
         _other => Ok(CliAction::Prompt {
             prompt: rest.join(" "),
@@ -3264,10 +3351,16 @@ pub fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
     let mut via_mcp: bool = false;
     let mut empire: bool = false;
     let mut export_ssb: Option<PathBuf> = None;
+    // I-42: --profile orchestrate|critique-only (run-profile axis: who writes
+    // + whether executor/fixer agents are spawned). Default orchestrate.
+    let mut profile: Option<String> = None;
     // G-2: --emit-rra is a flag that may optionally take a path. A bare
     // `--emit-rra` enables the default-path seal (and is harmless since the
     // RRA is default-ON); `--emit-rra <path>` / `--emit-rra=<path>` pins a path.
     let mut emit_rra: Option<PathBuf> = None;
+    // I-44: --zero-retention is a boolean flag (no value). Default false =
+    // fail-safe retain-everything.
+    let mut zero_retention: bool = false;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -3331,6 +3424,31 @@ pub fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
                 provider = Some(lower);
                 i += 1;
             }
+            // I-42: --profile orchestrate|critique-only (run-profile axis).
+            "--profile" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --profile".to_string())?;
+                let lower = value.trim().to_ascii_lowercase();
+                if !matches!(lower.as_str(), "orchestrate" | "critique-only") {
+                    return Err(format!(
+                        "unsupported value for --profile: {value} (expected orchestrate or critique-only)"
+                    ));
+                }
+                profile = Some(lower);
+                i += 2;
+            }
+            flag if flag.starts_with("--profile=") => {
+                let value = &flag[10..];
+                let lower = value.trim().to_ascii_lowercase();
+                if !matches!(lower.as_str(), "orchestrate" | "critique-only") {
+                    return Err(format!(
+                        "unsupported value for --profile: {value} (expected orchestrate or critique-only)"
+                    ));
+                }
+                profile = Some(lower);
+                i += 1;
+            }
             "--via-mcp" => {
                 via_mcp = true;
                 i += 1;
@@ -3369,6 +3487,11 @@ pub fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
                 emit_rra = Some(PathBuf::from(&flag[11..]));
                 i += 1;
             }
+            // I-44: --zero-retention (boolean flag, no value).
+            "--zero-retention" => {
+                zero_retention = true;
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `run` argument: {other}"));
             }
@@ -3379,7 +3502,7 @@ pub fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
         None => std::env::current_dir()
             .map_err(|e| format!("`run` cannot determine cwd for --project-root default: {e}"))?,
     };
-    Ok(CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb, emit_rra })
+    Ok(CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb, emit_rra, profile, zero_retention })
 }
 
 /// E-49 SWE-Bench Pro v5 driver — parse `elai task <problem_statement>
@@ -4960,15 +5083,16 @@ pub(crate) fn parse_model_drift_subcommand_args(
     })
 }
 
-/// G-2 — parse `elai rra <sub>`. Grammar:
+/// G-2 + I-40 — parse `elai rra <sub>`. Grammar:
 ///   `elai rra show <path>`
+///   `elai rra verify <path>` (I-40: spec-conformance check, distinct from replay --verify)
 pub(crate) fn parse_rra_subcommand_args(
     rest: &[String],
     output_format: CliOutputFormat,
 ) -> Result<CliAction, String> {
     let sub = rest
         .first()
-        .ok_or_else(|| "missing `rra` sub-action; expected: show <path>".to_string())?
+        .ok_or_else(|| "missing `rra` sub-action; expected: show <path> | verify <path>".to_string())?
         .as_str();
     match sub {
         "show" => {
@@ -4985,8 +5109,29 @@ pub(crate) fn parse_rra_subcommand_args(
                 output_format,
             })
         }
+        // I-40 — `elai rra verify <path>`: spec-conformance check against
+        // rra-spec-v1 (docs/spec/rra-spec-v1.md). DISTINCT from
+        // `elai replay --verify` (content-hash re-derivation). Exits nonzero
+        // on C1-C6 failures so CI can gate on it.
+        "verify" => {
+            let path = rest
+                .get(1)
+                .ok_or_else(|| "`rra verify` requires a <path> argument".to_string())?;
+            if rest.len() > 2 {
+                return Err(format!(
+                    "unexpected argument after `rra verify <path>`: {}",
+                    rest[2]
+                ));
+            }
+            Ok(CliAction::Rra {
+                action: RraAction::Verify {
+                    path: PathBuf::from(path),
+                },
+                output_format,
+            })
+        }
         other => Err(format!(
-            "unknown `rra` sub-action `{other}`; expected: show <path>"
+            "unknown `rra` sub-action `{other}`; expected: show <path> | verify <path>"
         )),
     }
 }
@@ -9172,4 +9317,74 @@ fn parse_risk_level(s: &str) -> Result<elai_orchestrator::critique::lenses::Risk
         "heavy" => Ok(RiskLevel::Heavy),
         other => Err(format!("unknown risk level `{other}`; expected `simple` or `heavy`")),
     }
+}
+
+/// I-40 — parse `elai wrap [--output <path>] [--json] [--fixture] -- <agent-cmd...>`.
+///
+/// Grammar:
+///   `elai wrap -- <agent-cmd> [args...]`      — subprocess mode
+///   `elai wrap --fixture`                      — deterministic Tier-1 fixture
+///   `elai wrap [--output <path>] -- <cmd...>` — pin .rra output path
+///
+/// `--` is REQUIRED before the agent command to prevent flag mis-parsing.
+/// `--fixture` runs the deterministic W-1 fixture without a real subprocess.
+/// Kill-switch: ELAI_WRAP_RRA_DISABLE=1 disables RRA emit (R9, default-ON).
+pub(crate) fn parse_wrap_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut output_path: Option<PathBuf> = None;
+    let mut fixture_mode = false;
+    let mut i = 0;
+    // Parse flags before `--` or `--fixture`.
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--fixture" => {
+                fixture_mode = true;
+                i += 1;
+            }
+            "--output" => {
+                let val = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing path after --output".to_string())?;
+                output_path = Some(PathBuf::from(val));
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output_path = Some(PathBuf::from(&flag[9..]));
+                i += 1;
+            }
+            "--" => {
+                i += 1;
+                break;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `wrap` flag `{other}`; use `--` to separate the agent command"
+                ));
+            }
+        }
+    }
+    if fixture_mode {
+        // Fixture mode: no agent command required.
+        return Ok(CliAction::Wrap {
+            agent_cmd: vec!["--fixture".to_string()],
+            output_path,
+            output_format,
+        });
+    }
+    // The remaining args after `--` are the agent command.
+    let agent_cmd: Vec<String> = rest[i..].to_vec();
+    if agent_cmd.is_empty() {
+        return Err(
+            "`elai wrap` requires an agent command after `--`; \
+             use `--fixture` for the deterministic fixture"
+                .to_string(),
+        );
+    }
+    Ok(CliAction::Wrap {
+        agent_cmd,
+        output_path,
+        output_format,
+    })
 }

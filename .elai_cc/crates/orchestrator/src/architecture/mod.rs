@@ -61,6 +61,10 @@ pub mod edit_checkpoints;
 // undo/redo/branch engine over the SHIPPED E-25 edit_checkpoints primitives.
 // Kill-switch: ELAI_TIMETRAVEL_DISABLE (default-ON; no wire-dark-allowlist row).
 pub mod timetravel;
+// I-52 (SCHEMA_VERSION 259): agent-callable checkpoint tool core (save/rewind/diff)
+// over the H-49 timetravel CAS substrate. Wired from the checkpoint_save/rewind/diff
+// arms of production_agent_rpc::translate_tool_request.
+pub mod checkpoint_tool;
 
 pub use catalog::{
     ArchetypeCatalog, ArchetypeEntry, AuthScheme, MultiTenancyModel, ProductionChecklistSubset,

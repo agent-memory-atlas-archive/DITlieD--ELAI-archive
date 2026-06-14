@@ -844,7 +844,7 @@
             <div class="orbit-card orbit-card--error">
               <div class="card-inner">
                 <div class="card-title-row">
-                  <Pulse mode="dot" size={6} color="--teal" />
+                  <Pulse mode="dot" size={6} color="--d-teal" />
                   <span class="intervention-title mono">[error: {p.source}]</span>
                 </div>
                 <span class="card-body">{p.message}</span>
@@ -1178,8 +1178,8 @@
       </button>
     </div>
 
-    <!-- Outlined chat shell. Background lifts to var(--bg-input);
-         border accents teal on focus-within. -->
+    <!-- Outlined chat shell: an inset --panel well; the hairline edge
+         accents teal on focus-within (center->out underline idiom). -->
     <div class="input-shell" class:input-shell--focused={commands.inputFocused}>
       <!-- Subtle teal underline, fades in on focus-within -->
       <div class="input-bar-line" aria-hidden="true"></div>
@@ -1237,9 +1237,16 @@
 
 <style>
   /* ================================================================
-     CommandWindow — Orbit aesthetic
-     Cards float in space; depth = top-edge gradient + hover outline.
-     No Card primitive. No left colored bars. No heavy chrome.
+     CommandWindow — DESIGN.md language (role tokens, one teal accent,
+     hairline borders, inset wells, §6 state language). Migrated off the
+     legacy bg / text / steel / border / accent / info token family onto
+     the role tokens so the pane flips correctly in light mode.
+
+     Shared idioms (collapsed here so they aren't restated per rule):
+       .u-mono           JetBrains Mono everywhere.
+       .u-btn-line       interactive button: hairline border, center->out
+                         teal underline on hover/active (no box, no dot).
+       state carries by shape + mono-inversion, never a foreign hue (§6).
   ================================================================ */
 
   .command-window {
@@ -1247,31 +1254,29 @@
     flex-direction: column;
     height: 100%;
     overflow: hidden;
-    /* Flat void — no starfield, no nebula. Pure minimal chrome. */
-    background: var(--bg-void);
+    /* The one app background — no starfield, no nebula (§3 work surface). */
+    background: var(--bg);
     position: relative;
   }
 
-  /* E-4 Task 3: pinned-rules strip. Sits above the stream so the user
-     can see active rules without scrolling away from the bubble area.
-     Collapsed by default; expands on click. */
+  /* E-4 Task 3: pinned-rules strip above the stream. */
   .pinned-rules-strip {
     flex: 0 0 auto;
-    padding: 4px var(--s-3, 8px) 0 var(--s-3, 8px);
+    padding: 4px var(--s-3) 0 var(--s-3);
     position: relative;
     z-index: 2;
   }
 
-  /* H-51: handoff resume offer banner */
+  /* H-51: handoff resume offer banner — an inset well, hairline edge. */
   .handoff-offer-banner {
     display: flex;
     align-items: center;
-    gap: var(--s-2, 6px);
-    padding: 6px var(--s-3, 8px);
-    background: var(--surface-overlay, #1e2433);
-    border-bottom: 1px solid var(--border-default, #2e3446);
-    font-size: var(--text-xs, 11px);
-    color: var(--text-secondary, #8b9cc8);
+    gap: var(--s-2);
+    padding: 6px var(--s-3);
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--read);
     flex-shrink: 0;
   }
   .handoff-offer-text {
@@ -1281,34 +1286,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* Both buttons use the shared center->out underline idiom (.u-btn-line). */
   .handoff-offer-btn {
     flex-shrink: 0;
-    padding: 2px 8px;
-    border-radius: var(--r-2, 4px);
-    font-size: var(--text-xs, 11px);
-    cursor: pointer;
-    border: 1px solid var(--border-default, #2e3446);
-    background: transparent;
+    padding: 3px 10px;
   }
-  .handoff-offer-btn--yes {
-    color: var(--accent-primary, #7c8cf8);
-    border-color: var(--accent-primary, #7c8cf8);
-  }
-  .handoff-offer-btn--no {
-    color: var(--text-tertiary, #5a6480);
-  }
+  .handoff-offer-btn--yes { color: var(--d-teal); }
+  .handoff-offer-btn--no  { color: var(--dim); }
 
-  /* E-4 Tasks 1, 2, 12: bubble-level chat UX critique overlays. The
-     chips + badge sit on their own row beneath the card body so they
-     never collide with existing card chrome. The correction block
-     follows on its own block-level line. */
+  /* E-4: bubble-level chat UX critique overlays. */
   .chat-ux-claims,
   .chat-ux-sycophancy {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
     margin-top: 4px;
-    padding: 0 var(--s-2, 4px);
+    padding: 0 var(--s-2);
   }
 
   /* ---- Stream ---- */
@@ -1318,14 +1311,12 @@
     display: flex;
     flex-direction: column;
     scrollbar-width: thin;
-    scrollbar-color: var(--border-default) transparent;
+    scrollbar-color: var(--line) transparent;
     position: relative;
     z-index: 1;
   }
 
-  /* Inner wrapper anchors content to the bottom of the scroll container.
-     When content fits: empty space at top, cards at bottom (chat style).
-     When content overflows: scrolls naturally; bottom is always at the bottom. */
+  /* Inner wrapper anchors content to the bottom of the scroll container. */
   .stream-inner {
     margin-top: auto;
     display: flex;
@@ -1336,15 +1327,15 @@
 
   .stream::-webkit-scrollbar { width: 4px; }
   .stream::-webkit-scrollbar-track { background: transparent; }
-  .stream::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--r-pill); }
-  .stream::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+  .stream::-webkit-scrollbar-thumb { background: var(--line); border-radius: var(--r-pill); }
+  .stream::-webkit-scrollbar-thumb:hover { background: var(--line2); }
 
   .card-wrapper {
     display: flex;
     flex-direction: column;
   }
 
-  /* ---- Empty state ---- */
+  /* ---- Empty state — focal next-action (§9 empty) ---- */
   .empty-state {
     display: flex;
     flex-direction: column;
@@ -1354,9 +1345,9 @@
   }
 
   .empty-label {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 14px;
-    color: var(--text-secondary);
+    color: var(--dim);
     margin-top: var(--s-1);
   }
 
@@ -1368,22 +1359,31 @@
     margin-top: var(--s-2);
   }
 
+  /* Focal next-action chips: quiet, the teal underline draws on hover. */
   .mono-ghost-btn {
     font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-ghost);
+    color: var(--dim);
     background: none;
     border: none;
     cursor: pointer;
-    padding: 0;
+    padding: 0 0 2px;
     outline: none;
-    transition: color var(--dur-fast) var(--ease-std);
+    position: relative;
+    transition: color var(--dur-fast) var(--ease-out);
   }
-
-  .mono-ghost-btn:hover {
-    color: var(--text-secondary);
+  .mono-ghost-btn::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 1px;
+    background: var(--d-teal);
+    transform: scaleX(0);
+    transform-origin: center;
+    transition: transform var(--dur-base) var(--ease-out);
   }
-
+  .mono-ghost-btn:hover { color: var(--read); }
+  .mono-ghost-btn:hover::after { transform: scaleX(1); }
   .mono-ghost-btn:focus-visible {
     box-shadow: var(--ring);
     border-radius: var(--r-xs);
@@ -1392,7 +1392,7 @@
   .label-ghost {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     margin-bottom: var(--s-1);
@@ -1418,22 +1418,16 @@
     border-radius: var(--r-sm);
     cursor: pointer;
     gap: var(--s-2);
-    transition: background var(--dur-fast) var(--ease-std);
+    transition: background var(--dur-fast) var(--ease-out);
     outline: none;
   }
-
-  .recent-task-row:hover {
-    background: var(--teal-ghost);
-  }
-
-  .recent-task-row:focus-visible {
-    box-shadow: var(--ring);
-  }
+  .recent-task-row:hover { background: var(--raised); }
+  .recent-task-row:focus-visible { box-shadow: var(--ring); }
 
   .recent-task-title {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-secondary);
+    color: var(--read);
     text-align: left;
     white-space: nowrap;
     overflow: hidden;
@@ -1443,12 +1437,15 @@
   .recent-task-status {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
     flex-shrink: 0;
   }
-
-  .status--completed { color: var(--teal); }
-  .status--failed    { color: var(--fail); }
+  /* §6 state language: done reads teal, a failed task is shape-led (✕)
+     not a red hue — the glyph is prepended, the text stays neutral. */
+  .status--completed { color: var(--d-teal-deep); }
+  .status--completed::before { content: '\2713 '; }
+  .status--failed    { color: var(--text); }
+  .status--failed::before { content: '\2715 '; }
 
   /* ---- User message — right-aligned plain text ---- */
   .user-msg {
@@ -1459,89 +1456,76 @@
     max-width: 80%;
     gap: var(--s-1);
   }
-
   .user-msg__text {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 13px;
-    color: var(--text-primary);
+    color: var(--text);
     line-height: 1.5;
     text-align: right;
   }
-
   .user-msg__ts {
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
 
-  /* ---- Status line — minimal, no card chrome — but aligned with the
-         left edge of orbit-card content so it doesn't read as off-grid. ---- */
+  /* ---- Status line — minimal, aligned with the orbit-card left edge ---- */
   .status-line {
     display: flex;
     align-items: baseline;
     gap: var(--s-2);
     padding: var(--s-1) var(--s-5);
   }
-
   .status-arrow {
     font-size: 13px;
-    color: var(--teal);
+    color: var(--d-teal);
     flex-shrink: 0;
     line-height: 1;
   }
-
   .status-state {
     font-size: 10px;
-    color: var(--teal);
+    color: var(--d-teal);
   }
-
   .status-msg {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-secondary);
+    color: var(--read);
     line-height: 1.5;
   }
-
   .status-step {
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
 
-  /* ---- Orbit card — shared floating-in-space base ---- */
+  /* ---- Orbit card — an INSET well (§3): --panel below --bg, hairline
+         edge, rising to --raised on hover. ---- */
   .orbit-card {
     position: relative;
-    padding: var(--s-4) var(--s-5);  /* 16–20 px generous padding */
+    padding: var(--s-4) var(--s-5);
     border-radius: var(--r-md);
-    background: transparent;
-    /* Default: no border; only a top-edge gradient line gives presence */
-    outline: 1px solid transparent;
+    background: var(--panel);
+    border: 1px solid var(--line);
     transition:
-      outline-color var(--dur-fast) var(--ease-std),
-      background var(--dur-fast) var(--ease-std);
+      border-color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
   }
-
   .orbit-card:hover {
-    outline-color: rgba(255,255,255,0.05);
-    background: rgba(16,20,26,0.35);
+    border-color: var(--d-teal-soft);
+    background: var(--raised);
   }
 
-  /* New card mount: brief teal-ghost glow fade out over 1.6s.
-     Applied via .card-wrapper .orbit-card because anim-enter-lift sits on the wrapper. */
+  /* New card mount: brief teal-soft edge glow that settles to the
+     hairline. Resolves to the static end-state under reduced motion. */
   .card-wrapper .orbit-card {
     animation: cardGlow 1.6s var(--ease-out) both;
   }
-
   @keyframes cardGlow {
-    0%   { outline-color: rgba(30,138,122,0.28); }
-    60%  { outline-color: rgba(30,138,122,0.12); }
-    100% { outline-color: transparent; }
+    0%   { border-color: var(--d-teal-soft); }
+    100% { border-color: var(--line); }
   }
 
-  /* ---- Top-edge gradient lines (kept invisible; cards rely only on hover outline + cardGlow mount anim) ---- */
-  .card-top-edge {
-    display: none;
-  }
+  /* Top-edge gradient retired — the card is an inset well, not a tile. */
+  .card-top-edge { display: none; }
 
-  /* ---- Card inner layout ---- */
   .card-inner {
     display: flex;
     flex-direction: column;
@@ -1550,65 +1534,51 @@
     z-index: 1;
   }
 
-  /* ---- Title row with breathing dot ---- */
   .card-title-row {
     display: flex;
     align-items: center;
     gap: var(--s-2);
   }
-
   .intervention-title {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 14px;
     font-weight: 500;
-    color: var(--text-primary);
+    color: var(--text);
     line-height: 1.3;
   }
 
-
   /* ---- Body text ---- */
   .card-body {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-secondary);
+    color: var(--read);
     line-height: 1.5;
   }
-
-  .card-step {
-    font-size: 10px;
-    color: var(--text-ghost);
-  }
-
+  .card-step,
   .card-filepath {
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
 
-  /* ---- Diff block ---- */
+  /* ---- Diff block — deeper inset well; teal strip on the live edge ---- */
   .diff-block {
     position: relative;
-    background: rgba(26,32,41,0.6);
-    border: 1px solid var(--border-subtle);
+    background: var(--sink);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
     overflow: hidden;
     margin: var(--s-1) 0;
   }
-
-  /* Vertical teal strip — 1px subtle left accent */
   .diff-left-strip {
     position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
+    left: 0; top: 0; bottom: 0;
     width: 1px;
-    background: var(--teal-line);
-    opacity: 0.5;
+    background: var(--d-teal-soft);
     pointer-events: none;
   }
-
   .diff-pre {
     font-size: 12px;
-    color: var(--text-secondary);
+    color: var(--read);
     padding: var(--s-2) var(--s-3) var(--s-2) calc(var(--s-3) + 3px);
     white-space: pre-wrap;
     word-break: break-all;
@@ -1616,10 +1586,10 @@
     margin: 0;
     background: none;
   }
-
-  /* Diff line tinting: lines starting with + or - */
-  :global(.diff-pre .diff-add) { color: rgba(30,138,122,0.8); }
-  :global(.diff-pre .diff-rem) { color: rgba(176,69,69,0.8); }
+  /* Diff line tinting (§6/§10: no foreign red/green). Additions ride the
+     teal accent; removals recede to dim. Shape (+/-) carries the rest. */
+  :global(.diff-pre .diff-add) { color: var(--d-teal); }
+  :global(.diff-pre .diff-rem) { color: var(--dim); }
 
   /* ---- Buttons ---- */
   .btn-row {
@@ -1629,105 +1599,101 @@
     margin-top: var(--s-2);
     align-items: center;
   }
-
   .btn-row--col {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  /* Approve: outlined teal — primary feeling, never solid fill */
-  .btn-approve {
-    font-family: var(--font-sans);
+  /* Shared interactive-button base: hairline border + the center->out
+     teal underline idiom (no fill, no dot). The primary/secondary
+     variants differ only in resting text color. */
+  .u-btn-line,
+  .btn-approve,
+  .btn-outlined,
+  .handoff-offer-btn {
+    font-family: var(--font-mono);
     font-size: 12px;
-    font-weight: 500;
-    color: var(--teal);
     background: transparent;
-    border: 1px solid var(--teal-line);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
-    padding: 4px 12px;
     cursor: pointer;
     outline: none;
+    position: relative;
     transition:
-      background var(--dur-fast) var(--ease-std),
-      color var(--dur-fast) var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std);
+      color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out);
   }
-
-  .btn-approve:hover {
-    background: var(--teal-ghost);
-    color: var(--teal-bright);
-    border-color: var(--teal);
-  }
-
-  .btn-approve:focus-visible {
-    box-shadow: var(--ring);
-  }
-
-  /* Outlined: disambiguation options + secondary action buttons */
+  .btn-approve,
   .btn-outlined {
-    font-family: var(--font-sans);
-    font-size: 12px;
-    color: var(--text-secondary);
-    background: transparent;
-    border: 1px solid var(--border-default);
-    border-radius: var(--r-sm);
     padding: 4px 12px;
-    cursor: pointer;
-    outline: none;
-    transition:
-      background var(--dur-fast) var(--ease-std),
-      color var(--dur-fast) var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std);
   }
+  .u-btn-line::after,
+  .btn-approve::after,
+  .btn-outlined::after,
+  .handoff-offer-btn::after {
+    content: '';
+    position: absolute;
+    left: 6px; right: 6px; bottom: 3px;
+    height: 1px;
+    background: var(--d-teal);
+    transform: scaleX(0);
+    transform-origin: center;
+    transition: transform var(--dur-base) var(--ease-out);
+  }
+  .u-btn-line:hover::after,
+  .btn-approve:hover::after,
+  .btn-outlined:hover::after,
+  .handoff-offer-btn:hover::after { transform: scaleX(1); }
+  .u-btn-line:focus-visible,
+  .btn-approve:focus-visible,
+  .btn-outlined:focus-visible,
+  .handoff-offer-btn:focus-visible { box-shadow: var(--ring); }
 
-  .btn-outlined:hover {
-    background: var(--teal-ghost);
-    color: var(--text-primary);
-    border-color: var(--teal-line);
+  .btn-approve {
+    color: var(--d-teal);
+    font-weight: 500;
+    border-color: var(--d-teal-soft);
   }
-
-  .btn-outlined:focus-visible {
-    box-shadow: var(--ring);
-  }
+  .btn-approve:hover { color: var(--d-teal-bright); border-color: var(--d-teal); }
+  .btn-outlined { color: var(--read); }
+  .btn-outlined:hover { color: var(--text); border-color: var(--d-teal-soft); }
 
   /* ---- Disambiguation ---- */
   .disambig-question {
     font-family: var(--font-mono);
     font-size: 12px;
     font-style: italic;
-    color: var(--text-secondary);
+    color: var(--read);
     line-height: 1.5;
   }
 
-  /* ---- Steering line — aligned with orbit-card left edge ---- */
+  /* ---- Steering line ---- */
   .steering-line {
     display: flex;
     align-items: baseline;
     gap: var(--s-2);
     padding: var(--s-1) var(--s-5);
   }
-
   .steering-dot {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 14px;
-    color: var(--text-ghost);
+    color: var(--dim);
     line-height: 1;
     flex-shrink: 0;
   }
-
   .steering-text {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 12px;
     font-style: italic;
-    color: var(--text-secondary);
+    color: var(--read);
     line-height: 1.5;
   }
 
-  /* ---- Response card (B-14 streaming) ---- */
+  /* ---- Response card (streaming) ---- */
   .response-text {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 13px;
-    color: var(--text-primary);
+    color: var(--text);
     line-height: 1.55;
     white-space: pre-wrap;
     word-break: break-word;
@@ -1736,10 +1702,7 @@
     padding: 0;
   }
 
-  /* ---- Mono utility ---- */
-  .mono {
-    font-family: var(--font-mono);
-  }
+  .mono { font-family: var(--font-mono); }
 
   /* ---- B-39D: Thinking + Effort affordances above the chat shell ---- */
   .reflect-controls {
@@ -1755,22 +1718,22 @@
     align-items: center;
     gap: 6px;
     background: transparent;
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--line);
     border-radius: var(--r-pill);
     padding: 3px 10px;
     font-size: 10.5px;
-    color: var(--text-ghost);
+    color: var(--dim);
     cursor: pointer;
     outline: none;
     transition:
-      color var(--dur-fast) var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std),
-      background var(--dur-fast) var(--ease-std);
+      color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
   }
   .reflect-toggle:hover,
   .reflect-effort:hover:not(:disabled) {
-    color: var(--text-secondary);
-    border-color: var(--border-default);
+    color: var(--read);
+    border-color: var(--line2);
   }
   .reflect-toggle:focus-visible,
   .reflect-effort:focus-visible {
@@ -1780,17 +1743,22 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--text-disabled);
-    transition: background var(--dur-fast) var(--ease-std), box-shadow var(--dur-fast) var(--ease-std);
+    background: var(--ghost);
+    transition: background var(--dur-fast) var(--ease-out);
   }
   .reflect-toggle--on {
-    color: var(--teal);
-    border-color: var(--teal-line);
-    background: var(--teal-ghost);
+    color: var(--d-teal);
+    border-color: var(--d-teal-soft);
+    background: var(--d-teal-ghost);
   }
+  /* active = ● teal outline + slow pulse (§6: the only moving thing). */
   .reflect-toggle--on .reflect-dot {
-    background: var(--teal);
-    box-shadow: 0 0 4px 0 var(--teal);
+    background: var(--d-teal);
+    animation: reflectPulse 2s var(--ease-std) infinite;
+  }
+  @keyframes reflectPulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.45; }
   }
   .reflect-label {
     letter-spacing: 0.04em;
@@ -1806,7 +1774,7 @@
     opacity: 0.7;
   }
   .reflect-effort-value {
-    color: var(--text-secondary);
+    color: var(--read);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-weight: 500;
@@ -1817,23 +1785,22 @@
     gap: 3px;
     margin-left: 2px;
   }
+  /* effort = an explicit n/m fraction (§6: never a lone percentage). */
   .reflect-effort-dot {
     width: 4px;
     height: 4px;
     border-radius: 50%;
-    background: var(--text-disabled);
-    opacity: 0.55;
-    transition: background var(--dur-fast) var(--ease-std), opacity var(--dur-fast) var(--ease-std);
+    background: var(--ghost);
+    transition: background var(--dur-fast) var(--ease-out);
   }
   .reflect-effort-dot--filled {
-    background: var(--teal);
-    opacity: 1;
+    background: var(--d-teal);
   }
 
   /* ---- Code-answer card (EXPLORE_CODE wire) ---- */
   .code-answer-header {
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
     margin-bottom: var(--s-2);
     letter-spacing: 0.02em;
   }
@@ -1846,11 +1813,11 @@
     gap: var(--s-2);
   }
   .code-answer-hit {
-    border-left: 2px solid var(--border-subtle);
+    border-left: 2px solid var(--line);
     padding-left: var(--s-2);
-    transition: border-color var(--dur-fast) var(--ease-std);
+    transition: border-color var(--dur-fast) var(--ease-out);
   }
-  .code-answer-hit:hover { border-left-color: var(--teal-line); }
+  .code-answer-hit:hover { border-left-color: var(--d-teal-soft); }
   .code-answer-meta {
     display: flex;
     align-items: center;
@@ -1858,17 +1825,17 @@
     font-size: 10px;
     line-height: 1.4;
   }
-  .code-answer-path { color: var(--teal); }
-  .code-answer-score { color: var(--text-ghost); }
+  .code-answer-path { color: var(--d-teal); }
+  .code-answer-score { color: var(--dim); }
   .code-answer-kind {
-    color: var(--text-disabled);
+    color: var(--ghost);
     text-transform: lowercase;
     font-size: 10px;
   }
   .code-answer-snippet {
     font-size: 10px;
-    color: var(--text-secondary);
-    background: rgba(26, 32, 41, 0.45);
+    color: var(--read);
+    background: var(--sink);
     border-radius: var(--r-xs);
     padding: var(--s-1) var(--s-2);
     margin: 4px 0 0;
@@ -1880,47 +1847,42 @@
   }
   .code-answer-hint {
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
     font-style: italic;
   }
 
   /* ---- Auto-detect Oracle chip ---- */
-  /* Container is focusable (tabindex=-1) for keyboard handling. Hide
-     the default focus ring on the container itself; the inner orbit-card
-     already has its own outline + cardGlow animation that signals focus. */
   .card-wrapper:focus,
   .card-wrapper:focus-visible {
     outline: none;
   }
   .research-chip {
-    outline: 1px solid var(--teal-line);
+    border-color: var(--d-teal-soft);
   }
 
-  /* Disabled input controls go quiet rather than greyed out — matches
-     ExploreWindow's input shell when pending. */
+  /* Disabled input controls go quiet rather than greyed out. */
   .input-textarea:disabled,
   .slash-toggle:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
 
-  /* ---- Input bar — invisible chrome, just a textarea floating at the bottom ---- */
+  /* ---- Input bar — invisible chrome, the composer floats at the bottom ---- */
   .input-bar {
     flex-shrink: 0;
     position: relative;
     background: transparent;
     z-index: 2;
   }
-
-  /* No separator line by default; thin teal line appears on focus-within */
+  /* Thin teal underline appears on focus-within (center->out idiom). */
   .input-bar-line {
     height: 1px;
-    background: var(--teal-line);
+    background: var(--d-teal);
     opacity: 0;
     pointer-events: none;
-    transition: opacity 180ms var(--ease-std);
+    transition: opacity var(--dur-base) var(--ease-out);
   }
-  .input-bar:focus-within .input-bar-line { opacity: 0.45; }
+  .input-bar:focus-within .input-bar-line { opacity: 1; }
 
   .input-row {
     display: flex;
@@ -1937,39 +1899,33 @@
     height: 26px;
     flex-shrink: 0;
     background: transparent;
-    border: 1px solid var(--border-default);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
     cursor: pointer;
-    color: var(--text-secondary);
+    color: var(--read);
     transition:
-      color var(--dur-fast) var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std),
-      background var(--dur-fast) var(--ease-std);
+      color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
     outline: none;
   }
-
-  .slash-toggle:hover {
-    color: var(--teal);
-    border-color: var(--teal-line);
-    background: var(--teal-ghost);
-  }
+  .slash-toggle:hover,
   .slash-toggle--active {
-    color: var(--teal);
-    border-color: var(--teal-line);
-    background: var(--teal-ghost);
+    color: var(--d-teal);
+    border-color: var(--d-teal-soft);
+    background: var(--d-teal-ghost);
   }
-
   .slash-toggle:focus-visible {
     box-shadow: var(--ring);
   }
 
-  /* Input: no visible border; teal underline on focus */
+  /* Composer input: no visible border; teal underline on focus. */
   .input-textarea {
     flex: 1 1 auto;
     background: transparent;
     border: none;
     border-bottom: 1px solid transparent;
-    color: var(--text-primary);
+    color: var(--text);
     font-size: 12px;
     line-height: 1.4;
     padding: 2px 4px;
@@ -1978,18 +1934,12 @@
     min-height: 22px;
     max-height: 120px;
     overflow-y: auto;
-    transition: border-color var(--dur-fast) var(--ease-std);
+    transition: border-color var(--dur-fast) var(--ease-out);
   }
+  .input-textarea::placeholder { color: var(--dim); }
+  .input-textarea:focus { border-bottom-color: var(--d-teal); }
 
-  .input-textarea::placeholder {
-    color: var(--text-ghost);
-  }
-
-  .input-textarea:focus {
-    border-bottom-color: var(--teal);
-  }
-
-  /* Send: outlined teal, NOT solid fill */
+  /* Send: outlined teal, never solid fill. */
   .send-btn {
     display: flex;
     align-items: center;
@@ -1998,29 +1948,24 @@
     height: 28px;
     flex-shrink: 0;
     background: transparent;
-    border: 1px solid var(--teal-line);
+    border: 1px solid var(--d-teal-soft);
     border-radius: var(--r-sm);
     cursor: pointer;
-    color: var(--teal);
+    color: var(--d-teal);
     outline: none;
     transition:
-      background var(--dur-fast) var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std),
-      color var(--dur-fast) var(--ease-std);
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
   }
-
   .send-btn:hover {
-    background: var(--teal-ghost);
-    border-color: var(--teal);
-    color: var(--teal-bright);
+    background: var(--d-teal-ghost);
+    border-color: var(--d-teal);
+    color: var(--d-teal-bright);
   }
+  .send-btn:focus-visible { box-shadow: var(--ring); }
 
-  .send-btn:focus-visible {
-    box-shadow: var(--ring);
-  }
-
-  /* C-6: Stop button. Mutually exclusive with .send-btn. Matches send height (28px).
-     --teal-soft background + --text-primary text per plan task 9. */
+  /* Stop button — mutually exclusive with send; tinted teal wash, never red. */
   .stop-btn {
     display: flex;
     align-items: center;
@@ -2029,68 +1974,59 @@
     height: 28px;
     padding: 0 10px;
     flex-shrink: 0;
-    background: var(--teal-soft);
-    border: 1px solid var(--teal-line);
+    background: var(--d-teal-ghost);
+    border: 1px solid var(--d-teal-soft);
     border-radius: var(--r-sm);
     cursor: pointer;
-    color: var(--text-primary);
-    font-family: var(--font-sans);
+    color: var(--text);
+    font-family: var(--font-mono);
     font-size: 12px;
     outline: none;
     transition:
-      background var(--dur-fast) var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std),
-      color var(--dur-fast) var(--ease-std);
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
   }
-
   .stop-btn:hover {
-    background: var(--teal-ghost);
-    border-color: var(--teal);
-    color: var(--teal-bright);
+    background: var(--d-teal-ghost);
+    border-color: var(--d-teal);
+    color: var(--d-teal-bright);
   }
+  .stop-btn:focus-visible { box-shadow: var(--ring); }
+  .stop-btn-label { line-height: 1; }
 
-  .stop-btn:focus-visible {
-    box-shadow: var(--ring);
-  }
-
-  .stop-btn-label {
-    line-height: 1;
-  }
-
-  /* ---- Outlined chat shell ---- */
+  /* ---- Outlined chat shell — inset well, teal edge on focus ---- */
   .input-shell {
     position: relative;
     margin: var(--s-3) var(--s-4) var(--s-3);
-    background: var(--bg-input);
-    border: 1px solid var(--border-default);
+    background: var(--panel);
+    border: 1px solid var(--line);
     border-radius: var(--r-md);
     padding: var(--s-1) var(--s-2);
     transition:
-      border-color var(--dur-fast) var(--ease-std),
-      background var(--dur-fast) var(--ease-std);
+      border-color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
   }
   .input-shell--focused {
-    border-color: var(--teal-line);
-    background: rgba(26, 32, 41, 0.85);
+    border-color: var(--d-teal-soft);
+    background: var(--raised);
   }
 
-  /* ---- Slash palette — floating dialog above the chat shell ---- */
+  /* ---- Slash palette — floating dialog; hairline edge, no shadow stack ---- */
   .slash-palette {
     position: absolute;
     bottom: calc(100% + 6px);
     left: var(--s-4);
     right: var(--s-4);
-    background: var(--bg-surface);
-    border: 1px solid var(--border-default);
+    background: var(--panel);
+    border: 1px solid var(--line2);
     border-radius: var(--r-md);
     padding: 6px;
-    z-index: 40;
-    animation: paletteLift 180ms var(--ease-out) both;
+    z-index: var(--z-shell-overlay);
+    animation: paletteLift var(--dur-base) var(--ease-out) both;
     max-height: 360px;
     overflow-y: auto;
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
   }
-
   @keyframes paletteLift {
     from { opacity: 0; transform: translateY(6px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -2098,7 +2034,7 @@
 
   .slash-filter-row {
     padding: 4px 4px 8px;
-    border-bottom: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--line);
     margin-bottom: 4px;
   }
   .slash-filter {
@@ -2106,21 +2042,32 @@
     background: transparent;
     border: none;
     outline: none;
-    color: var(--text-primary);
+    color: var(--text);
     font-size: 12px;
     padding: 4px 6px;
   }
-  .slash-filter::placeholder {
-    color: var(--text-ghost);
-  }
+  .slash-filter::placeholder { color: var(--dim); }
 
   .slash-section { padding: 4px 0; }
+  /* Static section label: the §4 5px teal dot-prefix (NOT interactive). */
   .slash-section-label {
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.10em;
-    color: var(--text-ghost);
-    padding: 4px 10px 4px;
+    color: var(--dim);
+    padding: 4px 10px 4px 16px;
+    position: relative;
+  }
+  .slash-section-label::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--d-teal);
   }
 
   .slash-row {
@@ -2137,42 +2084,36 @@
     outline: none;
     text-align: left;
     transition:
-      background var(--dur-fast) var(--ease-std),
-      color var(--dur-fast) var(--ease-std);
+      background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
   }
-
-  .slash-row:hover { background: var(--bg-hover); }
-
+  .slash-row:hover { background: var(--row); }
   .slash-row--active {
-    background: var(--teal-ghost);
-    outline: 1px solid var(--teal-line);
+    background: var(--d-teal-ghost);
+    outline: 1px solid var(--d-teal-soft);
     outline-offset: -1px;
   }
-
   .slash-row-label {
     font-size: 12px;
-    color: var(--text-primary);
+    color: var(--text);
   }
-
   .slash-row-desc {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-secondary);
+    color: var(--read);
     text-align: left;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
   .slash-row-hint {
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
-
   .slash-empty {
     padding: 12px;
     text-align: center;
-    color: var(--text-ghost);
+    color: var(--dim);
     font-size: 12px;
   }
 
@@ -2184,25 +2125,25 @@
     max-width: 520px;
     margin: var(--s-3) 0 var(--s-2);
     padding: var(--s-3) var(--s-4);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
-    background: var(--bg-surface);
+    background: var(--panel);
   }
   .positioning-para {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 12px;
     line-height: 1.5;
-    color: var(--text-secondary);
+    color: var(--read);
     margin: 0;
   }
   .positioning-tag {
     display: inline-block;
     padding: 1px 6px;
     margin-right: 6px;
-    border: 1px solid var(--border-default);
+    border: 1px solid var(--line);
     border-radius: var(--r-xs);
     font-size: 10px;
-    color: var(--teal);
+    color: var(--d-teal);
     text-transform: lowercase;
     letter-spacing: 0.04em;
   }
@@ -2211,7 +2152,7 @@
     margin-top: 4px;
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
     font-style: italic;
   }
 
@@ -2227,71 +2168,53 @@
     align-items: center;
     gap: 4px;
     padding: 2px 8px;
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--line);
     border-radius: var(--r-pill);
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
+  /* local runtime = the safe/active path, teal whisper. */
   .status-badge--local {
-    color: var(--teal);
-    border-color: var(--teal-line);
-    background: var(--teal-ghost);
+    color: var(--d-teal);
+    border-color: var(--d-teal-soft);
+    background: var(--d-teal-ghost);
   }
+  /* cloud-billed = an advisory the user must notice. §6/§10: no amber —
+     shape carries it (▲ prefix in --text), the chip stays neutral. */
   .status-badge--cloud_billed {
-    color: #d4a017;
-    border-color: rgba(212, 160, 23, 0.4);
-    background: rgba(212, 160, 23, 0.06);
+    color: var(--text);
+    border-color: var(--line2);
   }
+  .status-badge--cloud_billed::before { content: '\25B2 '; }
+  /* injection passed = ✓ teal-deep; blocked = ✕ mono-inversion (the
+     loudest thing on the surface); not_run = quiet dim. */
   .status-badge--injection-passed {
-    color: var(--teal);
-    border-color: var(--teal-line);
+    color: var(--d-teal);
+    border-color: var(--d-teal-soft);
   }
+  .status-badge--injection-passed::before { content: '\2713 '; }
   .status-badge--injection-blocked {
-    color: var(--fail);
-    border-color: rgba(176, 69, 69, 0.4);
+    color: var(--void);
+    background: var(--text);
+    border-color: var(--text);
   }
+  .status-badge--injection-blocked::before { content: '\2715 '; }
   .status-badge--injection-not_run {
-    color: var(--text-ghost);
+    color: var(--dim);
   }
-  /* H-35: rewind affordance -- per-turn "Rewind to here" button. */
+
+  /* H-35 / H-49: per-turn rewind + restore affordances (quiet until hover). */
   .rewind-affordance {
     display: flex;
     justify-content: flex-end;
     padding: 2px 0 0;
   }
-  .btn-rewind {
-    font-family: var(--font-sans);
-    font-size: 10px;
-    color: var(--text-ghost);
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: var(--r-sm);
-    padding: 2px 8px;
-    cursor: pointer;
-    outline: none;
-    opacity: 0;
-    transition:
-      opacity var(--dur-fast) var(--ease-std),
-      color var(--dur-fast) var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std);
-  }
-  .card-wrapper:hover .btn-rewind {
-    opacity: 1;
-  }
-  .btn-rewind:hover {
-    color: var(--text-secondary);
-    border-color: var(--border-default);
-  }
-  .btn-rewind:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  /* H-49 time-travel affordance styles */
+  .btn-rewind,
   .btn-restore-files {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
     background: transparent;
     border: 1px solid transparent;
     border-radius: var(--r-sm);
@@ -2300,21 +2223,26 @@
     outline: none;
     opacity: 0;
     transition:
-      opacity var(--dur-fast) var(--ease-std),
-      color var(--dur-fast) var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std);
+      opacity var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out);
   }
-  .card-wrapper:hover .btn-restore-files {
-    opacity: 1;
+  .card-wrapper:hover .btn-rewind,
+  .card-wrapper:hover .btn-restore-files { opacity: 1; }
+  .btn-rewind:hover {
+    color: var(--read);
+    border-color: var(--line);
   }
   .btn-restore-files:hover {
-    color: var(--teal, var(--text-secondary));
-    border-color: var(--border-default);
+    color: var(--d-teal);
+    border-color: var(--line);
   }
+  .btn-rewind:disabled,
   .btn-restore-files:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
+
   .tt-controls {
     display: flex;
     align-items: center;
@@ -2325,27 +2253,43 @@
   .btn-tt {
     font-family: var(--font-mono);
     font-size: 9px;
-    background: var(--bg-hover);
-    border: 1px solid var(--border-subtle);
+    background: var(--row);
+    border: 1px solid var(--line);
     border-radius: var(--r-xs);
-    color: var(--text-secondary);
+    color: var(--read);
     cursor: pointer;
     padding: 1px 6px;
     outline: none;
-    transition: background 120ms var(--ease-std), color 120ms var(--ease-std);
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
   }
   .btn-tt:hover {
-    background: var(--bg-surface);
-    color: var(--text-primary);
+    background: var(--raised);
+    color: var(--text);
   }
   .btn-tt:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
+  /* tt-error: §6 error language — inversion-adjacent, not a red hue. */
   .tt-error {
     font-family: var(--font-mono);
     font-size: 9px;
-    color: var(--fail);
+    color: var(--text);
     padding: 0 4px;
+  }
+  .tt-error::before { content: '\2715 '; }
+
+  /* prefers-reduced-motion: every animation resolves to its static end
+     state (§7). The token layer zeroes durations; we also halt the two
+     looping/keyframe effects so nothing moves on the data stream. */
+  @media (prefers-reduced-motion: reduce) {
+    .mono-ghost-btn::after,
+    .u-btn-line::after,
+    .btn-approve::after,
+    .btn-outlined::after,
+    .handoff-offer-btn::after { transition: none; }
+    .reflect-toggle--on .reflect-dot { animation: none; }
+    .card-wrapper .orbit-card { animation: none; border-color: var(--line); }
+    .slash-palette { animation: none; }
   }
 </style>

@@ -52,6 +52,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "seccodeplt" {
         return parse_bench_seccodeplt_args(&rest[1..]);
     }
+    if sub == "error-amplification" {
+        return parse_bench_error_amplification_args(&rest[1..]);
+    }
     if sub == "safedelta" {
         return parse_bench_safedelta_args(&rest[1..]);
     }
@@ -63,6 +66,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub == "crane" {
         return parse_bench_crane_args(&rest[1..]);
+    }
+    if sub == "convergence" {
+        return parse_bench_convergence_args(&rest[1..]);
     }
     if sub == "qdelta" {
         return parse_bench_qdelta_args(&rest[1..]);
@@ -78,7 +84,7 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'safedelta' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -782,6 +788,72 @@ fn parse_bench_seccodeplt_args(rest: &[String]) -> Result<CliAction, String> {
     Ok(CliAction::BenchSeccodeplt { json })
 }
 
+/// I-9 — parse `elai bench error-amplification [--fixture PATH] [--seed <u64>]
+/// [--json] [--no-repair]`. The fixture is embedded at compile time (default:
+/// `pipeline_v1.json`); `--fixture` overrides it with a path. `--seed` pins the
+/// perturbation seed (default: the `ELAI_SEED` path). `--no-repair` runs the R2
+/// negative control. Hand-rolled per the CLAUDE.md "no new clap dep" rule.
+fn parse_bench_error_amplification_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut fixture: Option<String> = None;
+    let mut seed: Option<u64> = None;
+    let mut json = false;
+    let mut no_repair = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--fixture" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --fixture".to_string())?;
+                fixture = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--fixture=") => {
+                fixture = Some(flag["--fixture=".len()..].to_string());
+                i += 1;
+            }
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|e| format!("invalid --seed value '{value}': {e}"))?,
+                );
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = Some(
+                    raw.parse::<u64>()
+                        .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?,
+                );
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--no-repair" => {
+                no_repair = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `bench error-amplification` argument: {other}"
+                ));
+            }
+        }
+    }
+    Ok(CliAction::BenchErrorAmplification {
+        fixture,
+        seed,
+        json,
+        no_repair,
+    })
+}
+
 /// H-30 — parse `elai bench staleness [--json] [--broken-retrieval]`. The
 /// fixture corpus is embedded at compile time + the report dir is fixed
 /// (`<cwd>/benchmarks/staleness/`), so the flags are `--json` (full report to
@@ -949,6 +1021,65 @@ fn parse_bench_crane_args(rest: &[String]) -> Result<CliAction, String> {
         crane_fixture,
         seed,
     })
+}
+
+// ---------------------------------------------------------------------------
+// I-27: `elai bench convergence --suite <PATH> [--seeds <u32>] [--json]`
+// ---------------------------------------------------------------------------
+
+/// I-27 — parse `elai bench convergence --suite <PATH> [--seeds <u32>] [--json]`.
+///
+/// `--suite` (required): path to the convergence fixture TOML.
+/// `--seeds` (optional): override seed_count from config (u32, must be >= 5).
+/// `--json`: print the full beacon JSON to stdout after the summary line.
+/// Hand-rolled per the CLAUDE.md "no new clap dep" rule.
+fn parse_bench_convergence_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut suite: Option<String> = None;
+    let mut seeds: u32 = 0; // 0 = use config's seed_count
+    let mut json: bool = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--suite" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --suite".to_string())?;
+                suite = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--suite=") => {
+                suite = Some(flag["--suite=".len()..].to_string());
+                i += 1;
+            }
+            "--seeds" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seeds".to_string())?;
+                seeds = value
+                    .parse::<u32>()
+                    .map_err(|e| format!("invalid --seeds value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seeds=") => {
+                let raw = &flag["--seeds=".len()..];
+                seeds = raw
+                    .parse::<u32>()
+                    .map_err(|e| format!("invalid --seeds value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench convergence` argument: {other}"));
+            }
+        }
+    }
+    let suite = suite
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "`bench convergence` requires --suite <PATH>".to_string())?;
+    Ok(crate::args::CliAction::BenchConvergence { suite, seeds, json })
 }
 
 fn validate_bool_arg(name: &str, value: &str) -> Result<(), String> {

@@ -74,6 +74,7 @@
     OAuthStatus,
     OAuthLoginCompletePayload,
     CloudModelInfo,
+    CompiledVariantRow,
   } from '$lib/api/types';
 
   // Phase D wiring: replace mock-data direct imports with stub.ts polling.
@@ -97,18 +98,23 @@
   });
   let DEP_AUDIT = $state<DepAuditResult[]>([]);
   const NOW = Date.now();
+  // I-36: compiled-variant badge chip state. Empty until a promoted variant
+  // has been substituted (store is empty until the offline optimizer runs).
+  let COMPILED_VARIANTS = $state<CompiledVariantRow[]>([]);
 
   onMount(() => {
     let alive = true;
     async function refresh() {
       try {
-        const [sc, gs, mcp, sb, pp, da] = await Promise.all([
+        const [sc, gs, mcp, sb, pp, da, cv] = await Promise.all([
           stub.get_sidecar_status(),
           stub.get_gate_status(),
           stub.get_mcp_status(),
           stub.get_local_budget(),
           stub.get_project_intelligence(),
           stub.get_dep_audit_results(),
+          // I-36: poll compiled-variant badge every 10s with the rest.
+          stub.get_compiled_variants(),
         ]);
         if (!alive) return;
         SIDECAR_STATUS = sc;
@@ -116,6 +122,7 @@
         MCP_STATUS = mcp;
         PROJECT_PROFILE = pp;
         DEP_AUDIT = da;
+        COMPILED_VARIANTS = cv;
         // local_max_context budget — currently not surfaced into the form.
         void sb;
       } catch (err) {
@@ -851,9 +858,7 @@
         <div class="s-row">
           <span class="s-label"></span>
           <div class="s-control s-control--wide">
-            <span class="mono" style="font-size: 0.8em; color: var(--danger, #d33);">
-              {oauthError}
-            </span>
+            <span class="s-fail-text mono"><span class="s-fail-glyph" aria-hidden="true">✕</span> {oauthError}</span>
           </div>
         </div>
       {/if}
@@ -875,9 +880,7 @@
         <div class="s-row">
           <span class="s-label"></span>
           <div class="s-control s-control--wide">
-            <span class="mono" style="font-size: 0.8em; color: var(--danger, #d33);">
-              {cloudModelError}
-            </span>
+            <span class="s-fail-text mono"><span class="s-fail-glyph" aria-hidden="true">✕</span> {cloudModelError}</span>
           </div>
         </div>
       {/if}
@@ -1113,6 +1116,43 @@
     <section class="s-section">
       <div class="s-header">phase 4H freeze (C-43)</div>
       <FreezeStatusBar />
+    </section>
+
+    <!-- Section: COMPILED PROMPT VARIANTS (I-36, SCHEMA_VERSION 268)
+         Badge chip showing the number of promoted compiled prompt variants
+         that have been substituted via CompiledPromptStore::lookup.
+         Empty/zero is the expected default until the offline GEPA optimizer
+         runs (Tier-2 DEFER). Kill-switch: ELAI_PROMPT_COMPILE_DISABLE=1. -->
+    <section class="s-section">
+      <div class="s-header">compiled prompts (I-36)</div>
+      <div class="s-row">
+        <span class="s-label">promoted variants used</span>
+        <div class="s-control">
+          <span
+            class="badge-chip"
+            class:badge-chip--active={COMPILED_VARIANTS.length > 0}
+            title={COMPILED_VARIANTS.length > 0
+              ? `last: ${COMPILED_VARIANTS[0].role}/${COMPILED_VARIANTS[0].backend} @ ${new Date(COMPILED_VARIANTS[0].ts).toISOString()}`
+              : 'no compiled variants in store (expected until offline optimizer runs)'}
+          >
+            {COMPILED_VARIANTS.length}
+          </span>
+        </div>
+      </div>
+      {#if COMPILED_VARIANTS.length > 0}
+        <div class="s-row">
+          <span class="s-label">last role</span>
+          <span class="mono s-value">{COMPILED_VARIANTS[0].role}</span>
+        </div>
+        <div class="s-row">
+          <span class="s-label">last backend</span>
+          <span class="mono s-value">{COMPILED_VARIANTS[0].backend}</span>
+        </div>
+        <div class="s-row">
+          <span class="s-label">variant hash</span>
+          <span class="mono s-value">{COMPILED_VARIANTS[0].variant_hash.slice(0, 12)}&hellip;</span>
+        </div>
+      {/if}
     </section>
 
     <!-- Section: CLOUD PANEL (C-5) — live provider routing + spend cap +
@@ -1444,18 +1484,23 @@
 
 <style>
   /* ================================================================
-     SettingsWindow — orbit aesthetic.
-     Vertical section list. Section headers in dim small caps.
-     No bordered containers per row. Section spacing via padding only.
-     Toggles are [ ON ] / [ off ] outlined-text buttons.
-     Number inputs: bare mono with teal-underline focus.
-     Dropdowns: outlined Select; no chevron decoration.
+     SettingsWindow — DESIGN.md role-token instrument.
+     Vertical grouped settings list inside the settings modal.
+     Section headers: §4 static dot-label (5px teal dot + dim caps).
+     Rows are flat — the grouping is the well, not per-row chrome.
+     Toggles: [ ON ] / [ off ] hairline-outlined mono buttons.
+     Inputs: bare mono with a center->out teal underline-draw focus.
+     Status: §6 state language — shape + mono, never a foreign hue.
+     One teal accent (--d-teal family); every neutral teal-tinted.
+     Shared --fl focus ring + .btn base collapse duplicate rules (MR-1).
   ================================================================ */
 
   .settings {
     padding: var(--s-5) var(--s-6) 0;
     min-height: 100%;
-    background: var(--bg-void);
+    background: var(--bg);
+    /* one teal focus ring, reused by every interactive element here */
+    --fl: 0 0 0 1px var(--d-teal), 0 0 0 3px var(--d-teal-soft);
   }
 
   .settings__banner {
@@ -1469,14 +1514,25 @@
     padding: var(--s-3) 0 var(--s-6);
   }
 
-  /* Section header — dim small caps */
+  /* Section header — §4 STATIC label: 5px teal dot + dim mono caps */
   .s-header {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
     font-family: var(--font-mono);
     font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--text-ghost);
+    letter-spacing: 0.2em;
+    color: var(--dim);
     margin-bottom: var(--s-3);
+  }
+  .s-header::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--d-teal);
+    flex-shrink: 0;
   }
 
   /* Setting row — flat, no borders, no chrome */
@@ -1489,9 +1545,9 @@
   }
 
   .s-label {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 13px;
-    color: var(--text-secondary);
+    color: var(--read);
     min-width: 180px;
     flex-shrink: 0;
   }
@@ -1506,11 +1562,11 @@
 
   /* Read-only text */
   .s-readonly {
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-secondary);
+    color: var(--read);
   }
-  .s-readonly--accent { color: var(--teal); }
+  .s-readonly--accent { color: var(--d-teal); }
   .s-readonly--mono {
     font-family: var(--font-mono);
     font-size: 10px;
@@ -1521,7 +1577,51 @@
 
   .s-ping {
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
+  }
+
+  /* §6 fail language — inline, no foreign hue: --text glyph + read body */
+  .s-fail-text {
+    font-size: 0.8em;
+    color: var(--read);
+  }
+  .s-fail-glyph {
+    color: var(--text);
+    font-weight: 600;
+    margin-right: 0.2em;
+  }
+  /* §6 fail (drift / advisory) — shape carries it; --text, never red */
+  .s-error { color: var(--text); }
+
+  /* ---- s-value: read-only mono label for settings rows ---- */
+  .s-value {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--read);
+  }
+
+  /* ---- I-36: compiled-prompt variant count badge chip (inset well) ---- */
+  .badge-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: var(--r-lg);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--dim);
+    transition: background var(--dur-fast) var(--ease-std),
+                color var(--dur-fast) var(--ease-std),
+                border-color var(--dur-fast) var(--ease-std);
+  }
+  .badge-chip--active {
+    background: var(--d-teal-ghost);
+    border-color: var(--d-teal-soft);
+    color: var(--d-teal);
   }
 
   /* ---- Bare input: no bg, no border, teal underline focus ---- */
@@ -1529,19 +1629,20 @@
     flex: 1;
     background: transparent;
     border: none;
-    border-bottom: 1px solid var(--border-subtle);
-    color: var(--text-primary);
+    border-bottom: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--font-mono);
     font-size: 12px;
     padding: 4px 2px;
     height: 28px;
     width: 100%;
     outline: none;
-    transition: border-color var(--dur-fast) var(--ease-std);
+    transition: border-color var(--dur-fast) var(--ease-out);
   }
 
-  .bare-input::placeholder { color: var(--text-ghost); }
+  .bare-input::placeholder { color: var(--ghost); }
 
-  .bare-input:focus { border-bottom-color: var(--teal); }
+  .bare-input:focus { border-bottom-color: var(--d-teal); }
 
   /* Hide the number-input spinners */
   .bare-input--num::-webkit-outer-spin-button,
@@ -1553,18 +1654,18 @@
 
   .bare-input--disabled,
   .bare-input:disabled {
-    color: var(--text-ghost);
-    border-bottom-color: var(--border-subtle);
+    color: var(--ghost);
+    border-bottom-color: var(--line);
     cursor: not-allowed;
   }
 
-  /* ---- Override file textarea: minimal chrome ---- */
+  /* ---- Override file textarea: hairline inset well ---- */
   .bare-textarea {
     width: 100%;
-    background: rgba(26, 32, 41, 0.6);
-    border: 1px solid var(--border-subtle);
+    background: var(--sink);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
-    color: var(--text-primary);
+    color: var(--text);
     font-family: var(--font-mono);
     font-size: 12px;
     padding: var(--s-2) var(--s-3);
@@ -1572,9 +1673,9 @@
     outline: none;
     line-height: 1.5;
     box-sizing: border-box;
-    transition: border-color var(--dur-fast) var(--ease-std);
+    transition: border-color var(--dur-fast) var(--ease-out);
   }
-  .bare-textarea:focus { border-color: var(--teal-line); }
+  .bare-textarea:focus { border-color: var(--d-teal-soft); }
 
   .s-override-editor {
     display: flex;
@@ -1589,17 +1690,17 @@
 
   .s-save-error {
     font-size: 10px;
-    color: var(--fail);
+    color: var(--text);
     margin-top: var(--s-1);
   }
 
-  /* ---- Toggle pill: [ ON ] / [ off ] outlined-text button ---- */
+  /* ---- Toggle pill: [ ON ] / [ off ] hairline-outlined mono button ---- */
   .toggle-pill {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
     background: transparent;
-    border: 1px solid var(--border-default);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
     padding: 3px 10px;
     cursor: pointer;
@@ -1611,26 +1712,27 @@
       background var(--dur-fast) var(--ease-std);
   }
   .toggle-pill:hover {
-    color: var(--text-secondary);
-    border-color: var(--teal-line);
+    color: var(--read);
+    border-color: var(--d-teal-soft);
   }
-  .toggle-pill:focus-visible { box-shadow: var(--ring); }
+  .toggle-pill:focus-visible { box-shadow: var(--fl); }
 
   .toggle-pill--on {
-    color: var(--teal);
-    border-color: var(--teal-line);
-    background: var(--teal-ghost);
+    color: var(--d-teal);
+    border-color: var(--d-teal-soft);
+    background: var(--d-teal-ghost);
   }
   .toggle-pill--on:hover {
-    color: var(--teal-bright);
-    border-color: var(--teal);
+    color: var(--d-teal-bright);
+    border-color: var(--d-teal);
   }
 
-  /* ---- Link-style buttons: tertiary actions ---- */
+  /* ---- Link-style buttons: tertiary actions, teal underline-draw ---- */
   .link-btn {
-    font-family: var(--font-sans);
+    position: relative;
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--teal);
+    color: var(--d-teal);
     background: transparent;
     border: none;
     padding: 2px 0;
@@ -1638,21 +1740,29 @@
     outline: none;
     transition: color var(--dur-fast) var(--ease-std);
   }
-  .link-btn:hover {
-    color: var(--teal-bright);
-    text-decoration: underline;
-    text-underline-offset: 2px;
+  .link-btn::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: var(--d-teal);
+    transform: scaleX(0);
+    transform-origin: center;
+    transition: transform var(--dur-base) var(--ease-out);
   }
-  .link-btn:focus-visible { box-shadow: var(--ring); border-radius: var(--r-xs); }
+  .link-btn:hover { color: var(--d-teal-bright); }
+  .link-btn:hover::after { transform: scaleX(1); }
+  .link-btn:focus-visible { box-shadow: var(--fl); border-radius: var(--r-xs); }
 
-  /* ---- Approve / outlined buttons (mirrors CommandWindow) ---- */
-  .btn-approve {
-    font-family: var(--font-sans);
+  /* ---- Action buttons: shared base, two color skins (MR-1 collapse) ---- */
+  .btn-approve,
+  .btn-outlined {
+    font-family: var(--font-mono);
     font-size: 12px;
-    font-weight: 500;
-    color: var(--teal);
     background: transparent;
-    border: 1px solid var(--teal-line);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
     padding: 4px 12px;
     cursor: pointer;
@@ -1661,37 +1771,27 @@
       background var(--dur-fast) var(--ease-std),
       color var(--dur-fast) var(--ease-std),
       border-color var(--dur-fast) var(--ease-std);
+  }
+  .btn-approve {
+    font-weight: 500;
+    color: var(--d-teal);
+    border-color: var(--d-teal-soft);
   }
   .btn-approve:hover {
-    background: var(--teal-ghost);
-    color: var(--teal-bright);
-    border-color: var(--teal);
+    background: var(--d-teal-ghost);
+    color: var(--d-teal-bright);
+    border-color: var(--d-teal);
   }
-  .btn-approve:focus-visible { box-shadow: var(--ring); }
-
-  .btn-outlined {
-    font-family: var(--font-sans);
-    font-size: 12px;
-    color: var(--text-secondary);
-    background: transparent;
-    border: 1px solid var(--border-default);
-    border-radius: var(--r-sm);
-    padding: 4px 12px;
-    cursor: pointer;
-    outline: none;
-    transition:
-      background var(--dur-fast) var(--ease-std),
-      color var(--dur-fast) var(--ease-std),
-      border-color var(--dur-fast) var(--ease-std);
-  }
+  .btn-outlined { color: var(--read); }
   .btn-outlined:hover {
-    background: var(--teal-ghost);
-    color: var(--text-primary);
-    border-color: var(--teal-line);
+    background: var(--d-teal-ghost);
+    color: var(--text);
+    border-color: var(--d-teal-soft);
   }
-  .btn-outlined:focus-visible { box-shadow: var(--ring); }
+  .btn-approve:focus-visible,
+  .btn-outlined:focus-visible { box-shadow: var(--fl); }
 
-  /* ---- Audit results: ghost-text mono rows, no card chrome ---- */
+  /* ---- Audit results: dim mono rows, no card chrome ---- */
   .audit-results {
     display: flex;
     flex-direction: column;
@@ -1705,17 +1805,24 @@
     align-items: baseline;
     padding: 2px 0;
     font-size: 10px;
-    color: var(--text-ghost);
+    color: var(--dim);
   }
-  .audit-row--outdated .audit-crate { color: var(--warn); }
-  .audit-crate { min-width: 140px; flex-shrink: 0; color: var(--text-secondary); }
-  .audit-ver { color: var(--text-ghost); flex-shrink: 0; }
+  /* §6 warn — shape only, drawn in --text, no own color */
+  .audit-row--outdated .audit-crate { color: var(--text); }
+  .audit-row--outdated .audit-crate::before { content: '▲ '; }
+  .audit-crate { min-width: 140px; flex-shrink: 0; color: var(--read); }
+  .audit-ver { color: var(--dim); flex-shrink: 0; }
   .audit-advisory {
-    color: var(--fail);
+    color: var(--text);
     font-size: 10px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     opacity: 0.85;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .link-btn::after { transition: none; }
+    .link-btn:hover::after { transform: scaleX(1); }
   }
 </style>

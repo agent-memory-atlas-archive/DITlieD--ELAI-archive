@@ -405,6 +405,13 @@ mod commands_g7;
 // entrypoint (W-2, no ELAI_*_ENABLE gate; Tier-2 dynamic arm is RunPod-gated).
 // cross-lang-pair: dashboard/tauri/api.
 mod commands_g6;
+// I-27 / SCHEMA_VERSION 265: ConvergencePanel (get_convergence_curve_rows command).
+// Reads the N most recent convergence_curve_measured flat-beacon rows emitted by
+// `elai bench convergence`. Surfaces curve table + knee label + non-monotonic-at.
+// The bench command IS the entrypoint (no ELAI_*_ENABLE gate).
+// SearchNodeEvent compute-spend axis WIRE-DARK[I-27] (PENDING I-4).
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_i27;
 // I-38 / SCHEMA_VERSION 235: QdeltaPanel (get_qdelta_latest command).
 // Reads the most recent qdelta_measured flat-beacon row emitted by
 // `elai bench qdelta`. Surfaces QDELTA + paired 95% CI + corpus_blake3 +
@@ -416,6 +423,12 @@ mod commands_i38;
 // Surfaces CDL / DIU / FSR governance metrics in GovernanceMetricsChip.
 // cross-lang-pair: dashboard/tauri/api.
 mod commands_i33;
+// I-36 / SCHEMA_VERSION 267: CompiledVariant badge chip in SettingsWindow.
+// Reads `prompt_compiled` SSB rows emitted when CompiledPromptStore::lookup
+// returns a promoted variant (substituted at the adapter boundary via
+// CompletionConfig::compiled_system_override). Kill-switch:
+// ELAI_PROMPT_COMPILE_DISABLE=1. cross-lang-pair: dashboard/tauri/api.
+mod commands_i36;
 // G-10 / SCHEMA_VERSION 218: ModelDriftPanel (get_model_drift_status command).
 // Reads the most recent model_drift_suspected Pattern-2 beacon row emitted at
 // `elai run` exit or `elai model-drift check`. Surfaces identity_key + kind +
@@ -1359,11 +1372,20 @@ pub fn run() {
             // I-38 (SCHEMA_VERSION 235): qdelta_measured rows from `elai bench qdelta`.
             // Surfaces QDELTA + paired 95% CI + corpus_blake3 + runpod_pending.
             // Live-model leg deferred (D-026). cross-lang-pair: dashboard/tauri/api.
+            // I-27 (SCHEMA_VERSION 265): convergence_curve_measured rows from `elai bench convergence`.
+            // Surfaces curve table + knee label + non_monotonic_at for ConvergencePanel.
+            // SearchNodeEvent compute-spend axis WIRE-DARK[I-27] (PENDING I-4).
+            // cross-lang-pair: dashboard/tauri/api.
+            commands_i27::get_convergence_curve_rows,
             commands_i38::get_qdelta_latest,
             // I-33 (SCHEMA_VERSION 240): governance_primitive_fired rows.
             // Aggregates CDL / DIU / FSR governance metrics for GovernanceMetricsChip.
             // cross-lang-pair: dashboard/tauri/api.
             commands_i33::get_governance_metrics,
+            // I-36 (SCHEMA_VERSION 267): prompt_compiled rows from build_system_prompt_for_role.
+            // Surfaces promoted-variant count + last-substitution ts for SettingsWindow badge.
+            // cross-lang-pair: dashboard/tauri/api.
+            commands_i36::get_compiled_variants,
             // G-10 (SCHEMA_VERSION 218): model_drift_suspected rows from `elai run` exit or
             // `elai model-drift check`. Surfaces identity_key + drift kind + signals +
             // per-family delta + affected template ids + fingerprint-confirmed/behavioral badge.

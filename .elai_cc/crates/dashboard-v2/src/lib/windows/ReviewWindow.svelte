@@ -348,21 +348,8 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: var(--bg-base);
+    background: var(--bg);
     overflow: hidden;
-  }
-
-  .review__loading {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .review__loading-text {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-ghost);
   }
 
   /* Tab strip */
@@ -370,33 +357,47 @@
     display: flex;
     flex-shrink: 0;
     overflow-x: auto;
-    background: var(--bg-surface);
-    border-bottom: 1px solid var(--border-subtle);
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
     scrollbar-width: none;
   }
   .tab-strip::-webkit-scrollbar { display: none; }
 
+  /* interactive tab — center->out underline idiom (§13/§14) */
   .file-tab {
+    position: relative;
     flex-shrink: 0;
     height: 32px;
     padding: 0 14px;
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--text-secondary);
+    color: var(--read);
     font-family: var(--font-mono);
     font-size: 10px;
     cursor: pointer;
     white-space: nowrap;
-    transition: color var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std);
+    transition: color var(--dur-fast) var(--ease-out);
     outline: none;
   }
-  .file-tab:hover { color: var(--text-primary); }
-  .file-tab--active {
-    color: var(--teal);
-    border-bottom-color: var(--teal);
+  .file-tab::after {
+    content: '';
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    bottom: 0;
+    height: 1px;
+    background: var(--d-teal);
+    transform: scaleX(0);
+    transform-origin: center;
+    transition: transform var(--dur-base) var(--ease-out);
   }
-  .file-tab:focus-visible { box-shadow: inset 0 0 0 1px var(--teal); }
+  .file-tab:hover { color: var(--text); }
+  .file-tab:hover::after { transform: scaleX(1); }
+  .file-tab--active {
+    color: var(--d-teal);
+  }
+  .file-tab--active::after { transform: scaleX(1); }
+  .file-tab:focus-visible { box-shadow: inset 0 0 0 1px var(--d-teal); }
 
   /* File header */
   .file-header {
@@ -405,14 +406,14 @@
     gap: var(--s-3);
     height: 32px;
     padding: 0 var(--s-3);
-    background: var(--bg-surface);
-    border-bottom: 1px solid var(--border-subtle);
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
     flex-shrink: 0;
   }
   .file-path {
     font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-primary);
+    color: var(--text);
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -422,7 +423,7 @@
   .file-action {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-secondary);
+    color: var(--dim);
     text-transform: uppercase;
     letter-spacing: 0.1em;
     flex-shrink: 0;
@@ -437,22 +438,23 @@
      HTML attrs, so we render a plain button + the matching styles). */
   .blast-radius-btn {
     background: transparent;
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--line);
     border-radius: var(--r-xs);
-    color: var(--text-secondary);
+    color: var(--read);
     font-family: var(--font-mono);
     font-size: 10px;
     padding: 2px 8px;
     cursor: pointer;
-    transition: background-color var(--dur-fast) var(--ease-std), color var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std);
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
   }
   .blast-radius-btn:hover {
-    background: var(--teal-ghost);
-    color: var(--teal);
-    border-color: var(--teal-line);
+    background: var(--d-teal-ghost);
+    color: var(--d-teal);
+    border-color: var(--d-teal-soft);
   }
 
-  /* File verdict banner */
+  /* File verdict banner — §6 state language: accepted reads teal (done),
+     declined reads via mono-inversion glyph, never a red fill. */
   .file-verdict {
     display: flex;
     align-items: center;
@@ -462,19 +464,43 @@
     font-size: 10px;
     flex-shrink: 0;
   }
-  .file-verdict--accepted { background: var(--teal-ghost); color: var(--teal); }
-  .file-verdict--declined { background: rgba(176,69,69,0.10); color: var(--fail); }
+  .file-verdict::before {
+    flex-shrink: 0;
+    font-size: 11px;
+    line-height: 1;
+  }
+  .file-verdict--accepted {
+    background: var(--d-teal-ghost);
+    color: var(--d-teal);
+  }
+  .file-verdict--accepted::before { content: '✓'; }
+  .file-verdict--declined {
+    background: var(--panel);
+    color: var(--read);
+  }
+  .file-verdict--declined::before {
+    content: '✕';
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    background: var(--text);
+    color: var(--void);
+    border-radius: var(--r-xs);
+    font-size: 9px;
+  }
   .file-verdict__undo {
     background: transparent;
     border: none;
-    color: var(--text-ghost);
+    color: var(--dim);
     font-family: var(--font-mono);
     font-size: 10px;
     cursor: pointer;
     padding: 0 4px;
     text-decoration: underline;
   }
-  .file-verdict__undo:hover { color: var(--text-secondary); }
+  .file-verdict__undo:hover { color: var(--read); }
 
   /* Retry note bar (file + hunk) */
   .retry-note-bar {
@@ -482,35 +508,36 @@
     align-items: center;
     gap: var(--s-2);
     padding: 4px 12px;
-    background: var(--bg-input);
-    border-bottom: 1px solid var(--border-subtle);
+    background: var(--sink);
+    border-bottom: 1px solid var(--line);
     flex-shrink: 0;
   }
   .retry-note-input {
     flex: 1;
     background: transparent;
     border: none;
-    border-bottom: 1px solid var(--border-subtle);
-    color: var(--text-primary);
+    border-bottom: 1px solid var(--line);
+    color: var(--text);
     font-size: 10px;
     padding: 2px 0;
     outline: none;
-    transition: border-color var(--dur-fast) var(--ease-std);
+    transition: border-color var(--dur-fast) var(--ease-out);
   }
-  .retry-note-input:focus { border-bottom-color: var(--teal); }
-  .retry-note-input::placeholder { color: var(--text-ghost); }
+  .retry-note-input:focus { border-bottom-color: var(--d-teal); }
+  .retry-note-input::placeholder { color: var(--dim); }
   .retry-note-confirm {
     background: transparent;
-    border: 1px solid var(--teal-line);
+    border: 1px solid var(--d-teal-soft);
     border-radius: var(--r-xs);
-    color: var(--teal);
+    color: var(--d-teal);
     font-family: var(--font-mono);
     font-size: 10px;
     padding: 1px 8px;
     cursor: pointer;
     flex-shrink: 0;
+    transition: background-color var(--dur-fast) var(--ease-out);
   }
-  .retry-note-confirm:hover { background: var(--teal-ghost); }
+  .retry-note-confirm:hover { background: var(--d-teal-ghost); }
 
   /* Diff body */
   .diff-body {
@@ -520,24 +547,46 @@
     font-size: 12px;
   }
 
-  /* Hunk header (separator line) */
+  /* Hunk header — hairline inset well (§3: card is a recess) */
   .diff-hunk {
     display: flex;
     align-items: center;
-    background: var(--bg-input);
+    background: var(--sink);
     padding: 4px 12px;
-    color: var(--text-secondary);
+    color: var(--read);
     font-size: 10px;
     gap: var(--s-2);
     position: relative;
     min-height: 24px;
+    border-bottom: 1px solid var(--line);
   }
   .diff-hunk__label { flex: 1; }
+  /* hunk verdict — §6 language: ✓ teal accepted, ✕ mono-inversion declined */
   .diff-hunk__verdict {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font-size: 10px;
   }
-  .diff-hunk__verdict--accepted { color: var(--teal); }
-  .diff-hunk__verdict--declined { color: var(--fail); }
+  .diff-hunk__verdict::before {
+    font-size: 10px;
+    line-height: 1;
+  }
+  .diff-hunk__verdict--accepted { color: var(--d-teal); }
+  .diff-hunk__verdict--accepted::before { content: '✓'; }
+  .diff-hunk__verdict--declined { color: var(--read); }
+  .diff-hunk__verdict--declined::before {
+    content: '✕';
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px;
+    height: 13px;
+    background: var(--text);
+    color: var(--void);
+    border-radius: var(--r-xs);
+    font-size: 8px;
+  }
 
   /* Always-visible per-hunk action row (C-7 DRIFT-4 rewrite) */
   .hunk-row {
@@ -545,23 +594,23 @@
     align-items: center;
     gap: var(--s-1);
     padding: 4px 12px;
-    background: var(--bg-base);
-    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
   }
 
   .hunk-btn {
     background: transparent;
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--line);
     border-radius: var(--r-xs);
-    color: var(--text-secondary);
+    color: var(--read);
     font-family: var(--font-mono);
     font-size: 10px;
     padding: 2px 8px;
     cursor: pointer;
-    transition: background-color var(--dur-fast) var(--ease-std), color var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std);
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
   }
-  .hunk-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-  .hunk-btn--active { color: var(--teal); border-color: var(--teal-line); background: var(--teal-ghost); }
+  .hunk-btn:hover { background: var(--raised); color: var(--text); }
+  .hunk-btn--active { color: var(--d-teal); border-color: var(--d-teal-soft); background: var(--d-teal-ghost); }
 
   .review__empty {
     flex: 1;

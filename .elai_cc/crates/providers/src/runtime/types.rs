@@ -152,6 +152,23 @@ pub enum RuntimeBackend {
     /// `NotImplemented` until verification completes. See
     /// `workflow/reasoning/E-39-decisions.md`.
     GroqFree,
+    /// I-49 — AWS Bedrock direct lane. Protocol logic (SigV4 signing +
+    /// binary EventStream decode) ships in Tier-1. Live billed calls via
+    /// `InvokeModelWithResponseStream` / Converse API are Tier-2 / D-026
+    /// PENDING (requires real AWS credentials). `create_runtime` constructs
+    /// the real adapter; `complete()` / `stream()` surface `MissingField`
+    /// until D-026 live checkbox. Targets enterprise accounts with Bedrock
+    /// access rather than Anthropic API keys. See
+    /// `workflow/reasoning/I-49-decisions.md`.
+    Bedrock,
+    /// I-49 — Azure OpenAI direct lane (Responses / chat-completions shape).
+    /// Azure OpenAI's `/openai/deployments/{deployment}/chat/completions`
+    /// endpoint is OpenAI-chat-completions-compatible; the adapter reuses
+    /// the `openai_compat` normalizer shim. Live billed calls are Tier-2 /
+    /// D-026 PENDING (requires real Azure deployment + API key). For
+    /// enterprise accounts that have Azure OpenAI but not Anthropic API
+    /// direct access. See `workflow/reasoning/I-49-decisions.md`.
+    AzureOpenAi,
 }
 
 impl RuntimeBackend {
@@ -184,6 +201,10 @@ impl RuntimeBackend {
             Self::DeepSeekV4Flash => "deepseek_v4_flash",
             Self::CerebrasFree => "cerebras_free",
             Self::GroqFree => "groq_free",
+            // I-49 -- Bedrock + Azure direct lanes. Protocol logic ships
+            // Tier-1; live billed calls are Tier-2 D-026 PENDING.
+            Self::Bedrock => "bedrock",
+            Self::AzureOpenAi => "azure_openai",
         }
     }
 
@@ -229,6 +250,10 @@ impl RuntimeBackend {
             Self::DeepSeekV4Flash,
             Self::CerebrasFree,
             Self::GroqFree,
+            // I-49 -- Bedrock + Azure direct lanes (Tier-1 protocol logic;
+            // live calls Tier-2 D-026 PENDING).
+            Self::Bedrock,
+            Self::AzureOpenAi,
         ]
     }
 }
@@ -490,6 +515,32 @@ pub struct CompletionConfig {
     /// (default). Backwards-compatible: all existing callers need no change.
     #[serde(default)]
     pub decoding_config: Option<ConstrainedDecodingConfig>,
+    /// I-26: cloud effort level for extended-thinking / reasoning roles.
+    ///
+    /// When `Some`, the value is forwarded as the `"effort"` field in the
+    /// Anthropic wire request for models that support the effort parameter
+    /// (Opus 4.7+ reasoning roles). `None` (the default) leaves the
+    /// effort key absent, preserving pre-I-26 behaviour for all callers.
+    ///
+    /// Valid values: "auto" | "expert".
+    /// HARD RULE (landmine #6 / I-0): `budget_tokens` MUST NOT be set on
+    /// Opus 4.7+ paths; effort replaces it. The contract test enforces this.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// I-36: compiled-prompt override for per-(role,backend) variants.
+    ///
+    /// When `Some`, the adapter substitutes this string as the system prompt
+    /// instead of `system`, mirroring the `apply_anthropic_cache_markers`
+    /// post-build-request transform at `anthropic_api.rs:232` (GD-1 precedent).
+    /// Set by `report_fns::build_system_prompt_for_role` when
+    /// `CompiledPromptStore::lookup(role, backend)` returns a promoted variant.
+    ///
+    /// `None` (the default) leaves the assembled `system` string unchanged.
+    /// Kill-switch `ELAI_PROMPT_COMPILE_DISABLE=1` causes the caller to never
+    /// set this field (store returns `None` from `lookup`).
+    /// Backwards-compatible: all existing callers need no change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_system_override: Option<String>,
 }
 
 impl Default for CompletionConfig {
@@ -502,6 +553,8 @@ impl Default for CompletionConfig {
             stop_sequences: Vec::new(),
             system: None,
             decoding_config: None,
+            effort: None,
+            compiled_system_override: None,
         }
     }
 }

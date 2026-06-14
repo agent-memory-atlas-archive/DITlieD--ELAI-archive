@@ -73,6 +73,7 @@ impl AstEvaluator for TreeSitterAstEvaluator {
 
         let mut cursor = tree_sitter::QueryCursor::new();
         let source_bytes = source.as_bytes();
+        let capture_names = ts_query.capture_names();
         let mut matches = cursor.matches(&ts_query, tree.root_node(), source_bytes);
 
         let mut results = Vec::new();
@@ -82,10 +83,19 @@ impl AstEvaluator for TreeSitterAstEvaluator {
                 let text = node
                     .utf8_text(source_bytes)
                     .map_err(|e| AstError::EvaluationFailed(format!("utf8: {e}")))?;
+                let byte_range = node.byte_range();
+                let capture_name = capture_names
+                    .get(capture.index as usize)
+                    .copied()
+                    .unwrap_or("")
+                    .to_string();
                 results.push(AstMatch {
                     node_text: text.to_string(),
                     start_line: u32::try_from(node.start_position().row).unwrap_or(u32::MAX),
                     end_line: u32::try_from(node.end_position().row).unwrap_or(u32::MAX),
+                    byte_start: byte_range.start,
+                    byte_end: byte_range.end,
+                    capture_name,
                 });
             }
         }

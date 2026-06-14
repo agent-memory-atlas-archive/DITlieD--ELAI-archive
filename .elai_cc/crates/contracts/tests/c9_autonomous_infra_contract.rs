@@ -430,6 +430,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         layer1a_processor: layer1a_processor.clone(),
         baby_step_executor: None,
         gate_mode: None,
+        // I-42: critique-only profile opt-in elsewhere; None = legacy posture.
+        run_profile: None,
         cloud_config: None,
         provider_override: None,
         hook_dispatcher: None,
@@ -469,6 +471,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         layer1a_processor: layer1a_processor.clone(),
         baby_step_executor: None,
         gate_mode: Some(GateMode::Interactive),
+        // I-42: critique-only profile opt-in elsewhere; None = legacy posture.
+        run_profile: None,
         cloud_config: None,
         provider_override: None,
         hook_dispatcher: None,
@@ -507,6 +511,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         layer1a_processor,
         baby_step_executor: None,
         gate_mode: Some(GateMode::Autonomous),
+        // I-42: critique-only profile opt-in elsewhere; None = legacy posture.
+        run_profile: None,
         cloud_config: None,
         provider_override: None,
         hook_dispatcher: None,

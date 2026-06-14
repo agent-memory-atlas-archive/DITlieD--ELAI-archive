@@ -92,7 +92,11 @@ pub fn default_binary_for(backend: RuntimeBackend) -> &'static str {
         // HTTP-only cloud / free-tier endpoints, not CLI subprocesses.
         | RuntimeBackend::DeepSeekV4Flash
         | RuntimeBackend::CerebrasFree
-        | RuntimeBackend::GroqFree => "<non-cli>",
+        | RuntimeBackend::GroqFree
+        // I-49 — Bedrock + Azure OpenAI are direct HTTP backends, not CLI
+        // subprocesses.
+        | RuntimeBackend::Bedrock
+        | RuntimeBackend::AzureOpenAi => "<non-cli>",
     }
 }
 

@@ -13,6 +13,15 @@
 //!
 //! See `workflow/reasoning/B-37-decisions.md` for the design contract.
 
+/// I-49 — AWS Bedrock direct lane. SigV4 signing (hand-rolled HMAC-SHA256
+/// via sha2 0.10, no new dep) + binary EventStream decoder + BedrockRuntime
+/// adapter. Live billed calls deferred to D-026. See
+/// `workflow/reasoning/I-49-decisions.md`.
+pub mod bedrock;
+/// I-49 — Azure OpenAI direct lane. Chat-completions-compatible adapter
+/// (reuses openai_compat shim); live billed calls D-026 PENDING. See
+/// `workflow/reasoning/I-49-decisions.md`.
+pub mod azure_openai;
 pub mod anthropic_api;
 pub mod cli_common;
 pub mod claude_code;
@@ -77,6 +86,15 @@ pub mod llama_cpp;
 pub mod mlx;
 pub mod platform_detect;
 
+pub use bedrock::{
+    BedrockRuntime, BedrockError, SigV4Headers,
+    crc32, decode_eventstream_frame, derive_signing_key, format_amz_date,
+    hex32, hmac_sha256, sha256_hex, sigv4_signing_headers, EventStreamMessage,
+};
+pub use azure_openai::{
+    AzureOpenAiRuntime, build_azure_chat_request, normalize_azure_chat_response,
+    normalize_finish_reason as azure_normalize_finish_reason,
+};
 pub use anthropic_api::AnthropicApiRuntime;
 pub use claude_code::ClaudeCodeRuntime;
 pub use cloud_route_difficulty::{
@@ -167,6 +185,9 @@ pub fn resolve_backend(candidate: &str) -> Result<RuntimeBackend, ResolveBackend
         }
         "cerebras_free" | "cerebras" => Some(RuntimeBackend::CerebrasFree),
         "groq_free" | "groq" => Some(RuntimeBackend::GroqFree),
+        // I-49 — Bedrock + Azure direct lanes.
+        "bedrock" | "aws_bedrock" | "aws-bedrock" => Some(RuntimeBackend::Bedrock),
+        "azure_openai" | "azure" | "azure-openai" => Some(RuntimeBackend::AzureOpenAi),
         _ => None,
     };
     match resolved {
@@ -266,6 +287,24 @@ pub fn create_runtime(
             backend: RuntimeBackend::GroqFree,
             hint: "Groq free-tier RuntimeAdapter wiring RUNPOD-PENDING; verify console.groq.com Llama 4 Scout / Qwen3 32B / Kimi K2 IDs + base URL + last-published date before live dispatch",
         }),
+        // I-49 — AWS Bedrock direct lane. Adapter is BUILDABLE (SigV4 +
+        // EventStream protocol logic ships Tier-1 with replay fixtures).
+        // `from_factory_config` surfaces `MissingField` when AWS creds are
+        // absent — never NotImplemented (the adapter EXISTS; cf Composer2).
+        // Live billed Converse calls are Tier-2 / D-026 PENDING.
+        RuntimeBackend::Bedrock => {
+            let adapter = BedrockRuntime::from_factory_config(&cfg)?;
+            Ok(Box::new(adapter))
+        }
+        // I-49 — Azure OpenAI direct lane. Adapter is BUILDABLE
+        // (chat-completions protocol + openai_compat normalization shim
+        // ships Tier-1 with replay fixtures). `from_factory_config` surfaces
+        // `MissingField` when Azure creds / endpoint are absent. Live billed
+        // Azure calls are Tier-2 / D-026 PENDING.
+        RuntimeBackend::AzureOpenAi => {
+            let adapter = AzureOpenAiRuntime::from_factory_config(&cfg)?;
+            Ok(Box::new(adapter))
+        }
     }
 }
 
@@ -281,7 +320,8 @@ mod tests {
             assert!(seen.insert(name), "duplicate canonical name {name}");
             assert_eq!(name, name.to_ascii_lowercase(), "{name} must be lowercase");
         }
-        assert_eq!(seen.len(), 20);
+        // I-49 added Bedrock + AzureOpenAi -> 22 total.
+        assert_eq!(seen.len(), 22);
     }
 
     #[test]
@@ -296,7 +336,8 @@ mod tests {
     #[test]
     fn resolve_backend_miss_returns_full_supported_list() {
         let err = resolve_backend("not-a-backend").expect_err("must miss");
-        assert_eq!(err.supported.len(), 20);
+        // I-49 added Bedrock + AzureOpenAi -> 22 total.
+        assert_eq!(err.supported.len(), 22);
         assert_eq!(err.candidate, "not-a-backend");
     }
 

@@ -89,6 +89,10 @@ fn reasoning_budget_scaled_payload_action_type_round_trips() {
         scaled_calls: 14,
         ceiling: 24,
         seed: 42,
+        // I-26 extension fields — None on GRC-dispatch rows (H-42 path).
+        depth_level: None,
+        budget_pct: None,
+        plateau_fired: None,
     });
     assert_eq!(payload.action_type(), SsbActionType::ReasoningBudgetScaled);
 }
@@ -480,6 +484,10 @@ async fn vec_emitter_accumulates_rows() {
         scaled_calls: 14,
         ceiling: 24,
         seed: 42,
+        // I-26 extension fields — None on GRC-dispatch rows (H-42 path).
+        depth_level: None,
+        budget_pct: None,
+        plateau_fired: None,
     };
     // Emit via the trait method.
     use elai_orchestrator::ReasoningBudgetScaledEmitter;

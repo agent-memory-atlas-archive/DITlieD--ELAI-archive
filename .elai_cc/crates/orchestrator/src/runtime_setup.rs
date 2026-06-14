@@ -28,6 +28,7 @@ use crate::{
     agent_pool::{AgentPoolConfig, InProcessAgentPool},
     autonomous_gate::{AutonomousGate, AutonomousGateConfig, GateMode},
     background_task::BackgroundTaskManager,
+    run_profile::RunProfile,
     cloud_mode::{CloudConfig, CloudModeRouter, RedactingBabyStepExecutor},
     compiled_pipeline::{CompiledPipelineStore, TemplateCrystallizer},
     dispatcher::{BackendConfig, BackendMode},
@@ -82,6 +83,16 @@ pub struct RuntimeWiring {
     /// `--mode` via `GateMode::from_cli_args` and stash the resolved mode
     /// here before calling apply.
     pub gate_mode: Option<GateMode>,
+    /// I-42 — critique-only operating profile. `None` keeps the legacy
+    /// autonomous-orchestrate posture (the executor is installed as resolved);
+    /// `Some(RunProfile::CritiqueOnly)` causes [`apply_task_runner_wiring`] to
+    /// force the resolved `baby_step_executor` to `None` BEFORE installing it,
+    /// structurally refusing the executor/fixer agent spawn (one gate covers
+    /// both, since the fixer derives from the same field). Callers parse
+    /// `--profile` via `RunProfile::from_cli_args` and stash the resolved
+    /// profile here before calling apply. `Some(RunProfile::Orchestrate)` is
+    /// equivalent to `None` for wiring purposes.
+    pub run_profile: Option<RunProfile>,
     /// B-6 #2 -- production [`InteractiveGate`] handle for the CLI human-
     /// prompt path. When `Some` AND `gate_mode` is set,
     /// [`apply_task_runner_wiring`] passes this handle as the second
@@ -766,6 +777,11 @@ pub async fn build_task_runner_wiring(
         // `Some(GateMode::from_cli_args(args.mode.as_deref()))` before
         // calling `apply_task_runner_wiring`.
         gate_mode: None,
+        // I-42: default to None so existing callers preserve the autonomous-
+        // orchestrate posture (executor installed as resolved). The CLI run
+        // surface sets this to `Some(RunProfile::from_cli_args(args.profile
+        // .as_deref()))` before calling `apply_task_runner_wiring`.
+        run_profile: None,
         // B-6 #2: default to None so existing non-CLI callers (dashboard,
         // contract tests) preserve the headless-batch behaviour (the
         // pre-wire posture where AutonomousGate::new received `None`).
@@ -921,6 +937,26 @@ pub fn apply_task_runner_wiring(
         (exec, resolved_mode, cloud.spend_cap_daily_usd)
     } else {
         (wiring.baby_step_executor.clone(), BackendMode::default(), None)
+    };
+    // I-42 — critique-only structural spawn gate. When the resolved profile
+    // refuses the executor spawn (CritiqueOnly), force the executor to `None`
+    // here, at the single install chokepoint, so NO disk-mutating
+    // `AgentPoolBabyStepExecutor` is ever installed. The runner falls back to
+    // the non-disk-mutating synthetic path, and because the fixer loop
+    // (`fix_and_rerun_until_green`) derives from the SAME
+    // `baby_step_executor`, this ONE gate covers BOTH executor and fixer.
+    // Fail-closed by construction: there is nothing to spawn. `None` /
+    // `Orchestrate` leaves the resolved executor untouched (legacy posture).
+    let resolved_executor = match wiring.run_profile {
+        Some(profile) if profile.refuses_executor_spawn() => {
+            tracing::info!(
+                run_profile = %profile,
+                "I-42 critique-only: executor/fixer spawn refused at install chokepoint \
+                 (baby_step_executor forced to None)"
+            );
+            None
+        }
+        _ => resolved_executor,
     };
     cfg.baby_step_executor = resolved_executor;
 
@@ -1260,6 +1296,15 @@ pub fn build_production_hook_dispatcher(
         .with_vibegate_seed_ok(vibegate_seed_ok)
         .with_dep_writetime_gate(dep_gate)
         .with_supervisor(supervisor)
+        // I-19: wire TDD preflight SSB so TddPreflightBlocked rows are emitted
+        // from the production hook path when ELAI_TDD_PREFLIGHT_ENABLE=1.
+        // Without this the gate blocked (fail-closed) but emitted no SSB row,
+        // making the WIRING_CONTRACT observable_effect structurally unreachable.
+        .with_tdd_preflight_ssb(
+            ssb.clone(),
+            crate::task_runner::RUNNER_AGENT_ID,
+            crate::task_runner::RUNNER_SUPERSTEP,
+        )
         // H-38 BLOCK-1: wire stop-cost SSB so day_usd is read from real CloudSpend
         // rows and StopConfirmationEvent beacons are emitted unconditionally on the
         // blocked path (R1/R4 off-agent artifact, fail-closed).
