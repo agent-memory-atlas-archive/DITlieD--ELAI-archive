@@ -1681,6 +1681,12 @@ pub struct DkgReadyPayload {
     /// Languages detected during the build (e.g. `["rust", "ts"]`). May be
     /// empty when the DKG engine does not expose per-language stats.
     pub languages: Vec<String>,
+    /// B-4: count of files that failed to parse during the DKG build.
+    /// Aligns producer with the dashboard consumer (commands.rs:2275 reads
+    /// `failed_files` from this payload). `#[serde(default)]` ensures
+    /// existing rows without this field deserialize cleanly as 0.
+    #[serde(default)]
+    pub failed_files: u64,
 }
 
 /// Batch 1A — payload for the hook dispatcher's SSB emissions.

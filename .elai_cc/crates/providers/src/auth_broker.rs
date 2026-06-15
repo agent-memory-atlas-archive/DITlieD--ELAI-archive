@@ -41,6 +41,8 @@ pub enum ResolveOutcome {
     /// Expired saved token was refreshed via HTTP exchange and re-persisted.
     Refreshed,
     /// Resolution failed; error surfaced as `ApiError`.
+    ///
+    /// Reserved: emitted by the I-50-ssb-threading promotion path (writer not yet threaded). Currently unconstructed.
     Failed,
 }
 

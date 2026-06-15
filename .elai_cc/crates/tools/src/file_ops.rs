@@ -12,6 +12,28 @@ use walkdir::WalkDir;
 /// Convert a glob pattern to a regex pattern string.
 /// Supports `*` (any chars except separator), `?` (single char), and `**` (any path).
 fn glob_to_regex(glob: &str) -> Result<Regex, io::Error> {
+    // Reject unmatched `[` before any further processing. A `[` that is never
+    // closed is an invalid glob pattern; escape-only treatment would silently
+    // accept it, making the test expect an Err that never arrives.
+    let mut depth: i32 = 0;
+    for c in glob.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unmatched '[' in glob pattern",
+        ));
+    }
+
     let mut regex_str = String::with_capacity(glob.len() * 2);
     regex_str.push('^');
     let mut chars = glob.chars().peekable();

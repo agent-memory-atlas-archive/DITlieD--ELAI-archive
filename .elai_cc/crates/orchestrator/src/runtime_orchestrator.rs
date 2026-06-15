@@ -23,6 +23,7 @@
 //! No `std::sync::Mutex` is held across `.await`.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use elai_core::clock::{ClockProvider, OsClock};
@@ -32,10 +33,12 @@ use elai_providers::runtime::{
     CompletionConfig, CompletionResponse, Message, RuntimeAdapter, RuntimeAdapterError,
     RuntimeBackend, RuntimeEvent, RuntimeHealth,
 };
+use elai_providers::{default_manifest_path, DecodingMode};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use crate::grammar_gate::call_grammar_gate;
 use crate::handoff_payload::compress_handoff_payload;
 use crate::role_predict::{predict_next_role, tier_allows_prewarm, VramTier};
 use crate::role_prompt::{
@@ -240,6 +243,8 @@ impl RuntimeOrchestrator {
         let chain: Vec<RuntimeBackend> = std::iter::once(primary)
             .chain(cfg.fallback_chain.iter().copied().filter(|b| *b != primary))
             .collect();
+        // I-34: snapshot grammar_manifest_path before releasing the config lock.
+        let grammar_manifest_path: Option<PathBuf> = cfg.grammar_manifest_path.clone();
         drop(cfg);
 
         // E-3 sub-phase 4B: wrap `config.system` with the unified
@@ -397,6 +402,17 @@ impl RuntimeOrchestrator {
                             }
                         }
                     }
+                    // I-34: run the CRANE grammar gate on successful completion.
+                    // Non-fatal: gate errors are warn-logged; the response is
+                    // always returned to the caller (enforcement routing is a
+                    // forward dep, see WIRE-DARK[I-34-enforce] in run_grammar_gate_if_eligible).
+                    Self::run_grammar_gate_if_eligible(
+                        &self.ssb,
+                        role,
+                        &config,
+                        grammar_manifest_path.as_ref(),
+                        &response.text,
+                    ).await;
                     return Ok(CompleteOutcome {
                         response,
                         used_backend: backend,
@@ -864,6 +880,97 @@ impl RuntimeOrchestrator {
             }
         }
         compressed.messages
+    }
+
+    /// I-34: run the CRANE grammar gate for a single completed response if
+    /// the completion is grammar-eligible and `config.grammar_gate_schema_json`
+    /// is set. Non-fatal: any gate error (SSB write, manifest I/O) is logged
+    /// at `warn` and the function returns without blocking the response.
+    ///
+    /// Eligibility: fires ONLY when
+    ///   (a) `config.decoding_config` contains a `Grammar { crane_adaptive: true }` mode, AND
+    ///   (b) `config.grammar_gate_schema_json` is `Some`.
+    ///
+    /// When schema_json is `None`, warns once and returns. When `ssb` is `None`,
+    /// the gate cannot emit SSB rows and is skipped silently (no SSB = no gate).
+    ///
+    /// Manifest path resolution: uses `config_manifest_path` when `Some`,
+    /// otherwise derives the conventional path from `current_dir()`.
+    async fn run_grammar_gate_if_eligible(
+        ssb: &Option<Arc<Ssb>>,
+        role: AgentRole,
+        config: &CompletionConfig,
+        config_manifest_path: Option<&PathBuf>,
+        decoded_output: &str,
+    ) {
+        // Gate needs an SSB handle to emit GrammarGateEvent rows.
+        let ssb = match ssb.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Gate needs a crane-adaptive Grammar decoding mode.
+        let decoding_mode = match config.decoding_config.as_ref() {
+            Some(dc) => &dc.mode,
+            None => return,
+        };
+        if !matches!(decoding_mode, DecodingMode::Grammar { crane_adaptive: true, .. }) {
+            return;
+        }
+
+        // Gate needs a schema_json to re-validate the output against.
+        let schema_json = match config.grammar_gate_schema_json.as_deref() {
+            Some(s) => s,
+            None => {
+                warn!(
+                    target = "runtime_orchestrator",
+                    ?role,
+                    "I-34 grammar gate skipped: no schema_json on CompletionConfig"
+                );
+                return;
+            }
+        };
+
+        // Resolve manifest path: prefer RuntimeConfig field, fall back to cwd + convention.
+        let manifest_path: PathBuf = match config_manifest_path {
+            Some(p) => p.clone(),
+            None => match std::env::current_dir() {
+                Ok(cwd) => default_manifest_path(&cwd),
+                Err(e) => {
+                    warn!(
+                        target = "runtime_orchestrator",
+                        error = %e,
+                        "I-34 grammar gate: current_dir failed, skipping gate"
+                    );
+                    return;
+                }
+            },
+        };
+
+        let session_id = format!("runtime_orchestrator::{role:?}");
+
+        // WIRE-DARK[I-34-enforce]: enforcement routing (PostParseRejected / PinViolation
+        // returning Err on try_complete and routing to dispatch_conformal_refusal) is a
+        // forward dep. This changeset: observe + emit only; return Ok normally on any
+        // gate result. See wire-dark-allowlist.toml row "I-34-enforce".
+        match call_grammar_gate(ssb, &session_id, decoding_mode, &manifest_path, decoded_output, schema_json).await {
+            Ok(result) => {
+                info!(
+                    target = "runtime_orchestrator",
+                    ?role,
+                    result = ?result,
+                    "I-34 grammar gate completed"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    target = "runtime_orchestrator",
+                    ?role,
+                    error = %e,
+                    "I-34 grammar gate error (non-fatal, completion proceeds)"
+                );
+            }
+        }
     }
 }
 

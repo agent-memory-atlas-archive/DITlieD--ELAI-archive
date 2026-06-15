@@ -731,6 +731,11 @@ pub async fn run_agent_session(
                     // default (test/harness) impl is identity. Only successful results
                     // are compressed -- a failure reason string is passed through so the
                     // agent sees the error verbatim.
+                    // WIRE-DARK[I-14]: superstep=0 is a placeholder. The real superstep
+                    // counter requires threading an i64 through run_agent_session's call
+                    // chain; that plumbing lands when the receipt-correlator dashboard
+                    // tile (I-14 promotion) is wired. Until then, receipts always record
+                    // superstep=0, which is correct for identity receipts (no transform fired).
                     let out = if ok {
                         rpc.transform_tool_output(out, 0).await
                     } else {

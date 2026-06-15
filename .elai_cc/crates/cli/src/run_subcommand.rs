@@ -287,6 +287,17 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
             mcp_dispatch_port,
             wiring.ssb.clone(),
         );
+        // C-47: wire the SSB emitter so tool_calibration_* rows land in the
+        // shared SSB store on every MCP dispatch. The emitter is constructed
+        // unconditionally (no extra env gate): when the broader case-base
+        // gate is off the bridge itself is a noop for calibration logic, but
+        // the SSB adapter rows still fire so the dashboard can observe the
+        // dispatch surface. Mirror of the `OrchestratorToolGateSsbEmitter`
+        // wiring in commands_c47.rs.
+        #[cfg(feature = "mcp")]
+        let mcp = mcp.with_calibration_ssb_emitter(std::sync::Arc::new(
+            elai_orchestrator::OrchestratorCaseBaseSsbEmitter::new(wiring.ssb.clone()),
+        ));
         #[cfg(feature = "mcp")]
         let mcp = match calibration_registry {
             Some(reg) => mcp.with_calibration_registry(reg),
@@ -899,10 +910,13 @@ async fn emit_run_artifact(
             kind: elai_orchestrator::ssb::RowChainSealedKind::ChainAdvanced,
             seq: chain_seq,
             session_id: session_id.to_owned(),
-            ts_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64,
+            ts_ms: i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+            )
+            .unwrap_or(i64::MAX),
             break_seq: None,
         },
     );
@@ -994,10 +1008,13 @@ async fn emit_attestation(
             kind: elai_orchestrator::ssb::RowChainSealedKind::AibomEmitted,
             seq: aibom_seq,
             session_id: session_id.to_owned(),
-            ts_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64,
+            ts_ms: i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+            )
+            .unwrap_or(i64::MAX),
             break_seq: None,
         },
     );

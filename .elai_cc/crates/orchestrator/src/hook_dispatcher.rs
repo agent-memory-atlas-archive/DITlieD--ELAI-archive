@@ -1409,7 +1409,9 @@ impl HookDispatcher for InProcessHookDispatcher {
             // I-19: TDD enforcer preflight gate. Default-OFF (ELAI_TDD_PREFLIGHT_ENABLE=1).
             // Fires only on Edit/Write-class invocations with a file_path we can parse.
             // GD-4: default-ON flip gated on FP rate bounded on >=3 real orchestrate runs.
-            if crate::tdd_preflight::tdd_preflight_enabled() {
+            // I-19 W-2: guard with !self.disabled so ELAI_HOOKS_DISABLED suppresses this
+            // gate the same way it suppresses vibegate + dep_writetime_gate above.
+            if !self.disabled && crate::tdd_preflight::tdd_preflight_enabled() {
                 let tdd_findings = self.run_tdd_preflight_check(&invocation).await;
                 if !tdd_findings.is_empty() {
                     findings.extend(tdd_findings);
@@ -1439,6 +1441,23 @@ impl HookDispatcher for InProcessHookDispatcher {
                     outcome_str,
                 );
                 sup.push_history_entry(&entry);
+
+                // I-35 (STAGE5-EXEC-F): when an untrusted-ingest tool was
+                // allowed through, push a synthetic "taint_check_pass" entry
+                // so the R2 sequence rule sees evidence of the taint check
+                // that fires inline here (run_gates / vibegate / argv gate).
+                // The double push is intentional: the first records the raw
+                // tool class ("untrusted_ingest"); the second records the pass
+                // signal that R2's predicate requires BETWEEN untrusted_ingest
+                // and file_write. Both entries share the same ts_ms — the
+                // taint check is synchronous and logically co-incident.
+                if tool_class == "untrusted_ingest" && outcome_str == "allowed" {
+                    sup.push_history_entry(&crate::tool_sequence::HistoryEntry::new(
+                        "taint_check_pass",
+                        ts_ms,
+                        "allowed",
+                    ));
+                }
             }
 
             Ok(findings)

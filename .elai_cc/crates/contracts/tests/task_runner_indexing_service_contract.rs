@@ -235,6 +235,7 @@ fn dkg_ready_payload_roundtrips_msgpack() {
         node_count: 1204,
         edge_count: 3850,
         languages: vec!["rust".into(), "ts".into(), "py".into()],
+        failed_files: 0,
     };
     let wrapped = SsbPayload::DkgReady(payload.clone());
     assert_eq!(wrapped.action_type(), SsbActionType::DkgReady);

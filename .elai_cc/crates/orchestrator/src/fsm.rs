@@ -564,12 +564,18 @@ pub struct Fsm {
     inner: Mutex<FsmInner>,
     workload_emitter: Option<WorkloadEmitter>,
     model_pool: Option<Arc<dyn crate::agent_pool::ModelPool>>,
-    /// Session wire-a12: when `Some`, the gate is consulted on every
+    /// Session wire-a12: when set, the gate is consulted on every
     /// `_ -> Auditing` transition (result cached in `FsmInner.last_audit_result`)
     /// and the `Auditing -> Memorizing` transition rejects with
     /// `FsmError::AuditingBlocked` if the cached result has any BLOCK findings.
+    ///
+    /// Uses `OnceLock` (matching `ssb_writer`) so the gate can be installed
+    /// through `Arc<Fsm>` after `build_runtime` returns — the same threading
+    /// constraint that prevents using the builder at construction time (the Ssb
+    /// is not yet available).  The first call to `set_deterministic_audit_gate`
+    /// wins; subsequent calls are silently ignored.
     deterministic_audit_gate:
-        Option<Arc<dyn crate::deterministic_audit_gate::DeterministicAuditGate>>,
+        OnceLock<Arc<dyn crate::deterministic_audit_gate::DeterministicAuditGate>>,
     /// B-2: SSB writer for emitting `PhaseTransition` rows on every successful
     /// transition. Uses `OnceLock` so the field can be set once after the Fsm is
     /// wrapped in `Arc` (needed because build_runtime returns ssb after Fsm is
@@ -700,7 +706,7 @@ impl Fsm {
             }),
             workload_emitter: None,
             model_pool: None,
-            deterministic_audit_gate: None,
+            deterministic_audit_gate: OnceLock::new(),
             ssb_writer: OnceLock::new(),
             compliance_provider: None,
             opus_plan_active: AtomicBool::new(false),
@@ -725,10 +731,12 @@ impl Fsm {
     /// Builder-style consumer; returns `self` so the setter can be chained with
     /// `Fsm::new(...).with_model_pool(...).with_deterministic_audit_gate(...)`.
     pub fn with_deterministic_audit_gate(
-        mut self,
+        self,
         gate: Arc<dyn crate::deterministic_audit_gate::DeterministicAuditGate>,
     ) -> Self {
-        self.deterministic_audit_gate = Some(gate);
+        // OnceLock: first write wins; ignore error on double-set (unlikely in
+        // builder chains but safe to ignore — the initial value is preserved).
+        let _ = self.deterministic_audit_gate.set(gate);
         self
     }
 
@@ -765,13 +773,17 @@ impl Fsm {
         self
     }
 
-    /// Mutable setter companion to [`Self::with_deterministic_audit_gate`].
-    /// Useful when the FSM is already owned by a struct field.
+    /// Shared-reference setter for [`Self::with_deterministic_audit_gate`].
+    ///
+    /// Uses `OnceLock::set` so this can be called through `Arc<Fsm>` after
+    /// `build_runtime` returns (the Ssb writer is not available earlier).
+    /// The first caller wins; subsequent calls are silently ignored — the gate
+    /// is a one-time install (process-lifetime configuration, not per-call).
     pub fn set_deterministic_audit_gate(
-        &mut self,
+        &self,
         gate: Arc<dyn crate::deterministic_audit_gate::DeterministicAuditGate>,
     ) {
-        self.deterministic_audit_gate = Some(gate);
+        let _ = self.deterministic_audit_gate.set(gate);
     }
 
     /// Set a callback to emit WorkloadProfilePayload to SSB on phase transitions.
@@ -853,7 +865,7 @@ impl Fsm {
             }),
             workload_emitter: None,
             model_pool: None,
-            deterministic_audit_gate: None,
+            deterministic_audit_gate: OnceLock::new(),
             ssb_writer: OnceLock::new(),
             compliance_provider: None,
             opus_plan_active: AtomicBool::new(false),
@@ -1087,7 +1099,7 @@ impl Fsm {
         // gate and cache the result. Findings are emitted by the gate impl
         // (fire-and-forget — see `DefaultDeterministicAuditGate`).
         if target == FsmState::Auditing {
-            if let Some(ref gate) = self.deterministic_audit_gate {
+            if let Some(gate) = self.deterministic_audit_gate.get() {
                 let result = gate.evaluate(source, target);
                 guard.last_audit_result = Some(result);
             } else {

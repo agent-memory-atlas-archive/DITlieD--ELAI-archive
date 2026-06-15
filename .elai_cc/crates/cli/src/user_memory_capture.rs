@@ -194,6 +194,14 @@ pub(crate) fn capture_remember_with_clock(
             return Err(CaptureError::GuardBlocked(pattern_class));
         }
         Err(e) => {
+            // I-13: MemoryWriteScanner::scan() reserves its Err variant for future
+            // runtime init failures (current impl panics at init on bad patterns, so
+            // this arm is unreachable today). Log + propagate so if a future init
+            // path returns Err instead of panicking, the error is observable.
+            tracing::warn!(
+                guard_err = %e,
+                "MemoryWriteScanner::scan returned Err (guard init failed); write refused"
+            );
             return Err(CaptureError::GuardInitFailed(e.to_string()));
         }
     }

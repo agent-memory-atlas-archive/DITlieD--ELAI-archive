@@ -547,6 +547,7 @@ impl T1Hook {
 
     /// C-31 §Task 5 — inject a MistakeBook-backed BLOCK event recorder.
     /// Setter pattern matches the established `set_*` style (see DRIFT-5).
+    // WIRE-DARK[C-31]: production consumer = OrchestratorMistakeRecorder + flag-gated TieredAnalysis construction, lands in C-31-promotion
     pub fn set_mistake_recorder(&mut self, recorder: Arc<dyn MistakeRecorder>) {
         self.mistake_recorder = Some(recorder);
     }
@@ -881,6 +882,7 @@ impl T2Hook {
 
     /// C-31 §Task 5 — inject a MistakeBook-backed BLOCK event recorder
     /// on T2 (used for LazyCode and EmptyBody BLOCK paths).
+    // WIRE-DARK[C-31]: production consumer = OrchestratorMistakeRecorder + flag-gated TieredAnalysis construction, lands in C-31-promotion
     pub fn set_mistake_recorder(&mut self, recorder: Arc<dyn MistakeRecorder>) {
         self.mistake_recorder = Some(recorder);
     }

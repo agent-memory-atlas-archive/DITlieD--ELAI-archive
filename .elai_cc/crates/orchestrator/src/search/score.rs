@@ -260,11 +260,11 @@ impl DeltaProgressScorer {
 
     /// Score a single isolated step with no prior history (task-runner smoke path).
     ///
-    /// Returns `(shaped_reward, phi_t, phi_t_prev=0.0, decay_factor)`.
-    /// phi_t_prev is always 0.0 because the task-runner exercises the emit wire
-    /// end-to-end without accumulating per-step history (the first step in a
-    /// single-task dispatch has no prior; the history makes sense only in the
-    /// i-4 multi-branch PUCT loop — D-6 decision).
+    /// Returns `(phi_t, phi_t)` — the current potential repeated as both elements.
+    /// The task-runner smoke path has no prior history, so phi_t_prev collapses to
+    /// phi_t (delta = 0). The full 4-value history (shaped_reward, phi_t, phi_t_prev,
+    /// decay_factor) is maintained by `score_step` in the i-4 multi-branch PUCT loop
+    /// (D-6 decision); `score_single` is the single-dispatch entry point only.
     #[must_use]
     pub fn score_single(
         test_pass: u32,

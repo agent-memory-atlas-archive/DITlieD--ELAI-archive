@@ -55,6 +55,8 @@ fn emit_indexing_ssb(
     // B-30 Pass C: LanguageGrammarStatus payload — emitted BEFORE DkgReady.
     // None when grammar status is unavailable (e.g. indexing failed).
     grammar_status: Option<LanguageRegistryStatus>,
+    // B-4: failed-file count for DkgReadyPayload; 0 when dkg is None.
+    dkg_failed_files: u64,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -130,6 +132,7 @@ fn emit_indexing_ssb(
                 node_count,
                 edge_count,
                 languages: Vec::new(),
+                failed_files: dkg_failed_files,
             });
             if let Err(e) = writer
                 .write_payload(CLI_INDEXING_AGENT_ID, CLI_INDEXING_SUPERSTEP, dkg_payload, Vec::new())
@@ -192,7 +195,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
         // Fresh index path: emit start, run, emit complete + DkgReady.
         let start_ms = now_unix_ms();
         if let Some(writer) = ssb {
-            emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None);
+            emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None, 0);
         }
         match svc.run_full_index() {
             Ok(summary) => {
@@ -217,6 +220,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                         None,
                         Some((node_count, edge_count)),
                         summary.registry_status,
+                        summary.dkg_files_failed,
                     );
                 }
             }
@@ -234,6 +238,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                         Some(e.to_string()),
                         None,
                         None,
+                        0,
                     );
                 }
             }
@@ -249,7 +254,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                 // Schema-rebuild path: emit start, run, emit complete + DkgReady.
                 let start_ms = now_unix_ms();
                 if let Some(writer) = ssb {
-                    emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None);
+                    emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None, 0);
                 }
                 match svc.run_full_index() {
                     Ok(summary) => {
@@ -272,6 +277,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                                 None,
                                 Some((node_count, edge_count)),
                                 summary.registry_status,
+                                summary.dkg_files_failed,
                             );
                         }
                     }
@@ -288,6 +294,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                                 Some(e.to_string()),
                                 None,
                                 None,
+                                0,
                             );
                         }
                     }

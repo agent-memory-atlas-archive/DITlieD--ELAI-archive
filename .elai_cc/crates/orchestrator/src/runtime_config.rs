@@ -15,6 +15,7 @@
 //! settings.toml).
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use elai_providers::runtime::{RuntimeBackend, RuntimeFactoryConfig};
@@ -77,6 +78,15 @@ pub struct RuntimeConfig {
     /// entry for the target backend on first use, instantiates the
     /// adapter via `create_runtime`, and caches it.
     pub factory_cfg: BTreeMap<RuntimeBackend, RuntimeFactoryConfig>,
+    /// I-34: optional path to the CRANE grammar-pin manifest. When `Some`,
+    /// `RuntimeOrchestrator::try_complete` passes this path to
+    /// `call_grammar_gate` for pin verification on grammar-eligible
+    /// completions. When `None`, the orchestrator falls back to
+    /// `std::env::current_dir()` joined with the conventional manifest
+    /// filename (`elai_providers::default_manifest_path`).
+    ///
+    /// `None` (the default) preserves all pre-I-34 behaviour unchanged.
+    pub grammar_manifest_path: Option<PathBuf>,
 }
 
 impl Default for RuntimeConfig {
@@ -96,6 +106,7 @@ impl Default for RuntimeConfig {
             per_role: PerRoleRuntime::default(),
             fallback_chain: default_fallback_chain(),
             factory_cfg,
+            grammar_manifest_path: None,
         }
     }
 }

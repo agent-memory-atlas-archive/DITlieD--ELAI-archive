@@ -41,6 +41,7 @@ pub fn apply_credit_to_manifest(manifest: &mut SkillManifest, raw_score: f32) {
 ///
 /// `None` means "treat every role as cold-start" — `SelectiveDelegator`
 /// is documented to handle this case via [`super::super::routing::selective::COLD_START_CREDIT`].
+// WIRE-DARK[C-45]: production consumer = a routing dispatch branch in the task runner, lands in C-45-promotion
 #[must_use]
 pub fn current_credit_weights(
     enabled: bool,

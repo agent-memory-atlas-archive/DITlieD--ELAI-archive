@@ -541,6 +541,16 @@ pub struct CompletionConfig {
     /// Backwards-compatible: all existing callers need no change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiled_system_override: Option<String>,
+    /// I-34: JSON Schema string used by the CRANE grammar gate
+    /// (`call_grammar_gate`) after decode. When `Some`, `runtime_orchestrator`
+    /// runs `re_validate_output(response.text, schema_json)` and emits a
+    /// `GrammarGateEvent` SSB row. When `None`, the grammar gate is skipped
+    /// even if `decoding_config.mode` is `Grammar { crane_adaptive: true }`.
+    ///
+    /// `None` (the default) preserves all pre-I-34 behaviour unchanged.
+    /// Backwards-compatible: all existing callers need no change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grammar_gate_schema_json: Option<String>,
 }
 
 impl Default for CompletionConfig {
@@ -555,6 +565,7 @@ impl Default for CompletionConfig {
             decoding_config: None,
             effort: None,
             compiled_system_override: None,
+            grammar_gate_schema_json: None,
         }
     }
 }

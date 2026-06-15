@@ -56,8 +56,18 @@ fn contract_all_10_roles_constructible() {
         // B-40: FRAMING substate agents.
         AgentRole::IdeaFramer,
         AgentRole::IdeaCritic,
+        // B-41: per-level auditor variants.
+        AgentRole::AuditorConcepts,
+        AgentRole::AuditorPhases,
+        AgentRole::AuditorSteps,
+        AgentRole::AuditorBabySteps,
+        AgentRole::AuditorBabyStepDetail,
+        // E-12: production-grade auditor.
+        AgentRole::AuditorProductionGrade,
+        // E-37: injection classifier.
+        AgentRole::InjectionClassifier,
     ];
-    assert_eq!(roles.len(), 10, "CONTRACT: must have exactly 10 AgentRole variants (B-40 added 2)");
+    assert_eq!(roles.len(), 17, "CONTRACT: must have exactly 17 AgentRole variants");
     let mut p = pool(u64::MAX);
     for role in &roles {
         let h = p.spawn(*role, "t".into()).unwrap();

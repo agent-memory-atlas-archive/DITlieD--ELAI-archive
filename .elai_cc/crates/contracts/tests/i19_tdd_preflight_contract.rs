@@ -403,9 +403,33 @@ async fn i19_production_dispatch_ssb_row_lands() {
     // dedicated async runtime (flavor = "multi_thread") so no other thread in
     // THIS test binary should race on this var. The value is scoped to this
     // test's env and we restore it at the end.
-    let prev_val = std::env::var("ELAI_TDD_PREFLIGHT_ENABLE").ok();
-    // SAFETY: we restore on every exit path; no concurrent test mutates this var.
-    unsafe { std::env::set_var("ELAI_TDD_PREFLIGHT_ENABLE", "1"); }
+    //
+    // I-19 W-1: use a RAII drop-guard so the var is restored even if the test
+    // panics between set_var and the manual restore that was here before. The
+    // guard holds the previous value and calls set_var / remove_var in Drop.
+    struct EnvRestore {
+        key: &'static str,
+        prev: Option<String>,
+    }
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            // SAFETY: symmetric with the set_var below; same thread, same guard.
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+    const ENV_KEY: &str = "ELAI_TDD_PREFLIGHT_ENABLE";
+    let _guard = EnvRestore {
+        key: ENV_KEY,
+        prev: std::env::var(ENV_KEY).ok(),
+    };
+    // SAFETY: the guard above restores on every exit path (including panic);
+    // no concurrent test mutates this var (dedicated multi_thread runtime).
+    unsafe { std::env::set_var(ENV_KEY, "1"); }
 
     // Source with a new pub fn and no test symbols in the Tier-1 feed.
     let source = r#"
@@ -433,13 +457,7 @@ pub fn compute_risk_score(input: f64) -> f64 {
         .await
         .expect("dispatch_pre_tool_use must not error");
 
-    // Restore env var (SAFETY: mirrors the set_var above).
-    unsafe {
-        match prev_val {
-            Some(v) => std::env::set_var("ELAI_TDD_PREFLIGHT_ENABLE", v),
-            None => std::env::remove_var("ELAI_TDD_PREFLIGHT_ENABLE"),
-        }
-    }
+    // Guard drops here (or on panic) and restores the env var automatically.
 
     // Gate must have fired and produced a Block finding.
     let has_block = findings.iter().any(|f| f.is_block());

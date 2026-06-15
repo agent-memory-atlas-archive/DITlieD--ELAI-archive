@@ -442,35 +442,51 @@ pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
         // restriction). Explicit arm required — relying on `_=>None`
         // fallback yields AgentGrcConfig::default() with required_steps=[]
         // which violates validate_config rule (a) per agent_pool.rs:548 B-5.
-        "idea_framer" => Some(AgentGrcConfig {
-            role: role.to_string(),
-            budget: GrcBudget::new(5, 800),
-            required_steps: vec![
-                GrcState::Observe,
-                GrcState::PlanAction,
-                GrcState::Act,
-                GrcState::Verify,
-            ],
-            grounding_level: GroundingLevel::High,
-            csq_required: false,
-            allowed_methods: vec![
-                VerificationMethod::FileCheck,
-                VerificationMethod::SourceCheck,
-                VerificationMethod::TestCheck,
-            ],
-            transition_overrides: FxHashMap::default(),
-            require_scope_enumeration: false,
-        }),
+        //
+        // Observe -> PlanAction is NOT in the default GrcState transition
+        // graph (Observe.allowed_next = [Hypothesize, Converge, Status]), so
+        // an additive transition_override {Observe: [PlanAction]} is required.
+        // The framer skips Hypothesize because it works from already-converged
+        // research streams rather than investigating. Same additive-override
+        // pattern as media_validator / chat_auditor (Observe->Verify edge).
+        "idea_framer" => {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Observe, vec![GrcState::PlanAction]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(5, 800),
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::PlanAction,
+                    GrcState::Act,
+                    GrcState::Verify,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                    VerificationMethod::TestCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+            })
+        }
         // B-40 idea_critic: per-round critic over a FramedIdea. Auditor-shape
         // double-Verify (Observe -> Verify -> Verify; mirror Auditor at
         // agent_pool.rs:717-722). Budget 5/800 caps per-round cost. The
         // Observe -> Verify edge is NOT in the default GrcState transition
         // graph (Observe.allowed_next = [Hypothesize, Converge, Status]), so
         // an additive transition_override is required — same pattern as
-        // media_validator + chat_auditor above.
+        // media_validator + chat_auditor above. Verify -> Verify is also not
+        // in the default graph (Verify.allowed_next = [Observe, Hypothesize,
+        // Converge, Status]), so the double-Verify chain needs a second
+        // override {Verify: [Verify]} — same pattern as the "auditor" arm in
+        // TomlConfigLoader::load_config which carries {Verify: [Verify, Observe]}.
         "idea_critic" => {
             let mut overrides = FxHashMap::default();
             overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            overrides.insert(GrcState::Verify, vec![GrcState::Verify]);
             Some(AgentGrcConfig {
                 role: role.to_string(),
                 budget: GrcBudget::new(5, 800),
@@ -505,6 +521,7 @@ pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
         "auditor_concepts" => {
             let mut overrides = FxHashMap::default();
             overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            overrides.insert(GrcState::Verify, vec![GrcState::Verify]);
             Some(AgentGrcConfig {
                 role: role.to_string(),
                 budget: GrcBudget::new(6, 1000),
@@ -527,6 +544,7 @@ pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
         "auditor_phases" => {
             let mut overrides = FxHashMap::default();
             overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            overrides.insert(GrcState::Verify, vec![GrcState::Verify]);
             Some(AgentGrcConfig {
                 role: role.to_string(),
                 budget: GrcBudget::new(5, 800),
@@ -548,6 +566,7 @@ pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
         "auditor_steps" => {
             let mut overrides = FxHashMap::default();
             overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            overrides.insert(GrcState::Verify, vec![GrcState::Verify]);
             Some(AgentGrcConfig {
                 role: role.to_string(),
                 budget: GrcBudget::new(4, 700),
@@ -570,6 +589,7 @@ pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
         "auditor_babysteps" => {
             let mut overrides = FxHashMap::default();
             overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            overrides.insert(GrcState::Verify, vec![GrcState::Verify]);
             Some(AgentGrcConfig {
                 role: role.to_string(),
                 budget: GrcBudget::new(4, 700),
@@ -592,6 +612,7 @@ pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
         "auditor_babystep_detail" => {
             let mut overrides = FxHashMap::default();
             overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            overrides.insert(GrcState::Verify, vec![GrcState::Verify]);
             Some(AgentGrcConfig {
                 role: role.to_string(),
                 budget: GrcBudget::new(3, 600),

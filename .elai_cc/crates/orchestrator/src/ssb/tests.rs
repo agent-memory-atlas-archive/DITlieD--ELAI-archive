@@ -213,6 +213,7 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 node_count: 0,
                 edge_count: 0,
                 languages: vec![],
+                failed_files: 0,
             }),
             SsbActionType::TieredAnalysis => SsbPayload::TieredAnalysis(TieredAnalysisPayload {
                 tier: "T1".into(),

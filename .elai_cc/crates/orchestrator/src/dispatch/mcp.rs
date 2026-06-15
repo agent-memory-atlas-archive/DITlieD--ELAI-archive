@@ -63,6 +63,15 @@ pub struct McpClientDispatch {
     /// in the one shared registry, not in throwaway per-call state.
     #[cfg(feature = "mcp")]
     calibration_registry: Option<Arc<elai_plugins::ToolCalibrationRegistry>>,
+    /// C-47 SSB-emitter arm: `OrchestratorCaseBaseSsbEmitter` attached at
+    /// the `run_subcommand` wiring seam (alongside the registry). When
+    /// `Some`, every `DefaultMcpBridge` constructed inside
+    /// [`Self::dispatch_tool`] receives `.with_calibration_ssb_emitter`
+    /// so tool_calibration_* SSB rows are emitted on each MCP dispatch.
+    /// When `None` (default, noop), the bridge uses `NoopCaseBaseEmitter`
+    /// -- zero behaviour change on the default leg.
+    #[cfg(feature = "mcp")]
+    calibration_ssb_emitter: Option<Arc<dyn elai_plugins::CaseBaseSsbEmitter>>,
     /// F-3p1 / Slice C3 (ENFORCE B): optional `CapabilityFlowAdapter` wired
     /// into the `ToolGate` of each per-call `DefaultMcpBridge`. When `Some`,
     /// every tool dispatch is routed through `dispatch_tool_call_with_gate`
@@ -92,6 +101,10 @@ impl McpClientDispatch {
             // `with_calibration_registry` at the wiring seam; default None.
             #[cfg(feature = "mcp")]
             calibration_registry: None,
+            // C-47: SSB emitter attached post-construction via
+            // `with_calibration_ssb_emitter` at the wiring seam; default None.
+            #[cfg(feature = "mcp")]
+            calibration_ssb_emitter: None,
             // F-3p1 / Slice C3: adapter attached post-construction via
             // `with_capability_flow_adapter`; default None (pass-through).
             #[cfg(feature = "mcp")]
@@ -111,6 +124,8 @@ impl McpClientDispatch {
             ssb: None,
             #[cfg(feature = "mcp")]
             calibration_registry: None,
+            #[cfg(feature = "mcp")]
+            calibration_ssb_emitter: None,
             #[cfg(feature = "mcp")]
             capability_flow_adapter: None,
         }
@@ -160,6 +175,20 @@ impl McpClientDispatch {
         registry: Arc<elai_plugins::ToolCalibrationRegistry>,
     ) -> Self {
         self.calibration_registry = Some(registry);
+        self
+    }
+
+    /// C-47: attach the SSB emitter for the 3 `tool_calibration_*` action
+    /// types. Called once at the `run_subcommand` wiring seam when
+    /// ELAI_C47_CASE_BASE_ENABLE is on. When not called, every
+    /// `DefaultMcpBridge` inside `dispatch_tool` uses the default
+    /// `NoopCaseBaseEmitter` -- zero behaviour change on the default leg.
+    #[cfg(feature = "mcp")]
+    pub fn with_calibration_ssb_emitter(
+        mut self,
+        emitter: Arc<dyn elai_plugins::CaseBaseSsbEmitter>,
+    ) -> Self {
+        self.calibration_ssb_emitter = Some(emitter);
         self
     }
 
@@ -295,6 +324,11 @@ impl Dispatch for McpClientDispatch {
             //
             // C-47b CLI-arm: calibration registry path layered on top of the
             // capability adapter path -- both can coexist.
+            //
+            // C-47 SSB-emitter: cloned before the match so all four arms can
+            // chain `.with_calibration_ssb_emitter` onto the bridge. When
+            // `None` the bridge uses the default `NoopCaseBaseEmitter`.
+            let ssb_emitter_opt = self.calibration_ssb_emitter.clone();
             let result = match (
                 self.capability_flow_adapter.as_ref(),
                 self.calibration_registry.as_ref(),
@@ -305,9 +339,12 @@ impl Dispatch for McpClientDispatch {
                             .with_committed_checker(adapter.clone() as StdArc<dyn elai_plugins::CommittedSetChecker + Send + Sync>),
                     );
                     let cache = StdArc::new(LazySchemaCache::new(1));
-                    let bridge = DefaultMcpBridge::default()
+                    let mut bridge = DefaultMcpBridge::default()
                         .with_tool_gate(gate, cache)
                         .with_calibration_registry(registry.clone());
+                    if let Some(emitter) = ssb_emitter_opt {
+                        bridge = bridge.with_calibration_ssb_emitter(emitter);
+                    }
                     rt.block_on(async move {
                         bridge
                             .dispatch_tool_call_with_gate(&url, &tool_name, "", args)
@@ -320,7 +357,10 @@ impl Dispatch for McpClientDispatch {
                             .with_committed_checker(adapter.clone() as StdArc<dyn elai_plugins::CommittedSetChecker + Send + Sync>),
                     );
                     let cache = StdArc::new(LazySchemaCache::new(1));
-                    let bridge = DefaultMcpBridge::default().with_tool_gate(gate, cache);
+                    let mut bridge = DefaultMcpBridge::default().with_tool_gate(gate, cache);
+                    if let Some(emitter) = ssb_emitter_opt {
+                        bridge = bridge.with_calibration_ssb_emitter(emitter);
+                    }
                     rt.block_on(async move {
                         bridge
                             .dispatch_tool_call_with_gate(&url, &tool_name, "", args)
@@ -329,8 +369,11 @@ impl Dispatch for McpClientDispatch {
                 }
                 (None, Some(registry)) => {
                     // Legacy C-47b path (no capability adapter).
-                    let bridge =
+                    let mut bridge =
                         DefaultMcpBridge::default().with_calibration_registry(registry.clone());
+                    if let Some(emitter) = ssb_emitter_opt {
+                        bridge = bridge.with_calibration_ssb_emitter(emitter);
+                    }
                     rt.block_on(async move {
                         bridge
                             .dispatch_tool_call_with_gate(&url, &tool_name, "", args)
@@ -338,7 +381,10 @@ impl Dispatch for McpClientDispatch {
                     })
                 }
                 (None, None) => {
-                    let bridge = DefaultMcpBridge::default();
+                    let mut bridge = DefaultMcpBridge::default();
+                    if let Some(emitter) = ssb_emitter_opt {
+                        bridge = bridge.with_calibration_ssb_emitter(emitter);
+                    }
                     rt.block_on(async move { bridge.http_call_tool(&url, &tool_name, args).await })
                 }
             };

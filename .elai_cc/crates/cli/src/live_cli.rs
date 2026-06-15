@@ -59,6 +59,8 @@ use elai_orchestrator::{
     // H-50: regime-aware window truth (replaces max_tokens_for_model in prepare_turn_runtime).
     effective_context_window,
     context_policy_disabled,
+    // C-28: production gate install (ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE).
+    DefaultDeterministicAuditGate,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -85,7 +87,7 @@ use elai_core::paths::{
     ELAI_DATA_DIR_NAME,
 };
 use elai_rules::stubs::EmptyDkgQuerier;
-use elai_tools::{install_prompt_hardening_ssb, GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
+use elai_tools::{dropped_row_count, install_prompt_hardening_ssb, GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
 
 use crate::commands::{
     handle_agents_slash_command, handle_mcp_slash_command, handle_mcp_slash_command_json,
@@ -767,6 +769,11 @@ impl LiveCli {
             // I-47: install the process-global SSB writer for the prompt-hardening
             // emitter in the tools crate's execute_agent_with_spawn seam.
             install_prompt_hardening_ssb(Arc::clone(ssb_arc));
+            // C-28: install DefaultDeterministicAuditGate behind the default-OFF
+            // ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE flag (wire-dark-allowlist.toml).
+            // With the flag unset (default), this block is skipped and behavior is
+            // identical to before (gate not installed, last_audit_result stays None).
+            maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
         } else {
             // I-47 F-1: SSB init failed (SQLite error, disk full, permissions).
             // The prompt-hardening security mechanisms (XML tagging, rule injection)
@@ -892,6 +899,8 @@ impl LiveCli {
                 // B-2: wire SSB writer into Fsm so PhaseTransition rows are emitted.
                 if let Some(ref ssb_arc) = ssb {
                     fsm.set_ssb_writer(Arc::clone(ssb_arc));
+                    // C-28: gate install (default-OFF, ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE).
+                    maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
                 }
                 let dag_path = session.path.parent()
                     .map(|p| p.join("dag.db"))
@@ -997,6 +1006,8 @@ impl LiveCli {
         // B-2: wire SSB writer into Fsm so PhaseTransition rows are emitted.
         if let Some(ref ssb_arc) = ssb {
             fsm.set_ssb_writer(Arc::clone(ssb_arc));
+            // C-28: gate install (default-OFF, ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE).
+            maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
         }
         let dag_path = session.path.parent()
             .map(|p| p.join("dag.db"))
@@ -1624,7 +1635,39 @@ impl LiveCli {
         Ok(())
     }
 
+    /// I-47 scream-path readout: check whether prompt-hardening SSB rows have been
+    /// dropped (SSB slot was not installed because SSB init failed at boot).
+    ///
+    /// Called once per process (OnceLock gate) at the start of the first user turn
+    /// so that by then at least one `execute_agent_with_spawn` dispatch may have
+    /// fired and incremented the counter. If the count is > 0, a `tracing::warn!`
+    /// surfaces the total so operators can diagnose the missing SSB-init issue
+    /// without reading the raw counter from outside the process.
+    ///
+    /// This is the production caller for [`elai_tools::dropped_row_count`].
+    fn check_dropped_prompt_hardening_rows_once() {
+        use std::sync::OnceLock;
+        static CHECKED: OnceLock<()> = OnceLock::new();
+        CHECKED.get_or_init(|| {
+            let n = dropped_row_count();
+            if n > 0 {
+                tracing::warn!(
+                    dropped_rows = n,
+                    "I-47 scream-path: {n} PromptHardeningApplied SSB row(s) were dropped \
+                     because the SSB slot was not installed at boot (SSB init failed). \
+                     Prompt-hardening security mechanisms remain active; only the SSB \
+                     audit trail is absent. Check the SSB initialisation error for the root cause."
+                );
+            }
+        });
+    }
+
     pub(crate) fn run_turn(&mut self, input: &str) -> Result<(), anyhow::Error> {
+        // I-47: check once per process whether prompt-hardening rows were dropped
+        // due to a missing SSB slot (reads dropped_row_count(), the production
+        // caller for that accessor). Best-effort: the OnceLock fires on first turn.
+        Self::check_dropped_prompt_hardening_rows_once();
+
         // E-1 Task 8: deterministic-preamble emitter. Synchronously
         // streams a 1-2 sentence "Continuing from where we left off:..."
         // prelude derived from the top-3 PPR-ranked notes whose tags or
@@ -3328,6 +3371,105 @@ fn c17_research_oracle_prefix(
 /// Protocol: scan recent rows for `memory_governance_event` action type,
 /// fold Pinned -> add to set, Unpinned -> remove from set (latest beacon wins
 /// for each fact_id).
+// ---------------------------------------------------------------------------
+// C-28: DefaultDeterministicAuditGate — production install helper
+// ---------------------------------------------------------------------------
+
+/// Install [`DefaultDeterministicAuditGate`] on the production FSM when the
+/// `ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE` env flag is set to `"1"`.
+///
+/// Called at the three `ChatCli` constructor sites immediately after
+/// `fsm.set_ssb_writer(...)`, where `ssb_arc` is already in scope.
+///
+/// Default-OFF behavior: when the flag is unset (the default), this function
+/// is a no-op and the FSM behaves identically to before — `last_audit_result`
+/// stays `None` and no deterministic audit runs on `_ -> Auditing` transitions.
+///
+/// When the flag is `"1"`:
+///   * A `ChangedFilesSupplier` closure runs `git diff --name-only HEAD` and
+///     returns the changed file list on each evaluation.
+///   * A `ProjectProfileSupplier` closure calls `detect_project_profile` with
+///     the process working directory on each evaluation.
+///   * `MutationConfig::default()` is used (mutation supplier is the library
+///     default; full mutation config threading is a promotion-plan item).
+///   * `set_deterministic_audit_gate` uses `OnceLock` — the first install wins,
+///     subsequent calls are silently ignored (safe for the three-ctor pattern).
+fn maybe_install_deterministic_audit_gate(
+    fsm: &Arc<elai_orchestrator::Fsm>,
+    ssb_arc: Arc<elai_orchestrator::Ssb>,
+) {
+    if std::env::var("ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE").as_deref() != Ok("1") {
+        return;
+    }
+    // Probe profile once at gate-install time to verify it is detectable.
+    // The DeterministicAuditGate requires a ProjectProfile on each evaluate();
+    // if detection fails at boot we skip the install (matches task_runner.rs
+    // semantics: deterministic audit is best-effort when profile is unavailable).
+    let gate_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let boot_profile = match elai_knowledge::detect_project_profile(&gate_root) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "C-28: project profile detection failed at gate-install; \
+                 DefaultDeterministicAuditGate NOT installed (ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE=1 set but skipped)"
+            );
+            return;
+        }
+    };
+    // Wrap the boot profile in Arc so the closure can clone cheaply on each
+    // evaluate() call. If re-detection at evaluate time fails, we fall back
+    // to the boot-time snapshot (stale but safe — no panic, no unwrap).
+    let boot_profile_arc = std::sync::Arc::new(boot_profile);
+    let profile_root = gate_root.clone();
+    let profile_supplier: elai_orchestrator::deterministic_audit_gate::ProjectProfileSupplier =
+        std::sync::Arc::new(move || {
+            elai_knowledge::detect_project_profile(&profile_root)
+                .unwrap_or_else(|e| {
+                    tracing::debug!(
+                        error = %e,
+                        "C-28: detect_project_profile failed at evaluate-time; using boot snapshot"
+                    );
+                    (*boot_profile_arc).clone()
+                })
+        });
+    let changed_files_supplier: elai_orchestrator::deterministic_audit_gate::ChangedFilesSupplier =
+        std::sync::Arc::new(|| {
+            let out = std::process::Command::new("git")
+                .args(["diff", "--name-only", "HEAD"])
+                .output();
+            match out {
+                Ok(o) if o.status.success() => {
+                    // Convert to owned String first so the iterator lifetime is
+                    // not tied to a temporary Cow.
+                    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+                    text.lines()
+                        .filter(|l| !l.is_empty())
+                        .map(PathBuf::from)
+                        .collect()
+                }
+                Ok(o) => {
+                    tracing::debug!(
+                        stderr = %String::from_utf8_lossy(&o.stderr),
+                        "C-28: git diff --name-only HEAD non-zero exit; returning empty changed-files list"
+                    );
+                    Vec::new()
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "C-28: git diff failed; returning empty changed-files list");
+                    Vec::new()
+                }
+            }
+        });
+    let gate = std::sync::Arc::new(DefaultDeterministicAuditGate::new(
+        ssb_arc,
+        profile_supplier,
+        changed_files_supplier,
+    ));
+    fsm.set_deterministic_audit_gate(gate);
+    tracing::info!("C-28: DefaultDeterministicAuditGate installed on production FSM (ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE=1)");
+}
+
 ///
 /// Fail-toward-decay: returns an empty set on ANY error (SSB unavailable,
 /// decode error, viewer not attached). The caller must NOT treat an empty

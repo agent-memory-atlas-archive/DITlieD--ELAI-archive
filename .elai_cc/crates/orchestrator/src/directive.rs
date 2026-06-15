@@ -203,6 +203,17 @@ pub trait Supervisor: Send + Sync {
     /// Tier-2 (OS-process separation) and stub supervisors inherit the no-op.
     fn push_history_entry(&self, _entry: &HistoryEntry) {}
 
+    /// I-35: return a shared clone of the internal [`HistoryBuffer`] so external
+    /// callers (e.g. `task_runner::run_post_step_deterministic_audit`) can push
+    /// synthetic history entries without holding a downcast reference.
+    ///
+    /// The default returns `None` (object-safe). Only [`InProcessSupervisor`]
+    /// overrides this to expose its real buffer. Tier-2 and stub supervisors
+    /// inherit the `None` default and thus silently skip the push.
+    fn history_buffer(&self) -> Option<HistoryBuffer> {
+        None
+    }
+
     /// Dyn-safe variant of [`InProcessSupervisor::execute_directive`].
     ///
     /// Gate-checks `directive` via [`run_gates`]; if blocked returns
@@ -667,6 +678,15 @@ impl Supervisor for InProcessSupervisor {
     /// full prior history.
     fn push_history_entry(&self, entry: &HistoryEntry) {
         self.history.push(entry.clone());
+    }
+
+    /// I-35: expose the internal [`HistoryBuffer`] so external callers such as
+    /// `task_runner::run_post_step_deterministic_audit` can push synthetic
+    /// entries (e.g. "auditor_pass") into the same ring buffer without
+    /// downcasting. Returns a shared clone — writes to the clone are visible
+    /// through the supervisor's own history (Arc-backed).
+    fn history_buffer(&self) -> Option<HistoryBuffer> {
+        Some(self.history.clone())
     }
 
     fn execute_directive_dyn<'a>(

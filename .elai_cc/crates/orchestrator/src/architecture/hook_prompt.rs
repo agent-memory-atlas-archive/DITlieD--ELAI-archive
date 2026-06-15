@@ -242,6 +242,8 @@ pub async fn prompt_decision(
         // I-36: hook_prompt bypasses compiled-variant substitution (this is a
         // hook call for the automation pipeline, not an agent-role completion).
         compiled_system_override: None,
+        // I-34: hook_prompt does not use CRANE grammar pinning.
+        grammar_gate_schema_json: None,
     };
     let completion_fut = runtime.complete(messages, config);
     let response =

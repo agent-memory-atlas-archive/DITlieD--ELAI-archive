@@ -5843,6 +5843,7 @@ async fn emit_dkg_ready(
         node_count,
         edge_count,
         languages,
+        failed_files: 0,
     });
     if let Err(e) = writer
         .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
@@ -10433,11 +10434,18 @@ async fn drive_task(
         // — the bubble-up pass keeps its existing inputs (acceptance
         // criterion: "Do NOT change the bubble-up logic itself").
         if outcome_passed && !exec_result.changed_files.is_empty() {
+            // I-35 (STAGE5-EXEC-F): resolve the supervisor so the audit fn
+            // can push an "auditor_pass" entry into the sequence-gate history.
+            let audit_supervisor = resolved
+                .hook_dispatcher
+                .as_ref()
+                .and_then(|d| d.supervisor());
             run_post_step_deterministic_audit(
                 writer,
                 project_dir.as_deref(),
                 bs_id.0,
                 &exec_result.changed_files,
+                audit_supervisor,
             )
             .await;
 
@@ -19255,6 +19263,12 @@ async fn run_post_step_deterministic_audit(
     project_dir: Option<&Path>,
     bs_id: u64,
     changed_files: &[PathBuf],
+    // I-35 (STAGE5-EXEC-F): optional supervisor whose history buffer receives an
+    // "auditor_pass" or "auditor_blocked" entry after the audit run, so
+    // the R1 sequence gate sees the real production audit evidence rather than only
+    // bench-injected entries. `None` = gate still operates but without this push
+    // (degraded, same as before this wire).
+    supervisor: Option<Arc<dyn crate::directive::Supervisor>>,
 ) {
     let Some(root) = project_dir else {
         return;
@@ -19316,6 +19330,25 @@ async fn run_post_step_deterministic_audit(
             ),
         )
         .await;
+    }
+
+    // I-35 (STAGE5-EXEC-F): push "auditor_pass" into the sequence-gate history
+    // buffer so the R1 rule sees real production audit evidence (not only
+    // bench-injected entries). Outcome is "allowed" when the auditor found no
+    // Block findings; "blocked" otherwise. Mirrors the clock idiom used in
+    // hook_dispatcher::dispatch_pre_tool_use (SystemTime, same as that push site).
+    if let Some(sup) = supervisor {
+        use crate::tool_sequence::HistoryEntry;
+        let outcome_str = if result.block_count() == 0 {
+            "allowed"
+        } else {
+            "blocked"
+        };
+        let ts_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        sup.push_history_entry(&HistoryEntry::new("auditor_pass", ts_ms, outcome_str));
     }
 }
 

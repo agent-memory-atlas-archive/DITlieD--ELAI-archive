@@ -408,35 +408,12 @@ pub(crate) fn build_runtime_with_plugin_state(
             Err(e) => eprintln!("[warn] session telemetry disabled: {e}"),
         }
     }
-    // WIRE-DARK[C-47]: the case-based calibration SSB emitter
-    // (`OrchestratorCaseBaseSsbEmitter`, orchestrator/src/lib.rs:1758 ->
-    // tool_calibration_ssb_adapter.rs:37) is NOT attachable from this builder.
-    // Two structural prerequisites are absent, both in files outside this
-    // module's ownership boundary:
-    //   (1) `ElaiRuntimeConfig` (crate::runtime_config) carries no `tool_use`
-    //       field, so the `[tool_use.case_base]` section at elai_cc.toml:1002
-    //       (enabled/lru_cap/hint_suppression/min_total_calls/
-    //       error_rate_threshold) is parsed by nothing. There is no
-    //       `cfg.tool_use.case_base.enabled` to branch on here.
-    //   (2) `build_runtime_with_plugin_state` constructs `ConversationRuntime`
-    //       (the interactive REPL path) and never builds a `DefaultMcpBridge`.
-    //       The bridge that carries the calibration registry is constructed
-    //       per-dispatch inside `McpClientDispatch::dispatch_tool_call`
-    //       (orchestrator/src/dispatch/mcp.rs:308-333, the `with_tool_gate`
-    //       + `with_calibration_registry` chain). That is the real site for the
-    //       `.with_calibration_ssb_emitter(...)` SSB-emitter half, with the
-    //       `OrchestratorCaseBaseSsbEmitter` constructed where
-    //       `McpClientDispatch::new` is called (run_subcommand.rs:260) and
-    //       stored on the dispatch struct. None of those three files are in
-    //       this builder's scope.
-    // Promotion path: add a `tool_use` field to `ElaiRuntimeConfig` (with a
-    // `CaseBaseConfig` carrying the five toml keys), thread the emitter field
-    // through `McpClientDispatch`, and call `.with_calibration_ssb_emitter`
-    // alongside `.with_calibration_registry` in dispatch/mcp.rs. Tracked in
-    // wire-dark-allowlist.toml under owner=C-47 (allowlist row owned by the
-    // allowlist agent in this parallel run). The C-47b registry/persist half is
-    // already wired (run_subcommand.rs:198-279); only the SSB-emitter half is
-    // dark.
+    // C-47 SSB-emitter wiring note: the `OrchestratorCaseBaseSsbEmitter`
+    // is NOT attached from this builder (the builder serves the interactive
+    // REPL path via `ConversationRuntime` and constructs no `DefaultMcpBridge`
+    // or `McpClientDispatch`). It is wired at the `run_subcommand.rs` seam
+    // alongside `with_calibration_registry` via `with_calibration_ssb_emitter`.
+    // See `run_subcommand.rs` C-47 block for the live wiring.
     Ok((BuiltRuntime::new(runtime, plugin_registry, mcp_state), ssb))
 }
 

@@ -239,8 +239,9 @@ pub struct RunArtifact {
     /// I-18: 5-layer blake3 stack hash (STATE/DEPS/PROCESS/RESULT/VERIFY) sealed
     /// into the RRA by [`build_rra`]. `None` on LEGACY receipts (pre-I-18).
     /// Appended as the 12th element of [`canonical_bundle_bytes`].
-    /// A Cargo.lock mutation mid-run invalidates the DEPS layer immediately
-    /// and causes `build_rra` to return [`RraError::CargoLockMutated`].
+    /// A Cargo.lock mutation mid-run invalidates the DEPS layer at verify time
+    /// (the DEPS layer hashes whatever Cargo.lock is present at seal time; a
+    /// later mutation changes the on-disk bytes so the layer no longer matches).
     #[serde(default)]
     pub stack_hash: Option<StackHash>,
     /// blake3 root over the canonical bundle bytes (everything above except
@@ -258,8 +259,10 @@ pub struct RunArtifact {
 ///   a mid-run Cargo.lock mutation is caught here and halts the run.
 /// - `process`: blake3 of the process-execution environment fingerprint
 ///   (seed || hardware_class || system_fingerprint_pin).
-/// - `result`:  blake3 of the run's bundle root (the G-2 `root_blake3`);
-///   a tampered artifact changes this layer.
+/// - `result`:  blake3 of the sealed objective hash bytes (the I-45
+///   `objective_hash` field from `build_rra`); a tampered or absent objective
+///   changes this layer. When no objective was framed, hashes the sentinel
+///   string `"no-objective"`.
 /// - `verify`:  blake3 of (state || deps || process || result) as the
 ///   cross-layer integrity combiner — a single-layer tamper changes this.
 ///
@@ -274,7 +277,8 @@ pub struct StackHash {
     pub deps: String,
     /// blake3 16-hex of the process environment (seed + hw_class + fp_pin).
     pub process: String,
-    /// blake3 16-hex of the G-2 bundle root.
+    /// blake3 16-hex of the sealed objective hash bytes (I-45 `objective_hash`
+    /// from `build_rra`). Sentinel `"no-objective"` when no objective was framed.
     pub result: String,
     /// blake3 16-hex of the cross-layer combiner (state || deps || process || result).
     pub verify: String,

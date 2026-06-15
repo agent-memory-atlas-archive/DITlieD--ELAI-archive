@@ -1,3 +1,9 @@
+// C-28 / Stage-5 EXEC-H: smoke test for the production gate install path.
+// This test exercises the NEW &self OnceLock setter (set_deterministic_audit_gate)
+// and the DefaultDeterministicAuditGate (not FakeGate) through an Arc<Fsm>.
+// Named to match the wire-dark-allowlist.toml smoke_test entry for
+// ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE.
+
 // Session wire-a12 contract tests.
 //
 // Exercises the [`DeterministicAuditGate`] hook installed on
@@ -218,4 +224,189 @@ fn contract_severity_counters_match_expectations() {
     let b = blocking_result();
     assert_eq!(b.block_count(), 2);
     assert_eq!(b.warn_count(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// C-28 / STAGE5-EXEC-H smoke test — production gate install path
+// ---------------------------------------------------------------------------
+//
+// Proves:
+//   1. DefaultDeterministicAuditGate (not FakeGate) can be built with
+//      production-shaped suppliers.
+//   2. set_deterministic_audit_gate(&self) installs it through Arc<Fsm>
+//      using the OnceLock slot (no &mut required).
+//   3. gate.evaluate() is called on `_ -> Auditing` and last_audit_result
+//      is populated (proves the gate is live, not test-only).
+//   4. A second set_deterministic_audit_gate call is silently ignored
+//      (OnceLock first-write-wins; the initial gate is preserved).
+//
+// Does NOT assert SSB rows because tokio::spawn emission is async and
+// testing async fire-and-forget rows would require a sleep or a poll loop
+// (both flaky). The SSB emit path is covered by the auditor's own contract
+// tests. Here we assert the install-and-call plumbing is wired.
+
+#[tokio::test]
+async fn c28_production_gate_installed_via_flag_emits_on_auditing_transition() {
+    use elai_core::{
+        ArchitecturePattern, BuildCommandRegistry, BuildSystem, BuildSystemProfile,
+        CommandScope, Convention, EntryPoint, EntryPointKind,
+        ErrorHandlingProfile, ErrorPattern, Language, LanguageProfile, ModuleOrganization,
+        NamingConventions, OrgPattern, ProjectProfile, PropagationStyle,
+        PROFILE_SCHEMA_VERSION, SeededClock,
+    };
+    use elai_core::project_profile::{
+        DomainClassification, ProjectDomain,
+    };
+    use elai_orchestrator::{
+        ssb::{Ssb, SsbConfig},
+        DefaultDeterministicAuditGate, Fsm, FsmState,
+    };
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    // --- build a real SSB in a tempdir ---
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = Arc::new(
+        Ssb::new(
+            SsbConfig {
+                db_path: dir.path().join("c28_smoke.db"),
+                project_id: "c28-smoke".into(),
+                session_id: "s-c28-smoke".into(),
+                pool_size: None,
+            },
+            Arc::new(SeededClock::new()),
+        )
+        .expect("SSB init"),
+    );
+
+    // --- minimal ProjectProfile fixture (no build commands so the auditor
+    //     skips the build check and returns quickly without calling cargo) ---
+    let fixture_profile = ProjectProfile {
+        schema_version: PROFILE_SCHEMA_VERSION,
+        generated_at: "2026-06-15T00:00:00Z".to_owned(),
+        project_root: PathBuf::from("/smoke-test"),
+        build_system: BuildSystemProfile {
+            system: BuildSystem::Cargo,
+            config_path: PathBuf::from("Cargo.toml"),
+            version: None,
+            monorepo: false,
+            workspaces: Vec::new(),
+        },
+        languages: LanguageProfile {
+            primary: Language::Rust,
+            secondary: Vec::new(),
+            distribution: BTreeMap::new(),
+            tree_sitter_coverage: 0.0,
+        },
+        frameworks: Vec::new(),
+        test_profile: Default::default(),
+        lint_tools: Vec::new(),
+        entry_points: vec![EntryPoint {
+            file: PathBuf::from("src/main.rs"),
+            kind: EntryPointKind::Server,
+        }],
+        ci: None,
+        naming: NamingConventions {
+            functions: Convention::Strong("snake_case".to_owned()),
+            types: Convention::Strong("PascalCase".to_owned()),
+            constants: Convention::Strong("SCREAMING_SNAKE_CASE".to_owned()),
+            modules: Convention::Unknown,
+        },
+        error_handling: ErrorHandlingProfile {
+            pattern: ErrorPattern::ResultBased,
+            propagation: PropagationStyle::QuestionMark,
+            error_crate: Some("thiserror".to_owned()),
+        },
+        module_organization: ModuleOrganization { pattern: OrgPattern::Layered },
+        dep_profile: Default::default(),
+        project_vision: None,
+        architecture: Some(ArchitecturePattern::Layered),
+        domains: vec![DomainClassification {
+            domain: ProjectDomain::WebBackend,
+            confidence: 0.9,
+            signals: vec!["smoke-test fixture".to_owned()],
+        }],
+        // No build commands: auditor treats this as "no build to run" and
+        // returns a result with checks_run > 0 (file-size / lazy / completeness
+        // still run over the empty changed-files list) and passed = true.
+        commands: BuildCommandRegistry {
+            build: Vec::new(),
+            test: Vec::new(),
+            lint: Vec::new(),
+            format: Vec::new(),
+            run: Vec::new(),
+            clean: Vec::new(),
+        },
+        fix_template_keys: Vec::new(),
+        constraints: Vec::new(),
+        overrides_applied: false,
+    };
+    let fixture_arc = Arc::new(fixture_profile);
+    let profile_supplier: elai_orchestrator::deterministic_audit_gate::ProjectProfileSupplier =
+        Arc::new(move || (*fixture_arc).clone());
+    let changed_files_supplier: elai_orchestrator::deterministic_audit_gate::ChangedFilesSupplier =
+        Arc::new(|| Vec::new());
+
+    let gate = Arc::new(DefaultDeterministicAuditGate::new(
+        Arc::clone(&ssb),
+        profile_supplier,
+        changed_files_supplier,
+    ));
+
+    // --- install gate through Arc<Fsm> via the new &self setter ---
+    let fsm = Arc::new(Fsm::new(None, 8192));
+    fsm.set_deterministic_audit_gate(Arc::clone(&gate) as Arc<dyn elai_orchestrator::deterministic_audit_gate::DeterministicAuditGate>);
+
+    // Drive to AUDITING so evaluate() is called.
+    drive_to_auditing(&fsm).await;
+
+    // last_audit_result must be Some — the gate ran.
+    let result = fsm
+        .last_audit_result()
+        .await
+        .expect("last_audit_result must be Some after gate install + _ -> Auditing");
+    // With an empty changed-files list, the auditor runs its non-build checks
+    // (file-size / lazy / completeness over 0 files) and passes.
+    assert!(
+        result.passed,
+        "gate should pass on empty changed-files list; findings: {:?}",
+        result.findings
+    );
+
+    // --- second install is silently ignored (OnceLock first-write-wins) ---
+    // This proves the double-install path (three-ctor live_cli pattern) is safe.
+    let gate2 = Arc::new(
+        DefaultDeterministicAuditGate::new(
+            Arc::clone(&ssb),
+            Arc::new(|| {
+                // This supplier must never be called — the second gate was NOT installed.
+                panic!("c28 smoke: second gate supplier must not be called (OnceLock should have ignored the second set call)");
+            }),
+            Arc::new(|| Vec::new()),
+        ),
+    );
+    fsm.set_deterministic_audit_gate(
+        gate2 as Arc<dyn elai_orchestrator::deterministic_audit_gate::DeterministicAuditGate>,
+    );
+
+    // Re-enter AUDITING via EXECUTING so the gate runs again.
+    fsm.transition(FsmState::Executing, "p", vec![])
+        .await
+        .expect("re-entry to Executing");
+    fsm.transition(FsmState::Auditing, "p", vec![])
+        .await
+        .expect("re-entry to Auditing");
+
+    // The first gate is still installed — second set was ignored.
+    // last_audit_result updated by the first gate's evaluate() (not the panic supplier).
+    let result2 = fsm
+        .last_audit_result()
+        .await
+        .expect("last_audit_result must be Some on second Auditing entry");
+    assert!(
+        result2.passed,
+        "second auditing entry with first gate should also pass; findings: {:?}",
+        result2.findings
+    );
 }

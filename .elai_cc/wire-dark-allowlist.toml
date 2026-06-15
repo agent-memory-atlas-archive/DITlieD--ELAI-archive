@@ -702,9 +702,21 @@ expiry_date       = "2026-09-01"
 promotion_plan_id = "C-41-5C"
 smoke_test        = "crates/contracts/tests/c41_skills_driven_workflow_contract.rs::skill_triggered_row_emitted_when_application_skills_enabled"
 
+# C-31: MistakeRecorder injection on T1Hook and T2Hook (set_mistake_recorder).
+# No prod consumer yet (OrchestratorMistakeRecorder + flag-gated TieredAnalysis
+# construction deferred to C-31-promotion). WIRE-DARK markers in tiered_analysis.rs.
+[[flag]]
+name              = "set_mistake_recorder"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "C-31-promotion"
+smoke_test        = "crates/contracts/tests/c31_file_plan_contract.rs::mistake_recorder_file_size_exceeded_block_invoked"
+
 # C-45: Cantante credit attribution. [agent.credit_attribution].enabled mirrored
 # routing/policy.rs:101-105 (default OFF asserted :166); current_credit_weights
-# consumed on the routing prod path.
+# wired behind the credit_attribution.enabled gate (production caller lands in
+# C-45-promotion task runner branch). WIRE-DARK marker in integration.rs.
 [[flag]]
 name              = "agent.credit_attribution.enabled"
 type              = "experiment"
@@ -716,14 +728,18 @@ smoke_test        = "crates/contracts/tests/c45_cantante_credit_attribution_cont
 # C-47: case-based tool calibration. [tool_use.case_base] enabled=false
 # (elai_cc.toml:1025); ToolCalibrationRegistry gate at plugins
 # tool_calibration/registry.rs. Prod SSB emit (OrchestratorCaseBaseSsbEmitter)
-# is WAVE-B wire (NoopCaseBaseEmitter installed today); flag+config gate exist.
+# WIRED via the --via-mcp dispatch path only (in-process dispatch has no MCP
+# seam by design) at run_subcommand.rs via McpClientDispatch::with_calibration_ssb_emitter
+# (STAGE5-EXEC-I, 2026-06-15). Flag+config gate still default-off.
+# NOTE: a true emit-through-bridge smoke requires an MCP fixture; the static
+# wiring fence below is the best available in-repo gate short of a live server.
 [[flag]]
 name              = "tool_use.case_base.enabled"
 type              = "experiment"
 owner             = "C-47"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "C-47"
-smoke_test        = "crates/contracts/tests/c47_case_based_calibration_contract.rs::tool_calibration_event_row_emitted_when_case_base_enabled"
+smoke_test        = "crates/contracts/tests/c47_case_based_calibration_contract.rs::record_call_wired_in_both_dispatchers"
 
 # C-40: GitHub PR adapter. [github] enabled=false (elai_cc.toml:1457; when false
 # every call returns disabled error); gh-CLI adapter + `elai pr` CLI wired.
@@ -1933,23 +1949,23 @@ name              = "WIRE-DARK[I-49]-bedrock-live-call"
 type              = "experiment"
 owner             = "maintainer"
 expiry_date       = "2027-06-01"
-promotion_plan_id = "I-49-promotion"
+promotion_plan_id = "D-026-runpod"
 smoke_test        = "crates/providers/tests/i49_replay_fixtures.rs::create_runtime_bedrock_missing_creds_returns_missing_field_not_not_implemented"
 
 # I-49: AzureOpenAiRuntime::complete() / stream() — live billed Azure OpenAI
 # chat-completions call. The adapter structure + request-build + response-
 # normalise (openai_compat shim reuse) is BUILT and tested via offline replay
-# fixtures (Tier-1). The live billed network call is gated on I-49-promotion (requires
-# real Azure OpenAI deployment endpoint + API key). The WIRE-DARK[I-49] marker
-# sits on the `complete()` and `stream()` method bodies in
-# crates/providers/src/runtime/azure_openai.rs.
-# promotion_plan_id = I-49-promotion (live billed call checkpoint).
+# fixtures (Tier-1). The live billed network call is gated on D-026 (requires
+# real Azure OpenAI deployment endpoint + API key, provisioned at D-026 RunPod
+# milestone). The WIRE-DARK[I-49] marker sits on the `complete()` and `stream()`
+# method bodies in crates/providers/src/runtime/azure_openai.rs.
+# promotion_plan_id = D-026-runpod (live billed call checkpoint).
 [[flag]]
 name              = "WIRE-DARK[I-49]-azure-live-call"
 type              = "experiment"
 owner             = "maintainer"
 expiry_date       = "2027-06-01"
-promotion_plan_id = "I-49-promotion"
+promotion_plan_id = "D-026-runpod"
 smoke_test        = "crates/providers/tests/i49_replay_fixtures.rs::create_runtime_azure_missing_creds_returns_missing_field_not_not_implemented"
 
 # ---- I-50 WIRE-DARK SSB-EMIT SEAM (session I-50-exec, 2026-06-15) ----
@@ -1987,3 +2003,99 @@ owner             = "maintainer"
 expiry_date       = "2027-12-01"
 promotion_plan_id = "I-40-wrap-rra-kill-switch-review"
 smoke_test        = "crates/contracts/tests/i40_trust_wrapper_contract.rs::wrap_fixture_emits_taint_flow_and_rra_bundle"
+
+# ---- STAGE-5-EXEC-E: I-34 CRANE grammar-gate production wiring (session STAGE5-EXEC-E) ----
+# WIRE-DARK[I-34-enforce]: enforcement routing for the CRANE grammar gate.
+# `call_grammar_gate` is now wired into `RuntimeOrchestrator::try_complete` via the
+# private helper `run_grammar_gate_if_eligible` (runtime_orchestrator.rs). On
+# PostParseRejected / PinViolation this changeset: emits the GrammarGateEvent SSB row
+# + tracing::warn, then returns Ok normally (non-fatal observe-only posture). The
+# enforcement routing -- returning Err from try_complete and routing callers to
+# dispatch_conformal_refusal (D-16 seam, claim_score=0.0) -- is the forward dep
+# registered here. That dep requires threading a CalibrationCorpus reference into
+# try_complete, adding a new error variant, and updating all try_complete callers;
+# scoped to a follow-on I-34-enforce plan step once the observe-only gate is
+# running on live data and the false-positive rate is measured. NOTE: added by an
+# executing run -- trips gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "WIRE-DARK[I-34-enforce]"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "I-34-enforce"
+smoke_test        = "crates/contracts/tests/i34_grammar_gate_contract.rs::grammar_gate_call_emits_crane_passed_event"
+
+# ---- STAGE-5-EXEC-G: I-18 W-5 verify_attestation_with_objective backing row ----
+# WIRE-DARK[I-45]: `verify_attestation_with_objective` (attestation.rs:512) is the
+# no-trailer staleness check variant; the production consumer lands in the IPC
+# dispatcher follow-on step (I-45 "no-trailer variant; consumer lands in IPC
+# dispatcher follow-on step" per the in-code marker). The fn is intentionally dark
+# until the IPC dispatcher is wired; the marker on line 511 of attestation.rs
+# documents the forward dep. The smoke_test below exercises the staleness logic
+# via the g2 contract (objective_hash_mismatch path: sealed hash != current text ->
+# AttestationVerdict::ReceiptStale), which is the behavioral ON-path property even
+# before the IPC caller lands. NOTE: added by STAGE5-EXEC-G -- trips
+# gate_freeze_check.py until re-locked out-of-band
+# (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "WIRE-DARK[I-45]"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "I-45"
+smoke_test        = "crates/contracts/tests/g2_replay_verify_contract.rs::objective_hash_mismatch_fires_for_stale_objective"
+
+# C-28 / Stage-5 EXEC-H: ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE gates the
+# DefaultDeterministicAuditGate install on the production FSM (live_cli.rs,
+# three constructor sites). Default-OFF experiment: the gate runs the full
+# 5-check deterministic audit sequence (build/version/file-size/lazy/completeness
+# + mutation/metamorphic when MutationConfig enables them) on every
+# `_ -> Auditing` FSM transition, emits Finding/MutationSurvived/
+# MutationBudgetedRun/SurvivorDirective SSB rows, and can BLOCK
+# `Auditing -> Memorizing` on BLOCK-severity findings.  Default-OFF prevents
+# regressions on live runs where the audit would reject the transition on real
+# findings; the operator opts in to deterministic blocking by setting the flag.
+# Promotion plan: C-28-promotion (measure false-block rate, then flip default-ON
+# or narrow the BLOCK criteria to the measured no-regression baseline).
+# NOTE: added by STAGE5-EXEC-H — trips gate_freeze_check.py until re-locked
+# out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-14"
+promotion_plan_id = "C-28-promotion"
+smoke_test        = "crates/contracts/tests/deterministic_audit_gate_contract.rs::c28_production_gate_installed_via_flag_emits_on_auditing_transition"
+
+# ---- B-7 SSB EMITTER WIRE-DARK REGISTRATION (task STAGE5-B7-DARKREG) ----
+# SsbPackageRefVerifiedEmitter and SsbTechStackDecidedEmitter exist in
+# crates/orchestrator/src/research_tree.rs and implement the PackageRefVerifiedEmitter
+# / TechStackDecidedEmitter traits respectively. Their production consumer is the
+# task_runner research-step dispatch that passes Some(&emitter) to
+# verify_packages_with_emitter / new_tech_stack_decision. That dispatch does not
+# exist yet (AUTHORING-DEFER confirmed: no task_runner reference to either emitter
+# type outside research_tree.rs). Registered here so the R9 leg does not flag them
+# as unexplained DARK structs. Promotion = B-7-promotion wires the task_runner
+# research-step dispatch to instantiate and pass these emitters.
+# No dedicated B-7 emitter contract test exists yet; smoke_test points at the
+# closest existing research_tree inline test that exercises the B-7 module code
+# (source quality + is_plausible_package_name domain). The B-7-promotion step
+# is expected to add the full emitter-path contract test.
+# NOTE: added by STAGE5-B7-DARKREG -- trips gate_freeze_check.py until re-locked
+# out-of-band (`python .claude/tools/gate_freeze_check.py --lock`).
+[[flag]]
+name              = "WIRE-DARK[B-7]:SsbPackageRefVerifiedEmitter"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "B-7-promotion"
+smoke_test        = "crates/orchestrator/src/research_tree.rs::tests::source_quality_exact_domain_match"
+
+[[flag]]
+name              = "WIRE-DARK[B-7]:SsbTechStackDecidedEmitter"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2027-06-01"
+promotion_plan_id = "B-7-promotion"
+smoke_test        = "crates/orchestrator/src/research_tree.rs::tests::source_quality_exact_domain_match"

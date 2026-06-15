@@ -591,6 +591,11 @@ impl IndexingService {
             edges = graph.edge_count,
             "DKG graph built"
         );
+        // B-4: capture failed-file count before dropping the engine.
+        let dkg_files_failed: u64 = u64::try_from(
+            dkg.failed_files().map(|v| v.len()).unwrap_or(0),
+        )
+        .unwrap_or(0);
         drop(dkg);
 
         // 7b. B-29 Phase 4 + C-24 (DRIFT-3): build the symbol graph on top of
@@ -774,6 +779,7 @@ impl IndexingService {
             bm25_chunks,
             bm25_skipped_binary,
             registry_status: Some(dkg_registry_status),
+            dkg_files_failed,
         };
 
         if is_resume {
@@ -1254,6 +1260,10 @@ pub struct IndexingSummary {
     /// B-30 Pass C: grammar load status captured after DkgEngine construction.
     /// None when DkgEngine construction failed before status could be read.
     pub registry_status: Option<elai_knowledge::LanguageRegistryStatus>,
+    /// Count of DKG files that failed to parse (B-4: aligns producer with the
+    /// `DkgReadyPayload.failed_files` consumer in dashboard commands.rs:2275).
+    /// Defaults to 0 when the engine's `failed_files()` query returns an error.
+    pub dkg_files_failed: u64,
 }
 
 // ---------------------------------------------------------------------------

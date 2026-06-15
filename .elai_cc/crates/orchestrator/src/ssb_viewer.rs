@@ -5323,10 +5323,10 @@ impl SsbViewer {
     /// stream.
     ///
     /// Uses `SsbViewer` (read-only SQLite) — no write handle needed.
-    /// The `session_id` comparison is against the decoded payload field, not
-    /// a DB column (the SSB table has no `session_id` column). We load all
-    /// `row_chain_sealed` rows and filter in-process; this is bounded because
-    /// the SSB has a finite row count and `row_chain_sealed` rows are sparse.
+    /// Filters by `session_id` via a SQL `WHERE session_id = ?` clause so only
+    /// rows belonging to this session are fetched. A defence-in-depth payload
+    /// check re-confirms the session match after decoding to guard against any
+    /// divergence between the column value and the embedded payload field.
     pub fn query_row_chain_sealed_for_session(
         &self,
         session_id: &str,
@@ -5334,19 +5334,24 @@ impl SsbViewer {
         use crate::ssb::{decode_ssb_payload, RowChainSealedPayload, SsbPayload};
 
         let conn = self.lock()?;
+        // Filter by session_id in SQL (session_id is a first-class column in the
+        // ssb table) so we never scan rows from other sessions. The in-process
+        // session_id check on the decoded payload is kept as a defence-in-depth
+        // guard for any path where the column value and payload diverge.
         let mut stmt = conn.prepare(
             "SELECT seq, payload FROM ssb \
              WHERE action_type = 'row_chain_sealed' \
+             AND session_id = ?1 \
              ORDER BY seq ASC",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
             let (seq, bytes) = row?;
-            // Filter by session_id from the decoded payload.
+            // Defence-in-depth: confirm the decoded payload session_id matches.
             if let Ok(SsbPayload::RowChainSealed(p)) = decode_ssb_payload(&bytes) {
                 if p.session_id == session_id {
                     result.push((seq, bytes));

@@ -1003,26 +1003,39 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
                 role: "context_compiler".into(),
                 ..AgentGrcConfig::default()
             }),
-        AgentRole::Researcher => AgentGrcConfig {
-            role: "researcher".into(),
-            budget: GrcBudget {
-                max_calls: 10,
-                max_chars: 1200,
-                calls_used: 0,
-                chars_used: 0,
-            },
-            required_steps: vec![
-                GrcState::Observe,
-                GrcState::Hypothesize,
-                GrcState::PlanAction,
-                GrcState::Verify,
-                GrcState::Converge,
-            ],
-            grounding_level: GroundingLevel::High,
-            csq_required: true,
-            require_scope_enumeration: false,
-            ..AgentGrcConfig::default()
-        },
+        AgentRole::Researcher => {
+            // The Researcher chain is [Observe, Hypothesize, PlanAction, Verify,
+            // Converge]. PlanAction.allowed_next() = [Act, Converge, Status] by
+            // default — Verify is absent, so the PlanAction -> Verify edge fails
+            // validate_step_chain without an additive override. The Designer arm
+            // has the identical chain shape and uses the same override; mirror it
+            // exactly (effective_allowed_next is additive-union, so [Act,
+            // Converge, Status, Verify] merges correctly without listing the
+            // defaults here).
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::PlanAction, vec![GrcState::Verify]);
+            AgentGrcConfig {
+                role: "researcher".into(),
+                budget: GrcBudget {
+                    max_calls: 10,
+                    max_chars: 1200,
+                    calls_used: 0,
+                    chars_used: 0,
+                },
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Hypothesize,
+                    GrcState::PlanAction,
+                    GrcState::Verify,
+                    GrcState::Converge,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: true,
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+                ..AgentGrcConfig::default()
+            }
+        }
         // B-5: delegate to reasoning crate's canonical config table.
         // agent_grc_config_for_role returns Some("media_validator") by construction;
         // the unwrap_or_else fallback is unreachable in practice but satisfies
