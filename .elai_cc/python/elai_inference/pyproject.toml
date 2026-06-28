@@ -24,6 +24,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# E-28: FA2 mandatory on Ampere (RTX 3090/3060 sm_80/sm_86). flash-attn
+# 2.8.3 (Jan 2026) supports CUDA 11.8-12.8 / torch 2.4-2.9. Anti-slopsquat
+# verified 2026-06-22: pypi.org/pypi/flash-attn/json -> info.version
+# 2.8.3.post1, BSD-3-Clause (classifiers). Pin >=2.8.3,<2.9 admits the
+# post-release and any later 2.8.x patch. NO FA3/FA4 (Hopper/Blackwell only).
+#
+# Windows wheel fallback: flash-attn ships no official prebuilt Windows
+# wheels, so it is an OPTIONAL extra, NOT a hard dependency — otherwise
+# `pip install elai-inference` would fail on Windows. Install on the remote
+# Linux 3090 only: `pip install -e '.[fa2]' --no-build-isolation`. On
+# Windows the sidecar falls back to SDPA via the `import flash_attn`
+# try/except in server.py (ELAI_FORCE_SDPA=1 path).
+fa2 = [
+    "flash-attn>=2.8.3,<2.9",
+]
 dev = [
     "pytest>=7",
     # C-28: T-1 mutation testing for Python sidecar code. Shelled out from

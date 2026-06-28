@@ -52,7 +52,20 @@ except ImportError:  # pragma: no cover -- only triggers on broken deployments
     _MessagesRequestModel = None  # type: ignore[assignment]
     _SIDECAR_SCHEMA_VERSION = 0
     _E45_SCHEMAS_AVAILABLE = False
+
+# H-50 STEP 3: sidecar context-reduction journal + measurement layer. The
+# journal is env-gated (ELAI_CONTEXT_JOURNAL_ENABLE, default OFF) so this
+# import + call are no-ops on the default path. The sidecar only MEASURES
+# input tokens and journals them; the trim itself is the orchestrator/CLI's
+# job (live_cli.rs prepare_turn_runtime + conversation.rs maybe_auto_compact).
+try:
+    from elai_inference.context_journal import maybe_journal_turn as _h50_maybe_journal_turn
+    _H50_JOURNAL_AVAILABLE = True
+except ImportError:  # pragma: no cover -- broken deployment fallback
+    _h50_maybe_journal_turn = None  # type: ignore[assignment]
+    _H50_JOURNAL_AVAILABLE = False
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
@@ -1556,6 +1569,155 @@ def apply_yarn_rope_scaling_at_boot(
     return model_config
 
 
+def apply_yarn_rope_scaling(
+    model_config: Any,
+    factor: float,
+    original_max_position: int = QWEN25_CODER_ORIGINAL_MAX_POSITION,
+) -> Any:
+    """Inject YaRN rope_scaling into a model config for the LIVE boot path.
+
+    E-28 STEP 3: when ELAI_YARN_FACTOR is set at boot, InferenceEngine loads
+    AutoConfig.from_pretrained, calls this helper to inject rope_scaling, then
+    passes the patched config to AutoModelForCausalLM.from_pretrained. This is
+    the opt-in context-extension toggle per arXiv:2501.15383 (Qwen2.5-1M
+    recipe: factor=4 targets 128K from original_max_position_embeddings=32768).
+
+    Unlike apply_yarn_rope_scaling_at_boot (harness-only, gated behind
+    ELAI_YARN_EVAL_GATE), this function runs on the live boot path when
+    ELAI_YARN_FACTOR is set. It is NOT gated by ELAI_YARN_EVAL_GATE. The E-32
+    refuse_yarn_at_boot refusal only applies to ELAI_USE_YARN=1 — a different
+    env var — so ELAI_YARN_FACTOR bypasses the E-32 refusal by design (E-28
+    plan supersedes E-32 for this specific opt-in toggle).
+
+    Guarded assert: config.max_position_embeddings >= 32768 to prevent silent
+    mis-config (e.g., a 4K-context model accidentally paired with YaRN factor=4
+    would produce garbage). Uses an explicit SidecarBootError raise instead of
+    a bare `assert` so the check survives `python -O`.
+
+    Args:
+        model_config: HF AutoConfig instance for the model.
+        factor: YaRN scaling factor (2.0, 4.0, 8.0). Validated > 0 and finite.
+        original_max_position: Pre-extension max position embeddings.
+            Defaults to 32768 (Qwen2.5-Coder-7B base context window).
+
+    Returns:
+        The same config object with rope_scaling injected.
+
+    Raises:
+        SidecarBootError: when factor is invalid, original_max_position < 1,
+            config type is unsupported, or config.max_position_embeddings <
+            32768 (the guarded assert per E-28 plan STEP 3).
+    """
+    if not (factor > 0.0) or factor != factor:  # catches NaN
+        raise SidecarBootError(
+            f"YaRN factor must be positive finite; got {factor}"
+        )
+    if original_max_position < 1:
+        raise SidecarBootError(
+            f"YaRN original_max_position_embeddings must be >= 1; "
+            f"got {original_max_position}"
+        )
+    rope_scaling = {
+        "type": "yarn",
+        "factor": float(factor),
+        "original_max_position_embeddings": int(original_max_position),
+    }
+    if hasattr(model_config, "rope_scaling"):
+        model_config.rope_scaling = rope_scaling
+    elif isinstance(model_config, dict):
+        model_config["rope_scaling"] = rope_scaling
+    else:
+        raise SidecarBootError(
+            f"apply_yarn_rope_scaling: unsupported config type "
+            f"{type(model_config).__name__}; expected AutoConfig or dict"
+        )
+    # Guarded assert per E-28 plan STEP 3: prevent silent mis-config where a
+    # short-context model is paired with YaRN extension. Use explicit raise
+    # (not bare assert) so it survives `python -O`.
+    max_pos = getattr(model_config, "max_position_embeddings", None)
+    if isinstance(model_config, dict):
+        max_pos = model_config.get("max_position_embeddings")
+    if max_pos is not None and max_pos < original_max_position:
+        raise SidecarBootError(
+            f"YaRN guarded assert: config.max_position_embeddings={max_pos} "
+            f"< original_max_position={original_max_position}; refusing to "
+            f"apply YaRN extension to a model with a shorter base context "
+            f"window than the YaRN original_max. See E-28 plan STEP 3."
+        )
+    logger.info(
+        "yarn_rope_scaling_applied",
+        factor=float(factor),
+        original_max_position_embeddings=int(original_max_position),
+        applied_at_layer=-1,
+        gate="ELAI_YARN_FACTOR (live boot path)",
+    )
+    return model_config
+
+
+# StreamingLLM sliding-window default. When ELAI_LOCAL_MAX_CONTEXT is unset
+# the window defaults to 25000 — the production recommendation per
+# REMOTE-SIDECAR.md ("Use 25000-28000 in production for headroom" under the
+# 32K native Qwen2.5-Coder-7B ceiling). This is the same env the Rust client
+# uses to cap the local lane context (CLAUDE.md ELAI_LOCAL_MAX_CONTEXT).
+STREAMING_LLM_DEFAULT_WINDOW_SIZE: int = 25_000
+
+
+def resolve_streaming_llm_config() -> "tuple[int, int]":
+    """Read ELAI_STREAMING_LLM_SINKS + ELAI_LOCAL_MAX_CONTEXT env vars.
+
+    Returns (sink_count, window_size). When ELAI_STREAMING_LLM_SINKS is
+    unset or "0", returns (0, 0) — StreamingLLM masking is OFF and the
+    generation path is byte-identical to the pre-E-28 baseline (backward
+    compat: the caller skips the mask entirely when sink_count == 0).
+
+    When ELAI_STREAMING_LLM_SINKS == "1", sink_count defaults to
+    STREAMING_LLM_DEFAULT_SINK_COUNT (4 per arXiv:2309.17453 Sec 4.2).
+    When set to an integer N > 0, sink_count = N.
+
+    window_size is read from ELAI_LOCAL_MAX_CONTEXT so the sliding window
+    matches the Rust client's local-lane context cap. Default
+    STREAMING_LLM_DEFAULT_WINDOW_SIZE (25000).
+
+    Raises:
+        SidecarBootError: when either env var is set to a non-integer or
+            non-positive value (fail-closed at boot rather than a silent
+            degraded mask mid-generation).
+
+    References:
+        * arXiv:2309.17453 Xiao et al. ICLR 2024 — sink_count >= 4 (Sec 4.2).
+        * github.com/mit-han-lab/streaming-llm — pure-Python mask reference.
+    """
+    raw = os.getenv("ELAI_STREAMING_LLM_SINKS", "0").strip()
+    if raw in ("", "0"):
+        return 0, 0
+    if raw == "1":
+        sink_count = STREAMING_LLM_DEFAULT_SINK_COUNT
+    else:
+        try:
+            sink_count = int(raw)
+        except ValueError as exc:
+            raise SidecarBootError(
+                f"ELAI_STREAMING_LLM_SINKS must be 0, 1, or a positive "
+                f"integer; got '{raw}'"
+            ) from exc
+        if sink_count < 1:
+            raise SidecarBootError(
+                f"ELAI_STREAMING_LLM_SINKS must be >= 1 when set; got {sink_count}"
+            )
+    window_raw = os.getenv("ELAI_LOCAL_MAX_CONTEXT", str(STREAMING_LLM_DEFAULT_WINDOW_SIZE)).strip()
+    try:
+        window_size = int(window_raw)
+    except ValueError as exc:
+        raise SidecarBootError(
+            f"ELAI_LOCAL_MAX_CONTEXT must be an integer; got '{window_raw}'"
+        ) from exc
+    if window_size < 1:
+        raise SidecarBootError(
+            f"ELAI_LOCAL_MAX_CONTEXT must be >= 1; got {window_size}"
+        )
+    return sink_count, window_size
+
+
 # ---------------------------------------------------------------------------
 # E-32: FoundInTheMiddleCalibrator — training-free positional-prior subtraction
 # ---------------------------------------------------------------------------
@@ -2029,6 +2191,30 @@ class InferenceEngine:
             quant_backend = "fp16"
         logger.info("loading_model", model=model_name, quant_backend=quant_backend, kv_cache_dtype=kv_cache_dtype, load_in_4bit=load_in_4bit, attn=_attn_impl)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # E-28 STEP 3: YaRN context-extension toggle (env-gated, default off).
+        # When ELAI_YARN_FACTOR is set (e.g. "4.0"), load AutoConfig first,
+        # inject rope_scaling via apply_yarn_rope_scaling, then pass the
+        # patched config to from_pretrained. When unset, yarn_config is None
+        # and from_pretrained loads the default config (byte-identical to the
+        # pre-E-28 baseline). The E-32 refuse_yarn_at_boot only blocks
+        # ELAI_USE_YARN=1 — a different env var — so this path is not blocked.
+        yarn_config = None
+        yarn_factor_raw = os.getenv("ELAI_YARN_FACTOR", "").strip()
+        if yarn_factor_raw:
+            try:
+                yarn_factor = float(yarn_factor_raw)
+            except ValueError as exc:
+                raise SidecarBootError(
+                    f"ELAI_YARN_FACTOR must be a float (e.g. 2.0, 4.0, 8.0); "
+                    f"got '{yarn_factor_raw}'"
+                ) from exc
+            yarn_config = AutoConfig.from_pretrained(model_name)
+            apply_yarn_rope_scaling(yarn_config, yarn_factor)
+            logger.info(
+                "yarn_factor_resolved",
+                factor=yarn_factor,
+                model=model_name,
+            )
         if quant_backend == "awq":
             compute_cap = 0
             if torch.cuda.is_available():
@@ -2040,14 +2226,14 @@ class InferenceEngine:
             except ImportError as exc:
                 raise RuntimeError("AWQ backend requires autoawq and transformers>=4.45; install: pip install autoawq>=0.2.0") from exc
             awq_version = "marlin" if marlin_enabled else "gemm"
-            self.model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=AwqConfig(version=awq_version), device_map=device_map, attn_implementation=_attn_impl)
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, config=yarn_config, quantization_config=AwqConfig(version=awq_version), device_map=device_map, attn_implementation=_attn_impl)
             logger.info("quant_backend_selected", backend="awq", kv_dtype=kv_cache_dtype, compute_capability=compute_cap, marlin_enabled=marlin_enabled)
         elif quant_backend == "nf4":
             bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True)
-            self.model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb_config, device_map=device_map, attn_implementation=_attn_impl)
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, config=yarn_config, quantization_config=bnb_config, device_map=device_map, attn_implementation=_attn_impl)
             logger.info("quant_backend_selected", backend="nf4", kv_dtype=kv_cache_dtype, compute_capability=0, marlin_enabled=False)
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map=device_map, attn_implementation=_attn_impl)
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, config=yarn_config, torch_dtype=torch.bfloat16, device_map=device_map, attn_implementation=_attn_impl)
             logger.info("quant_backend_selected", backend="fp16", kv_dtype=kv_cache_dtype, compute_capability=0, marlin_enabled=False)
         if kv_cache_dtype in ("fp8_e4m3", "fp8_e5m2"):
             compute_cap_kv = 0
@@ -2060,6 +2246,48 @@ class InferenceEngine:
         self.model.eval()
         self.lock = Lock()
         _log_vram("after_model_load")
+
+        # E-28: StreamingLLM attention-sink masking config (env-gated, default
+        # off). resolve_streaming_llm_config returns (0, 0) when
+        # ELAI_STREAMING_LLM_SINKS is unset/0 — the generation paths skip the
+        # mask entirely in that case, preserving byte-identical baseline
+        # behaviour. When sinks > 0, _apply_streaming_llm_if_active wraps the
+        # model.generate attention_mask per arXiv:2309.17453.
+        self.streaming_llm_sinks, self.streaming_llm_window = resolve_streaming_llm_config()
+        if self.streaming_llm_sinks > 0:
+            logger.info(
+                "streaming_llm_configured",
+                sink_count=self.streaming_llm_sinks,
+                window_size=self.streaming_llm_window,
+            )
+
+        # E-28 STEP 4: Pin SDPA backend to FLASH_ATTENTION when ELAI_FORCE_SDPA=1.
+        # Per pytorch#133780, SDPA silently falls back to MATH on shape errors
+        # when the backend is not explicitly pinned. We call pin_sdpa_backend()
+        # at boot to (a) verify the FLASH_ATTENTION SDPA backend is available on
+        # this hardware/torch version, (b) emit the sdpa_backend_pinned SSB row
+        # for dashboard visibility, and (c) set the flag that the generate paths
+        # use to wrap model.generate() in the pinned context manager. If the
+        # backend is unavailable (pin_active=False), raise a clear error rather
+        # than silently falling back to MATH (report Anti-pattern "SDPA without
+        # explicit backend pin").
+        self._sdpa_pin_enabled = False
+        if os.getenv("ELAI_FORCE_SDPA", "0") == "1":
+            _ctx_mgr, _backend_name, _pin_active = pin_sdpa_backend()
+            if not _pin_active:
+                raise SidecarBootError(
+                    "ELAI_FORCE_SDPA=1 but FLASH_ATTENTION SDPA backend is "
+                    "unavailable (torch<2.3 or backend not supported on this "
+                    "hardware). Refusing to boot with a silent MATH fallback. "
+                    "Either upgrade torch>=2.3 or unset ELAI_FORCE_SDPA to use "
+                    "flash_attention_2. Reference: pytorch#133780."
+                )
+            self._sdpa_pin_enabled = True
+            logger.info(
+                "sdpa_backend_pinned_ssb",
+                backend=_backend_name,
+                forced_via_env=True,
+            )
 
         # Model config
         if hasattr(self.model.config, "text_config"):
@@ -2362,9 +2590,17 @@ class InferenceEngine:
         # is None or LMFE is unavailable; we only attach to kwargs when valid.
         prefix_fn = self._build_constrained_prefix_fn(response_format)
 
+        # E-28: StreamingLLM attention-sink masking (env-gated, default off).
+        # Applied to the prefill attention_mask before generate; no-op when
+        # ELAI_STREAMING_LLM_SINKS is unset/0. The streaming path does not
+        # use chunked prefill, so the mask covers the full input sequence.
+        stream_attention_mask = self._apply_streaming_llm_if_active(
+            inputs.attention_mask, context_position=input_token_count,
+        )
+
         generation_kwargs = {
             "input_ids": inputs.input_ids,
-            "attention_mask": inputs.attention_mask,
+            "attention_mask": stream_attention_mask,
             "max_new_tokens": max_tokens,
             "do_sample": temperature > 0,
             "streamer": streamer,
@@ -2400,7 +2636,15 @@ class InferenceEngine:
                     if seed is not None:
                         _transformers_set_seed(int(seed))
                         torch.manual_seed(int(seed))
-                    self.model.generate(**generation_kwargs)
+                    # E-28 STEP 4: pin SDPA backend to FLASH_ATTENTION around
+                    # model.generate to prevent silent MATH fallback
+                    # (pytorch#133780). Fresh context manager per call.
+                    if self._sdpa_pin_enabled:
+                        _sdpa_ctx, _, _ = pin_sdpa_backend()
+                        with _sdpa_ctx:
+                            self.model.generate(**generation_kwargs)
+                    else:
+                        self.model.generate(**generation_kwargs)
             finally:
                 if self._dola_processor is not None:
                     self._dola_processor.remove_hooks()
@@ -2453,6 +2697,55 @@ class InferenceEngine:
                 logger.info("chunked_prefill", processed=end, total=seq_len)
 
         return cache
+
+    def _apply_streaming_llm_if_active(
+        self,
+        attention_mask: "torch.Tensor",
+        context_position: int,
+    ) -> "torch.Tensor":
+        """Apply StreamingLLM attention-sink masking if enabled at boot.
+
+        No-op (returns the mask unchanged) when ELAI_STREAMING_LLM_SINKS is
+        unset/0 — preserving byte-identical baseline behaviour. When sinks
+        > 0 AND context_position >= sink_count + window_size, delegates to
+        apply_streaming_llm_mask (arXiv:2309.17453) which keeps the first
+        `sink_count` tokens plus a trailing sliding window of
+        `window_size` tokens and zeroes the evicted middle region.
+
+        Emits the `streaming_llm_engaged_ssb` beacon (mirrors the Rust
+        SsbActionType::StreamingLlmEngaged for dashboard visibility) ONLY
+        when eviction actually occurs — short contexts below the
+        sink+window threshold are a silent passthrough so the SSB journal
+        is not polluted with no-op rows.
+
+        Args:
+            attention_mask: 2D or 4D HF attention mask tensor.
+            context_position: Absolute position of the current token in
+                the untruncated text (input_token_count for prefill).
+
+        Returns:
+            The (possibly masked) attention mask tensor.
+        """
+        sinks = self.streaming_llm_sinks
+        window = self.streaming_llm_window
+        if sinks < 1:
+            return attention_mask
+        if context_position < sinks + window:
+            # Short context — no eviction; passthrough (no SSB noise).
+            return attention_mask
+        masked = apply_streaming_llm_mask(
+            attention_mask,
+            sink_count=sinks,
+            window_size=window,
+            context_position=context_position,
+        )
+        logger.info(
+            "streaming_llm_engaged_ssb",
+            sink_count=sinks,
+            window_size=window,
+            context_position=context_position,
+        )
+        return masked
 
     def _generate_impl(
         self,
@@ -2539,6 +2832,15 @@ class InferenceEngine:
                     # Use quantized cache even for short prompts if TQ enabled
                     past_kv = self._make_cache()
 
+        # E-28: StreamingLLM attention-sink masking (env-gated, default off).
+        # Applied to the full-length attention_mask AFTER chunked prefill so
+        # the KV cache still holds every token (mask-only, no eviction) but
+        # attention is restricted to sinks U window per arXiv:2309.17453.
+        # No-op when ELAI_STREAMING_LLM_SINKS is unset/0.
+        gen_attention_mask = self._apply_streaming_llm_if_active(
+            gen_attention_mask, context_position=input_token_count,
+        )
+
         generation_kwargs = {
             "input_ids": gen_input_ids,
             "attention_mask": gen_attention_mask,
@@ -2606,7 +2908,15 @@ class InferenceEngine:
                 if seed is not None:
                     _transformers_set_seed(int(seed))
                     torch.manual_seed(int(seed))
-                outputs = self.model.generate(**generation_kwargs)
+                # E-28 STEP 4: pin SDPA backend to FLASH_ATTENTION around
+                # model.generate to prevent silent MATH fallback
+                # (pytorch#133780). Fresh context manager per call.
+                if self._sdpa_pin_enabled:
+                    _sdpa_ctx, _, _ = pin_sdpa_backend()
+                    with _sdpa_ctx:
+                        outputs = self.model.generate(**generation_kwargs)
+                else:
+                    outputs = self.model.generate(**generation_kwargs)
         finally:
             if self._dola_processor is not None:
                 self._dola_processor.remove_hooks()
@@ -3809,6 +4119,21 @@ async def handle_messages(request: Request):
         prompt_chars=len(prompt),
         cache_marker_boundary=marker_boundary,
     )
+
+    # H-50 STEP 3: measure input tokens + journal the turn (env-gated, default
+    # OFF). The sidecar only MEASURES here -- it does NOT trim the prompt; the
+    # orchestrator/CLI applies the regime-aware trim before sending. When
+    # ELAI_CONTEXT_JOURNAL_PROOF=1 and the turn exceeds trim_at, a
+    # would-reduce ContextReduction row is also journaled. No-op on the
+    # default path (journal disabled) so there is no extra tokenization cost.
+    if _H50_JOURNAL_AVAILABLE and _h50_maybe_journal_turn is not None and _engine is not None:
+        try:
+            _h50_maybe_journal_turn(
+                prompt, messages, model_name, _engine.tokenizer,
+                max_output_tokens=max_tokens,
+            )
+        except Exception as _h50_exc:  # pragma: no cover -- journal must never fail the turn
+            logger.warning("h50_journal_turn_failed", error=str(_h50_exc))
 
     if stream:
         # Streaming branch is OUT OF SCOPE for Track C-D (per s-934436 audit
