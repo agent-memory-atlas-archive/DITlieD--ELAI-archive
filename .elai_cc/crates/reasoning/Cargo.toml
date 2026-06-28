@@ -9,6 +9,11 @@ publish.workspace = true
 elai-core = { path = "../core" }
 elai-providers = { path = "../providers" }
 elai-memory = { path = "../memory" }
+# tools/ cannot be a path dep: tools/ -> orchestrator/ -> reasoning/ creates a
+# circular dependency. FILE_CHECK and SOURCE_CHECK use the FileReader trait
+# (verification.rs) which decouples reasoning/ from tools/ at the trait level.
+# StdFileReader provides the production impl via std::fs; tools/ injects richer
+# implementations at the orchestrator seam when needed.
 rustc-hash.workspace = true
 thiserror.workspace = true
 serde.workspace = true

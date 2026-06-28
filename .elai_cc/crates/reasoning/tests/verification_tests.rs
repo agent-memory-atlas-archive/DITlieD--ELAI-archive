@@ -137,7 +137,7 @@ fn web_check_stub_returns_error() {
     assert!(result.is_err(), "WebCheck stub should return error");
     match result.unwrap_err() {
         GrcError::VerificationError { method, .. } => {
-            assert_eq!(method, VerificationMethod::WebCheck);
+            assert_eq!(*method, VerificationMethod::WebCheck);
         }
         other => panic!("expected VerificationError, got: {:?}", other),
     }
@@ -156,7 +156,7 @@ fn api_check_stub_returns_error() {
     assert!(result.is_err(), "ApiCheck stub should return error");
     match result.unwrap_err() {
         GrcError::VerificationError { method, .. } => {
-            assert_eq!(method, VerificationMethod::ApiCheck);
+            assert_eq!(*method, VerificationMethod::ApiCheck);
         }
         other => panic!("expected VerificationError, got: {:?}", other),
     }
@@ -175,7 +175,7 @@ fn api_registry_check_stub_returns_error() {
     assert!(result.is_err(), "ApiRegistryCheck stub should return error");
     match result.unwrap_err() {
         GrcError::VerificationError { method, .. } => {
-            assert_eq!(method, VerificationMethod::ApiRegistryCheck);
+            assert_eq!(*method, VerificationMethod::ApiRegistryCheck);
         }
         other => panic!("expected VerificationError, got: {:?}", other),
     }

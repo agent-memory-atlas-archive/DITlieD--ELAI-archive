@@ -208,6 +208,16 @@ impl TestRunner for NoopTestRunner {
 // construction by the orchestrator; tests use a mock closure.
 // ---------------------------------------------------------------------------
 
+/// Lookup closure for `ArtifactCheck`: `(artifact_name, query) -> matched?`.
+pub type ArtifactLookupFn = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+/// Lookup closure for `CosmosCheck` (B-42):
+/// `(artifact_name, query, claim_category) -> matched?`.
+pub type CosmosLookupFn = Arc<dyn Fn(&str, &str, &str) -> bool + Send + Sync>;
+/// Post-lookup notification for `CosmosCheck` (C-2 DRIFT-3):
+/// `(artifact_name, claim_category, query, score, matched)`.
+pub type CosmosGroundingCallbackFn =
+    Arc<dyn Fn(&str, &str, &str, f32, bool) + Send + Sync>;
+
 pub struct LocalVerifier {
     file_reader: Box<dyn FileReader>,
     test_runner: Box<dyn TestRunner>,
@@ -217,7 +227,7 @@ pub struct LocalVerifier {
     /// Returns `true` when at least one artifact chunk matches the query.
     /// When `None`, `ArtifactCheck` returns `Unverified` with a
     /// `"artifact_lookup not bound"` reason.
-    artifact_lookup: Option<Arc<dyn Fn(&str, &str) -> bool + Send + Sync>>,
+    artifact_lookup: Option<ArtifactLookupFn>,
     /// Optional cosmos lookup callback for `CosmosCheck` verification (B-42).
     ///
     /// Signature: `(artifact_name: &str, query: &str, claim_category: &str) -> bool`.
@@ -225,16 +235,14 @@ pub struct LocalVerifier {
     /// matches the query. When `None`, `CosmosCheck` returns a descriptive
     /// `MalformedGrounding` error analogous to the `ArtifactCheck` unbound
     /// path. Orchestrator injects a real closure backed by the cosmos store.
-    cosmos_lookup:
-        Option<Arc<dyn Fn(&str, &str, &str) -> bool + Send + Sync>>,
+    cosmos_lookup: Option<CosmosLookupFn>,
     /// C-2 (DRIFT-3): optional post-lookup notification fired after every
     /// `CosmosCheck` dispatch (success and miss alike). Signature:
     /// `(artifact_name, claim_category, query, score, matched)`. Wired to
     /// `CosmosWorker::record_grounding_used` so a live cloud run produces
     /// at least one `cosmos_grounding_used` SSB row even though the
     /// background `tick()` loop is still deferred (C-16).
-    cosmos_grounding_callback:
-        Option<Arc<dyn Fn(&str, &str, &str, f32, bool) + Send + Sync>>,
+    cosmos_grounding_callback: Option<CosmosGroundingCallbackFn>,
 }
 
 impl LocalVerifier {
@@ -253,19 +261,13 @@ impl LocalVerifier {
     /// The closure receives `(artifact_name, query)` and returns `true` when
     /// the artifact store has at least one matching chunk.  Orchestrator
     /// injects a real closure backed by `artifact_search`; tests inject a mock.
-    pub fn with_artifact_lookup(
-        mut self,
-        f: Arc<dyn Fn(&str, &str) -> bool + Send + Sync>,
-    ) -> Self {
+    pub fn with_artifact_lookup(mut self, f: ArtifactLookupFn) -> Self {
         self.artifact_lookup = Some(f);
         self
     }
 
     /// Builder-style setter for the cosmos lookup closure (B-42).
-    pub fn with_cosmos_lookup(
-        mut self,
-        f: Arc<dyn Fn(&str, &str, &str) -> bool + Send + Sync>,
-    ) -> Self {
+    pub fn with_cosmos_lookup(mut self, f: CosmosLookupFn) -> Self {
         self.cosmos_lookup = Some(f);
         self
     }
@@ -279,7 +281,7 @@ impl LocalVerifier {
     /// before the C-16 tick loop lands.
     pub fn with_cosmos_grounding_callback(
         mut self,
-        f: Arc<dyn Fn(&str, &str, &str, f32, bool) + Send + Sync>,
+        f: CosmosGroundingCallbackFn,
     ) -> Self {
         self.cosmos_grounding_callback = Some(f);
         self
@@ -316,7 +318,7 @@ impl Verifier for LocalVerifier {
                             regex::escape(claim)
                         );
                         let re = Regex::new(&pattern).map_err(|e| GrcError::VerificationError {
-                            method: VerificationMethod::SourceCheck,
+                            method: Box::new(VerificationMethod::SourceCheck),
                             claim: claim.to_string(),
                             reason: format!("invalid regex for symbol '{}': {}", claim, e),
                         })?;
@@ -461,7 +463,7 @@ impl Verifier for LocalVerifier {
             }
 
             other => Err(GrcError::VerificationError {
-                method: other.clone(),
+                method: Box::new(other.clone()),
                 claim: claim.to_string(),
                 reason: format!("{:?} not supported by LocalVerifier", other),
             }),
@@ -541,7 +543,7 @@ impl Verifier for NetworkVerifier {
                 // Stub: network verification not yet implemented.
                 // Phase 2B tests use mocks; real network in integration tests.
                 Err(GrcError::VerificationError {
-                    method,
+                    method: Box::new(method),
                     claim: claim.to_string(),
                     reason: "network verification not yet implemented".to_string(),
                 })
@@ -549,7 +551,7 @@ impl Verifier for NetworkVerifier {
             other => Err(GrcError::VerificationError {
                 claim: claim.to_string(),
                 reason: format!("{:?} not supported by NetworkVerifier", other),
-                method: other,
+                method: Box::new(other),
             }),
         }
     }

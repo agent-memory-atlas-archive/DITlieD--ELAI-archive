@@ -153,7 +153,7 @@ pub fn reflect(
         note_preview: preview(&note.body, 80),
         facts_extracted: extracted.len(),
         decay,
-        core_block_bytes: core.content.as_bytes().len(),
+        core_block_bytes: core.content.len(),
     })
 }
 
@@ -164,7 +164,7 @@ pub fn should_reflect(turn_index: usize, every_n: usize) -> bool {
     if every_n == 0 {
         return false;
     }
-    turn_index > 0 && turn_index % every_n == 0
+    turn_index > 0 && turn_index.is_multiple_of(every_n)
 }
 
 /// Deterministic head-of-each-turn condenser. Caps each turn at
@@ -188,7 +188,7 @@ pub fn summarize_window(conv: &Conversation, max_turns: usize) -> String {
 }
 
 fn take_head(s: &str, max_bytes: usize) -> &str {
-    if s.as_bytes().len() <= max_bytes {
+    if s.len() <= max_bytes {
         return s;
     }
     let mut cut = max_bytes;

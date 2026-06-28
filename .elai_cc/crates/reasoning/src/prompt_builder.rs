@@ -39,7 +39,7 @@ pub const CONVENTIONS_BLOCK_HEADER: &str = "CONVENTIONS";
 /// the block is not re-appended.
 ///
 /// Returns the merged prompt, truncated to `CONVENTIONS_PROMPT_BUDGET_TOKENS
-/// * 4` chars for the injected block ONLY (the base_prompt is preserved
+/// × 4` chars for the injected block ONLY (the base_prompt is preserved
 /// verbatim).
 pub fn build_with_conventions(conventions_block: Option<&str>, base_prompt: &str) -> String {
     let Some(block) = conventions_block else {

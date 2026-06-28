@@ -658,7 +658,7 @@ fn parse_auditor_verdict(raw: &str, n_candidates: u32) -> (u32, String) {
 fn approx_tokens(s: &str) -> u32 {
     let chars = s.chars().count();
     // Round up to avoid undercounting near zero.
-    ((chars + 3) / 4) as u32
+    u32::try_from(chars.div_ceil(4)).unwrap_or(u32::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -757,8 +757,15 @@ mod tests {
             cursor: AtomicU32::new(0),
         };
         let sink = Arc::new(CountingSink::default());
+        // max_refine_iterations = 1: single-pass auditor (no extra refine passes).
+        // The test's canned responses provide exactly 1 auditor response, matching
+        // the single-pass call count: 1 triage + N reasoner + 1 auditor = 2 + N.
+        let config = ChatReflectConfig {
+            max_refine_iterations: 1,
+            ..ChatReflectConfig::default()
+        };
         let pipeline = ChatReflectPipeline::new(
-            ChatReflectConfig::default(),
+            config,
             Some(sink.clone() as Arc<dyn ReflectEventSink>),
         );
         let out = pipeline.run("t1".to_string(), "what's 2+2?", &client).await;

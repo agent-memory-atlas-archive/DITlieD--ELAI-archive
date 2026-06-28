@@ -117,13 +117,14 @@ impl BasicGrcEngine {
     fn require_scope_enumeration(&self) -> bool {
         self.agent_config
             .as_ref()
-            .map_or(false, |c| c.require_scope_enumeration)
+            .is_some_and(|c| c.require_scope_enumeration)
     }
 
     /// Compute effective allowed transitions from a state, considering agent config.
     /// When agent config is set:
     ///   1. Merge default transitions with transition_overrides (additive union)
     ///   2. Filter to step whitelist: only states in required_steps + [Status, Converge]
+    ///
     /// When no agent config: use default allowed_next unchanged.
     fn effective_transitions(&self, state: GrcState) -> Vec<GrcState> {
         match &self.agent_config {
@@ -308,7 +309,11 @@ impl GrcEngine for BasicGrcEngine {
                         return Err(GrcError::InvalidTransition {
                             from: None,
                             to: step.step_type,
-                            allowed: vec![GrcState::Observe, GrcState::Converge, GrcState::Status],
+                            allowed: Box::new([
+                                GrcState::Observe,
+                                GrcState::Converge,
+                                GrcState::Status,
+                            ]),
                         });
                     }
                 }
@@ -318,7 +323,7 @@ impl GrcEngine for BasicGrcEngine {
                         return Err(GrcError::InvalidTransition {
                             from: Some(last),
                             to: step.step_type,
-                            allowed,
+                            allowed: allowed.into_boxed_slice(),
                         });
                     }
                 }
@@ -436,7 +441,7 @@ impl GrcEngine for BasicGrcEngine {
                             if !allowed_disc.contains(&std::mem::discriminant(&method)) {
                                 let method_for_msg = method.clone();
                                 return Err(GrcError::VerificationError {
-                                    method,
+                                    method: Box::new(method),
                                     claim: format!("{}:{}", source_type, reference),
                                     reason: format!(
                                         "method {:?} not in allowed_methods for role '{}'",
@@ -688,6 +693,12 @@ impl GrcEngine for BasicGrcEngine {
             });
         }
 
+        // Patterns mapping to the spec's CRITICAL severity categories
+        // (reasoning.txt s6): data_loss (fs/file/write/delete/remove),
+        // security_breach (net/tcpstream), financial_error (money/payment),
+        // auth_bypass (auth/token/credential/password). Any op matching one
+        // of these is classified Critical (guard MANDATORY); all others are
+        // Warning (guard recommended, does not block).
         let critical_patterns: &[&str] = &[
             "fs::", "file", "write", "delete", "remove", "net::", "tcpstream",
             "money", "payment", "auth", "token", "credential", "password",
@@ -760,13 +771,12 @@ impl GrcEngine for BasicGrcEngine {
                 FeasibilityOutcome::Fail
             }
         } else {
-            // Source matching: check if claim appears in any source.
-            // Match on meaningful content (>3 words or exact match) to avoid
-            // false positives on trivial substrings.
+            // Source matching: check if the trimmed claim appears as a substring
+            // in any provided source. This is a simple contains() check — more
+            // sophisticated matching (word-count thresholds, fuzzy match) is
+            // deferred to phase 4F per the spec.
             let claim_trimmed = claim.trim();
-            let found = sources.iter().any(|source| {
-                source.contains(claim_trimmed)
-            });
+            let found = sources.iter().any(|source| source.contains(claim_trimmed));
 
             if found {
                 FeasibilityOutcome::Pass

@@ -152,7 +152,11 @@ pub enum GrcError {
     InvalidTransition {
         from: Option<GrcState>,
         to: GrcState,
-        allowed: Vec<GrcState>,
+        // Boxed to keep the Err variant small — a Vec<GrcState> (24 bytes on
+        // 64-bit) inflates every Result<GrcError> return; Box<[GrcState]> is
+        // a single pointer + length (16 bytes) and allocates only when the
+        // error is actually constructed.
+        allowed: Box<[GrcState]>,
     },
 
     #[error("malformed grounding: '{raw}' — {reason}")]
@@ -160,7 +164,10 @@ pub enum GrcError {
 
     #[error("verification failed: {method:?} on '{claim}' — {reason}")]
     VerificationError {
-        method: VerificationMethod,
+        // Boxed to keep the Err variant small — VerificationMethod itself
+        // carries up to 3 Strings (VisualArtifactCheck/CosmosCheck), making
+        // the variant ~128 bytes unboxed. Box reduces it to a single pointer.
+        method: Box<VerificationMethod>,
         claim: String,
         reason: String,
     },
@@ -569,8 +576,7 @@ pub struct GroundingResult {
     pub method: VerificationMethod,
     pub level: GroundingLevel,
     pub source: String,
-    /// Unix timestamp from TimeSource (u64). Injected via entropy-quarantined
-    /// trait when TimeSource is added to core. For now, caller provides directly.
+    /// Unix timestamp (u64) from entropy-quarantined TimeSource.
     pub verified_at: u64,
 }
 

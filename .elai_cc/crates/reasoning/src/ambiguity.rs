@@ -69,12 +69,8 @@ pub const DEFAULT_MAX_FORMAT_ERROR_RETRIES: u32 = 5;
 pub fn clamp01(x: f32) -> f32 {
     if x.is_nan() {
         0.0
-    } else if x < 0.0 {
-        0.0
-    } else if x > 1.0 {
-        1.0
     } else {
-        x
+        x.clamp(0.0, 1.0)
     }
 }
 

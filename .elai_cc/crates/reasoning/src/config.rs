@@ -212,12 +212,7 @@ impl AgentGrcConfigLoader for TomlConfigLoader {
         }
 
         // (d) csq_required implies at least one Verify in required_steps
-        if config.csq_required
-            && !config
-                .required_steps
-                .iter()
-                .any(|s| *s == GrcState::Verify)
-        {
+        if config.csq_required && !config.required_steps.contains(&GrcState::Verify) {
             return Err(GrcError::ConfigValidation {
                 role: config.role.clone(),
                 reason: "csq_required is true but required_steps has no Verify step".to_string(),
