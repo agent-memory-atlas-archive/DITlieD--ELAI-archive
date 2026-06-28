@@ -11,7 +11,7 @@
   import { plan } from '../../state/plan.svelte';
   import { session } from '../../state/session.svelte';
   import type { DecompNode } from '../../api/types';
-  import Wordmark from './Wordmark.svelte';
+  import BrandCluster from './BrandCluster.svelte';
 
   // Count leaf nodes by status to build the n/m running fraction.
   function countLeaves(node: DecompNode | null | undefined, acc: { done: number; total: number; active: boolean }) {
@@ -53,21 +53,9 @@
 </script>
 
 <header class="tabbar" data-tauri-drag-region>
-  <!-- brand cluster: back chevron + shared ELAI stroke wordmark -->
-  <div class="brand-cluster">
-    <button
-      class="back-btn"
-      onclick={() => session.openSelector()}
-      aria-label="Back to project selection"
-      title="Back to project selection"
-    >
-      <!-- hairline left-arrow chevron -->
-      <svg class="back-glyph" viewBox="0 0 16 16" aria-hidden="true">
-        <polyline points="10,3 5,8 10,13" />
-      </svg>
-    </button>
-    <Wordmark />
-  </div>
+  <!-- shared brand lockup: back chevron + ELAI text wordmark (identical
+       to the project-selector topbar — DESIGN §16) -->
+  <BrandCluster onBack={() => session.openSelector()} backLabel="Back to project selection" />
 
   <div class="tabs" role="tablist" aria-label="Primary navigation">
     {#each SHELL_TABS as tab (tab)}
@@ -108,68 +96,11 @@
     align-items: center;
     gap: 14px;
     height: 100%;
-    padding: 0 14px 0 12px;
+    /* left inset matches the selector topbar (16px) so the shared
+       BrandCluster sits at the identical x on both — DESIGN §16 */
+    padding: 0 14px 0 16px;
     background: var(--bg);
     border-bottom: 1px solid var(--line);
-  }
-
-  /* brand-cluster — back chevron + wordmark grouped top-left */
-  .brand-cluster {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    flex: none;
-    -webkit-app-region: no-drag;
-  }
-
-  /* back-to-project-selection button — hairline, teal on hover,
-     center->out underline idiom (DESIGN §13, no dot, no box). */
-  .back-btn {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--ghost);
-    padding: 0;
-    transition: color var(--dur-fast) var(--ease-out);
-    outline: none;
-  }
-  .back-btn::after {
-    content: '';
-    position: absolute;
-    left: 3px;
-    right: 3px;
-    bottom: 2px;
-    height: 1px;
-    background: var(--d-teal);
-    transform: scaleX(0);
-    transform-origin: center;
-    transition: transform var(--dur-slow) var(--ease-out);
-  }
-  .back-btn:hover {
-    color: var(--d-teal-bright);
-  }
-  .back-btn:hover::after {
-    transform: scaleX(1);
-  }
-  .back-btn:focus-visible {
-    box-shadow: inset 0 0 0 1px var(--d-teal);
-    border-radius: var(--r-sm);
-  }
-
-  .back-glyph {
-    width: 14px;
-    height: 14px;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    fill: none;
   }
 
   /* nav centered absolutely in the bar — the selector's mode-selector
@@ -282,7 +213,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .seg--a { animation: none; }
-    .tab::after,
-    .back-btn::after { transition: none; }
+    .tab::after { transition: none; }
   }
 </style>

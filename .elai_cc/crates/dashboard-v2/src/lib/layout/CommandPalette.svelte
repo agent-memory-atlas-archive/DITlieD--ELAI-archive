@@ -15,7 +15,7 @@
     id: string;
     label: string;
     kbd?: string;
-    handler: () => void;
+    handler: () => void | Promise<void>;
   }
 
   function toggleDrawer(key: DrawerKey) {
@@ -90,13 +90,22 @@
       label: 'Return to project selector',
       handler: () => session.openSelector(),
     },
-    // B-9: session branch operations (fork/merge/close are CLI-delegated;
-    // commands exist on backend but require SessionDag in AppState — deferred).
-    // Opening the command window lets the user type the equivalent CLI command.
+    // B-9: session branch operations — wired to backend commands.
+    // Fork is available directly; merge/close require SessionDag (deferred to B-9).
     {
       id: 'session-fork',
-      label: '/session fork  (opens command window — use CLI)',
-      handler: () => workspace.setPrimaryWindow('command'),
+      label: '/session fork',
+      handler: async () => {
+        const branchName = prompt('Enter branch name for fork:');
+        if (branchName) {
+          try {
+            await stub.fork_session_branch(branchName);
+            alert(`Forked session branch: ${branchName}`);
+          } catch (e) {
+            alert(`Failed to fork: ${e}`);
+          }
+        }
+      },
     },
     {
       id: 'session-merge',
@@ -139,8 +148,8 @@
     }
   });
 
-  function executeAction(action: PaletteAction) {
-    action.handler();
+  async function executeAction(action: PaletteAction) {
+    await action.handler();
     workspace.closeCommandPalette();
     onClose();
   }
@@ -167,7 +176,7 @@
     if (e.key === 'Enter') {
       e.preventDefault();
       const action = filteredActions[selectedIndex];
-      if (action) executeAction(action);
+      if (action) void executeAction(action);
       return;
     }
   }
@@ -241,7 +250,7 @@
           role="option"
           aria-selected={i === selectedIndex}
           data-active={i === selectedIndex ? 'true' : 'false'}
-          onclick={() => executeAction(action)}
+          onclick={() => void executeAction(action)}
           onmouseenter={() => { selectedIndex = i; }}
         >
           {#if i === selectedIndex}

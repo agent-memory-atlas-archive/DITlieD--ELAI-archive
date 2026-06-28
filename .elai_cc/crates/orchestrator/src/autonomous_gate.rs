@@ -384,6 +384,78 @@ fn default_true_for_security_monotonicity() -> bool {
 }
 
 impl Evidence {
+    /// Check 1: knowledge readiness. Mirrors [`KnowledgeReadinessGate`].
+    /// Source: orchestrator.txt §13 L626-629.
+    pub fn check_knowledge_readiness(&self) -> EvidenceVerdict {
+        if self.knowledge_readiness {
+            EvidenceVerdict::Pass
+        } else {
+            EvidenceVerdict::Fail {
+                reason: "knowledge_readiness".to_string(),
+            }
+        }
+    }
+
+    /// Check 2: zero UNGROUNDED claims. Mirrors [`GroundingSweepGate`].
+    /// Source: orchestrator.txt §13 L631.
+    pub fn check_zero_ungrounded(&self) -> EvidenceVerdict {
+        if self.zero_ungrounded {
+            EvidenceVerdict::Pass
+        } else {
+            EvidenceVerdict::Fail {
+                reason: "zero_ungrounded".to_string(),
+            }
+        }
+    }
+
+    /// Check 3: tests fail correctly (not syntax errors). Mirrors [`TestFailReasonsGate`].
+    /// Source: orchestrator.txt §13 L632.
+    pub fn check_tests_fail_correctly(&self) -> EvidenceVerdict {
+        if self.tests_fail_correctly {
+            EvidenceVerdict::Pass
+        } else {
+            EvidenceVerdict::Fail {
+                reason: "tests_fail_correctly".to_string(),
+            }
+        }
+    }
+
+    /// Check 4: test flipped FAIL -> PASS. Mirrors [`TestFlippedGate`].
+    /// Source: orchestrator.txt §13 L633.
+    pub fn check_test_flipped(&self) -> EvidenceVerdict {
+        if self.test_flipped {
+            EvidenceVerdict::Pass
+        } else {
+            EvidenceVerdict::Fail {
+                reason: "test_flipped".to_string(),
+            }
+        }
+    }
+
+    /// Check 5: zero BLOCK findings. Mirrors [`ZeroBlocksGate`].
+    /// Source: orchestrator.txt §13 L639.
+    pub fn check_zero_blocks(&self) -> EvidenceVerdict {
+        if self.zero_blocks {
+            EvidenceVerdict::Pass
+        } else {
+            EvidenceVerdict::Fail {
+                reason: "zero_blocks".to_string(),
+            }
+        }
+    }
+
+    /// Check 6: DKG reflects new code and changelog has entry. Mirrors [`DkgChangelogGate`].
+    /// Source: orchestrator.txt §13 L640.
+    pub fn check_dkg_and_changelog_present(&self) -> EvidenceVerdict {
+        if self.dkg_and_changelog_present {
+            EvidenceVerdict::Pass
+        } else {
+            EvidenceVerdict::Fail {
+                reason: "dkg_and_changelog_present".to_string(),
+            }
+        }
+    }
+
     /// Every check passed. Required for any [`AutonomyDecision::AutoAdvance`].
     ///
     /// B-40: includes `framing_converged` as the 7th check. Because the field
@@ -683,7 +755,8 @@ pub struct AutoAdvanceEvaluator {
 
 impl Default for AutoAdvanceEvaluator {
     /// Pre-populate one check per [`EscalationTrigger`] axis plus an
-    /// `AutoAdvance` catch-all that defers to [`Evidence::all_passed`].
+    /// `AutoAdvance` catch-all that runs all 6 evidence checks mirroring
+    /// gates S13 before auto-advancing.
     fn default() -> Self {
         let mut gate_checks: FxHashMap<FsmTransition, EvidenceCheck> =
             FxHashMap::with_capacity_and_hasher(5, Default::default());
@@ -726,15 +799,24 @@ impl Default for AutoAdvanceEvaluator {
             FsmTransition::AutoAdvance,
             EvidenceCheck {
                 artifact_path: None,
-                description: "all evidence checks passing",
+                description: "all 6 evidence checks passing",
                 check_fn: |ev: &Evidence| {
-                    if ev.all_passed() {
-                        EvidenceVerdict::Pass
-                    } else {
-                        EvidenceVerdict::Fail {
-                            reason: ev.failed_checks().join(","),
+                    // Run all 6 evidence checks mirroring gates S13
+                    let checks = [
+                        ev.check_knowledge_readiness(),
+                        ev.check_zero_ungrounded(),
+                        ev.check_tests_fail_correctly(),
+                        ev.check_test_flipped(),
+                        ev.check_zero_blocks(),
+                        ev.check_dkg_and_changelog_present(),
+                    ];
+                    // All must pass
+                    for check in checks {
+                        if !check.is_pass() {
+                            return check;
                         }
                     }
+                    EvidenceVerdict::Pass
                 },
             },
         );

@@ -146,11 +146,11 @@
         {
           selector: 'node',
           style: {
-            'background-color': '#3578e5',
+            'background-color': '#6e7681', // text-secondary from spec
             'label': 'data(label)',
-            'color': '#fff',
+            'color': '#d0d7de', // text-primary from spec
             'font-size': 9,
-            'text-outline-color': '#000',
+            'text-outline-color': '#0a0e12', // bg-void from spec
             'text-outline-width': 1,
             'text-valign': 'center',
             'width': 24,
@@ -177,8 +177,8 @@
           selector: 'edge',
           style: {
             'width': 1,
-            'line-color': '#888',
-            'target-arrow-color': '#888',
+            'line-color': '#6e7681', // text-secondary from spec
+            'target-arrow-color': '#6e7681',
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
           },
@@ -186,26 +186,26 @@
         {
           selector: 'edge[cyclic = "true"]',
           style: {
-            'line-color': '#ff5252',
-            'target-arrow-color': '#ff5252',
+            'line-color': '#c44040', // fail from spec
+            'target-arrow-color': '#c44040',
             'line-style': 'dashed',
           },
         },
         {
           selector: 'node.impact-1',
-          style: { 'background-color': '#ffb199', 'border-width': 2, 'border-color': '#ff5252' },
+          style: { 'background-color': '#c44040', 'border-width': 2, 'border-color': '#c44040' }, // fail from spec
         },
         {
           selector: 'node.impact-2',
-          style: { 'background-color': '#ff8a73', 'border-width': 2, 'border-color': '#d6342b' },
+          style: { 'background-color': '#c49b2a', 'border-width': 2, 'border-color': '#c49b2a' }, // warn from spec
         },
         {
           selector: 'node.impact-3',
-          style: { 'background-color': '#ff5247', 'border-width': 2, 'border-color': '#a4140e' },
+          style: { 'background-color': '#6e7681', 'border-width': 2, 'border-color': '#6e7681' }, // text-secondary from spec
         },
         {
           selector: 'node:selected',
-          style: { 'border-color': '#0bf', 'border-width': 3 },
+          style: { 'border-color': '#1B7A6E', 'border-width': 3 }, // teal from spec
         },
         // -------------------------------------------------------------
         // C-24 (DRIFT-7 Path A) — decomposition-mode shape selectors.
@@ -225,7 +225,7 @@
             'height': 60,
             'border-width': 3,
             'background-color': '#283c5a',
-            'color': '#fff',
+            'color': '#d0d7de', // text-primary from spec
             'font-size': 12,
           },
         },
@@ -237,7 +237,7 @@
             'height': 48,
             'border-width': 2,
             'background-color': '#3b5a8a',
-            'color': '#fff',
+            'color': '#d0d7de', // text-primary from spec
             'font-size': 11,
           },
         },
@@ -249,7 +249,7 @@
             'height': 36,
             'border-width': 1,
             'background-color': '#4f7eb7',
-            'color': '#fff',
+            'color': '#d0d7de', // text-primary from spec
             'font-size': 10,
           },
         },
@@ -261,7 +261,7 @@
             'height': 60,
             'border-width': 1,
             'background-color': '#7fa9d9',
-            'color': '#fff',
+            'color': '#d0d7de', // text-primary from spec
             'font-size': 9,
           },
         },
@@ -272,13 +272,13 @@
         // over the level-shape background-color above.
         {
           selector: 'node.status-pending',
-          style: { 'background-color': '#9e9e9e' },
+          style: { 'background-color': '#6e7681' }, // text-secondary from spec
         },
         {
           selector: 'node.status-running',
           style: {
-            'background-color': '#1976d2',
-            'border-color': '#0bf',
+            'background-color': '#1B7A6E', // teal from spec
+            'border-color': '#24a08e', // teal-bright from spec
             'border-width': 3,
             // cytoscape transitions: cycle border-color for a pulse hint.
             'transition-property': 'border-color',
@@ -287,15 +287,15 @@
         },
         {
           selector: 'node.status-passed',
-          style: { 'background-color': '#388e3c' },
+          style: { 'background-color': '#1B7A6E' }, // teal (pass) from spec
         },
         {
           selector: 'node.status-failed',
-          style: { 'background-color': '#d32f2f' },
+          style: { 'background-color': '#c44040' }, // fail from spec
         },
         {
           selector: 'node.status-blocked',
-          style: { 'background-color': '#f57c00' },
+          style: { 'background-color': '#c49b2a' }, // warn from spec
         },
       ],
     });
@@ -686,7 +686,7 @@
     padding: 16px;
   }
   .overlay--error {
-    color: #ff7676;
+    color: #c44040; // fail from spec
   }
   .footer {
     display: flex;

@@ -33,9 +33,9 @@ use elai_knowledge::splade::{SpladeExpander, SpladeConfig};
 use elai_knowledge::index_version::{check_and_upgrade, LogNotifier};
 
 use elai_core::paths::{
-    dkg_db_path as core_dkg_db_path, models_dir_path as core_models_dir_path,
-    vector_cache_db_path as core_vector_cache_db_path,
-    vectors_db_path as core_vectors_db_path,
+    bm25_index_root as core_bm25_index_root, dkg_db_path as core_dkg_db_path,
+    models_dir_path as core_models_dir_path, vector_cache_db_path as core_vector_cache_db_path,
+    vectors_db_path as core_vectors_db_path, BM25_PROJECT_ID as CORE_BM25_PROJECT_ID,
 };
 
 use crate::live_cli::{
@@ -69,7 +69,16 @@ impl LiveCli {
 
         check_index_version(&project_root);
 
-        let knowledge_pipeline = match Bm25Index::new(&project_root, session_id) {
+        // retrieval-mem-fixes (dkg-stream-rigorous Task 2): open the BM25 index
+        // at the CANONICAL location the writer (`IndexingService`) populates —
+        // `<project_root>/.elai_cc/indexes/projects/default/bm25` — not the old
+        // per-session `<project_root>/projects/<session_id>/bm25` path, which is
+        // always a freshly-created EMPTY directory (the populated index lives
+        // under .elai_cc/indexes). Reader and writer now share
+        // `bm25_index_root` + `BM25_PROJECT_ID`, so a built index is reachable
+        // at query time. `session_id` still keys per-session SSB rows below.
+        let bm25_root = core_bm25_index_root(&project_root);
+        let knowledge_pipeline = match Bm25Index::new(&bm25_root, CORE_BM25_PROJECT_ID) {
             Ok(bm25) => {
                 let models_dir = core_models_dir_path(&project_root);
                 let mut pipeline = build_base_pipeline(
@@ -166,37 +175,38 @@ fn build_base_pipeline(
 ) -> QueryPipeline {
     let catrag = CatRag::new(CatRagConfig::default());
 
-    // C-8 Task #8: try to load a standalone graphcodebert ONNX
-    // session for the A-RAG semantic_search dot-product path.
-    let code_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
-    let code_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
-    let arag_embedder: Option<Arc<OrtSession>> = match OrtSession::new(
-        &code_model_path,
-        &code_tok_path,
-        512,
-        768,
-    ) {
-        Ok(sess) => Some(Arc::new(sess)),
-        Err(e) => {
-            eprintln!(
-                "warn: arag.semantic_search ONNX embedder not loaded: {e}; \
-                 falling back to embedding-norm proxy"
-            );
-            None
-        }
-    };
-    let mut arag = AragOrchestrator::new(AragConfig::default());
-    if let Some(ref emb) = arag_embedder {
-        arag = arag.with_embedder(emb.clone());
-    }
-
-    // Wire the A-RAG corpus from the on-disk DKG when opt-in env flag is set.
+    // retrieval-mem-fixes FIX #3: the A-RAG semantic_search embedder is
+    // GraphCodeBERT (~496MB). It is ONLY consulted when the A-RAG corpus is
+    // populated, which is itself opt-in via ELAI_ARAG_POPULATE_FROM_DKG. So
+    // compute that gate FIRST and load the embedder only when the corpus will
+    // actually be populated — on the default path the model is never loaded.
     let arag_populate_enabled = std::env::var("ELAI_ARAG_POPULATE_FROM_DKG")
         .map(|v| {
             let v = v.trim().to_ascii_lowercase();
             matches!(v.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(false);
+
+    let mut arag = AragOrchestrator::new(AragConfig::default());
+    if arag_populate_enabled {
+        // C-8 Task #8: standalone graphcodebert ONNX session for the A-RAG
+        // semantic_search dot-product path (loaded only behind the gate above).
+        let code_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
+        let code_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
+        match OrtSession::new(&code_model_path, &code_tok_path, 512, 768) {
+            Ok(sess) => {
+                arag = arag.with_embedder(Arc::new(sess));
+            }
+            Err(e) => {
+                eprintln!(
+                    "warn: arag.semantic_search ONNX embedder not loaded: {e}; \
+                     falling back to embedding-norm proxy"
+                );
+            }
+        }
+    }
+
+    // Wire the A-RAG corpus from the on-disk DKG when opt-in env flag is set.
     if arag_populate_enabled {
         let dkg_db_path_for_arag = core_dkg_db_path(project_root);
         if dkg_db_path_for_arag.exists() {
@@ -230,27 +240,52 @@ fn attach_vector_module(
     models_dir: &Path,
     ssb: &Option<Arc<elai_orchestrator::Ssb>>,
 ) -> QueryPipeline {
-    let code_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
-    let code_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
     let text_model_path = models_dir.join("onnx").join("granite-embed.onnx");
     let text_tok_path = models_dir.join("onnx").join("granite-embed-tokenizer.json");
 
-    // C-8: code_sess and arag embedder are independent OrtSession instances.
-    match (
-        OrtSession::new(&code_model_path, &code_tok_path, 512, 768),
-        OrtSession::new(&text_model_path, &text_tok_path, 512, 384),
-    ) {
-        (Ok(code_sess), Ok(text_sess)) => {
-            let vm = OrtVectorModule::new(code_sess, text_sess);
-            pipeline.vector_module = Some(Box::new(vm));
+    // retrieval-mem-fixes FIX #3: the primary vector index stores GRANITE
+    // (text, 384-dim) embeddings; GraphCodeBERT (code, 768-dim, ~496MB) is
+    // only needed to populate the SECONDARY code-vec index, which is itself
+    // opt-in via ELAI_CODE_VEC (has_code_index()==false on the default path).
+    // So load GraphCodeBERT only when code-vec is on; otherwise install a
+    // text-only module so the default path searches text vectors WITHOUT
+    // loading the code model.
+    let code_vec_enabled = std::env::var("ELAI_CODE_VEC")
+        .map(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    let text_sess = match OrtSession::new(&text_model_path, &text_tok_path, 512, 384) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("warn: vector text model not loaded: {e}");
+            None
         }
-        (code_r, text_r) => {
-            if let Err(ref e) = code_r {
-                eprintln!("warn: vector code model not loaded: {e}");
+    };
+
+    if let Some(text_sess) = text_sess {
+        if code_vec_enabled {
+            // Code-vec opt-in: load GraphCodeBERT and install the dual-model
+            // module so the secondary code index can be populated.
+            let code_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
+            let code_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
+            match OrtSession::new(&code_model_path, &code_tok_path, 512, 768) {
+                Ok(code_sess) => {
+                    let vm = OrtVectorModule::new(code_sess, text_sess);
+                    pipeline.vector_module = Some(Box::new(vm));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warn: vector code model not loaded ({e}); \
+                         installing text-only vector module"
+                    );
+                    pipeline.vector_module =
+                        Some(Box::new(TextOnlyVectorModule { text_session: text_sess }));
+                }
             }
-            if let Err(ref e) = text_r {
-                eprintln!("warn: vector text model not loaded: {e}");
-            }
+        } else {
+            // Default path: text-only — GraphCodeBERT is NOT loaded.
+            pipeline.vector_module =
+                Some(Box::new(TextOnlyVectorModule { text_session: text_sess }));
         }
     }
 
@@ -259,6 +294,38 @@ fn attach_vector_module(
     }
 
     pipeline
+}
+
+/// retrieval-mem-fixes FIX #3: a text-only
+/// [`elai_knowledge::vector::VectorModule`] backed by a single granite-embed
+/// ONNX session. Installed on the default (no `ELAI_CODE_VEC`) path so the
+/// primary text-vector index works WITHOUT loading the ~496MB GraphCodeBERT
+/// code model. `embed_code` returns `Err` (the code-vec secondary index is
+/// disabled on this path anyway); `VectorIndexer::index_file` tolerates it.
+struct TextOnlyVectorModule {
+    text_session: OrtSession,
+}
+
+impl elai_knowledge::vector::VectorModule for TextOnlyVectorModule {
+    fn embed_code(&self, _text: &str) -> Result<Vec<f32>, elai_knowledge::vector::VectorError> {
+        Err(elai_knowledge::vector::VectorError::OrtError(
+            "code embedding disabled (ELAI_CODE_VEC off; text-only vector module)".to_string(),
+        ))
+    }
+
+    fn embed_text(&self, text: &str) -> Result<Vec<f32>, elai_knowledge::vector::VectorError> {
+        self.text_session
+            .embed(text)
+            .map_err(|e| elai_knowledge::vector::VectorError::OrtError(e.to_string()))
+    }
+
+    fn readiness(&self) -> elai_knowledge::ReadinessStatus {
+        if self.text_session.embed("test").is_ok() {
+            elai_knowledge::ReadinessStatus::Degraded
+        } else {
+            elai_knowledge::ReadinessStatus::Unavailable
+        }
+    }
 }
 
 /// Install the vector indexer (with optional code-vec secondary index) and the
@@ -406,6 +473,43 @@ fn attach_dkg(
     let dkg_lifecycle_sink = make_ssb_knowledge_sink(ssb);
     match crate::dkg_lifecycle::ensure_dkg_or_rebuild(project_root, dkg_lifecycle_sink) {
         Ok(engine) => {
+            // retrieval-mem-fixes FIX #2b: build the shared PageRank snapshot
+            // ONCE here (subject to the same node-count cap as the per-query
+            // path) so STANDARD/DEEP queries reuse it instead of rebuilding
+            // `DkgSnapshot::from_engine` on every query. Over-cap or build
+            // failure leaves the cache as `None`, and Stage 2 falls back to the
+            // (also-capped) per-query build, so this is a pure perf win.
+            let cap = elai_knowledge::pipeline::pagerank_max_nodes();
+            match engine.node_count() {
+                Ok(n) if n > cap => {
+                    tracing::warn!(
+                        node_count = n,
+                        cap,
+                        "FIX #2b: dkg node count over cap at stack build; pagerank snapshot not cached (per-query path will skip pagerank)"
+                    );
+                }
+                Ok(_) => match elai_knowledge::pagerank::DkgSnapshot::from_engine(&engine) {
+                    Ok(snap) => {
+                        pipeline = pipeline
+                            .with_dkg_snapshot(Arc::new(snap));
+                        tracing::info!(
+                            "FIX #2b: cached pagerank snapshot installed (reused across queries)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "FIX #2b: pagerank snapshot build failed at stack build; falling back to per-query build"
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "FIX #2b: dkg node_count probe failed at stack build; falling back to per-query build"
+                    );
+                }
+            }
             pipeline.dkg_engine = Some(engine);
         }
         Err(e) => {

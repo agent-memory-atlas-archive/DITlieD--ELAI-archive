@@ -286,8 +286,23 @@ impl Bm25Index {
         if query_text.trim().is_empty() {
             return Ok(Vec::new());
         }
+        // Code-symbol queries routinely carry tantivy QueryParser metacharacters
+        // (`::` path separators, `->`, `(...)`, `<T>`) that the parser interprets
+        // as field selectors / boolean / phrase / range syntax rather than as
+        // literal terms. The most damaging is `:` — a query like
+        // `RuntimeAdapter::stream_step` is lexed as a field selector on the
+        // nonexistent field `RuntimeAdapter`, so `parse_query` returns a query
+        // matching ZERO documents (and the caller's `unwrap_or_default()` turns
+        // that into an empty result set). Since this index has a single searched
+        // field (`content`) and the use case is bag-of-terms code search, we
+        // neutralise the DSL metacharacters to spaces before parsing so the
+        // surviving identifier fragments tokenise and match normally.
+        let sanitized = sanitize_bm25_query(query_text);
+        if sanitized.trim().is_empty() {
+            return Ok(Vec::new());
+        }
         let query_parser = QueryParser::for_index(&self.index, vec![self.fields.content]);
-        let query = query_parser.parse_query(query_text)?;
+        let query = query_parser.parse_query(&sanitized)?;
         let searcher = self.reader.searcher();
         let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).order_by_score())?;
 
@@ -857,6 +872,34 @@ fn is_cast_chunker_enabled() -> bool {
     }
 }
 
+/// Tantivy `QueryParser` DSL metacharacters that must be neutralised in a
+/// raw code-symbol query. `:` is the load-bearing one (field selector — the
+/// `RuntimeAdapter::stream_step` zero-hit bug), but the boolean/phrase/range/
+/// fuzzy/boost/group operators are stripped too so a query like
+/// `Foo<T>(bar)` or `a->b` degrades to its literal identifier fragments
+/// instead of erroring or acquiring unintended boolean semantics. `_` is
+/// deliberately KEPT (snake_case is a single token under the default
+/// tokenizer) and `.` is KEPT (file-extension / method-dot terms).
+const BM25_QUERY_METACHARS: &[char] = &[
+    ':', '^', '+', '-', '(', ')', '[', ']', '{', '}', '"', '~', '*', '?', '\\', '!', '<', '>',
+];
+
+/// Replace tantivy DSL metacharacters with spaces so a raw code-symbol query
+/// parses as a bag of literal terms over the single `content` field. Idempotent
+/// and allocation-light (returns the input unchanged when no metachar present).
+///
+/// Rationale + the concrete zero-hit failure it fixes are documented at the
+/// call site in [`Bm25Index::query`].
+fn sanitize_bm25_query(query: &str) -> String {
+    if !query.contains(BM25_QUERY_METACHARS) {
+        return query.to_string();
+    }
+    query
+        .chars()
+        .map(|c| if BM25_QUERY_METACHARS.contains(&c) { ' ' } else { c })
+        .collect()
+}
+
 /// C-17: extensions that route through `heading_paragraph_chunks` when AST
 /// parsing returns nothing. Keeps the heading/paragraph mode focused on
 /// prose surfaces; binary/code files keep their 50-line line_block path.
@@ -1423,6 +1466,40 @@ fn helper() -> bool {
         let hits2 = idx.query("Config", 10).unwrap();
         assert!(!hits2.is_empty());
         assert_eq!(hits2[0].chunk_kind, ChunkKind::Struct);
+    }
+
+    // -- sanitize_bm25_query neutralises tantivy DSL metacharacters --
+    #[test]
+    fn sanitize_bm25_query_neutralises_metachars() {
+        // `::` path separator (the zero-hit bug) -> spaces.
+        assert_eq!(sanitize_bm25_query("RuntimeAdapter::stream_step"), "RuntimeAdapter  stream_step");
+        // snake_case underscore and dot are preserved (single-token terms).
+        assert_eq!(sanitize_bm25_query("foo_bar.rs"), "foo_bar.rs");
+        // arrow / generics / parens -> spaces.
+        assert_eq!(sanitize_bm25_query("a->b"), "a  b");
+        assert_eq!(sanitize_bm25_query("Foo<T>(bar)"), "Foo T  bar ");
+        // no metachars -> unchanged (allocation-light identity path).
+        assert_eq!(sanitize_bm25_query("plain query"), "plain query");
+    }
+
+    // -- A `::` query returns BM25 hits after sanitization (the code-01 fix) --
+    #[test]
+    fn colon_colon_query_returns_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut idx = Bm25Index::new(dir.path(), "colon-proj").unwrap();
+        let chunks = vec![BM25Chunk {
+            path: p("ollama.rs"),
+            content: "async fn ollama_stream_step(adapter: &RuntimeAdapter) { /* ... */ }".to_string(),
+            line_start: 1,
+            line_end: 1,
+            kind: ChunkKind::Function,
+        }];
+        idx.index_file(&p("ollama.rs"), Some(chunks)).unwrap();
+
+        // Before the fix this parsed as a field selector on `RuntimeAdapter`
+        // and returned zero hits. After sanitization it matches the chunk.
+        let hits = idx.query("RuntimeAdapter::stream_step", 10).unwrap();
+        assert!(!hits.is_empty(), "`::` query must return hits after sanitization");
     }
 
     // -- Index version bumped to v2 --

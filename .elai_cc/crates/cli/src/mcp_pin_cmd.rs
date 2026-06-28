@@ -37,13 +37,8 @@
 use std::fs;
 use std::path::Path;
 
+use elai_core::paths::mcp_dir_path;
 use serde_json::{json, Value};
-
-/// Pin directory relative to the workspace root. Mirrors the private
-/// `PIN_DIR` constant in `crates/plugins/src/mcp_schema_pin.rs`; the pin
-/// FILES are written there by the production bridge, this surface only
-/// enumerates them.
-const PIN_DIR: &str = ".elai/mcp/pins";
 
 /// Format a unix-ms timestamp as a stable, locale-independent string.
 /// Avoids a chrono dependency: prints the raw epoch-ms (deterministic,
@@ -88,11 +83,12 @@ pub fn render_json(cwd: &Path, rest: &[&str]) -> Value {
 }
 
 fn render_usage_text(unexpected: Option<&str>) -> String {
+    let pin_dir_display = ".elai_cc/mcp/pins";
     let mut lines = vec![
         "MCP Pin (E-24)".to_string(),
         "  Usage            /mcp pin [list|show <server>|update <server>|help]".to_string(),
         "  Direct CLI       elai mcp pin [list|show <server>|update <server>]".to_string(),
-        format!("  Store            <cwd>/{PIN_DIR}/*.toml (blake3 schema hash)"),
+        format!("  Store            <cwd>/{pin_dir_display}/*.toml (blake3 schema hash)"),
         "  OWASP            MCP03:2025 Tool Poisoning (rug-pull / line-jump)".to_string(),
     ];
     if let Some(args) = unexpected {
@@ -102,27 +98,28 @@ fn render_usage_text(unexpected: Option<&str>) -> String {
 }
 
 fn render_usage_json(unexpected: Option<&str>) -> Value {
+    let pin_dir_display = ".elai_cc/mcp/pins";
     json!({
         "kind": "mcp_pin",
         "action": "help",
         "usage": {
             "slash_command": "/mcp pin [list|show <server>|update <server>|help]",
             "direct_cli": "elai mcp pin [list|show <server>|update <server>]",
-            "store": format!("<cwd>/{PIN_DIR}/*.toml"),
+            "store": format!("<cwd>/{pin_dir_display}/*.toml"),
             "owasp": "MCP03:2025",
         },
         "unexpected": unexpected,
     })
 }
 
-/// Enumerate `<cwd>/.elai/mcp/pins/*.toml` and parse each into a
+/// Enumerate `<cwd>/.elai_cc/mcp/pins/*.toml` and parse each into a
 /// `PinRecord`. Returns the list of (filename, record) pairs sorted by
 /// the on-disk filename for deterministic output. A pin file that fails
 /// to parse is surfaced with its filename + the parse error rather than
 /// silently dropped (fail-loud, not fail-open).
 #[cfg(feature = "mcp")]
 fn collect_pins(cwd: &Path) -> Vec<(String, Result<elai_plugins::PinRecord, String>)> {
-    let dir = cwd.join(PIN_DIR);
+    let dir = mcp_dir_path(cwd).join("pins");
     let mut out: Vec<(String, Result<elai_plugins::PinRecord, String>)> = Vec::new();
     let Ok(entries) = fs::read_dir(&dir) else {
         return out;
@@ -152,9 +149,10 @@ fn collect_pins(cwd: &Path) -> Vec<(String, Result<elai_plugins::PinRecord, Stri
 #[cfg(feature = "mcp")]
 fn render_list_text(cwd: &Path) -> String {
     let pins = collect_pins(cwd);
+    let pin_dir = mcp_dir_path(cwd).join("pins");
     let mut lines = vec![
         "MCP Pin (E-24)".to_string(),
-        format!("  Store            {}", cwd.join(PIN_DIR).display()),
+        format!("  Store            {}", pin_dir.display()),
         format!("  Pinned servers   {}", pins.len()),
     ];
     if pins.is_empty() {
@@ -202,10 +200,11 @@ fn render_list_json(cwd: &Path) -> Value {
             }),
         })
         .collect();
+    let pin_dir = mcp_dir_path(cwd).join("pins");
     json!({
         "kind": "mcp_pin",
         "action": "list",
-        "store": cwd.join(PIN_DIR).display().to_string(),
+        "store": pin_dir.display().to_string(),
         "count": servers.len(),
         "servers": servers,
     })

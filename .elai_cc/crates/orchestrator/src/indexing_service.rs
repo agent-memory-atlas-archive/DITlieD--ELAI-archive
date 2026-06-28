@@ -54,7 +54,10 @@ pub const BINARY_DETECT_BYTES: usize = 8192;
 const DKG_DB_FILENAME: &str = elai_core::paths::DKG_DB_FILENAME;
 
 /// BM25 project ID used when creating the BM25 index inside indexes_dir.
-const BM25_PROJECT_ID: &str = "default";
+/// Re-exported from the canonical `elai_core::paths` const so the query-time
+/// READER (`build_local_knowledge_stack`) and this WRITER cannot drift apart;
+/// a mismatch silently points the reader at an empty per-session directory.
+const BM25_PROJECT_ID: &str = elai_core::paths::BM25_PROJECT_ID;
 
 /// Buffer size (bytes) for the streaming BLAKE3 hasher used in
 /// [`hash_file_contents`]. 64 KiB keeps the call-count low without
@@ -138,6 +141,64 @@ pub fn indexing_disabled_via_env() -> bool {
             matches!(v.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(false)
+}
+
+/// retrieval-mem-fixes FIX #1: opt-in gate for the bulk vector-index build.
+///
+/// `build_index_resumable` only builds BM25 + DKG. The vector index
+/// (`vectors_db_path`) is left empty, so STANDARD/DEEP queries run with an
+/// empty vector stage until something populates it incrementally. When this
+/// gate is truthy (`1`/`true`/`yes`/`on`), the resumable build additionally
+/// embeds the candidate corpus (streaming ONE file at a time, so peak RAM is
+/// bounded by the embedding model, not the corpus) and saves the index to
+/// `vectors_db_path`. Default-OFF: embedding the whole corpus is expensive and
+/// loads an ONNX model, so it must be explicitly requested.
+pub const ELAI_BULK_VECTOR_BUILD_ENV: &str = "ELAI_BULK_VECTOR_BUILD";
+
+/// Returns `true` when the operator opted into the bulk vector-index build via
+/// [`ELAI_BULK_VECTOR_BUILD_ENV`]. Default (unset / empty / non-truthy) = `false`.
+pub fn bulk_vector_build_enabled() -> bool {
+    std::env::var(ELAI_BULK_VECTOR_BUILD_ENV)
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+/// retrieval-mem-fixes FIX #1 (+ FIX #3 alignment): a text-only
+/// [`elai_knowledge::vector::VectorModule`] backed by a single granite-embed
+/// ONNX session. The bulk vector-index build embeds chunk text into the
+/// primary 384-dim index; the secondary code-vec index is opt-in
+/// (`ELAI_CODE_VEC`) and only that path needs GraphCodeBERT. Using a
+/// text-only module here means the DEFAULT bulk build does NOT load the
+/// ~496MB GraphCodeBERT model. `embed_code` returns `Err`, which
+/// `VectorIndexer::index_file` already tolerates (it logs at debug and skips
+/// the code-vec slot for that chunk).
+struct TextOnlyVectorModule {
+    text_session: elai_knowledge::vector::ort_session::OrtSession,
+}
+
+impl elai_knowledge::vector::VectorModule for TextOnlyVectorModule {
+    fn embed_code(&self, _text: &str) -> Result<Vec<f32>, elai_knowledge::vector::VectorError> {
+        Err(elai_knowledge::vector::VectorError::OrtError(
+            "code embedding not available in text-only bulk build (ELAI_CODE_VEC off)".to_string(),
+        ))
+    }
+
+    fn embed_text(&self, text: &str) -> Result<Vec<f32>, elai_knowledge::vector::VectorError> {
+        self.text_session
+            .embed(text)
+            .map_err(|e| elai_knowledge::vector::VectorError::OrtError(e.to_string()))
+    }
+
+    fn readiness(&self) -> elai_knowledge::ReadinessStatus {
+        if self.text_session.embed("test").is_ok() {
+            elai_knowledge::ReadinessStatus::Degraded
+        } else {
+            elai_knowledge::ReadinessStatus::Unavailable
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +364,104 @@ impl IndexingService {
     /// Whether any index artifacts exist on disk.
     pub fn indexes_exist(&self) -> bool {
         self.dkg_db_path.exists()
+    }
+
+    /// retrieval-mem-fixes FIX #1: opt-in, memory-bounded bulk vector-index
+    /// build. Embeds each candidate source file (streaming ONE file at a time
+    /// via [`elai_knowledge::vector::indexer::VectorIndexer::index_file`], so
+    /// peak RAM is bounded by the embedding model + a single file's chunks,
+    /// never the whole corpus) and saves the index to `vectors_db_path`.
+    ///
+    /// Gated by [`bulk_vector_build_enabled`] at the call site — this method is
+    /// only invoked when the operator opted in. Graceful: a missing model, an
+    /// embedding failure, or a save failure is logged and does NOT fail the
+    /// surrounding index build (the vector stage simply stays empty, exactly
+    /// as it was before this fix).
+    ///
+    /// FIX #3 alignment: uses a text-only embedding module
+    /// ([`TextOnlyVectorModule`]) so the DEFAULT bulk build does NOT load
+    /// GraphCodeBERT. The secondary code-vec index is out of scope here (it is
+    /// opt-in via `ELAI_CODE_VEC` and only matters for the query-time stack).
+    fn build_vector_index_streaming(&self, candidates: &[PathBuf]) {
+        use elai_knowledge::vector::indexer::VectorIndexer;
+        use elai_knowledge::vector::ort_session::OrtSession;
+        use elai_knowledge::vector::TEXT_VEC_DIM;
+
+        // Resolve the granite-embed model from the project's models dir.
+        // max_seq_len=512, output_dim=384 mirror knowledge_stack.rs.
+        let models_onnx = elai_core::paths::models_dir_path(&self.project_root).join("onnx");
+        let model_path = models_onnx.join("granite-embed.onnx");
+        let tok_path = models_onnx.join("granite-embed-tokenizer.json");
+        let text_session = match OrtSession::new(&model_path, &tok_path, 512, TEXT_VEC_DIM) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    model = %model_path.display(),
+                    error = %e,
+                    "FIX #1: bulk vector build skipped — granite-embed not loadable"
+                );
+                return;
+            }
+        };
+        let vector_module = TextOnlyVectorModule { text_session };
+
+        let index_path = elai_core::paths::vectors_db_path(&self.project_root);
+        // Start from any existing index so a re-run is incremental (index_file
+        // removes a file's prior chunks before re-adding), not a silent reset.
+        let mut indexer = if index_path.exists() {
+            match VectorIndexer::load(&index_path, TEXT_VEC_DIM) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %index_path.display(),
+                        error = %e,
+                        "FIX #1: existing vector index unreadable; rebuilding from empty"
+                    );
+                    VectorIndexer::new(TEXT_VEC_DIM)
+                }
+            }
+        } else {
+            VectorIndexer::new(TEXT_VEC_DIM)
+        };
+
+        let mut files_embedded: usize = 0;
+        let mut chunks_embedded: usize = 0;
+        for abs_path in candidates {
+            if is_binary_file(abs_path) || is_excluded_path(abs_path) {
+                continue;
+            }
+            // Stream: one file's chunks are embedded then dropped before the
+            // next file. No cache is threaded here (the cache is a query-time
+            // optimisation owned by the live pipeline); the bulk build embeds
+            // directly so RAM stays bounded by the resident model.
+            match indexer.index_file(abs_path, &vector_module, None) {
+                Ok(stats) => {
+                    files_embedded = files_embedded.saturating_add(stats.files_indexed);
+                    chunks_embedded = chunks_embedded.saturating_add(stats.chunks_embedded);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        path = %abs_path.display(),
+                        error = %e,
+                        "FIX #1: bulk vector index_file failed (skipping file)"
+                    );
+                }
+            }
+        }
+
+        match indexer.save(&index_path) {
+            Ok(()) => tracing::info!(
+                path = %index_path.display(),
+                files_embedded,
+                chunks_embedded,
+                "FIX #1: bulk vector index built and saved"
+            ),
+            Err(e) => tracing::warn!(
+                path = %index_path.display(),
+                error = %e,
+                "FIX #1: bulk vector index save failed (vector stage stays empty this run)"
+            ),
+        }
     }
 
     /// Build DKG graph and BM25 index from scratch.
@@ -738,6 +897,20 @@ impl IndexingService {
         //     build (not per query), so the slowdown is acceptable for
         //     the dashboard observability gain.
         self.emit_minified_chunked_rows(&candidates);
+
+        // 7d. retrieval-mem-fixes FIX #1: opt-in bulk vector-index build.
+        // Default-OFF (ELAI_BULK_VECTOR_BUILD). When on, embed the candidate
+        // corpus (streaming one file at a time) into `vectors_db_path` so a
+        // fresh index is not left with an empty vector stage. Best-effort: a
+        // failure here is logged inside the helper and never breaks the build.
+        if bulk_vector_build_enabled() {
+            tracing::info!(
+                target = "indexing_service",
+                candidate_files = candidates.len(),
+                "FIX #1: bulk vector build opted in; embedding corpus (streaming)"
+            );
+            self.build_vector_index_streaming(&candidates);
+        }
 
         // 8. Mark completed.
         let completed_meta = ProjectMetadata {

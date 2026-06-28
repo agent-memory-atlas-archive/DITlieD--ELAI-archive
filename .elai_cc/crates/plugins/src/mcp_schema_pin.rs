@@ -2,7 +2,7 @@
 //!
 //! On first connection to an MCP server, fetches `tools/list`, computes a
 //! `blake3` hash over the canonicalized (tool-name-sorted) JSON-serialized
-//! tool list, and stores it in `.elai_cc/.elai/mcp/pins/{encoded_url}.toml`.
+//! tool list, and stores it in `.elai_cc/mcp/pins/{encoded_url}.toml`.
 //! On subsequent connections, recomputes and compares. A mismatch emits
 //! `mcp_schema_pin_violation` SSB row and returns [`PinStatus::Violation`].
 //!
@@ -12,6 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use elai_core::clock::{ClockProvider, OsClock};
+use elai_core::paths::mcp_dir_path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -131,9 +132,6 @@ fn canonical_value(v: serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Pin directory relative to the workspace root.
-const PIN_DIR: &str = ".elai/mcp/pins";
-
 /// Encode a server URL to a safe filename component.
 fn encode_url(url: &str) -> String {
     url.chars()
@@ -144,7 +142,7 @@ fn encode_url(url: &str) -> String {
 /// Resolve the pin file path for the given server URL, creating parent dirs
 /// as needed.
 fn pin_path(workspace_root: &Path, server_url: &str) -> Result<PathBuf, SchemaPinError> {
-    let dir = workspace_root.join(PIN_DIR);
+    let dir = mcp_dir_path(workspace_root).join("pins");
     fs::create_dir_all(&dir)?;
     let filename = format!("{}.toml", encode_url(server_url));
     Ok(dir.join(filename))

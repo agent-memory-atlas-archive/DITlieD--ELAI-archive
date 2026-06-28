@@ -461,7 +461,7 @@ pub async fn get_archive_verify_status(
 ) -> Result<ArchiveVerifyStatus, String> {
     let viewer = match &state.viewer {
         Some(v) => v.clone(),
-        None => return Ok(ArchiveVerifyStatus::default()),
+        None => return Err("SSB viewer unavailable".to_string()),
     };
     match viewer.recent_rows_of_type("archive_verify_result", 1) {
         Ok(rows) => Ok(project_archive_verify_status(rows)),
@@ -470,7 +470,7 @@ pub async fn get_archive_verify_status(
                 error = %e,
                 "get_archive_verify_status: viewer error"
             );
-            Ok(ArchiveVerifyStatus::default())
+            Err(format!("viewer error: {}", e))
         }
     }
 }

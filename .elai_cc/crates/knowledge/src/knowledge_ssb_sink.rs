@@ -128,8 +128,9 @@ pub struct PagerankRunEvent {
 }
 
 /// C-38: emitted when the CLI's `ensure_dkg_or_rebuild` helper begins
-/// a rebuild because `.elai/dkg.db` is absent or stale. The matching
-/// `DkgRebuildCompleteEvent` row brackets the rebuild's end.
+/// a rebuild because the canonical DKG database (`.elai_cc/indexes/dkg.db`)
+/// is absent or stale. The matching `DkgRebuildCompleteEvent` row brackets
+/// the rebuild's end.
 ///
 /// `trigger_reason` is a snake-case label (`"missing"`, `"stale"`)
 /// carried so the dashboard can render WHY a rebuild fired. The

@@ -2494,6 +2494,13 @@ impl LiveCli {
                 tracing::warn!(path = %path.display(), "IndexingService reindex_file failed: {e}");
             }
         }
+        // retrieval-mem-fixes FIX #2b: the incremental reindex above mutates the
+        // on-disk DKG, so the pipeline's cached PageRank snapshot is now stale.
+        // Rebuild it (capped) from the current engine so subsequent queries do
+        // not rank over stale graph topology. No-op when no snapshot was cached.
+        if let Some(ref mut pipeline) = self.knowledge_pipeline {
+            pipeline.rebuild_dkg_snapshot();
+        }
     }
 
     pub(crate) fn run_prompt_json(&mut self, input: &str) -> Result<(), anyhow::Error> {

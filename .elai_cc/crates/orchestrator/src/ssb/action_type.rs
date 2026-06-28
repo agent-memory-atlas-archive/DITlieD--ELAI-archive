@@ -1439,8 +1439,9 @@ pub enum SsbActionType {
     PagerankRun,
     /// C-38 (SCHEMA_VERSION 107): DKG rebuild start beacon. Emitted by
     /// the CLI helper `dkg_lifecycle::ensure_dkg_or_rebuild` when the
-    /// `.elai/dkg.db` file is missing or stale and a rebuild is about to
-    /// run. Bracketed with [`Self::DkgRebuildComplete`]. Carries a
+    /// canonical DKG database (`.elai_cc/indexes/dkg.db`) is missing or
+    /// stale and a rebuild is about to run. Bracketed with
+    /// [`Self::DkgRebuildComplete`]. Carries a
     /// [`DkgRebuildStartedPayload`] (workspace_root_hash, trigger_reason).
     DkgRebuildStarted,
     /// C-38 (SCHEMA_VERSION 107): DKG rebuild end beacon. Emitted at the

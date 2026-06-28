@@ -25,7 +25,7 @@
   import { reindex } from '../state/reindex.svelte';
   import { formatRelative } from '../utils/time';
   import type { ProjectEntry, ExecutionMode } from '../api/types';
-  import Wordmark from '../layout/shell/Wordmark.svelte';
+  import BrandCluster from '../layout/shell/BrandCluster.svelte';
   import TopRightControls from '../chrome/TopRightControls.svelte';
 
   const MODES: ExecutionMode[] = ['LOCAL', 'CLOUD', 'HYBRID'];
@@ -212,19 +212,10 @@
        children (brand, modes, toggle, controls) sit above it and are
        NOT draggable. Double-click a drag region = toggle-maximize. -->
   <header class="topbar" data-tauri-drag-region>
-    <!-- left cluster: back-to-intro + shared wordmark + subtitle -->
-    <div class="brand-cluster">
-      <button
-        class="back-btn"
-        onclick={() => session.openIntro()}
-        aria-label="Back to intro"
-        title="Back to intro"
-      >
-        <svg class="back-glyph" viewBox="0 0 16 16" aria-hidden="true">
-          <polyline points="10,3 5,8 10,13" />
-        </svg>
-      </button>
-      <Wordmark />
+    <!-- left cluster: shared brand lockup (back chevron + wordmark) +
+         the selector-only subtitle -->
+    <div class="brand-row">
+      <BrandCluster onBack={() => session.openIntro()} backLabel="Back to intro" />
       <span class="brand-sep" aria-hidden="true">·</span>
       <span class="brand-title">session select</span>
     </div>
@@ -385,61 +376,14 @@
     align-items: center;
   }
 
-  /* brand-cluster: back chevron + shared wordmark + subtitle */
-  .brand-cluster {
+  /* brand-row: the shared BrandCluster (back + wordmark) + the
+     selector-only subtitle. The cluster itself styles back+wordmark. */
+  .brand-row {
     display: flex;
     align-items: center;
     gap: 6px;
     flex: none;
     -webkit-app-region: no-drag;
-  }
-
-  /* back-to-intro button — hairline, teal on hover, center->out underline */
-  .back-btn {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--ghost);
-    padding: 0;
-    transition: color var(--dur-fast) var(--ease-out);
-    outline: none;
-  }
-  .back-btn::after {
-    content: '';
-    position: absolute;
-    left: 3px;
-    right: 3px;
-    bottom: 2px;
-    height: 1px;
-    background: var(--d-teal);
-    transform: scaleX(0);
-    transform-origin: center;
-    transition: transform var(--dur-slow) var(--ease-out);
-  }
-  .back-btn:hover {
-    color: var(--d-teal-bright);
-  }
-  .back-btn:hover::after {
-    transform: scaleX(1);
-  }
-  .back-btn:focus-visible {
-    box-shadow: inset 0 0 0 1px var(--d-teal);
-    border-radius: var(--r-sm);
-  }
-  .back-glyph {
-    width: 14px;
-    height: 14px;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    fill: none;
   }
 
   .brand-sep {
@@ -460,9 +404,6 @@
     flex: 1;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .back-btn::after { transition: none; }
-  }
   /* modes — center-top of the bar, START-style underline, NO box.
      Absolutely centered against the relative topbar so they sit dead
      center regardless of the brand / toggle widths on either side. */

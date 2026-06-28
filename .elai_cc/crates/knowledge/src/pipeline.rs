@@ -94,6 +94,31 @@ pub fn symbol_graph_5th_rrf_enabled_from_env() -> bool {
     }
 }
 
+/// retrieval-mem-fixes FIX #2a: hard node-count cap for the Stage 2 pagerank
+/// snapshot build. When the DKG node count exceeds this, the pagerank + catrag
+/// stages are skipped entirely (they tolerate an empty snapshot and RRF treats
+/// the empty stage lists as no-ops), so peak memory stays bounded on giant
+/// codebases. Overridable via [`ELAI_PAGERANK_MAX_NODES_ENV`].
+///
+/// Rationale: `DkgSnapshot::from_engine` clones every node's symbol_name +
+/// file_path + signature String plus all edges into memory. On a 14k-file tree
+/// this is multi-GB and was rebuilt per query — the OOM this fix exists to kill.
+pub const PAGERANK_MAX_NODES_DEFAULT: usize = 50_000;
+
+/// retrieval-mem-fixes FIX #2a: env override for [`PAGERANK_MAX_NODES_DEFAULT`].
+pub const ELAI_PAGERANK_MAX_NODES_ENV: &str = "ELAI_PAGERANK_MAX_NODES";
+
+/// Resolve the effective pagerank node cap. Reads [`ELAI_PAGERANK_MAX_NODES_ENV`]
+/// and falls back to [`PAGERANK_MAX_NODES_DEFAULT`] when unset / empty /
+/// unparseable. A value of `0` is treated as "disable pagerank" (any non-empty
+/// graph exceeds it), which is an explicit opt-out, not an error.
+pub fn pagerank_max_nodes() -> usize {
+    std::env::var(ELAI_PAGERANK_MAX_NODES_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(PAGERANK_MAX_NODES_DEFAULT)
+}
+
 /// E-17 SP4 wire: env gate for Anthropic Contextual Retrieval at ingest.
 ///
 /// When set to a truthy value (`1`/`true`/`on`, case-insensitive), the
@@ -155,6 +180,15 @@ pub struct QueryPipeline {
     pub vector_module: Option<Box<dyn VectorModule + Send + Sync>>,
     pub vector_indexer: Option<VectorIndexer>,
     pub dkg_engine: Option<DkgEngine>,
+    /// retrieval-mem-fixes FIX #2b: pre-built, shared PageRank snapshot.
+    /// Materialised ONCE at stack-construction time (in
+    /// `cli::knowledge_stack::attach_dkg`, subject to the same node-count cap
+    /// as the per-query path) and reused across every STANDARD/DEEP query
+    /// instead of rebuilding `DkgSnapshot::from_engine` per query. `None` when
+    /// no engine is attached, the graph exceeds the cap, or the build failed —
+    /// in which case Stage 2 falls back to the (also-capped) per-query build.
+    /// Invalidated + rebuilt on reindex via [`Self::rebuild_dkg_snapshot`].
+    pub dkg_snapshot: Option<Arc<DkgSnapshot>>,
     pub freshness_db: Option<FreshnessDb>,
     pub hyde_stage: Option<HydeStage>,
     /// Optional context-artifact search stage (B-35 Phase B, Task 8).
@@ -225,6 +259,7 @@ impl QueryPipeline {
             vector_module: None,
             vector_indexer: None,
             dkg_engine: None,
+            dkg_snapshot: None,
             freshness_db: None,
             hyde_stage: None,
             artifact_stage: None,
@@ -338,6 +373,66 @@ impl QueryPipeline {
     pub fn with_dkg_engine(mut self, engine: DkgEngine) -> Self {
         self.dkg_engine = Some(engine);
         self
+    }
+
+    /// retrieval-mem-fixes FIX #2b: install a pre-built shared PageRank
+    /// snapshot. The production wiring site
+    /// (`cli::knowledge_stack::attach_dkg`) builds the snapshot ONCE — gated by
+    /// the same [`pagerank_max_nodes`] cap as the per-query path — and installs
+    /// it here so Stage 2 reuses it instead of rebuilding
+    /// `DkgSnapshot::from_engine` on every query. Omitting this is a
+    /// behaviour-preserving no-op: Stage 2 falls back to the per-query build.
+    pub fn with_dkg_snapshot(mut self, snapshot: Arc<DkgSnapshot>) -> Self {
+        self.dkg_snapshot = Some(snapshot);
+        self
+    }
+
+    /// retrieval-mem-fixes FIX #2b: rebuild (or clear) the cached PageRank
+    /// snapshot from the currently attached `dkg_engine`. Called from the
+    /// reindex seam (`cli::live_cli::notify_file_changed`) after the DKG has
+    /// been incrementally updated, so the cached snapshot does not serve stale
+    /// graph topology to subsequent queries.
+    ///
+    /// Honours the [`pagerank_max_nodes`] cap: if the (possibly grown) graph
+    /// now exceeds the cap, the snapshot is cleared to `None` and Stage 2
+    /// degrades to bm25+vector+rerank. A build failure also clears it (logged).
+    /// No-op (clears to `None`) when no engine is attached.
+    pub fn rebuild_dkg_snapshot(&mut self) {
+        let cap = pagerank_max_nodes();
+        let Some(ref engine) = self.dkg_engine else {
+            self.dkg_snapshot = None;
+            return;
+        };
+        let node_count = match engine.node_count() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "FIX #2b: dkg node_count probe failed on reindex; clearing cached snapshot"
+                );
+                self.dkg_snapshot = None;
+                return;
+            }
+        };
+        if node_count > cap {
+            tracing::warn!(
+                node_count,
+                cap,
+                "FIX #2b: dkg node count over cap after reindex; pagerank snapshot disabled (degrading to bm25+vector+rerank)"
+            );
+            self.dkg_snapshot = None;
+            return;
+        }
+        match DkgSnapshot::from_engine(engine) {
+            Ok(snap) => self.dkg_snapshot = Some(Arc::new(snap)),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "FIX #2b: dkg snapshot rebuild failed on reindex; clearing cached snapshot"
+                );
+                self.dkg_snapshot = None;
+            }
+        }
     }
 
     pub fn with_freshness_db(mut self, db: FreshnessDb) -> Self {
@@ -824,55 +919,105 @@ impl QueryPipeline {
         // empty-graph / FAST paths, which compute_overlay tolerates.
         let mut pagerank_scores: Vec<(usize, f64)> = Vec::new();
         let pagerank_start = self.clock.now();
-        let snapshot = if use_vector {
-            let (snap, pagerank_results, pagerank_error, top_node_name) = match self.dkg_engine {
-                Some(ref engine) => match DkgSnapshot::from_engine(engine) {
-                    Ok(snap) => {
-                        let config = PageRankConfig::default();
-                        let token_est: &dyn Fn(&str) -> usize = &|s: &str| s.len() / 4;
-                        let repo_map = compute_repo_map(&snap, query, &[], &config, token_est);
-                        let top_name = repo_map
-                            .ranked_symbols
-                            .first()
-                            .map(|rs| rs.symbol_name.clone());
-                        // 1E-R1: map each ranked symbol's node_id back to its
-                        // position in `snap.nodes` (the index space
-                        // compute_overlay expects) and carry (idx, rank) pairs.
-                        // FxHashMap (B-15 HashMap-ban-safe; same hasher the
-                        // pagerank module uses for the inverse id_to_idx map).
-                        let id_to_idx: rustc_hash::FxHashMap<i64, usize> = snap
-                            .nodes
-                            .iter()
-                            .enumerate()
-                            .map(|(i, n)| (n.node_id, i))
-                            .collect();
-                        pagerank_scores = repo_map
-                            .ranked_symbols
-                            .iter()
-                            .filter_map(|rs| id_to_idx.get(&rs.node_id).map(|&idx| (idx, rs.rank)))
-                            .collect();
-                        let results: Vec<RetrievalResult> = repo_map
-                            .ranked_symbols
-                            .iter()
-                            .map(|rs| RetrievalResult {
-                                chunk_id: format!("{}:{}", rs.file_path.display(), rs.symbol_name),
-                                snippet: rs.signature.clone(),
-                                score: rs.rank,
-                                tool_used: "pagerank".to_string(),
-                            })
-                            .collect();
-                        (snap, results, None, top_name)
+        let snapshot: Arc<DkgSnapshot> = if use_vector {
+            // retrieval-mem-fixes FIX #2a/#2b: resolve the snapshot to rank over.
+            // Prefer the pre-built cached snapshot (FIX #2b — one build per
+            // stack, not per query). Otherwise build per-query from the engine,
+            // but ONLY after a cheap node_count() probe confirms the graph is
+            // under the cap (FIX #2a — the memory guard). Over-cap or no-engine
+            // yields an empty snapshot; pagerank + catrag then no-op and RRF
+            // degrades to bm25+vector+rerank. `Arc` so the cached path is a
+            // cheap clone and the per-query path stays a single allocation.
+            let (snap, snap_error): (Arc<DkgSnapshot>, Option<String>) =
+                if let Some(ref cached) = self.dkg_snapshot {
+                    (cached.clone(), None)
+                } else {
+                    match self.dkg_engine {
+                        Some(ref engine) => {
+                            let cap = pagerank_max_nodes();
+                            match engine.node_count() {
+                                Ok(n) if n > cap => {
+                                    tracing::warn!(
+                                        node_count = n,
+                                        cap,
+                                        "FIX #2a: dkg node count over cap; skipping pagerank+catrag snapshot build (degrading to bm25+vector+rerank)"
+                                    );
+                                    (
+                                        Arc::new(DkgSnapshot { nodes: Vec::new(), edges: Vec::new() }),
+                                        None,
+                                    )
+                                }
+                                Ok(_) => match DkgSnapshot::from_engine(engine) {
+                                    Ok(s) => (Arc::new(s), None),
+                                    Err(e) => {
+                                        tracing::debug!("DkgSnapshot::from_engine failed: {e}");
+                                        (
+                                            Arc::new(DkgSnapshot {
+                                                nodes: Vec::new(),
+                                                edges: Vec::new(),
+                                            }),
+                                            Some(e.to_string()),
+                                        )
+                                    }
+                                },
+                                Err(e) => {
+                                    tracing::debug!("dkg node_count probe failed: {e}");
+                                    (
+                                        Arc::new(DkgSnapshot {
+                                            nodes: Vec::new(),
+                                            edges: Vec::new(),
+                                        }),
+                                        Some(e.to_string()),
+                                    )
+                                }
+                            }
+                        }
+                        None => (
+                            Arc::new(DkgSnapshot { nodes: Vec::new(), edges: Vec::new() }),
+                            None,
+                        ),
                     }
-                    Err(e) => {
-                        tracing::debug!("DkgSnapshot::from_engine failed: {e}");
-                        let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
-                        (empty, Vec::new(), Some(e.to_string()), None)
-                    }
-                },
-                None => {
-                    let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
-                    (empty, Vec::new(), None, None)
-                }
+                };
+
+            // Rank over the resolved snapshot. Empty snapshots produce an empty
+            // repo_map (compute_repo_map tolerates zero nodes), leaving
+            // pagerank_scores empty for the downstream catrag overlay.
+            let (pagerank_results, pagerank_error, top_node_name) = if snap.nodes.is_empty() {
+                (Vec::new(), snap_error, None)
+            } else {
+                let config = PageRankConfig::default();
+                let token_est: &dyn Fn(&str) -> usize = &|s: &str| s.len() / 4;
+                let repo_map = compute_repo_map(&snap, query, &[], &config, token_est);
+                let top_name = repo_map
+                    .ranked_symbols
+                    .first()
+                    .map(|rs| rs.symbol_name.clone());
+                // 1E-R1: map each ranked symbol's node_id back to its position
+                // in `snap.nodes` (the index space compute_overlay expects) and
+                // carry (idx, rank) pairs. FxHashMap (B-15 HashMap-ban-safe;
+                // same hasher the pagerank module uses for the inverse map).
+                let id_to_idx: rustc_hash::FxHashMap<i64, usize> = snap
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| (n.node_id, i))
+                    .collect();
+                pagerank_scores = repo_map
+                    .ranked_symbols
+                    .iter()
+                    .filter_map(|rs| id_to_idx.get(&rs.node_id).map(|&idx| (idx, rs.rank)))
+                    .collect();
+                let results: Vec<RetrievalResult> = repo_map
+                    .ranked_symbols
+                    .iter()
+                    .map(|rs| RetrievalResult {
+                        chunk_id: format!("{}:{}", rs.file_path.display(), rs.symbol_name),
+                        snippet: rs.signature.clone(),
+                        score: rs.rank,
+                        tool_used: "pagerank".to_string(),
+                    })
+                    .collect();
+                (results, snap_error, top_name)
             };
             let pagerank_latency_ms =
                 self.clock.elapsed_since(pagerank_start).as_millis() as u64;
@@ -903,7 +1048,6 @@ impl QueryPipeline {
             });
             snap
         } else {
-            let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
             stages.push(PipelineStage {
                 stage: "pagerank".to_string(),
                 results: Vec::new(),
@@ -911,7 +1055,7 @@ impl QueryPipeline {
                 circuit_breaker_state: None,
                 error: None,
             });
-            empty
+            Arc::new(DkgSnapshot { nodes: Vec::new(), edges: Vec::new() })
         };
 
         // Stage 3: catrag (STANDARD + DEEP)

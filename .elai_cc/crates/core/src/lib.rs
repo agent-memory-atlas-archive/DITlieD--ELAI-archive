@@ -83,6 +83,22 @@ pub use source_tier::{
     ClassificationMethod, SourceClassification, SourceTier, SourceTierConfig, SourceTierError,
 };
 
+// B-1: path helpers — single source of truth for ELAI on-disk layout
+pub use paths::{
+    artifacts_dir_path, artifact_manifest_path, artifact_path, cache_dir_path,
+    dkg_db_path, held_out_db_path, held_out_dir_path,
+    index_manifest_path, indexes_dir_path, memory_dir_path, memory_facts_db_path,
+    mcp_dir_path, metrics_dir_path, models_dir_path, rules_db_path, sessions_dir_path,
+    user_profile_db_path, user_profile_dir, user_projects_index_path,
+    vector_cache_db_path, vectors_db_path, bm25_dir_path,
+    ELAI_DATA_DIR_NAME, INDEXES_DIR_NAME, DKG_DB_FILENAME, VECTORS_FILE_NAME,
+    VECTOR_CACHE_DB_FILENAME, SESSIONS_DIR_NAME, METRICS_DIR_NAME, MODELS_DIR_NAME,
+    RULES_DB_FILENAME, ARTIFACTS_DIR_NAME, ARTIFACT_MANIFEST_EXT, MEMORY_DIR_NAME,
+    MEMORY_FACTS_DB_FILENAME, USER_PROFILE_DIR_NAME, USER_PROFILE_DB_FILENAME,
+    USER_PROJECTS_INDEX_FILENAME, HELD_OUT_DIR_NAME, HELD_OUT_DB_FILENAME,
+    CACHE_DIR_NAME, MCP_PINS_DIR_NAME, INDEX_MANIFEST_FILENAME,
+};
+
 pub use research_types::{
     generate_fact_id, AnswerConfidence, ExtractedFact, ResearchAnswer, ResearchPipelineError,
     ResearchQuery, VerificationLevel, VerifiedClaim,

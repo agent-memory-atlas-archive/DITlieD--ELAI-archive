@@ -38,13 +38,14 @@ use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use elai_core::paths::cache_dir_path;
+
 use crate::ssb::{PromptCompiledKind, PromptCompiledPayload, Ssb, SsbPayload};
 
 // ---------------------------------------------------------------------------
 // Constants — named, no magic numbers.
 // ---------------------------------------------------------------------------
 
-const COMPILED_PROMPT_CACHE_DIR: &str = ".elai/cache";
 const COMPILED_PROMPT_CACHE_FILE: &str = "compiled_prompts.msgpack";
 
 /// A compiled prompt variant for one (role, backend) pair.
@@ -174,12 +175,10 @@ impl CompiledPromptStore {
         }
     }
 
-    /// Resolve the standard cache path under `project_root/.elai/cache/compiled_prompts.msgpack`.
+    /// Resolve the standard cache path under `project_root/.elai_cc/cache/compiled_prompts.msgpack`.
     #[must_use]
     pub fn standard_path(project_root: &Path) -> PathBuf {
-        project_root
-            .join(COMPILED_PROMPT_CACHE_DIR)
-            .join(COMPILED_PROMPT_CACHE_FILE)
+        cache_dir_path(project_root).join(COMPILED_PROMPT_CACHE_FILE)
     }
 
     /// Read-only accessor for tests / diagnostics.

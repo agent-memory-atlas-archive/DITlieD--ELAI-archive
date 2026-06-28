@@ -70,7 +70,7 @@ pub async fn browser_e2e_status(
 ) -> Result<BrowserE2eStatusDto, String> {
     let viewer = match &state.viewer {
         Some(v) => v.clone(),
-        None => return Ok(BrowserE2eStatusDto::default()),
+        None => return Err("SSB viewer unavailable".to_string()),
     };
 
     let action_types: [&str; 4] = [

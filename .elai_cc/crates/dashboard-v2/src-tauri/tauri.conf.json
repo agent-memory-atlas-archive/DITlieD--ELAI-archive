@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ELAI",
+  "productName": "elai-dashboard-v2",
   "version": "0.1.0",
   "identifier": "dev.elai.dashboard-v2",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "ELAI",
+        "title": "ELAI Dashboard V2",
         "width": 1280,
         "height": 800,
         "minWidth": 1000,

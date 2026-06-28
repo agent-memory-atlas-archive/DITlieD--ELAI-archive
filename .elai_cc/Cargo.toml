@@ -87,3 +87,17 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = "line-tables-only"
+
+# elai-orchestrator carries multiple very large hand/generated files (ssb/payloads.rs
+# ~19.7k lines, ssb/action_type.rs ~6.4k lines with several 330+-arm string->enum
+# match fns). Under concurrent build load these blow rustc/LLVM's codegen stack and
+# trip the MSVC /GS stack cookie (exit 0xc0000409 STATUS_STACK_BUFFER_OVERRUN), an
+# unrecoverable fastfail RUST_MIN_STACK cannot widen (it is a codegen-worker stack).
+# More, smaller codegen units cap the IR any single codegen invocation must lower,
+# so no unit recurses deep enough to overrun. Behaviour-preserving: codegen-units
+# affects only how the crate is partitioned for codegen, never its semantics.
+[profile.dev.package.elai-orchestrator]
+codegen-units = 256
+
+[profile.release.package.elai-orchestrator]
+codegen-units = 256

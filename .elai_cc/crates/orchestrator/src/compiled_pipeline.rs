@@ -40,6 +40,8 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use elai_core::paths::cache_dir_path;
+
 use crate::ssb::{
     CompiledPipelineFiredPayload, DecompileTriggeredPayload, DecompileTriggerReason,
     Ssb, SsbPayload, TemplateCrystallizedPayload,
@@ -81,9 +83,6 @@ pub const COMPILATION_ELIGIBLE_MIN_USES: u32 = 3;
 /// prompt-cache breakpoint TTL norms and prevents pipelines from
 /// accumulating across unrelated work weeks.
 pub const COMPILED_PIPELINE_TTL_SECS: u64 = 604_800;
-
-/// C-25 Task 8 — relative cache directory under the project root.
-pub const COMPILED_PIPELINE_CACHE_DIR: &str = ".elai/cache";
 
 /// C-25 Task 8 — cache filename for the persisted store.
 pub const COMPILED_PIPELINE_CACHE_FILE: &str = "compiled_pipelines.msgpack";
@@ -694,13 +693,11 @@ impl CompiledPipelineStore {
         }
     }
 
-    /// Resolve the standard cache path under `project_root/.elai/cache/
+    /// Resolve the standard cache path under `project_root/.elai_cc/cache/
     /// compiled_pipelines.msgpack`.
     #[must_use]
     pub fn standard_path(project_root: &Path) -> PathBuf {
-        project_root
-            .join(COMPILED_PIPELINE_CACHE_DIR)
-            .join(COMPILED_PIPELINE_CACHE_FILE)
+        cache_dir_path(project_root).join(COMPILED_PIPELINE_CACHE_FILE)
     }
 
     /// Read-only accessor for tests / `/pipeline list`.

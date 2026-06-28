@@ -179,7 +179,7 @@ pub async fn get_velocity_cap_status(
     let cap = cap_limit(limit);
     let viewer = match &state.viewer {
         Some(v) => v.clone(),
-        None => return Ok(VelocityCapStatus::default()),
+        None => return Err("SSB viewer unavailable".to_string()),
     };
     let raw = match viewer.recent_rows_of_type("cost_token_event", cap) {
         Ok(r) => r,
@@ -189,7 +189,7 @@ pub async fn get_velocity_cap_status(
                 error = %e,
                 "get_velocity_cap_status: viewer error"
             );
-            return Ok(VelocityCapStatus::default());
+            return Err(format!("viewer error: {}", e));
         }
     };
     let mut windows: Vec<VelocityWindowSnapshot> = Vec::new();

@@ -339,9 +339,11 @@ impl DkgEngine {
     }
 
     pub fn build_graph(&mut self, project_root: &Path) -> Result<DependencyGraph, KnowledgeError> {
+        dkg_phase_marker("walk_start");
         let mut source_files = Vec::new();
         walk_source_files(project_root, &mut source_files);
         source_files.sort();
+        dkg_phase_marker("parse_loop_start");
 
         // E-42: ABI probe — one pass over the registry before the source loop.
         // Guarded by the ELAI_TREE_SITTER_GRAMMARS_ENABLE env var so this is
@@ -554,11 +556,15 @@ impl DkgEngine {
             files_parsed += 1;
         }
 
+        dkg_phase_marker("parse_loop_end");
+
         // B-30 Pass C: resolve non-Rust module imports to cross-file edges.
         self.resolve_multi_module_imports(project_root)?;
+        dkg_phase_marker("resolve_imports_end");
 
         // Generate cross-file edges: "imports" and "implements"
         self.generate_cross_edges()?;
+        dkg_phase_marker("cross_edges_end");
 
         // H-10: materialise the dkg_nodes_pagerank table so get_pagerank_top
         // returns non-empty results. Runs after generate_cross_edges so the
@@ -568,9 +574,11 @@ impl DkgEngine {
         if let Err(e) = self.materialise_pagerank() {
             tracing::warn!("H-10 pagerank materialisation failed (non-fatal): {e}");
         }
+        dkg_phase_marker("pagerank_end");
 
         // A-48: Extract heuristic data flow edges from tree-sitter ASTs
         self.extract_all_data_flow_edges(&source_files)?;
+        dkg_phase_marker("data_flow_end");
 
         let edge_count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM dkg_edges",
@@ -628,6 +636,34 @@ impl DkgEngine {
         /// The 50 000 bound was measured as safe on the smallest target configs
         /// (≤8 GB RAM); the ELAI self-index (398 741 nodes) always exceeds it.
         const MAX_PAGERANK_NODES: usize = 50_000;
+
+        // Index-time memory guard (giant-repo OOM fix): DkgSnapshot::from_engine
+        // loads EVERY node (with cloned name/path/signature strings) + all edges
+        // into RAM. On a large self-index (~399K nodes) that is a multi-GB
+        // allocation that happens BEFORE the MAX_PAGERANK_NODES cap below could
+        // skip it — the index-time OOM. Count cheaply first and, when over the
+        // cap, skip the materialisation entirely (identical empty-table outcome
+        // to the over-cap branch further down, but without ever loading the graph).
+        let pre_node_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM dkg_nodes", [], |row| row.get(0))?;
+        if usize::try_from(pre_node_count).unwrap_or(usize::MAX) > MAX_PAGERANK_NODES {
+            tracing::warn!(
+                node_count = pre_node_count,
+                cap = MAX_PAGERANK_NODES,
+                "H-10 pagerank: graph exceeds cap; skipping snapshot materialisation \
+                 (index-time memory guard). PageRank unavailable for this index."
+            );
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS dkg_nodes_pagerank (
+                    symbol TEXT NOT NULL,
+                    path   TEXT NOT NULL,
+                    score  REAL NOT NULL
+                );
+                DELETE FROM dkg_nodes_pagerank;",
+            )?;
+            return Ok(());
+        }
 
         let snapshot = DkgSnapshot::from_engine(self)?;
 
@@ -893,6 +929,21 @@ impl DkgEngine {
             result.push(r?);
         }
         Ok(result)
+    }
+
+    /// Cheap node-count probe used as the memory guard before a caller
+    /// materialises the full node + edge set (e.g. `DkgSnapshot::from_engine`).
+    /// Runs a single `COUNT(*)` against `dkg_nodes` instead of loading every
+    /// row, so it is safe to call per-query on arbitrarily large graphs.
+    ///
+    /// retrieval-mem-fixes FIX #2a: the pagerank Stage 2 path uses this to skip
+    /// the snapshot build entirely when the graph exceeds `ELAI_PAGERANK_MAX_NODES`,
+    /// bounding peak memory on giant codebases regardless of repo size.
+    pub fn node_count(&self) -> Result<usize, KnowledgeError> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM dkg_nodes", [], |row| row.get(0))?;
+        Ok(usize::try_from(count).unwrap_or(0))
     }
 
     pub fn edges(&self) -> Result<EdgeList, KnowledgeError> {
@@ -1536,6 +1587,17 @@ impl DkgEngine {
 
 /// Minimum token overlap for similarity match inclusion.
 const SIMILARITY_MIN_TOKENS: usize = 1;
+
+/// Env-gated phase marker for index-time memory profiling. Emits a single line
+/// to stderr only when `ELAI_DKG_PHASE_TRACE=1`, so it is zero-cost (one env
+/// lookup) on the production path. Used by the `dkg_mem_probe` example to
+/// correlate peak RSS samples with the active `build_graph` phase. NOT a
+/// production observability surface — it is a diagnostic seam.
+fn dkg_phase_marker(phase: &str) {
+    if std::env::var_os("ELAI_DKG_PHASE_TRACE").is_some() {
+        eprintln!("DKG_PHASE {phase}");
+    }
+}
 
 /// Tokenize a symbol name by splitting on `_`, `-`, and camelCase boundaries,
 /// then lowercasing. Handles snake_case, camelCase, PascalCase, kebab-case,

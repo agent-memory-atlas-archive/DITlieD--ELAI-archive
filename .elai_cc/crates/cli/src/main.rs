@@ -17,6 +17,7 @@ mod dep_check_cmd;
 mod doctor;
 mod handoff;
 mod indexing;
+mod index_cmd;
 mod init;
 mod input;
 mod install;
@@ -1306,6 +1307,9 @@ fn run() -> Result<(), anyhow::Error> {
         }
         CliAction::BenchRag { tier, top_k, query, json, project_root } => {
             bench_cmd::run_bench_rag(tier, top_k, query, json, project_root)?;
+        }
+        CliAction::IndexBuild { project_root, vectors, json } => {
+            crate::index_cmd::run_index_build(project_root, vectors, json)?;
         }
         CliAction::BenchSycophancy { fixtures, output, detection_floor, fp_ceiling } => {
             bench_cmd::run_bench_sycophancy(fixtures, output, detection_floor, fp_ceiling)?;

@@ -4,13 +4,14 @@
 //! ("if dkg.db exists, load engine; otherwise silently skip"). The
 //! plain existence-check left Phase 1D PageRank dead at runtime on any
 //! freshly-cloned workspace, because no production path created
-//! `.elai/dkg.db` before the QueryPipeline first ran Stage 2. The
-//! C-38 contract test
+//! the canonical DKG database (`.elai_cc/indexes/dkg.db`) before the
+//! QueryPipeline first ran Stage 2. The C-38 contract test
 //! `crates/contracts/tests/c38_pagerank_production_contract.rs` locks
 //! the rebuild-on-missing behaviour.
 //!
 //! Public entry point: [`ensure_dkg_or_rebuild`]. The helper:
-//!   1. Resolves the canonical `.elai/dkg.db` path from `workspace_root`.
+//!   1. Resolves the canonical `.elai_cc/indexes/dkg.db` path from
+//!      `workspace_root`.
 //!   2. If the file exists AND was modified within the staleness window
 //!      (default 24h), opens the existing engine and returns it.
 //!   3. Otherwise: emits one `DkgRebuildStartedEvent`, runs the existing
@@ -221,7 +222,8 @@ fn workspace_root_hash(workspace_root: &Path) -> u64 {
 /// Snake-case label so dashboards can group rebuild causes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebuildTrigger {
-    /// `.elai/dkg.db` does not exist; first build for this workspace.
+    /// Canonical DKG database (`.elai_cc/indexes/dkg.db`) does not exist;
+    /// first build for this workspace.
     Missing,
     /// File exists but modified-time exceeded the staleness window.
     Stale,

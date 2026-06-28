@@ -6246,8 +6246,8 @@ pub struct PagerankRunPayload {
 /// C-38 — payload for [`SsbActionType::DkgRebuildStarted`].
 ///
 /// Emitted by `elai_cli::dkg_lifecycle::ensure_dkg_or_rebuild` when the
-/// `.elai/dkg.db` file is missing or stale. `trigger_reason` is a
-/// snake-case label so dashboards can group rebuild causes:
+/// canonical DKG database (`.elai_cc/indexes/dkg.db`) is missing or stale.
+/// `trigger_reason` is a snake-case label so dashboards can group rebuild causes:
 /// `"missing"` | `"stale"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DkgRebuildStartedPayload {

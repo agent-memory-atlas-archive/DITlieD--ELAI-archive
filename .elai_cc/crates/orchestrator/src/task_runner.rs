@@ -8660,7 +8660,11 @@ async fn drive_task(
                 anti_spiral_fired: anti_spiral_legacy
                     || pattern_now.is_some()
                     || watchdog_fired,
-                replan_major: false,
+                // B-22 STEP 3 — derive replan_major from SSB ReplanRequest rows
+                // with severity == "MAJOR". Cold-start (no rows) is vacuous-default
+                // false, so no escalation fires unless a MAJOR replan is explicitly
+                // requested.
+                replan_major: derive_replan_major(writer.as_ref()),
                 max_restarts_exhausted: false,
                 context_budget_terminal: false,
                 auto_advance_count_for_concept: 0,
@@ -17013,6 +17017,30 @@ pub fn derive_babystep_zero_blocks(reader: &dyn SsbReader) -> bool {
 /// B-41 — Plan-tier per-level audit zero-blocks check.
 pub fn derive_plan_zero_blocks(reader: &dyn SsbReader) -> bool {
     derive_per_level_zero_blocks_for(reader, "plan")
+}
+
+/// B-22 STEP 3 — derive the replan_major escalation trigger from SSB.
+/// Returns `true` IFF at least one `ReplanRequest` row exists with
+/// severity == "MAJOR" for the current session. Cold-start (no such rows)
+/// is vacuous-default `false`, preserving the existing behavior where
+/// no escalation fires unless a MAJOR replan is explicitly requested.
+///
+/// Source: phase-4G.txt §4G.4 escalation triggers.
+pub fn derive_replan_major(reader: &dyn SsbReader) -> bool {
+    let rows = reader
+        .query_by_type(SsbActionType::ReplanRequest)
+        .unwrap_or_default();
+    for entry in rows.iter() {
+        let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref()) else {
+            continue;
+        };
+        if let SsbPayload::ReplanRequest(p) = payload {
+            if p.severity == "MAJOR" {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// F-10 — derive the AUTO-ADVANCE security-monotonicity evidence check from

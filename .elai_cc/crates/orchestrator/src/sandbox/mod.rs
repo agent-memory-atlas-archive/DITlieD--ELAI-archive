@@ -1118,6 +1118,99 @@ impl LinuxSandbox {
         Self { processes: Mutex::new(BTreeMap::new()) }
     }
 
+    /// clone3 wrapper for Linux process spawn with namespace isolation.
+    ///
+    /// This is a B-18 STEP 1 implementation: provides a clone3 wrapper that
+    /// can be used instead of the older libc::clone syscall. The wrapper
+    /// supports the same namespace flags (CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWNET)
+    /// required for agent isolation.
+    ///
+    /// This implementation uses the raw libc::clone3 syscall with the
+    /// clone_args structure defined in Linux kernel headers.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it performs raw syscalls and manipulates
+    /// process memory. The caller must ensure:
+    /// - The callback function only uses async-signal-safe operations
+    /// - The stack pointer is valid and properly aligned
+    /// - The child data pointer remains valid until the child execs
+    ///
+    /// # Arguments
+    ///
+    /// * `clone_cb` - Callback function executed in the child process
+    /// * `stack_top` - Pointer to the top of the child's stack
+    /// * `clone_flags` - Namespace flags (CLONE_NEWNS, CLONE_NEWPID, etc.)
+    /// * `child_data` - Pointer to data passed to the child callback
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(pid)` - PID of the child process (in parent) or 0 (in child)
+    /// * `Err(SandboxError)` - If the clone3 syscall fails
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn clone3_wrapper(
+        clone_cb: extern "C" fn(*mut libc::c_void) -> libc::c_int,
+        stack_top: *mut libc::c_void,
+        clone_flags: libc::c_int,
+        child_data: *mut libc::c_void,
+    ) -> Result<libc::pid_t, SandboxError> {
+        // clone3 syscall number (x86_64)
+        const SYS_clone3: libc::c_long = 435;
+
+        // clone_args structure as defined in Linux kernel headers
+        #[repr(C)]
+        struct CloneArgs {
+            flags: u64,
+            pidfd: u64,
+            child_tid: u64,
+            parent_tid: u64,
+            exit_signal: u64,
+            stack: u64,
+            stack_size: u64,
+            tls: u64,
+            set_tid: u64,
+            set_tid_size: u64,
+            cgroup: u64,
+        }
+
+        let mut args = CloneArgs {
+            flags: clone_flags as u64,
+            pidfd: 0,
+            child_tid: 0,
+            parent_tid: 0,
+            exit_signal: libc::SIGCHLD as u64,
+            stack: stack_top as u64,
+            stack_size: 0,
+            tls: 0,
+            set_tid: 0,
+            set_tid_size: 0,
+            cgroup: 0,
+        };
+
+        // Perform the clone3 syscall
+        let pid = libc::syscall(
+            SYS_clone3,
+            &mut args as *mut CloneArgs,
+            std::mem::size_of::<CloneArgs>(),
+        );
+
+        if pid == -1 {
+            return Err(SandboxError::ProcessLaunchFailed(format!(
+                "clone3 syscall failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        // In child process (pid == 0), execute the callback and exit
+        if pid == 0 {
+            let exit_code = clone_cb(child_data);
+            libc::_exit(exit_code);
+        }
+
+        // In parent process, return the child's PID
+        Ok(pid as libc::pid_t)
+    }
+
     /// Compile IPC_BASELINE seccomp-bpf filter in the PARENT process (heap-safe).
     ///
     /// Returns raw BPF program bytes. The child installs these via prctl(PR_SET_SECCOMP)
@@ -1559,19 +1652,18 @@ impl AgentSandbox for LinuxSandbox {
                 }
             }
 
-            libc::clone(
+            // B-18 STEP 1: Use clone3 wrapper instead of libc::clone
+            // clone3 provides better namespace isolation and is the modern Linux API
+            match Self::clone3_wrapper(
                 clone_cb,
-                stack_top as *mut libc::c_void,
+                stack_top,
                 clone_flags,
                 &child_data as *const ChildData as *mut libc::c_void,
-            )
+            ) {
+                Ok(pid) => pid,
+                Err(e) => return Err(e),
+            }
         };
-
-        if pid == -1 {
-            return Err(SandboxError::ProcessLaunchFailed(
-                format!("clone() failed: {}", std::io::Error::last_os_error()),
-            ));
-        }
 
         // BLOCK 1 fix: prevent parent from dropping stack and captured data
         // while the child is still executing on them. The child's execvp replaces

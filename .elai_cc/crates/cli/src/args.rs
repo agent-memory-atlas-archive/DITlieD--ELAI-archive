@@ -1016,6 +1016,17 @@ pub(crate) enum CliAction {
         json: bool,
         project_root: PathBuf,
     },
+    /// dkg-stream-rigorous Task 2: `elai index build [--project-root PATH] [--vectors]`.
+    /// Non-interactive full index build (BM25 + DKG + optional streaming
+    /// vectors) that writes to the CANONICAL `.elai_cc/indexes/projects/default/bm25`
+    /// + `dkg.db` + `vector_index.json` paths the query-time stack (and the
+    /// `bench rag` eval seam) read from. `--vectors` sets `ELAI_BULK_VECTOR_BUILD=1`
+    /// for this run so the (memory-bounded, streaming) vector stage is populated.
+    IndexBuild {
+        project_root: PathBuf,
+        vectors: bool,
+        json: bool,
+    },
     /// I-34: `elai bench crane [--crane-fixture PATH] [--seed <u64>]`.
     /// Deterministic CRANE hybrid grammar-pin gate fixture harness. Drives the
     /// three-layer I-34 gate (eligibility + blake3 pin verify + post-parse
@@ -3105,6 +3116,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // B-15 Tranche O.2 (orchestrate s-22600): parser block moved to
         // crate::args_bench. CliAction variants unchanged.
         "bench" => crate::args_bench::parse_bench_subcommand_args(&rest[1..]),
+        // dkg-stream-rigorous Task 2: `elai index build [--project-root PATH] [--vectors]`.
+        "index" => parse_index_subcommand_args(&rest[1..]),
         // D-28: `elai farm-adv-rm <run|verdict> ...` — adversarial example
         // farming runner. Drives the AdvRmFarmer (orchestrator-side) and
         // writes corpus.jsonl with `gold_verdict: "pending"`. Single
@@ -4948,6 +4961,65 @@ pub(crate) fn parse_dkg_args(rest: &[String]) -> Result<CliAction, String> {
 ///   `elai freeze verify`
 ///   `elai freeze ratify --ratifier <id>`
 /// ELAI design hypothesis — no paper grounding.
+/// dkg-stream-rigorous Task 2: parse `elai index build [--project-root PATH]
+/// [--vectors] [--json]`. The only sub-action is `build`. `--project-root`
+/// defaults to the current working directory; `--vectors` opts the
+/// (memory-bounded, streaming) vector stage into the build.
+pub(crate) fn parse_index_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .ok_or_else(|| "missing `index` sub-action; expected: build".to_string())?
+        .as_str();
+    match sub {
+        "build" => {
+            let mut project_root: Option<PathBuf> = None;
+            let mut vectors = false;
+            let mut json = false;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--project-root" => {
+                        let v = rest.get(i + 1).ok_or_else(|| {
+                            "`--project-root` requires a path argument".to_string()
+                        })?;
+                        project_root = Some(PathBuf::from(v));
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--project-root=") => {
+                        let v = flag.trim_start_matches("--project-root=");
+                        project_root = Some(PathBuf::from(v));
+                        i += 1;
+                    }
+                    "--vectors" => {
+                        vectors = true;
+                        i += 1;
+                    }
+                    "--json" => {
+                        json = true;
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!("unexpected argument to `index build`: {other}"));
+                    }
+                }
+            }
+            let project_root = match project_root {
+                Some(p) => p,
+                None => std::env::current_dir()
+                    .map_err(|e| format!("could not resolve current dir for --project-root: {e}"))?,
+            };
+            Ok(CliAction::IndexBuild {
+                project_root,
+                vectors,
+                json,
+            })
+        }
+        other => Err(format!(
+            "unknown `index` sub-action {other:?}; expected: build"
+        )),
+    }
+}
+
 pub(crate) fn parse_freeze_subcommand_args(
     rest: &[String],
     output_format: CliOutputFormat,

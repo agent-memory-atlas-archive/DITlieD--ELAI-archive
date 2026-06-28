@@ -168,12 +168,35 @@ fn is_special_file(path: &Path) -> bool {
     SPECIAL_FILES.iter().any(|s| path_str.ends_with(s))
 }
 
-fn build_adjacency_matrix(
+/// Sparse row-stochastic transition for the PageRank power iteration.
+///
+/// Replaces the former dense `Vec<Vec<f64>>` adjacency matrix, which cost
+/// O(n²) memory (a 23 392-node ELAI self-index built a 4.38 GB dense matrix
+/// even though the graph has only ~11 k edges). This representation is
+/// O(n + edges): `out_edges[from]` holds the row-normalized `(to, weight)`
+/// pairs of source `from`, exactly the non-zero entries the dense matrix held.
+/// `dangling` is the set of sources whose row was all-zero (no out-edges),
+/// identical to the former `build_dangling_vector(&matrix)`.
+///
+/// Numerics are byte-for-byte equivalent to the dense path: per (from,to) the
+/// raw weight is `weight * sqrt(ref_count_of_to)` (×50 when either endpoint is
+/// active), accumulated per cell, then each source row is normalized to sum 1.0.
+struct SparseTransition {
+    /// Per source node: its outgoing (target, normalized_weight) edges.
+    out_edges: Vec<Vec<(usize, f64)>>,
+    /// Source indices with no outgoing edges (former all-zero matrix rows).
+    dangling: Vec<usize>,
+}
+
+fn build_sparse_transition(
     snapshot: &DkgSnapshot,
     active_files: &[PathBuf],
-) -> Vec<Vec<f64>> {
+) -> SparseTransition {
     let n = snapshot.nodes.len();
-    let mut matrix = vec![vec![0.0_f64; n]; n];
+
+    // Accumulate raw weights per source, merging duplicate (from,to) cells the
+    // way the dense matrix did with `matrix[from][to] += w`.
+    let mut out_edges: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
 
     for &(from, to, weight) in &snapshot.edges {
         if from >= n || to >= n {
@@ -193,20 +216,30 @@ fn build_adjacency_matrix(
             w *= 50.0;
         }
 
-        matrix[from][to] += w;
-    }
-
-    // Normalize rows so each row sums to 1.0 (stochastic matrix)
-    for row in &mut matrix {
-        let sum: f64 = row.iter().sum();
-        if sum > 0.0 {
-            for val in row.iter_mut() {
-                *val /= sum;
-            }
+        // Merge into an existing (from,to) cell if present, else push a new one.
+        let row = &mut out_edges[from];
+        if let Some(cell) = row.iter_mut().find(|(t, _)| *t == to) {
+            cell.1 += w;
+        } else {
+            row.push((to, w));
         }
     }
 
-    matrix
+    // Row-normalize: each source's outgoing weights sum to 1.0 (stochastic).
+    let mut dangling = Vec::new();
+    for (from, row) in out_edges.iter_mut().enumerate() {
+        let sum: f64 = row.iter().map(|(_, w)| *w).sum();
+        if sum > 0.0 {
+            for (_, w) in row.iter_mut() {
+                *w /= sum;
+            }
+        } else {
+            // All-zero row == no resolvable out-edges == dangling node.
+            dangling.push(from);
+        }
+    }
+
+    SparseTransition { out_edges, dangling }
 }
 
 fn build_personalization(node_count: usize, task_mentioned_indices: &[usize]) -> Vec<f64> {
@@ -231,27 +264,18 @@ fn build_personalization(node_count: usize, task_mentioned_indices: &[usize]) ->
     pers
 }
 
-fn build_dangling_vector(matrix: &[Vec<f64>]) -> Vec<usize> {
-    matrix
-        .iter()
-        .enumerate()
-        .filter(|(_, row)| row.iter().all(|&v| v == 0.0))
-        .map(|(i, _)| i)
-        .collect()
-}
-
 fn power_iteration(
-    matrix: &[Vec<f64>],
+    transition: &SparseTransition,
     personalization: &[f64],
-    dangling_nodes: &[usize],
     damping: f64,
     max_iter: usize,
     tolerance: f64,
 ) -> Vec<f64> {
-    let n = matrix.len();
+    let n = transition.out_edges.len();
     if n == 0 {
         return vec![];
     }
+    let dangling_nodes = &transition.dangling;
 
     let mut ranks = vec![1.0 / n as f64; n];
 
@@ -261,11 +285,17 @@ fn power_iteration(
         // Dangling node contribution: sum of ranks of dangling nodes
         let dangling_sum: f64 = dangling_nodes.iter().map(|&i| ranks[i]).sum();
 
-        // Matrix multiplication: new_rank[i] = sum_j(matrix[j][i] * ranks[j])
-        for j in 0..n {
+        // Sparse matrix multiplication: new_rank[i] = sum_j(matrix[j][i] * ranks[j]).
+        // matrix[j][i] is non-zero only for the row-normalized out-edges of j, so
+        // scatter ranks[j]*w into new_rank[to] over j's out-edges. Identical sum
+        // to the dense loop, O(edges) instead of O(n²).
+        for (j, row) in transition.out_edges.iter().enumerate() {
             let rj = ranks[j];
-            for (i, nr) in new_ranks.iter_mut().enumerate() {
-                *nr += matrix[j][i] * rj;
+            if rj == 0.0 {
+                continue;
+            }
+            for &(to, w) in row {
+                new_ranks[to] += w * rj;
             }
         }
 
@@ -413,8 +443,9 @@ pub fn compute_repo_map(
         };
     }
 
-    // Build adjacency matrix and run PageRank
-    let matrix = build_adjacency_matrix(snapshot, active_files);
+    // Build sparse row-stochastic transition and run PageRank. Sparse (O(n+edges))
+    // replaces the former dense O(n²) adjacency matrix that OOM'd on large repos.
+    let transition = build_sparse_transition(snapshot, active_files);
 
     // Identify task-mentioned nodes
     let task_lower = task.to_lowercase();
@@ -427,12 +458,10 @@ pub fn compute_repo_map(
         .collect();
 
     let personalization = build_personalization(n, &task_mentioned);
-    let dangling = build_dangling_vector(&matrix);
 
     let ranks = power_iteration(
-        &matrix,
+        &transition,
         &personalization,
-        &dangling,
         config.damping_factor,
         config.max_iterations,
         config.tolerance,

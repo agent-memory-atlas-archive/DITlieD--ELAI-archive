@@ -174,9 +174,9 @@
   .conv-panel {
     font-family: var(--font-mono, monospace);
     font-size: 0.82rem;
-    color: var(--color-text, #e2e8f0);
-    background: var(--color-surface, #0f172a);
-    border: 1px solid var(--color-border, #1e293b);
+    color: var(--text-primary, #d0d7de);
+    background: var(--bg-surface, #151a20);
+    border: 1px solid var(--bg-hover, #1a2028);
     border-radius: 6px;
     padding: 0.75rem 1rem;
     display: flex;
@@ -189,35 +189,35 @@
     align-items: center;
     gap: 0.5rem;
     padding-bottom: 0.5rem;
-    border-bottom: 1px solid var(--color-border, #1e293b);
+    border-bottom: 1px solid var(--bg-hover, #1a2028);
   }
 
   .conv-title {
     font-weight: 600;
-    color: var(--color-accent, #38bdf8);
+    color: var(--teal-bright, #24a08e);
     letter-spacing: 0.02em;
   }
 
   .conv-count {
     font-size: 0.75rem;
-    color: var(--color-muted, #64748b);
+    color: var(--text-secondary, #6e7681);
     margin-left: auto;
   }
 
   .conv-error {
-    color: var(--color-error, #f87171);
+    color: var(--fail, #c44040);
     font-size: 0.78rem;
   }
 
   .conv-empty {
-    color: var(--color-muted, #64748b);
+    color: var(--text-secondary, #6e7681);
     font-size: 0.78rem;
     padding: 0.5rem 0;
   }
 
   .conv-empty code {
-    color: var(--color-accent, #38bdf8);
-    background: var(--color-surface-raised, #1e293b);
+    color: var(--teal-bright, #24a08e);
+    background: var(--bg-input, #1e2530);
     padding: 0.1em 0.3em;
     border-radius: 3px;
   }
@@ -227,7 +227,7 @@
     flex-direction: column;
     gap: 0.4rem;
     padding-bottom: 0.75rem;
-    border-bottom: 1px dashed var(--color-border, #1e293b);
+    border-bottom: 1px dashed var(--bg-hover, #1a2028);
   }
 
   .conv-run:last-child {
@@ -244,12 +244,12 @@
 
   .conv-suite {
     font-weight: 600;
-    color: var(--color-text, #e2e8f0);
+    color: var(--text-primary, #d0d7de);
   }
 
   .conv-meta {
     font-size: 0.74rem;
-    color: var(--color-muted, #64748b);
+    color: var(--text-secondary, #6e7681);
   }
 
   .conv-badge {
@@ -261,27 +261,27 @@
   }
 
   .conv-badge--pending {
-    background: color-mix(in oklch, var(--color-warn, #fbbf24) 20%, transparent);
-    color: var(--color-warn, #fbbf24);
-    border: 1px solid color-mix(in oklch, var(--color-warn, #fbbf24) 40%, transparent);
+    background: color-mix(in oklch, var(--warn, #c49b2a) 20%, transparent);
+    color: var(--warn, #c49b2a);
+    border: 1px solid color-mix(in oklch, var(--warn, #c49b2a) 40%, transparent);
   }
 
   .conv-warning {
     font-size: 0.76rem;
-    color: var(--color-warn, #fbbf24);
-    background: color-mix(in oklch, var(--color-warn, #fbbf24) 10%, transparent);
-    border: 1px solid color-mix(in oklch, var(--color-warn, #fbbf24) 30%, transparent);
+    color: var(--warn, #c49b2a);
+    background: color-mix(in oklch, var(--warn, #c49b2a) 10%, transparent);
+    border: 1px solid color-mix(in oklch, var(--warn, #c49b2a) 30%, transparent);
     border-radius: 4px;
     padding: 0.25rem 0.5rem;
   }
 
   .conv-knee {
     font-size: 0.76rem;
-    color: var(--color-muted, #64748b);
+    color: var(--text-secondary, #6e7681);
   }
 
   .conv-knee strong {
-    color: var(--color-accent, #38bdf8);
+    color: var(--teal-bright, #24a08e);
   }
 
   .conv-table {
@@ -292,16 +292,16 @@
 
   .conv-table th {
     text-align: left;
-    color: var(--color-muted, #64748b);
+    color: var(--text-secondary, #6e7681);
     font-weight: 500;
     padding: 0.2rem 0.4rem;
-    border-bottom: 1px solid var(--color-border, #1e293b);
+    border-bottom: 1px solid var(--bg-hover, #1a2028);
     white-space: nowrap;
   }
 
   .conv-table td {
     padding: 0.18rem 0.4rem;
-    border-bottom: 1px solid color-mix(in oklch, var(--color-border, #1e293b) 50%, transparent);
+    border-bottom: 1px solid color-mix(in oklch, var(--bg-hover, #1a2028) 50%, transparent);
   }
 
   .conv-table tr:last-child td {
@@ -309,21 +309,21 @@
   }
 
   .conv-ci {
-    color: var(--color-muted, #64748b);
+    color: var(--text-secondary, #6e7681);
     font-size: 0.73rem;
   }
 
   .conv-knee-row td {
-    background: color-mix(in oklch, var(--color-accent, #38bdf8) 8%, transparent);
+    background: color-mix(in oklch, var(--teal-bright, #24a08e) 8%, transparent);
   }
 
   .conv-dip td {
-    background: color-mix(in oklch, var(--color-warn, #fbbf24) 8%, transparent);
+    background: color-mix(in oklch, var(--warn, #c49b2a) 8%, transparent);
   }
 
   .conv-meta-details {
     font-size: 0.72rem;
-    color: var(--color-muted, #64748b);
+    color: var(--text-secondary, #6e7681);
     cursor: pointer;
   }
 

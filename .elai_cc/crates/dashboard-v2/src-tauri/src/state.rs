@@ -234,6 +234,7 @@ use elai_orchestrator::{
     // elai_orchestrator::runtime_setup) used by the Tauri setup() callback
     // to spawn start_task_runner with both processors as Some(...).
     TaskRunnerError,
+    research_tree::ResearchCache, // B-36: ResearchCache for web research result caching (Track A.6 / D.7)
 };
 use elai_web_validator::DevServerHandle;
 
@@ -263,6 +264,26 @@ pub(crate) fn resolve_ssb_path(project_root: &Path) -> Option<PathBuf> {
     ];
     candidates.into_iter().find(|p| p.exists())
 }
+
+// ---------------------------------------------------------------------------
+// SSE event name constants for streaming operations (B-36 Step 5/5)
+// ---------------------------------------------------------------------------
+
+/// Event name for web research step progress (D.2 run_planning_task).
+/// Emitted via Window::emit to feed the activity feed / orbit captions.
+pub const WEB_RESEARCH_STEP_EVENT: &str = "web_research_step";
+
+/// Event name for turn-level sidecar log lines (D.7 one_shot_prompt).
+/// Emitted via Window::emit for streaming sidecar output.
+pub const TURN_EVENT: &str = "turn";
+
+/// Event name for streaming start notification (D.7 one_shot_prompt).
+/// Emitted via Window::emit when sidecar streaming begins.
+pub const STREAMING_STARTED_EVENT: &str = "streaming_started";
+
+/// Event name for response chunks (D.7 one_shot_prompt).
+/// Emitted via Window::emit for streaming response text.
+pub const RESPONSE_EVENT: &str = "response";
 
 /// Resolve the active project root. Defaults to the current working directory
 /// (where elai.bat / dashboard was launched from).
@@ -348,6 +369,11 @@ pub struct AppState {
     /// `SsbViewer::feasibility_summary` and does not need the prober.
     #[allow(dead_code)] // wired for future probe-now Tauri command (4F.7-4F.8 path)
     pub feasibility_prober: Arc<dyn FeasibilityProber>,
+    /// B-36: ResearchCache for web research result caching (Track A.6 / D.7).
+    /// Shared across the dashboard's research commands (D.2 run_planning_task,
+    /// D.3 run_research) to avoid redundant web fetches. Constructed at
+    /// startup with default TTL (3600s) and max entries (1000).
+    pub research_cache: Arc<ResearchCache>,
     /// B-24 Phase 4I Group C8: per-step media validation entries fed by the
     /// SSB subscriber. Keyed by `step_id`. `tokio::sync::RwLock` because the
     /// SSB subscriber updates it under an async task while Tauri commands
@@ -672,13 +698,18 @@ impl AppState {
             mcp_server_url: Arc::new(Mutex::new(mcp_url)),
             sidecar_url: Arc::new(Mutex::new(sidecar_url)),
             webhook_url: Arc::new(Mutex::new(None)),
-            clock,
+            clock: clock.clone(),
             http,
             streaming_http,
             active_streams: Arc::new(Mutex::new(BTreeMap::new())),
             remote_sidecar_progress: Arc::new(Mutex::new(None)),
             dev_servers: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             feasibility_prober,
+            // B-36: ResearchCache with default TTL (3600s) and max entries (1000).
+            // The clock is attached so cache entries respect wall-clock time.
+            research_cache: Arc::new(
+                ResearchCache::new(1000, 3600).with_clock(clock),
+            ),
             media_validation: Arc::new(tokio::sync::RwLock::new(FxHashMap::default())),
             // Phase A1b: runner handles default to None. Populated by the
             // Tauri setup() callback in lib.rs when writer.is_some(); the

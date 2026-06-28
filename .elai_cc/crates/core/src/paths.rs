@@ -102,6 +102,14 @@ pub const HELD_OUT_DIR_NAME: &str = "held-out";
 /// the JSONL fixture directories under `HELD_OUT_DIR_NAME`.
 pub const HELD_OUT_DB_FILENAME: &str = "held_out.sqlite";
 
+/// C-25 / I-36: cache directory for compiled pipelines and compiled prompts.
+/// Lives under the project root as `.elai_cc/cache` (canonical location).
+pub const CACHE_DIR_NAME: &str = "cache";
+
+/// E-24: MCP schema-hash pin directory. Lives under the project root as
+/// `.elai_cc/mcp/pins` (canonical location).
+pub const MCP_PINS_DIR_NAME: &str = "mcp";
+
 // ---------------------------------------------------------------------------
 // Path helpers — pure functions of `project_root`.
 // ---------------------------------------------------------------------------
@@ -152,6 +160,25 @@ pub fn bm25_dir_path(project_root: &Path) -> PathBuf {
     project_root
         .join(ELAI_DATA_DIR_NAME)
         .join(INDEXES_DIR_NAME)
+}
+
+/// Canonical BM25 `project_id` (the `Bm25Index::new(root, project_id)` key).
+///
+/// `Bm25Index::new` lays the index out at `<root>/projects/<project_id>/bm25`.
+/// The single on-disk BM25 index per project is keyed `"default"`: both the
+/// index WRITER (`IndexingService::build_index_resumable`) and the query-time
+/// READER (`build_local_knowledge_stack`) MUST agree on this id, or the reader
+/// opens an empty per-session directory while the populated index sits unread.
+/// This const is the single source of truth that keeps them aligned.
+pub const BM25_PROJECT_ID: &str = "default";
+
+/// Root path passed to `Bm25Index::new` so it resolves to the canonical
+/// `<project_root>/.elai_cc/indexes/projects/default/bm25` directory that
+/// `IndexingService` writes. Reader and writer both go through here (with
+/// [`BM25_PROJECT_ID`]) so a built index is actually reachable at query time.
+#[inline]
+pub fn bm25_index_root(project_root: &Path) -> PathBuf {
+    bm25_dir_path(project_root)
 }
 
 /// `<project_root>/.elai_cc/indexes/vector_index.json`
@@ -370,4 +397,30 @@ pub fn artifact_manifest_path(
         .join(task_id)
         .join(step_id)
         .join(format!("{artifact_id}.{ext}", ext = ARTIFACT_MANIFEST_EXT))
+}
+
+// ---------------------------------------------------------------------------
+// C-25 / I-36 / E-24: Cache and MCP pin helpers.
+// ---------------------------------------------------------------------------
+
+/// `<project_root>/.elai_cc/cache`
+///
+/// C-25 / I-36: canonical location for compiled pipeline cache and
+/// compiled prompt cache. Replaces the legacy `.elai/cache` literal.
+#[inline]
+pub fn cache_dir_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(ELAI_DATA_DIR_NAME)
+        .join(CACHE_DIR_NAME)
+}
+
+/// `<project_root>/.elai_cc/mcp`
+///
+/// E-24: canonical location for MCP schema-hash pin store. Callers
+/// append `pins/` themselves to get the full pin directory.
+#[inline]
+pub fn mcp_dir_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(ELAI_DATA_DIR_NAME)
+        .join(MCP_PINS_DIR_NAME)
 }

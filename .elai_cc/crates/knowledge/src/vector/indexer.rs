@@ -563,6 +563,63 @@ impl<'de> serde::Deserialize<'de> for ChunkMeta {
 mod tests {
     use super::*;
 
+    /// retrieval-mem-fixes FIX #1: deterministic mock embedding module (NO
+    /// ONNX, NO model load) used to exercise the streaming index_file -> save
+    /// -> load roundtrip that `IndexingService::build_vector_index_streaming`
+    /// composes. Embeds a fixed-dim vector derived from the byte sum so the
+    /// roundtrip is reproducible without any external model.
+    struct MockTextModule {
+        dim: usize,
+    }
+    impl VectorModule for MockTextModule {
+        fn embed_code(&self, _t: &str) -> Result<Vec<f32>, crate::vector::VectorError> {
+            Err(crate::vector::VectorError::OrtError("no code embed in mock".into()))
+        }
+        fn embed_text(&self, t: &str) -> Result<Vec<f32>, crate::vector::VectorError> {
+            let seed = t.bytes().map(|b| b as f32).sum::<f32>();
+            Ok((0..self.dim).map(|i| (seed + i as f32) * 0.001).collect())
+        }
+        fn readiness(&self) -> crate::ReadinessStatus {
+            crate::ReadinessStatus::Degraded
+        }
+    }
+
+    #[test]
+    fn bulk_build_index_file_save_load_roundtrip() {
+        // FIX #1: prove the streaming primitive (index_file per file -> save ->
+        // load) the bulk vector build uses works on a tiny synthetic fixture,
+        // without loading any real embedding model (hardware-safety constraint).
+        let dir = tempfile::tempdir().unwrap();
+        let dim = 8usize;
+        let module = MockTextModule { dim };
+
+        // 2-file synthetic fixture.
+        let f1 = dir.path().join("a.rs");
+        let f2 = dir.path().join("b.rs");
+        std::fs::write(&f1, "fn alpha() { let x = 1; }\nfn beta() { let y = 2; }\n").unwrap();
+        std::fs::write(&f2, "struct Gamma;\nimpl Gamma { fn run(&self) {} }\n").unwrap();
+
+        // Stream: index one file at a time (the bulk-build loop shape).
+        let mut indexer = VectorIndexer::new(dim);
+        let s1 = indexer.index_file(&f1, &module, None).unwrap();
+        let s2 = indexer.index_file(&f2, &module, None).unwrap();
+        assert!(s1.chunks_embedded + s2.chunks_embedded > 0, "expected some chunks embedded");
+        let count_before = indexer.len();
+        assert!(count_before > 0, "index should be non-empty after streaming build");
+
+        // Save then reload — the persisted index must round-trip the chunk count.
+        let index_path = dir.path().join("vectors.bin");
+        indexer.save(&index_path).unwrap();
+        assert!(index_path.exists(), "index file must exist after save");
+
+        let reloaded = VectorIndexer::load(&index_path, dim).unwrap();
+        assert_eq!(
+            reloaded.len(),
+            count_before,
+            "reloaded index chunk count must match the saved index"
+        );
+    }
+
     #[test]
     fn chunk_key_deterministic() {
         let k1 = chunk_key(Path::new("foo.rs"), 1, 50);
