@@ -36,6 +36,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+// J-21 Step 4 — activation-decay scorer (TTL demoted to max-age guardrail;
+// extends H-31/H-32/E-5 + J-21 Steps 1-3; never amends them).
+pub mod activation_decay;
+// J-21 FIX-ACCEPTANCE — acceptance-evidence contract (test-only). Verifies
+// the `elai acceptance verify J-21` trigger produces an AcceptanceEvidence
+// SSB row. Compiled ONLY under #[cfg(test)] — zero production surface.
+#[cfg(test)]
+mod acceptance_evidence;
 pub mod citation_validity;
 pub mod contradiction;
 pub mod core_block;
@@ -54,9 +62,18 @@ pub mod mem0_dispatcher;
 pub mod nli_onnx;
 pub mod notes;
 pub mod quarantine_broadcast;
+// J-21 Step 3 — provenance-linked raw-evidence tier + sufficiency-gated
+// escalation (extends H-31/H-32/E-5 + J-21 Steps 1-2; never amends them).
+pub mod raw_evidence;
+// J-21 Step 2 — retrieval-time authorization + typed claim/evidence split
+// + write quarantine (extends H-31/H-32/E-5; never amends them).
+pub mod retrieval_authorization;
 // F-12 Tier-1 — semantic contradiction pre-filter (deterministic local NLI
 // judge). Fully offline; no ort in the default build.
 pub mod semantic_contradiction;
+// J-21 Step 1 — commit-aware semantic validation (extends H-32's
+// existence-only check with commit+AST identity re-derivation).
+pub mod semantic_validation;
 pub mod retrieval;
 pub mod store;
 pub mod tools;
@@ -94,6 +111,11 @@ pub use citation_validity::{
     CitationValidator, NullValidator, Tier, Validity, UNUSED_TTL_MS,
 };
 pub use retrieval::{get_relevant_facts, RetrievalFilter, ValidationExclusion};
+// J-21 Step 1 — commit-aware semantic validation re-exports.
+pub use semantic_validation::{
+    extract_stored_identity, revalidate_semantic, SemanticError, SemanticValidity,
+    SemanticValidator, SymbolIdentity, ValidationScope,
+};
 pub use semantic_contradiction::{
     adjudicate_semantic, collect_cross_key_candidates, pair_fingerprint, ContradictionCandidate,
     DeterministicNliJudge, NliJudge, NliLabel, NliVerdict, SemanticAction, SemanticConflictOutcome,
@@ -106,3 +128,22 @@ pub use tools::{
 };
 pub use trust::{Provenance, TrustTier};
 pub use view::{SafetyCriticalQueryType, TierCeiling};
+// J-21 Step 2 — retrieval-time authorization re-exports.
+pub use retrieval_authorization::{
+    authorization_exclusion, authorize_for_injection, extract_claim_from_fact,
+    get_authorized_facts, quarantine_or_accept, AuthorizationExclusion, Claim, ClaimAuthorization,
+    Evidence, NullSemanticValidator, QuarantineDecision, QuarantineStore, WriteQuarantineRecord,
+};
+// J-21 Step 3 — raw-evidence tier + sufficiency-gated escalation re-exports.
+pub use raw_evidence::{
+    assess_sufficiency, escalate_to_raw_evidence, get_authorized_facts_with_escalation,
+    RawEvidenceEscalation, RawEvidenceRecord, RawEvidenceStore, SufficiencyReason,
+    SufficiencyVerdict, MAX_RECORDS_PER_NAMESPACE,
+};
+// J-21 Step 4 — activation-decay scorer re-exports.
+pub use activation_decay::{
+    activation_decay_tick, collect_activation_expired, get_authorized_facts_with_activation_decay,
+    score_activation, ActivationDecayConfig, ActivationDecayStats, ActivationRetrievalResult,
+    ActivationScore, DEFAULT_ACTIVATION_RETENTION_THRESHOLD, DEFAULT_MAX_AGE_GUARDRAIL_MS,
+    USE_HALF_LIFE_MS, VALIDATION_HALF_LIFE_MS,
+};

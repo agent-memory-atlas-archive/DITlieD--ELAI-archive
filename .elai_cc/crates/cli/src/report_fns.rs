@@ -1204,7 +1204,10 @@ pub(crate) fn assemble_user_memory_section(
     use crate::user_memory_capture::{user_memory_enabled, DEFAULT_USER_ID};
     use elai_core::clock::{ClockProvider, OsClock};
     use elai_core::paths::memory_dir_path;
-    use elai_memory::{get_relevant_facts, FactStore, FactType, NullValidator, RetrievalFilter};
+    use elai_memory::{
+        get_authorized_facts, get_relevant_facts, FactStore, FactType, NullSemanticValidator,
+        NullValidator, RetrievalFilter, ValidationScope,
+    };
 
     // FIREWALL FIRST: a non-allowlisted role gets ZERO user-memory (structural, fail-closed).
     // Tier-A facts are also excluded here (same firewall — auditor/critic/adversary get ZERO
@@ -1229,13 +1232,38 @@ pub(crate) fn assemble_user_memory_section(
     let mut any_facts = false;
 
     // --- Tier-B (Preference-class): voice/tool/pattern preferences ---
+    // J-21: route Tier-B through the retrieval-time authorization gate
+    // (`get_authorized_facts`) rather than the bare H-32 retrieval. This makes
+    // the J-21 authorization+semantic chain genuinely reachable from the live
+    // CLI memory-assembly entrypoint.
+    //
+    // NON-REGRESSING for Tier-B: `authorize_for_injection` -> `revalidate_semantic`
+    // short-circuits Preference-class (Tier-B) facts to `Valid`/`Authorized`
+    // BEFORE either validator is consulted (semantic_validation.rs:284-286 +
+    // retrieval_authorization.rs:342-344; proven by the `tier_b_short_circuits_to_valid`
+    // test, which returns Valid even with a failing semantic validator). So the
+    // fail-closed `NullValidator` + `NullSemanticValidator` never run for these
+    // facts: the authorized set equals the H-32 candidate set and the exclusions
+    // list is always empty here. Quarantine is `None` (no write-quarantine store
+    // on the read path).
+    let tier_b_existence = NullValidator;
+    let tier_b_semantic = NullSemanticValidator;
+    let tier_b_scope = ValidationScope::at_head("", "");
     let tier_b_filter = RetrievalFilter {
         fact_type: Some(FactType::Preference),
         ..RetrievalFilter::default()
     };
-    if let Ok((tier_b_facts, _)) =
-        get_relevant_facts(&store, DEFAULT_USER_ID, &tier_b_filter, MEMORY_RETRIEVAL_K, now_ms)
-    {
+    if let Ok((tier_b_facts, _)) = get_authorized_facts(
+        &store,
+        DEFAULT_USER_ID,
+        &tier_b_filter,
+        MEMORY_RETRIEVAL_K,
+        now_ms,
+        &tier_b_existence,
+        &tier_b_semantic,
+        &tier_b_scope,
+        None,
+    ) {
         if !tier_b_facts.is_empty() {
             any_facts = true;
             lines.push(
