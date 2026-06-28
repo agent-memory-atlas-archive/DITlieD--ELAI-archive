@@ -23,6 +23,12 @@ use uuid::Uuid;
 
 mod agent_loop;
 
+// C-45 STEP 3: the `dropper` module lives in the library target
+// (`src/lib.rs`) so integration tests under `tests/` can exercise
+// `AgentRoleDropper` without spawning the full IPC loop. The binary
+// re-uses the same module via the lib crate path.
+use elai_cc_agent::dropper;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -105,6 +111,35 @@ fn send_message(stream: &mut dyn Write, msg: &IpcMessageType) -> Result<(), Agen
     write_frame(stream, &frame)
 }
 
+/// Render an `AgentRole` as its snake_case wire name for the fallback
+/// response content. The agent crate does not depend on `serde_json`
+/// (crate invariant at main.rs:1-9), so this manual matcher covers
+/// the 8 pilot roles. Falls back to the Debug representation for
+/// non-pilot roles (which are not droppable in C-45 and thus never
+/// reach this path via the dropper).
+fn role_snake_case(role: elai_ipc_types::AgentRole) -> &'static str {
+    use elai_ipc_types::AgentRole;
+    match role {
+        AgentRole::Executor => "executor",
+        AgentRole::Auditor => "auditor",
+        AgentRole::Researcher => "researcher",
+        AgentRole::Designer => "designer",
+        AgentRole::PromptEngineer => "prompt_engineer",
+        AgentRole::ContextCompiler => "context_compiler",
+        AgentRole::MemoryWriter => "memory_writer",
+        AgentRole::MediaValidator => "media_validator",
+        AgentRole::IdeaFramer => "idea_framer",
+        AgentRole::IdeaCritic => "idea_critic",
+        AgentRole::AuditorConcepts => "auditor_concepts",
+        AgentRole::AuditorPhases => "auditor_phases",
+        AgentRole::AuditorSteps => "auditor_steps",
+        AgentRole::AuditorBabySteps => "auditor_baby_steps",
+        AgentRole::AuditorBabyStepDetail => "auditor_baby_step_detail",
+        AgentRole::AuditorProductionGrade => "auditor_production_grade",
+        AgentRole::InjectionClassifier => "injection_classifier",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Message dispatch
 // ---------------------------------------------------------------------------
@@ -114,10 +149,38 @@ fn handle_message(
     agent_id: &Uuid,
     writer: &mut dyn Write,
     reader: &mut dyn Read,
+    dropper: &dropper::AgentRoleDropper,
 ) -> Result<bool, AgentError> {
     match msg {
         IpcMessageType::AgentRequest { task, dispatch_config } => {
             tracing::info!(task = %task, role = ?dispatch_config.role, "received agent request");
+
+            // C-45 STEP 2: when the dropper is active and this request
+            // is for the dropped role, return a fallback AgentResponse
+            // instead of entering the full ReAct loop. The fallback is
+            // always defined (per-role fallback table in dropper.rs) and
+            // observable (non-empty content describing the fallback
+            // strategy). C-45 stub_ban: "dropped-role fallback path MUST
+            // be DEFINED per role; panic on drop is not acceptable."
+            if let Some(desc) = dropper.fallback_description(dispatch_config.role) {
+                tracing::info!(
+                    role = ?dispatch_config.role,
+                    fallback = desc,
+                    "C-45 role-drop fallback: returning merged-behavior response"
+                );
+                let role_str = role_snake_case(dispatch_config.role);
+                let content = format!(
+                    "C-45 role-drop fallback: role `{role_str}` dropped — {desc}. \
+                     Task was not executed by this role's full agent cycle."
+                );
+                let response = IpcMessageType::AgentResponse {
+                    content,
+                    artifacts: Vec::new(),
+                };
+                send_message(writer, &response)?;
+                return Ok(true);
+            }
+
             // Phase A2: dispatch into the real ReAct loop instead of the
             // ack-only stub that 4A.5 shipped. run_react_turn drives
             // InferRequest <-> InferResponse <-> ToolRequest <-> ToolResult
@@ -245,6 +308,18 @@ fn run_message_loop(
     let mut last_heartbeat = _clock.now();
     let uptime_start = _clock.now();
 
+    // C-45 STEP 2: read the role-drop policy from the environment.
+    // The orchestrator sets ELAI_C45_DROPPED_ROLE when spawning this
+    // agent under a "drop one role" credit-attribution configuration.
+    // Unset / unrecognized -> baseline (no role dropped).
+    let dropper = dropper::AgentRoleDropper::from_env();
+    if !dropper.is_baseline() {
+        tracing::info!(
+            dropped_role = ?dropper.dropped_role,
+            "C-45 role-drop policy active for this agent process"
+        );
+    }
+
     loop {
         // Send heartbeat if interval elapsed
         if _clock.elapsed_since(last_heartbeat) >= heartbeat_interval {
@@ -261,7 +336,7 @@ fn run_message_loop(
         match read_frame(reader) {
             Ok(frame) => {
                 let msg = IpcFrame::decode(&frame.payload).map_err(AgentError::Frame)?;
-                match handle_message(msg, &agent_id, writer, reader)? {
+                match handle_message(msg, &agent_id, writer, reader, &dropper)? {
                     true => continue,
                     false => break,
                 }
