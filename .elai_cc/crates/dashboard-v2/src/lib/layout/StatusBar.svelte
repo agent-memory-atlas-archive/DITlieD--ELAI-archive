@@ -323,7 +323,7 @@
 
   .reindex--running {
     color: var(--teal);
-    animation: reindexPulse 1.4s var(--ease-std) infinite;
+    animation: breath 2s ease-in-out infinite;
   }
 
   .reindex--done {
@@ -332,10 +332,5 @@
 
   .reindex--error {
     color: var(--fail);
-  }
-
-  @keyframes reindexPulse {
-    0%, 100% { opacity: 0.6; }
-    50%      { opacity: 1; }
   }
 </style>

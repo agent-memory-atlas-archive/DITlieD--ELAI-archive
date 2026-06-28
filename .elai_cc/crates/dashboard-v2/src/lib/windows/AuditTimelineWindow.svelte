@@ -38,15 +38,16 @@
   let selectedFindings = $state<AuditFinding[] | null>(null);
   let selectedLabel = $state<string>('');
 
-  // Mode-keyed colour mapping per brief.
+  // Mode-keyed colour mapping — uses E-33 Wong signal palette tokens
+  // (color-blind-safe, WCAG 2.2) for categorical audit-mode differentiation.
   const modeColour: Record<AuditorMode, string> = {
-    concepts: '#3b82f6', // blue
-    phases: '#22c55e', // green
-    steps: '#eab308', // yellow
-    babysteps: '#f97316', // orange
-    babystep_detail: '#ef4444', // red
-    plan: '#a855f7', // purple
-    production_grade: '#ec4899', // pink
+    concepts: 'var(--signal-blue)',
+    phases: 'var(--signal-green)',
+    steps: 'var(--signal-orange)',
+    babysteps: 'var(--signal-vermilion)',
+    babystep_detail: 'var(--signal-rose)',
+    plan: 'var(--purple)',
+    production_grade: 'var(--teal-bright)',
   };
 
   const modeLabel: Record<AuditorMode, string> = {
@@ -209,9 +210,9 @@
     width: 100%;
     overflow: auto;
     padding: 1rem;
-    font-family: system-ui, -apple-system, sans-serif;
-    color: var(--fg, #e5e7eb);
-    background: var(--bg, #0f172a);
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    background: var(--bg-base);
     box-sizing: border-box;
   }
 
@@ -246,21 +247,21 @@
     margin-left: 0.25rem;
   }
 
-  .atl-block { color: #ef4444; }
-  .atl-cascade { color: #f97316; }
-  .atl-fabrication { color: #dc2626; font-weight: 600; }
+  .atl-block { color: var(--fail); }
+  .atl-cascade { color: var(--warn); }
+  .atl-fabrication { color: var(--fail); font-weight: 600; }
 
   .atl-refresh {
     background: transparent;
-    border: 1px solid #334155;
+    border: 1px solid var(--border-default);
     color: inherit;
     padding: 0.25rem 0.75rem;
     border-radius: 4px;
     cursor: pointer;
     font-size: 0.75rem;
   }
-  .atl-refresh:hover { background: #1e293b; }
-  .atl-refresh:focus { outline: 2px solid #3b82f6; outline-offset: 2px; }
+  .atl-refresh:hover { background: var(--bg-surface); }
+  .atl-refresh:focus { outline: 2px solid var(--info); outline-offset: 2px; }
 
   .atl-badges {
     display: flex;
@@ -279,10 +280,10 @@
   }
 
   .atl-error {
-    border-left: 3px solid #ef4444;
+    border-left: 3px solid var(--fail);
     padding: 0.5rem 0.75rem;
     margin-bottom: 1rem;
-    background: rgba(239, 68, 68, 0.08);
+    background: var(--fail-ghost);
   }
 
   .atl-loading,
@@ -293,7 +294,7 @@
   }
 
   .atl-empty code {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--border-default);
     padding: 0 0.25rem;
     border-radius: 3px;
   }
@@ -302,7 +303,7 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    border-left: 1px solid #1e293b;
+    border-left: 1px solid var(--bg-surface);
   }
 
   .atl-row {
@@ -314,7 +315,7 @@
   }
 
   .atl-row.atl-cascade-row {
-    border-bottom: 1px dashed #f97316;
+    border-bottom: 1px dashed var(--warn);
   }
 
   .atl-dot {
@@ -328,7 +329,7 @@
     flex-shrink: 0;
     padding: 0;
   }
-  .atl-dot:focus { outline: 2px solid #3b82f6; outline-offset: 2px; }
+  .atl-dot:focus { outline: 2px solid var(--info); outline-offset: 2px; }
 
   .atl-verdict-block .atl-dot {
     background: transparent;
@@ -360,24 +361,24 @@
     letter-spacing: 0.05em;
   }
   .atl-verdict-allow {
-    color: #22c55e;
-    background: rgba(34, 197, 94, 0.12);
+    color: var(--pass);
+    background: var(--pass-ghost);
   }
   .atl-verdict-block {
-    color: #ef4444;
-    background: rgba(239, 68, 68, 0.12);
+    color: var(--fail);
+    background: var(--fail-ghost);
   }
 
   .atl-flag {
     font-size: 0.6875rem;
     padding: 0.125rem 0.375rem;
     border-radius: 3px;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--border-subtle);
   }
 
   .atl-flag-cascade {
-    color: #f97316;
-    background: rgba(249, 115, 22, 0.12);
+    color: var(--warn);
+    background: var(--warn-ghost);
   }
 
   .atl-count {
@@ -390,8 +391,8 @@
     right: 1rem;
     top: 4rem;
     width: min(420px, 90vw);
-    background: #1e293b;
-    border: 1px solid #334155;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     padding: 1rem;
     z-index: 1000;
@@ -414,7 +415,7 @@
     cursor: pointer;
     font-size: 1.25rem;
   }
-  .atl-popover button:focus { outline: 2px solid #3b82f6; }
+  .atl-popover button:focus { outline: 2px solid var(--info); }
 
   .atl-findings {
     list-style: none;
@@ -426,7 +427,7 @@
 
   .atl-finding {
     padding: 0.5rem 0;
-    border-bottom: 1px solid #334155;
+    border-bottom: 1px solid var(--border-default);
   }
   .atl-finding:last-child { border-bottom: none; }
   .atl-finding p {
@@ -438,7 +439,7 @@
     font-size: 0.75rem;
   }
 
-  .atl-sev-BLOCK strong { color: #ef4444; }
-  .atl-sev-WARN strong { color: #eab308; }
-  .atl-sev-INFO strong { color: #3b82f6; }
+  .atl-sev-BLOCK strong { color: var(--fail); }
+  .atl-sev-WARN strong { color: var(--warn); }
+  .atl-sev-INFO strong { color: var(--info); }
 </style>

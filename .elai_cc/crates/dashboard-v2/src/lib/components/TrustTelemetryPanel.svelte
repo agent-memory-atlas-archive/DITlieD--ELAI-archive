@@ -199,13 +199,13 @@
 
   .card-val {
     font-family: var(--font-mono);
-    font-size: 16px;
+    font-size: 15px;
     color: var(--text-primary);
     font-weight: 500;
   }
 
   .card-hint {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-disabled);
     font-style: italic;
   }

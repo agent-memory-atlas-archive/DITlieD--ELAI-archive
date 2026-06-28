@@ -213,13 +213,13 @@
   }
   .drawer-header h2 {
     margin: 0 0 0.25rem 0;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
   }
   .grounding {
     margin: 0;
     color: var(--muted-fg, #888);
-    font-size: 11px;
+    font-size: 10px;
   }
   .status {
     color: var(--muted-fg, #888);
@@ -239,7 +239,7 @@
     color: var(--fg, #ddd);
     cursor: pointer;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
   }
   .category-bands button.active {
     background: var(--accent-bg, #2a4a6a);
@@ -261,7 +261,7 @@
   }
   .mode-tag {
     font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 11px;
+    font-size: 10px;
   }
   .count {
     text-align: right;

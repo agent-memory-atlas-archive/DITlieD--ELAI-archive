@@ -140,7 +140,7 @@
   }
   .error-banner {
     color: #d05050;
-    font-size: 11px;
+    font-size: 10px;
     padding: 4px 0;
   }
   .empty {
@@ -174,7 +174,7 @@
     text-align: left;
     padding: 2px 6px;
     border-bottom: 1px solid #2a2a2a;
-    font-size: 11px;
+    font-size: 10px;
   }
   .footer {
     margin-top: 6px;

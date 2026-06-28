@@ -30,9 +30,17 @@ import type {
   ContextBudget,
   DecompNode,
   PipelineNode,
+  ExecutablePipelineDag,
   DagRepairEvent,
+  DagRepairEscalated,
   // B-7 (SCHEMA_VERSION 100): producer-wire surfaces.
   PackageRefVerified,
+  // B-7 Task #8: PhaseSizingSplitter split-badge surface.
+  PhaseSizedSplit,
+  // B-7 Step 9: TreePositionChanged cursor surface.
+  TreePosition,
+  // B-7 Step 10: per-baby-step failure retry history.
+  FailureRecord,
   ResearchTreeNode,
   VramGauge,
   InferenceMetrics,
@@ -173,6 +181,7 @@ import {
   DECOMP_TREE,
   PIPELINE_NODES,
   DAG_REPAIR_EVENTS,
+  DAG_REPAIR_ESCALATED,
   RESEARCH_TREE,
   VRAM_GAUGES,
   INFERENCE_METRICS,
@@ -372,9 +381,15 @@ export async function get_impact_analysis(): Promise<ImpactAnalysis> {
 // TASK / WORKFLOW
 // ------------------------------------------------------------------
 
-export async function submit_task(task: string): Promise<{ taskId: string }> {
-  logStub('submit_task', { task });
-  const live = await tryInvoke<{ taskId: string }>('submit_task', { task });
+export async function submit_task(
+  task: string,
+  autonomous?: boolean,
+): Promise<{ taskId: string }> {
+  logStub('submit_task', { task, autonomous });
+  const live = await tryInvoke<{ taskId: string }>('submit_task', {
+    task,
+    autonomous: autonomous ?? false,
+  });
   if (live) return live;
   await delay(150, 240);
   const taskId = `t-${Date.now()}`;
@@ -1201,12 +1216,37 @@ export async function get_bubble_up_events(): Promise<BubbleUpEvent[]> {
   return BUBBLE_UP_EVENTS;
 }
 
-export async function get_executable_pipeline(): Promise<PipelineNode[]> {
+// B-7 STEP 7: returns the full ExecutablePipeline DAG (nodes +
+// validation_errors + repair_log). The Tauri command now returns a
+// structured object instead of a flat node array. Falls back to a
+// mock DAG shape when the desktop shell is unavailable.
+export async function get_executable_pipeline(): Promise<ExecutablePipelineDag> {
   logStub('get_executable_pipeline');
-  const live = await tryInvoke<PipelineNode[]>('get_executable_pipeline');
+  const live = await tryInvoke<ExecutablePipelineDag>('get_executable_pipeline');
   if (live) return live;
   await delay();
-  return PIPELINE_NODES;
+  return {
+    nodes: PIPELINE_NODES,
+    validation_errors: DAG_REPAIR_EVENTS.map((e) => ({
+      kind: e.action_kind,
+      round: e.round,
+      message: e.reason,
+    })),
+    repair_log: DAG_REPAIR_EVENTS.map((e) => ({
+      action_kind: e.action_kind,
+      round: e.round,
+      reason: e.reason,
+      escalated: false,
+    })).concat(
+      DAG_REPAIR_ESCALATED.map((e) => ({
+        action_kind: 'escalated',
+        round: e.rounds,
+        reason: e.last_error,
+        escalated: true,
+        remaining_issues: e.remaining_issues,
+      })),
+    ),
+  };
 }
 
 export async function get_dag_repair_log(): Promise<DagRepairEvent[]> {
@@ -1217,6 +1257,16 @@ export async function get_dag_repair_log(): Promise<DagRepairEvent[]> {
   return DAG_REPAIR_EVENTS;
 }
 
+// B-7 STEP 6: dag_repair_escalated rows from SSB. Surfaced alongside
+// get_dag_repair_log in the OrchestrationDrawer DAG REPAIR section.
+export async function get_dag_repair_escalated(): Promise<DagRepairEscalated[]> {
+  logStub('get_dag_repair_escalated');
+  const live = await tryInvoke<DagRepairEscalated[]>('get_dag_repair_escalated');
+  if (live) return live;
+  await delay();
+  return DAG_REPAIR_ESCALATED;
+}
+
 // B-7 (SCHEMA_VERSION 100): producer-wire surface — package_ref_verified
 // rows from SSB. Used by PlanWindow concept/phase detail pane. Cold start
 // returns an empty array (no mock data fallback — these are session-scoped
@@ -1224,6 +1274,43 @@ export async function get_dag_repair_log(): Promise<DagRepairEvent[]> {
 export async function get_package_verifications(): Promise<PackageRefVerified[]> {
   logStub('get_package_verifications');
   const live = await tryInvoke<PackageRefVerified[]>('get_package_verifications');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+// B-7 Task #8: PhaseSizingSplitter split-badge surface. Returns
+// task_split rows that carry phase_sizing context (splitter =
+// "phase_sizing", phase_id != null). Cold start returns an empty
+// array (no mock data — splits are session-scoped outcomes).
+export async function get_phase_sized_splits(): Promise<PhaseSizedSplit[]> {
+  logStub('get_phase_sized_splits');
+  const live = await tryInvoke<PhaseSizedSplit[]>('get_phase_sized_splits');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+// B-7 Step 9: TreeNavigator state cursor. Returns recent tree_position_changed
+// rows from SSB (most recent first). PlanWindow uses the latest row's
+// current_node to highlight the navigator cursor. Cold start returns an empty
+// array (no mock data — cursor positions are session-scoped outcomes).
+export async function get_tree_positions(): Promise<TreePosition[]> {
+  logStub('get_tree_positions');
+  const live = await tryInvoke<TreePosition[]>('get_tree_positions');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+// B-7 Step 10: per-baby-step failure retry history. Returns recent
+// failure_recorded rows from SSB (most recent first). PlanWindow baby-step
+// detail pane filters these by baby_step_id to show retry history. Cold
+// start returns an empty array (no mock data — failures are session-scoped
+// outcomes).
+export async function get_failure_records(): Promise<FailureRecord[]> {
+  logStub('get_failure_records');
+  const live = await tryInvoke<FailureRecord[]>('get_failure_records');
   if (live) return live;
   await delay();
   return [];
@@ -2002,22 +2089,20 @@ export async function get_webhook_url(): Promise<{ webhook_url: string | null }>
 // ------------------------------------------------------------------
 // CHAT
 // ------------------------------------------------------------------
-
-export async function submit_chat_message(
-  text: string,
-  intent: string,
-  sessionId?: string,
-): Promise<{ seq: number }> {
-  logStub('submit_chat_message', { text, intent, sessionId });
-  const live = await tryInvoke<{ seq: number }>('submit_chat_message', {
-    text,
-    intent,
-    sessionId,
-  });
-  if (live) return live;
-  await delay();
-  return { seq: Date.now() };
-}
+// B-14 POLISH: the intent-only `submit_chat_message` wrapper was removed
+// (spec stub_ban). The dashboard now streams real tokens via `stream_chat`
+// below. The Tauri command is still registered (commands.rs) for SSB-row
+// compatibility but has no frontend caller.
+//
+// The three wrappers below (`get_chat_history`, `emit_chat_response`,
+// `classify_intent`) are currently uncalled from the frontend — the
+// streaming path uses `stream_chat`/`cancel_stream`, and intent
+// classification uses the synchronous TS-side `classifyIntent` in
+// `utils/intent.ts`. They are retained as wiring-contract surface: the
+// `classify_intent` Tauri command is the production caller that makes
+// the orchestrator `intent_classifier::classify_intent` symbol
+// reachable, and `emit_chat_response`/`get_chat_history` remain
+// available for future SSB-backed card rendering.
 
 export async function get_chat_history(limit: number): Promise<unknown[]> {
   logStub('get_chat_history', { limit });
@@ -2069,25 +2154,33 @@ export async function stream_chat(
   options?: { thinkingEnabled?: boolean; effortLevel?: string },
 ): Promise<{ streamId: string; offline?: boolean; reflect?: boolean }> {
   logStub('stream_chat', { message, requestId, options });
-  const live = await tryInvoke<{ streamId: string; offline?: boolean; reflect?: boolean }>(
-    'start_chat_stream',
-    {
-      prompt: message,
-      requestId,
-      thinkingEnabled: options?.thinkingEnabled ?? false,
-      effortLevel: options?.effortLevel ?? null,
-    },
-  );
-  if (live) return live;
-  // Browser-dev mock: simulate streaming via setTimeout token drip.
-  // The mock emits tokens directly into the callback supplied by streamChat().
+  // B-14 STEP 2: invoke the new `stream_chat` Tauri command (added in
+  // WIRE-1) which streams real sidecar `/v1/messages` SSE tokens over the
+  // unified `chat_event` channel. The server generates the stream_id and
+  // returns it; the frontend filters `chat_event` payloads by that id.
+  // thinkingEnabled/effortLevel are not yet forwarded (full
+  // ConversationRuntime integration is a later step); the new command
+  // signature is (message, session_id).
+  const live = await tryInvoke<{ stream_id: string }>('stream_chat', {
+    message,
+    sessionId: `dash-v2-${requestId}`,
+  });
+  if (live) return { streamId: live.stream_id };
+  // Browser-dev mock: keep the requestId as streamId so the mock drip
+  // path in streamChat() stays self-consistent (no server to generate one).
+  await delay();
   return { streamId: requestId };
 }
 
-export async function cancel_stream(requestId: string): Promise<{ ok: boolean }> {
-  logStub('cancel_stream', { requestId });
-  const live = await tryInvoke<{ ok: boolean }>('cancel_chat_stream', { requestId });
-  if (live) return live;
+export async function cancel_stream(streamId: string): Promise<{ ok: boolean }> {
+  logStub('cancel_stream', { streamId });
+  // B-14 STEP 2: invoke the new `cancel_stream` Tauri command which aborts
+  // the detached streaming task by its server-issued stream_id. Tauri
+  // camelCases the Rust `stream_id` arg to `streamId`.
+  const live = await tryInvoke<{ cancelled: boolean; error?: string }>('cancel_stream', {
+    streamId,
+  });
+  if (live) return { ok: live.cancelled };
   await delay();
   return { ok: true };
 }
@@ -2130,48 +2223,82 @@ export async function streamChat(
     return () => { cancelled = true; };
   }
 
-  // Tauri path: invoke + listen.
+  // B-14 STEP 2: Tauri path. Subscribe to the unified `chat_event`
+  // channel BEFORE invoking stream_chat so the streaming_started / first
+  // token events are not lost. The server generates the stream_id and
+  // returns it from stream_chat; we filter events by that id once known.
+  // Events arriving before the invoke resolves (only streaming_started,
+  // which carries no content) are dropped harmlessly.
   // Dynamic import keeps the Tauri API out of browser-only bundles.
   const { listen } = await import('@tauri-apps/api/event');
 
-  const tokenEvent = `chat-stream:${requestId}`;
-  const endEvent = `chat-stream-end:${requestId}`;
-
-  const unlistenToken = await listen<{ text: string; stream_id: string }>(
-    tokenEvent,
-    (e) => onToken(e.payload.text),
-  );
-  const unlistenEnd = await listen<{
+  type ChatEventPayload = {
     stream_id: string;
-    stop_reason?: string;
+    event_type: 'streaming_started' | 'token' | 'response_complete' | 'error';
+    token?: string;
     error?: string;
-    offline?: boolean;
-  }>(endEvent, (e) => {
-    unlistenToken();
-    unlistenEnd();
-    if (e.payload.error) {
-      onError(e.payload.error, Boolean(e.payload.offline));
-    } else {
-      onEnd(e.payload.stop_reason ?? 'end_turn');
+  };
+
+  let resolvedStreamId: string | null = null;
+  let unlisten: (() => void) | null = null;
+  let finished = false;
+
+  function finish(errMsg?: string, offline = false) {
+    if (finished) return;
+    finished = true;
+    if (unlisten) { unlisten(); unlisten = null; }
+    if (errMsg) onError(errMsg, offline);
+    else onEnd('end_turn');
+  }
+
+  unlisten = await listen<ChatEventPayload>('chat_event', (e) => {
+    if (resolvedStreamId === null || e.payload.stream_id !== resolvedStreamId) return;
+    switch (e.payload.event_type) {
+      case 'token':
+        if (e.payload.token) onToken(e.payload.token);
+        break;
+      case 'response_complete':
+        finish();
+        break;
+      case 'error': {
+        const msg = e.payload.error && e.payload.error.length > 0
+          ? e.payload.error
+          : 'stream error';
+        // The new command reports sidecar connection failures as
+        // "sidecar connect failed: ..."; surface those as offline so the
+        // caller shows the elai.bat --remote hint.
+        finish(msg, /connect|sidecar/i.test(msg));
+        break;
+      }
+      case 'streaming_started':
+        // No content; the typing indicator is driven by streaming=true on
+        // the response card (SkeletonBubble pre-TTFT, CursorSentinel after).
+        break;
     }
   });
 
-  // Fire the stream — this returns immediately with { streamId }.
-  const result = await stream_chat(prompt, requestId, options);
-  if (result.offline) {
-    unlistenToken();
-    unlistenEnd();
-    onError(
-      'sidecar offline — start with `elai.bat --remote` to use the friend\'s GPU box',
-      true,
-    );
-    return () => {};
+  // Fire the stream — returns immediately with { streamId }.
+  let streamId: string;
+  try {
+    const result = await stream_chat(prompt, requestId, options);
+    streamId = result.streamId;
+    resolvedStreamId = streamId;
+  } catch (err) {
+    finish(`stream_chat invoke failed: ${String(err)}`);
+    return () => { if (unlisten) unlisten(); };
   }
 
+  // Cleanup: unlisten + abort the inflight generation. On user-initiated
+  // cancel the aborted tokio task emits no response_complete, so we call
+  // onEnd here to finalize the response card (drop the typing indicator).
+  // On natural completion finish() has already run and this is a no-op.
   return () => {
-    unlistenToken();
-    unlistenEnd();
-    cancel_stream(requestId).catch(() => {});
+    if (unlisten) { unlisten(); unlisten = null; }
+    if (!finished) {
+      finished = true;
+      cancel_stream(streamId).catch(() => {});
+      onEnd('cancelled');
+    }
   };
 }
 
@@ -2407,9 +2534,52 @@ export async function cancel_d5_live_contract(
 // D.7 — ONE-SHOT PROMPT
 // ------------------------------------------------------------------
 
-export async function one_shot_prompt(text: string): Promise<{ ok: boolean; text: string }> {
+/** B-36 STEP 5: streaming callbacks for the `one_shot_prompt` SSE events.
+ *  The backend emits `streaming_started` (once, before subprocess spawn),
+ *  `turn` (per stdout/stderr line), and `response` (once, on completion).
+ *  Callers pass these to receive live updates; the returned cancel function
+ *  unlistens all three event channels. */
+export interface OneShotPromptStreamCallbacks {
+  onStreamingStarted?: (payload: { request_id: string; text: string }) => void;
+  onTurn?: (payload: { request_id: string; line: string }) => void;
+  onResponse?: (payload: { request_id: string; ok: boolean; text: string; exit_code: number | null }) => void;
+}
+
+export async function one_shot_prompt(
+  text: string,
+  stream?: OneShotPromptStreamCallbacks,
+): Promise<{ ok: boolean; text: string }> {
   logStub('one_shot_prompt', { text });
+
+  // B-36 STEP 5: subscribe to the SSE event channels BEFORE invoking so
+  // `streaming_started` (emitted before the subprocess spawns) is not lost.
+  // Dynamic import keeps the Tauri API out of browser-only bundles.
+  let unlisten: (() => void) | null = null;
+  if (stream) {
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      const un1 = stream.onStreamingStarted
+        ? await listen<{ request_id: string; text: string }>('streaming_started', (e) => stream.onStreamingStarted!(e.payload))
+        : null;
+      const un2 = stream.onTurn
+        ? await listen<{ request_id: string; line: string }>('turn', (e) => stream.onTurn!(e.payload))
+        : null;
+      const un3 = stream.onResponse
+        ? await listen<{ request_id: string; ok: boolean; text: string; exit_code: number | null }>('response', (e) => stream.onResponse!(e.payload))
+        : null;
+      unlisten = () => {
+        try { un1?.(); } catch (_) { /* drop */ }
+        try { un2?.(); } catch (_) { /* drop */ }
+        try { un3?.(); } catch (_) { /* drop */ }
+      };
+    } catch {
+      // Tauri event API unavailable (browser mode) — streaming callbacks
+      // simply never fire; the invoke still returns the final result.
+    }
+  }
+
   const live = await tryInvoke<{ ok: boolean; text: string }>('one_shot_prompt', { text });
+  if (unlisten) { try { unlisten(); } catch (_) { /* drop */ } }
   if (live) return live;
   await delay();
   return { ok: false, text: '[browser-dev: no elai.exe available]' };

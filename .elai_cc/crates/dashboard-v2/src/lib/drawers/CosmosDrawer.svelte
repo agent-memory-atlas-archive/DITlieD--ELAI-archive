@@ -213,7 +213,7 @@
     font-size: 10px;
     color: var(--text-secondary);
     margin-bottom: 10px;
-    line-height: 1.5;
+    line-height: var(--leading-text);
   }
   .rows {
     display: flex;

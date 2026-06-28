@@ -34,5 +34,5 @@
     letter-spacing: 0.1em;
     color: var(--text-secondary);
   }
-  .map-badge .dim { color: var(--text-ghost); font-size: 9px; }
+  .map-badge .dim { color: var(--text-ghost); font-size: 10px; }
 </style>

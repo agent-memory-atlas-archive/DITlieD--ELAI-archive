@@ -100,7 +100,7 @@
   .gate { cursor: default; }
   .gate-label {
     font-family: var(--font-mono);
-    font-size: 8px;
+    font-size: 10px;
     fill: var(--text-secondary);
   }
 </style>

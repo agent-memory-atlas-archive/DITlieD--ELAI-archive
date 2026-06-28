@@ -407,7 +407,7 @@
     gap: 12px;
   }
   .section-label {
-    font-size: 11px;
+    font-size: 10px;
     letter-spacing: 0.12em;
     color: var(--fg-muted, #888);
   }
@@ -425,7 +425,7 @@
     padding: 2px 4px;
   }
   .store-meta {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fg-muted, #888);
   }
   .store-meta .ghost {
@@ -508,7 +508,7 @@
     border: none;
     cursor: pointer;
     padding: 0 2px;
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1;
     opacity: 0.5;
     transition: opacity 0.15s;
@@ -551,7 +551,7 @@
   }
   .value {
     margin-top: 2px;
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fg-muted, #aaa);
     font-family: var(--font-mono);
     overflow-wrap: anywhere;
@@ -576,7 +576,7 @@
     border: 1px solid var(--border, #333);
     padding: 2px 8px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10px;
   }
   .refresh-btn:hover {
     background: var(--bg-elevated, #161616);

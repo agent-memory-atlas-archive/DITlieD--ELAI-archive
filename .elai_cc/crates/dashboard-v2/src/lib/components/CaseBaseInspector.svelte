@@ -271,7 +271,7 @@
   .cbi-recent li {
     display: flex;
     gap: 8px;
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 0;
   }
   .cbi-tag {

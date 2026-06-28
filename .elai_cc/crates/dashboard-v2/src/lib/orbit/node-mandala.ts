@@ -39,7 +39,6 @@ import {
   updateGateSegmentsGeometry,
 } from '../scene/planet-scan.ts';
 import jetbrainsMonoUrl from '@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url';
-import interUrl from '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url';
 
 // Compass keys + a 5th NW slot used by the integration-point variant.
 export type MandalaAnchorKey = 'n' | 'e' | 's' | 'w' | 'nw';
@@ -486,7 +485,7 @@ export class NodeMandala {
     // Tauri's webview was failing to fetch the `?url`-imported assets
     // silently, leaving the SDF atlas empty so no glyphs ever rendered.
     // Troika's built-in Roboto fallback works without any fetch.
-    void opts.font; void jetbrainsMonoUrl; void interUrl;
+    void opts.font; void jetbrainsMonoUrl;
     // Troika expects color as hex int, hex string, or rgb tuple — NOT
     // a THREE.Color instance. Pass the integer hex value.
     tx.color = opts.color.getHex();

@@ -49,7 +49,7 @@
   }
   .badge {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 600;
     color: var(--warn);
     letter-spacing: 0.10em;
@@ -73,12 +73,13 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-ghost);
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
   .hint {
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-ghost);
     font-style: italic;
+    line-height: var(--leading-code);
   }
 </style>

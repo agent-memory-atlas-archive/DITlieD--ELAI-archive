@@ -53,7 +53,7 @@
     border-top: 1px solid var(--line);
     background: var(--bg);
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--dim);
     user-select: none;
     flex: 0 0 auto;

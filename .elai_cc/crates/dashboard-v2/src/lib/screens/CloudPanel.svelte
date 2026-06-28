@@ -332,11 +332,11 @@
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--text-mute, #8a8a8a);
+    color: var(--text-secondary);
   }
   .cloud-panel__hint {
-    font-size: 11px;
-    color: var(--text-dim, #6a6a6a);
+    font-size: 10px;
+    color: var(--text-secondary);
   }
   .cloud-panel__row {
     display: grid;
@@ -344,11 +344,11 @@
     align-items: center;
     gap: 12px;
     padding: 6px 0;
-    border-bottom: 1px solid var(--border-soft, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--border-subtle);
   }
   .cloud-panel__label {
-    color: var(--text-mute, #8a8a8a);
-    font-size: 11px;
+    color: var(--text-secondary);
+    font-size: 10px;
   }
   .cloud-panel__control {
     display: flex;
@@ -360,34 +360,34 @@
     font-size: 12px;
   }
   .cloud-panel__metric.is-warn {
-    color: var(--warn, #d99a3c);
+    color: var(--warn);
   }
   .cloud-panel__metric.is-blocked {
-    color: var(--err, #d94c4c);
+    color: var(--fail);
   }
   .cloud-panel__no-cap {
-    color: var(--text-dim, #6a6a6a);
-    font-size: 11px;
+    color: var(--text-secondary);
+    font-size: 10px;
     margin-left: 4px;
   }
   .cloud-panel__gauge {
     flex: 1;
     height: 4px;
     min-width: 80px;
-    background: var(--bg-soft, rgba(255, 255, 255, 0.06));
+    background: var(--bg-hover);
     border-radius: 2px;
     overflow: hidden;
   }
   .cloud-panel__gauge-fill {
     height: 100%;
-    background: var(--ok, #4ca97a);
+    background: var(--pass);
     transition: width 200ms ease;
   }
   .cloud-panel__gauge-fill.is-warn {
-    background: var(--warn, #d99a3c);
+    background: var(--warn);
   }
   .cloud-panel__gauge-fill.is-blocked {
-    background: var(--err, #d94c4c);
+    background: var(--fail);
   }
   .cloud-panel__badge {
     font-size: 10px;
@@ -397,36 +397,36 @@
     letter-spacing: 0.08em;
   }
   .cloud-panel__badge.is-warn {
-    background: rgba(217, 154, 60, 0.12);
-    color: var(--warn, #d99a3c);
+    background: var(--warn-ghost);
+    color: var(--warn);
   }
   .cloud-panel__badge.is-blocked {
-    background: rgba(217, 76, 76, 0.12);
-    color: var(--err, #d94c4c);
+    background: var(--fail-ghost);
+    color: var(--fail);
   }
   .cloud-panel__seg {
     background: transparent;
-    border: 1px solid var(--border-soft, rgba(255, 255, 255, 0.12));
-    color: var(--text, #d0d0d0);
+    border: 1px solid var(--border-default);
+    color: var(--text-primary);
     padding: 3px 10px;
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
     border-radius: 3px;
     font-family: inherit;
     text-transform: lowercase;
   }
   .cloud-panel__seg.is-active {
-    background: var(--accent-soft, rgba(255, 255, 255, 0.12));
-    border-color: var(--accent, #88aacc);
-    color: var(--accent, #88aacc);
+    background: var(--steel-ghost);
+    border-color: var(--steel);
+    color: var(--steel);
   }
   .cloud-panel__seg:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
   .cloud-panel__loading {
-    font-size: 11px;
-    color: var(--text-dim, #6a6a6a);
+    font-size: 10px;
+    color: var(--text-secondary);
     padding: 4px 0;
   }
   /* C-5 follow-on (SCHEMA_VERSION 103) — route-blocked / warn-limit /
@@ -439,23 +439,23 @@
     flex-wrap: wrap;
     padding: 6px 8px;
     border-radius: 3px;
-    font-size: 11px;
-    border: 1px solid var(--border-soft, rgba(255, 255, 255, 0.08));
+    font-size: 10px;
+    border: 1px solid var(--border-subtle);
   }
   .cloud-panel__notice.is-blocked {
-    background: rgba(217, 76, 76, 0.12);
-    color: var(--err, #d94c4c);
-    border-color: var(--err, #d94c4c);
+    background: var(--fail-ghost);
+    color: var(--fail);
+    border-color: var(--fail);
   }
   .cloud-panel__notice.is-warn {
-    background: rgba(217, 154, 60, 0.12);
-    color: var(--warn, #d99a3c);
-    border-color: var(--warn, #d99a3c);
+    background: var(--warn-ghost);
+    color: var(--warn);
+    border-color: var(--warn);
   }
   .cloud-panel__notice.is-info {
-    background: rgba(136, 170, 204, 0.10);
-    color: var(--accent, #88aacc);
-    border-color: var(--accent, #88aacc);
+    background: var(--info-ghost);
+    color: var(--info);
+    border-color: var(--info);
   }
   .cloud-panel__notice-tag {
     font-size: 10px;
@@ -464,7 +464,7 @@
     font-weight: 600;
   }
   .cloud-panel__notice-body {
-    font-size: 11px;
+    font-size: 10px;
   }
   .mono {
     font-family: inherit;

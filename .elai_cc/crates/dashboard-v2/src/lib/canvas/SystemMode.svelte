@@ -258,7 +258,7 @@
     overflow: hidden;
     background: var(--bg);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .sys-header {
@@ -413,7 +413,7 @@
     background: none;
     border: none;
     color: var(--dim);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
   }
   .insp-close:hover { color: var(--text); }
@@ -437,7 +437,7 @@
   .insp-caption {
     font-size: 10px;
     color: var(--read);
-    line-height: 1.5;
+    line-height: var(--leading-code);
     margin: 0 0 10px;
     padding-left: 8px;
     border-left: 2px solid var(--d-teal-soft);
@@ -457,7 +457,7 @@
   }
   .insp-val { font-size: 10px; color: var(--read); overflow-wrap: anywhere; }
   .insp-evidence { color: var(--d-teal-bright); }
-  .insp-note { font-size: 10px; color: var(--dim); line-height: 1.5; }
+  .insp-note { font-size: 10px; color: var(--dim); line-height: var(--leading-code); }
   .insp-actions { margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
   .insp-btn {
     font-family: var(--font-mono);
@@ -496,10 +496,10 @@
     padding: 24px;
     text-align: center;
   }
-  .fault-msg { color: var(--read); font-size: 11px; }
+  .fault-msg { color: var(--read); font-size: 10px; }
   .retry-btn, .empty-box {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 6px 14px;
     background: none;
     border: 1px solid var(--line2);
@@ -509,7 +509,7 @@
     transition: border-color var(--dur-fast) var(--ease-out);
   }
   .retry-btn:hover, .empty-box:hover { border-color: var(--d-teal); }
-  .empty-hint { color: var(--dim); font-size: 10px; max-width: 280px; line-height: 1.5; margin: 0; }
+  .empty-hint { color: var(--dim); font-size: 10px; max-width: 280px; line-height: var(--leading-text); margin: 0; }
 
   @keyframes skelpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
   @media (prefers-reduced-motion: reduce) {

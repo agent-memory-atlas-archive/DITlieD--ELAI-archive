@@ -190,13 +190,13 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    background: var(--bg-surface, #1a2029);
-    border: 1px solid var(--border-default, rgba(255,255,255,0.10));
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     padding: 6px 14px;
     font-family: var(--font-sans, sans-serif);
     font-size: 12px;
-    color: var(--text-secondary, rgba(255,255,255,0.65));
+    color: var(--text-secondary);
     box-shadow: 0 4px 24px rgba(0,0,0,0.45);
     animation: bannerSlideUp 180ms var(--ease-std, ease) both;
   }
@@ -210,9 +210,9 @@
 
   .notif-banner__allow {
     background: transparent;
-    border: 1px solid var(--teal-line, rgba(30,138,122,0.4));
+    border: 1px solid var(--teal-line);
     border-radius: 4px;
-    color: var(--teal, #1e8a7a);
+    color: var(--teal);
     font-family: var(--font-sans, sans-serif);
     font-size: 10px;
     padding: 2px 10px;

@@ -198,13 +198,13 @@
   }
   .ci {
     font-size: 0.75rem;
-    color: #aaa;
+    color: var(--text-secondary);
   }
   .pending-badge {
     display: inline-block;
     font-size: 0.7rem;
-    background: #3a2800;
-    color: #ffaa00;
+    background: var(--warn-ghost);
+    color: var(--warn);
     border-radius: 4px;
     padding: 0.1rem 0.4rem;
     margin-top: 0.2rem;
@@ -215,7 +215,7 @@
     color: #888;
   }
   .mono {
-    font-family: monospace;
+    font-family: var(--font-mono);
   }
   .ts {
     color: #666;

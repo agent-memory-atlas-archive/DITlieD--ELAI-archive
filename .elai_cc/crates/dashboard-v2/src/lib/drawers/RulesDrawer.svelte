@@ -383,7 +383,7 @@
   }
 
   .tile-count--large {
-    font-size: 22px;
+    font-size: 18px;
     color: var(--teal-bright);
   }
 

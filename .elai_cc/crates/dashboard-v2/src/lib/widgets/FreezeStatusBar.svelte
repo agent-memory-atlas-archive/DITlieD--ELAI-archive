@@ -123,21 +123,21 @@
   }
 
   .badge-clean {
-    background: var(--color-green-700, #1f6f3a);
-    color: var(--color-green-50, #e6f6ec);
+    background: var(--pass);
+    color: var(--text-primary);
   }
 
   .badge-violated {
-    background: var(--color-red-700, #8a1f1f);
-    color: var(--color-red-50, #f6e6e6);
+    background: var(--fail);
+    color: var(--text-primary);
   }
 
   .badge-neutral {
-    background: var(--color-zinc-700, #444);
-    color: var(--color-zinc-50, #eee);
+    background: var(--text-disabled);
+    color: var(--text-primary);
   }
 
   .meta {
-    color: var(--color-zinc-400, #888);
+    color: var(--text-secondary);
   }
 </style>

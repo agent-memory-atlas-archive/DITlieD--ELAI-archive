@@ -225,7 +225,7 @@
     gap: 12px;
   }
   .section-label {
-    font-size: 11px;
+    font-size: 10px;
     letter-spacing: 0.12em;
     color: var(--fg-muted, #888);
   }
@@ -243,7 +243,7 @@
     padding: 2px 4px;
   }
   .store-meta {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fg-muted, #888);
   }
   .store-meta .ghost {
@@ -293,7 +293,7 @@
     margin-top: 4px;
     padding: 6px 8px;
     background: var(--bg-elevated, #161616);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fg-muted, #aaa);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
@@ -329,7 +329,7 @@
   }
   .body {
     margin-top: 2px;
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fg-muted, #aaa);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
@@ -364,7 +364,7 @@
     border: 1px solid var(--border, #333);
     padding: 2px 8px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10px;
   }
   .refresh-btn:hover {
     background: var(--bg-elevated, #161616);

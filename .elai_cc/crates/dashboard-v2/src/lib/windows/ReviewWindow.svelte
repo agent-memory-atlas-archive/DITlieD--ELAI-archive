@@ -466,7 +466,7 @@
   }
   .file-verdict::before {
     flex-shrink: 0;
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1;
   }
   .file-verdict--accepted {
@@ -488,7 +488,7 @@
     background: var(--text);
     color: var(--void);
     border-radius: var(--r-xs);
-    font-size: 9px;
+    font-size: 10px;
   }
   .file-verdict__undo {
     background: transparent;
@@ -545,6 +545,7 @@
     flex-direction: column;
     font-family: var(--font-mono);
     font-size: 12px;
+    line-height: var(--leading-code);
   }
 
   /* Hunk header — hairline inset well (§3: card is a recess) */
@@ -585,7 +586,7 @@
     background: var(--text);
     color: var(--void);
     border-radius: var(--r-xs);
-    font-size: 8px;
+    font-size: 10px;
   }
 
   /* Always-visible per-hunk action row (C-7 DRIFT-4 rewrite) */

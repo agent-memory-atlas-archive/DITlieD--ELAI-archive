@@ -43,7 +43,7 @@
   }
   .prefix {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.18em;
     color: var(--teal);
@@ -52,7 +52,7 @@
   .text {
     font-family: var(--font-mono);
     font-size: 12px;
-    line-height: 1.5;
+    line-height: var(--leading-code);
     color: var(--text-primary);
     text-align: center;
   }

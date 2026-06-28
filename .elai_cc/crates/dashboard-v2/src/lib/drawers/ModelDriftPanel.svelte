@@ -262,6 +262,6 @@
     color: #888;
   }
   .mono {
-    font-family: monospace;
+    font-family: var(--font-mono);
   }
 </style>

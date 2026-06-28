@@ -730,12 +730,21 @@ export interface DecompNode {
   detail?: BabyStepDetail; // only on baby-step level
 }
 
+// B-7 STEP 11: BubbleUpEvent typed surface — mirrors the backend
+// BubbleUpTypedPayload (ssb/payloads.rs). `from_level` and `to_level` are
+// DecompositionLevel Debug-format strings: "BabyStep" | "Step" | "Phase"
+// | "Concept". `action_kind` is the BubbleUpAction discriminant:
+// "research_alternative" | "redecompose_step" | "replan_phase" |
+// "replan_concept" | "diagnose_and_retry" | "escalate".
+// When from_level == to_level the event is a same-level threshold miss;
+// when they differ it is a cascade lift (e.g. BabyStep → Step).
 export interface BubbleUpEvent {
-  ts: number;
-  level: DecompLevel;
-  node_id: string;
-  message: string;
-  escalated: boolean;
+  from_level: string;
+  to_level: string;
+  action_kind: string;
+  reason: string;
+  failure_count: number;
+  threshold: number;
 }
 
 // ------------------------------------------------------------------
@@ -749,12 +758,50 @@ export interface PipelineNode {
   deps: string[]; // node IDs
 }
 
+// B-7 STEP 7: validation error history entry derived from dag_repair_round
+// SSB rows. `kind` is the repair action ("reorder" | "substitute"), `round`
+// is the repair-loop iteration, `message` is the validation error description.
+export interface ValidationErrorEntry {
+  kind: string;
+  round: number;
+  message: string;
+}
+
+// B-7 STEP 7: repair log entry — one per dag_repair_round or
+// dag_repair_escalated SSB row. `escalated` is true when T_DAG=10 was
+// exhausted (dag_repair_escalated row).
+export interface RepairLogEntry {
+  action_kind: string; // "reorder" | "substitute" | "escalated"
+  round: number;
+  reason: string;
+  escalated: boolean;
+  remaining_issues?: number;
+}
+
+// B-7 STEP 7: full ExecutablePipeline DAG response from
+// get_executable_pipeline Tauri command. Wraps the DAG nodes, validation
+// error history, and repair log into one structured object for the
+// PlanWindow detail-pane DAG visualizer.
+export interface ExecutablePipelineDag {
+  nodes: PipelineNode[];
+  validation_errors: ValidationErrorEntry[];
+  repair_log: RepairLogEntry[];
+}
+
+// B-7 STEP 6: mirrors orchestrator DagRepairRoundPayload (ssb/payloads.rs).
+// Snake-case field names match the rmp serialization byte-for-byte.
 export interface DagRepairEvent {
-  ts: number;
-  kind: 'Reorder' | 'Substitute';
-  from_node_id: string;
-  to_node_id?: string;
-  t_dag_counter: number;
+  action_kind: string; // "reorder" | "substitute"
+  round: number;
+  reason: string;
+}
+
+// B-7 STEP 6: mirrors orchestrator DagRepairEscalatedPayload (ssb/payloads.rs).
+// Emitted when T_DAG=10 repair rounds are exhausted without convergence.
+export interface DagRepairEscalated {
+  rounds: number;
+  remaining_issues: number;
+  last_error: string;
 }
 
 // B-7 (SCHEMA_VERSION 100): producer-wire surfaces. Hand-authored TS
@@ -766,6 +813,33 @@ export interface PackageRefVerified {
   registry: string;
   version: string | null;
   verified: boolean;
+}
+
+// B-7 Task #8: mirrors orchestrator TaskSplitPayload (extended with
+// phase_id + complexity_reason for PhaseSizingSplitter context). Only
+// rows with splitter = "phase_sizing" and phase_id != null are returned
+// by get_phase_sized_splits; the other optional fields stay for forward
+// compatibility with the full payload shape.
+export interface PhaseSizedSplit {
+  original_task_id: string;
+  sub_task_ids: string[];
+  depth: number;
+  sub_task_summaries: string[] | null;
+  splitter: string | null;
+  complexity_estimate: number | null;
+  phase_id: number | null;
+  complexity_reason: string | null;
+}
+
+// B-7 Step 9: mirrors orchestrator TreePositionChangedPayload (ssb/payloads.rs).
+// Emitted once per DepthFirstNavigator advance() / handle_failure transition.
+// current_node is a snake-case node id (e.g. "bs-3", "step-1"); empty when the
+// traversal is exhausted. visited/blocked/skipped carry BabyStepId.0 values.
+export interface TreePosition {
+  current_node: string;
+  visited: number[];
+  blocked: number[];
+  skipped: number[];
 }
 
 // B-7 (SCHEMA_VERSION 100): mirrors orchestrator FailureRecordedPayload
@@ -1003,6 +1077,11 @@ export interface InterventionRequest {
   file?: string;
   diff_summary?: string;
   created_ts: number;
+  // B-14 STEP 5: +N -M lines per dashboard-design.txt RESPONSE TYPES
+  // "What changed (file path, +N -M lines)". Optional — populated by
+  // the producer when the diff line counts are known.
+  lines_added?: number;
+  lines_removed?: number;
   // C2: present when intervention_type === 'request_credential'.
   intervention_type?: InterventionTypeName;
   credential_fields?: CredentialField[];
@@ -1105,6 +1184,10 @@ export interface ErrorCardPayload {
   source: string;
   step_id?: string;
   recoverable: boolean;
+  // B-14 STEP 5: "What ELAI will do about it (retry strategy, escalation)"
+  // per dashboard-design.txt RESPONSE TYPES Error card. Optional —
+  // populated by the producer when a retry/escalation plan is known.
+  retry_strategy?: string;
 }
 
 export interface DisambiguationCardPayload {
@@ -1118,6 +1201,10 @@ export interface SteeringCardPayload {
   vector_label: string;
   delta_description: string;
   applied: boolean;
+  // B-14 STEP 5: "Applied to: [current task / all future steps]"
+  // per dashboard-design.txt RESPONSE TYPES Steering acknowledgment.
+  // Optional — populated by the producer when the scope is known.
+  applied_to?: string;
 }
 
 export interface UserCardPayload {
@@ -2854,7 +2941,15 @@ export interface RuleTransitionRow {
  *  `get_session_handoffs` so the SettingsWindow handoff list reads the
  *  right keys. The legacy V1 fields `{id, branch, ts}` are replaced by
  *  the canonical `{seq, ts_ms, winner, abandoned, trunk_snap_id,
- *  from_snap_count}` shape. */
+ *  from_snap_count}` shape.
+ *
+ *  B-13-POLISH-1 finding: this type currently has NO frontend consumer.
+ *  The frontend consumes handoff data indirectly via
+ *  `get_session_branches` (commands.rs), which wraps each handoff row
+ *  into a `SessionBranch` object `{id, label, status, created_ts,
+ *  last_activity_ts, parent_branch_id}`. This type is retained as
+ *  documentation of the canonical Rust shape; remove it only if the
+ *  SettingsWindow is confirmed to never render raw handoff rows. */
 export interface SessionHandoffEntry {
   seq: number;
   ts_ms: number;

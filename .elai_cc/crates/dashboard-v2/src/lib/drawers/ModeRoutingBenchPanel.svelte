@@ -194,7 +194,7 @@
 
   .reload-btn {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     background: var(--bg-hover);
     border: 1px solid var(--border-default);
@@ -211,7 +211,7 @@
     font-size: 10px;
     color: var(--text-secondary);
     letter-spacing: 0.02em;
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
 
   .legend-label {
@@ -270,7 +270,7 @@
   .footnote {
     color: var(--text-secondary);
     font-size: 10px;
-    line-height: 1.4;
+    line-height: var(--leading-text);
   }
 
   .error-banner {

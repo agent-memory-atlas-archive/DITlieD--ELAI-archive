@@ -213,7 +213,7 @@
 
   .reload-btn {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     background: var(--bg-hover);
     border: 1px solid var(--border-default);
@@ -248,14 +248,14 @@
 
   .overall {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
     margin-left: auto;
   }
 
   .dominant {
     margin: 0;
     color: rgb(220, 120, 120);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   table.families {

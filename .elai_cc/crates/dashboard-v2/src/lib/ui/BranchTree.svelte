@@ -288,16 +288,16 @@
   }
   .tt-node-tag {
     color: var(--text-ghost);
-    font-size: 9px;
+    font-size: 10px;
     background: var(--bg-hover);
     padding: 0 3px;
     border-radius: 2px;
   }
-  .tt-node-time { color: var(--text-ghost); font-size: 9px; }
-  .tt-node-manifest { font-size: 9px; }
-  .tt-branch-count { font-size: 9px; color: var(--text-secondary); }
+  .tt-node-time { color: var(--text-ghost); font-size: 10px; }
+  .tt-node-manifest { font-size: 10px; }
+  .tt-branch-count { font-size: 10px; color: var(--text-secondary); }
   .tt-head-label {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--teal);
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -406,7 +406,7 @@
   }
 
   .act-btn--xs {
-    font-size: 9px;
+    font-size: 10px;
     padding: 0 4px;
     margin-left: auto;
   }

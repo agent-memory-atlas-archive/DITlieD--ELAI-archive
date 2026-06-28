@@ -195,8 +195,8 @@
     opacity: 0.8;
   }
   .sg-error {
-    background: #5b1c1c;
-    color: #fcd7d7;
+    background: var(--fail-ghost);
+    color: var(--fail);
     padding: 0.4rem 0.6rem;
     border-radius: 4px;
     font-size: 0.85rem;
@@ -238,7 +238,7 @@
     display: flex;
     gap: 0.6rem;
     font-size: 0.85rem;
-    border-bottom: 1px solid var(--surface-2, #2a2a2a);
+    border-bottom: 1px solid var(--border-default);
     padding: 0.2rem 0;
   }
   .sg-name {

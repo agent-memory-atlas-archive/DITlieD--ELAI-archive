@@ -489,6 +489,7 @@ mod reflect_bridge;
 mod remote_sidecar_helpers;
 mod scaffold_applier;
 mod state;
+mod state_cache;
 
 // Phase A (s-69820): re-export `DashboardScaffoldApplier` so any future
 // task-runner construction in CLI/agent can pull it via `elai_dashboard_v2_lib`
@@ -724,8 +725,15 @@ pub fn run() {
             commands::get_bubble_up_events,
             commands::get_executable_pipeline,
             commands::get_dag_repair_log,
+            commands::get_dag_repair_escalated,
             // B-7 (SCHEMA_VERSION 100): producer-wire dashboard surface.
             commands::get_package_verifications,
+            // B-7 Task #8: PhaseSizingSplitter split-badge surface.
+            commands::get_phase_sized_splits,
+            // B-7 Step 9: TreeNavigator state cursor highlight.
+            commands::get_tree_positions,
+            // B-7 Step 10: per-baby-step failure retry history.
+            commands::get_failure_records,
             // RESEARCH
             commands::get_research_tree,
             commands::get_source_quality_tiers,
@@ -804,6 +812,9 @@ pub fn run() {
             commands::get_chat_history,
             commands::emit_chat_response,
             commands::classify_intent,
+            // B-14 STEP 1: live token streaming chat (sidecar SSE -> Tauri events)
+            commands::stream_chat,
+            commands::cancel_stream,
             commands::get_recent_tasks,
             // GROUNDING CACHE
             commands::get_grounding_cache_stats,

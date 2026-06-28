@@ -232,16 +232,16 @@
   .config-label {
     color: #aaa;
     min-width: 11rem;
-    font-family: monospace;
+    font-family: var(--font-mono);
     font-size: 0.8rem;
   }
 
   .config-value {
-    font-family: monospace;
+    font-family: var(--font-mono);
   }
 
   .config-code {
-    font-family: monospace;
+    font-family: var(--font-mono);
     background: #1e1e1e;
     padding: 0 0.25rem;
     border-radius: 2px;
@@ -251,7 +251,7 @@
 
   .gate-badge,
   .phase-badge {
-    font-family: monospace;
+    font-family: var(--font-mono);
     font-weight: 600;
     font-size: 0.8rem;
   }
@@ -294,13 +294,13 @@
   }
 
   .ts-cell {
-    font-family: monospace;
+    font-family: var(--font-mono);
     white-space: nowrap;
     color: #888;
   }
 
   .session-cell {
-    font-family: monospace;
+    font-family: var(--font-mono);
     max-width: 8rem;
     overflow: hidden;
     text-overflow: ellipsis;

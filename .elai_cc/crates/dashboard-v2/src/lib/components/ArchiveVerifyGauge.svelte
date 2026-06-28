@@ -208,7 +208,7 @@
   }
 
   .avg-cell-value--mono {
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .avg-cell-value--fail {

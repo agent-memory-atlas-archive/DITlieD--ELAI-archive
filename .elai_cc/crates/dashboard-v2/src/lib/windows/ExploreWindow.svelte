@@ -192,7 +192,7 @@
     position: relative;
     padding: 4px 9px 6px;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.14em;
     background: none;
     border: none;

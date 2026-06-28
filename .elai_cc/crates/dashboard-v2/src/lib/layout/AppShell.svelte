@@ -138,7 +138,7 @@
 </script>
 
 <div
-  class="app-shell anim-enter-fade"
+  class="app-shell anim-panel-in"
   bind:this={shellEl}
   style="--panel-split: 50%; --explorer-width: {workspace.explorerWidth}px"
 >

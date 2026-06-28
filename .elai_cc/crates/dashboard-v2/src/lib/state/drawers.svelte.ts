@@ -676,26 +676,34 @@ function createResearch() {
   // that a boolean `cancelled` flag cannot handle.
   let progressUnlisten: UnlistenFn | null = null;
   let doneUnlisten: UnlistenFn | null = null;
+  // B-36 STEP 5: canonical SSE event name `web_research_step` (WIRING_CONTRACT
+  // produces_symbols). The backend emits this alongside the legacy
+  // `research-progress` alias; we listen to both so the drawer updates
+  // regardless of which event arrives first.
+  let webResearchStepUnlisten: UnlistenFn | null = null;
   let listenerGen = 0;
 
   async function startProgressListeners() {
-    if (progressUnlisten !== null && doneUnlisten !== null) return;
+    if (progressUnlisten !== null && doneUnlisten !== null && webResearchStepUnlisten !== null) return;
     listenerGen += 1;
     const myGen = listenerGen;
     try {
-      const [un1, un2] = await Promise.all([
+      const [un1, un2, un3] = await Promise.all([
         listen<ResearchProgressPayload>('research-progress', (event) => applyProgress(event.payload)),
         listen<ResearchDonePayload>('research-done', (event) => applyDone(event.payload)),
+        listen<ResearchProgressPayload>('web_research_step', (event) => applyProgress(event.payload)),
       ]);
       if (myGen !== listenerGen) {
         // Generation rolled — teardown ran (and possibly another bootstrap).
         // Unlisten the listeners we just registered; the active gen owns its own.
         try { un1(); } catch (err) { console.warn('[researchData] late progress unlisten failed', err); }
         try { un2(); } catch (err) { console.warn('[researchData] late done unlisten failed', err); }
+        try { un3(); } catch (err) { console.warn('[researchData] late web_research_step unlisten failed', err); }
         return;
       }
       progressUnlisten = un1;
       doneUnlisten = un2;
+      webResearchStepUnlisten = un3;
     } catch (err) {
       // Degrade gracefully — drawer continues to poll every 10s.
       console.warn('[researchData] research event listen() failed', err);
@@ -711,6 +719,10 @@ function createResearch() {
     if (doneUnlisten) {
       try { doneUnlisten(); } catch (err) { console.warn('[researchData] done unlisten failed', err); }
       doneUnlisten = null;
+    }
+    if (webResearchStepUnlisten) {
+      try { webResearchStepUnlisten(); } catch (err) { console.warn('[researchData] web_research_step unlisten failed', err); }
+      webResearchStepUnlisten = null;
     }
   }
 

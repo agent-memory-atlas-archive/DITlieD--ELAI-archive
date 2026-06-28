@@ -157,7 +157,7 @@
     width: 100%;
     overflow: hidden;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     background: var(--bg);
   }
 

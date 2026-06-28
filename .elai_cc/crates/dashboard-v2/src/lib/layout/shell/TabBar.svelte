@@ -124,7 +124,7 @@
     display: flex;
     align-items: center;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.18em;
     padding: 6px 13px;
@@ -180,7 +180,7 @@
     align-items: center;
     gap: 9px;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.14em;
     color: var(--dim);
   }
@@ -206,7 +206,7 @@
 
   .sid {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.14em;
     color: var(--dim);
   }

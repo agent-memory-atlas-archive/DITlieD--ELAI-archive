@@ -127,7 +127,7 @@
     switch (role) {
       case 'coder': return 'executor running';
       case 'critic': return 'auditor reviewing';
-      case 'planner': return 'planner thinking';
+      case 'planner': return 'planner planning';
       case 'default': return 'agent ready';
       default: return `role: ${role}`;
     }
@@ -201,11 +201,21 @@
   });
 
   // ----------------------------------------------------------------
-  // Input placeholder by FSM state
+  // Input placeholder by FSM state (B-14 STEP 6)
   // ----------------------------------------------------------------
+  // Card kinds that require the user to respond to the card above:
+  // intervention (approve/reject/modify), credential-request (fill
+  // fields), disambiguation (pick an option). All three trigger the
+  // "respond to the card above" placeholder per dashboard-design.txt.
+  const RESPONSE_CARD_KINDS: ReadonlySet<string> = new Set([
+    'intervention',
+    'credential-request',
+    'disambiguation',
+  ]);
+
   const placeholder = $derived(() => {
-    const hasIntervention = commands.cards.some((c) => c.kind === 'intervention');
-    if (hasIntervention) return 'respond to the card above, or type to add context';
+    const hasResponseCard = commands.cards.some((c) => RESPONSE_CARD_KINDS.has(c.kind));
+    if (hasResponseCard) return 'respond to the card above, or type to add context';
     if (fsm.state === 'IDLE') return 'describe a task, ask a question, or type / for commands';
     if (fsm.state === 'EXECUTING') return 'add constraints, or wait for intervention cards';
     return 'what do you need?';
@@ -295,9 +305,15 @@
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         const chosen = slashFilter[slashHighlightIdx];
-        // Bare-command autocomplete only. "/research" + Enter -> "/research ".
-        // "/research find pytorch" + Enter -> submit verbatim (do not clobber args).
-        if (chosen && commands.inputValue.trim() === chosen.command) {
+        // Autocomplete while the user is still typing the command token
+        // (input starts with "/" and contains no space). Once a space is
+        // typed (entering args), Enter submits verbatim.
+        //   "/re" + Enter      -> "/research "  (autocomplete partial)
+        //   "/research" + Enter -> "/research " (autocomplete full)
+        //   "/research foo" + Enter -> submit verbatim (do not clobber args)
+        const isCommandToken = commands.inputValue.startsWith('/')
+          && !commands.inputValue.includes(' ');
+        if (chosen && isCommandToken) {
           executeSlash(chosen.command);
         } else {
           submitInput();
@@ -311,17 +327,16 @@
       }
     }
 
-    // C-6: Ctrl+Enter as ADDITIONAL submit alias (spec dashboard-design.txt:852).
-    // Preserves existing bare-Enter submit (muscle memory). Shift+Enter still inserts newline.
+    // C-6 Step 10: Ctrl+Enter sends the prompt via the same submit handler
+    // as the Send button. Only fires when the textarea is non-empty and no
+    // stream is in flight. Plain Enter is NOT intercepted — it inserts a
+    // newline (default textarea behavior) per spec "preserve newline behavior".
     if (e.key === 'Enter' && e.ctrlKey) {
-      e.preventDefault();
-      submitInput();
+      if (!commands.isStreaming && commands.inputValue.trim()) {
+        e.preventDefault();
+        submitInput();
+      }
       return;
-    }
-
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      submitInput();
     }
   }
 
@@ -770,7 +785,14 @@
                 </div>
                 <span class="card-body">{p.request.description}</span>
                 {#if p.request.file}
-                  <span class="card-filepath mono">{p.request.file}</span>
+                  <span class="card-filepath mono">
+                    {p.request.file}
+                    {#if p.request.lines_added != null || p.request.lines_removed != null}
+                      <span class="diff-linecounts">
+                        +{p.request.lines_added ?? 0} -{p.request.lines_removed ?? 0}
+                      </span>
+                    {/if}
+                  </span>
                 {/if}
                 {#if p.request.diff_summary}
                   <div class="diff-block">
@@ -848,6 +870,9 @@
                   <span class="intervention-title mono">[error: {p.source}]</span>
                 </div>
                 <span class="card-body">{p.message}</span>
+                {#if p.retry_strategy}
+                  <span class="card-retry-strategy mono">{p.retry_strategy}</span>
+                {/if}
                 {#if p.step_id}
                   <span class="card-step mono">{p.step_id}</span>
                 {/if}
@@ -886,11 +911,13 @@
             </div>
 
           {:else if card.kind === 'steering'}
-            <!-- Steering: minimal italic line with dot prefix -->
+            <!-- Steering: minimal italic line with dot prefix.
+                 Per spec: "Noted: [constraint summary]" + "Applied to:
+                 [current task / all future steps]". Teal text, inline. -->
             {@const p = card.payload as import('../api/types').SteeringCardPayload}
             <div class="steering-line">
               <span class="steering-dot" aria-hidden="true">·</span>
-              <span class="steering-text">Noted: {p.delta_description}</span>
+              <span class="steering-text">Noted: {p.delta_description}{#if p.applied_to} — Applied to: {p.applied_to}{/if}</span>
             </div>
 
           {:else if card.kind === 'response'}
@@ -1202,7 +1229,7 @@
           placeholder={placeholder()}
           rows={1}
           disabled={!!commands.pendingResearchChip}
-          aria-label="Prompt — press Enter or Ctrl+Enter to send"
+          aria-label="Press Ctrl+Enter to send"
           oninput={handleInput}
           onkeydown={handleKeydown}
           onfocus={() => commands.setFocused(true)}
@@ -1275,7 +1302,7 @@
     padding: 6px var(--s-3);
     background: var(--panel);
     border-bottom: 1px solid var(--line);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--read);
     flex-shrink: 0;
   }
@@ -1346,7 +1373,7 @@
 
   .empty-label {
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: 13px;
     color: var(--dim);
     margin-top: var(--s-1);
   }
@@ -1460,7 +1487,7 @@
     font-family: var(--font-mono);
     font-size: 13px;
     color: var(--text);
-    line-height: 1.5;
+    line-height: var(--leading-code);
     text-align: right;
   }
   .user-msg__ts {
@@ -1468,12 +1495,16 @@
     color: var(--dim);
   }
 
-  /* ---- Status line — minimal, aligned with the orbit-card left edge ---- */
+  /* ---- Status line — bg-surface + teal left border (2px) per
+         dashboard-design.txt RESPONSE TYPES Status card. ---- */
   .status-line {
     display: flex;
     align-items: baseline;
     gap: var(--s-2);
     padding: var(--s-1) var(--s-5);
+    background: var(--bg-surface);
+    border-left: 2px solid var(--d-teal);
+    border-radius: var(--r-sm);
   }
   .status-arrow {
     font-size: 13px;
@@ -1489,7 +1520,7 @@
     font-family: var(--font-mono);
     font-size: 12px;
     color: var(--read);
-    line-height: 1.5;
+    line-height: var(--leading-code);
   }
   .status-step {
     font-size: 10px;
@@ -1511,6 +1542,21 @@
   .orbit-card:hover {
     border-color: var(--d-teal-soft);
     background: var(--raised);
+  }
+
+  /* B-14 STEP 5: card-type left borders per dashboard-design.txt
+     RESPONSE TYPES. 2px colored left edge differentiates card kind
+     without breaking the V2 inset-well design (1px hairline on the
+     other three sides stays). */
+  .orbit-card--intervention {
+    border-left: 2px solid var(--purple);
+  }
+  .orbit-card--error {
+    border-left: 2px solid var(--fail);
+  }
+  /* Disambiguation: "No colored border." — transparent edge, no tint. */
+  .orbit-card--plain {
+    border-left: 2px solid transparent;
   }
 
   /* New card mount: brief teal-soft edge glow that settles to the
@@ -1541,10 +1587,10 @@
   }
   .intervention-title {
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--text);
-    line-height: 1.3;
+    line-height: var(--leading-code);
   }
 
   /* ---- Body text ---- */
@@ -1552,12 +1598,24 @@
     font-family: var(--font-mono);
     font-size: 12px;
     color: var(--read);
-    line-height: 1.5;
+    line-height: var(--leading-code);
   }
   .card-step,
   .card-filepath {
     font-size: 10px;
     color: var(--dim);
+  }
+  /* B-14 STEP 5: +N -M line counts next to the file path per spec. */
+  .diff-linecounts {
+    margin-left: var(--s-2);
+    color: var(--d-teal);
+  }
+  /* B-14 STEP 5: retry strategy line per spec Error card
+     "What ELAI will do about it (retry strategy, escalation)". */
+  .card-retry-strategy {
+    font-size: 10px;
+    color: var(--dim);
+    font-style: italic;
   }
 
   /* ---- Diff block — deeper inset well; teal strip on the live edge ---- */
@@ -1582,7 +1640,7 @@
     padding: var(--s-2) var(--s-3) var(--s-2) calc(var(--s-3) + 3px);
     white-space: pre-wrap;
     word-break: break-all;
-    line-height: 1.5;
+    line-height: var(--leading-code);
     margin: 0;
     background: none;
   }
@@ -1664,7 +1722,7 @@
     font-size: 12px;
     font-style: italic;
     color: var(--read);
-    line-height: 1.5;
+    line-height: var(--leading-code);
   }
 
   /* ---- Steering line ---- */
@@ -1676,7 +1734,7 @@
   }
   .steering-dot {
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: 13px;
     color: var(--dim);
     line-height: 1;
     flex-shrink: 0;
@@ -1685,8 +1743,8 @@
     font-family: var(--font-mono);
     font-size: 12px;
     font-style: italic;
-    color: var(--read);
-    line-height: 1.5;
+    color: var(--d-teal);
+    line-height: var(--leading-code);
   }
 
   /* ---- Response card (streaming) ---- */
@@ -1694,7 +1752,7 @@
     font-family: var(--font-mono);
     font-size: 13px;
     color: var(--text);
-    line-height: 1.55;
+    line-height: var(--leading-code);
     white-space: pre-wrap;
     word-break: break-word;
     margin: 0;
@@ -1823,7 +1881,7 @@
     align-items: center;
     gap: var(--s-3);
     font-size: 10px;
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
   .code-answer-path { color: var(--d-teal); }
   .code-answer-score { color: var(--dim); }
@@ -1841,7 +1899,7 @@
     margin: 4px 0 0;
     white-space: pre-wrap;
     word-break: break-word;
-    line-height: 1.45;
+    line-height: var(--leading-code);
     max-height: 9.5em;
     overflow: hidden;
   }
@@ -1927,7 +1985,7 @@
     border-bottom: 1px solid transparent;
     color: var(--text);
     font-size: 12px;
-    line-height: 1.4;
+    line-height: var(--leading-code);
     padding: 2px 4px;
     resize: none;
     outline: none;
@@ -2132,7 +2190,7 @@
   .positioning-para {
     font-family: var(--font-mono);
     font-size: 12px;
-    line-height: 1.5;
+    line-height: var(--leading-code);
     color: var(--read);
     margin: 0;
   }
@@ -2252,7 +2310,7 @@
   }
   .btn-tt {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     background: var(--row);
     border: 1px solid var(--line);
     border-radius: var(--r-xs);
@@ -2273,7 +2331,7 @@
   /* tt-error: §6 error language — inversion-adjacent, not a red hue. */
   .tt-error {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text);
     padding: 0 4px;
   }

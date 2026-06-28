@@ -908,10 +908,10 @@
   }
 
   function bgVoidHex(): number {
-    const s = colorMap['--bg-void'] || '#07090b';
+    const s = colorMap['--bg-void'] || '#0a0e12';
     if (s.startsWith('#')) return parseInt(s.slice(1), 16);
     const m = s.match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (!m) return 0x07090b;
+    if (!m) return 0x0a0e12;
     return (parseInt(m[1], 10) << 16) | (parseInt(m[2], 10) << 8) | parseInt(m[3], 10);
   }
 
@@ -1865,7 +1865,7 @@
     pointer-events: none;
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 10px;
-    line-height: 1.25;
+    line-height: var(--leading-code);
     letter-spacing: 0.04em;
     color: var(--teal-bright, rgba(75, 220, 180, 1));
     background: rgba(7, 9, 11, 0.78);
@@ -1900,9 +1900,9 @@
     text-shadow: 0 0 6px rgba(7, 9, 11, 0.92), 0 0 2px rgba(7, 9, 11, 1);
     transition: opacity 200ms ease-out, color 200ms ease-out;
   }
-  .orbit-label--phase { color: var(--text-secondary, rgba(180, 195, 200, 0.85)); font-size: 10.5px; }
-  .orbit-label--step  { color: var(--text-ghost, rgba(150, 165, 170, 0.70)); font-size: 9.5px; }
-  .orbit-label--baby  { color: var(--text-ghost, rgba(150, 165, 170, 0.55)); font-size: 9px; }
+  .orbit-label--phase { color: var(--text-secondary, rgba(180, 195, 200, 0.85)); font-size: 10px; }
+  .orbit-label--step  { color: var(--text-ghost, rgba(150, 165, 170, 0.70)); font-size: 10px; }
+  .orbit-label--baby  { color: var(--text-ghost, rgba(150, 165, 170, 0.55)); font-size: 10px; }
   .orbit-label--active {
     color: var(--teal-bright, rgba(75, 220, 180, 1));
     font-size: 10px;
@@ -1920,7 +1920,7 @@
     pointer-events: none;
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 10px;
-    line-height: 1.2;
+    line-height: var(--leading-code);
     letter-spacing: 0.04em;
     color: var(--text-ghost, rgba(150, 165, 170, 0.85));
     text-shadow: 0 0 4px rgba(7, 9, 11, 0.9), 0 0 1px rgba(7, 9, 11, 1);
@@ -1934,7 +1934,7 @@
     border-radius: 3px;
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 9.5px;
-    line-height: 1.25;
+    line-height: var(--leading-code);
     letter-spacing: 0.02em;
     white-space: pre;
     color: var(--text-secondary, rgba(180, 195, 200, 0.85));

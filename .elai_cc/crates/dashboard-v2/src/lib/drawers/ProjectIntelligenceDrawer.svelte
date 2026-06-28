@@ -226,7 +226,7 @@
     font-family: var(--font-sans);
     font-size: 12px;
     color: var(--text-secondary);
-    line-height: 1.5;
+    line-height: var(--leading-text);
     margin: 0;
   }
 
@@ -249,7 +249,7 @@
     color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: 10px;
-    line-height: 1.5;
+    line-height: var(--leading-code);
     padding: var(--s-2) var(--s-3);
     resize: vertical;
     outline: none;

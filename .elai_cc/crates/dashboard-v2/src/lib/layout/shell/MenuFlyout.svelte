@@ -161,7 +161,7 @@
     align-items: center;
     gap: 6px;
     font-family: var(--font-mono);
-    font-size: 8px;
+    font-size: 10px;
     letter-spacing: 0.22em;
     color: var(--dim);
     margin: 18px 0 8px;
@@ -184,7 +184,7 @@
     gap: 8px;
     width: 100%;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text);
     padding: 7px 9px;
     background: none;
@@ -196,7 +196,7 @@
   }
   .fitem:hover { background: var(--d-teal-ghost); }
   .fitem:focus-visible { box-shadow: inset 0 0 0 1px var(--d-teal); }
-  .fitem .k { color: var(--ghost); font-size: 9px; flex: none; }
+  .fitem .k { color: var(--ghost); font-size: 10px; flex: none; }
 
   /* I3: monitor nav rows use center->out underline (DESIGN §13), not the dot.
      The dot is for STATIC section labels (.fsec::before) only (§4). */
@@ -206,7 +206,7 @@
     align-items: center;
     width: 100%;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--dim);
     padding: 5px 9px;
     background: none;

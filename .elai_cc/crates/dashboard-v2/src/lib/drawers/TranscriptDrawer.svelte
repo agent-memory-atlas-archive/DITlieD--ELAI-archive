@@ -229,7 +229,7 @@
   }
   .hd-title {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     margin: 0;
     text-transform: uppercase;
@@ -237,12 +237,12 @@
   }
   .hd-hint {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
   .nav-btn, .load-older-btn {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     background: var(--bg-hover);
     border: 1px solid var(--border-subtle);
     border-radius: var(--r-xs);
@@ -276,7 +276,7 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--r-sm);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
   }
   .entry--user {
     border-left: 2px solid var(--signal-blue);
@@ -287,14 +287,14 @@
   .entry-head {
     display: flex;
     justify-content: space-between;
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
   .entry-kind { color: var(--text-secondary); }
   .entry-ts { color: var(--text-ghost); }
-  .entry-seq { color: var(--text-ghost); font-size: 8px; }
+  .entry-seq { color: var(--text-ghost); font-size: 10px; }
   .entry-body {
     color: var(--text-primary);
     margin-top: 4px;
@@ -307,7 +307,7 @@
   }
   .state {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     padding: var(--s-2);
   }
@@ -315,7 +315,7 @@
   .state--empty { color: var(--text-ghost); }
   .has-newer-hint {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
     text-align: center;
     padding: var(--s-1);

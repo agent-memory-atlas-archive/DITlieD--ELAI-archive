@@ -223,7 +223,7 @@
 
   .reload-btn {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     background: var(--bg-hover);
     border: 1px solid var(--border-default);
@@ -301,7 +301,7 @@
     font-weight: 500;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
   }
 
@@ -352,7 +352,7 @@
   }
 
   .ba-arrow {
-    font-size: 16px;
+    font-size: 15px;
     color: var(--text-secondary);
   }
 

@@ -6,7 +6,7 @@
   import { activity } from '$lib/state/activity.svelte';
   import { workspace } from '$lib/state/workspace.svelte';
   import { graph } from '$lib/state/graph.svelte';
-  import { get_bubble_up_events, get_package_verifications } from '$lib/api/stub';
+  import { get_bubble_up_events, get_package_verifications, get_executable_pipeline, get_phase_sized_splits, get_tree_positions, get_failure_records } from '$lib/api/stub';
   import { Tree, Badge, Button, Empty, Card, Scrollbar } from '$lib/ui';
   import SkeletonList from '$lib/components/SkeletonList.svelte';
   import NodeStateGlyph from '$lib/canvas/NodeStateGlyph.svelte';
@@ -16,8 +16,13 @@
     DecompNode,
     BubbleUpEvent,
     BabyStepBlock,
-    DecompLevel,
     PackageRefVerified,
+    PhaseSizedSplit,
+    ExecutablePipelineDag,
+    PipelineNode,
+    RepairLogEntry,
+    TreePosition,
+    FailureRecord,
   } from '$lib/api/types';
 
   // ----------------------------------------------------------------
@@ -135,6 +140,235 @@
     total: packageVerifications.length,
     verified: packageVerifications.filter((p) => p.verified).length,
   });
+
+  // B-7 Task #8: PhaseSizingSplitter split-badge surface. Polls
+  // get_phase_sized_splits from the orchestrator SSB viewer. Rendered
+  // as a SPLIT badge on phase nodes whose phase_id matches a split row.
+  let phaseSizedSplits = $state<PhaseSizedSplit[]>([]);
+  onMount(() => {
+    let alive = true;
+    async function refresh() {
+      try {
+        const rows = await get_phase_sized_splits();
+        if (alive) phaseSizedSplits = rows;
+      } catch (err) {
+        console.debug('[PlanWindow] get_phase_sized_splits failed', err);
+      }
+    }
+    void refresh();
+    const t = setInterval(refresh, 5_000);
+    return () => { alive = false; clearInterval(t); };
+  });
+
+  // Returns the PhaseSizedSplit row for a given phase node, or null.
+  // Phase node ids in the dashboard follow the pattern 'phase-N' where
+  // N is the numeric phase_id. We extract the trailing number and match
+  // it against the split row's phase_id field.
+  function splitForNode(nodeId: string): PhaseSizedSplit | null {
+    const segments = nodeId.split(/[^0-9]+/).filter((s) => s.length > 0);
+    if (segments.length === 0) return null;
+    const n = Number.parseInt(segments[segments.length - 1], 10);
+    if (!Number.isFinite(n)) return null;
+    return phaseSizedSplits.find((s) => s.phase_id === n) ?? null;
+  }
+
+  // ----------------------------------------------------------------
+  // B-7 Step 9: TreeNavigator state cursor. Polls get_tree_positions
+  // from the orchestrator SSB viewer. The latest row's current_node
+  // is passed to the Tree component as cursorId to highlight the node
+  // the navigator is currently processing (distinct from user selection).
+  // ----------------------------------------------------------------
+  let treePositions = $state<TreePosition[]>([]);
+  onMount(() => {
+    let alive = true;
+    async function refresh() {
+      try {
+        const rows = await get_tree_positions();
+        if (alive) treePositions = rows;
+      } catch (err) {
+        console.debug('[PlanWindow] get_tree_positions failed', err);
+      }
+    }
+    void refresh();
+    const t = setInterval(refresh, 5_000);
+    return () => { alive = false; clearInterval(t); };
+  });
+
+  // Latest cursor node id (empty string when no rows or traversal exhausted).
+  const cursorNodeId = $derived(
+    treePositions.length > 0 ? treePositions[0].current_node : '',
+  );
+
+  // ----------------------------------------------------------------
+  // B-7 Step 10: per-baby-step failure retry history. Polls
+  // get_failure_records from the orchestrator SSB viewer. The baby-step
+  // detail pane filters these by baby_step_id to show the retry trail
+  // (reason + attempts per FailureRecord upsert inside handle_failure).
+  // ----------------------------------------------------------------
+  let failureRecords = $state<FailureRecord[]>([]);
+  onMount(() => {
+    let alive = true;
+    async function refresh() {
+      try {
+        const rows = await get_failure_records();
+        if (alive) failureRecords = rows;
+      } catch (err) {
+        console.debug('[PlanWindow] get_failure_records failed', err);
+      }
+    }
+    void refresh();
+    const t = setInterval(refresh, 5_000);
+    return () => { alive = false; clearInterval(t); };
+  });
+
+  // Derived: failure records for the currently selected baby-step node.
+  // Uses babyStepIdFromNode to extract the numeric id from the dashboard
+  // node id (e.g. 'bs-1.1.3' -> 3) and matches against baby_step_id.
+  const selectedBabyStepFailures = $derived.by(() => {
+    const node = selectedNode;
+    if (!node || node.level !== 'baby-step') return [];
+    const numericId = babyStepIdFromNode(node.id);
+    if (numericId === null) return [];
+    return failureRecords.filter((f) => f.baby_step_id === numericId);
+  });
+
+  // ----------------------------------------------------------------
+  // B-7 STEP 7: ExecutablePipeline DAG visualizer. Polls the
+  // get_executable_pipeline Tauri command (which returns the full DAG
+  // + validation_errors + repair_log) and renders a lightweight SVG
+  // graph in the detail pane. No d3/cytoscape dependency — the DAG is
+  // a strict hierarchy (concept → phase → step → baby_step), so a
+  // level-based SVG layout suffices.
+  // ----------------------------------------------------------------
+  let pipelineDag = $state<ExecutablePipelineDag>({
+    nodes: [],
+    validation_errors: [],
+    repair_log: [],
+  });
+  let dagExpanded = $state(false);
+
+  onMount(() => {
+    let alive = true;
+    async function refresh() {
+      try {
+        const dag = await get_executable_pipeline();
+        if (alive) pipelineDag = dag;
+      } catch (err) {
+        console.debug('[PlanWindow] get_executable_pipeline failed', err);
+      }
+    }
+    void refresh();
+    const t = setInterval(refresh, 5_000);
+    return () => { alive = false; clearInterval(t); };
+  });
+
+  // SVG layout: assign each node an (x, y) position based on its depth
+  // in the dependency hierarchy. Root nodes (no deps) are at level 0.
+  // Nodes are spaced horizontally within each level.
+  const DAG_NODE_W = 120;
+  const DAG_NODE_H = 28;
+  const DAG_LEVEL_GAP = 50;
+  const DAG_NODE_GAP = 12;
+
+  const dagLayout = $derived.by(() => {
+    const nodes = pipelineDag.nodes;
+    if (nodes.length === 0) return { positioned: [], edges: [], width: 0, height: 0 };
+
+    // Build adjacency: dep -> dependents
+    const nodeMap = new Map<string, PipelineNode>();
+    for (const n of nodes) nodeMap.set(n.id, n);
+
+    // Compute depth (longest path from any root) via topological levels.
+    const depthCache = new Map<string, number>();
+    function depth(id: string): number {
+      if (depthCache.has(id)) return depthCache.get(id)!;
+      const node = nodeMap.get(id);
+      if (!node || node.deps.length === 0) {
+        depthCache.set(id, 0);
+        return 0;
+      }
+      const d = 1 + Math.max(...node.deps.map((dep) => {
+        const depNode = nodeMap.get(dep);
+        return depNode ? depth(dep) : 0;
+      }));
+      depthCache.set(id, d);
+      return d;
+    }
+
+    // Group nodes by depth level.
+    const levels = new Map<number, PipelineNode[]>();
+    for (const n of nodes) {
+      const d = depth(n.id);
+      if (!levels.has(d)) levels.set(d, []);
+      levels.get(d)!.push(n);
+    }
+
+    const maxDepth = Math.max(...levels.keys(), 0);
+    const positioned: { node: PipelineNode; x: number; y: number }[] = [];
+    const edges: { from: string; to: string; x1: number; y1: number; x2: number; y2: number }[] = [];
+
+    let maxWidth = 0;
+    for (let lvl = 0; lvl <= maxDepth; lvl++) {
+      const levelNodes = levels.get(lvl) ?? [];
+      const levelWidth = levelNodes.length * (DAG_NODE_W + DAG_NODE_GAP) - DAG_NODE_GAP;
+      if (levelWidth > maxWidth) maxWidth = levelWidth;
+    }
+
+    const posMap = new Map<string, { x: number; y: number }>();
+    for (let lvl = 0; lvl <= maxDepth; lvl++) {
+      const levelNodes = levels.get(lvl) ?? [];
+      const levelWidth = levelNodes.length * (DAG_NODE_W + DAG_NODE_GAP) - DAG_NODE_GAP;
+      const startX = (maxWidth - levelWidth) / 2;
+      for (let i = 0; i < levelNodes.length; i++) {
+        const x = startX + i * (DAG_NODE_W + DAG_NODE_GAP);
+        const y = lvl * (DAG_NODE_H + DAG_LEVEL_GAP);
+        posMap.set(levelNodes[i].id, { x, y });
+        positioned.push({ node: levelNodes[i], x, y });
+      }
+    }
+
+    for (const n of nodes) {
+      const to = posMap.get(n.id);
+      if (!to) continue;
+      for (const dep of n.deps) {
+        const from = posMap.get(dep);
+        if (!from) continue;
+        edges.push({
+          from: dep,
+          to: n.id,
+          x1: from.x + DAG_NODE_W / 2,
+          y1: from.y + DAG_NODE_H,
+          x2: to.x + DAG_NODE_W / 2,
+          y2: to.y,
+        });
+      }
+    }
+
+    return {
+      positioned,
+      edges,
+      width: maxWidth,
+      height: (maxDepth + 1) * (DAG_NODE_H + DAG_LEVEL_GAP) - DAG_LEVEL_GAP,
+    };
+  });
+
+  function dagNodeStatusColor(status: string): string {
+    switch (status) {
+      case 'done': return 'var(--d-green, #4ade80)';
+      case 'active': return 'var(--d-teal, #2dd4bf)';
+      case 'failed': return 'var(--d-red, #f87171)';
+      case 'skipped': return 'var(--dim, #6b7280)';
+      default: return 'var(--raised, #374151)';
+    }
+  }
+
+  function dagNodeKindLabel(kind: string): string {
+    return kind.toUpperCase();
+  }
+
+  function repairLogClass(entry: RepairLogEntry): string {
+    return entry.escalated ? 'repair-entry repair-escalated' : 'repair-entry';
+  }
 
   function handleCtrlSelectNode(id: string) {
     // Ctrl+click: open Activity window in primary panel and scroll to this step
@@ -422,16 +656,70 @@
     return node.children?.length ?? 0;
   }
 
-  // BubbleUp state (§6: shape carries state, no foreign hue). Escalation is
-  // the loud one (fail); phase-level lift is warn; lower levels stay quiet.
+  // B-7 STEP 11: BubbleUp cascade hierarchy visualization.
+  // The typed payload carries from_level / to_level / action_kind / reason.
+  // We render a 4-level cascade bar: BabyStep → Step → Phase → Concept,
+  // with each event shown as an arrow chip on the segment it traverses.
+  // Same-level events (from_level == to_level) are shown on the level node
+  // itself as a threshold-miss indicator.
+
+  // State severity from action_kind — escalate is the loud one (fail);
+  // replan_phase / replan_concept are warn; lower levels stay quiet.
   function bubbleState(event: BubbleUpEvent): 'fail' | 'warn' | 'pending' {
-    if (event.escalated) return 'fail';
-    if (event.level === 'phase') return 'warn';
+    if (event.action_kind === 'escalate') return 'fail';
+    if (event.action_kind === 'replan_phase' || event.action_kind === 'replan_concept') return 'warn';
     return 'pending';
   }
 
-  function levelLabel(l: DecompLevel): string {
-    return l.toUpperCase();
+  // Short label for the action_kind discriminant.
+  function actionLabel(kind: string): string {
+    const map: Record<string, string> = {
+      'research_alternative': 'RESEARCH',
+      'redecompose_step': 'REDECOMP',
+      'replan_phase': 'REPLAN-P',
+      'replan_concept': 'REPLAN-C',
+      'diagnose_and_retry': 'RETRY',
+      'escalate': 'ESCALATE',
+    };
+    return map[kind] ?? kind.toUpperCase();
+  }
+
+  // The 4 cascade levels in order from lowest to highest.
+  const CASCADE_LEVELS = ['BabyStep', 'Step', 'Phase', 'Concept'] as const;
+
+  // Short label for a cascade level node.
+  function cascadeNodeLabel(level: string): string {
+    const map: Record<string, string> = {
+      'BabyStep': 'BS',
+      'Step': 'S',
+      'Phase': 'P',
+      'Concept': 'C',
+    };
+    return map[level] ?? level.slice(0, 2).toUpperCase();
+  }
+
+  // Count of events at each level node (same-level threshold misses).
+  function sameLevelCount(level: string): number {
+    return bubbleUpEvents.filter((e) => e.from_level === level && e.to_level === level).length;
+  }
+
+  // Count of events on a cascade segment (from → to).
+  function segmentCount(from: string, to: string): number {
+    return bubbleUpEvents.filter((e) => e.from_level === from && e.to_level === to).length;
+  }
+
+  // Severity of a cascade segment or level node.
+  function segmentSeverity(from: string, to: string): 'fail' | 'warn' | 'pending' {
+    const events = bubbleUpEvents.filter((e) => e.from_level === from && e.to_level === to);
+    if (events.some((e) => e.action_kind === 'escalate')) return 'fail';
+    if (events.some((e) => e.action_kind === 'replan_phase' || e.action_kind === 'replan_concept')) return 'warn';
+    return 'pending';
+  }
+
+  // Tooltip text for a cascade segment.
+  function segmentTooltip(from: string, to: string): string {
+    const events = bubbleUpEvents.filter((e) => e.from_level === from && e.to_level === to);
+    return events.map((e) => `${actionLabel(e.action_kind)}: ${e.reason} (${e.failure_count}/${e.threshold})`).join('\n');
   }
 
   // ----------------------------------------------------------------
@@ -448,17 +736,46 @@
       <Badge tone="teal" size="xs">{plan.tree.status.toUpperCase()}</Badge>
     </div>
     <div class="toolbar-center">
-      <div class="bubble-strip">
-        {#each bubbleUpEvents as ev (ev.ts)}
-          {@const bs = bubbleState(ev)}
-          <div class="bubble-chip" class:is-escalated={bs === 'fail'} title="{ev.message}">
-            {#if bs !== 'pending'}
-              <NodeStateGlyph state={bs} size={11} />
+      <!-- B-7 STEP 11: Cascade hierarchy visualization with arrows
+           BabyStep → Step → Phase → Concept. Each level node shows a
+           count badge for same-level threshold misses; each arrow
+           segment shows a count badge for cascade lifts. -->
+      <div class="cascade-bar" aria-label="Bubble-up cascade hierarchy">
+        {#if bubbleUpEvents.length === 0}
+          <span class="cascade-empty">no bubble-up events</span>
+        {:else}
+          {#each CASCADE_LEVELS as lvl, i (lvl)}
+            <div
+              class="cascade-node"
+              class:has-miss={sameLevelCount(lvl) > 0}
+              class:sev-fail={sameLevelCount(lvl) > 0 && segmentSeverity(lvl, lvl) === 'fail'}
+              class:sev-warn={sameLevelCount(lvl) > 0 && segmentSeverity(lvl, lvl) === 'warn'}
+              title={sameLevelCount(lvl) > 0 ? segmentTooltip(lvl, lvl) : `${lvl} level`}
+            >
+              <span class="cascade-node-label">{cascadeNodeLabel(lvl)}</span>
+              {#if sameLevelCount(lvl) > 0}
+                <span class="cascade-node-count">{sameLevelCount(lvl)}</span>
+              {/if}
+            </div>
+            {#if i < CASCADE_LEVELS.length - 1}
+              {@const nextLvl = CASCADE_LEVELS[i + 1]}
+              {@const cnt = segmentCount(lvl, nextLvl)}
+              {@const sev = segmentSeverity(lvl, nextLvl)}
+              <div
+                class="cascade-arrow"
+                class:has-events={cnt > 0}
+                class:sev-fail={cnt > 0 && sev === 'fail'}
+                class:sev-warn={cnt > 0 && sev === 'warn'}
+                title={cnt > 0 ? segmentTooltip(lvl, nextLvl) : ''}
+              >
+                <span class="cascade-arrow-glyph">→</span>
+                {#if cnt > 0}
+                  <span class="cascade-arrow-count">{cnt}</span>
+                {/if}
+              </div>
             {/if}
-            <span class="bubble-level">{levelLabel(ev.level)}</span>
-            <span class="bubble-node">{ev.node_id}</span>
-          </div>
-        {/each}
+          {/each}
+        {/if}
       </div>
     </div>
     <div class="toolbar-right">
@@ -481,6 +798,7 @@
             nodes={treeNodes}
             expandedIds={plan.expandedIds}
             selectedId={plan.selectedId ?? ''}
+            cursorId={cursorNodeId}
             onselect={(id) => plan.selectNode(id)}
             onctrselect={handleCtrlSelectNode}
           />
@@ -550,6 +868,42 @@
                     class="meta-value"
                     class:all-verified={packageVerifyStats.verified === packageVerifyStats.total}
                   >{packageVerifyStats.verified}/{packageVerifyStats.total}</span>
+                </div>
+              {/if}
+              <!-- B-7 Task #8: PhaseSizingSplitter split badge. Shown only
+                   on phase nodes that have a matching phase_sized_split SSB
+                   row. The badge displays the sub-task count + complexity
+                   reason tooltip. -->
+              {#if splitForNode(selectedNode.id)}
+                {@const split = splitForNode(selectedNode.id)!}
+                <div
+                  class="meta-row"
+                  data-testid="phase-split-row"
+                  title={split.complexity_reason ?? 'phase_sized_split'}
+                >
+                  <span class="meta-label">SPLIT</span>
+                  <span class="meta-value split-badge">
+                    <span class="split-count">{split.sub_task_ids.length}</span>
+                    <span class="split-unit">sub-tasks</span>
+                  </span>
+                </div>
+              {/if}
+              <!-- B-7 Step 9: TreeNavigator cursor state. Shown when the
+                   selected node is the current navigator cursor, surfacing
+                   the visited/blocked/skipped drift trail. -->
+              {#if cursorNodeId !== '' && cursorNodeId === selectedNode.id && treePositions.length > 0}
+                {@const pos = treePositions[0]}
+                <div
+                  class="meta-row"
+                  data-testid="tree-cursor-row"
+                  title="tree_position_changed: navigator cursor state"
+                >
+                  <span class="meta-label">CURSOR</span>
+                  <span class="meta-value cursor-state">
+                    <span class="cursor-chip cursor-visited">{pos.visited.length} visited</span>
+                    <span class="cursor-chip cursor-blocked">{pos.blocked.length} blocked</span>
+                    <span class="cursor-chip cursor-skipped">{pos.skipped.length} skipped</span>
+                  </span>
                 </div>
               {/if}
             </div>
@@ -682,6 +1036,119 @@
                 </div>
               {/each}
             </div>
+
+            <!-- B-7 Step 10: per-baby-step failure retry history. Renders
+                 failure_recorded SSB rows matching this baby step's numeric
+                 id. Each row shows the attempt count and failure reason.
+                 Hidden when no failure rows exist for this step. -->
+            {#if selectedBabyStepFailures.length > 0}
+              <div class="retry-history" data-testid="retry-history">
+                <div class="retry-header">
+                  <span class="retry-title">RETRY HISTORY</span>
+                  <span class="retry-count">{selectedBabyStepFailures.length}</span>
+                </div>
+                <ul class="retry-list">
+                  {#each selectedBabyStepFailures as rec (rec.attempts + rec.reason)}
+                    <li class="retry-row">
+                      <span class="retry-attempts" title="attempts">#{rec.attempts}</span>
+                      <span class="retry-reason">{rec.reason}</span>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+          {/if}
+
+          <!-- B-7 STEP 7: ExecutablePipeline DAG visualizer. Renders the
+               full pipeline DAG (nodes + edges) as a lightweight SVG graph,
+               plus the repair log and validation error history. Collapsible
+               to keep the detail pane clean when not needed. -->
+          {#if pipelineDag.nodes.length > 0}
+            <div class="dag-section" data-testid="executable-pipeline-dag">
+              <button
+                class="dag-toggle text-btn"
+                type="button"
+                onclick={() => dagExpanded = !dagExpanded}
+              >
+                <span class="dag-toggle-icon">{dagExpanded ? '▾' : '▸'}</span>
+                EXECUTABLE PIPELINE DAG ({pipelineDag.nodes.length} nodes)
+              </button>
+
+              {#if dagExpanded}
+                <div class="dag-svg-wrap">
+                  <svg
+                    class="dag-svg"
+                    width={dagLayout.width + 20}
+                    height={dagLayout.height + 10}
+                    viewBox={`-10 -5 ${dagLayout.width + 20} ${dagLayout.height + 10}`}
+                    role="img"
+                    aria-label="Executable pipeline dependency graph"
+                  >
+                    {#each dagLayout.edges as edge (`${edge.from}-${edge.to}`)}
+                      <path
+                        class="dag-edge"
+                        d={`M ${edge.x1} ${edge.y1} C ${edge.x1} ${(edge.y1 + edge.y2) / 2}, ${edge.x2} ${(edge.y1 + edge.y2) / 2}, ${edge.x2} ${edge.y2}`}
+                      />
+                    {/each}
+                    {#each dagLayout.positioned as item (item.node.id)}
+                      {@const isSelected = selectedNode?.id === item.node.id}
+                      <g transform={`translate(${item.x}, ${item.y})`}>
+                        <rect
+                          class="dag-node"
+                          class:dag-node-selected={isSelected}
+                          width={DAG_NODE_W}
+                          height={DAG_NODE_H}
+                          rx="3"
+                          fill={dagNodeStatusColor(item.node.status)}
+                          fill-opacity="0.15"
+                          stroke={dagNodeStatusColor(item.node.status)}
+                          stroke-width="1"
+                        />
+                        <text
+                          class="dag-node-kind"
+                          x="4"
+                          y="11"
+                        >{dagNodeKindLabel(item.node.kind)}</text>
+                        <text
+                          class="dag-node-label"
+                          x="4"
+                          y="23"
+                        >{item.node.label.length > 18 ? item.node.label.slice(0, 17) + '…' : item.node.label}</text>
+                      </g>
+                    {/each}
+                  </svg>
+                </div>
+
+                {#if pipelineDag.repair_log.length > 0}
+                  <div class="dag-repair-log" data-testid="dag-repair-log">
+                    <div class="dag-subhead">REPAIR LOG</div>
+                    {#each pipelineDag.repair_log as entry, idx (idx)}
+                      <div class={repairLogClass(entry)}>
+                        <span class="repair-round">R{entry.round}</span>
+                        <span class="repair-kind">{entry.action_kind}</span>
+                        <span class="repair-reason">{entry.reason}</span>
+                        {#if entry.escalated}
+                          <span class="repair-badge" title="T_DAG=10 exhausted">ESCALATED</span>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if pipelineDag.validation_errors.length > 0}
+                  <div class="dag-validation-errors" data-testid="dag-validation-errors">
+                    <div class="dag-subhead">VALIDATION ERROR HISTORY</div>
+                    {#each pipelineDag.validation_errors as err, idx (idx)}
+                      <div class="val-err-entry">
+                        <span class="val-err-kind">{err.kind}</span>
+                        <span class="val-err-round">R{err.round}</span>
+                        <span class="val-err-msg">{err.message}</span>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
+            </div>
           {/if}
         </div>
       {/if}
@@ -736,48 +1203,107 @@
     overflow: hidden;
   }
 
-  .bubble-strip {
+  /* B-7 STEP 11: Cascade hierarchy bar — BabyStep → Step → Phase → Concept */
+  .cascade-bar {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     overflow-x: auto;
     scrollbar-width: none;
     padding: 2px 0;
   }
 
-  .bubble-strip::-webkit-scrollbar {
+  .cascade-bar::-webkit-scrollbar {
     display: none;
   }
 
-  .bubble-chip {
+  .cascade-empty {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    letter-spacing: 0.06em;
+  }
+
+  .cascade-node {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     height: 18px;
-    padding: 0 6px;
-    border-radius: var(--r-xs);
+    padding: 0 5px;
     border: 1px solid var(--line);
+    border-radius: var(--r-xs);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: transparent;
     flex-shrink: 0;
     cursor: default;
   }
 
-  /* escalation framed by a stronger hairline; the loud signal is the glyph */
-  .bubble-chip.is-escalated {
-    border-color: var(--line2);
+  .cascade-node.has-miss {
+    border-color: var(--steel);
   }
 
-  .bubble-level {
-    font-family: var(--font-mono);
-    font-size: 9px;
+  .cascade-node.sev-warn {
+    border-color: var(--warn);
+  }
+
+  .cascade-node.sev-fail {
+    border-color: var(--fail);
+  }
+
+  .cascade-node-label {
     font-weight: 600;
     letter-spacing: 0.06em;
     color: var(--dim);
   }
 
-  .bubble-node {
+  .cascade-node-count {
+    font-size: 9px;
+    color: var(--text-ghost);
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: var(--r-pill);
+    padding: 0 4px;
+    min-width: 14px;
+    text-align: center;
+  }
+
+  .cascade-arrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--read);
+    color: var(--text-ghost);
+    flex-shrink: 0;
+    cursor: default;
+  }
+
+  .cascade-arrow.has-events {
+    color: var(--steel);
+  }
+
+  .cascade-arrow.sev-warn {
+    color: var(--warn);
+  }
+
+  .cascade-arrow.sev-fail {
+    color: var(--fail);
+  }
+
+  .cascade-arrow-glyph {
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .cascade-arrow-count {
+    font-size: 9px;
+    color: var(--text-ghost);
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: var(--r-pill);
+    padding: 0 4px;
+    min-width: 14px;
+    text-align: center;
   }
 
   .toolbar-right {
@@ -932,11 +1458,11 @@
 
   .detail-title {
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--text);
     margin: 0;
-    line-height: 1.3;
+    line-height: var(--leading-code);
   }
 
   .detail-elapsed {
@@ -996,6 +1522,35 @@
     color: var(--d-teal);
   }
 
+  /* B-7 Task #8: split badge — amber accent to distinguish from
+     verified (teal) and failed (red). */
+  .split-badge {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 2px;
+  }
+  .split-badge .split-count {
+    color: var(--d-amber, #fbbf24);
+    font-weight: 600;
+  }
+  .split-badge .split-unit {
+    color: var(--dim);
+    font-size: 0.85em;
+  }
+
+  /* B-7 Step 9: TreeNavigator cursor state chips. */
+  .cursor-state {
+    display: inline-flex;
+    gap: 6px;
+  }
+  .cursor-chip {
+    font-size: 0.85em;
+    color: var(--dim);
+  }
+  .cursor-chip.cursor-visited { color: var(--d-teal, #2dd4bf); }
+  .cursor-chip.cursor-blocked { color: var(--d-red, #f87171); }
+  .cursor-chip.cursor-skipped { color: var(--dim); }
+
   .children-list {
     display: flex;
     flex-direction: column;
@@ -1045,7 +1600,7 @@
     background: transparent;
     font-family: var(--font-mono);
     font-size: 10px;
-    line-height: 1.2;
+    line-height: var(--leading-code);
   }
 
   .chip-label {
@@ -1114,8 +1669,74 @@
     font-family: var(--font-mono);
     font-size: 12px;
     color: var(--read);
-    line-height: 1.5;
+    line-height: var(--leading-code);
     margin: 0;
+    word-break: break-word;
+  }
+
+  /* ---- B-7 Step 10: per-baby-step retry history ---- */
+  .retry-history {
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--d-red, #f87171);
+    border-radius: var(--r-sm);
+    padding: var(--s-3);
+    margin-top: var(--s-3);
+    background: var(--panel);
+  }
+
+  .retry-header {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    margin-bottom: var(--s-2);
+  }
+
+  .retry-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--dim);
+  }
+
+  .retry-count {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--d-red, #f87171);
+    background: color-mix(in srgb, var(--d-red, #f87171) 12%, transparent);
+    padding: 1px 6px;
+    border-radius: var(--r-xs, 2px);
+  }
+
+  .retry-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .retry-row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+  }
+
+  .retry-attempts {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--d-red, #f87171);
+    flex-shrink: 0;
+    min-width: 28px;
+  }
+
+  .retry-reason {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--read);
+    line-height: var(--leading-code);
     word-break: break-word;
   }
 
@@ -1162,18 +1783,18 @@
     padding-left: 6px;
   }
   .ipe-row-intent {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text);
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
   .ipe-row-assertion {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--dim);
     font-family: var(--font-mono);
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
   .ipe-empty {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--dim);
     margin: 0 0 var(--s-2) 0;
   }
@@ -1189,7 +1810,7 @@
     border-radius: var(--r-xs);
     padding: 6px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text);
     resize: vertical;
   }
@@ -1207,7 +1828,7 @@
     border-radius: var(--r-xs);
     color: var(--text);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
     transition: border-color var(--dur-fast) var(--ease-out),
       background var(--dur-fast) var(--ease-out);
@@ -1226,13 +1847,181 @@
   }
   /* §6 error language: mono-inversion, never a foreign red. */
   .ipe-error {
-    font-size: 11px;
-    color: var(--void, #030404);
+    font-size: 10px;
+    color: var(--void);
     background: var(--text);
     border-radius: 2px;
     padding: 3px 6px;
     margin: 0;
     align-self: flex-start;
     font-weight: 600;
+  }
+
+  /* ---- B-7 STEP 7: ExecutablePipeline DAG visualizer ---- */
+  .dag-section {
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    padding: var(--s-2) var(--s-3);
+    margin-top: var(--s-3);
+    background: var(--panel);
+  }
+
+  .dag-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--read);
+    padding: 2px 0;
+  }
+
+  .dag-toggle-icon {
+    font-size: 10px;
+    color: var(--dim);
+  }
+
+  .dag-svg-wrap {
+    overflow-x: auto;
+    overflow-y: hidden;
+    margin-top: var(--s-2);
+    padding: 4px 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--raised) transparent;
+  }
+
+  .dag-svg-wrap::-webkit-scrollbar {
+    height: 4px;
+  }
+
+  .dag-svg-wrap::-webkit-scrollbar-thumb {
+    background: var(--raised);
+    border-radius: 2px;
+  }
+
+  .dag-svg {
+    display: block;
+  }
+
+  .dag-edge {
+    fill: none;
+    stroke: var(--line2);
+    stroke-width: 1;
+  }
+
+  .dag-node {
+    cursor: default;
+    transition: stroke-width var(--dur-fast) var(--ease-out);
+  }
+
+  .dag-node-selected {
+    stroke-width: 2.5;
+  }
+
+  .dag-node-kind {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    fill: var(--dim);
+  }
+
+  .dag-node-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    fill: var(--text);
+  }
+
+  .dag-subhead {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--dim);
+    margin-bottom: 4px;
+    margin-top: var(--s-2);
+  }
+
+  .dag-repair-log,
+  .dag-validation-errors {
+    margin-top: var(--s-2);
+  }
+
+  .repair-entry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--read);
+  }
+
+  .repair-entry.repair-escalated {
+    color: var(--void);
+    background: var(--text);
+    border-radius: 2px;
+    padding: 3px 6px;
+  }
+
+  .repair-round {
+    color: var(--dim);
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .repair-kind {
+    color: var(--d-teal);
+    flex-shrink: 0;
+  }
+
+  .repair-reason {
+    color: var(--read);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .repair-badge {
+    flex-shrink: 0;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--d-red, #f87171);
+    border: 1px solid var(--d-red, #f87171);
+    border-radius: 2px;
+    padding: 0 3px;
+  }
+
+  .val-err-entry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--read);
+  }
+
+  .val-err-kind {
+    color: var(--d-teal);
+    flex-shrink: 0;
+  }
+
+  .val-err-round {
+    color: var(--dim);
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .val-err-msg {
+    color: var(--read);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

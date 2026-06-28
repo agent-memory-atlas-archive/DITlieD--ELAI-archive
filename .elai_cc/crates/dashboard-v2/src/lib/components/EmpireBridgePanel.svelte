@@ -183,13 +183,13 @@
   }
   header h3 {
     margin: 0;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
   }
   .badge {
     padding: 2px 8px;
     border-radius: 12px;
-    font-size: 11px;
+    font-size: 10px;
     text-transform: lowercase;
   }
   .badge.ok {
@@ -218,11 +218,11 @@
     flex-direction: column;
   }
   .metric .label {
-    font-size: 11px;
+    font-size: 10px;
     color: #9090a8;
   }
   .metric .value {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
   }
   table {

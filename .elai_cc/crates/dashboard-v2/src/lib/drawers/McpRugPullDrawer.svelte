@@ -186,7 +186,7 @@
 
   .reload-btn {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     background: var(--bg-hover);
     border: 1px solid var(--border-default);
@@ -208,7 +208,7 @@
 
   .summary-label {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -307,7 +307,7 @@
 
   .footnote {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .error-banner {

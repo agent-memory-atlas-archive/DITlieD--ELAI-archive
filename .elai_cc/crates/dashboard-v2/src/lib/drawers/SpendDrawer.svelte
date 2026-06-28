@@ -108,7 +108,7 @@
   }
   .hd-title {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     margin: 0;
     text-transform: uppercase;
@@ -116,7 +116,7 @@
   }
   .hd-hint {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
   .grid {
@@ -132,7 +132,7 @@
   }
   .cell-key {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -149,7 +149,7 @@
   }
   .state {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     padding: var(--s-2);
   }
@@ -157,7 +157,7 @@
   .state--empty { color: var(--text-ghost); }
   .note {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
     padding-top: var(--s-1);
   }

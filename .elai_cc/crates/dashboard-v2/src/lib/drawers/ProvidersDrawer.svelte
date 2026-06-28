@@ -538,7 +538,7 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-secondary);
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
 
   .empty-note {

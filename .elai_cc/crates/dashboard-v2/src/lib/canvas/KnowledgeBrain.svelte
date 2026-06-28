@@ -138,7 +138,7 @@
     overflow: hidden;
     background: var(--bg);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
   }
   .brain-head {
     display: flex;
@@ -185,11 +185,11 @@
     color: var(--text); border: 1px solid var(--line2);
     border-radius: var(--r-xs); padding: 0 3px;
   }
-  .note-title { font-size: 11px; color: var(--text); font-weight: 500; }
+  .note-title { font-size: 10px; color: var(--text); font-weight: 500; }
   .note-body {
     font-size: 9px;
     color: var(--read);
-    line-height: 1.4;
+    line-height: var(--leading-text);
     overflow: hidden;
     display: -webkit-box;
     -webkit-line-clamp: 3;

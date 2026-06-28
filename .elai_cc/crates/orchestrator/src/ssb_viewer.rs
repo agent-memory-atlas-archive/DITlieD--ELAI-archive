@@ -4079,7 +4079,6 @@ impl SsbViewer {
     /// Returns up to `limit` recent `dag_repair_escalated` rows in descending
     /// seq order (most recent first). Used by the dashboard DAG_REPAIR drawer
     /// to surface escalation events when T_DAG=10 is exhausted.
-    // WIRE-DARK[dashboard-v2]: consumer is dashboard-v2/src-tauri/src/commands.rs (recent_dag_repair_escalated calls), landing in the dashboard-v2 slice immediately after this one.
     pub fn recent_dag_repair_escalated(
         &self,
         limit: usize,
@@ -4113,7 +4112,6 @@ impl SsbViewer {
     /// Used by the dashboard to render split badges on phase nodes in the
     /// PlanWindow tree. Rows without phase context (supervision-layer
     /// splits, deterministic-fallback, research_tree) are filtered out.
-    // WIRE-DARK[dashboard-v2]: consumer is dashboard-v2/src-tauri/src/commands.rs (recent_phase_sized_splits call), landing in the dashboard-v2 slice immediately after this one.
     pub fn recent_phase_sized_splits(
         &self,
         limit: usize,

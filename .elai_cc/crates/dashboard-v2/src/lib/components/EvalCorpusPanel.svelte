@@ -139,7 +139,7 @@
   }
   .ec-thresholds {
     color: #7a7a7a;
-    font-size: 11px;
+    font-size: 10px;
   }
   .ec-empty {
     color: #555;
@@ -157,12 +157,12 @@
     border: 1px solid #2a2a2a;
     border-radius: 2px;
     color: #c0c0c0;
-    font-size: 11px;
+    font-size: 10px;
   }
   .ec-families {
     width: 100%;
     border-collapse: collapse;
-    font-size: 11px;
+    font-size: 10px;
   }
   .ec-families th,
   .ec-families td {

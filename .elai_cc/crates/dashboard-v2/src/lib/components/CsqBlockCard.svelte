@@ -146,7 +146,7 @@
   }
   .csq-block-title {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fail);
     font-weight: 600;
   }
@@ -186,7 +186,7 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-secondary);
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
   .csq-block-actions {
     display: flex;

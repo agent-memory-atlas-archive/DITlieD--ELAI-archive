@@ -425,7 +425,7 @@
     cursor: pointer;
     font-family: var(--font-mono);
     font-weight: 500;
-    font-size: 11px;
+    font-size: 10px;
     letter-spacing: 0.18em;
     color: var(--dim);
     padding: 16px 16px;
@@ -592,7 +592,7 @@
 
   .nm {
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text);
     white-space: nowrap;
@@ -635,8 +635,8 @@
     color: var(--read);
     border: 1px solid var(--line2);
     border-radius: 0;
-    padding: 11px 20px;
-    font-size: 11px;
+    padding: 10px 20px;
+    font-size: 10px;
     letter-spacing: 0.16em;
     text-transform: uppercase;
     position: relative;
@@ -671,7 +671,7 @@
     letter-spacing: 0.06em;
     font-size: 12.5px;
     border-radius: var(--r-sm);
-    padding: 11px 18px;
+    padding: 10px 18px;
   }
   .newproj.base::after {
     display: none;
@@ -693,14 +693,14 @@
   }
   .empty-glyph {
     font-family: var(--font-mono);
-    font-size: 22px;
+    font-size: 18px;
     color: var(--ghost);
     line-height: 1;
   }
   .empty-title {
     margin: 0;
     font-family: var(--font-mono);
-    font-size: 17px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--text);
   }
@@ -724,16 +724,13 @@
     height: 46px;
     border: 1px solid var(--line);
     border-radius: var(--r-md);
-    background: var(--sink);
-    animation: skelpulse 1.4s ease-in-out infinite;
+    background: linear-gradient(90deg, var(--sink) 25%, var(--row) 50%, var(--sink) 75%);
+    background-size: 400% 100%;
+    animation: shimmer 1.6s linear infinite;
   }
   .skel:nth-child(2) { animation-delay: 0.18s; }
   .skel:nth-child(3) { animation-delay: 0.36s; }
   .skel:nth-child(4) { animation-delay: 0.54s; }
-  @keyframes skelpulse {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 0.8; }
-  }
 
   /* ── ERROR (mono inversion fail-chip) ── */
   .fail-chip {
@@ -763,7 +760,7 @@
   .warn-box {
     display: flex;
     align-items: center;
-    gap: 11px;
+    gap: 10px;
     border: 1px solid var(--line2);
     border-radius: var(--r-md);
     padding: 15px 17px;

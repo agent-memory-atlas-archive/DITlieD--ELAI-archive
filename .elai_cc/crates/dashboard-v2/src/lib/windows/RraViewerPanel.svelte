@@ -220,7 +220,7 @@
 
   .reload-btn {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     background: var(--bg-hover);
     border: 1px solid var(--border-default);
@@ -242,7 +242,7 @@
 
   .summary-label {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -327,7 +327,7 @@
 
   .footnote {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   /* I-45: objective hash badge */
@@ -346,20 +346,20 @@
   }
 
   .badge-legacy {
-    background: rgba(120, 120, 120, 0.15);
+    background: var(--border-subtle);
     color: var(--text-secondary);
-    border: 1px solid rgba(120, 120, 120, 0.3);
+    border: 1px solid var(--border-default);
   }
 
   .badge-sealed {
-    background: rgba(80, 180, 120, 0.12);
-    color: #5cb87a;
-    border: 1px solid rgba(80, 180, 120, 0.3);
+    background: var(--pass-ghost);
+    color: var(--pass);
+    border: 1px solid var(--pass-soft);
   }
 
   .error-banner {
-    background: rgba(220, 80, 80, 0.1);
-    border: 1px solid rgba(220, 80, 80, 0.4);
+    background: var(--fail-ghost);
+    border: 1px solid var(--fail-soft);
     padding: 8px;
     border-radius: var(--r-sm);
   }

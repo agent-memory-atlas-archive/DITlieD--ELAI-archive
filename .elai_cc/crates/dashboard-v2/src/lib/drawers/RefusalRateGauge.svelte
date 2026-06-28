@@ -338,7 +338,7 @@
   th, td {
     padding: 0.35rem 0.5rem;
     text-align: left;
-    border-bottom: 1px solid var(--border, #2a2a2a);
+    border-bottom: 1px solid var(--border-default);
     vertical-align: middle;
   }
 
@@ -357,8 +357,8 @@
   .band-axis {
     position: relative;
     height: 1.25rem;
-    background: var(--bar-bg, #1a1a1a);
-    border: 1px solid var(--border, #2a2a2a);
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
     overflow: hidden;
   }
 
@@ -366,7 +366,7 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    background: rgba(74, 136, 102, 0.35);
+    background: var(--pass-ghost);
   }
 
   .rate-marker {
@@ -417,12 +417,12 @@
     width: 100%;
     height: 3rem;
     display: block;
-    background: var(--bar-bg, #1a1a1a);
-    border: 1px solid var(--border, #2a2a2a);
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
   }
 
   .band-line {
-    stroke: rgba(74, 136, 102, 0.4);
+    stroke: var(--pass-soft);
     stroke-width: 0.5;
     stroke-dasharray: 2 2;
   }

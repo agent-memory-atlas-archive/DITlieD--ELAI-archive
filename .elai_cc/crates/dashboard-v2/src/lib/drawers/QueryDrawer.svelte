@@ -140,7 +140,7 @@
   }
   .hd-title {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     margin: 0;
     text-transform: uppercase;
@@ -148,7 +148,7 @@
   }
   .hd-hint {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
   .rows {
@@ -166,10 +166,10 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--r-sm);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
   }
   .row-tier {
-    font-size: 9px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
@@ -190,7 +190,7 @@
   .row-ts { color: var(--text-ghost); }
   .state {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     padding: var(--s-2);
   }

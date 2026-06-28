@@ -262,14 +262,14 @@
     color: #f66;
   }
   .dq-empty {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-muted, #888);
     margin: 4px 0;
   }
   .dq-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 11px;
+    font-size: 10px;
   }
   .dq-table th,
   .dq-table td {
@@ -309,7 +309,7 @@
   }
   .dq-reviewer-input {
     font-family: var(--font-mono, monospace);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 6px;
     background: var(--surface-2, #1f1f1f);
     color: inherit;
@@ -325,7 +325,7 @@
   }
   .dq-pending-banner {
     font-family: var(--font-mono, monospace);
-    font-size: 11px;
+    font-size: 10px;
     padding: 6px 8px;
     background: rgba(249, 196, 77, 0.08);
     border: 1px solid var(--warn, #f9c44d);

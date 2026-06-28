@@ -1014,7 +1014,7 @@
   }
   .hyde-preview-label {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-secondary);
     letter-spacing: 0.06em;
     text-transform: uppercase;

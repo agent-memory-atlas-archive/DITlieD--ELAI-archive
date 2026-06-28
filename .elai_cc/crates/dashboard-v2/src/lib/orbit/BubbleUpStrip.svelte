@@ -1,32 +1,45 @@
 <script lang="ts">
   // BubbleUpStrip — horizontal event chip strip rendered beneath the orbit tree.
   // Subscribes to get_bubble_up_events with 500ms polling.
-  // LIVE: empty until B-7 wires bubble_up_event SSB emit
+  // B-7 STEP 11: now consumes the typed BubbleUpTypedPayload surface
+  // (from_level / to_level / action_kind / reason / failure_count / threshold).
 
   import { get_bubble_up_events } from '$lib/api/stub';
-  import type { BubbleUpEvent, DecompLevel } from '$lib/api/types';
+  import type { BubbleUpEvent } from '$lib/api/types';
 
-  // Color mapping replicates PlanWindow.svelte:bubbleColor() — do not import
-  // the function directly (it lives inside a script block, not exported).
+  // Color by action_kind severity — escalate is fail; replan_phase /
+  // replan_concept are warn; lower-level actions stay quiet (steel).
   function bubbleColor(event: BubbleUpEvent): string {
-    if (event.escalated) return 'var(--fail)';
-    if (event.level === 'baby-step') return 'var(--steel)';
-    if (event.level === 'step')      return 'var(--steel)';
-    if (event.level === 'phase')     return 'var(--warn)';
-    if (event.level === 'concept')   return 'var(--text-ghost)';
+    if (event.action_kind === 'escalate') return 'var(--fail)';
+    if (event.action_kind === 'replan_phase' || event.action_kind === 'replan_concept') return 'var(--warn)';
+    if (event.from_level === 'BabyStep') return 'var(--steel)';
+    if (event.from_level === 'Step') return 'var(--steel)';
+    if (event.from_level === 'Phase') return 'var(--warn)';
     return 'var(--text-ghost)';
   }
 
-  // Chip label from level + escalated flag
+  // Chip label: show the cascade direction (from → to) or action for same-level.
   function chipLabel(event: BubbleUpEvent): string {
-    if (event.escalated) return 'Escalate';
-    const map: Record<DecompLevel, string> = {
-      'baby-step': 'BabyStep',
-      'step':      'Step',
-      'phase':     'Phase',
-      'concept':   'Concept',
+    const actionMap: Record<string, string> = {
+      'research_alternative': 'RESEARCH',
+      'redecompose_step': 'REDECOMP',
+      'replan_phase': 'REPLAN-P',
+      'replan_concept': 'REPLAN-C',
+      'diagnose_and_retry': 'RETRY',
+      'escalate': 'ESCALATE',
     };
-    return map[event.level] ?? event.level;
+    return actionMap[event.action_kind] ?? event.action_kind.toUpperCase();
+  }
+
+  // Short level label for the cascade direction.
+  function shortLevel(level: string): string {
+    const map: Record<string, string> = {
+      'BabyStep': 'BS',
+      'Step': 'S',
+      'Phase': 'P',
+      'Concept': 'C',
+    };
+    return map[level] ?? level.slice(0, 2).toUpperCase();
   }
 
   // Internal state — self-polled
@@ -53,8 +66,8 @@
     return () => clearInterval(id);
   });
 
-  // Sort newest first
-  const sorted = $derived([...events].sort((a, b) => b.ts - a.ts));
+  // Stable index-based ordering (payload no longer carries a timestamp).
+  const sorted = $derived([...events]);
 </script>
 
 <div class="bubble-strip" aria-label="Bubble-up event strip">
@@ -63,19 +76,18 @@
   {:else if error}
     <span class="strip-empty strip-error">{error}</span>
   {:else if sorted.length === 0}
-    <!-- LIVE: empty until B-7 wires bubble_up_event SSB emit -->
     <span class="strip-empty">no bubble-up events</span>
   {:else}
     <div class="strip-chips">
-      {#each sorted as ev (ev.ts + ev.node_id)}
+      {#each sorted as ev, i (i)}
         <span
           class="chip"
           style:--chip-color={bubbleColor(ev)}
-          title={ev.message}
-          aria-label="{chipLabel(ev)}: {ev.message}"
+          title="{chipLabel(ev)}: {ev.reason} ({ev.failure_count}/{ev.threshold})"
+          aria-label="{chipLabel(ev)} {shortLevel(ev.from_level)}→{shortLevel(ev.to_level)}: {ev.reason}"
         >
           <span class="chip-level">{chipLabel(ev)}</span>
-          <span class="chip-id">{ev.node_id}</span>
+          <span class="chip-cascade">{shortLevel(ev.from_level)}→{shortLevel(ev.to_level)}</span>
         </span>
       {/each}
     </div>
@@ -126,7 +138,7 @@
     border: 1px solid var(--chip-color, var(--border-subtle));
     background: transparent;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     white-space: nowrap;
     pointer-events: none;
   }
@@ -137,10 +149,7 @@
     letter-spacing: 0.08em;
   }
 
-  .chip-id {
+  .chip-cascade {
     color: var(--text-ghost);
-    max-width: 64px;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 </style>

@@ -212,7 +212,7 @@
 
   .sfs-chip-kind {
     font-family: var(--font-mono, monospace);
-    font-size: 9px;
+    font-size: 10px;
     padding: 1px 4px;
     border-radius: var(--r-xs, 3px);
     letter-spacing: 0.04em;
@@ -251,7 +251,7 @@
 
   .sfs-chip-ago {
     font-family: var(--font-mono, monospace);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost, #888);
   }
 

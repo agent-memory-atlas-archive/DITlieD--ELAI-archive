@@ -3,7 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { orchestrationData } from '../state/drawers.svelte';
   import { Card, Badge, Button } from '$lib/ui';
-  import { logStub, get_sandbox_status } from '../api/stub';
+  import { logStub, get_sandbox_status, get_dag_repair_log, get_dag_repair_escalated } from '../api/stub';
   import { tooltip } from '$lib/ui/tooltip';
   // E-15: dedicated panel for FirecrackerHotPool + Gvisor + AppContainer
   // backend selection + researcher-net allowlist surface. Mounted next to
@@ -12,6 +12,7 @@
   import type {
     FsmState, GateVerdict, AgentLifecycle, BspSuperstep, SandboxStatus, SandboxTier,
     AmbiguityState, AmbiguityComponent,
+    DagRepairEvent, DagRepairEscalated,
   } from '../api/types';
 
   onMount(() => {
@@ -336,6 +337,43 @@
     if (d >= 0.3) return 'warn';
     return 'teal';
   }
+
+  // B-7 STEP 6: DAG repair events log — surfaces dag_repair_round +
+  // dag_repair_escalated SSB rows. Polls every 5s matching the
+  // stagnation/ambiguity card pattern.
+  let dagRepairRounds = $state<DagRepairEvent[]>([]);
+  let dagRepairEscalated = $state<DagRepairEscalated[]>([]);
+  let dagRepairError = $state<string | null>(null);
+
+  async function refreshDagRepair() {
+    try {
+      [dagRepairRounds, dagRepairEscalated] = await Promise.all([
+        get_dag_repair_log(),
+        get_dag_repair_escalated(),
+      ]);
+      dagRepairError = null;
+    } catch (e) {
+      dagRepairError = String(e);
+    }
+  }
+
+  $effect(() => {
+    refreshDagRepair();
+    const id = setInterval(refreshDagRepair, 5_000);
+    return () => clearInterval(id);
+  });
+
+  function repairActionTone(kind: string): string {
+    if (kind === 'reorder') return 'warn';
+    if (kind === 'substitute') return 'teal';
+    return 'ghost';
+  }
+
+  function repairActionLabel(kind: string): string {
+    if (kind === 'reorder') return 'REORDER';
+    if (kind === 'substitute') return 'SUBSTITUTE';
+    return kind;
+  }
 </script>
 
 <div class="orchestration-drawer">
@@ -529,6 +567,49 @@
         ></div>
       {/each}
     </div>
+  </Card>
+
+  <!-- 5b. DAG REPAIR (B-7 STEP 6) — surfaces dag_repair_round +
+       dag_repair_escalated SSB rows from the pipeline factory repair loop.
+       Reorder = warn (amber), Substitute = teal, Escalated = fail (red). -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">DAG REPAIR</div>
+    {#if dagRepairError}
+      <p class="ambig-error">{dagRepairError}</p>
+    {:else if dagRepairRounds.length === 0 && dagRepairEscalated.length === 0}
+      <p class="ambig-loading">no repair events</p>
+    {:else}
+      {#if dagRepairEscalated.length > 0}
+        <div class="dag-repair-escalated">
+          {#each dagRepairEscalated.slice(0, 3) as esc}
+            <div class="dag-repair-esc-row">
+              <Badge tone="fail" size="xs">ESCALATED</Badge>
+              <span class="dag-repair-esc-meta">
+                T_DAG={esc.rounds} exhausted, {esc.remaining_issues} issues remaining
+              </span>
+              {#if esc.last_error}
+                <span class="dag-repair-esc-err" title={esc.last_error}>
+                  {esc.last_error.slice(0, 50)}{esc.last_error.length > 50 ? '…' : ''}
+                </span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+      <div class="dag-repair-rows">
+        {#each dagRepairRounds.slice(0, 10) as ev}
+          <div class="dag-repair-row">
+            <Badge tone={repairActionTone(ev.action_kind)} size="xs">
+              {repairActionLabel(ev.action_kind)}
+            </Badge>
+            <span class="dag-repair-round">r{ev.round}</span>
+            <span class="dag-repair-reason" title={ev.reason}>
+              {ev.reason.slice(0, 50)}{ev.reason.length > 50 ? '…' : ''}
+            </span>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </Card>
 
   <!-- 6. SANDBOX TIER -->
@@ -777,7 +858,7 @@
 
   .ambig-score {
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
   }
 
@@ -837,7 +918,7 @@
     align-items: center;
     justify-content: center;
     color: var(--text-primary);
-    font-size: 9px;
+    font-size: 10px;
   }
 
   .ambig-floor-warning {
@@ -894,7 +975,7 @@
 
   .stag-ts {
     color: var(--text-ghost);
-    font-size: 9px;
+    font-size: 10px;
   }
 
   .stag-tag {
@@ -1148,7 +1229,7 @@
     width: 100%;
     border-collapse: collapse;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
   }
   .credit-table th {
     text-align: left;
@@ -1159,5 +1240,63 @@
   .credit-table td {
     padding: 2px 0;
     overflow-wrap: anywhere;
+  }
+
+  /* B-7 STEP 6: DAG repair log */
+  .dag-repair-escalated {
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-dim, rgba(255, 255, 255, 0.06));
+  }
+
+  .dag-repair-esc-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+
+  .dag-repair-esc-meta {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+
+  .dag-repair-esc-err {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dag-repair-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .dag-repair-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .dag-repair-round {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    flex-shrink: 0;
+  }
+
+  .dag-repair-reason {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

@@ -339,7 +339,7 @@
     cursor: pointer;
     padding: 2px 4px;
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
     border-radius: var(--r-sm);
     transition: color var(--dur-fast) var(--ease-out),
@@ -365,7 +365,7 @@
     color: var(--text);
     font-family: var(--font-mono);
     padding: 3px 6px;
-    font-size: 11px;
+    font-size: 10px;
     border-radius: var(--r-sm);
     outline: none;
     transition: border-color var(--dur-fast) var(--ease-out);
@@ -391,7 +391,7 @@
     cursor: pointer;
     text-align: left;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -514,10 +514,10 @@
     gap: 6px;
     padding: 24px 8px;
     color: var(--dim);
-    font-size: 11px;
+    font-size: 10px;
   }
   .tree-empty__glyph {
-    font-size: 16px;
+    font-size: 15px;
     color: var(--ghost);
   }
 
@@ -526,7 +526,7 @@
     align-items: center;
     gap: 8px;
     padding: 12px 8px;
-    font-size: 11px;
+    font-size: 10px;
     color: var(--read);
   }
   /* §6 fail = mono-inversion chip, never red */

@@ -204,7 +204,7 @@
 
   .tss-chip-kind {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     padding: 1px 4px;
     border-radius: var(--r-xs);
     letter-spacing: 0.04em;
@@ -226,7 +226,7 @@
 
   .tss-chip-ago {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 

@@ -84,7 +84,7 @@
   });
 </script>
 
-<div class="workflow-shell anim-enter-fade">
+<div class="workflow-shell anim-panel-in">
   <!-- Frameless titlebar drag + window controls (kept working — brief §5 G).
        Drag strip left of the controls is a guaranteed-free grab zone. -->
   <div class="winctl-host">

@@ -27,11 +27,10 @@ use std::sync::Arc;
 
 use elai_orchestrator::{
     canvas_ui_action::{emit_select_ssb_row, run_select_gate, SelectGateVerdict},
-    ssb::{
-        CanvasViewKind, CanvasViewPayload, SsbActionType, SsbPayload,
-        CANVAS_CHECKPOINT_INTERVAL_OPS,
-    },
+    ssb::{CanvasViewKind, CanvasViewPayload, SsbActionType, SsbPayload},
 };
+#[cfg(test)]
+use elai_orchestrator::ssb::CANVAS_CHECKPOINT_INTERVAL_OPS;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 

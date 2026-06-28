@@ -686,7 +686,7 @@
     padding: 16px;
   }
   .overlay--error {
-    color: #c44040; // fail from spec
+    color: var(--fail);
   }
   .footer {
     display: flex;

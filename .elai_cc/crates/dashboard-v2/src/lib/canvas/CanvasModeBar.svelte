@@ -130,7 +130,7 @@
 
   .mode-btn {
     position: relative;
-    padding: 4px 11px 6px;
+    padding: 4px 10px 6px;
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.16em;
@@ -165,7 +165,7 @@
   .chrome-btn {
     padding: 3px 7px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     background: var(--panel);
     color: var(--dim);
     border: 1px solid var(--line);

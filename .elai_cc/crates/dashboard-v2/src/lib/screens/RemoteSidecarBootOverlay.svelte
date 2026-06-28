@@ -131,13 +131,13 @@
     align-items: center;
     justify-content: center;
     /* Semi-transparent dark backdrop, no blur per DESIGN.md flat aesthetic */
-    background: rgba(10, 12, 16, 0.82);
+    background: var(--bg-overlay);
     z-index: 9000;
   }
 
   .overlay {
-    background: var(--color-surface, #0d1117);
-    border: 1px solid var(--color-border, #21262d);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
     min-width: 340px;
     max-width: 480px;
     width: 100%;
@@ -158,7 +158,7 @@
     font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
     font-size: 10px;
     letter-spacing: 0.12em;
-    color: var(--color-muted, #6e7681);
+    color: var(--text-secondary);
     text-transform: uppercase;
   }
 
@@ -166,9 +166,9 @@
     font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
     font-size: 10px;
     letter-spacing: 0.08em;
-    color: var(--color-muted, #6e7681);
+    color: var(--text-secondary);
     background: none;
-    border: 1px solid var(--color-border, #21262d);
+    border: 1px solid var(--border-default);
     padding: 3px 8px;
     cursor: pointer;
     text-transform: uppercase;
@@ -176,8 +176,8 @@
   }
 
   .skip-btn:hover {
-    color: var(--color-fg, #e6edf3);
-    border-color: var(--color-muted, #6e7681);
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
   }
 
   /* ---- steps ---- */
@@ -207,28 +207,28 @@
     grid-area: label;
     font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
     font-size: 12px;
-    color: var(--color-fg, #e6edf3);
+    color: var(--text-primary);
   }
 
   .step[data-state='ghost'] .step-label {
-    color: var(--color-muted, #6e7681);
+    color: var(--text-secondary);
   }
 
   .step-status {
     grid-area: status;
     font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
     font-size: 10px;
-    color: var(--color-muted, #6e7681);
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
 
   .step[data-state='ok'] .step-status {
-    color: var(--color-teal, #39d353);
+    color: var(--teal-bright);
   }
 
   .step[data-state='error'] .step-status {
-    color: var(--color-red, #f85149);
+    color: var(--fail);
   }
 
   .step-error {
@@ -236,7 +236,7 @@
     grid-column: 2 / span 2;
     font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
     font-size: 10px;
-    color: var(--color-red, #f85149);
+    color: var(--fail);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -253,28 +253,28 @@
 
   /* ghost: hollow circle outline */
   .indicator--ghost {
-    border: 1px solid var(--color-muted, #6e7681);
+    border: 1px solid var(--text-secondary);
     background: none;
   }
 
   /* running: breath animation (pulse) — no spinner per DESIGN.md */
   .indicator--breath {
-    background: var(--color-teal, #39d353);
-    animation: breath 1.4s ease-in-out infinite;
+    background: var(--teal-bright);
+    animation: breath 2s ease-in-out infinite;
   }
 
   @keyframes breath {
-    0%, 100% { opacity: 0.25; transform: scale(0.75); }
-    50%       { opacity: 1;    transform: scale(1.1); }
+    0%, 100% { opacity: 0.2; }
+    50%       { opacity: 0.5; }
   }
 
   /* ok: solid teal fill */
   .indicator--ok {
-    background: var(--color-teal, #39d353);
+    background: var(--teal-bright);
   }
 
   /* error: solid red fill */
   .indicator--error {
-    background: var(--color-red, #f85149);
+    background: var(--fail);
   }
 </style>

@@ -505,7 +505,7 @@
     position: relative;
     background: var(--bg);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   /* node-story overlay — slides in from the right over the work surface */

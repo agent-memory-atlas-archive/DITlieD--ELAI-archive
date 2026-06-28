@@ -103,7 +103,7 @@
 
 <style>
   .mcp-status-panel {
-    font-family: monospace;
+    font-family: var(--font-mono);
     font-size: 13px;
     padding: 12px;
     border: 1px solid #333;
@@ -121,12 +121,12 @@
 
   h3 {
     margin: 0;
-    font-size: 14px;
+    font-size: 13px;
     color: #aaa;
   }
 
   button {
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     background: #2a2a2a;
     border: 1px solid #444;
@@ -171,7 +171,7 @@
   }
 
   .server-url {
-    font-size: 11px;
+    font-size: 10px;
     color: #88aaff;
     margin-bottom: 6px;
     word-break: break-all;
@@ -186,11 +186,11 @@
 
   .label {
     color: #888;
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .value {
-    font-size: 11px;
+    font-size: 10px;
     color: #ccc;
   }
 

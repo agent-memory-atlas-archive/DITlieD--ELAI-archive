@@ -194,7 +194,7 @@
   }
   .prp-count {
     color: var(--text-ghost);
-    font-size: 11px;
+    font-size: 10px;
   }
   .prp-body {
     border-top: 1px solid var(--border-subtle);
@@ -251,7 +251,7 @@
     border: none;
     color: var(--text-ghost);
     cursor: pointer;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
     padding: 0 4px;
   }

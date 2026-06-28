@@ -411,18 +411,18 @@
     display: inline-block;
     padding: 0.125rem 0.5rem;
     border-radius: 0.25rem;
-    background: var(--surface-2, #2a2a2a);
+    background: var(--bg-surface);
     font-size: 0.85rem;
   }
 
   .badge-muted {
-    color: var(--text-muted, #888);
+    color: var(--text-secondary);
   }
 
   section h3 {
     margin: 0 0 0.5rem 0;
     font-size: 1rem;
-    color: var(--text-muted, #aaa);
+    color: var(--text-secondary);
   }
 
   .form-row {
@@ -443,7 +443,7 @@
     flex-direction: column;
     gap: 0.125rem;
     font-size: 0.85rem;
-    color: var(--text-muted, #aaa);
+    color: var(--text-secondary);
   }
 
   .form-row.form-row-inline label {
@@ -455,9 +455,9 @@
   .form-row textarea,
   .filter-row input[type='number'],
   .filter-row select {
-    background: var(--surface-2, #1f1f1f);
-    border: 1px solid var(--surface-border, #444);
-    color: var(--text, #eee);
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+    color: var(--text-primary);
     padding: 0.25rem 0.5rem;
     font-family: inherit;
     font-size: 0.9rem;
@@ -471,16 +471,16 @@
   }
 
   button {
-    background: var(--surface-2, #2a2a2a);
-    color: var(--text, #eee);
-    border: 1px solid var(--surface-border, #444);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border-default);
     padding: 0.25rem 0.75rem;
     font-family: inherit;
     cursor: pointer;
   }
 
   button:hover:not(:disabled) {
-    background: var(--surface-3, #353535);
+    background: var(--bg-hover);
   }
 
   button:disabled {
@@ -489,23 +489,23 @@
   }
 
   button.primary {
-    background: var(--accent, #2d6cdf);
-    color: white;
-    border-color: var(--accent, #2d6cdf);
+    background: var(--purple);
+    color: var(--text-primary);
+    border-color: var(--purple);
   }
 
   button.danger {
-    background: var(--danger-surface, #592b2b);
-    border-color: var(--danger-border, #8a4040);
+    background: var(--fail-ghost);
+    border-color: var(--fail-soft);
   }
 
   .error {
-    color: var(--danger-text, #ff6b6b);
+    color: var(--fail);
     font-size: 0.85rem;
   }
 
   .success {
-    color: var(--success-text, #5bd97a);
+    color: var(--pass);
     font-size: 0.85rem;
   }
 
@@ -522,11 +522,11 @@
     flex-direction: column;
     gap: 0.125rem;
     font-size: 0.8rem;
-    color: var(--text-muted, #aaa);
+    color: var(--text-secondary);
   }
 
   .empty-state {
-    color: var(--text-muted, #888);
+    color: var(--text-secondary);
     font-size: 0.9rem;
     font-style: italic;
   }
@@ -544,19 +544,19 @@
   .checks-table td {
     text-align: left;
     padding: 0.25rem 0.5rem;
-    border-bottom: 1px solid var(--surface-border, #2a2a2a);
+    border-bottom: 1px solid var(--border-default);
     font-size: 0.85rem;
     overflow-wrap: anywhere;
   }
 
   .pr-table th,
   .checks-table th {
-    color: var(--text-muted, #888);
+    color: var(--text-secondary);
     font-weight: 600;
   }
 
   tr.focused {
-    background: var(--surface-2, #2a2a2a);
+    background: var(--bg-surface);
   }
 
   .status-actions {
@@ -575,7 +575,7 @@
   }
 
   .status-fields dt {
-    color: var(--text-muted, #aaa);
+    color: var(--text-secondary);
   }
 
   .status-fields dd {
@@ -583,17 +583,17 @@
   }
 
   .ci-success {
-    color: var(--success-text, #5bd97a);
+    color: var(--pass);
   }
   .ci-pending {
-    color: var(--warn-text, #d9c95b);
+    color: var(--warn);
   }
   .ci-failing {
-    color: var(--danger-text, #ff6b6b);
+    color: var(--fail);
   }
 
   a {
-    color: var(--accent, #2d6cdf);
+    color: var(--teal);
     text-decoration: none;
   }
 
@@ -603,7 +603,7 @@
 
   /* E-41 PR Review section */
   .pr-review-panel {
-    border-top: 1px solid var(--surface-border, #444);
+    border-top: 1px solid var(--border-default);
     padding-top: 0.75rem;
   }
 
@@ -614,7 +614,7 @@
   }
 
   .pr-review-card {
-    background: var(--surface-2, #2a2a2a);
+    background: var(--bg-surface);
     border-radius: 0.25rem;
     padding: 0.5rem 0.75rem;
   }
@@ -622,7 +622,7 @@
   .pr-review-card h4 {
     margin: 0 0 0.25rem 0;
     font-size: 0.9rem;
-    color: var(--text-muted, #aaa);
+    color: var(--text-secondary);
   }
 
   .pr-review-card ul {
@@ -632,7 +632,7 @@
   }
 
   .muted {
-    color: var(--text-muted, #888);
+    color: var(--text-secondary);
     font-size: 0.8rem;
   }
 </style>

@@ -7,6 +7,9 @@
     nodes: TreeNode[];
     expandedIds?: Set<string>;
     selectedId?: string;
+    /** B-7 Step 9: TreeNavigator cursor node id. Distinct from selection —
+     *  highlights the node the navigator is currently processing. */
+    cursorId?: string;
     onselect?: (id: string) => void;
     /** Called when user Ctrl+clicks a node — navigates to it in Activity. */
     onctrselect?: (id: string) => void;
@@ -17,6 +20,7 @@
     nodes,
     expandedIds = $bindable(new Set<string>()),
     selectedId = $bindable(''),
+    cursorId = '',
     onselect,
     onctrselect,
     depth = 0,
@@ -73,11 +77,13 @@
     {@const expanded = expandedIds.has(node.id)}
     {@const isSelected = selectedId === node.id}
     {@const isActive = node.status === 'active'}
+    {@const isCursor = cursorId !== '' && cursorId === node.id}
 
     <div
       class="tree-node"
       class:tree-node--selected={isSelected}
       class:tree-node--active={isActive}
+      class:tree-node--cursor={isCursor}
       onclick={(e) => handleClick(node.id, e)}
       role="treeitem"
       aria-selected={isSelected}
@@ -120,6 +126,7 @@
         nodes={node.children ?? []}
         bind:expandedIds
         bind:selectedId
+        {cursorId}
         {onselect}
         {onctrselect}
         depth={depth + 1}
@@ -157,6 +164,21 @@
 
   .tree-node--selected {
     background: var(--bg-hover);
+  }
+
+  /* B-7 Step 9: TreeNavigator cursor — right-edge amber marker bar.
+   * Distinct from --active (left teal bar) and --selected (bg-hover). */
+  .tree-node--cursor::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 2px;
+    bottom: 2px;
+    width: 2px;
+    background: var(--amber, #f59e0b);
+    border-radius: 1px;
+    animation: scaleBarIn 140ms var(--ease-out) both;
+    transform-origin: top;
   }
 
   /* 2-px teal left border for active node, scales in from top */
@@ -210,13 +232,7 @@
   }
 
   .tree-dot--breath {
-    animation: breath 2.2s ease-in-out infinite;
-  }
-
-  @keyframes breath {
-    0%   { opacity: 0.2; }
-    50%  { opacity: 0.55; }
-    100% { opacity: 0.2; }
+    animation: breath 2s ease-in-out infinite;
   }
 
   .tree-label {

@@ -1596,7 +1596,7 @@
   /* ---- s-value: read-only mono label for settings rows ---- */
   .s-value {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--read);
   }
 
@@ -1612,7 +1612,7 @@
     background: var(--panel);
     border: 1px solid var(--line);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--dim);
     transition: background var(--dur-fast) var(--ease-std),
                 color var(--dur-fast) var(--ease-std),
@@ -1671,7 +1671,7 @@
     padding: var(--s-2) var(--s-3);
     resize: vertical;
     outline: none;
-    line-height: 1.5;
+    line-height: var(--leading-code);
     box-sizing: border-box;
     transition: border-color var(--dur-fast) var(--ease-out);
   }

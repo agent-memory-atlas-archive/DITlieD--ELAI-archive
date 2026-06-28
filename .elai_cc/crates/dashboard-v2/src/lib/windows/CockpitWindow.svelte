@@ -272,7 +272,7 @@
 
   .reload-btn {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     background: var(--raised);
     border: 1px solid var(--line);
@@ -308,7 +308,7 @@
 
   .headline-detail {
     color: var(--read);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   /* DSR chip — §6 state language: shape + teal/dim/inversion, never
@@ -391,7 +391,7 @@
 
   .summary-label {
     color: var(--dim);
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -445,7 +445,7 @@
 
   .footnote {
     color: var(--dim);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   /* IPC/load failure — §6 mono-inversion fail card, never red */
@@ -475,12 +475,12 @@
 
   .banner-detail {
     color: var(--dim);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .banner-reason {
     margin: 0;
-    font-size: 11px;
+    font-size: 10px;
     white-space: pre-wrap;
     word-break: break-word;
     color: var(--dim);

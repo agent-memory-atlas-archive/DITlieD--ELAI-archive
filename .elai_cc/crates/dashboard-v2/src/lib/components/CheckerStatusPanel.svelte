@@ -223,7 +223,7 @@
     width: 100%;
     border-collapse: collapse;
     font-family: var(--font-mono, monospace);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .csp-table th,

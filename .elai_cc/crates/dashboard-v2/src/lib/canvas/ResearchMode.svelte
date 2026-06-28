@@ -227,7 +227,7 @@
     width: 100%;
     overflow: hidden;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     background: var(--bg);
   }
 
@@ -302,7 +302,7 @@
     padding: 5px 12px;
     border-bottom: 1px solid var(--line);
     margin-bottom: 4px;
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text);
   }
 

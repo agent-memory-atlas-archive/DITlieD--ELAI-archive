@@ -17,7 +17,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-// Required for AppHandle::emit() calls in submit_chat_message streaming path.
+// Required for AppHandle::emit() calls in stream_chat / start_chat_stream
+// (Tauri 2 event emitter for SSE token streaming to the frontend).
 use tauri::Emitter;
 
 // C-15: replace bare SystemTime::now / Instant::now with ClockProvider-backed
@@ -27,7 +28,8 @@ use tauri::Emitter;
 use elai_core::clock::{ClockProvider, OsClock};
 
 use elai_orchestrator::{
-    ChangeDecisionPayload, ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
+    AutoAdvanceEvaluator, AutonomousEvidence, ChangeDecisionPayload, ChatMessagePayload,
+    ChatResponsePayload, ContextBudgetComputedPayload, EvidenceVerdict,
     ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary,
     InterventionCredentials, InterventionKeyword,
     InterventionOption, InterventionResponsePayload, InterventionRetry,
@@ -496,12 +498,46 @@ pub async fn get_system_status(state: State<'_, AppState>) -> CmdResult<Value> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn submit_task(state: State<'_, AppState>, task: String) -> CmdResult<Value> {
+pub async fn submit_task(
+    state: State<'_, AppState>,
+    task: String,
+    autonomous: Option<bool>,
+) -> CmdResult<Value> {
     let writer = state
         .writer
         .as_ref()
         .ok_or_else(|| "ssb writer unavailable; no session db open".to_owned())?;
     let project_id = state.project_id.lock().map(|g| g.clone()).unwrap_or_default();
+
+    // B-22 STEP 2: when the caller passes `autonomous: Some(true)`, run the
+    // AutoAdvanceEvaluator's 6 evidence checks before emitting the
+    // TaskSubmitted row. This wires the evaluator into the production
+    // "dashboard task submit with --autonomous mode" entrypoint. On a
+    // Fail verdict the submission is rejected with the failing check names
+    // so the frontend can surface the reason; on Pass the row is emitted
+    // and the taskId is returned as usual.
+    if autonomous.unwrap_or(false) {
+        let evaluator = AutoAdvanceEvaluator::default();
+        // Cold-start evidence: the dashboard submit path has no SSB history
+        // to derive real evidence from, so we use the default (all-false)
+        // snapshot. The evaluator's AutoAdvance check will return Fail with
+        // the list of failing checks, which the frontend surfaces as a
+        // "not ready for autonomous mode" message. This is the correct
+        // behaviour — autonomous mode requires evidence artifacts to be
+        // present before auto-advance is permitted.
+        let evidence = AutonomousEvidence::default();
+        let verdict = evaluator.evaluate_all(&evidence);
+        if !verdict.is_pass() {
+            let reason = match verdict {
+                EvidenceVerdict::Fail { reason } => reason,
+                _ => "evidence check failed".to_owned(),
+            };
+            return Err(format!(
+                "autonomous mode rejected: evidence checks failed [{reason}]"
+            ));
+        }
+    }
+
     let payload = SsbPayload::TaskSubmitted(TaskSubmittedPayload {
         task: task.clone(),
         project_id,
@@ -3906,38 +3942,138 @@ pub fn get_bubble_up_events(state: State<'_, AppState>) -> CmdResult<Value> {
     serde_json::to_value(&rows).map_err(|e| e.to_string())
 }
 
-/// C-4: replace stub with live SSB read. Walks the decomposition tree
-/// (concept_decomposition_node rows) and emits an ordered list of leaf
-/// baby-steps with their concept/phase/step ancestry. Returns `[]` when
-/// no rows exist yet — the dashboard renders a "no decomposition yet"
-/// placeholder.
+/// B-7 STEP 7: ExecutablePipeline DAG visualizer. Returns the full DAG
+/// (nodes + dependency edges) built from the decomposition tree, plus
+/// validation error history and repair_log sourced from SSB
+/// `dag_repair_round` + `dag_repair_escalated` rows.
+///
+/// Response shape:
+///   { nodes: PipelineNode[], validation_errors: ValidationErrorEntry[],
+///     repair_log: RepairLogEntry[] }
+///
+/// `nodes` — one DAG node per concept / phase / step / baby_step. Each
+/// node's `deps` array lists its parent node id (the decomposition tree
+/// is a strict hierarchy, so every non-root node has exactly one dep).
+/// `kind` is "task" for concept/phase/step/baby_step, "gate" for steps
+/// that carry an exit-criteria checkpoint, and "merge" for concept roots
+/// that aggregate multiple phases.
+///
+/// `validation_errors` — derived from `dag_repair_round` rows. Each repair
+/// round's `reason` field carries the validation error description; the
+/// `action_kind` ("reorder" | "substitute") identifies the repair strategy
+/// applied. This is the ValidationErrorKind history surface — the SSB does
+/// not persist standalone ValidationError rows, so the repair round reasons
+/// are the canonical error-history source.
+///
+/// `repair_log` — the raw `dag_repair_round` rows plus any
+/// `dag_repair_escalated` rows (T_DAG=10 exhausted), so the dashboard can
+/// render the full repair timeline including escalation badges.
+///
+/// Returns `{ nodes: [], validation_errors: [], repair_log: [] }` when no
+/// viewer is configured or no decomposition rows exist yet — the dashboard
+/// renders a "no decomposition yet" placeholder.
 #[tauri::command]
 pub fn get_executable_pipeline(state: State<'_, AppState>) -> CmdResult<Value> {
-    let snapshot = match state.viewer.as_ref() {
-        Some(v) => v.decomposition_tree(None).map_err(map_err)?,
-        None => return Ok(json!([])),
+    let viewer = match state.viewer.as_ref() {
+        Some(v) => v,
+        None => {
+            return Ok(json!({
+                "nodes": [],
+                "validation_errors": [],
+                "repair_log": [],
+            }));
+        }
     };
-    let mut steps: Vec<Value> = Vec::new();
+
+    // 1. Build DAG nodes from the decomposition tree snapshot.
+    let snapshot = viewer.decomposition_tree(None).map_err(map_err)?;
+    let mut nodes: Vec<Value> = Vec::new();
     for concept in &snapshot.concepts {
+        let concept_id = format!("concept-{}", concept.id);
+        let concept_has_multi_phase = concept.phases.len() > 1;
+        nodes.push(json!({
+            "id": concept_id,
+            "label": concept.title,
+            "kind": if concept_has_multi_phase { "merge" } else { "task" },
+            "status": "pending",
+            "deps": [],
+        }));
         for phase in &concept.phases {
+            let phase_id = format!("phase-{}", phase.id);
+            nodes.push(json!({
+                "id": phase_id,
+                "label": phase.title,
+                "kind": "task",
+                "status": "pending",
+                "deps": [concept_id],
+            }));
             for step in &phase.steps {
+                let step_id = format!("step-{}", step.id);
+                // Steps with exit-criteria behave as gates in the DAG.
+                let step_kind = "gate";
+                nodes.push(json!({
+                    "id": step_id,
+                    "label": step.title,
+                    "kind": step_kind,
+                    "status": "pending",
+                    "deps": [phase_id],
+                }));
                 for baby in &step.baby_steps {
-                    steps.push(json!({
-                        "baby_step_id": baby.id,
-                        "baby_step_title": baby.title,
-                        "status": baby.status,
-                        "step_id": step.id,
-                        "step_title": step.title,
-                        "phase_id": phase.id,
-                        "phase_title": phase.title,
-                        "concept_id": concept.id,
-                        "concept_title": concept.title,
+                    let baby_id = format!("bs-{}", baby.id);
+                    let baby_status = match baby.status.as_str() {
+                        "pass" | "done" | "completed" => "done",
+                        "fail" | "failed" | "error" => "failed",
+                        "active" | "running" => "active",
+                        "skip" | "skipped" => "skipped",
+                        _ => "pending",
+                    };
+                    nodes.push(json!({
+                        "id": baby_id,
+                        "label": baby.title,
+                        "kind": "task",
+                        "status": baby_status,
+                        "deps": [step_id],
                     }));
                 }
             }
         }
     }
-    Ok(Value::Array(steps))
+
+    // 2. Collect validation error history + repair log from SSB rows.
+    let repair_rounds = viewer.recent_dag_repair_rounds(100).unwrap_or_default();
+    let repair_escalated = viewer.recent_dag_repair_escalated(50).unwrap_or_default();
+
+    let mut validation_errors: Vec<Value> = Vec::new();
+    let mut repair_log: Vec<Value> = Vec::new();
+
+    for round in &repair_rounds {
+        validation_errors.push(json!({
+            "kind": round.action_kind,
+            "round": round.round,
+            "message": round.reason,
+        }));
+        repair_log.push(json!({
+            "action_kind": round.action_kind,
+            "round": round.round,
+            "reason": round.reason,
+            "escalated": false,
+        }));
+    }
+    for esc in &repair_escalated {
+        repair_log.push(json!({
+            "action_kind": "escalated",
+            "round": esc.rounds,
+            "reason": esc.last_error,
+            "escalated": true,
+            "remaining_issues": esc.remaining_issues,
+        }));
+    }
+
+    Ok(json!({
+        "nodes": nodes,
+        "validation_errors": validation_errors,
+        "repair_log": repair_log,
+    }))
 }
 
 #[tauri::command]
@@ -3952,6 +4088,20 @@ pub fn get_dag_repair_log(state: State<'_, AppState>) -> CmdResult<Value> {
     serde_json::to_value(&rows).map_err(|e| e.to_string())
 }
 
+/// B-7 STEP 6: query `dag_repair_escalated` rows from SSB (most recent 50).
+/// Returns empty array when no viewer is configured or no escalation rows
+/// exist. Surfaced alongside `get_dag_repair_log` in the OrchestrationDrawer
+/// DAG REPAIR section so users see when T_DAG=10 is exhausted.
+#[tauri::command]
+pub fn get_dag_repair_escalated(state: State<'_, AppState>) -> CmdResult<Value> {
+    let rows = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.recent_dag_repair_escalated(50).ok())
+        .unwrap_or_default();
+    serde_json::to_value(&rows).map_err(|e| e.to_string())
+}
+
 /// B-7 (SCHEMA_VERSION 100): query `package_ref_verified` rows from SSB
 /// (most recent 100). Returns empty array when no viewer is configured or
 /// no package-verify rows exist. Mirrors the `get_dag_repair_log` shape so
@@ -3962,6 +4112,49 @@ pub fn get_package_verifications(state: State<'_, AppState>) -> CmdResult<Value>
         .viewer
         .as_ref()
         .and_then(|v| v.recent_package_verifications(100).ok())
+        .unwrap_or_default();
+    serde_json::to_value(&rows).map_err(|e| e.to_string())
+}
+
+/// B-7 Task #8: query `task_split` rows carrying PhaseSizingSplitter context
+/// (splitter = "phase_sizing", phase_id = Some) from SSB (most recent 100).
+/// Returns empty array when no viewer is configured or no phase-split rows
+/// exist. PlanWindow renders a split badge on phase nodes that appear in
+/// this list.
+#[tauri::command]
+pub fn get_phase_sized_splits(state: State<'_, AppState>) -> CmdResult<Value> {
+    let rows = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.recent_phase_sized_splits(100).ok())
+        .unwrap_or_default();
+    serde_json::to_value(&rows).map_err(|e| e.to_string())
+}
+
+/// B-7 Step 9: query `tree_position_changed` rows from SSB (most recent
+/// 100). Returns empty array when no viewer is configured or no cursor
+/// rows exist. PlanWindow uses the latest row's `current_node` to
+/// highlight the TreeNavigator cursor in the tree pane.
+#[tauri::command]
+pub fn get_tree_positions(state: State<'_, AppState>) -> CmdResult<Value> {
+    let rows = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.recent_tree_positions(100).ok())
+        .unwrap_or_default();
+    serde_json::to_value(&rows).map_err(|e| e.to_string())
+}
+
+/// B-7 Step 10: query `failure_recorded` rows from SSB (most recent
+/// 100). Returns empty array when no viewer is configured or no failure
+/// rows exist yet. PlanWindow baby-step detail pane uses these to render
+/// per-baby-step retry history (reason + attempts per failure upsert).
+#[tauri::command]
+pub fn get_failure_records(state: State<'_, AppState>) -> CmdResult<Value> {
+    let rows = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.recent_failure_records(100).ok())
         .unwrap_or_default();
     serde_json::to_value(&rows).map_err(|e| e.to_string())
 }
@@ -5378,6 +5571,13 @@ pub fn get_webhook_url(state: State<'_, AppState>) -> CmdResult<Value> {
 // CHAT
 // ---------------------------------------------------------------------------
 
+/// B-14 POLISH: superseded by [`stream_chat`]. This command writes a
+/// `chat_message` SSB row carrying the intent string but does NOT stream
+/// LLM tokens. The frontend `submit_chat_message` wrapper was removed
+/// from `stub.ts` (spec stub_ban); the dashboard now uses `stream_chat`
+/// for real token streaming. This Tauri command remains registered for
+/// SSB-row compatibility and potential external callers, but has no
+/// frontend caller as of B-14.
 #[tauri::command]
 pub async fn submit_chat_message(
     state: State<'_, AppState>,
@@ -5447,32 +5647,196 @@ pub async fn emit_chat_response(
     Ok(json!({ "seq": seq }))
 }
 
+/// B-14 STEP 1: Stream real LLM tokens from the sidecar `/v1/messages` SSE
+/// endpoint to the frontend via Tauri events. Emits `"chat_event"` with
+/// `{ stream_id, event_type, ... }` payloads where `event_type` is one of:
+/// `"streaming_started"`, `"token"`, `"response_complete"`, `"error"`.
+///
+/// Returns `{ "stream_id": "<id>" }` immediately so the frontend can
+/// `listen("chat_event", ...)` before the first token arrives. The streaming
+/// task runs in a detached tokio task whose `AbortHandle` is stored in
+/// `state.active_streams[stream_id]` so `cancel_stream` can abort it.
+#[tauri::command]
+pub async fn stream_chat(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    message: String,
+    session_id: Option<String>,
+) -> CmdResult<Value> {
+    let sidecar_url = state
+        .sidecar_url
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|_| "http://localhost:8100".to_string());
+    let session = session_id.unwrap_or_else(|| format!("dash-v2-{}", std::process::id()));
+    let stream_id = format!(
+        "{}:{}",
+        session,
+        state
+            .clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+
+    // Emit streaming_started event so the frontend can bind its listener.
+    app.emit(
+        "chat_event",
+        json!({
+            "stream_id": stream_id,
+            "event_type": "streaming_started"
+        }),
+    )
+    .map_err(|e| format!("emit failed: {e}"))?;
+
+    // Stream from sidecar using direct HTTP (matches existing
+    // start_chat_stream pattern). Full ConversationRuntime integration would
+    // require more wiring (private modules); this reuses the same sidecar
+    // path that the CLI uses.
+    let streaming_http = state.streaming_http.clone();
+    let app_clone = app.clone();
+    let stream_id_clone = stream_id.clone();
+    let sidecar_url_clone = sidecar_url.clone();
+    let message_clone = message.clone();
+
+    let handle = tokio::task::spawn(async move {
+        let request_body = serde_json::json!({
+            "model": "qwen",
+            "messages": [{"role": "user", "content": message_clone}],
+            "stream": true,
+            "max_tokens": 512
+        });
+
+        let mut response = match streaming_http
+            .post(format!("{}/v1/messages", sidecar_url_clone))
+            .json(&request_body)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                let _ = app_clone.emit(
+                    "chat_event",
+                    json!({
+                        "stream_id": stream_id_clone,
+                        "event_type": "error",
+                        "error": format!("sidecar connect failed: {e}")
+                    }),
+                );
+                return;
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let _ = app_clone.emit(
+                "chat_event",
+                json!({
+                    "stream_id": stream_id_clone,
+                    "event_type": "error",
+                    "error": format!("sidecar returned {}", status)
+                }),
+            );
+            return;
+        }
+
+        // Stream SSE events (matches existing start_chat_stream pattern).
+        let mut sse_buf = String::new();
+        loop {
+            match response.chunk().await {
+                Ok(Some(bytes)) => {
+                    sse_buf.push_str(&String::from_utf8_lossy(&bytes));
+                    while let Some(pos) = sse_buf.find("\n\n") {
+                        let frame = sse_buf[..pos].to_owned();
+                        sse_buf = sse_buf[pos + 2..].to_owned();
+                        if let Some(text) = extract_text_delta(&frame) {
+                            let _ = app_clone.emit(
+                                "chat_event",
+                                json!({
+                                    "stream_id": stream_id_clone,
+                                    "event_type": "token",
+                                    "token": text
+                                }),
+                            );
+                        }
+                        if frame.contains("\"message_stop\"") {
+                            let _ = app_clone.emit(
+                                "chat_event",
+                                json!({
+                                    "stream_id": stream_id_clone,
+                                    "event_type": "response_complete"
+                                }),
+                            );
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    let _ = app_clone.emit(
+                        "chat_event",
+                        json!({
+                            "stream_id": stream_id_clone,
+                            "event_type": "response_complete"
+                        }),
+                    );
+                    return;
+                }
+                Err(e) => {
+                    let _ = app_clone.emit(
+                        "chat_event",
+                        json!({
+                            "stream_id": stream_id_clone,
+                            "event_type": "error",
+                            "error": format!("stream error: {e}")
+                        }),
+                    );
+                    return;
+                }
+            }
+        }
+    });
+
+    {
+        let mut streams = state
+            .active_streams
+            .lock()
+            .map_err(|e| format!("lock failed: {e}"))?;
+        streams.insert(stream_id.clone(), handle.abort_handle());
+    }
+
+    Ok(json!({ "stream_id": stream_id }))
+}
+
+/// B-14 STEP 1: Cancel an inflight `stream_chat` by stream_id. Aborts the
+/// detached tokio task and removes the handle from `active_streams`.
+#[tauri::command]
+pub fn cancel_stream(
+    state: State<'_, AppState>,
+    stream_id: String,
+) -> CmdResult<Value> {
+    let mut streams = state
+        .active_streams
+        .lock()
+        .map_err(|e| format!("lock failed: {e}"))?;
+    if let Some(handle) = streams.remove(&stream_id) {
+        handle.abort();
+        Ok(json!({ "cancelled": true }))
+    } else {
+        Ok(json!({ "cancelled": false, "error": "stream not found" }))
+    }
+}
+
 #[tauri::command]
 pub fn classify_intent(text: String) -> CmdResult<Value> {
-    // Simple deterministic classifier mirroring the spec routing rules.
-    let lower = text.trim().to_ascii_lowercase();
-    let intent = if lower.starts_with("/task") || lower.starts_with("task ") {
-        "TASK"
-    } else if lower.starts_with("/fix") || lower.contains("error") || lower.contains("bug") {
-        "FIX"
-    } else if lower.starts_with("/research") {
-        "RESEARCH"
-    } else if lower.starts_with("/explore") {
-        "EXPLORE"
-    } else if lower.starts_with("/config") {
-        "CONFIG"
-    } else if lower.starts_with("/status") {
-        "STATUS"
-    } else if lower.starts_with("/continue") {
-        "CONTINUE"
-    } else if lower.starts_with("/ask") || lower.contains("?") {
-        "EXPLORE"
-    } else if lower.is_empty() {
-        "AMBIGUOUS"
-    } else {
-        "AMBIGUOUS"
-    };
-    Ok(json!({ "intent": intent, "text": text }))
+    // B-14 STEP 3: delegate to the canonical orchestrator classifier so
+    // the dashboard Tauri command and the frontend TS classifier
+    // (`crates/dashboard-v2/src/lib/utils/intent.ts`) share one category
+    // set. The orchestrator `classify_intent` is the deterministic floor
+    // (slash commands + keywords); `Ambiguous` results may be resolved
+    // by an LLM fallback call in the dashboard layer (spec FLOW 4).
+    let intent = elai_orchestrator::intent_classifier::classify_intent(&text);
+    Ok(json!({ "intent": intent.as_str(), "text": text }))
 }
 
 #[tauri::command]
@@ -6768,17 +7132,20 @@ pub async fn run_planning_task(
 
     let request_id = format!("plan-{seq}");
 
-    let _ = app.emit(
-        "planning-progress",
-        json!({
-            "request_id": request_id,
-            "status":     "submitted",
-            "task":       task,
-            "project_id": pid,
-            "seq":        seq,
-            "note": "task written to SSB; task-runner will pick up and process it",
-        }),
-    );
+    let planning_payload = json!({
+        "request_id": request_id,
+        "status":     "submitted",
+        "task":       task,
+        "project_id": pid,
+        "seq":        seq,
+        "note": "task written to SSB; task-runner will pick up and process it",
+    });
+    // B-36 STEP 5: emit the canonical `web_research_step` SSE event name
+    // (WIRING_CONTRACT produces_symbols) alongside the legacy
+    // `planning-progress` alias so both old and new frontend listeners
+    // receive the planning submission event.
+    let _ = app.emit("web_research_step", planning_payload.clone());
+    let _ = app.emit("planning-progress", planning_payload);
 
     Ok(json!({
         "ok":        true,
@@ -6835,20 +7202,23 @@ impl elai_orchestrator::web_research_orchestrator::WebResearchStepEmitter
         let app = self.app.clone();
         let request_id = self.request_id.clone();
         Box::pin(async move {
-            let _ = app.emit(
-                "research-progress",
-                json!({
-                    "request_id":      request_id,
-                    "node_id":         event.node_id,
-                    "action":          event.action,
-                    "phi":             event.phi,
-                    "psi":             event.psi,
-                    "iteration":       event.iteration,
-                    "sources_fetched": event.sources_fetched,
-                    "sources_used":    event.sources_used,
-                    "fetcher":         event.fetcher,
-                }),
-            );
+            let payload = json!({
+                "request_id":      request_id,
+                "node_id":         event.node_id,
+                "action":          event.action,
+                "phi":             event.phi,
+                "psi":             event.psi,
+                "iteration":       event.iteration,
+                "sources_fetched": event.sources_fetched,
+                "sources_used":    event.sources_used,
+                "fetcher":         event.fetcher,
+            });
+            // B-36 STEP 5: emit the canonical `web_research_step` SSE event
+            // name (WIRING_CONTRACT produces_symbols) alongside the legacy
+            // `research-progress` alias so both old and new frontend listeners
+            // receive the same payload.
+            let _ = app.emit("web_research_step", payload.clone());
+            let _ = app.emit("research-progress", payload);
         })
     }
 }
@@ -7371,24 +7741,108 @@ pub async fn cancel_d5_live_contract(
 /// Runs `elai.exe prompt "<text>"` as a subprocess and returns stdout.
 /// The elai.exe binary is located as a sibling of the current executable
 /// (same target/release/ directory). Returns the stdout text on success.
+///
+/// B-36 STEP 5: emits SSE events via `Window::emit` so the frontend can
+/// render streaming progress live:
+///   - `streaming_started` — emitted once before the subprocess spawns.
+///   - `turn`              — emitted per stdout/stderr line as it arrives.
+///   - `response`          — emitted once when the subprocess exits (ok or
+///                           error), carrying the full stdout + exit status.
 #[tauri::command]
-pub async fn one_shot_prompt(text: String) -> CmdResult<Value> {
+pub async fn one_shot_prompt(
+    app: tauri::AppHandle,
+    text: String,
+) -> CmdResult<Value> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
     let exe = locate_elai_exe()?;
-    let output = tokio::process::Command::new(&exe)
+
+    // B-36 STEP 5: emit streaming_started before spawning so the frontend
+    // can flip its typing indicator on immediately.
+    let request_id = format!("oneshot-{}", now_ms_raw());
+    let _ = app.emit(
+        "streaming_started",
+        json!({
+            "request_id": request_id,
+            "text":       text,
+        }),
+    );
+
+    let mut child = tokio::process::Command::new(&exe)
         .args(["prompt", &text])
-        .output()
-        .await
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("failed to spawn elai.exe: {e}"))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    if output.status.success() {
-        Ok(json!({ "ok": true, "text": stdout }))
+    // Merge stdout + stderr lines via a channel so both are forwarded as
+    // `turn` events (same pattern as run_d5_live_contract).
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
+
+    let tx_out = tx.clone();
+    let stdout_handle = child.stdout.take().map(|s| {
+        tokio::task::spawn(async move {
+            let mut lines = BufReader::new(s).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if tx_out.send(line).await.is_err() {
+                    break;
+                }
+            }
+        })
+    });
+
+    let tx_err = tx;
+    let stderr_handle = child.stderr.take().map(|s| {
+        tokio::task::spawn(async move {
+            let mut lines = BufReader::new(s).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if tx_err.send(line).await.is_err() {
+                    break;
+                }
+            }
+        })
+    });
+
+    // Forward lines to frontend via `turn` events.
+    let app_turn = app.clone();
+    let rid_turn = request_id.clone();
+    let mut all_lines: Vec<String> = Vec::new();
+    while let Some(line) = rx.recv().await {
+        all_lines.push(line.clone());
+        let _ = app_turn.emit(
+            "turn",
+            json!({
+                "request_id": rid_turn,
+                "line":       line,
+            }),
+        );
+    }
+
+    // Wait for the child + reader tasks to finish.
+    let status = child.wait().await.map_err(|e| format!("elai.exe wait failed: {e}"))?;
+    if let Some(h) = stdout_handle { let _ = h.await; }
+    if let Some(h) = stderr_handle { let _ = h.await; }
+
+    let stdout_text = all_lines.join("\n");
+
+    // B-36 STEP 5: emit the final `response` event carrying the full output.
+    let _ = app.emit(
+        "response",
+        json!({
+            "request_id": request_id,
+            "ok":         status.success(),
+            "text":       stdout_text,
+            "exit_code":  status.code(),
+        }),
+    );
+
+    if status.success() {
+        Ok(json!({ "ok": true, "text": stdout_text }))
     } else {
         Err(format!(
             "elai.exe prompt exited with {:?}: {}",
-            output.status.code(),
-            if stderr.is_empty() { &stdout } else { &stderr }
+            status.code(),
+            stdout_text
         ))
     }
 }

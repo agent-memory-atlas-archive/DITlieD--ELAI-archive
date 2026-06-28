@@ -163,7 +163,7 @@
     align-items: center;
     padding: 2px 8px;
     border-radius: var(--r-pill);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
     border: 1px solid transparent;
   }
@@ -190,7 +190,7 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 8px;
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .row-label {
@@ -228,7 +228,7 @@
   }
 
   .warning {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fail);
     padding-top: 4px;
     border-top: 1px solid rgba(176, 69, 69, 0.2);
@@ -236,7 +236,7 @@
   }
 
   .advisory {
-    font-size: 11px;
+    font-size: 10px;
     color: #d4a017;
     padding-top: 4px;
     border-top: 1px solid rgba(212, 160, 23, 0.2);

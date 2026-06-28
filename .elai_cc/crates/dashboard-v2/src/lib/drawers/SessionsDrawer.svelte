@@ -221,7 +221,7 @@
 
   .section-header {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -232,7 +232,7 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-ghost);
-    line-height: 1.5;
+    line-height: var(--leading-code);
     margin: 0;
   }
 

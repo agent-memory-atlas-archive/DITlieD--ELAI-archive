@@ -38,6 +38,7 @@ import type {
   MistakeEntry,
   PipelineNode,
   DagRepairEvent,
+  DagRepairEscalated,
   BuildSlot,
   DevServer,
   ProjectProfile,
@@ -273,10 +274,16 @@ export const DECOMP_TREE: DecompNode = {
 // BubbleUp events
 // ------------------------------------------------------------------
 export const BUBBLE_UP_EVENTS: BubbleUpEvent[] = [
-  { ts: mins(12), level: 'baby-step', node_id: 'bs-3.2.3', message: 'EXIT_CRITERIA met: revocation round-trip < 1.2ms', escalated: false },
-  { ts: mins(8), level: 'step', node_id: 's-3.2', message: 'STEP checkpoint PARTIAL — bs-3.2.4 still active', escalated: false },
-  { ts: mins(5), level: 'phase', node_id: 'p-3', message: 'Phase 3 progress: 2/3 steps complete', escalated: false },
-  { ts: mins(3), level: 'concept', node_id: 'c-1', message: 'Concept health: NOMINAL — no escalation required', escalated: false },
+  // Same-level threshold miss (BabyStep → BabyStep, research_alternative)
+  { from_level: 'BabyStep', to_level: 'BabyStep', action_kind: 'research_alternative', reason: 'baby_step=BabyStepId(7)', failure_count: 3, threshold: 3 },
+  // Cascade lift: BabyStep → Step (redecompose_step)
+  { from_level: 'BabyStep', to_level: 'Step', action_kind: 'redecompose_step', reason: 'step=StepId(3)', failure_count: 2, threshold: 2 },
+  // Cascade lift: Step → Phase (replan_phase)
+  { from_level: 'Step', to_level: 'Phase', action_kind: 'replan_phase', reason: 'phase=PhaseId(2)', failure_count: 2, threshold: 2 },
+  // Cascade lift: Phase → Concept (replan_concept)
+  { from_level: 'Phase', to_level: 'Concept', action_kind: 'replan_concept', reason: 'concept=ConceptId(1)', failure_count: 1, threshold: 1 },
+  // Escalation — all retries exhausted
+  { from_level: 'Concept', to_level: 'Concept', action_kind: 'escalate', reason: 'all retries exhausted across concept tree', failure_count: 5, threshold: 1 },
 ];
 
 // ------------------------------------------------------------------
@@ -667,7 +674,12 @@ export const PIPELINE_NODES: PipelineNode[] = [
 ];
 
 export const DAG_REPAIR_EVENTS: DagRepairEvent[] = [
-  { ts: mins(28), kind: 'Substitute', from_node_id: 'pn-003', to_node_id: 'pn-003', t_dag_counter: 1, },
+  { action_kind: 'substitute', round: 1, reason: 'substituted with compatible tool' },
+  { action_kind: 'reorder', round: 2, reason: 'removed back-edge to break cycle' },
+];
+
+export const DAG_REPAIR_ESCALATED: DagRepairEscalated[] = [
+  { rounds: 10, remaining_issues: 2, last_error: 'CycleDetected: unresolvable cycle in DAG' },
 ];
 
 // ------------------------------------------------------------------

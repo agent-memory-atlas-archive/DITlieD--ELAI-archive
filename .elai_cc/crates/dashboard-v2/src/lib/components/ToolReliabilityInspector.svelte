@@ -256,7 +256,7 @@
     padding: 2px 0;
   }
   .ri-path {
-    font-size: 11px;
+    font-size: 10px;
     opacity: 0.85;
   }
   .ri-empty {
@@ -276,7 +276,7 @@
     list-style: none;
     padding-left: 0;
     margin: 6px 0 0 0;
-    font-size: 11px;
+    font-size: 10px;
   }
   .ri-recent li {
     display: flex;

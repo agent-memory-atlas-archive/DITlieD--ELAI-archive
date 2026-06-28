@@ -518,7 +518,7 @@
   }
   .orbit-canvas-root:hover .zoom-hud { opacity: 1; }
   .zoom-prefix {
-    font-size: 9px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.15em;
   }

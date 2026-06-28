@@ -332,7 +332,7 @@
   >
     {#if activeTab}
       {#key activeTabId}
-        <div class="window-host anim-enter-fade">
+        <div class="window-host anim-panel-in">
           <WindowHost type={activeTab.type} />
         </div>
       {/key}

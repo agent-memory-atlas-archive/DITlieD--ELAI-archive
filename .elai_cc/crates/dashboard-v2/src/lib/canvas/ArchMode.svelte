@@ -267,7 +267,7 @@
 
   .arch-mode__mermaid-text {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     white-space: pre-wrap;
     color: var(--read);
     margin: 0 0 8px;
@@ -275,14 +275,14 @@
 
   .arch-mode__loading,
   .arch-mode__empty {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--dim);
     margin: 0;
   }
 
   /* error reads via text + the surrounding state language, not red */
   .arch-mode__error {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text);
     margin: 0;
   }

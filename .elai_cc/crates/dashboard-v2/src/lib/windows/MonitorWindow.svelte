@@ -382,12 +382,19 @@
   </section>
   <!-- B-3 #28 (CLASS C): ProposalsPanel feature-gate. Mount only when the
        `self-modification` cargo feature is active (B-23 producer ready).
-       Default builds hide the panel entirely to avoid a misleading
-       "no pending proposals" empty state when the Layer 1A producer is
-       not even running. -->
+       Default builds show a deferral note so users see the panel is
+       intentional, not broken — matching the AutoAdvanceStats #27 pattern. -->
   {#if featureFlags.self_modification}
     <section class="monitor-section self-mod-proposals" aria-label="Layer 1A proposals">
       <ProposalsPanel />
+    </section>
+  {:else}
+    <section class="monitor-section self-mod-proposals--deferred" aria-label="Layer 1A proposals (deferred)">
+      <div class="auto-advance__row auto-advance__row--deferred">
+        <span class="auto-advance__metric mono auto-advance__metric--deferred">
+          self-modification disabled (awaiting B-23)
+        </span>
+      </div>
     </section>
   {/if}
 
@@ -897,7 +904,7 @@
   }
   .identity-task {
     font-family: var(--font-sans);
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--text-primary);
     text-align: center;
@@ -947,7 +954,7 @@
     background: transparent;
     border: none;
     font-family: var(--font-mono);
-    font-size: 16px;
+    font-size: 15px;
     line-height: 1;
     cursor: pointer;
     padding: 0;
@@ -1009,7 +1016,7 @@
     font-family: var(--font-sans);
     font-size: 12px;
     color: var(--text-secondary);
-    line-height: 1.5;
+    line-height: var(--leading-text);
     min-width: 0;
     overflow-wrap: anywhere;
   }
@@ -1052,17 +1059,17 @@
 
   .iv-title {
     font-family: var(--font-sans);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--text-primary);
-    line-height: 1.3;
+    line-height: var(--leading-text);
   }
 
   .iv-desc {
     font-family: var(--font-sans);
     font-size: 12px;
     color: var(--text-secondary);
-    line-height: 1.5;
+    line-height: var(--leading-text);
   }
 
   .diff-block {
@@ -1089,7 +1096,7 @@
     padding: var(--s-2) var(--s-3) var(--s-2) calc(var(--s-3) + 3px);
     white-space: pre-wrap;
     word-break: break-all;
-    line-height: 1.5;
+    line-height: var(--leading-code);
     margin: 0;
     background: none;
   }
@@ -1202,19 +1209,12 @@
 
   /* Failure: animated 2px left border (200ms fade) per DESIGN.md §8 */
   .tl-row--fail {
-    animation: failBorder 200ms ease-out both;
-  }
-  @keyframes failBorder {
-    0%   { border-left: 2px solid transparent; }
-    100% { border-left: 2px solid var(--fail); }
+    animation: stepFail 200ms var(--ease-out) both;
+    border-left: 2px solid var(--fail);
   }
 
   /* Step completion flash: 100ms teal-ghost per DESIGN.md §8 */
-  @keyframes step-flash {
-    0%, 100% { background: transparent; }
-    50%       { background: var(--teal-ghost); }
-  }
-  .tl-row--pass { animation: step-flash 100ms ease-in-out; }
+  .tl-row--pass { animation: stepComplete 100ms var(--ease-out) both; }
 
   .tl-empty {
     font-size: 10px;
@@ -1269,9 +1269,9 @@
     color: var(--text-secondary);
     border-left: 2px solid transparent;
   }
-  .audit-badge--green { border-left-color: #22c55e; }
-  .audit-badge--yellow { border-left-color: #eab308; }
-  .audit-badge--red { border-left-color: #ef4444; color: #fca5a5; }
+  .audit-badge--green { border-left-color: var(--pass); }
+  .audit-badge--yellow { border-left-color: var(--warn); }
+  .audit-badge--red { border-left-color: var(--fail); color: var(--fail); }
   .auto-advance__row {
     display: flex;
     flex-direction: row;
@@ -1323,9 +1323,9 @@
     padding: 4px 10px;
     font-size: 10px;
     border-radius: 3px;
-    background: rgba(95, 168, 255, 0.08);
-    color: #5fa8ff;
-    border: 1px solid rgba(95, 168, 255, 0.25);
+    background: var(--info-ghost);
+    color: var(--info);
+    border: 1px solid var(--info-soft);
   }
   .framing-badge-status {
     font-size: 10px;
@@ -1333,15 +1333,15 @@
     border-radius: 2px;
   }
   .badge-ok {
-    background: rgba(111, 192, 111, 0.18);
-    color: #6fc06f;
+    background: var(--pass-ghost);
+    color: var(--pass);
   }
   .badge-block {
-    background: rgba(255, 107, 107, 0.18);
-    color: #ff6b6b;
+    background: var(--fail-ghost);
+    color: var(--fail);
   }
   .badge-active {
-    background: rgba(95, 168, 255, 0.18);
-    color: #5fa8ff;
+    background: var(--info-ghost);
+    color: var(--info);
   }
 </style>

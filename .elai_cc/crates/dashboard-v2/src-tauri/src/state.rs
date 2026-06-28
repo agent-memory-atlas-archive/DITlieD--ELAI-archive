@@ -218,6 +218,7 @@ pub enum ReviewDecision {
     RequestRevalidate,
 }
 
+use crate::state_cache::StateCache;
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
 #[cfg(feature = "mcp")]
@@ -479,6 +480,13 @@ pub struct AppState {
     /// lock-guarded per-tool; the field is written once at construction.
     #[cfg(feature = "mcp")]
     pub calibration_registry: Option<Arc<ToolCalibrationRegistry>>,
+    /// B-36 Session 2 STEP 3: cache sub-state. Holds the
+    /// `Arc<Mutex<ResearchCache>>` handle required by the WIRING_CONTRACT
+    /// ("AppState struct with Arc<...> handles to orchestrator + cli +
+    /// cache"). Defined in `state_cache.rs` so this file stays under the
+    /// MR-1 1000-line boundary. Consumed by D.3 `run_research` for
+    /// repeated-query cache hits.
+    pub cache: StateCache,
 }
 
 impl AppState {
@@ -754,6 +762,7 @@ impl AppState {
             // the env gate is off or the feature is absent.
             #[cfg(feature = "mcp")]
             calibration_registry,
+            cache: StateCache::new(),
         }
     }
 

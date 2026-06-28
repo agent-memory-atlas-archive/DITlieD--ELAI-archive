@@ -70,7 +70,7 @@
     border: 1px solid var(--teal-line);
     border-radius: var(--r-md);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
   }
   .snackbar-body {

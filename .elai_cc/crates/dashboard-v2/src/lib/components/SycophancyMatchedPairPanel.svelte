@@ -113,7 +113,7 @@
   }
   .smp-summary {
     color: #7a7a7a;
-    font-size: 11px;
+    font-size: 10px;
   }
   .smp-empty {
     color: #555;
@@ -123,7 +123,7 @@
   .smp-probes {
     width: 100%;
     border-collapse: collapse;
-    font-size: 11px;
+    font-size: 10px;
   }
   .smp-probes th,
   .smp-probes td {

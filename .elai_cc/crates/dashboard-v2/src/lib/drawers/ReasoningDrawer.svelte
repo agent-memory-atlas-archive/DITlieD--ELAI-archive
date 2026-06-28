@@ -798,7 +798,7 @@
     padding: 2px 0;
     cursor: pointer;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--text-secondary);
@@ -870,7 +870,7 @@
 
   .sweep-count {
     font-family: var(--font-mono);
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 600;
     line-height: 1;
   }
@@ -881,7 +881,7 @@
 
   .sweep-label {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
     letter-spacing: 0.06em;
     margin-top: 3px;
@@ -921,7 +921,7 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-secondary);
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
 
   .csq-actions {
@@ -970,7 +970,7 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-secondary);
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
 
   .conflict-meta {
@@ -1114,7 +1114,7 @@
     display: flex;
     align-items: baseline;
     gap: 8px;
-    line-height: 1.4;
+    line-height: var(--leading-code);
   }
   .reflect-tl-detail {
     font-family: var(--font-mono);

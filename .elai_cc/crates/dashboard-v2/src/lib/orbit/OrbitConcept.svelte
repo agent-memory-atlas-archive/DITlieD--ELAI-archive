@@ -435,14 +435,14 @@
     letter-spacing: 0.04em;
   }
   .label--phase { font-size: 10px; }
-  .label--step  { font-size: 9px; fill: var(--text-ghost); }
-  .label--baby  { font-size: 9px; fill: var(--text-ghost); }
+  .label--step  { font-size: 10px; fill: var(--text-ghost); }
+  .label--baby  { font-size: 10px; fill: var(--text-ghost); }
   .label--active  { fill: var(--teal-bright); }
-  .label--ambient { fill: var(--text-ghost); opacity: 0.65; font-size: 9px; }
+  .label--ambient { fill: var(--text-ghost); opacity: 0.65; font-size: 10px; }
 
   .centre-label {
     font-family: var(--font-mono);
-    font-size: 8px;
+    font-size: 10px;
     fill: var(--teal-bright);
     text-transform: uppercase;
     letter-spacing: 0.1em;

@@ -165,7 +165,7 @@
     min-height: 0;
     background: var(--bg);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--read);
   }
 
@@ -209,7 +209,7 @@
   .story-close {
     flex: none;
     background: none; border: none; color: var(--dim);
-    font-size: 11px; cursor: pointer;
+    font-size: 10px; cursor: pointer;
   }
   .story-close:hover { color: var(--text); }
 
@@ -220,7 +220,7 @@
     padding: 4px 12px 8px;
     color: var(--read);
     font-size: 10px;
-    line-height: 1.4;
+    line-height: var(--leading-text);
   }
 
   .story-nav {
@@ -274,8 +274,8 @@
   .hist-conf--high { color: var(--d-teal-bright); }
   .hist-conf--medium { color: var(--read); }
   .hist-conf--low { color: var(--dim); }
-  .hist-summary { color: var(--text); font-size: 11px; margin: 2px 0; line-height: 1.4; }
-  .hist-why { color: var(--read); font-size: 10px; line-height: 1.45; }
+  .hist-summary { color: var(--text); font-size: 10px; margin: 2px 0; line-height: var(--leading-text); }
+  .hist-why { color: var(--read); font-size: 10px; line-height: var(--leading-text); }
   .hist-scope { color: var(--dim); font-size: 9px; margin-top: 3px; }
   .hist-receipts { display: flex; flex-wrap: wrap; gap: 4px; margin: 5px 0 3px; }
   .rchip {

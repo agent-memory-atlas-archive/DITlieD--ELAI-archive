@@ -39,11 +39,19 @@
   --teal:         #1B7A6E;   /* active, focus ring, brand */
   --teal-bright:  #24a08e;   /* progress bars, important badges */
   --teal-soft:    rgba(27,122,110,0.25);  /* glows, subtle highlights */
-  --teal-ghost:   rgba(27,122,110,0.08);  /* hover tint, active bg */
+  --teal-ghost:   #1B7A6E15;  /* hover tint, active bg */
   --teal-line:    rgba(27,122,110,0.45);  /* 1–2px accent borders */
 
   /* ----------------------------------------------------------
-     SECONDARY — cold steel blue
+     SECONDARY — purple for interactive elements
+     Buttons, user actions, chat bubbles.
+  ---------------------------------------------------------- */
+  --purple:       #7C5CBF;   /* buttons, user actions, chat bubbles */
+  --purple-soft:  #7C5CBF30; /* hover states on interactive elements */
+  --purple-ghost: #7C5CBF12; /* subtle interactive backgrounds */
+
+  /* ----------------------------------------------------------
+     TERTIARY — cold steel blue
      Links, informational text, keyboard hints only.
   ---------------------------------------------------------- */
   --steel:        #5A7A9E;
@@ -61,10 +69,22 @@
   /* ----------------------------------------------------------
      SEMANTIC — used only where actual state requires it
   ---------------------------------------------------------- */
-  --pass: #1E8A7A;   /* reuses teal */
-  --warn: #C39A3A;   /* muted amber */
-  --fail: #B04545;   /* muted red */
-  --info: #5A7A9E;   /* reuses steel */
+  --pass: #1B7A6E;   /* reuses teal */
+  --warn: #c49b2a;   /* muted amber */
+  --fail: #c44040;   /* muted red */
+  --info: #5088c0;   /* steel blue */
+
+  /* Semantic soft/ghost variants — for badge backgrounds, hover tints,
+     and subtle highlights on status indicators. Mirrors the teal/steel
+     soft/ghost pattern so components never need raw rgba literals. */
+  --pass-soft:  rgba(27,122,110,0.25);
+  --pass-ghost: rgba(27,122,110,0.08);
+  --warn-soft:  rgba(196,155,42,0.25);
+  --warn-ghost: rgba(196,155,42,0.08);
+  --fail-soft:  rgba(196,64,64,0.25);
+  --fail-ghost: rgba(196,64,64,0.08);
+  --info-soft:  rgba(80,136,192,0.25);
+  --info-ghost: rgba(80,136,192,0.08);
 
   /* ----------------------------------------------------------
      BORDERS
@@ -72,13 +92,14 @@
   --border-subtle:  rgba(255,255,255,0.04);
   --border-default: rgba(255,255,255,0.07);
   --border-strong:  rgba(255,255,255,0.12);
+  --border-width:   1px;
 
   /* ----------------------------------------------------------
      RADIUS
   ---------------------------------------------------------- */
   --r-xs:   2px;
-  --r-sm:   4px;
-  --r-md:   6px;
+  --r-sm:   3px;   /* buttons, inputs */
+  --r-md:   6px;   /* panels, cards */
   --r-lg:   10px;
   --r-pill: 999px;
 
@@ -97,11 +118,12 @@
   --s-16: 64px;
 
   /* ----------------------------------------------------------
-     MOTION — 120–240ms range, ease-out for enters
+     MOTION — 80–240ms range, ease-out for enters
   ---------------------------------------------------------- */
-  --dur-fast: 120ms;
-  --dur-base: 180ms;
-  --dur-slow: 320ms;
+  --dur-fast: 80ms;    /* panel fade out */
+  --dur-base: 120ms;  /* opacity transitions, panel fade in */
+  --dur-slow: 150ms;   /* transform transitions */
+  --dur-xl:   320ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);   /* expo-out, premium feel */
   --ease-in:  cubic-bezier(0.7, 0, 0.84, 0);
   --ease-std: cubic-bezier(0.4, 0, 0.2, 1);
@@ -113,11 +135,29 @@
   ---------------------------------------------------------- */
 
   /* ----------------------------------------------------------
+     SCROLLBARS
+  ---------------------------------------------------------- */
+  --scrollbar-width: 4px;
+  --scrollbar-track: var(--bg-hover);
+  --scrollbar-thumb: var(--teal-soft);
+
+  /* ----------------------------------------------------------
      TYPOGRAPHY
   ---------------------------------------------------------- */
-  --font-sans:    'JetBrains Mono', 'Fira Code', monospace; /* C-6: body font is monospace per spec; token name kept for back-compat */
+  --font-sans:    'JetBrains Mono', monospace; /* C-6 step5: body font is monospace per spec; token name kept for back-compat */
   --font-mono:    'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
   --font-display: 'Segoe UI Variable', 'Segoe UI', sans-serif; /* thin-200 for display */
+
+  /* Type scale (exact from spec) */
+  --text-xs:   10px;  /* letter-spacing: 0.05em */
+  --text-sm:   12px;
+  --text-base: 13px;
+  --text-lg:   15px;
+  --text-xl:   18px;  /* letter-spacing: 0.15em */
+
+  /* Line height */
+  --leading-text: 1.6;
+  --leading-code: 1.4;
 
   /* ----------------------------------------------------------
      FOCUS RING
@@ -408,6 +448,42 @@
 ::selection {
   background: var(--teal-soft);
   color: var(--text-primary);
+}
+
+/* ----------------------------------------------------------
+   SCROLLBARS — 4px wide, hidden until hover
+---------------------------------------------------------- */
+::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+  height: var(--scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--teal);
+}
+
+/* Hide scrollbars by default, show on hover */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*:hover::-webkit-scrollbar {
+  opacity: 1;
+}
+
+*::-webkit-scrollbar {
+  opacity: 0;
+  transition: opacity 0.2s ease;
 }
 
 /* ----------------------------------------------------------

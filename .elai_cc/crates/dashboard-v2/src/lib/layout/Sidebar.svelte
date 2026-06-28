@@ -28,6 +28,14 @@
     Icon: IconCtor;
   }
 
+  // SPEC-DELTA: finalglance spec (dashboard-design.txt:195-199) lists 5 nav
+  // icons: terminal, layers, play, search, settings. This sidebar ships 8:
+  //   spec-matched: command(Terminal), plan(Layers), activity(Play), settings(Settings)
+  //   surplus: review(GitBranch), monitor(Activity), graph(Network), explore(Compass)
+  //   missing: search (no Search icon wired; explore is a C-7 Q&A surface, not
+  //            the spec's "search" affordance).
+  // Surplus icons retained for feature parity; remove when C-7 UX audit
+  // resolves the icon set. Do NOT silently delete — hiding pre-empts the audit.
   const navItems: NavItem[] = [
     { type: 'command',  label: 'Command',  shortcut: 'Ctrl+1', Icon: Terminal },
     { type: 'plan',     label: 'Plan',     shortcut: 'Ctrl+2', Icon: Layers },
@@ -257,7 +265,7 @@
 </nav>
 
 <style>
-  /* C-6: width 64px -> 48px to match spec dashboard-design.txt:182.
+  /* C-6: sidebar column narrowed to 48px per spec dashboard-design.txt:182.
      Coupled change in AppShell.svelte grid-template-columns. */
   .sidebar {
     display: flex;
@@ -278,7 +286,7 @@
   .wordmark {
     font-family: var(--font-display);
     font-weight: 200;
-    font-size: 17px;
+    font-size: 18px;
     letter-spacing: 0.22em;
     color: var(--teal);
     text-transform: uppercase;

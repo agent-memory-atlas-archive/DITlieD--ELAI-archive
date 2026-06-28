@@ -206,7 +206,7 @@
   th {
     font-weight: 600;
     color: var(--text-muted, #888);
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
   }
 

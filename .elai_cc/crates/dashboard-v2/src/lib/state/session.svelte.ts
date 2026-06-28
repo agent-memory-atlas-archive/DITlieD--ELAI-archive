@@ -126,9 +126,12 @@ function createSession() {
   let sessionId = $state<string>(`s-${Date.now()}`);
   let recentProjects = $state<ProjectSummary[]>(loadRecents());
   // B-39D: REFLECT pipeline toggle + effort level. Persisted in localStorage.
-  // When `thinkingEnabled` is true, start_chat_stream routes through the
-  // ChatReflectPipeline (TRIAGE→REASONER N→AUDITOR→SYNTHESIZE) instead of
-  // forwarding SSE chunks. `effortLevel` maps to REASONER best-of-N width
+  // The frontend `streamChat` helper (stub.ts) forwards `thinkingEnabled`
+  // and `effortLevel` to the Tauri `stream_chat` command (B-14). Full
+  // REFLECT-pipeline routing (TRIAGE→REASONER N→AUDITOR→SYNTHESIZE) is
+  // implemented in the older `start_chat_stream` Tauri command (B-39D);
+  // `stream_chat` does not yet forward these options — see the TODO in
+  // stub.ts `stream_chat`. `effortLevel` maps to REASONER best-of-N width
   // (low=2, medium=4, high=6, max=8).
   let thinkingEnabled = $state<boolean>(loadThinking());
   let effortLevel = $state<EffortLevel>(loadEffort());

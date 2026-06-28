@@ -46,5 +46,5 @@
     letter-spacing: 0.1em;
     color: var(--text-secondary);
   }
-  .research-badge .dim { color: var(--text-ghost); font-size: 9px; }
+  .research-badge .dim { color: var(--text-ghost); font-size: 10px; }
 </style>

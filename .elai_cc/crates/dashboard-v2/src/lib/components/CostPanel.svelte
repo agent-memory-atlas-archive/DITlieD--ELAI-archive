@@ -265,7 +265,7 @@
   }
   .cp-count {
     color: var(--text-dim, #888);
-    font-size: 11px;
+    font-size: 10px;
   }
   .cp-error {
     color: var(--err-fg, #d97f7f);
@@ -276,7 +276,7 @@
   }
   .cp-section-title {
     margin: 6px 0 4px 0;
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
     color: var(--text-dim, #888);
     letter-spacing: 0.04em;

@@ -85,7 +85,7 @@
     border-radius: 0 var(--r-md, 4px) var(--r-md, 4px) 0;
     font-family: var(--font-sans);
     font-size: 12px;
-    line-height: 1.4;
+    line-height: var(--leading-text);
   }
   .hcb-header {
     display: flex;

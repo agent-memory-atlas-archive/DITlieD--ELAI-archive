@@ -215,7 +215,7 @@
   .session-id {
     color: var(--text-muted, #666);
     font-size: 0.7rem;
-    font-family: monospace;
+    font-family: var(--font-mono);
   }
 
   .decision-detail {

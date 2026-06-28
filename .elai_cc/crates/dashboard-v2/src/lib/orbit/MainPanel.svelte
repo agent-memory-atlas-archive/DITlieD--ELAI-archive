@@ -1,4 +1,11 @@
 <script lang="ts">
+  // WIRE-DARK[B-13-POLISH-1] — this component has NO importer. It is
+  // retained as reference for a future DOM-overlay NodePanel pass but
+  // is NOT part of the production render path. OrbitCanvas renders the
+  // mandala via node-mandala.ts (three.js) instead. See orbit/README.md
+  // "DEAD CODE" section. Safe to remove if the V3 DOM-panel approach is
+  // fully abandoned.
+
   // MainPanel — primary information surface for the V3 NodePanel design.
   // 480×300px, anchored to a "south of node" projection point. Always
   // upright (camera-facing) with a slight rotateX(-4deg) tilt so it
@@ -166,7 +173,7 @@
     color: var(--text-primary);
     font-family: var(--font-sans);
     font-size: 12px;
-    line-height: 1.4;
+    line-height: var(--leading-text);
     transform-origin: 50% 0%;
     opacity: 0;
     transition: opacity var(--mp-fade-in-ms) var(--mp-fade-ease);
@@ -271,7 +278,7 @@
   .mp-line {
     font-family: var(--font-mono);
     font-size: 10px;
-    line-height: 1.4;
+    line-height: var(--leading-code);
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;

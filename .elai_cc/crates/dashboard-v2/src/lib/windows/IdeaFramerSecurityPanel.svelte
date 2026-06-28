@@ -181,7 +181,7 @@
 <style>
   .ifs-panel {
     padding: 1rem;
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
   }
   .ifs-header {
     display: flex;
@@ -189,15 +189,15 @@
     gap: 0.75rem;
   }
   .ifs-badge {
-    background: var(--accent-bg, #1f2937);
-    color: var(--accent-fg, #f3f4f6);
+    background: var(--bg-input);
+    color: var(--text-primary);
     padding: 0.125rem 0.5rem;
     border-radius: 0.25rem;
     font-size: 0.75rem;
   }
   .ifs-runpod {
-    background: #92400e;
-    color: #fef3c7;
+    background: var(--warn-soft);
+    color: var(--warn);
     padding: 0.125rem 0.5rem;
     border-radius: 0.25rem;
     font-size: 0.75rem;
@@ -217,11 +217,11 @@
     min-width: 9rem;
   }
   .ifs-error {
-    color: #ef4444;
+    color: var(--fail);
     margin: 0.5rem 0;
   }
   .ifs-loading {
-    color: #6b7280;
+    color: var(--text-secondary);
   }
   .ifs-profile dl {
     display: grid;
@@ -247,20 +247,20 @@
   .ifs-results td {
     text-align: left;
     padding: 0.25rem 0.5rem;
-    border-bottom: 1px solid var(--border, #374151);
+    border-bottom: 1px solid var(--border-default);
   }
   .ifs-ok {
-    color: #10b981;
+    color: var(--pass);
   }
   .ifs-missing {
-    color: #f59e0b;
+    color: var(--warn);
   }
   .ifs-missing em {
     display: block;
     font-size: 0.75rem;
-    color: #9ca3af;
+    color: var(--text-secondary);
   }
   .ifs-fail {
-    color: #ef4444;
+    color: var(--fail);
   }
 </style>

@@ -53,7 +53,7 @@
     background: var(--bg);
     border-top: 1px solid var(--line);
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.12em;
     color: var(--dim);
     box-sizing: border-box;
@@ -74,7 +74,7 @@
 
   .sid {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.12em;
     color: var(--dim);
     background: none;

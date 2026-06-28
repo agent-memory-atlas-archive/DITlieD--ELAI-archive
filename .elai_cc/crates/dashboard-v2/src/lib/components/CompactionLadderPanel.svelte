@@ -190,7 +190,7 @@
     color: #ccc;
     border: 1px solid #2a2a2a;
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
     border-radius: 2px;
   }
@@ -200,26 +200,26 @@
   .banner {
     background: #1c1a14;
     color: #d0b070;
-    font-size: 11px;
+    font-size: 10px;
     padding: 6px 8px;
     margin-bottom: 8px;
     border-left: 2px solid #d0a040;
   }
   .error-banner {
     color: #d05050;
-    font-size: 11px;
+    font-size: 10px;
     padding: 4px 0;
   }
   .empty {
     color: #888;
     font-style: italic;
     padding: 6px 0;
-    font-size: 11px;
+    font-size: 10px;
   }
   .section-label {
     margin-top: 10px;
     margin-bottom: 4px;
-    font-size: 11px;
+    font-size: 10px;
     color: #aaa;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -254,7 +254,7 @@
     color: #888;
   }
   .tier-name {
-    font-size: 11px;
+    font-size: 10px;
     color: #ccc;
     margin: 2px 0;
   }
@@ -289,6 +289,6 @@
   }
   .mono {
     font-family: 'JetBrains Mono', 'Consolas', monospace;
-    font-size: 11px;
+    font-size: 10px;
   }
 </style>

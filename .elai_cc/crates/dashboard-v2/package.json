@@ -8,11 +8,13 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit"
+    "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
+    "test": "vitest",
+    "test:visual": "playwright test",
+    "test:visual:update": "playwright test --update-snapshots"
   },
   "dependencies": {
     "@babel/standalone": "7.29.7",
-    "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@lucide/svelte": "^1.11.0",
     "@tauri-apps/api": "^2",
@@ -31,12 +33,15 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.48.0",
     "@sveltejs/vite-plugin-svelte": "^4.0.4",
     "@tauri-apps/cli": "^2",
     "@types/three": "^0.184.0",
+    "jsdom": "^25.0.0",
     "pngjs": "^7.0.0",
     "svelte-check": "^4",
     "typescript": "^5",
-    "vite": "^5"
+    "vite": "^5",
+    "vitest": "^2.1.0"
   }
 }

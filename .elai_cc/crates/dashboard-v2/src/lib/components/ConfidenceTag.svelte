@@ -70,7 +70,7 @@
     white-space: nowrap;
   }
   .ctag--md {
-    font-size: 11px;
+    font-size: 10px;
     padding: 3px 8px;
   }
   .ctag-glyph {

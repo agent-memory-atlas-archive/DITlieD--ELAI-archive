@@ -316,6 +316,6 @@
     text-align: right;
   }
   .mono {
-    font-family: monospace;
+    font-family: var(--font-mono);
   }
 </style>

@@ -214,15 +214,15 @@
     .rail-tooltip-global {
       position: fixed;
       transform: translateY(-50%);
-      background: #10141A;
-      border: 1px solid rgba(255,255,255,0.07);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
       border-radius: 4px;
       padding: 4px 8px;
       font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
       font-size: 10px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      color: #D7DCE3;
+      color: var(--text-primary);
       white-space: nowrap;
       pointer-events: none;
       z-index: 9999;

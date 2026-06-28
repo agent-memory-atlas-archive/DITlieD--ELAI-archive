@@ -217,7 +217,7 @@
 
   h3 {
     margin: 4px 0 0 0;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -226,7 +226,7 @@
 
   .reload-btn {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     background: var(--bg-hover);
     border: 1px solid var(--border-default);
@@ -248,7 +248,7 @@
 
   .summary-label {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -312,6 +312,6 @@
 
   .footnote {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
   }
 </style>

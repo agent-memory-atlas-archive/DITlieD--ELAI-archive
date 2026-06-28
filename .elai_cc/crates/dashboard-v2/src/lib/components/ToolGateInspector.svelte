@@ -167,7 +167,7 @@
   </section>
 </div>
 <style>
-  .tool-gate-inspector{font-family:monospace;padding:1rem}
+  .tool-gate-inspector{font-family:var(--font-mono);padding:1rem}
   header{display:flex;align-items:baseline;gap:1rem;margin-bottom:0.5rem}
   h2{margin:0;font-size:1rem}
   .ts{color:grey;font-size:0.75rem}
@@ -179,7 +179,7 @@
   dt{font-weight:bold}
   .filter-dataplane{margin-top:1rem}
   .commit-row,.quarantine-row{display:flex;gap:0.5rem;align-items:baseline;font-size:0.8rem;margin-top:0.25rem}
-  .chip.hash{background:#1e3a5f;color:#7ecfff;padding:0 0.35rem;border-radius:3px;font-size:0.7rem;font-family:monospace}
+  .chip.hash{background:#1e3a5f;color:#7ecfff;padding:0 0.35rem;border-radius:3px;font-size:0.7rem;font-family:var(--font-mono)}
   .categories{color:#aaa}
   .task-id{font-size:0.7rem}
   .denied-tool{color:red;font-weight:bold}

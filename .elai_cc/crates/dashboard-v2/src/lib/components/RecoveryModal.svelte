@@ -185,7 +185,7 @@
     justify-content: center;
     padding: var(--s-4);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 

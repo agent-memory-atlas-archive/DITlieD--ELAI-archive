@@ -178,7 +178,7 @@
     color: var(--text);
   }
   .mt-prefix {
-    font-size: 9px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.12em;
     color: var(--dim);
