@@ -2959,10 +2959,12 @@ fn baby_step_dispatched_detail_to_row(
 // When the D-10 router picks GroundingMode::ConformalRefusal the
 // orchestrator runs this producer. It accepts a pre-loaded
 // `CalibrationCorpus`, computes tau via
-// `crate::conformal_calibration::compute_tau_and_emit` (one
+// `crate::calibration::compute_tau_and_emit` (one
 // `conformal_tau_computed` SSB row), then runs the per-claim decision
 // via `decide_and_emit` (one `conformal_refusal_decided` SSB row), and
 // returns the typed `RefusalDecision`.
+// I-23: all calibration imports go through the `crate::calibration`
+// facade — no consumer reaches `conformal_calibration` directly.
 //
 // Grounding: arXiv:2503.01345 (UniCR — unified conformal refusal) +
 // Vovk et al. *Algorithmic Learning in a Random World* (2005) §2.2.
@@ -2977,9 +2979,9 @@ fn baby_step_dispatched_detail_to_row(
 /// entropy-quarantine rule — matches [`route_claim`] +
 /// [`dispatch_constructive_checkers`].
 ///
-/// Returns the typed [`crate::conformal_calibration::RefusalDecision`]
+/// Returns the typed [`crate::calibration::RefusalDecision`]
 /// on success. Tau-compute failures (insufficient corpus, bad epsilon)
-/// propagate as [`crate::conformal_calibration::ConformalError`] — the
+/// propagate as [`crate::calibration::ConformalError`] — the
 /// caller should fall back to `GroundingMode::ConservativeFallback`
 /// per the D-10 routing table.
 pub async fn dispatch_conformal_refusal<

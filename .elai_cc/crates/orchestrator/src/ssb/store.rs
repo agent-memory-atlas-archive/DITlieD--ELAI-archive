@@ -303,6 +303,14 @@ pub struct Ssb {
     db_path: std::path::PathBuf,
     shutdown: Arc<AtomicBool>,
     _write_task: tokio::task::JoinHandle<()>,
+    /// I-18 STEP-1: rolling blake3 chain hash maintained by the single-writer.
+    /// After each insert, this holds `Some(blake3_16hex(last_row_payload_bytes))`.
+    /// `None` on GENESIS (no rows inserted yet). Exposed via
+    /// [`Ssb::chain_prev_hash`] so the production CLI seal path
+    /// (`elai run --emit-rra`) can stamp the chain link without re-deriving
+    /// the full stream. Deterministic in-process: the single-writer holds the
+    /// rolling state so no out-of-order insert can spoof the chain (IS-1).
+    chain_rolling: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Ssb {
@@ -365,8 +373,14 @@ impl Ssb {
         let sid = session_id.clone();
         let sd = shutdown.clone();
 
+        // I-18 STEP-1: rolling blake3 chain hash shared between the single-writer
+        // task and the Ssb handle. None on GENESIS; updated to blake3_16hex of
+        // each inserted row's payload bytes after every successful commit.
+        let chain_rolling = Arc::new(std::sync::Mutex::new(None::<String>));
+        let chain_for_loop = chain_rolling.clone();
+
         let write_task = tokio::spawn(write_loop(
-            writer_conn, write_rx, bc_tx, clock, pid, sid, sd,
+            writer_conn, write_rx, bc_tx, clock, pid, sid, sd, chain_for_loop,
         ));
 
         Ok(Self {
@@ -378,6 +392,7 @@ impl Ssb {
             db_path: config.db_path.clone(),
             shutdown,
             _write_task: write_task,
+            chain_rolling,
         })
     }
 
@@ -467,6 +482,27 @@ impl Ssb {
     /// Session ID this SSB is bound to.
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// I-18 STEP-1: the rolling blake3 chain_prev_hash maintained by the
+    /// single-writer. Returns `Some(blake3_16hex)` of the most recently
+    /// committed row's payload bytes, or `None` on GENESIS (no rows inserted
+    /// yet). This is the chain link that the NEXT insert will carry as its
+    /// `chain_prev_hash`.
+    ///
+    /// Deterministic in-process: the single-writer is the sole updater
+    /// (IS-1), so no out-of-order insert can spoof the chain. The hash is
+    /// blake3 (CLAUDE.md Anti-Stale-Training hard rule — never sha256/blake2).
+    ///
+    /// Production caller: `elai run --emit-rra` via
+    /// `cli::run_subcommand::emit_run_artifact` stamps this value into the
+    /// sealing log alongside the G-2 RRA bundle root.
+    #[must_use]
+    pub fn chain_prev_hash(&self) -> Option<String> {
+        self.chain_rolling
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
     }
 
     /// Return all entries for a session ordered by seq ASC (oldest first).
@@ -696,6 +732,11 @@ async fn write_loop(
     project_id: String,
     session_id: String,
     shutdown: Arc<AtomicBool>,
+    // I-18 STEP-1: rolling blake3 chain hash. Updated to blake3_16hex of
+    // each committed row's payload bytes. None until the first successful
+    // insert (GENESIS). The single-writer is the ONLY updater, so no
+    // out-of-order insert can spoof the chain (IS-1 single-writer invariant).
+    chain_rolling: Arc<std::sync::Mutex<Option<String>>>,
 ) {
     while let Some(msg) = rx.recv().await {
         let result = execute_write(
@@ -708,6 +749,24 @@ async fn write_loop(
 
         match result {
             Ok((seq, created_at)) => {
+                // I-18 STEP-1: advance the rolling blake3 chain hash.
+                // The chain_prev_hash for the NEXT row = blake3 of THIS
+                // row's payload bytes (16-hex prefix, same convention as
+                // rra.rs::truncate_hex / RRA_HEX_PREFIX_LEN). Computed
+                // AFTER the commit so a failed write never advances the
+                // chain. blake3 only (CLAUDE.md Anti-Stale-Training).
+                let new_chain_hash: String = {
+                    let full = blake3::hash(&msg.request.payload).to_hex();
+                    full.chars().take(crate::rra::RRA_HEX_PREFIX_LEN).collect()
+                };
+                if let Ok(mut guard) = chain_rolling.lock() {
+                    *guard = Some(new_chain_hash);
+                } else {
+                    tracing::warn!(
+                        "I-18: chain_rolling mutex poisoned; rolling hash not advanced for seq {seq}"
+                    );
+                }
+
                 let entry = SsbEntry {
                     seq,
                     project_id: project_id.clone(),

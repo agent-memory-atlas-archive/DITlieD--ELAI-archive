@@ -18,10 +18,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::ssb::{
     ssb_action_type_from_str_public, BabyStepReadyPayload, BubbleUpTypedPayload,
-    ConceptDecompositionNodePayload, ContextBudgetComputedPayload, DagRepairRoundPayload,
-    FeasibilityReportPayload, InterventionOption, InterventionRequestPayload, InterventionType,
-    NovelStepDetectedPayload, ReflectAuditVerdictPayload, ReflectRefinedPayload,
-    ReflectTriagedPayload, SsbActionType, SsbPayload, StubRunPayload, TaskSubmittedPayload,
+    ConceptDecompositionNodePayload, ContextBudgetComputedPayload, DagRepairEscalatedPayload,
+    DagRepairRoundPayload, FeasibilityReportPayload, InterventionOption,
+    InterventionRequestPayload, InterventionType, NovelStepDetectedPayload,
+    ReflectAuditVerdictPayload, ReflectRefinedPayload, ReflectTriagedPayload, SsbActionType,
+    SsbPayload, StubRunPayload, TaskSplitPayload, TaskSubmittedPayload,
 };
 
 /// Maximum length of `phase_id` accepted by [`SsbViewer::step_progress`].
@@ -4070,6 +4071,75 @@ impl SsbViewer {
             let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
             if let SsbPayload::DagRepairRound(p) = payload {
                 out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns up to `limit` recent `dag_repair_escalated` rows in descending
+    /// seq order (most recent first). Used by the dashboard DAG_REPAIR drawer
+    /// to surface escalation events when T_DAG=10 is exhausted.
+    // WIRE-DARK[dashboard-v2]: consumer is dashboard-v2/src-tauri/src/commands.rs (recent_dag_repair_escalated calls), landing in the dashboard-v2 slice immediately after this one.
+    pub fn recent_dag_repair_escalated(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<DagRepairEscalatedPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::DagRepairEscalated.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::DagRepairEscalated(p) = payload {
+                out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// B-7 Task #8: Returns up to `limit` recent `task_split` rows that
+    /// carry PhaseSizingSplitter context (`splitter = "phase_sizing"` and
+    /// `phase_id = Some(_)`), in descending seq order (most recent first).
+    /// Used by the dashboard to render split badges on phase nodes in the
+    /// PlanWindow tree. Rows without phase context (supervision-layer
+    /// splits, deterministic-fallback, research_tree) are filtered out.
+    // WIRE-DARK[dashboard-v2]: consumer is dashboard-v2/src-tauri/src/commands.rs (recent_phase_sized_splits call), landing in the dashboard-v2 slice immediately after this one.
+    pub fn recent_phase_sized_splits(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<TaskSplitPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::TaskSplit.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::TaskSplit(p) = payload {
+                // Only retain rows that carry PhaseSizingSplitter context:
+                // splitter must be "phase_sizing" and phase_id must be set.
+                if p.splitter.as_deref() == Some("phase_sizing") && p.phase_id.is_some() {
+                    out.push(p);
+                }
             }
         }
         Ok(out)

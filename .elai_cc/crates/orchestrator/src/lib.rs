@@ -315,6 +315,13 @@ pub mod indexing_service;
 // C-29: Testing-Trust Tier T-2 (IntentPair) — per-BabyStep intent
 // formalization. See workflow/reasoning/C-29-decisions.md.
 pub mod intent_pair;
+// B-14 STEP 3: Dashboard chat intent classification. 7 spec categories
+// (TASK / FIX / EXPLORE / CONFIG / INTERVENE / STEER / ABORT) with
+// deterministic slash-command + keyword tier and an Ambiguous fallback
+// for LLM disambiguation (spec FLOW 4). Production caller is the Tauri
+// `classify_intent` command in dashboard-v2 commands.rs. See
+// docs/thefinalglance/B-plan/B-14_live_token_streaming_chat.md.
+pub mod intent_classifier;
 // I-37: EARS requirement objects — typed, hash-keyed, mutation-covered EARS
 // requirement records with a deterministic verified status + RequirementsGate +
 // RequirementVerified SSB emit. See docs/thefinalglance/I-plan/I-37_ears_requirement_objects.md.

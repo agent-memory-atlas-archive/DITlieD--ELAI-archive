@@ -1982,6 +1982,17 @@ pub struct TaskSplitPayload {
     /// only when `splitter = Some("phase_sizing")`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub complexity_estimate: Option<u32>,
+    /// B-7 Task #8: phase id of the phase that was sized-split. Populated
+    /// only when `splitter = Some("phase_sizing")` and the caller supplied
+    /// the phase context. `None` for supervision-layer splits and
+    /// deterministic-fallback rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<u64>,
+    /// B-7 Task #8: human-readable reason the PhaseSizingSplitter fired
+    /// (e.g. `"token_estimate=8192 > budget*0.6=2457"`). Populated only
+    /// when `splitter = Some("phase_sizing")` and a real split occurred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complexity_reason: Option<String>,
 }
 
 /// Batch 3B (Phase 4G) — escalation trigger row. `trigger` is the

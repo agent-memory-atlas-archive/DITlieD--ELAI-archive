@@ -320,6 +320,8 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 sub_task_summaries: None,
                 splitter: None,
                 complexity_estimate: None,
+                phase_id: None,
+                complexity_reason: None,
             }),
             SsbActionType::EscalationFired => SsbPayload::EscalationFired(EscalationFiredPayload {
                 trigger: "anti_spiral".into(),

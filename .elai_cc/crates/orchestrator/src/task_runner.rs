@@ -1171,6 +1171,7 @@ where
                 None,
                 "fix_and_rerun",
                 None,
+                None,
             )
             .await;
             // H-36: emit needs-input notification immediately after the
@@ -8697,6 +8698,7 @@ async fn drive_task(
                 resolved.task_splitter.as_ref(),
                 &task_summary,
                 resolved.research_tree.as_ref(),
+                current_location.as_ref().map(|l| l.phase_id.0),
             )
             .await;
         }
@@ -17266,6 +17268,7 @@ async fn emit_autonomous_decision(
     splitter: Option<&Arc<dyn crate::phase_sizing_splitter::TaskSplitter>>,
     task_summary: &str,
     research_tree: Option<&Arc<tokio::sync::RwLock<crate::research_tree::ResearchTree>>>,
+    phase_id: Option<u64>,
 ) {
     use crate::autonomous_gate::AutonomyDecision;
     let (decision_label, risk_level, reason, evidence_summary) = match decision {
@@ -17391,6 +17394,8 @@ async fn emit_autonomous_decision(
                         sub_task_summaries: None,
                         splitter: Some("research_tree_failed".to_owned()),
                         complexity_estimate: None,
+                        phase_id: None,
+                        complexity_reason: None,
                     }
                 } else {
                     let ids: Vec<String> =
@@ -17404,6 +17409,8 @@ async fn emit_autonomous_decision(
                         sub_task_summaries: Some(summaries),
                         splitter: Some("research_tree".to_owned()),
                         complexity_estimate: None,
+                        phase_id: None,
+                        complexity_reason: None,
                     }
                 }
             } else if let Some(splitter) = splitter {
@@ -17433,12 +17440,19 @@ async fn emit_autonomous_decision(
                         sub_task_summaries: None,
                         splitter: Some("deterministic_fallback".to_owned()),
                         complexity_estimate: Some(est.token_estimate),
+                        phase_id,
+                        complexity_reason: None,
                     }
                 } else {
                     let ids: Vec<String> =
                         subs.iter().map(|s| s.sub_task_id.clone()).collect();
                     let summaries: Vec<String> =
                         subs.iter().map(|s| s.summary.clone()).collect();
+                    let complexity_reason = Some(format!(
+                        "token_estimate={} exceeds budget*{:.1} threshold (phase_sizing splitter)",
+                        est.token_estimate,
+                        crate::pipeline_builder::SPLIT_RATIO
+                    ));
                     crate::ssb::TaskSplitPayload {
                         original_task_id: step_id.to_owned(),
                         sub_task_ids: ids,
@@ -17446,6 +17460,8 @@ async fn emit_autonomous_decision(
                         sub_task_summaries: Some(summaries),
                         splitter: Some("phase_sizing".to_owned()),
                         complexity_estimate: Some(est.token_estimate),
+                        phase_id,
+                        complexity_reason,
                     }
                 }
             } else {
@@ -17469,6 +17485,8 @@ async fn emit_autonomous_decision(
                     sub_task_summaries: None,
                     splitter: None,
                     complexity_estimate: None,
+                    phase_id: None,
+                    complexity_reason: None,
                 }
             };
             let p = SsbPayload::TaskSplit(payload);
