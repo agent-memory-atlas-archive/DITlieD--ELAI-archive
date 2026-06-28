@@ -114,9 +114,11 @@ impl ModelCatalog {
     /// Returns `Err(ModelCatalogError::ParseError)` on invalid TOML or
     /// missing required fields. Never panics (R9).
     pub fn from_toml_str(src: &str) -> Result<Self, ModelCatalogError> {
-        // Suppress unknown fields: parse via toml::Value first, then
-        // deserialize the typed sub-sections. This tolerates comment blocks
-        // (CONFLICT: ...) and future extension fields without breaking.
+        // toml::from_str natively skips TOML comments (the CONFLICT: blocks
+        // in models.toml are comments, not data). Unknown top-level keys are
+        // silently dropped because RawCatalog only declares the fields it
+        // needs (serde default behavior for non-#[serde(deny_unknown_fields)]
+        // structs). This tolerates future extension fields without breaking.
         let raw: RawCatalog = toml::from_str(src)?;
 
         let thresholds = CatalogVramThresholds {

@@ -141,10 +141,21 @@ fn sigv4_different_service_different_key() {
 // =========================================================================
 
 /// The Authorization header produced by sigv4_signing_headers must be
-/// structurally well-formed: correct algorithm prefix, Credential field,
-/// SignedHeaders field, and Signature field.
+/// structurally well-formed AND reproduce the exact known-good signature
+/// for the fixed test inputs (I-49 stub_ban: "the fixture harness signs
+/// real canonical requests against recorded keys and asserts the
+/// known-good signature").
+///
 /// We verify with fixed clock (unix_secs = 1440938160 = 2015-08-30T12:36:00Z)
-/// and the AWS test-suite canonical credentials.
+/// and the AWS test-suite canonical credentials. The expected signature
+/// `31f0d4c006b5056791b678b8d5bf2269b887dac99783977b7c8b42dbcf684695`
+/// is the ground truth computed via Python hmac + hashlib (RFC 2104
+/// HMAC-SHA256) over the exact same canonical request the Rust code
+/// builds — including RFC 3986 path encoding (`:` -> `%3A` in the
+/// Bedrock model ID). The kSigning chain is independently cross-verified
+/// against the aws-crt-nodejs test suite get-vanilla vector in the
+/// `sigv4_derive_signing_key_known_good` unit test (bedrock.rs).
+///
 /// Note: 1440938160 verified by: datetime(2015,8,30,12,36,0,utc).timestamp()
 #[test]
 fn sigv4_authorization_header_structure() {
@@ -196,6 +207,16 @@ fn sigv4_authorization_header_structure() {
     assert!(
         sig.chars().all(|c| c.is_ascii_hexdigit()),
         "Signature must be all hex digits: {sig}"
+    );
+
+    // I-49 stub_ban: assert the EXACT known-good signature, not just
+    // structure. Ground truth computed via Python RFC 2104 HMAC-SHA256
+    // over the identical canonical request the Rust code builds
+    // (including RFC 3986 path encoding of the Bedrock model ID).
+    assert_eq!(
+        sig,
+        "31f0d4c006b5056791b678b8d5bf2269b887dac99783977b7c8b42dbcf684695",
+        "Signature must reproduce the known-good value for the fixed test inputs"
     );
 
     // x-amz-content-sha256 must be the SHA-256 of the body.

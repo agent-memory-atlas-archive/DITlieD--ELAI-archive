@@ -20,6 +20,17 @@ pub mod runtime;
 pub mod sidecar_client;
 mod sse;
 pub mod telemetry_types;
+// J-53: deterministic tool-input repair shim for the OpenAI-compat
+// unmasked-decoder seam. Wired from openai_compat.rs::parse_tool_arguments.
+pub mod tool_input_repair;
+// J-53 step 5: re-export the ToolInputRepaired SSB action_type providers-side
+// event + Kind discriminator so the orchestrator emit wrapper (following the
+// auth_broker_emit pattern) can map them to the SSB journal row without a
+// circular dep.
+pub use tool_input_repair::{
+    RepairKind, RepairOutcome, RelationalDefault, ToolInputRepairEvent, ToolInputRepairKind,
+    apply_relational_defaults, repair_tool_input,
+};
 mod types;
 #[cfg(feature = "turboquant")]
 pub mod turboquant;

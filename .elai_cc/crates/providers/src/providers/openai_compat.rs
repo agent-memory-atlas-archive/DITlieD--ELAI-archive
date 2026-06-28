@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::ApiError;
+use crate::tool_input_repair::{apply_relational_defaults, repair_tool_input, RepairOutcome};
 use crate::types::{
     ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent,
     InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest,
@@ -132,7 +133,8 @@ impl OpenAiCompatClient {
         let response = self.send_with_retry(&request).await?;
         let request_id = request_id_from_headers(response.headers());
         let payload = response.json::<ChatCompletionResponse>().await?;
-        let mut normalized = normalize_response(&request.model, payload)?;
+        let schema_map = self.build_tool_schema_map(&request);
+        let mut normalized = normalize_response(&request.model, payload, &schema_map, self.config().provider_name)?;
         if normalized.request_id.is_none() {
             normalized.request_id = request_id;
         }
@@ -147,6 +149,7 @@ impl OpenAiCompatClient {
         let response = self
             .send_with_retry(&request.clone().with_streaming())
             .await?;
+        let schema_map = self.build_tool_schema_map(request);
         Ok(MessageStream {
             request_id: request_id_from_headers(response.headers()),
             response,
@@ -154,6 +157,7 @@ impl OpenAiCompatClient {
             pending: VecDeque::new(),
             done: false,
             state: StreamState::new(request.model.clone()),
+            schema_map,
         })
     }
 
@@ -215,6 +219,29 @@ impl OpenAiCompatClient {
             .checked_mul(multiplier)
             .map_or(self.max_backoff, |delay| delay.min(self.max_backoff)))
     }
+
+    /// Build a `name -> input_schema` map from the request's `tools` list.
+    ///
+    /// J-53: this is the response-path schema access point on
+    /// `OpenAiCompatClient`. The response tool_call carries only `name` +
+    /// `arguments` today, so the schema must come from the request side.
+    /// Both the non-streaming (`send_message` -> `normalize_response`) and
+    /// streaming (`stream_message` -> `MessageStream` -> `StreamState`)
+    /// response paths thread this map into `parse_tool_arguments` so the
+    /// deterministic repair shim can validate-then-repair malformed args.
+    #[must_use]
+    pub fn build_tool_schema_map(
+        &self,
+        request: &MessageRequest,
+    ) -> std::collections::HashMap<String, Value> {
+        let mut map = std::collections::HashMap::new();
+        if let Some(tools) = &request.tools {
+            for tool in tools {
+                map.insert(tool.name.clone(), tool.input_schema.clone());
+            }
+        }
+        map
+    }
 }
 
 impl Provider for OpenAiCompatClient {
@@ -243,6 +270,12 @@ pub struct MessageStream {
     pending: VecDeque<StreamEvent>,
     done: bool,
     state: StreamState,
+    /// J-53: name -> input_schema map from the request's `tools` list.
+    /// Threaded into `StreamState::ingest_chunk` / `finish` so the
+    /// streaming response path can apply `parse_tool_arguments` (repair)
+    /// when tool calls complete — the streaming analog of the non-streaming
+    /// `normalize_response` schema lookup.
+    schema_map: std::collections::HashMap<String, Value>,
 }
 
 impl MessageStream {
@@ -258,7 +291,7 @@ impl MessageStream {
             }
 
             if self.done {
-                self.pending.extend(self.state.finish()?);
+                self.pending.extend(self.state.finish(&self.schema_map)?);
                 if let Some(event) = self.pending.pop_front() {
                     return Ok(Some(event));
                 }
@@ -268,7 +301,8 @@ impl MessageStream {
             match self.response.chunk().await? {
                 Some(chunk) => {
                     for parsed in self.parser.push(&chunk)? {
-                        self.pending.extend(self.state.ingest_chunk(parsed)?);
+                        self.pending
+                            .extend(self.state.ingest_chunk(parsed, &self.schema_map)?);
                     }
                 }
                 None => {
@@ -330,7 +364,11 @@ impl StreamState {
         }
     }
 
-    fn ingest_chunk(&mut self, chunk: ChatCompletionChunk) -> Result<Vec<StreamEvent>, ApiError> {
+    fn ingest_chunk(
+        &mut self,
+        chunk: ChatCompletionChunk,
+        schema_map: &std::collections::HashMap<String, Value>,
+    ) -> Result<Vec<StreamEvent>, ApiError> {
         let mut events = Vec::new();
         if !self.message_started {
             self.message_started = true;
@@ -393,11 +431,20 @@ impl StreamState {
                         continue;
                     }
                 }
-                if let Some(delta_event) = state.delta_event() {
-                    events.push(StreamEvent::ContentBlockDelta(delta_event));
-                }
+                // J-53: suppress raw InputJsonDelta fragment streaming.
+                // Arguments are accumulated and repaired (parse_tool_arguments)
+                // at tool-call completion, so the consumer receives one
+                // corrected InputJsonDelta instead of raw fragments that
+                // might be malformed.
                 if choice.finish_reason.as_deref() == Some("tool_calls") && !state.stopped {
                     state.stopped = true;
+                    let schema = state
+                        .name
+                        .as_deref()
+                        .and_then(|name| schema_map.get(name));
+                    events.push(StreamEvent::ContentBlockDelta(
+                        state.finalize_arguments(schema),
+                    ));
                     events.push(StreamEvent::ContentBlockStop(ContentBlockStopEvent {
                         index: block_index,
                     }));
@@ -410,6 +457,13 @@ impl StreamState {
                     for state in self.tool_calls.values_mut() {
                         if state.started && !state.stopped {
                             state.stopped = true;
+                            let schema = state
+                                .name
+                                .as_deref()
+                                .and_then(|name| schema_map.get(name));
+                            events.push(StreamEvent::ContentBlockDelta(
+                                state.finalize_arguments(schema),
+                            ));
                             events.push(StreamEvent::ContentBlockStop(ContentBlockStopEvent {
                                 index: state.block_index(),
                             }));
@@ -422,7 +476,10 @@ impl StreamState {
         Ok(events)
     }
 
-    fn finish(&mut self) -> Result<Vec<StreamEvent>, ApiError> {
+    fn finish(
+        &mut self,
+        schema_map: &std::collections::HashMap<String, Value>,
+    ) -> Result<Vec<StreamEvent>, ApiError> {
         if self.finished {
             return Ok(Vec::new());
         }
@@ -441,13 +498,17 @@ impl StreamState {
                 if let Some(start_event) = state.start_event()? {
                     state.started = true;
                     events.push(StreamEvent::ContentBlockStart(start_event));
-                    if let Some(delta_event) = state.delta_event() {
-                        events.push(StreamEvent::ContentBlockDelta(delta_event));
-                    }
                 }
             }
             if state.started && !state.stopped {
                 state.stopped = true;
+                let schema = state
+                    .name
+                    .as_deref()
+                    .and_then(|name| schema_map.get(name));
+                events.push(StreamEvent::ContentBlockDelta(
+                    state.finalize_arguments(schema),
+                ));
                 events.push(StreamEvent::ContentBlockStop(ContentBlockStopEvent {
                     index: state.block_index(),
                 }));
@@ -483,7 +544,6 @@ struct ToolCallState {
     id: Option<String>,
     name: Option<String>,
     arguments: String,
-    emitted_len: usize,
     started: bool,
     stopped: bool,
 }
@@ -525,18 +585,26 @@ impl ToolCallState {
         }))
     }
 
-    fn delta_event(&mut self) -> Option<ContentBlockDeltaEvent> {
-        if self.emitted_len >= self.arguments.len() {
-            return None;
-        }
-        let delta = self.arguments[self.emitted_len..].to_string();
-        self.emitted_len = self.arguments.len();
-        Some(ContentBlockDeltaEvent {
+    /// J-53: produce the final `InputJsonDelta` for this tool call by
+    /// running the accumulated argument string through `parse_tool_arguments`
+    /// (which applies the deterministic validate-then-repair shim). This
+    /// replaces the old `delta_event` that streamed raw argument fragments
+    /// as they arrived — the consumer now receives one corrected delta at
+    /// tool-call completion instead of raw fragments that might be
+    /// malformed.
+    fn finalize_arguments(&self, schema: Option<&Value>) -> ContentBlockDeltaEvent {
+        let tool_name = self.name.as_deref().unwrap_or("");
+        let repaired = if self.arguments.is_empty() {
+            json!({})
+        } else {
+            parse_tool_arguments(tool_name, &self.arguments, schema)
+        };
+        ContentBlockDeltaEvent {
             index: self.block_index(),
             delta: ContentBlockDelta::InputJsonDelta {
-                partial_json: delta,
+                partial_json: repaired.to_string(),
             },
-        })
+        }
     }
 }
 
@@ -794,6 +862,8 @@ fn should_request_stream_usage(config: OpenAiCompatConfig) -> bool {
 fn normalize_response(
     model: &str,
     response: ChatCompletionResponse,
+    schema_map: &std::collections::HashMap<String, Value>,
+    provider_name: &str,
 ) -> Result<MessageResponse, ApiError> {
     let choice = response
         .choices
@@ -807,10 +877,34 @@ fn normalize_response(
         content.push(OutputContentBlock::Text { text });
     }
     for tool_call in choice.message.tool_calls {
+        let schema = schema_map.get(&tool_call.function.name);
+        // J-53 step 5: production seam — parse + repair + produce the
+        // `ToolInputRepairEvent` for the SSB `ToolInputRepaired` action_type.
+        // The event is emitted via `tracing` here (the orchestrator emit
+        // wrapper maps it to the SSB journal row). A clean `ShipUnchanged`
+        // yields `None` (zero repair row — plan stub_ban).
+        let (input, repair_event) = parse_tool_arguments_with_telemetry(
+            &tool_call.function.name,
+            &tool_call.function.arguments,
+            schema,
+            provider_name,
+            model,
+        );
+        if let Some(event) = repair_event {
+            tracing::info!(
+                provider = %event.provider,
+                model = %event.model,
+                tool = %event.tool,
+                kind = ?event.kind,
+                repair_kinds = ?event.repair_kinds,
+                relational_default = ?event.relational_default,
+                "J-53: tool input repair event (SSB ToolInputRepaired)"
+            );
+        }
         content.push(OutputContentBlock::ToolUse {
             id: tool_call.id,
-            name: tool_call.function.name,
-            input: parse_tool_arguments(&tool_call.function.arguments),
+            name: tool_call.function.name.clone(),
+            input,
         });
     }
 
@@ -841,8 +935,118 @@ fn normalize_response(
     })
 }
 
-fn parse_tool_arguments(arguments: &str) -> Value {
-    serde_json::from_str(arguments).unwrap_or_else(|_| json!({ "raw": arguments }))
+/// Parse and (if needed) deterministically repair a tool's argument string.
+///
+/// J-53: this replaces the legacy `serde_json::from_str(arguments)
+/// .unwrap_or_else(|_| json!({ "raw": arguments }))` fallback that stuffed
+/// malformed args into a silent `{"raw": ...}` blob. Now:
+/// - `ShipUnchanged` / `Repaired` -> the corrected `Value`.
+/// - `Unrepairable` -> a model-readable `tool_input_invalid` value (the
+///   structured "what was wrong" message, NOT a raw serde error, NOT a silent
+///   blob) that rides E-18's one-shot-retry/fixer path as the fallback AFTER
+///   deterministic repair.
+///
+/// J-53 step 4: after shape repair, `apply_relational_defaults` fills in
+/// missing offset/limit counterparts for offset/limit-class tools (`limit`
+/// alone -> `offset=0`, `offset` alone -> `limit=<tool default>`). The
+/// `RelationalDefault.note` is logged here; surfacing it in the ToolResult
+/// requires the tool dispatcher (`crates/tools/src/dispatcher.rs`).
+///
+/// J-53 step 5: this is the telemetry-less form (used by the streaming path
+/// and tests). The production non-streaming seam calls
+/// `parse_tool_arguments_with_telemetry` instead, which also produces the
+/// `ToolInputRepairEvent` for the SSB `ToolInputRepaired` action_type.
+fn parse_tool_arguments(
+    tool_name: &str,
+    arguments: &str,
+    input_schema: Option<&Value>,
+) -> Value {
+    parse_tool_arguments_with_telemetry(tool_name, arguments, input_schema, "", "").0
+}
+
+/// Parse, repair, and produce a `ToolInputRepairEvent` for the SSB
+/// `ToolInputRepaired` action_type (J-53 step 5).
+///
+/// This is the production-seam entry: the non-streaming `normalize_response`
+/// path calls it with the provider name + model so every non-`ShipUnchanged`-
+/// clean outcome yields a `ToolInputRepairEvent` carrying {provider, model,
+/// tool, kind, repair_kinds, relational_default, ts_ms}. The event is emitted
+/// via `tracing` by the caller; the orchestrator emit wrapper (a separate,
+/// orchestrator-scoped task following the `auth_broker_emit` pattern —
+/// elai-providers cannot depend on elai-orchestrator) maps it to the SSB
+/// journal row. Returns `(value, Option<event>)`; `None` means the input was
+/// clean (shipped byte-identical, zero repair row — plan stub_ban).
+fn parse_tool_arguments_with_telemetry(
+    tool_name: &str,
+    arguments: &str,
+    input_schema: Option<&Value>,
+    provider: &str,
+    model: &str,
+) -> (Value, Option<crate::tool_input_repair::ToolInputRepairEvent>) {
+    use crate::tool_input_repair::{ToolInputRepairEvent, ToolInputRepairKind};
+
+    let outcome = repair_tool_input(tool_name, arguments, input_schema);
+    match outcome {
+        RepairOutcome::Unrepairable { model_readable_msg } => {
+            let event = Some(ToolInputRepairEvent::new(
+                provider,
+                model,
+                tool_name,
+                ToolInputRepairKind::UnrepairableSurfaced,
+                Vec::new(),
+                None,
+            ));
+            (json!({ "tool_input_invalid": model_readable_msg }), event)
+        }
+        RepairOutcome::ShipUnchanged { value } => {
+            let mut v = value;
+            let relational_default = apply_relational_defaults(tool_name, &mut v, input_schema);
+            if let Some(ref default) = relational_default {
+                tracing::debug!(
+                    tool = %tool_name,
+                    field = %default.field,
+                    default_value = %default.default_value,
+                    note = %default.note,
+                    "J-53: relational default applied at parse_tool_arguments seam"
+                );
+            }
+            let event = if relational_default.is_some() {
+                Some(ToolInputRepairEvent::new(
+                    provider,
+                    model,
+                    tool_name,
+                    ToolInputRepairKind::RelationalDefaulted,
+                    Vec::new(),
+                    relational_default,
+                ))
+            } else {
+                None
+            };
+            (v, event)
+        }
+        RepairOutcome::Repaired { value, kinds } => {
+            let mut v = value;
+            let relational_default = apply_relational_defaults(tool_name, &mut v, input_schema);
+            if let Some(ref default) = relational_default {
+                tracing::debug!(
+                    tool = %tool_name,
+                    field = %default.field,
+                    default_value = %default.default_value,
+                    note = %default.note,
+                    "J-53: relational default applied at parse_tool_arguments seam"
+                );
+            }
+            let event = Some(ToolInputRepairEvent::new(
+                provider,
+                model,
+                tool_name,
+                ToolInputRepairKind::ShapeRepaired,
+                kinds,
+                relational_default,
+            ));
+            (v, event)
+        }
+    }
 }
 
 fn next_sse_frame(buffer: &mut Vec<u8>) -> Option<String> {
@@ -983,7 +1187,8 @@ impl StringExt for String {
 mod tests {
     use super::{
         build_chat_completion_request, chat_completions_endpoint, normalize_finish_reason,
-        openai_tool_choice, parse_tool_arguments, OpenAiCompatClient, OpenAiCompatConfig,
+        openai_tool_choice, parse_tool_arguments, parse_tool_arguments_with_telemetry,
+        OpenAiCompatClient, OpenAiCompatConfig,
     };
     use crate::error::ApiError;
     use crate::types::{
@@ -1089,11 +1294,113 @@ mod tests {
 
     #[test]
     fn parses_tool_arguments_fallback() {
+        // J-53: the {"raw": ...} silent fallback is REMOVED. Valid JSON ships
+        // unchanged; malformed args are repaired or surface a model-readable
+        // tool_input_invalid value (NOT a silent blob).
+        let _lock = env_lock();
+        std::env::remove_var("ELAI_TOOLCALL_REPAIR_DISABLE");
+        let schema = json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]});
+        // Valid input ships unchanged.
         assert_eq!(
-            parse_tool_arguments("{\"city\":\"Paris\"}"),
+            parse_tool_arguments("weather", r#"{"city":"Paris"}"#, Some(&schema)),
             json!({"city": "Paris"})
         );
-        assert_eq!(parse_tool_arguments("not-json"), json!({"raw": "not-json"}));
+        // Stringified array is repaired (json-array-parse).
+        let arr_schema = json!({"type": "object", "properties": {"items": {"type": "array", "items": {"type": "string"}}}});
+        assert_eq!(
+            parse_tool_arguments("list", r#"{"items":"[\"a\",\"b\"]"}"#, Some(&arr_schema)),
+            json!({"items": ["a", "b"]})
+        );
+        // Unrepairable arg surfaces a model-readable tool_input_invalid value.
+        let unrepairable = parse_tool_arguments("weather", "not-json", Some(&schema));
+        assert!(
+            unrepairable.get("tool_input_invalid").is_some(),
+            "expected tool_input_invalid, got {unrepairable}"
+        );
+    }
+
+    #[test]
+    fn parse_tool_arguments_applies_relational_defaults() {
+        // J-53 step 4: offset/limit-class tools get relational defaults.
+        // `limit` alone -> `offset=0`; `offset` alone -> `limit=200`.
+        let _lock = env_lock();
+        std::env::remove_var("ELAI_TOOLCALL_REPAIR_DISABLE");
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "offset": { "type": "integer", "minimum": 0 },
+                "limit": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["path"]
+        });
+        // limit alone -> offset=0
+        let result = parse_tool_arguments("read_file", r#"{"path":"/foo","limit":50}"#, Some(&schema));
+        assert_eq!(result, json!({"path": "/foo", "limit": 50, "offset": 0}));
+
+        // offset alone -> limit=200 (DEFAULT_LIMIT)
+        let result = parse_tool_arguments("read_file", r#"{"path":"/foo","offset":10}"#, Some(&schema));
+        assert_eq!(result, json!({"path": "/foo", "offset": 10, "limit": 200}));
+
+        // both present -> no default
+        let result = parse_tool_arguments("read_file", r#"{"path":"/foo","offset":10,"limit":50}"#, Some(&schema));
+        assert_eq!(result, json!({"path": "/foo", "offset": 10, "limit": 50}));
+    }
+
+    #[test]
+    fn parse_tool_arguments_with_telemetry_emits_correct_kinds() {
+        // J-53 step 5: the production seam produces a ToolInputRepairEvent
+        // with the right Kind discriminator for each outcome.
+        let _lock = env_lock();
+        std::env::remove_var("ELAI_TOOLCALL_REPAIR_DISABLE");
+        let arr_schema = json!({"type": "object", "properties": {"items": {"type": "array", "items": {"type": "string"}}}});
+        let read_schema = json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "offset": { "type": "integer", "minimum": 0 },
+                "limit": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["path"]
+        });
+        let obj_schema = json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]});
+
+        // (a) clean input -> no event (byte-identical, zero repair row).
+        let (val, ev) = parse_tool_arguments_with_telemetry(
+            "weather", r#"{"city":"Paris"}"#, Some(&obj_schema), "xAI", "grok-3",
+        );
+        assert_eq!(val, json!({"city": "Paris"}));
+        assert!(ev.is_none(), "clean input must not emit a repair event");
+
+        // (b) shape repair -> ShapeRepaired carrying the repair kind.
+        let (val, ev) = parse_tool_arguments_with_telemetry(
+            "list", r#"{"items":"[\"a\",\"b\"]"}"#, Some(&arr_schema), "xAI", "grok-3",
+        );
+        assert_eq!(val, json!({"items": ["a", "b"]}));
+        let ev = ev.expect("shape repair must emit an event");
+        assert_eq!(ev.provider, "xAI");
+        assert_eq!(ev.model, "grok-3");
+        assert_eq!(ev.tool, "list");
+        assert_eq!(ev.kind, crate::tool_input_repair::ToolInputRepairKind::ShapeRepaired);
+        assert!(ev.repair_kinds.contains(&crate::tool_input_repair::RepairKind::JsonArrayParse));
+
+        // (c) relational default only -> RelationalDefaulted.
+        let (val, ev) = parse_tool_arguments_with_telemetry(
+            "read_file", r#"{"path":"/foo","limit":50}"#, Some(&read_schema), "OpenAI", "gpt-5",
+        );
+        assert_eq!(val, json!({"path": "/foo", "limit": 50, "offset": 0}));
+        let ev = ev.expect("relational default must emit an event");
+        assert_eq!(ev.kind, crate::tool_input_repair::ToolInputRepairKind::RelationalDefaulted);
+        assert!(ev.repair_kinds.is_empty());
+        assert_eq!(ev.relational_default.as_ref().map(|d| d.field.as_str()), Some("offset"));
+
+        // (d) unrepairable -> UnrepairableSurfaced + tool_input_invalid value.
+        let (val, ev) = parse_tool_arguments_with_telemetry(
+            "weather", "not-json", Some(&obj_schema), "xAI", "grok-3",
+        );
+        assert!(val.get("tool_input_invalid").is_some());
+        let ev = ev.expect("unrepairable must emit an event");
+        assert_eq!(ev.kind, crate::tool_input_repair::ToolInputRepairKind::UnrepairableSurfaced);
     }
 
     #[test]

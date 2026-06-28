@@ -289,7 +289,13 @@ impl RuntimeAdapter for AnthropicApiRuntime {
         messages: Vec<Message>,
         config: CompletionConfig,
     ) -> BoxStream<'static, Result<StreamChunk, RuntimeAdapterError>> {
-        let request = self.build_request(messages, &config).with_streaming();
+        let mut request = self.build_request(messages, &config).with_streaming();
+        // H-1: stamp the shipped ephemeral cache markers on the stable prefix
+        // at the adapter boundary, mirroring the `complete` path above. This
+        // makes the RuntimeAdapter stream path's cache-marker consume explicit
+        // and independent of stream_message internals (GD-1: REUSE the shipped
+        // stamper, never re-implement it).
+        crate::providers::anthropic::apply_anthropic_cache_markers(&mut request);
         let client = Arc::clone(&self.client);
 
         // We need to await `stream_message` before emitting any chunks

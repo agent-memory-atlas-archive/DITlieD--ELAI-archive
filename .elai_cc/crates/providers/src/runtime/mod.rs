@@ -1,8 +1,8 @@
 //! Multi-runtime adapter layer (B-37 Phase 4M).
 //!
-//! Provides a single `RuntimeAdapter` trait covering the 11 backends
-//! enumerated in `RuntimeBackend`. B-37A wired Sidecar + AnthropicApi
-//! end-to-end; B-37B lands the 7 CLI subprocess adapters
+//! Provides a single `RuntimeAdapter` trait covering the backends
+//! enumerated in `RuntimeBackend` (22 as of I-49). B-37A wired Sidecar +
+//! AnthropicApi end-to-end; B-37B lands the 7 CLI subprocess adapters
 //! (ClaudeCodeRuntime, CodexCliRuntime, OpenCodeRuntime, HermesRuntime,
 //! GeminiCliRuntime, KiroCliRuntime, CopilotCliRuntime). Ollama + Vllm
 //! remain stubs until B-37C.
@@ -10,6 +10,8 @@
 //! Subsequent sub-cycles fill in the remaining stubs:
 //! - B-37C: Ollama + vLLM native HTTP adapters; PerRoleRuntime.
 //! - B-37D: `/runtime` CLI command + dashboard RuntimePanel.
+//! - I-49: AWS Bedrock + Azure OpenAI direct lanes (protocol logic +
+//!   replay fixtures; live calls D-026 PENDING).
 //!
 //! See `workflow/reasoning/B-37-decisions.md` for the design contract.
 

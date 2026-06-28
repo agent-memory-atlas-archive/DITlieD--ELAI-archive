@@ -19,7 +19,7 @@ use futures_util::stream::{self, BoxStream};
 use super::types::{
     unavailable, CompletionConfig, CompletionResponse, Message, RuntimeAdapter,
     RuntimeAdapterError, RuntimeBackend, RuntimeCapabilities, RuntimeFactoryConfig, RuntimeFuture,
-    RuntimeHealth, RuntimeHealthFuture, StreamChunk,
+    RuntimeHealthFuture, StreamChunk,
 };
 
 const BACKEND: RuntimeBackend = RuntimeBackend::AzureOpenAi;
@@ -180,6 +180,9 @@ pub struct AzureOpenAiRuntime {
     /// Azure OpenAI API version string.
     api_version: String,
     /// Azure API key (ELAI treats it as a SecretString at the factory level).
+    // WIRE-DARK[I-49]: read by the live chat-completions request path
+    // that lands with the D-026 live-call checkbox.
+    #[allow(dead_code)]
     api_key: super::secret::SecretString,
 }
 
@@ -384,25 +387,20 @@ mod tests {
 
     #[test]
     fn completions_url_is_well_formed() {
-        // Use from_factory_config with env-var approach, but since env is not
-        // set, test the URL builder directly by constructing the struct via
-        // public fields (we can't — fields are private). Test via build_azure_chat_request
-        // instead since URL construction is the adapter's internal concern.
-        // The URL builder is verified indirectly here via a snapshot.
-        let endpoint = "https://myresource.openai.azure.com";
-        let deployment = "gpt-4o";
-        let api_version = "2024-08-01-preview";
-        let expected = format!(
-            "{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+        // Construct via from_factory_config with explicit cfg fields so the
+        // URL builder is exercised end-to-end (not just a format snapshot).
+        let mut cfg = RuntimeFactoryConfig::for_backend(RuntimeBackend::AzureOpenAi);
+        cfg.api_key = Some(super::super::secret::SecretString::new("test-key".to_string()));
+        cfg.base_url = Some("https://myresource.openai.azure.com/".to_string());
+        cfg.model = Some("gpt-4o".to_string());
+        cfg.runtime_profile = Some("2024-08-01-preview".to_string());
+        let adapter = AzureOpenAiRuntime::from_factory_config(&cfg)
+            .expect("adapter must construct with explicit cfg");
+        let url = adapter.completions_url();
+        assert_eq!(
+            url,
+            "https://myresource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-08-01-preview",
+            "completions_url must match the documented Azure endpoint shape (trailing slash trimmed)"
         );
-        // We verify the format matches what the adapter would construct.
-        // (Direct field access unavailable; this mirrors the impl logic.)
-        let url = format!(
-            "{}/openai/deployments/{}/chat/completions?api-version={}",
-            endpoint.trim_end_matches('/'),
-            deployment,
-            api_version
-        );
-        assert_eq!(url, expected);
     }
 }

@@ -19,13 +19,22 @@ use elai_core::TokenUsage;
 
 use crate::model_catalog::ModelCatalog;
 
-// Private fallback constants — kept for the `const fn default_sonnet_tier()`.
-// Source of truth: config/models.toml [models] family="sonnet" entry.
-// I-51 drift contract asserts these == catalog values.
+// Private fallback constants — kept for the `const fn default_sonnet_tier()`
+// and the catalog-failure fallback in pricing_for_model. Source of truth:
+// config/models.toml [models] family entries. I-51 drift contract asserts
+// these == catalog values.
 const DEFAULT_INPUT_COST_PER_MILLION: f64 = 15.0;
 const DEFAULT_OUTPUT_COST_PER_MILLION: f64 = 75.0;
 const DEFAULT_CACHE_CREATION_COST_PER_MILLION: f64 = 18.75;
 const DEFAULT_CACHE_READ_COST_PER_MILLION: f64 = 1.5;
+
+// Haiku-family fallback constants (source of truth: models.toml family="haiku").
+// Used when the catalog fails to load — eliminates raw price literals from the
+// fallback arm so the drift contract's no-raw-literals intent is fully realized.
+const DEFAULT_HAIKU_INPUT_COST_PER_MILLION: f64 = 1.0;
+const DEFAULT_HAIKU_OUTPUT_COST_PER_MILLION: f64 = 5.0;
+const DEFAULT_HAIKU_CACHE_CREATION_COST_PER_MILLION: f64 = 1.25;
+const DEFAULT_HAIKU_CACHE_READ_COST_PER_MILLION: f64 = 0.1;
 
 /// Per-million-token pricing used for cost estimation.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -107,14 +116,16 @@ pub fn pricing_for_model(model: &str) -> Option<ModelPricing> {
     }
 
     // Fallback: catalog has no entry for this family (should not happen with
-    // a well-formed embedded models.toml). Use inline constants to preserve
-    // the pre-I-51 return values exactly.
+    // a well-formed embedded models.toml). Use the private DEFAULT_* constants
+    // to preserve the pre-I-51 return values exactly — no raw price literals
+    // inline, so a future catalog price change is caught by the drift contract
+    // test (which asserts DEFAULT_* == catalog values).
     match family {
         "haiku" => Some(ModelPricing {
-            input_cost_per_million: 1.0,
-            output_cost_per_million: 5.0,
-            cache_creation_cost_per_million: 1.25,
-            cache_read_cost_per_million: 0.1,
+            input_cost_per_million: DEFAULT_HAIKU_INPUT_COST_PER_MILLION,
+            output_cost_per_million: DEFAULT_HAIKU_OUTPUT_COST_PER_MILLION,
+            cache_creation_cost_per_million: DEFAULT_HAIKU_CACHE_CREATION_COST_PER_MILLION,
+            cache_read_cost_per_million: DEFAULT_HAIKU_CACHE_READ_COST_PER_MILLION,
         }),
         "opus" | "sonnet" => Some(ModelPricing {
             input_cost_per_million: DEFAULT_INPUT_COST_PER_MILLION,
