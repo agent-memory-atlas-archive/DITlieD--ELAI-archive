@@ -127,14 +127,71 @@ pub struct AuditorConfig {
     /// Default: `true`.
     #[serde(default = "default_true")]
     pub deterministic_first: bool,
+    /// C-9 — `[agents.auditor.backend]` stanza. Selects the inference
+    /// backend for the auditor agent. Defaults to `"auto"` so callers
+    /// that omit the stanza preserve the pre-C-9 routing behaviour.
+    #[serde(default)]
+    pub backend: BackendStanza,
 }
 
 impl Default for AuditorConfig {
     fn default() -> Self {
         Self {
             deterministic_first: true,
+            backend: BackendStanza::default(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// C-9 — BackendStanza + per-role agent backend configs
+// ---------------------------------------------------------------------------
+
+/// Serde helper: returns `"auto"` for the default backend label.
+fn default_backend_auto() -> String {
+    "auto".to_owned()
+}
+
+/// `[agents.<role>.backend]` stanza — selects the inference backend for a
+/// given agent role. Source: C-9 task 11 / B-22.report MISSING claim.
+///
+/// Accepted values (consumed by the runtime routing layer): `local`, `api`,
+/// `hybrid`, `auto`. Defaults to `"auto"` so a missing stanza preserves the
+/// pre-C-9 routing behaviour.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackendStanza {
+    /// Backend label: `local`, `api`, `hybrid`, or `auto`.
+    #[serde(default = "default_backend_auto")]
+    pub backend: String,
+}
+
+impl Default for BackendStanza {
+    fn default() -> Self {
+        Self {
+            backend: default_backend_auto(),
+        }
+    }
+}
+
+/// `[agents.executor]` stanza — executor agent configuration. C-9 adds the
+/// `backend` sub-stanza; future executor-level knobs land here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExecutorAgentConfig {
+    /// `[agents.executor.backend]` — inference backend for the executor.
+    #[serde(default)]
+    pub backend: BackendStanza,
+}
+
+/// `[agents.designer]` stanza — designer agent configuration. C-9 adds the
+/// `backend` sub-stanza; future designer-level knobs land here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesignerAgentConfig {
+    /// `[agents.designer.backend]` — inference backend for the designer.
+    #[serde(default)]
+    pub backend: BackendStanza,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +202,12 @@ impl Default for AuditorConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentsConfig {
-    /// `[agents.auditor]` — deterministic-first auditor toggle.
+    /// `[agents.auditor]` — deterministic-first auditor toggle + backend.
     pub auditor: AuditorConfig,
+    /// `[agents.executor]` — executor agent backend config (C-9).
+    pub executor: ExecutorAgentConfig,
+    /// `[agents.designer]` — designer agent backend config (C-9).
+    pub designer: DesignerAgentConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -827,6 +888,62 @@ calibration_target_model = "Qwen2.5-Coder-14B"
                     !cfg.agents.auditor.deterministic_first,
                     "deterministic_first = false must be respected"
                 );
+            },
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // C-9 — BackendStanza parsing for [agents.{role}.backend] stanzas.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn backend_stanza_defaults_auto_when_absent() {
+        with_toml_file("[output]\nstrip_emoji = false\n", |root| {
+            let cfg = load_elai_config(root);
+            assert_eq!(
+                cfg.agents.auditor.backend.backend, "auto",
+                "auditor backend must default to 'auto' when stanza absent"
+            );
+            assert_eq!(
+                cfg.agents.executor.backend.backend, "auto",
+                "executor backend must default to 'auto' when stanza absent"
+            );
+            assert_eq!(
+                cfg.agents.designer.backend.backend, "auto",
+                "designer backend must default to 'auto' when stanza absent"
+            );
+        });
+    }
+
+    #[test]
+    fn backend_stanza_parses_explicit_values() {
+        with_toml_file(
+            "[agents.auditor]\ndeterministic_first = true\n\
+             [agents.auditor.backend]\nbackend = \"anthropic_api\"\n\
+             [agents.executor.backend]\nbackend = \"auto\"\n\
+             [agents.designer.backend]\nbackend = \"anthropic_api\"\n",
+            |root| {
+                let cfg = load_elai_config(root);
+                assert_eq!(cfg.agents.auditor.backend.backend, "anthropic_api");
+                assert_eq!(cfg.agents.executor.backend.backend, "auto");
+                assert_eq!(cfg.agents.designer.backend.backend, "anthropic_api");
+                // deterministic_first must still parse alongside the new
+                // backend sub-stanza.
+                assert!(cfg.agents.auditor.deterministic_first);
+            },
+        );
+    }
+
+    #[test]
+    fn backend_stanza_auditor_only_does_not_break_executor_designer() {
+        with_toml_file(
+            "[agents.auditor.backend]\nbackend = \"local\"\n",
+            |root| {
+                let cfg = load_elai_config(root);
+                assert_eq!(cfg.agents.auditor.backend.backend, "local");
+                // Executor + designer fall through to default "auto".
+                assert_eq!(cfg.agents.executor.backend.backend, "auto");
+                assert_eq!(cfg.agents.designer.backend.backend, "auto");
             },
         );
     }

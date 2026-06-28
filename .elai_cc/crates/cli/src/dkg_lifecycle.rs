@@ -448,7 +448,7 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("fresh.db");
         std::fs::write(&path, b"").expect("write");
-        let now = SystemTime::now()
+        let now = SystemTime::now() // entropy-allow: cfg-test-staleness-fixture-now-sec
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("epoch")
             .as_secs();

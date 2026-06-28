@@ -590,7 +590,7 @@ mod tests {
                 + std::time::Duration::from_millis(self.ms.load(Ordering::Relaxed))
         }
         fn instant_now(&self) -> std::time::Instant {
-            std::time::Instant::now()
+            std::time::Instant::now() // entropy-allow: cfg-test-stepping-clock-instant-now-mock-impl
         }
         fn now_ms(&self) -> u128 {
             // Strictly-increasing: return the current value then advance for the next call.

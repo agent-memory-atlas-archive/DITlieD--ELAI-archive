@@ -42,8 +42,10 @@ use tracing::info;
 // Temp-dir helper (no tempfile dep — uses std::env::temp_dir + pid/ts disambig)
 // ---------------------------------------------------------------------------
 
+// C-15 entropy-allow: temp-dir disambiguation uses subsec_nanos for
+// uniqueness; no determinism guarantee needed for throwaway temp paths.
 fn make_temp_dir(prefix: &str) -> anyhow::Result<std::path::PathBuf> {
-    let ts = std::time::SystemTime::now()
+    let ts = std::time::SystemTime::now() // entropy-allow: temp-dir-disambiguation-subsec-nanos
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();

@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use elai_core::paths::sessions_dir_path;
+use elai_orchestrator::benchmarks::arc_agi2_runner::{ARCAGI2Runner, VecARCSsbEmitter};
 use elai_orchestrator::ssb::{QdeltaMeasuredPayload, SsbReader as _};
 use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
 use serde::{Deserialize, Serialize};
@@ -98,10 +99,23 @@ pub struct QdeltaConfig {
     pub paired: bool,
     /// Cost per task in USD (reported alongside accuracy per GD-3 $/task policy).
     pub dollar_per_task: f64,
-    /// D-20 contamination probe result from a prior ARC bench run (or "not_run").
-    /// Allowed values: "not_run" | "honestly_evaluated" | "game_with_memorization".
-    /// NOT an inline call to ARCAGI2Runner — carries a string verdict from a prior run.
+    /// D-20 contamination probe result. Allowed values:
+    /// "not_run" | "honestly_evaluated" | "game_with_memorization" | "refused".
+    ///
+    /// If `contamination_probe_dataset` is set, the harness runs the D-20
+    /// `ARCAGI2Runner` probe at run time and OVERWRITES this field with the
+    /// live verdict (STEP 5 wiring). If `contamination_probe_dataset` is
+    /// absent, this field carries a manually-set verdict from a prior run.
     pub contamination_probe_result: String,
+    /// Optional path to a D-20 ARC-AGI-2 fixture JSONL. If present, the harness
+    /// runs `ARCAGI2Runner::run_all` against this dataset before accepting the
+    /// run as clean, and populates `contamination_probe_result` from the verdict
+    /// (STEP 5 — D-20 contamination probe wired into QdeltaConfig).
+    ///
+    /// Composes the D-20 probe function call; does NOT re-implement the probe
+    /// (GD-1, COMPOSES-WITH).
+    #[serde(default)]
+    pub contamination_probe_dataset: Option<String>,
     /// Per-task paired observations. Each row has on_defective + off_defective.
     pub tasks: Vec<QdeltaTaskRow>,
 }
@@ -152,6 +166,11 @@ pub enum BenchQdeltaError {
     /// Writing the QdeltaMeasured beacon failed.
     #[error("qdelta could not write SSB beacon: {source_msg}")]
     SsbWrite { source_msg: String },
+    /// D-20 contamination probe failure (fixture I/O, JSON parse, runner error).
+    /// The harness does NOT silently skip the probe — a probe failure is a
+    /// hard error so the contamination status is never falsely reported.
+    #[error("qdelta contamination probe failed: {source_msg}")]
+    ContaminationProbe { source_msg: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +188,55 @@ pub fn floor_check(config: &QdeltaConfig) -> Result<(), BenchQdeltaError> {
         });
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// D-20 contamination probe (STEP 5 — wired into QdeltaConfig)
+// ---------------------------------------------------------------------------
+
+/// Run the D-20 ARC-AGI-2 memorization probe against the supplied dataset and
+/// return the verdict string.
+///
+/// Composes [`ARCAGI2Runner`] — does NOT re-implement the probe (GD-1,
+/// COMPOSES-WITH). Uses [`VecARCSsbEmitter`] (in-memory, no SSB write) because
+/// the QDELTA harness only needs the verdict, not a separate ARC SSB row.
+///
+/// Returns one of the closed [`elai_orchestrator::benchmarks::arc_agi2_runner::ARCVerdict`]
+/// wire labels:
+///   - `"honestly_evaluated"`    — task cut is clean
+///   - `"game_with_memorization"` — memorization detected; results suspect
+///   - `"refused"`               — honest refusal (calibration tuning needed)
+///
+/// On any infrastructural failure (fixture I/O, JSON parse, runner error) returns
+/// `Err(ContaminationProbe)` — the harness does NOT silently skip the probe.
+pub fn run_contamination_probe(dataset_path: &Path) -> Result<String, BenchQdeltaError> {
+    let now_ms = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+    )
+    .unwrap_or(i64::MAX);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| BenchQdeltaError::ContaminationProbe {
+            source_msg: format!("tokio runtime: {e}"),
+        })?;
+
+    let dataset = dataset_path.to_path_buf();
+    rt.block_on(async move {
+        let runner = ARCAGI2Runner::new(dataset, now_ms);
+        let emitter = VecARCSsbEmitter::new();
+        let report = runner
+            .run_all(&emitter)
+            .await
+            .map_err(|e| BenchQdeltaError::ContaminationProbe {
+                source_msg: format!("ARCAGI2Runner: {e}"),
+            })?;
+        Ok(report.gating_verdict.as_str().to_string())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -235,35 +303,18 @@ fn xorshift64(mut state: u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Methodology doc generator
+// Methodology doc generator (STEP 2 — focused submodule, MR-1 split)
 // ---------------------------------------------------------------------------
 
-/// Generate a machine-readable methodology description from `QdeltaConfig`.
-/// Output is deterministic under the same config (GD-2).
-pub fn generate_methodology_doc(config: &QdeltaConfig) -> String {
-    format!(
-        "QDELTA methodology (I-38)\n\
-         suite: {suite}\n\
-         model_id: {model_id}\n\
-         seed_count: {seed_count} (floor >= {FLOOR_MIN_SEED_COUNT})\n\
-         paired: {paired}\n\
-         dollar_per_task: {dollar_per_task:.6}\n\
-         contamination_probe_result: {contamination}\n\
-         task_count: {task_count}\n\
-         framing: ablation (gates-ON vs gates-OFF), GD-3 — no leaderboard rank\n\
-         bootstrap_n_resamples: {BOOTSTRAP_N_RESAMPLES}\n\
-         ci_level: 95% two-sided (lower={CI_LOWER_TAIL}, upper={CI_UPPER_TAIL})\n\
-         runpod_pending: true (live-model leg deferred per D-026)\n\
-         surviving_mutants_per_task: 0.0 (I-20 stub, pending I-20 ship)",
-        suite = config.suite,
-        model_id = config.model_id,
-        seed_count = config.seed_count,
-        paired = config.paired,
-        dollar_per_task = config.dollar_per_task,
-        contamination = config.contamination_probe_result,
-        task_count = config.tasks.len(),
-    )
-}
+// The methodology doc generator + sidecar writer live in a focused submodule
+// to keep this file under the MR-1 1000-line maintainability boundary. The
+// submodule uses `super::{...}` to access QdeltaConfig, the floor/CI consts,
+// and BenchQdeltaError without widening their visibility.
+#[path = "bench_qdelta_methodology.rs"]
+mod bench_qdelta_methodology;
+
+pub use bench_qdelta_methodology::generate_methodology_doc;
+pub(crate) use bench_qdelta_methodology::write_methodology_doc;
 
 // ---------------------------------------------------------------------------
 // CLI entry
@@ -292,7 +343,7 @@ pub fn run_inner(config_path: PathBuf, seed: u64, json: bool) -> Result<(), Benc
         path: config_path.display().to_string(),
         source_msg: e.to_string(),
     })?;
-    let config: QdeltaConfig =
+    let mut config: QdeltaConfig =
         toml::from_str(&String::from_utf8_lossy(&config_bytes)).map_err(|e| {
             BenchQdeltaError::ConfigParse {
                 source_msg: e.to_string(),
@@ -301,6 +352,17 @@ pub fn run_inner(config_path: PathBuf, seed: u64, json: bool) -> Result<(), Benc
 
     // 2. Statistical floor check — exits nonzero before any compute.
     floor_check(&config)?;
+
+    // 2b. D-20 contamination probe (STEP 5) — if a dataset path is configured,
+    // run the ARCAGI2Runner probe and overwrite contamination_probe_result with
+    // the live verdict. Composes the D-20 probe call; does NOT re-implement it
+    // (GD-1, COMPOSES-WITH). A probe failure is a hard error (never silently
+    // skip the contamination check).
+    if let Some(ref dataset) = config.contamination_probe_dataset {
+        let probe_path = PathBuf::from(dataset);
+        let verdict = run_contamination_probe(&probe_path)?;
+        config.contamination_probe_result = verdict;
+    }
 
     // 3. Build paired bool vectors from task rows.
     let on_cells: Vec<bool> = config.tasks.iter().map(|t| t.on_defective).collect();
@@ -337,6 +399,10 @@ pub fn run_inner(config_path: PathBuf, seed: u64, json: bool) -> Result<(), Benc
         source_msg: e.to_string(),
     })?;
     let report_path = write_json_report(&project_root, &config, on_defective_rate, off_defective_rate, delta, ci_low, ci_high, seed, &corpus_blake3)?;
+
+    // 6b. Write the human-readable methodology doc as a sidecar artifact
+    // (STEP 2 of I-38: machine-readable config -> human-readable methodology).
+    let methodology_path = write_methodology_doc(&project_root, &config)?;
 
     // 7. Emit ONE QdeltaMeasured SSB beacon.
     // TODO[I-38-I20-pending]: replace with real I-20 SSB row lookup when I-20 ships
@@ -381,6 +447,7 @@ pub fn run_inner(config_path: PathBuf, seed: u64, json: bool) -> Result<(), Benc
         &corpus_blake3[..16],
         report_path.display(),
     );
+    println!("QDELTA methodology_doc={}", methodology_path.display());
     if json {
         let body = serde_json::to_string_pretty(&payload).map_err(|e| BenchQdeltaError::Serialise {
             source_msg: e.to_string(),
@@ -524,7 +591,7 @@ mod tests {
     /// on_rate  = 1/5 = 0.200   (task3 has on_defective=true)
     /// off_rate = 4/5 = 0.800   (tasks 1,2,3,5 have off_defective=true; task3 is both-true)
     /// delta    = 0.800 - 0.200 = 0.600  (non-degenerate, anti-floor-fake)
-    const QDELTA_FIXTURE_VALID: &str = r#"
+    pub(crate) const QDELTA_FIXTURE_VALID: &str = r#"
 suite = "test_qdelta_fixture"
 model_id = "fixture_corpus_v1"
 seed_count = 5
@@ -556,7 +623,7 @@ off_defective = true
     /// Under-powered fixture (seed_count=3, paired=false).
     /// floor_check() MUST return Err(FloorViolation) before any compute.
     /// NO QdeltaMeasured row should be emitted.
-    const QDELTA_FIXTURE_UNDERPOWER: &str = r#"
+    pub(crate) const QDELTA_FIXTURE_UNDERPOWER: &str = r#"
 suite = "test_qdelta_underpower"
 model_id = "fixture_corpus_v1"
 seed_count = 3
@@ -638,7 +705,7 @@ on_defective = false
 off_defective = true
 "#;
 
-    fn parse_fixture(s: &str) -> QdeltaConfig {
+    pub(crate) fn parse_fixture(s: &str) -> QdeltaConfig {
         toml::from_str(s).expect("fixture parse")
     }
 
@@ -786,6 +853,7 @@ off_defective = true
             paired: true,
             dollar_per_task: 0.01,
             contamination_probe_result: "not_run".into(),
+            contamination_probe_dataset: None,
             tasks: vec![
                 QdeltaTaskRow { on_defective: true, off_defective: true },
                 QdeltaTaskRow { on_defective: false, off_defective: false },
@@ -840,5 +908,83 @@ off_defective = true
         let state = if 0u64 == 0 { 1u64 } else { 0u64 };
         let next = xorshift64(state);
         assert_ne!(next, state, "xorshift64 must not be a fixed point at state=1");
+    }
+
+    // -----------------------------------------------------------------------
+    // D-20 contamination probe wiring (STEP 5)
+    // -----------------------------------------------------------------------
+
+    /// Write a minimal D-20 ARC-AGI-2 fixture JSONL that produces an
+    /// `HonestlyEvaluated` verdict. Mirrors the bench_arc.rs test fixture
+    /// shape: hypothetical claims with 0 DKG-match + low near-duplicate
+    /// -> DiscoveryCandidate + non-Constructive mode = honest evaluation.
+    fn write_arc_fixture(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        use std::io::Write;
+        let path = dir.path().join("arc_mini_fixture.jsonl");
+        let mut f = std::fs::File::create(&path).expect("create arc fixture");
+        let lines = [
+            r#"{"task_id":"t1","claim_text":"x","claim_type":"hypothetical","expected_novelty_class":"discovery_candidate","dkg_match_count":0,"near_duplicate_threshold":0.05}"#,
+            r#"{"task_id":"t2","claim_text":"x","claim_type":"hypothetical","expected_novelty_class":"discovery_candidate","dkg_match_count":0,"near_duplicate_threshold":0.1}"#,
+            r#"{"task_id":"t3","claim_text":"x","claim_type":"hypothetical","expected_novelty_class":"discovery_candidate","dkg_match_count":0,"near_duplicate_threshold":0.15}"#,
+            r#"{"task_id":"t4","claim_text":"x","claim_type":"hypothetical","expected_novelty_class":"discovery_candidate","dkg_match_count":0,"near_duplicate_threshold":0.2}"#,
+            r#"{"task_id":"t5","claim_text":"x","claim_type":"hypothetical","expected_novelty_class":"discovery_candidate","dkg_match_count":0,"near_duplicate_threshold":0.25}"#,
+        ];
+        for line in lines {
+            writeln!(f, "{line}").expect("write arc fixture line");
+        }
+        path
+    }
+
+    #[test]
+    fn run_contamination_probe_returns_honestly_evaluated() {
+        // STEP 5: run_contamination_probe() composes ARCAGI2Runner and returns
+        // the verdict string. A valid D-20 fixture must produce
+        // "honestly_evaluated".
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let fixture = write_arc_fixture(&dir);
+        let verdict = run_contamination_probe(&fixture).expect("probe should succeed");
+        assert_eq!(
+            verdict, "honestly_evaluated",
+            "valid D-20 fixture must produce honestly_evaluated; got {verdict}"
+        );
+    }
+
+    #[test]
+    fn run_contamination_probe_returns_closed_verdict() {
+        // The verdict must be one of the three closed ARCVerdict wire labels.
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let fixture = write_arc_fixture(&dir);
+        let verdict = run_contamination_probe(&fixture).expect("probe should succeed");
+        assert!(
+            verdict == "honestly_evaluated"
+                || verdict == "game_with_memorization"
+                || verdict == "refused",
+            "verdict must be a closed ARCVerdict label; got {verdict}"
+        );
+    }
+
+    #[test]
+    fn run_contamination_probe_fails_on_missing_dataset() {
+        // A missing dataset path must produce Err(ContaminationProbe), NOT
+        // silently return "not_run". The harness never falsely reports the
+        // contamination status.
+        let result = run_contamination_probe(std::path::Path::new("/definitely/does/not/exist.jsonl"));
+        assert!(result.is_err(), "missing dataset must produce an error");
+        match result.unwrap_err() {
+            BenchQdeltaError::ContaminationProbe { .. } => {}
+            other => panic!("expected ContaminationProbe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn qdelta_config_contamination_probe_dataset_defaults_to_none() {
+        // Existing fixtures without the field must still parse (serde default).
+        // The QDELTA_FIXTURE_VALID constant does not include
+        // contamination_probe_dataset, so it defaults to None.
+        let config = parse_fixture(QDELTA_FIXTURE_VALID);
+        assert!(
+            config.contamination_probe_dataset.is_none(),
+            "contamination_probe_dataset must default to None when absent from TOML"
+        );
     }
 }

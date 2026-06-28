@@ -883,7 +883,7 @@ async fn emit_run_artifact(
                     objective_hash: obj_hash.clone(),
                     current_hash: None,
                     session_id: session_id.to_owned(),
-                    ts_ms: std::time::SystemTime::now()
+                    ts_ms: std::time::SystemTime::now() // entropy-allow: ssb-objective-seal-ts-ms-cli-entrypoint
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as i64,
@@ -911,7 +911,7 @@ async fn emit_run_artifact(
             seq: chain_seq,
             session_id: session_id.to_owned(),
             ts_ms: i64::try_from(
-                std::time::SystemTime::now()
+                std::time::SystemTime::now() // entropy-allow: ssb-row-chain-seal-ts-ms-cli-entrypoint
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis(),
@@ -924,6 +924,13 @@ async fn emit_run_artifact(
         .await
         .map_err(|e| anyhow::anyhow!("writing row_chain_sealed(chain_advanced) row: {e}"))?;
 
+    // I-18 STEP-1: stamp the single-writer rolling chain_prev_hash into the
+    // sealing log. This is the PRODUCTION CALLER of Ssb::chain_prev_hash()
+    // (R7 production reachability). The rolling hash is maintained by the
+    // single-writer on every SSB flush; stamping it here gives the off-agent
+    // verifier a deterministic chain link without re-deriving the full stream.
+    let rolling_chain_prev_hash = ssb.chain_prev_hash();
+
     tracing::info!(
         rra_path = %rra_path.display(),
         root_blake3 = %artifact.root_blake3,
@@ -931,6 +938,7 @@ async fn emit_run_artifact(
         gate_count,
         objective_hash = ?artifact.objective_hash,
         chain_prev_hash = ?artifact.chain_prev_hash,
+        rolling_chain_prev_hash = ?rolling_chain_prev_hash,
         "elai run: G-2 RRA sealed + run_artifact_emitted + objective_sealed + row_chain_sealed rows written"
     );
     Ok(())
@@ -1009,7 +1017,7 @@ async fn emit_attestation(
             seq: aibom_seq,
             session_id: session_id.to_owned(),
             ts_ms: i64::try_from(
-                std::time::SystemTime::now()
+                std::time::SystemTime::now() // entropy-allow: ssb-aibom-emit-ts-ms-cli-entrypoint
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis(),

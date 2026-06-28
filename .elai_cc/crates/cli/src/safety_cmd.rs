@@ -418,7 +418,7 @@ fn replay_tool_filter_fixture(
     // Map the string category labels from the fixture to ToolCategory and commit.
     use elai_orchestrator::tool_filter::ToolCategory;
     let now_ms: i64 = i64::try_from(
-        std::time::SystemTime::now()
+        std::time::SystemTime::now() // entropy-allow: tool-filter-report-ts-ms-cli-entrypoint
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis(),

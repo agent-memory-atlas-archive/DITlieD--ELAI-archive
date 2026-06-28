@@ -13,5 +13,13 @@
 // types like `AllowedToolSet` from `main.rs`, so they cannot be exposed
 // without a much larger structural change. See workflow/reasoning/
 // C-39-decisions.md DECISION D3.
+//
+// I-38 STEP 4: `bench_qdelta.rs` is also self-contained — it depends only
+// on `elai-core`, `elai-orchestrator`, `serde`, `thiserror`, `toml`,
+// `blake3`, `serde_json`, and `tokio` (all external crates, no `crate::*`
+// refs in non-test code). Exposed so contract tests under
+// `crates/contracts/tests/` can drive `floor_check()` and `run_inner()`
+// with on-disk fixture TOML files.
 
 pub mod mcp_client;
+pub mod bench_qdelta;

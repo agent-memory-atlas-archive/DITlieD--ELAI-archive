@@ -249,7 +249,9 @@ pub(crate) async fn run(
     let suppressions = load_suppressions(&allowlist_path)?;
 
     // now_unix for suppression expiry comparison.
-    let now_unix = std::time::SystemTime::now()
+    // C-15 entropy-allow: clock Arc consumed by Ssb::new above; suppression
+    // expiry is operator-observability, not a determinism-quarantined producer.
+    let now_unix = std::time::SystemTime::now() // entropy-allow: suppression-expiry-clock-consumed-by-ssb-new
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
         .unwrap_or(0);

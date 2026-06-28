@@ -589,7 +589,9 @@ fn try_emit_ssb_beacons(rows: &[PlanStatusRow], project_root: &Path) -> Result<(
         }
     };
 
-    let ts_ms: i64 = SystemTime::now()
+    // C-15 entropy-allow: CLI plan-status subcommand — no ClockProvider
+    // threaded through this command handler; ts_ms is SSB observability only.
+    let ts_ms: i64 = SystemTime::now() // entropy-allow: cli-plan-status-ssb-ts-ms-no-clockprovider
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0)

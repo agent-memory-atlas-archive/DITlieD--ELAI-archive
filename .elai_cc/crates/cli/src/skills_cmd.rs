@@ -206,7 +206,7 @@ fn run_eval(
             } else {
                 SkillOutcome::Passed
             };
-            let ts_ms = std::time::SystemTime::now()
+            let ts_ms = std::time::SystemTime::now() // entropy-allow: skill-telemetry-ts-ms-cli-entrypoint
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
