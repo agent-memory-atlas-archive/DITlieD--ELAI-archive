@@ -352,6 +352,13 @@ pub struct EmpireConfig {
     /// value the host-side scaffold currently honours; other values fall
     /// back to it with a tracing::warn.
     pub bridge_state_default: String,
+    /// C-34 step 5: path to the Empire codebase on the local filesystem.
+    /// When non-empty + `enabled = true`, the repair pipeline
+    /// (`orchestrator::empire::RepairPipeline`) uses this as the scan root
+    /// for detecting CircularDep / HardImport / StdlibShadow pathologies.
+    /// Empty string (default) = "no Empire codebase mounted"; the repair
+    /// pipeline stays inert and the bridge remains in Disconnected state.
+    pub codebase_path: String,
 }
 
 impl Default for EmpireConfig {
@@ -363,6 +370,7 @@ impl Default for EmpireConfig {
             tcp_host: String::from("127.0.0.1"),
             tcp_port: 7430,
             bridge_state_default: String::from("Disconnected"),
+            codebase_path: String::new(),
         }
     }
 }
@@ -426,6 +434,11 @@ pub fn validate_empire_section_when_enabled(cfg: &EmpireConfig) {
     if cfg.transport == "tcp" && cfg.tcp_port == 0 {
         tracing::warn!(
             "elai_cc.toml [empire].tcp_port=0 with transport=tcp; activation patch will reject and fall back to Disconnected"
+        );
+    }
+    if cfg.codebase_path.is_empty() {
+        tracing::warn!(
+            "elai_cc.toml [empire].codebase_path is empty; repair pipeline (CircularDep/HardImport/StdlibShadow) stays inert until Empire codebase is mounted"
         );
     }
 }
