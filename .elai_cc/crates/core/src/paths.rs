@@ -145,10 +145,7 @@ pub fn index_manifest_path(project_root: &Path) -> PathBuf {
 /// `<project_root>/.elai_cc/indexes/dkg.db`
 #[inline]
 pub fn dkg_db_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(ELAI_DATA_DIR_NAME)
-        .join(INDEXES_DIR_NAME)
-        .join(DKG_DB_FILENAME)
+    indexes_dir_path(project_root).join(DKG_DB_FILENAME)
 }
 
 /// `<project_root>/.elai_cc/indexes`
@@ -157,9 +154,7 @@ pub fn dkg_db_path(project_root: &Path) -> PathBuf {
 /// crate manages its own subfile layout.
 #[inline]
 pub fn bm25_dir_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(ELAI_DATA_DIR_NAME)
-        .join(INDEXES_DIR_NAME)
+    indexes_dir_path(project_root)
 }
 
 /// Canonical BM25 `project_id` (the `Bm25Index::new(root, project_id)` key).
@@ -184,10 +179,7 @@ pub fn bm25_index_root(project_root: &Path) -> PathBuf {
 /// `<project_root>/.elai_cc/indexes/vector_index.json`
 #[inline]
 pub fn vectors_db_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(ELAI_DATA_DIR_NAME)
-        .join(INDEXES_DIR_NAME)
-        .join(VECTORS_FILE_NAME)
+    indexes_dir_path(project_root).join(VECTORS_FILE_NAME)
 }
 
 /// `<project_root>/.elai_cc/indexes/vector_cache.db`
@@ -198,10 +190,7 @@ pub fn vectors_db_path(project_root: &Path) -> PathBuf {
 /// the cache never escapes the project's data dir.
 #[inline]
 pub fn vector_cache_db_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(ELAI_DATA_DIR_NAME)
-        .join(INDEXES_DIR_NAME)
-        .join(VECTOR_CACHE_DB_FILENAME)
+    indexes_dir_path(project_root).join(VECTOR_CACHE_DB_FILENAME)
 }
 
 /// `<project_root>/.elai_cc/sessions`
@@ -396,7 +385,7 @@ pub fn artifact_manifest_path(
     artifacts_dir_path(project_root)
         .join(task_id)
         .join(step_id)
-        .join(format!("{artifact_id}.{ext}", ext = ARTIFACT_MANIFEST_EXT))
+        .join(format!("{artifact_id}.{ARTIFACT_MANIFEST_EXT}"))
 }
 
 // ---------------------------------------------------------------------------
