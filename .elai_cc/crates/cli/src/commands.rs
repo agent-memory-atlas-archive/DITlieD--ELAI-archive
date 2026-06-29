@@ -2111,6 +2111,16 @@ fn parse_runtime_command(args: &[&str]) -> Result<SlashCommand, SlashCommandPars
             role: None,
             target: None,
         }),
+        // A trailing `--json` output flag must not flip a successful read-only
+        // list into a usage error: the metamorphic CLI invariant (test_modes
+        // check_metamorphic P2) requires `/runtime list` and `/runtime list
+        // --json` to share an exit class. Accept the flag and still resolve to
+        // the list action; a genuinely unknown trailing arg still errors below.
+        ["list" | "show", "--json"] => Ok(SlashCommand::Runtime {
+            action: Some("list".to_string()),
+            role: None,
+            target: None,
+        }),
         ["list" | "show", ..] => Err(usage_error("runtime list", "")),
         ["test"] => Err(usage_error("runtime test", "<backend>")),
         ["test", backend] => Ok(SlashCommand::Runtime {
@@ -4822,6 +4832,29 @@ mod tests {
         SlashCommand::parse(input)
             .expect_err("slash command should be rejected")
             .to_string()
+    }
+
+    #[test]
+    fn runtime_list_tolerates_json_output_flag() {
+        // Metamorphic CLI invariant (test_modes check_metamorphic P2): `/runtime
+        // list` and `/runtime list --json` must share an exit class. Both parse Ok
+        // to the list action; an unknown trailing arg still errors.
+        for input in ["/runtime list --json", "/runtime show --json"] {
+            match SlashCommand::parse(input) {
+                Ok(Some(SlashCommand::Runtime { action, .. })) => {
+                    assert_eq!(
+                        action.as_deref(),
+                        Some("list"),
+                        "{input} should resolve to the list action"
+                    );
+                }
+                other => panic!("{input} expected Ok(Some(Runtime list)), got {other:?}"),
+            }
+        }
+        assert!(
+            SlashCommand::parse("/runtime list garbage").is_err(),
+            "an unknown trailing arg must still be a usage error"
+        );
     }
 
     #[allow(clippy::too_many_lines)]
