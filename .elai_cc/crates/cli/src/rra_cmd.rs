@@ -149,6 +149,45 @@ fn render_show_text(art: &RunArtifact) {
     if art.manifest.is_empty() {
         println!("    (no F-gate verdicts present — a valid gate-off state, not a failure)");
     }
+    // I-40 Step 5 — render the action-stream event rows so wrapped-run rows
+    // (taint_flow + run_artifact_emitted from `elai wrap`) are visible in the
+    // existing RRA viewer. Capped to avoid flooding the terminal on a long
+    // `elai run` bundle; the full stream is always available via --output json.
+    render_event_stream(art);
+}
+
+/// I-40 Step 5 — render the action-stream event rows in the text viewer.
+///
+/// Each event row shows its append-only seq, its SSB action_type wire tag, and
+/// its sealed content hash (event_blake3). This makes wrapped-run rows
+/// (taint_flow from the untrusted-ingest / blocked-write gates, and the
+/// run_artifact_emitted beacon) visible when an operator runs
+/// `elai rra show <wrap-fixture.rra>`. The dashboard `RraViewerPanel` already
+/// surfaces the run_artifact_emitted beacon via `get_run_artifact` (no session
+/// filter), so the frontend_pair is satisfied without a new Svelte component.
+///
+/// Capped at [`EVENT_STREAM_RENDER_CAP`] rows to bound terminal output; a
+/// `... N more` indicator is printed when the stream is truncated. The full
+/// event stream is always available via `--output json` (the JSON path
+/// serializes the entire `RunArtifact` including every event).
+const EVENT_STREAM_RENDER_CAP: usize = 50;
+
+fn render_event_stream(art: &RunArtifact) {
+    if art.events.is_empty() {
+        return;
+    }
+    println!("  event stream   :");
+    let total = art.events.len();
+    let shown = total.min(EVENT_STREAM_RENDER_CAP);
+    for ev in &art.events[..shown] {
+        println!(
+            "    [seq {:>4}] {:<28} {}",
+            ev.seq, ev.action_type, ev.event_blake3
+        );
+    }
+    if total > shown {
+        println!("    ... {} more (use --output json for the full stream)", total - shown);
+    }
 }
 
 fn run_verify(path: &std::path::Path, output_format: CliOutputFormat) -> Result<(), String> {
