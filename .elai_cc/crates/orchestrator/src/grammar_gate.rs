@@ -95,7 +95,7 @@ pub enum GrammarGateResult {
 /// Saturates on pre-epoch clocks (sets t=0) and saturates past year 292278994
 /// (sets t=i64::MAX). These edge cases are advisory-only for SSB timestamps.
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
+    std::time::SystemTime::now() // entropy-allow: SSB journal ts_ms, no ClockProvider threaded into this gate
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()

@@ -1431,7 +1431,7 @@ impl HookDispatcher for InProcessHookDispatcher {
                 };
                 let tool_class =
                     crate::tool_sequence::tool_class_from_action_type(invocation.action_type);
-                let ts_ms = std::time::SystemTime::now()
+                let ts_ms = std::time::SystemTime::now() // entropy-allow: tool-sequence history ts_ms, no ClockProvider in scope (sync dispatch path)
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);

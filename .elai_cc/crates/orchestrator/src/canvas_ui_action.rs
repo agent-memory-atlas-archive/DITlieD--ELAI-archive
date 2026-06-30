@@ -243,7 +243,7 @@ pub fn emit_select_ssb_row(
     });
     let ssb = ssb.clone();
     let node_id_owned = node_id.to_owned();
-    let ts_ms = std::time::SystemTime::now()
+    let ts_ms = std::time::SystemTime::now() // entropy-allow: SSB journal ts_ms, no ClockProvider in scope (sync fire-and-forget emitter)
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();

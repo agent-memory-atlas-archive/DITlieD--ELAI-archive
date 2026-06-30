@@ -452,7 +452,7 @@ pub async fn emit_requirement_verified_to_ssb(
     superstep: i64,
     set: &EarsRequirementSet,
 ) {
-    let ts_ms = SystemTime::now()
+    let ts_ms = SystemTime::now() // entropy-allow: SSB journal ts_ms, no ClockProvider threaded into this gate
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0);

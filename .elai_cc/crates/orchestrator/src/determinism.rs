@@ -328,8 +328,7 @@ impl DriftComparator {
     /// C-27-decisions.md D11 because per-audit IDs are one-shot correlators
     /// without a meaningful EntropySource threading path.
     pub fn new(seed: u64, sink: DriftSink) -> Self {
-        // entropy-allow: per-comparator correlator; no EntropySource threaded
-        let audit_id = uuid::Uuid::new_v4();
+        let audit_id = uuid::Uuid::new_v4(); // entropy-allow: per-comparator correlator; no EntropySource threaded (C-27-decisions.md D11)
         Self::with_audit_id(seed, sink, audit_id)
     }
 

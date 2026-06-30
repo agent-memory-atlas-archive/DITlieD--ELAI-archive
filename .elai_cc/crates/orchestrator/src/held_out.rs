@@ -100,7 +100,7 @@ impl TaskId {
     /// Matches the convention used by [`crate::reasoning_template::TemplateId`].
     #[must_use]
     pub fn new_v4() -> Self {
-        Self(Uuid::new_v4().simple().to_string())
+        Self(Uuid::new_v4().simple().to_string()) // entropy-allow: held-out task id, opaque identifier never byte-compared by replay
     }
 
     /// Borrow the underlying string slice.

@@ -346,7 +346,7 @@ pub async fn emit_mutation_budgeted_runs(writer: &Ssb, summary: &MutationBudgetS
     if env_gate_truthy(ELAI_MUTATION_BUDGET_DISABLE_ENV) {
         return;
     }
-    let ts_ms = std::time::SystemTime::now()
+    let ts_ms = std::time::SystemTime::now() // entropy-allow: SSB journal ts_ms, no ClockProvider threaded into this gate
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);

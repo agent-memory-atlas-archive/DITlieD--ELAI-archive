@@ -596,7 +596,7 @@ mod tests {
         // files (avoids a SQLite "database is locked" collision under the
         // parallel test runner).
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now()
+        let nanos = SystemTime::now() // entropy-allow: test-only tempdir db filename suffix, never byte-compared by replay
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);

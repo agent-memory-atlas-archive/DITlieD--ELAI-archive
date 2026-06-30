@@ -1891,7 +1891,7 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                                 reference_path: Some(ref_path.clone()),
                                 mode: ValidationMode::Quick,
                                 output_dir: None,
-                                request_id: uuid::Uuid::new_v4(),
+                                request_id: uuid::Uuid::new_v4(), // entropy-allow: per-request correlator, never byte-compared by replay
                             };
                             let tier1 = ImageValidator::default();
                             let result = tier1

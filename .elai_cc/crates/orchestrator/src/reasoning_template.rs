@@ -45,7 +45,7 @@ impl TemplateId {
     /// or a fixture-derived UUID via `From<Uuid>`.
     #[must_use]
     pub fn new_v4() -> Self {
-        Self(Uuid::new_v4())
+        Self(Uuid::new_v4()) // entropy-allow: opaque template id, never byte-compared by replay (deterministic test paths use Uuid::nil() instead)
     }
 
     /// Borrow the underlying UUID.

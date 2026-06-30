@@ -772,7 +772,7 @@ impl DeterministicAuditor {
             Err(_) => return Ok(None),
         };
 
-        let started = std::time::Instant::now();
+        let started = std::time::Instant::now(); // entropy-allow: wall-clock latency measurement, never byte-compared by replay
         let project_root = self.config.project_root.clone();
         let cache_path = project_root.join(".elai").join("mutation_cache.sqlite3");
         let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);

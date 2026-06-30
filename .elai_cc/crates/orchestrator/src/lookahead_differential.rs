@@ -554,7 +554,7 @@ mod tests {
 
     fn rand_suffix() -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
+        SystemTime::now() // entropy-allow: test-only tempdir db filename suffix, never byte-compared by replay
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0)

@@ -51,7 +51,7 @@ fn outcome_to_kind(outcome: ResolveOutcome) -> AuthBrokerEventKind {
 /// If no tokio runtime is active, the emit is skipped (best-effort; a missed
 /// SSB row is never a correctness failure).
 fn emit_auth_broker_event(ssb: &Arc<Ssb>, kind: AuthBrokerEventKind, error_kind: &str) {
-    let ts_ms = SystemTime::now()
+    let ts_ms = SystemTime::now() // entropy-allow: SSB journal ts_ms, no ClockProvider in scope (sync fire-and-forget emitter)
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);

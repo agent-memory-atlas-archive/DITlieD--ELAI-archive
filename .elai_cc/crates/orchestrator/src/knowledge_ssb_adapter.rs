@@ -194,7 +194,7 @@ impl KnowledgeSsbSink for OrchestratorKnowledgeSsbSink {
             }
             serde_json::Value::Object(m)
         };
-        let ts_ms = std::time::SystemTime::now()
+        let ts_ms = std::time::SystemTime::now() // entropy-allow: SSB journal ts_ms, no ClockProvider in scope (sync dispatch path)
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
             .unwrap_or(0);

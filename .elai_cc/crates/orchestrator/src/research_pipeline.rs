@@ -867,7 +867,7 @@ pub fn prebind_research_answer(
 
     // Build (SourceCitation, anchor_id, excerpt) tuples for Bound citations only.
     // Ghost/Stale citations are excluded — the caller routes them to D-16 refusal.
-    let now_ms = std::time::SystemTime::now()
+    let now_ms = std::time::SystemTime::now() // entropy-allow: citation prebind ts_ms, no ClockProvider in scope (sync pipeline path)
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);

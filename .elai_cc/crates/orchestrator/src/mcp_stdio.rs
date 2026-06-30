@@ -768,7 +768,7 @@ impl McpServerManager {
         qualified_tool_name: &str,
     ) -> Option<DeferredResolveInfo> {
         let cache = self.schema_cache.as_ref()?;
-        let start = Instant::now();
+        let start = Instant::now(); // entropy-allow: resolve_ns latency measurement, never byte-compared by replay
         // Use resolve_with_first_flag so we know whether this is the first
         // time this tool has been resolved. `is_first=true` means cache-miss
         // (first use); `is_first=false` means cache-hit (already resolved).

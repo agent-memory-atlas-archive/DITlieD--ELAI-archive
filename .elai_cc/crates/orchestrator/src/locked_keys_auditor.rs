@@ -350,7 +350,7 @@ impl LockedKeysAuditor {
             // accepted boundary for non-deterministic audit ids. The
             // determinism harness operates on action_type sequences,
             // not audit ids.
-            audit_id: uuid::Uuid::new_v4(),
+            audit_id: uuid::Uuid::new_v4(), // entropy-allow: per-audit-run correlator, never byte-compared by replay (matches C-27 StubBanAuditor precedent)
         }
     }
 

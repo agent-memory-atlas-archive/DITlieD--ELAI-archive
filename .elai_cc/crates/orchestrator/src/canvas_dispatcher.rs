@@ -131,7 +131,7 @@ impl CanvasOpsDispatcher for InProcessCanvasDispatcher {
         )?;
 
         // Build the unique op id (blake3 of tool_id + mode + node_id + ts_ms).
-        let ts_ms = std::time::SystemTime::now()
+        let ts_ms = std::time::SystemTime::now() // entropy-allow: blake3 op-id salt + SSB ts_ms, no ClockProvider in scope (sync dispatch path)
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();

@@ -252,7 +252,7 @@ fn current_date_iso() -> String {
     // std::time::SystemTime gives seconds since UNIX_EPOCH. Convert to
     // "YYYY-MM-DD" manually (no chrono / time dep).
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
+    let secs = SystemTime::now() // entropy-allow: today's wall-clock date for allowlist expiry comparison, must track real calendar time
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);

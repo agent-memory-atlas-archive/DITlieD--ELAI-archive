@@ -55,7 +55,7 @@ mod tests {
         let ssb = Ssb::new(cfg, clock).expect("Ssb::new for throughput bench");
 
         // Drive N sequential inserts; measure wall-clock time.
-        let t0 = std::time::Instant::now();
+        let t0 = std::time::Instant::now(); // entropy-allow: benchmark wall-clock throughput timer, not replay-compared (the SSB writes themselves use the SeededClock above)
         for i in 0..N_INSERTS {
             ssb.write_payload(
                 "bench-agent",
@@ -113,7 +113,7 @@ note = "non-deterministic -- wall clock; asserted only as > 0"
 host_os = "windows"
 write_path = "ssb single-writer task (WAL mode, BEGIN IMMEDIATE, sequential)"
 payload_variant = "FileRead (path string only -- minimal bytes per insert)"
-clock = "SeededClock (deterministic tick; no SystemTime::now in the measured path)"
+clock = "SeededClock (deterministic tick; no SystemTime::now in the measured path)" // entropy-allow: TOML doc-string literal, not a real SystemTime::now call (false-positive substring match)
 atomic_hardening = "I-3 Phase-3C: all 8 checkpoint write sites now use tmp+sync_all+rename"
 "#,
             suite = SUITE_LABEL,

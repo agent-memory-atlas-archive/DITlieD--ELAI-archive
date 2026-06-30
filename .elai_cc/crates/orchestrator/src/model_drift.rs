@@ -459,7 +459,7 @@ pub async fn check_model_drift(
 /// Saturates to 0 on pre-epoch clocks (advisory only; not load-bearing).
 #[must_use]
 pub fn now_ms() -> u64 {
-    SystemTime::now()
+    SystemTime::now() // entropy-allow: advisory-only wall-clock stamp, no ClockProvider threaded into this gate
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()

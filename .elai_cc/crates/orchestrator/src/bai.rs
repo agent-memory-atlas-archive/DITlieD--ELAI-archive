@@ -798,7 +798,7 @@ pub async fn emit_bai_round_with_canary(
     };
     let evidence_pass = eval.stage_10_pass + eval.stage_50_pass + eval.stage_200_pass;
     let evidence_total = eval.stage_10_total + eval.stage_50_total + eval.stage_200_total;
-    let audit_id = Uuid::new_v4().simple().to_string();
+    let audit_id = Uuid::new_v4().simple().to_string(); // entropy-allow: per-decision correlator, never byte-compared by replay
     let summary_payload = SsbPayload::BaiPromotionDecision(BaiPromotionDecisionPayload {
         template_id: candidate_template_id.as_hex(),
         decision: decision_label.into(),
