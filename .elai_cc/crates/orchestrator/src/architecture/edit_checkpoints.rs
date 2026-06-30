@@ -253,7 +253,7 @@ pub fn snapshot_pre_edit(
     // (~100ns Windows, ~1ns Linux) for any realistic concurrent-writer
     // load on a single session. Falls back to 0 on the (impossible in
     // practice) `SystemTime::now < UNIX_EPOCH` branch.
-    let nanos: u64 = std::time::SystemTime::now()
+    let nanos: u64 = std::time::SystemTime::now() // entropy-allow: concurrent-writer-dir-tiebreak-nonce-not-replay-compared
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::from(d.subsec_nanos()))
         .unwrap_or(0);

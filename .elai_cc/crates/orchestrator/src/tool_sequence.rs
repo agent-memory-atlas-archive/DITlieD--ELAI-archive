@@ -517,7 +517,13 @@ pub async fn emit_tool_sequence_verdict(
         ),
     };
 
-    let ts_ms = std::time::SystemTime::now()
+    // emit_tool_sequence_verdict is a free fn taking no clock param (callers
+    // are the bench probe + hook_dispatcher, neither thread a ClockProvider
+    // here); ts_ms lands in a ToolSequenceVerdict SSB row but the determinism
+    // harness replays on action_type sequences, not this field. Threading a
+    // clock would require a signature change at every call site, out of
+    // scope for a minimum-diff fix.
+    let ts_ms = std::time::SystemTime::now() // entropy-allow: ssb-row-ts-no-clock-param-multiple-call-sites
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;

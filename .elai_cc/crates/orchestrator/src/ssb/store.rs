@@ -697,8 +697,14 @@ fn insert_session_archived_row(
         store_kind: "ssb".to_owned(),
     });
     let bytes = rmp_serde::to_vec_named(&payload)?;
+    // insert_session_archived_row is a synchronous migration helper taking
+    // only `conn: &Connection` (no ClockProvider threaded); created_at lands
+    // in the literal SQL row but the determinism replay harness operates on
+    // action_type sequences, not this migration-path timestamp. Threading a
+    // clock would require a signature change at the migration call site, out
+    // of scope for a minimum-diff fix.
     let created_at = i64::try_from(
-        std::time::SystemTime::now()
+        std::time::SystemTime::now() // entropy-allow: migration-row-ts-no-clock-param-call-site
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_secs(),

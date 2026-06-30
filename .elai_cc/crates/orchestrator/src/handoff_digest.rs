@@ -127,7 +127,7 @@ pub fn detect_open_topic(cwd: &Path) -> Option<TopicHandle> {
     }
 
     let handoffs_dir = cwd.join("workflow").join("handoffs");
-    let now_secs = SystemTime::now()
+    let now_secs = SystemTime::now() // entropy-allow: repl-startup-mtime-horizon-check-not-replay-compared
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
@@ -397,7 +397,7 @@ fn update_current_status(content: &str, new_status: &str) -> String {
 
 /// Return today's UTC date as "YYYY-MM-DD".
 fn chrono_date_utc() -> String {
-    let now = SystemTime::now()
+    let now = SystemTime::now() // entropy-allow: human-readable-digest-date-label-not-replay-compared
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();

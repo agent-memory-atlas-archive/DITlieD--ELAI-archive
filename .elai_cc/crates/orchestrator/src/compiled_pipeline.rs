@@ -99,7 +99,7 @@ pub struct TemplateId(pub Uuid);
 impl TemplateId {
     #[must_use]
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        Self(Uuid::new_v4()) // entropy-allow: opaque-correlation-id-not-cache-key-not-replay-compared
     }
 }
 
@@ -118,7 +118,7 @@ pub struct PipelineOutcomeId(pub Uuid);
 impl PipelineOutcomeId {
     #[must_use]
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        Self(Uuid::new_v4()) // entropy-allow: opaque-correlation-id-not-cache-key-not-replay-compared
     }
 }
 
@@ -373,7 +373,7 @@ impl TemplateCrystallizer {
             return None;
         }
         let pipeline = CompiledPipeline {
-            pipeline_id: Uuid::new_v4(),
+            pipeline_id: Uuid::new_v4(), // entropy-allow: fresh-uuid-per-crystallization-cache-key-is-plan-skeleton-hash-not-this
             concept_class: concept_class.to_string(),
             plan_skeleton_hash,
             steps,
@@ -923,7 +923,7 @@ mod tests {
     async fn compiled_executor_hit_returns_pipeline_and_bumps_use_count() {
         let exec = CompiledExecutor::new(None);
         let pipeline = CompiledPipeline {
-            pipeline_id: Uuid::new_v4(),
+            pipeline_id: Uuid::new_v4(), // entropy-allow: test-fixture-id-compared-by-reference-not-byte-value
             concept_class: "Counter".into(),
             plan_skeleton_hash: 7,
             steps: vec![step(0, "p", 0, true)],
@@ -949,7 +949,7 @@ mod tests {
     async fn compiled_executor_low_confidence_returns_decompile() {
         let exec = CompiledExecutor::new(None);
         let pipeline = CompiledPipeline {
-            pipeline_id: Uuid::new_v4(),
+            pipeline_id: Uuid::new_v4(), // entropy-allow: test-fixture-id-compared-by-reference-not-byte-value
             concept_class: "K".into(),
             plan_skeleton_hash: 1,
             steps: vec![step(0, "p", 0, true)],
@@ -971,7 +971,7 @@ mod tests {
     async fn compiled_executor_two_failures_trigger_decompile() {
         let mut exec = CompiledExecutor::new(None);
         let pipeline = CompiledPipeline {
-            pipeline_id: Uuid::new_v4(),
+            pipeline_id: Uuid::new_v4(), // entropy-allow: test-fixture-id-compared-by-reference-not-byte-value
             concept_class: "K".into(),
             plan_skeleton_hash: 1,
             steps: vec![step(0, "p", 0, true)],
@@ -1022,7 +1022,7 @@ mod tests {
         let path = dir.path().join("nested").join("compiled.msgpack");
         let mut store = CompiledPipelineStore::new(path.clone());
         let pipeline = CompiledPipeline {
-            pipeline_id: Uuid::new_v4(),
+            pipeline_id: Uuid::new_v4(), // entropy-allow: test-fixture-id-compared-by-reference-not-byte-value
             concept_class: "Counter".into(),
             plan_skeleton_hash: 0x42,
             steps: vec![step(0, "p", 0, true)],
@@ -1052,7 +1052,7 @@ mod tests {
         let mut store = CompiledPipelineStore::with_ttl(path, 10);
         // Old entry (last_used_at = 0) and new entry (now = 100).
         let old_pipeline = CompiledPipeline {
-            pipeline_id: Uuid::new_v4(),
+            pipeline_id: Uuid::new_v4(), // entropy-allow: test-fixture-id-compared-by-reference-not-byte-value
             concept_class: "Old".into(),
             plan_skeleton_hash: 1,
             steps: vec![step(0, "p", 0, true)],
@@ -1064,7 +1064,7 @@ mod tests {
         };
         store.upsert(old_pipeline, 0);
         let new_pipeline = CompiledPipeline {
-            pipeline_id: Uuid::new_v4(),
+            pipeline_id: Uuid::new_v4(), // entropy-allow: test-fixture-id-compared-by-reference-not-byte-value
             concept_class: "New".into(),
             plan_skeleton_hash: 2,
             steps: vec![step(0, "p", 0, true)],

@@ -415,7 +415,12 @@ impl TddPreflight {
         }
 
         if let Some((writer, agent_id, superstep)) = self.ssb.as_ref() {
-            let ts_ms = SystemTime::now()
+            // check_with_emit is an inherent method with no ClockProvider
+            // field on self; ts_ms lands in a TddPreflight* SSB row but the
+            // determinism harness replays on action_type sequences, not this
+            // field. Threading a clock would require a struct field +
+            // constructor change, out of scope for a minimum-diff fix.
+            let ts_ms = SystemTime::now() // entropy-allow: ssb-row-ts-no-clock-field-constructor-change-needed
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);

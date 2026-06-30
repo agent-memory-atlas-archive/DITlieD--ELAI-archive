@@ -6490,8 +6490,15 @@ async fn drive_task(
                                 token_delta_from_reduce,
                             );
 
+                            // This arm has no ClockProvider in scope
+                            // (drive_task threads `self.clock` for latency
+                            // measurement elsewhere, but not into this
+                            // BeliefState/ID-3 receipt branch); ts_ms lands in
+                            // an emit_condensed_receipt SSB row but the
+                            // determinism harness replays on action_type
+                            // sequences, not this field.
                             let ts_ms = i64::try_from(
-                                std::time::SystemTime::now()
+                                std::time::SystemTime::now() // entropy-allow: ssb-row-ts-no-clock-in-scope-id3-branch
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
                                     .as_millis(),
@@ -8218,7 +8225,13 @@ async fn drive_task(
                                                 code_changes: None,
                                                 tests_written: None,
                                                 commit_hashes: vec![],
-                                                created_at: std::time::SystemTime::now()
+                                                // No ClockProvider in scope at this
+                                                // timetravel snapshot branch;
+                                                // created_at is a Snapshot metadata
+                                                // field, not byte-compared by the
+                                                // determinism replay harness
+                                                // (action_type sequences are).
+                                                created_at: std::time::SystemTime::now() // entropy-allow: snapshot-metadata-ts-not-replay-compared
                                                     .duration_since(std::time::UNIX_EPOCH)
                                                     .map(|d| d.as_millis() as u64)
                                                     .unwrap_or(0),
@@ -19390,7 +19403,11 @@ async fn run_post_step_deterministic_audit(
         } else {
             "blocked"
         };
-        let ts_ms = std::time::SystemTime::now()
+        // Mirrors the SystemTime idiom used in
+        // hook_dispatcher::dispatch_pre_tool_use (see comment above); ts_ms
+        // feeds an in-memory sequence-gate history buffer entry, not a
+        // replay-compared SSB row.
+        let ts_ms = std::time::SystemTime::now() // entropy-allow: in-memory-history-buffer-ts-not-replay-compared
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
             .unwrap_or(0);

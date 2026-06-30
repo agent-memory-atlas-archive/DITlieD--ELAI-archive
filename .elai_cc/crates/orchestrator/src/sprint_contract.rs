@@ -378,8 +378,14 @@ pub fn bound_field(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Current wall-clock unix-ms (entropy read once at the emit boundary).
+// now_ms is a free fn taking no clock param (no ClockProvider threaded into
+// sprint_contract's emit helpers); the resulting ts_ms lands in a
+// SprintContractEvent SSB row but the determinism harness replays on
+// action_type sequences, not this field. Threading a clock would require a
+// signature change across every call site, out of scope for a minimum-diff
+// fix.
 fn now_ms() -> i64 {
-    SystemTime::now()
+    SystemTime::now() // entropy-allow: ssb-row-ts-no-clock-param-every-call-site
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)

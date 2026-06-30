@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn manifest_loader_parses_complete_feature() {
-        let dir = std::env::temp_dir().join(format!("elai-smoke-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("elai-smoke-{}", uuid::Uuid::new_v4())); // entropy-allow: test-temp-dir-uniqueness-key-not-replay-compared
         std::fs::create_dir_all(&dir).expect("mkdir");
         let path = dir.join("smoke-manifest.toml");
         std::fs::write(
@@ -867,7 +867,7 @@ mod tests {
 
     #[test]
     fn manifest_loader_missing_field_is_parse_err() {
-        let dir = std::env::temp_dir().join(format!("elai-smoke-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("elai-smoke-{}", uuid::Uuid::new_v4())); // entropy-allow: test-temp-dir-uniqueness-key-not-replay-compared
         std::fs::create_dir_all(&dir).expect("mkdir");
         let path = dir.join("smoke-manifest.toml");
         // Missing expect_ssb.

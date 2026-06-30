@@ -211,7 +211,7 @@ impl RegistryExistenceChecker for SubprocessRegistryChecker {
 
         // Bounded blocking call with a ~1.5 s wall-clock budget.
         let timeout = Duration::from_millis(1_500);
-        let call_start = Instant::now();
+        let call_start = Instant::now(); // entropy-allow: subprocess-timeout-budget-elapsed-measurement-not-replay-compared
 
         let mut child = match Command::new(&self.python)
             .arg(&self.script_path)
@@ -451,7 +451,7 @@ impl LruExistenceCache {
         // If the key already exists, update in place (no order change needed
         // since TTL reset is benign).
         if inner.map.contains_key(&key) {
-            inner.map.insert(key, (verdict, Instant::now()));
+            inner.map.insert(key, (verdict, Instant::now())); // entropy-allow: in-process-ttl-cache-insertion-mark-not-replay-compared
             return;
         }
 
@@ -463,7 +463,7 @@ impl LruExistenceCache {
         }
 
         inner.insertion_order.push_back(key.clone());
-        inner.map.insert(key, (verdict, Instant::now()));
+        inner.map.insert(key, (verdict, Instant::now())); // entropy-allow: in-process-ttl-cache-insertion-mark-not-replay-compared
     }
 }
 
@@ -996,7 +996,11 @@ impl DepWriteTimeGate {
     /// runtime rather than the spawn-detached `emit_ssb_row` path.
     #[must_use]
     pub fn build_slop_payload(record: &BlockedDepRecord) -> WriteTimeSlopsquatBlockedPayload {
-        let ts_ms: i64 = std::time::SystemTime::now()
+        // This is a real SSB-row ts_ms field, but build_slop_payload is a free fn
+        // (no &self) called cross-crate from cli/dep_check_cmd.rs and from a
+        // contract test fixture; threading a ClockProvider would require a
+        // signature change at both call sites, out of scope for a minimum-diff fix.
+        let ts_ms: i64 = std::time::SystemTime::now() // entropy-allow: ssb-row-ts-no-reachable-clock-cross-crate-caller
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
             .unwrap_or(0);
@@ -1032,7 +1036,11 @@ impl DepWriteTimeGate {
             return;
         };
 
-        let ts_ms: i64 = std::time::SystemTime::now()
+        // emit_ssb_row is best-effort (errors logged via warn!, not propagated);
+        // DepWriteTimeGate holds no ClockProvider field today and this is the
+        // only call site, so injecting one would add machinery for a single
+        // non-replay-compared correlation timestamp, out of scope here.
+        let ts_ms: i64 = std::time::SystemTime::now() // entropy-allow: ssb-row-ts-no-clock-field-single-call-site
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
             .unwrap_or(0);

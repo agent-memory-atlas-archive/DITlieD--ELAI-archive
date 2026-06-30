@@ -589,7 +589,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::time::{SystemTime, UNIX_EPOCH};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now()
+        let nanos = SystemTime::now() // entropy-allow: test-tmpdir-collision-avoidance-nonce-not-replay-compared
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);

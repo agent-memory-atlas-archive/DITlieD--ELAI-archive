@@ -928,11 +928,10 @@ impl WiringAuditCmd {
             ));
         }
 
-        // entropy-allow: per-audit-run correlator; uuid::Uuid::new_v4 is the
-        // accepted boundary for non-deterministic ids in audit output. The
-        // determinism harness operates on action_type sequences, not audit
-        // ids.
-        let audit_id = uuid::Uuid::new_v4();
+        // Per-audit-run correlator; uuid::Uuid::new_v4 is the accepted boundary
+        // for non-deterministic ids in audit output. The determinism harness
+        // operates on action_type sequences, not audit ids.
+        let audit_id = uuid::Uuid::new_v4(); // entropy-allow: per-audit-run correlator-id-not-replay-compared
         let captured: Arc<std::sync::Mutex<Vec<SsbPayload>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
 
