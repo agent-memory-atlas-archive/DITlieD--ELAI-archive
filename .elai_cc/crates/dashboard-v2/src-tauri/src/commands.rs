@@ -3685,7 +3685,7 @@ async fn emit_session_forked_dashboard(
         return;
     }
     let Some(ssb_ref) = ssb else { return; };
-    let ts_ms = std::time::SystemTime::now()
+    let ts_ms = std::time::SystemTime::now() // entropy-allow: free fn takes only `ssb: Option<&Ssb>`, no AppState/ClockProvider in scope; gated behind ELAI_E25_SESSION_FORK_EMIT_ENABLE, advisory architecture-event beacon
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0);
@@ -6098,7 +6098,7 @@ struct StreamTiming {
 impl StreamTiming {
     fn new() -> Self {
         Self {
-            start: std::time::Instant::now(),
+            start: std::time::Instant::now(), // entropy-allow: monotonic Instant baseline for in-stream TTFT/gap durations only (see struct doc comment above); unaffected by clock skew, never compared across a determinism replay
             ttft: None,
             last_chunk_at: None,
             inter_chunk_gaps_ms: Vec::new(),
@@ -6109,7 +6109,7 @@ impl StreamTiming {
     /// Record one rendered text delta. Sets TTFT on the first delta and
     /// records the gap since the previous delta on every subsequent one.
     fn on_delta(&mut self) {
-        let now = std::time::Instant::now();
+        let now = std::time::Instant::now(); // entropy-allow: monotonic Instant for inter-chunk gap measurement only, same rationale as StreamTiming::new
         if self.ttft.is_none() {
             self.ttft = Some(now.duration_since(self.start));
         }
@@ -10145,10 +10145,7 @@ pub async fn trigger_cosmos_refresh(
     _name: Option<String>,
     state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<TriggerCosmosRefreshResponse, String> {
-    let started_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let started_at_ms = i64::try_from(state.clock.now_ms()).unwrap_or(i64::MAX); // clock-injected via AppState.clock (ClockProvider), not raw SystemTime
 
     let writer = state
         .writer
@@ -10160,10 +10157,7 @@ pub async fn trigger_cosmos_refresh(
     let cosmos_root = elai_knowledge::default_cosmos_root()
         .map_err(|e| format!("cosmos refresh: resolve root failed: {e}"))?;
     if !cosmos_root.exists() {
-        let completed_at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let completed_at_ms = i64::try_from(state.clock.now_ms()).unwrap_or(i64::MAX); // clock-injected via AppState.clock (ClockProvider), not raw SystemTime
         return Ok(TriggerCosmosRefreshResponse {
             refreshed_count: 0,
             started_at_ms,
@@ -10175,10 +10169,7 @@ pub async fn trigger_cosmos_refresh(
     let manifest = elai_knowledge::CosmosManifest::load(&manifest_path)
         .map_err(|e| format!("cosmos refresh: manifest load failed: {e}"))?;
     if manifest.artifacts.is_empty() {
-        let completed_at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let completed_at_ms = i64::try_from(state.clock.now_ms()).unwrap_or(i64::MAX); // clock-injected via AppState.clock (ClockProvider), not raw SystemTime
         return Ok(TriggerCosmosRefreshResponse {
             refreshed_count: 0,
             started_at_ms,
@@ -10204,10 +10195,7 @@ pub async fn trigger_cosmos_refresh(
     // rows itself; we just count the result.
     let refreshed_count = elai_orchestrator::trigger_cosmos_refresh(&writer, &worker).await;
 
-    let completed_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let completed_at_ms = i64::try_from(state.clock.now_ms()).unwrap_or(i64::MAX); // clock-injected via AppState.clock (ClockProvider), not raw SystemTime
 
     Ok(TriggerCosmosRefreshResponse {
         refreshed_count,
@@ -11567,7 +11555,7 @@ pub async fn credit_attribution_status(
         }
     }
 
-    let ts_ms = std::time::SystemTime::now()
+    let ts_ms = std::time::SystemTime::now() // entropy-allow: synthetic credit-attribution pilot harness (`_state` deliberately unused; runpod_pending=true until the live pilot lands per fn doc comment), no production replay depends on this value yet
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
@@ -11699,7 +11687,7 @@ pub async fn routing_decisions_status(
         })
         .collect();
 
-    let ts_ms = std::time::SystemTime::now()
+    let ts_ms = std::time::SystemTime::now() // entropy-allow: synthetic routing-decisions pilot harness (`_state` deliberately unused; runpod_pending=true until the live pilot lands per fn doc comment), no production replay depends on this value yet
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);

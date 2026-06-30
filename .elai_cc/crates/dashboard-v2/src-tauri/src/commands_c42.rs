@@ -167,7 +167,7 @@ pub async fn gateway_authz_run_fuzz(
 
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
+    SystemTime::now() // entropy-allow: free-standing helper backing gateway_authz deny-row timestamps, no AppState/ClockProvider in scope at this fn
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)

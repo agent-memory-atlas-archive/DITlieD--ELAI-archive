@@ -188,7 +188,7 @@ pub async fn list_tool_gate_rows(
 
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
+    SystemTime::now() // entropy-allow: free-standing window-filter helper, no AppState/ClockProvider in scope; used only to compute a relative cutoff_ms for retain(), not a replayed/persisted value
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)

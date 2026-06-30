@@ -372,10 +372,7 @@ pub async fn ratify_discovery(
         .writer
         .as_ref()
         .ok_or_else(|| "ssb writer unavailable; no session db open".to_owned())?;
-    let ts_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let ts_ms = i64::try_from(state.clock.now_ms()).unwrap_or(i64::MAX); // clock-injected via AppState.clock (ClockProvider), not raw SystemTime
     let payload = SsbPayload::DiscoveryRatified(DiscoveryRatifiedPayload {
         template_id,
         reviewer_id,
@@ -413,10 +410,7 @@ pub async fn reject_discovery(
         .writer
         .as_ref()
         .ok_or_else(|| "ssb writer unavailable; no session db open".to_owned())?;
-    let ts_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let ts_ms = i64::try_from(state.clock.now_ms()).unwrap_or(i64::MAX); // clock-injected via AppState.clock (ClockProvider), not raw SystemTime
     let payload = SsbPayload::DiscoveryRejected(DiscoveryRejectedPayload {
         template_id,
         reviewer_id,

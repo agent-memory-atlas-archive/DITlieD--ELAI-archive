@@ -244,10 +244,7 @@ pub async fn emit_canvas_checkpoint(
         session_id,
     });
 
-    let ts_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0);
+    let ts_ms = i64::try_from(state.clock.now_ms()).unwrap_or(i64::MAX); // clock-injected via AppState.clock (ClockProvider), not raw SystemTime
 
     let seq = writer
         .write_payload("canvas_checkpoint_emitter", ts_ms, payload, vec![])
