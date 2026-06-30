@@ -1,0 +1,162 @@
+{
+  "suite": "j1_perception_gateway",
+  "seed": 0,
+  "normalized_coord_scale": 1000,
+  "note": "Deterministic reference the J-1 perception-gateway contract tests assert against. All data is ELAI-generated (seed=0); no literature figures (HD-1/ID-5). Live-VLM-gated assertions are pending T5.",
+  "fixtures": {
+    "fine_text_4k": {
+      "image": "fine_text_4k.png",
+      "dimensions": [
+        3840,
+        2160
+      ],
+      "font_pt": 8,
+      "text_lines": [
+        {
+          "text": "ELAI perception gateway -- fixture fine print (seed=0).",
+          "bbox_px": [
+            64,
+            66,
+            259,
+            73
+          ],
+          "bbox_normalized": [
+            17,
+            31,
+            67,
+            34
+          ]
+        },
+        {
+          "text": "This block is rendered at 8pt on a 3840x2160 canvas; when the image",
+          "bbox_px": [
+            64,
+            80,
+            321,
+            87
+          ],
+          "bbox_normalized": [
+            17,
+            37,
+            84,
+            40
+          ]
+        },
+        {
+          "text": "is downscaled to a model sweet spot (1568/2048/1280 longest side)",
+          "bbox_px": [
+            64,
+            94,
+            322,
+            101
+          ],
+          "bbox_normalized": [
+            17,
+            44,
+            84,
+            47
+          ]
+        },
+        {
+          "text": "the glyphs collapse and the serial below becomes illegible.",
+          "bbox_px": [
+            64,
+            108,
+            278,
+            115
+          ],
+          "bbox_normalized": [
+            17,
+            50,
+            72,
+            53
+          ]
+        },
+        {
+          "text": "Serial: ELAI-J1-7Q4Z-2026",
+          "bbox_px": [
+            64,
+            122,
+            163,
+            129
+          ],
+          "bbox_normalized": [
+            17,
+            56,
+            42,
+            60
+          ]
+        },
+        {
+          "text": "Batch: 2026-06-30-T7   Rev: 1   Channel: gateway-arm-discriminator",
+          "bbox_px": [
+            64,
+            136,
+            308,
+            143
+          ],
+          "bbox_normalized": [
+            17,
+            63,
+            80,
+            66
+          ]
+        },
+        {
+          "text": "Do not read this serial from a downscaled copy; preprocess first.",
+          "bbox_px": [
+            64,
+            150,
+            294,
+            157
+          ],
+          "bbox_normalized": [
+            17,
+            69,
+            77,
+            73
+          ]
+        }
+      ],
+      "question": "What is the serial number shown in the fine print?",
+      "expected_answer": "ELAI-J1-7Q4Z-2026",
+      "note": "8pt fine text on a 4K canvas. The gateway arm (preprocess + scaffold) answers the serial question; the --raw-image control arm fails it (R2 negative control, plan line 116-117)."
+    },
+    "click_target": {
+      "image": "click_target.png",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "target": {
+        "pixel": [
+          1789,
+          873
+        ],
+        "normalized": [
+          932,
+          808
+        ]
+      },
+      "error_bound_pct": 2.0,
+      "note": "Single seeded click target at a known pixel + normalized (0..=1000) coordinate. The gateway arm must localize it within <2% error on the normalized scale (plan observable_effect line 113)."
+    },
+    "dense_ui_tiling": {
+      "image": "dense_ui_tiling.png",
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "ui_element_count": 144,
+      "tile_size_px": 1568,
+      "tile_overlap": 0.25,
+      "expected_tile_grid": [
+        2,
+        1
+      ],
+      "expected_tile_count": 2,
+      "thumbnail_longest_side_px": 512,
+      "note": "Dense UI grid (16x9 = 144 buttons/labels) on a 2560x1440 canvas. The gateway arm must emit tiles (expected 2 for Claude sweet spot 1568 with 0.25 overlap) + a 512px thumbnail in the journaled request (plan observable_effect line 114)."
+    }
+  }
+}

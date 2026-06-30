@@ -5460,7 +5460,13 @@ CREATE TABLE IF NOT EXISTS ssb (
         'auth_broker_token_acquired',
         'auth_broker_refreshed',
         'auth_broker_provider_linked',
-        'auth_broker_refresh_failed'
+        'auth_broker_refresh_failed',
+        -- J-1.T4 (SCHEMA_VERSION 269): PerceptionScaffoldEvent -- perception-gateway
+        -- scaffold lifecycle. SINGLE-VARIANT Pattern-2; single sql_str, the 4-arm
+        -- PerceptionScaffoldEventKind discriminator rides inside the payload.
+        -- Wire-dark unless ELAI_PERCEPTION_GATEWAY_ENABLE=1.
+        -- TOTAL_VARIANTS 577 -> 578.
+        'perception_scaffold_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

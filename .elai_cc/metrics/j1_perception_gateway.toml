@@ -1,0 +1,104 @@
+# J-1: perception-gateway raw-vs-gateway arm discrimination -- ELAI's OWN measured
+# schema. All shipped numbers are ELAI-measured per config; external figures appear
+# only as cited rationale (HD-1/ID-5). Metrics pending T5 live VLM verification
+# (USER_OVERRIDE: code + code-side tests only, make ready).
+#
+# ID-5: every value in [measured.*] below is either an ELAI-measured number or an
+# explicit pending_t5_live placeholder. No literature alpha (SRC-3 sweet-spot
+# 1568/2048/1280, ~60% JPEG savings, 30-60% preprocess recovery, ~0->40% scaffold)
+# is carried as a measured number or as a gate threshold -- those figures are
+# DESIGN RATIONALE ONLY and live in [rationale_external] with their SRC-3 citation.
+#
+# LIVE-VLM-GATED: the gateway-arm fine-text answer + raw-arm fine-text failure are
+# PENDING T5's live runs (W-10, USER_OVERRIDDEN this round). The fixtures + the
+# assertions are defined now (see [fixture]); the measured numbers land when T5
+# boots the sidecar. The schema + the discrimination verdict shape ship today.
+#
+# Recomputable from the journal under ELAI_SEED (GD-2) -- pending T5:
+#   ELAI_SEED=0 elai run --fixture j1_perception/fine_text_4k --task "$FINE_TEXT_QUESTION"
+#   ELAI_SEED=0 elai run --fixture j1_perception/fine_text_4k --raw-image --task "$FINE_TEXT_QUESTION"
+# (the journal rows + PerceptionScaffoldEvent SSB rows are recomputable under ELAI_SEED)
+
+[fixture]
+suite = "j1_perception_gateway"
+seed = 0
+normalized_coord_scale = 1000
+fixtures_dir = "crates/contracts/tests/fixtures/j1_perception"
+generator = "crates/contracts/tests/fixtures/j1_perception/gen_fixtures.py"
+ground_truth = "crates/contracts/tests/fixtures/j1_perception/ground_truth.json"
+
+[fixture.fine_text_4k]
+image = "fine_text_4k.png"
+dimensions = [3840, 2160]
+font_pt = 8
+question = "What is the serial number shown in the fine print?"
+expected_answer = "ELAI-J1-7Q4Z-2026"
+note = "8pt fine text on a 4K canvas; illegible when downscaled to a sweet spot."
+
+[fixture.click_target]
+image = "click_target.png"
+dimensions = [1920, 1080]
+target_pixel = [1789, 873]
+target_normalized = [932, 808]
+error_bound_pct = 2.0
+note = "Single seeded click target; gateway arm must localize within <2% on the 0..=1000 scale."
+
+[fixture.dense_ui_tiling]
+image = "dense_ui_tiling.png"
+dimensions = [2560, 1440]
+ui_element_count = 144
+tile_size_px = 1568
+tile_overlap = 0.25
+expected_tile_grid = [2, 1]
+expected_tile_count = 2
+thumbnail_longest_side_px = 512
+note = "Dense UI grid; gateway arm must emit tiles + a 512px thumbnail in the journaled request."
+
+[measured.gateway_arm]
+# Canonical arm: perception gateway ON (preprocess + scaffold + route).
+# The gateway arm answers the fine-text question the raw arm fails.
+pending_t5_live = true
+fine_text_answered = "pending_t5_live"
+fine_text_answer = "pending_t5_live"
+click_target_coord_error_pct = "pending_t5_live"
+dense_ui_tiles_emitted = "pending_t5_live"
+dense_ui_thumbnail_emitted = "pending_t5_live"
+note = "Gateway arm (preprocess + scaffold). Live-VLM-gated; T5 fills these fields."
+
+[measured.raw_image_arm]
+# R2 negative control: --raw-image arm (no preprocessing, no scaffold).
+# The raw arm MUST fail the fine-text question -- this is the discrimination
+# proof (phase_I9.toml [measured.no_repair] is the precedent: the broken arm
+# is measured, not assumed).
+pending_t5_live = true
+fine_text_answered = "pending_t5_live"
+fine_text_answer = "pending_t5_live"
+click_target_coord_error_pct = "pending_t5_live"
+dense_ui_tiles_emitted = "pending_t5_live"
+dense_ui_thumbnail_emitted = "pending_t5_live"
+note = "Raw-image control arm (no preprocess, no scaffold). Live-VLM-gated; T5 fills these fields. Expected to FAIL the fine-text question (R2 negative control)."
+
+[verdict]
+# The metric DISCRIMINATES (R2): the gateway arm answers the fine-text question
+# the raw arm fails. The discrimination is pending T5 live verification -- the
+# schema + the verdict shape ship now, the boolean lands when T5 boots the sidecar.
+discriminates = "pending_t5_live"
+gateway_answers_raw_fails = "pending_t5_live"
+click_target_coord_error_below_2pct = "pending_t5_live"
+dense_ui_tiles_and_thumbnail_emitted = "pending_t5_live"
+buildable = true
+pending_t5_live = true
+note = "Verdict is pending T5 live VLM runs (USER_OVERRIDE). The fixture + assertion are defined now; the booleans land when T5 measures."
+
+[rationale_external]
+# HD-1/ID-5 fence: external design-rationale figures from SRC-3. These are NOT
+# measured numbers and MUST NOT be carried as gate thresholds. Cited for
+# traceability only.
+src = "J-HARNESS-GROUNDING-MAP.md:71-72 (SRC-3)"
+sweet_spot_longest_side_px_claude = 1568
+sweet_spot_longest_side_px_gpt = 2048
+sweet_spot_longest_side_px_qwen_vl = 1280
+jpeg_token_savings_pct_rationale = "~60%"
+preprocess_recovery_pct_rationale = "30-60%"
+scaffold_lift_pct_rationale = "~0->40%"
+note = "EXTERNAL design rationale only (SRC-3). Not measured; not a gate threshold. The [measured.*] arms carry ELAI-measured or pending_t5_live values only."

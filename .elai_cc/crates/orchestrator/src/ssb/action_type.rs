@@ -4658,6 +4658,35 @@ pub enum SsbActionType {
     /// (Anthropic impl) + B-37 RuntimeFactoryConfig.auth_source (consumer).
     /// TOTAL_VARIANTS 576 -> 577.
     AuthBrokerEvent(AuthBrokerEventKind),
+    /// J-1.T4 (SCHEMA_VERSION 269): perception-gateway scaffold lifecycle event.
+    /// SINGLE-VARIANT Pattern-2 (41st application). Carries
+    /// [`PerceptionScaffoldEventPayload`] with the `kind` discriminator
+    /// (4 arms: `preprocessed` / `scaffold_emitted` /
+    /// `routed_to_specialist` / `degraded_passthrough`) + free-form
+    /// `details_json`. Wire-dark unless
+    /// `ELAI_PERCEPTION_GATEWAY_ENABLE=1` (see
+    /// [`crate::perception::ELAI_PERCEPTION_GATEWAY_ENABLE_ENV`]).
+    ///
+    /// Producers (T4 wires scaffold + router gates; T5 wires preprocess):
+    ///   * `production_agent_rpc::handle_infer_request` scaffold gate --
+    ///     emits `scaffold_emitted` on Ok(ScaffoldEmitted),
+    ///     `degraded_passthrough` on Ok(DegradedPassthrough) + Err.
+    ///   * `production_agent_rpc::handle_infer_request` router gate --
+    ///     emits `routed_to_specialist` on RouteToPixelDiff,
+    ///     `degraded_passthrough` on the DegradedPassthrough decision.
+    ///   * `perception::preprocess` (T5) -- emits `preprocessed` once the
+    ///     preprocess call site is wired into handle_infer_request. T4
+    ///     ships the Kind arm with NO emit site (unused enum variant, not
+    ///     a WIRE-DARK pub fn -- the controller decision records this fork).
+    ///
+    /// NoImagePresent is a no-op (scaffold fires ONLY on image-bearing
+    /// dispatches, plan line 63). Single sql_str `perception_scaffold_event`
+    /// (Pattern-2 single-variant convention; the Kind discriminator rides
+    /// inside the payload, mirroring DocumentVisionRagEvent).
+    ///
+    /// See workflow/reasoning/J-1-decisions.md (T4).
+    /// TOTAL_VARIANTS 577 -> 578.
+    PerceptionScaffoldEvent(PerceptionScaffoldEventKind),
 }
 
 impl SsbActionType {
@@ -5569,6 +5598,12 @@ impl SsbActionType {
             // I-50 (SCHEMA_VERSION 268): AuthBrokerEvent -- subscription auth broker lifecycle.
             // 4-arm Pattern-2; each arm maps to its own sql_str.
             Self::AuthBrokerEvent(kind) => kind.as_sql_str(),
+            // J-1.T4 (SCHEMA_VERSION 269): perception-gateway scaffold lifecycle.
+            // SINGLE-VARIANT Pattern-2 (41st application); single sql_str, the
+            // 4-arm PerceptionScaffoldEventKind discriminator rides inside the
+            // payload (mirrors DocumentVisionRagEvent). Wire-dark unless
+            // ELAI_PERCEPTION_GATEWAY_ENABLE=1.
+            Self::PerceptionScaffoldEvent(_) => "perception_scaffold_event",
         }
     }
 }
@@ -6399,6 +6434,11 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "auth_broker_refreshed" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::Refreshed)),
         "auth_broker_provider_linked" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::ProviderLinked)),
         "auth_broker_refresh_failed" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::RefreshFailed)),
+        // J-1.T4 (SCHEMA_VERSION 269): PerceptionScaffoldEvent -- perception-gateway
+        // scaffold lifecycle. SINGLE-VARIANT Pattern-2; single sql_str, the 4-arm
+        // Kind discriminator rides inside the payload. ScaffoldEmitted is the
+        // representative arm (the success path, most-semantic).
+        "perception_scaffold_event" => Ok(SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::ScaffoldEmitted)),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

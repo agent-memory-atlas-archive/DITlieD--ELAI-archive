@@ -1493,6 +1493,17 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // Emit path proven reachable by the i50_auth_broker_contract test (real TempDir SQLite).
     // TokenAcquired is the representative arm (ONE SSB_ACTION_TYPES entry). 576 -> 577.
     SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::TokenAcquired),
+    // J-1.T4 (SCHEMA_VERSION 269, 2026-06-14): PerceptionScaffoldEvent -- perception-gateway
+    // scaffold lifecycle event (J-1.T4). Pattern-2 single-variant 4-arm
+    // PerceptionScaffoldEventKind: Preprocessed / ScaffoldEmitted / RoutedToSpecialist /
+    // DegradedPassthrough. Single sql_str `perception_scaffold_event` (the Kind discriminator
+    // rides inside the payload, mirroring DocumentVisionRagEvent).
+    // Wire-dark unless ELAI_PERCEPTION_GATEWAY_ENABLE=1 (gate checked at the call site in
+    // handle_infer_request; emit helper does NOT re-gate). T4 wires scaffold + router gates;
+    // T5 wires the Preprocessed arm emit at the preprocess call site.
+    // ScaffoldEmitted is the representative arm (ONE SSB_ACTION_TYPES entry). 577 -> 578.
+    // SCHEMA = -309 + 578 = 269.
+    SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::ScaffoldEmitted),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

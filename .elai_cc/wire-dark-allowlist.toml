@@ -2099,3 +2099,51 @@ owner             = "maintainer"
 expiry_date       = "2027-06-01"
 promotion_plan_id = "B-7-promotion"
 smoke_test        = "crates/orchestrator/src/research_tree.rs::tests::source_quality_exact_domain_match"
+
+# ---- J-1 WIRE-DARK ENTRIES (perception gateway skeleton, T1 skeleton fns) ----
+# J-1: perception gateway. scaffold (T2) + route (T3) are WIRED at
+# production_agent_rpc.rs::handle_infer_request (no WIRE-DARK marker, no row).
+# The four rows below cover the T1 skeleton pub fns that are NOT yet wired:
+#   * perception::preprocess::preprocess -- T5 wires the live sidecar call.
+#   * perception::perception_gateway_disabled -- companion negation; the
+#     dispatch seam calls perception_gateway_enabled() (the positive form),
+#     so the negation is unused at the seam today.
+#   * PerceptionGateway::with_spec -- T5 wires the per-target-model spec
+#     selection from the active provider.
+#   * TargetModel::sweet_spot_longest_side_px -- T5/T7 wires the
+#     per-target-model sweet-spot edge into the sidecar preprocess call.
+# promotion_plan_id = J-1-promotion (the J-1 step that flips these on).
+# NOTE: added by J-1.T1T2T3-REIMPL -- trips gate_freeze_check.py until
+# re-locked out-of-band (python .claude/tools/gate_freeze_check.py --lock).
+
+[[flag]]
+name              =  WIRE-DARK[J-1]:perception::preprocess::preprocess
+type              = experiment
+owner             = maintainer
+expiry_date       = 2027-06-01
+promotion_plan_id = J-1-promotion
+smoke_test        = crates/contracts/tests/j1_perception_gateway_contract.rs::preprocess_no_image_present_arm
+
+[[flag]]
+name              = WIRE-DARK[J-1]:perception::perception_gateway_disabled
+type              = experiment
+owner             = maintainer
+expiry_date       = 2027-06-01
+promotion_plan_id = J-1-promotion
+smoke_test        = crates/contracts/tests/j1_perception_gateway_contract.rs::perception_gateway_default_off_when_env_unset
+
+[[flag]]
+name              = WIRE-DARK[J-1]:perception::PerceptionGateway::with_spec
+type              = experiment
+owner             = maintainer
+expiry_date       = 2027-06-01
+promotion_plan_id = J-1-promotion
+smoke_test        = crates/contracts/tests/j1_perception_gateway_contract.rs::perception_gateway_with_spec_carries_preprocess_spec
+
+[[flag]]
+name              = WIRE-DARK[J-1]:perception::preprocess::TargetModel::sweet_spot_longest_side_px
+type              = experiment
+owner             = maintainer
+expiry_date       = 2027-06-01
+promotion_plan_id = J-1-promotion
+smoke_test        = crates/contracts/tests/j1_perception_gateway_contract.rs::target_model_sweet_spot_edges_pinned

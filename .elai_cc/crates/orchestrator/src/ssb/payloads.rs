@@ -3698,6 +3698,25 @@ pub enum SsbPayload {
     /// reachable via the i50 contract test (real TempDir SQLite).
     /// TOTAL_VARIANTS 576 -> 577.
     AuthBrokerEvent(AuthBrokerEventPayload),
+    /// J-1.T4 (SCHEMA_VERSION 269): perception-gateway scaffold lifecycle event.
+    ///
+    /// SINGLE-VARIANT Pattern-2 4-arm [`PerceptionScaffoldEventKind`]:
+    /// - `Preprocessed`: the sidecar preprocess step conditioned the image
+    ///   (T5 wires the emit at the preprocess call site; T4 ships the arm
+    ///   with no emit site per the controller decision).
+    /// - `ScaffoldEmitted`: the two-call scaffold (describe-literal-elements
+    ///   + task model) completed; emitted at the scaffold gate on success.
+    /// - `RoutedToSpecialist`: the router dispatched to a specialist arm
+    ///   (RouteToPixelDiff); emitted at the router gate.
+    /// - `DegradedPassthrough`: the scaffold or router degraded to
+    ///   passthrough (failure / missing paths); the raw image forwards
+    ///   UNCONDITIONED with an explicit marker (never a silent fallthrough).
+    ///
+    /// Wire-dark unless `ELAI_PERCEPTION_GATEWAY_ENABLE=1` (the gate is
+    /// checked at the call site in `handle_infer_request`; the emit helper
+    /// does NOT re-gate). Reuses [`crate::perception::ELAI_PERCEPTION_GATEWAY_ENABLE_ENV`].
+    /// TOTAL_VARIANTS 577 -> 578.
+    PerceptionScaffoldEvent(PerceptionScaffoldEventPayload),
 }
 
 impl SsbPayload {
@@ -4505,6 +4524,10 @@ impl SsbPayload {
             // The representative arm is TokenAcquired; kind carries the concrete arm so
             // per-arm sql_str round-trips via AuthBrokerEventKind::as_sql_str.
             Self::AuthBrokerEvent(ref p) => SsbActionType::AuthBrokerEvent(p.kind),
+            // J-1.T4 (SCHEMA_VERSION 269): perception-gateway scaffold lifecycle event
+            // (4-arm Pattern-2 single-variant). Single sql_str; the Kind discriminator
+            // rides inside the payload. ScaffoldEmitted is the representative arm.
+            Self::PerceptionScaffoldEvent(ref p) => SsbActionType::PerceptionScaffoldEvent(p.kind),
         }
     }
 }
@@ -19687,5 +19710,81 @@ pub struct AuthBrokerEventPayload {
     /// `"token_expired_no_refresh"`, `"http_401"`). Empty string for other arms.
     pub error_kind: String,
     /// Wall-clock milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-1.T4 (SCHEMA_VERSION 269): PerceptionScaffoldEvent substrate
+// ---------------------------------------------------------------------------
+
+/// J-1.T4 (SCHEMA_VERSION 269): 4-arm fire-point discriminator carried by
+/// [`PerceptionScaffoldEventPayload`]. Mirrors the
+/// [`DocumentVisionRagEventKind`] / [`AuthBrokerEventKind`] shape
+/// (snake_case wire labels + `as_str()` helper). Pattern-2 (41st
+/// application).
+///
+/// Arm order: preprocess -> scaffold -> route -> degrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PerceptionScaffoldEventKind {
+    /// The sidecar preprocess step conditioned the image (JPEG q85 / tile /
+    /// thumbnail per `PreprocessSpec`). T5 wires the emit at the preprocess
+    /// call site; T4 ships the arm with NO emit site (unused enum variant,
+    /// not a WIRE-DARK pub fn -- controller decision).
+    Preprocessed,
+    /// The two-call scaffold (call 1 describe-literal-elements + call 2 task
+    /// model) completed; `literal_elements` carries the structured
+    /// description. Emitted at the scaffold gate on Ok(ScaffoldEmitted).
+    ScaffoldEmitted,
+    /// The router dispatched to a specialist arm (RouteToPixelDiff -- the
+    /// B-24 Tier-1 pixel-diff veto path). Emitted at the router gate.
+    RoutedToSpecialist,
+    /// The scaffold or router degraded to passthrough (scaffold failure,
+    /// router DegradedPassthrough decision). The raw image forwards
+    /// UNCONDITIONED with an explicit marker (never a silent fallthrough,
+    /// plan stub_ban).
+    DegradedPassthrough,
+}
+
+impl PerceptionScaffoldEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Preprocessed => "preprocessed",
+            Self::ScaffoldEmitted => "scaffold_emitted",
+            Self::RoutedToSpecialist => "routed_to_specialist",
+            Self::DegradedPassthrough => "degraded_passthrough",
+        }
+    }
+}
+
+/// J-1.T4 -- payload for [`SsbActionType::PerceptionScaffoldEvent`].
+///
+/// Wire-dark default; emission gated by `ELAI_PERCEPTION_GATEWAY_ENABLE`
+/// env var (see [`crate::perception::ELAI_PERCEPTION_GATEWAY_ENABLE_ENV`]).
+/// The gate is checked at the call site in `handle_infer_request`; the
+/// emit helper does NOT re-gate. Carries the 4-arm discriminator + session
+/// / task ids + free-form JSON details so each kind's per-kind scalars
+/// ride along without per-kind payload structs (Pattern-2 single-variant
+/// scope-lean).
+///
+/// Does NOT derive `Eq` -- `details_json` may carry NaN-not-equal `f32`
+/// (e.g. scaffold call1_temperature) per the Pattern-2 precedents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PerceptionScaffoldEventPayload {
+    /// Fire-point discriminator. See [`PerceptionScaffoldEventKind`].
+    pub kind: PerceptionScaffoldEventKind,
+    /// Optional canonical session id.
+    pub session_id: Option<String>,
+    /// Optional canonical task id (finer-grained than session).
+    pub task_id: Option<String>,
+    /// Free-form per-kind context. Serialized as JSON so future kinds can
+    /// extend without a schema bump. Conventional fields per kind:
+    /// `scaffold_emitted` -> `literal_element_count`, `call1_temperature`;
+    /// `routed_to_specialist` -> `router_type`, `image_path_present`;
+    /// `degraded_passthrough` -> `reason`, `source` ("scaffold" / "router").
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
 }

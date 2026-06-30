@@ -351,6 +351,7 @@ per_level_audit_cascade
 per_level_audit_started
 per_level_audit_verdict
 per_role_decoding_applied
+perception_scaffold_event
 persona_reanchored
 phase_complete
 phase_node_ready

@@ -1182,6 +1182,11 @@ pub mod util;
 // agent session management. Exposes AgentRpcServer trait + InferOutcome +
 // ToolOutcome + bind_session_listener + accept_one + run_agent_session.
 pub mod ipc_accept;
+// J-1 — perception gateway: condition every inbound image before any model
+// sees it. Skeleton + scaffold (T2 wired) + hard-limit router (T3 wired).
+// Wire-dark by default (ELAI_PERCEPTION_GATEWAY_ENABLE=1 to enable; GD-4).
+// Plan: docs/thefinalglance/J-plan/J-1_perception_gateway.md.
+pub mod perception;
 // Phase B2c — ProductionAgentRpcServer: impls AgentRpcServer wrapping
 // AnthropicClient (sidecar or cloud via ELAI_GROUNDING_BACKEND) and
 // InProcessToolDispatcher.

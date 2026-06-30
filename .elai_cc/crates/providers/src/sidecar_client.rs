@@ -200,6 +200,49 @@ struct CompletionResponse {
 }
 
 // ---------------------------------------------------------------------------
+// J-1.T5 — perception endpoint response types (legs 2/4, sidecar-gated W-10)
+// ---------------------------------------------------------------------------
+
+/// Response from `/v1/perception/preprocess`. The sidecar performs the heavy
+/// image ops (resize, JPEG q85, tile, thumbnail) and returns the conditioned
+/// image bytes as a base64 string + the longest-side pixel edge applied.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PerceptionPreprocessResponse {
+    /// Outcome tag — mirrors `perception::PreprocessOutcome` snake_case arms
+    /// (`"preprocessed"` / `"no_image_present"` / `"degraded_passthrough"`).
+    pub outcome: String,
+    /// Conditioned image bytes, base64-encoded JPEG. Empty on
+    /// `no_image_present` / `degraded_passthrough`.
+    #[serde(default)]
+    pub conditioned_image_b64: String,
+    /// Longest-side pixel edge applied on `preprocessed`; 0 otherwise.
+    #[serde(default)]
+    pub longest_side_px: u32,
+}
+
+/// One literal element emitted by the scaffold's describe-literal-elements
+/// call (call 1). `bbox` is in `[0, 1000]` normalized coords (SRC-3 mechanism 4).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PerceptionLiteralElementWire {
+    pub label: String,
+    pub bbox: [u32; 4],
+}
+
+/// Response from `/v1/perception/scaffold`. Carries the call-1
+/// describe-literal-elements output (structured JSON `LiteralElement[]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PerceptionScaffoldResponse {
+    /// Outcome tag — mirrors `perception::ScaffoldOutcome` snake_case arms.
+    pub outcome: String,
+    /// Literal elements on `scaffold_emitted`; empty otherwise.
+    #[serde(default)]
+    pub literal_elements: Vec<PerceptionLiteralElementWire>,
+    /// Call-1 temperature actually used (pinned to 0.0).
+    #[serde(default)]
+    pub call1_temperature: f32,
+}
+
+// ---------------------------------------------------------------------------
 // SidecarProvider
 // ---------------------------------------------------------------------------
 

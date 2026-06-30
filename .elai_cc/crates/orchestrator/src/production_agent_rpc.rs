@@ -69,6 +69,21 @@ use elai_providers::{
 use serde_json::Value;
 
 use crate::ipc_accept::{AgentRpcServer, InferOutcome, ToolOutcome};
+// J-1 — perception gateway (scaffold T2 + router T3 wired at
+// handle_infer_request; wire-dark by default via
+// ELAI_PERCEPTION_GATEWAY_ENABLE).
+use crate::perception;
+use crate::media_validator::tier1::ImageValidator;
+use crate::media_validator::tier1::Tier1Validator;
+use crate::media_validator::types::{
+    MediaValidationRequest, MediaType, QualitySpec, ToolCapabilityFlags, ValidationMode,
+};
+// J-1.T3 controller decision 3: do NOT extend RefusalReason. The gate site
+// returns RefusalDecision::Abstain with reason=None (constructed locally;
+// decide_and_emit_with_reason is NOT called — that path requires an SSB
+// emitter + injected clock not available at this seam, and the router's
+// TypedRefusal is deterministic, not score-based).
+use crate::conformal_calibration::RefusalDecision;
 
 use elai_safety::provenance::{Provenance, Provenanced, TextSource};
 use elai_safety::taint_flow::tainted_context;
@@ -1825,6 +1840,172 @@ impl AgentRpcServer for ProductionAgentRpcServer {
             } else {
                 max_tokens
             };
+            // J-1 — perception gateway (scaffold T2 + router T3). Wire-dark
+            // by default (ELAI_PERCEPTION_GATEWAY_ENABLE=1 to enable; GD-4).
+            // Runs AFTER effective_max_tokens compute (last cache breakpoint,
+            // HD-2) and BEFORE MessageRequest construction — the prompt is the
+            // post-assembly volatile tail, so the gate never busts the
+            // byte-stable prefix. Router gate runs FIRST so
+            // RouteToPixelDiff / TypedRefusal short-circuit (no scaffold call
+            // needed on those arms — plan stub_ban: visual-diffs NEVER reach
+            // the scaffold's VLM calls).
+            if perception::perception_gateway_enabled() {
+                let router_input = perception::RouterInput {
+                    router_type: perception::classify_prompt(&prompt),
+                    has_image: perception::prompt_carries_image(&prompt),
+                    image_path: None,
+                    reference_path: None,
+                };
+                match perception::route(&router_input) {
+                    perception::RouterDecision::RouteToPixelDiff => {
+                        // J-1.T4 — emit RoutedToSpecialist (the router
+                        // dispatched to the B-24 Tier-1 pixel-diff veto
+                        // specialist arm). Non-fatal SSB write.
+                        emit_perception_scaffold_event(
+                            self.ssb.as_ref(),
+                            &self.clock,
+                            crate::ssb::PerceptionScaffoldEventKind::RoutedToSpecialist,
+                            None,
+                            serde_json::json!({
+                                "router_type": "visual_diff",
+                                "image_path_present": router_input.image_path.is_some(),
+                                "reference_path_present": router_input.reference_path.is_some(),
+                            }),
+                        )
+                        .await;
+                        // Build a MediaValidationRequest for the B-24 Tier-1
+                        // pixel-diff veto. NEVER a VLM (plan stub_ban: Tier-1
+                        // veto is law). image_path / reference_path are None
+                        // at the text-only InferRequest frame today (W-7 fork
+                        // — InputContentBlock has no Image variant); the
+                        // router already returned DegradedPassthrough when
+                        // paths are missing, so this arm only fires when
+                        // paths are present (T5 wires the path extraction).
+                        if let (Some(img_path), Some(ref_path)) =
+                            (router_input.image_path.as_ref(), router_input.reference_path.as_ref())
+                        {
+                            let req = MediaValidationRequest {
+                                media_type: MediaType::Image,
+                                file_path: img_path.clone(),
+                                quality_spec: QualitySpec::default(),
+                                reference_path: Some(ref_path.clone()),
+                                mode: ValidationMode::Quick,
+                                output_dir: None,
+                                request_id: uuid::Uuid::new_v4(),
+                            };
+                            let tier1 = ImageValidator::default();
+                            let result = tier1
+                                .validate(&req, ToolCapabilityFlags::empty())
+                                .await;
+                            if !result.pass {
+                                // B-24 Tier-1 veto — refuse, never route to a VLM.
+                                return InferOutcome::Failed(
+                                    "perception_gateway: visual-diff pixel-diff veto (Tier-1 fail)"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        // Paths missing or Tier-1 passed — fall through to
+                        // the scaffold gate (degrade-to-passthrough on
+                        // missing paths is handled by the router returning
+                        // DegradedPassthrough, which the _ arm below catches).
+                    }
+                    perception::RouterDecision::TypedRefusal => {
+                        // D-16 typed refusal — counting over hard limit
+                        // (deterministic, never a guess). Controller decision
+                        // 3: RefusalDecision::Abstain with reason=None (do
+                        // NOT extend RefusalReason). The literal return is
+                        // InferOutcome::Failed (the gate's return type);
+                        // RefusalDecision::Abstain is the semantic refusal.
+                        let _refusal = RefusalDecision::Abstain;
+                        return InferOutcome::Failed(
+                            "perception_gateway: typed refusal (counting over hard limit, RefusalDecision::Abstain reason=None)"
+                                .to_string(),
+                        );
+                    }
+                    perception::RouterDecision::DegradedPassthrough => {
+                        // J-1.T4 — emit DegradedPassthrough (the router could
+                        // not classify / specialist dispatch failed). The raw
+                        // image forwards UNCONDITIONED (never a silent
+                        // fallthrough, plan stub_ban). Non-fatal SSB write.
+                        emit_perception_scaffold_event(
+                            self.ssb.as_ref(),
+                            &self.clock,
+                            crate::ssb::PerceptionScaffoldEventKind::DegradedPassthrough,
+                            None,
+                            serde_json::json!({
+                                "source": "router",
+                                "reason": "router_degraded_passthrough",
+                            }),
+                        )
+                        .await;
+                        // Fall through to the scaffold gate below.
+                    }
+                    _ => {
+                        // Passthrough / RouteToTiling: fall through to the
+                        // scaffold gate below (no specialist routing emit).
+                    }
+                }
+                // J-1.T2 — scaffold gate (two-call flow structure, T5 wires
+                // the live sidecar calls). Logged-only at this leg — errors
+                // degrade to passthrough (never a silent fallthrough).
+                // J-1.T4 — emits ScaffoldEmitted on Ok(ScaffoldEmitted),
+                // DegradedPassthrough on Ok(DegradedPassthrough) + Err.
+                // NoImagePresent is a no-op (scaffold fires ONLY on
+                // image-bearing dispatches, plan line 63).
+                let scaffold_input = perception::ScaffoldInput::from_prompt(&prompt);
+                match perception::scaffold(&scaffold_input) {
+                    Ok(result) => match result.outcome {
+                        perception::ScaffoldOutcome::ScaffoldEmitted => {
+                            emit_perception_scaffold_event(
+                                self.ssb.as_ref(),
+                                &self.clock,
+                                crate::ssb::PerceptionScaffoldEventKind::ScaffoldEmitted,
+                                None,
+                                serde_json::json!({
+                                    "literal_element_count": result.literal_elements.len(),
+                                    "call1_temperature": result.call1_temperature,
+                                }),
+                            )
+                            .await;
+                        }
+                        perception::ScaffoldOutcome::DegradedPassthrough => {
+                            emit_perception_scaffold_event(
+                                self.ssb.as_ref(),
+                                &self.clock,
+                                crate::ssb::PerceptionScaffoldEventKind::DegradedPassthrough,
+                                None,
+                                serde_json::json!({
+                                    "source": "scaffold",
+                                    "reason": "degraded_passthrough",
+                                }),
+                            )
+                            .await;
+                        }
+                        perception::ScaffoldOutcome::NoImagePresent => {
+                            // No-op: scaffold fires ONLY on image-bearing
+                            // dispatches (plan line 63). No SSB emit.
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "perception_gateway: scaffold failed (degraded to passthrough)"
+                        );
+                        emit_perception_scaffold_event(
+                            self.ssb.as_ref(),
+                            &self.clock,
+                            crate::ssb::PerceptionScaffoldEventKind::DegradedPassthrough,
+                            None,
+                            serde_json::json!({
+                                "source": "scaffold",
+                                "reason": "scaffold_error",
+                            }),
+                        )
+                        .await;
+                    }
+                }
+            }
             // patch-R5 — wire system_prompt (when set) as a one-block
             // `SystemBlock` array, and pin `tool_choice` to `Auto`. R3 always
             // publishes the 6-tool catalog, so `tool_choice` must always be
@@ -4321,6 +4502,44 @@ async fn emit_checkpoint_tool_event(
             tracing::warn!(
                 error = %e,
                 "checkpoint_tool: CheckpointToolEvent SSB write failed (non-fatal)"
+            );
+        }
+    }
+}
+
+/// J-1.T4: emit one `PerceptionScaffoldEvent` SSB row (off-agent observable, R4).
+/// Non-fatal: a write failure is logged, never propagated (mirrors the
+/// emit_structural_edit_event / emit_checkpoint_tool_event discipline).
+///
+/// The `ELAI_PERCEPTION_GATEWAY_ENABLE` gate is checked at the call site in
+/// `handle_infer_request` (the perception block); this helper does NOT re-gate
+/// (it is only called from inside the gated block). `agent_id="agent_rpc"`,
+/// `superstep=0`. `ts_ms` via `Ssb::now_ms_via_clock` (entropy quarantine).
+async fn emit_perception_scaffold_event(
+    ssb: Option<&Arc<crate::ssb::Ssb>>,
+    clock: &Arc<dyn ClockProvider>,
+    kind: crate::ssb::PerceptionScaffoldEventKind,
+    session_id: Option<&str>,
+    details_json: serde_json::Value,
+) {
+    if let Some(ssb_arc) = ssb {
+        let ts_ms = crate::ssb::Ssb::now_ms_via_clock(clock);
+        let payload = crate::ssb::SsbPayload::PerceptionScaffoldEvent(
+            crate::ssb::PerceptionScaffoldEventPayload {
+                kind,
+                session_id: session_id.map(|s| s.to_owned()),
+                task_id: None,
+                details_json,
+                ts_ms,
+            },
+        );
+        if let Err(e) = ssb_arc
+            .write_payload("agent_rpc", 0, payload, Vec::new())
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "perception_scaffold: PerceptionScaffoldEvent SSB write failed (non-fatal)"
             );
         }
     }

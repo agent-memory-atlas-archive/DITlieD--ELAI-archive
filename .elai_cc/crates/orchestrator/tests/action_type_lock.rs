@@ -1537,6 +1537,11 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // I-50 (SCHEMA_VERSION 268): AuthBrokerEvent Pattern-2 4-arm (TokenAcquired/Refreshed/ProviderLinked/RefreshFailed).
         // SSB_ACTION_TYPES carries the single representative AuthBrokerEvent(AuthBrokerEventKind::TokenAcquired) arm.
         SsbActionType::AuthBrokerEvent(_) => (),
+        // J-1.T4 (SCHEMA_VERSION 269): PerceptionScaffoldEvent Pattern-2 4-arm single-variant
+        // (Preprocessed/ScaffoldEmitted/RoutedToSpecialist/DegradedPassthrough).
+        // SSB_ACTION_TYPES carries the single representative
+        // PerceptionScaffoldEvent(PerceptionScaffoldEventKind::ScaffoldEmitted) arm.
+        SsbActionType::PerceptionScaffoldEvent(_) => (),
     }
 }
 
