@@ -83,13 +83,13 @@ trap 'rm -f "$HITS_FILE"' EXIT
 # whitespace) starts with `//` — these are comment / doc-comment lines, not
 # real entropy leaks. B-15 finish: false-positive elimination.
 strip_comments() {
-    awk -F: 'BEGIN{OFS=":"} {
-        idx1 = index($0, ":");
-        rest1 = substr($0, idx1+1);
-        idx2 = index(rest1, ":");
-        content = substr(rest1, idx2+1);
-        sub(/^[ \t]+/, "", content);
-        if (content ~ /^\/\//) next;
+    awk '{
+        pos = match($0, /:[0-9]+:/);
+        if (pos > 0) {
+            content = substr($0, pos + RLENGTH);
+            sub(/^[ \t]+/, "", content);
+            if (content ~ /^\/\//) next;
+        }
         print
     }'
 }
