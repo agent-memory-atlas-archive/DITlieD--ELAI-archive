@@ -152,7 +152,7 @@ impl IpcToolRegistry {
             if delta > 0 {
                 let ts_ms = {
                     use std::time::{SystemTime, UNIX_EPOCH};
-                    SystemTime::now()
+                    SystemTime::now() // entropy-allow: free-standing ToolRegistry::execute path, no ClockProvider threaded through ToolHandler::execute; observability ts_ms for a DualSerialized SSB row, not a replayed value
                         .duration_since(UNIX_EPOCH)
                         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
                         .unwrap_or(0)

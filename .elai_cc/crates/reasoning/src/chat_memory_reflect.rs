@@ -278,7 +278,7 @@ fn naive_keywords(text: &str, cap: usize) -> Vec<String> {
 /// Convenience: produce a `Turn` carrying `now_ms`-keyed id. Used by
 /// the orchestrator's per-message wrapper.
 pub fn turn_with_clock(role: &str, text: &str, message_id: &str) -> Turn {
-    let _ = SystemTime::now();
+    let _ = SystemTime::now(); // entropy-allow: result discarded, appears vestigial (Turn below carries no timestamp field and this fn has no caller found in the codebase); left as-is per scope, flagged for separate dead-code review
     Turn {
         message_id: message_id.into(),
         role: role.into(),

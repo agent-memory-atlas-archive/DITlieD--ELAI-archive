@@ -195,7 +195,7 @@ impl MemoryFact {
     /// Generate a fresh UUIDv4 hex string for `fact_id`. Single source of
     /// truth so call sites cannot drift to ad-hoc IDs.
     pub fn new_id() -> String {
-        uuid::Uuid::new_v4().to_string()
+        uuid::Uuid::new_v4().to_string() // entropy-allow: opaque primary-key row id, never byte-compared by replay (matches orchestrator audit_id/request_id precedent)
     }
 
     /// Validate invariants before persistence. Cheap — pure CPU.

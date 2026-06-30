@@ -392,7 +392,7 @@ impl AragOrchestrator {
         // call (WIRING_CONTRACT ordering invariant: NO embedder.embed(query) before
         // this check). Clock is real-time; the cache is session-stable in-memory only.
         let query_hash = blake3_32_arag(query.as_bytes());
-        let now_secs = std::time::SystemTime::now()
+        let now_secs = std::time::SystemTime::now() // entropy-allow: comment above (I-15) already documents this as real-time on purpose, session-stable in-memory exact-match cache only, no ClockProvider threaded through AragOrchestrator::semantic_search
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);

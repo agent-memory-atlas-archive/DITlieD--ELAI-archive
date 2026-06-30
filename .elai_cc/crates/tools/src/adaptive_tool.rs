@@ -155,7 +155,7 @@ impl<T: ToolDispatcher + ?Sized> ToolDispatcher for AdaptiveTool<T> {
     ) -> Pin<Box<dyn Future<Output = Result<EditOutcome, ToolDispatchError>> + Send + '_>> {
         let step_id = String::new();
         Box::pin(async move {
-            let start = Instant::now();
+            let start = Instant::now(); // entropy-allow: DAIRA trace elapsed-time baseline, no ClockProvider threaded through ToolDispatcher::dispatch_edit; monotonic duration only, never persisted/replayed
             self.emit("edit", DAIRA_TOOL_CALL_START, 0, "started", &step_id).await;
             self.emit("edit", DAIRA_READ, 0, "started", &step_id).await;
 
@@ -191,7 +191,7 @@ impl<T: ToolDispatcher + ?Sized> ToolDispatcher for AdaptiveTool<T> {
     > {
         Box::pin(async move {
             let step_id = req.step_id.clone();
-            let start = Instant::now();
+            let start = Instant::now(); // entropy-allow: DAIRA trace elapsed-time baseline, no ClockProvider threaded through ToolDispatcher::dispatch_validate; monotonic duration only, never persisted/replayed
             self.emit("validate", DAIRA_TOOL_CALL_START, 0, "started", &step_id).await;
             // Each tier is a deterministic branch decision; emit Branch once
             // up front so the dashboard's call-graph view sees a "tier-fan"
@@ -239,7 +239,7 @@ impl<T: ToolDispatcher + ?Sized> ToolDispatcher for AdaptiveTool<T> {
     ) -> Pin<Box<dyn Future<Output = Option<ClassifiedFailure>> + Send + '_>> {
         Box::pin(async move {
             let step_id = input.step_id.clone();
-            let start = Instant::now();
+            let start = Instant::now(); // entropy-allow: DAIRA trace elapsed-time baseline, no ClockProvider threaded through ToolDispatcher::dispatch_classify_failure; monotonic duration only, never persisted/replayed
             self.emit("classify_failure", DAIRA_TOOL_CALL_START, 0, "started", &step_id).await;
             // classify_failure walks a regex DFA — emit Branch for the
             // taxonomic-decision step.
@@ -273,7 +273,7 @@ impl<T: ToolDispatcher + ?Sized> ToolDispatcher for AdaptiveTool<T> {
     ) -> Pin<Box<dyn Future<Output = Result<CommitOutcome, ToolDispatchError>> + Send + '_>> {
         Box::pin(async move {
             let step_id = req.step_id.clone();
-            let start = Instant::now();
+            let start = Instant::now(); // entropy-allow: DAIRA trace elapsed-time baseline, no ClockProvider threaded through ToolDispatcher::dispatch_git_commit; monotonic duration only, never persisted/replayed
             self.emit("git_commit", DAIRA_TOOL_CALL_START, 0, "started", &step_id).await;
             self.emit("git_commit", DAIRA_WRITE, 0, "started", &step_id).await;
 
@@ -299,7 +299,7 @@ impl<T: ToolDispatcher + ?Sized> ToolDispatcher for AdaptiveTool<T> {
     ) -> Pin<Box<dyn Future<Output = Result<FileView, ToolDispatchError>> + Send + '_>> {
         Box::pin(async move {
             let step_id = String::new();
-            let start = Instant::now();
+            let start = Instant::now(); // entropy-allow: DAIRA trace elapsed-time baseline, no ClockProvider threaded through ToolDispatcher::dispatch_file_read_outline; monotonic duration only, never persisted/replayed
             self.emit("file_read_outline", DAIRA_TOOL_CALL_START, 0, "started", &step_id).await;
             self.emit("file_read_outline", DAIRA_READ, 0, "started", &step_id).await;
 
@@ -321,7 +321,7 @@ impl<T: ToolDispatcher + ?Sized> ToolDispatcher for AdaptiveTool<T> {
         Box::pin(async move {
             let step_id = req.step_id.clone();
             let retry_round = req.retry_round;
-            let start = Instant::now();
+            let start = Instant::now(); // entropy-allow: DAIRA trace elapsed-time baseline, no ClockProvider threaded through ToolDispatcher::dispatch_incremental_compile; monotonic duration only, never persisted/replayed
             self.emit("incremental_compile", DAIRA_TOOL_CALL_START, 0, "started", &step_id).await;
             self.emit("incremental_compile", DAIRA_BRANCH, 0, "started", &step_id).await;
             if retry_round > 0 {

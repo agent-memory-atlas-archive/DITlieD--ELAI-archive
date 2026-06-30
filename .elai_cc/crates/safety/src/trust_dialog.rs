@@ -82,7 +82,7 @@ pub fn ensure_session_trust(
 /// The returned token should be stored in session state and passed to
 /// [`ensure_session_trust`] on all subsequent hook/env load attempts.
 pub fn mint_trust_token(session_id: &str) -> TrustToken {
-    let minted_at_ms = SystemTime::now()
+    let minted_at_ms = SystemTime::now() // entropy-allow: free fn, no ClockProvider threaded through trust-dialog entry; session trust token mint time, not a replayed/persisted determinism value
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);

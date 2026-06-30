@@ -263,7 +263,7 @@ impl ToolInputRepairEvent {
         repair_kinds: Vec<RepairKind>,
         relational_default: Option<RelationalDefault>,
     ) -> Self {
-        let ts_ms = std::time::SystemTime::now()
+        let ts_ms = std::time::SystemTime::now() // entropy-allow: ToolInputRepairEvent::new is a free constructor, no ClockProvider threaded through the OpenAI-compat repair shim; observability ts_ms for the repair event, not a replayed value
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);

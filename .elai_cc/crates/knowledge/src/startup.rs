@@ -126,13 +126,20 @@ pub fn load_reference_vec(project_data_dir: &Path) -> Option<Vec<f32>> {
 /// 1I-R4: writes the reference into the `[index]` table (creating the file from
 /// the current binary's version metadata if it does not exist yet) instead of
 /// the old standalone JSON file. The `created_at` for a fresh file is the
-/// current system time.
-pub fn save_reference_vec(project_data_dir: &Path, vec: &[f32]) -> Result<(), std::io::Error> {
+/// current system time, read through `clock` (entropy-quarantine: this value
+/// is persisted to disk and read back across restarts for drift detection, so
+/// it must be replay-deterministic under a seeded clock in tests).
+pub fn save_reference_vec(
+    project_data_dir: &Path,
+    vec: &[f32],
+    clock: &dyn ClockProvider,
+) -> Result<(), std::io::Error> {
     let path = index_version_path(project_data_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let created_at = std::time::SystemTime::now()
+    let created_at = clock
+        .system_now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
         .unwrap_or(0);
@@ -205,7 +212,7 @@ pub fn startup_readiness_check(
 
     // Drift check: only meaningful if we got Ready and have an embedding to check
     let drift_check = if best_status == ReadinessStatus::Ready {
-        check_canary_drift(canary_embedding, config)
+        check_canary_drift(canary_embedding, config, clock)
     } else {
         DriftCheckResult::Skipped { reason: "canary did not pass" }
     };
@@ -246,6 +253,7 @@ pub fn startup_readiness_check(
 fn check_canary_drift(
     canary_embedding: Option<&[f32]>,
     config: &StartupConfig,
+    clock: &dyn ClockProvider,
 ) -> DriftCheckResult {
     let canary_vec = match canary_embedding {
         Some(v) if !v.is_empty() => v,
@@ -274,7 +282,7 @@ fn check_canary_drift(
         None => {
             // First startup — no reference vector stored yet.
             // Persist the current canary embedding as the reference.
-            if let Err(e) = save_reference_vec(project_dir, canary_vec) {
+            if let Err(e) = save_reference_vec(project_dir, canary_vec, clock) {
                 tracing::warn!("failed to persist canary reference vector: {e}");
             }
             DriftCheckResult::ReferenceGenerated
@@ -365,7 +373,8 @@ mod tests {
     fn reference_vec_round_trip() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let vec = vec![0.1, 0.2, 0.3, 0.4];
-        save_reference_vec(tmp.path(), &vec).expect("save");
+        let clock = SeededClock::new();
+        save_reference_vec(tmp.path(), &vec, &clock).expect("save");
         let loaded = load_reference_vec(tmp.path()).expect("load");
         assert_eq!(vec, loaded);
     }
@@ -470,7 +479,8 @@ mod tests {
     fn drift_check_passes_with_similar_vectors() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let reference = vec![1.0, 0.0, 0.0];
-        save_reference_vec(tmp.path(), &reference).expect("save ref");
+        let clock = SeededClock::new();
+        save_reference_vec(tmp.path(), &reference, &clock).expect("save ref");
 
         let canary = vec![0.99, 0.1, 0.0]; // very similar
         let config = StartupConfig {
@@ -478,7 +488,7 @@ mod tests {
             ..StartupConfig::default()
         };
 
-        let result = check_canary_drift(Some(&canary), &config);
+        let result = check_canary_drift(Some(&canary), &config, &clock);
         match result {
             DriftCheckResult::Passed { similarity } => {
                 assert!(similarity >= DRIFT_THRESHOLD, "sim={similarity}");
@@ -491,7 +501,8 @@ mod tests {
     fn drift_check_fails_with_dissimilar_vectors() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let reference = vec![1.0, 0.0, 0.0];
-        save_reference_vec(tmp.path(), &reference).expect("save ref");
+        let clock = SeededClock::new();
+        save_reference_vec(tmp.path(), &reference, &clock).expect("save ref");
 
         let canary = vec![0.0, 1.0, 0.0]; // orthogonal = sim 0
         let config = StartupConfig {
@@ -499,7 +510,7 @@ mod tests {
             ..StartupConfig::default()
         };
 
-        let result = check_canary_drift(Some(&canary), &config);
+        let result = check_canary_drift(Some(&canary), &config, &clock);
         match result {
             DriftCheckResult::Failed { similarity } => {
                 assert!(similarity < DRIFT_THRESHOLD, "sim={similarity}");
@@ -512,6 +523,7 @@ mod tests {
     fn drift_check_first_startup_generates_reference() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let canary = vec![1.0, 2.0, 3.0];
+        let clock = SeededClock::new();
         let config = StartupConfig {
             project_data_dir: Some(tmp.path().to_path_buf()),
             ..StartupConfig::default()
@@ -520,7 +532,7 @@ mod tests {
         // No reference file exists yet
         assert!(load_reference_vec(tmp.path()).is_none());
 
-        let result = check_canary_drift(Some(&canary), &config);
+        let result = check_canary_drift(Some(&canary), &config, &clock);
         assert!(matches!(result, DriftCheckResult::ReferenceGenerated));
 
         // Reference should now be persisted
@@ -531,7 +543,8 @@ mod tests {
     #[test]
     fn drift_check_skipped_without_embedding() {
         let config = StartupConfig::default();
-        let result = check_canary_drift(None, &config);
+        let clock = SeededClock::new();
+        let result = check_canary_drift(None, &config, &clock);
         assert!(matches!(result, DriftCheckResult::Skipped { .. }));
     }
 
@@ -541,7 +554,8 @@ mod tests {
             project_data_dir: None,
             ..StartupConfig::default()
         };
-        let result = check_canary_drift(Some(&[1.0, 2.0]), &config);
+        let clock = SeededClock::new();
+        let result = check_canary_drift(Some(&[1.0, 2.0]), &config, &clock);
         assert!(matches!(result, DriftCheckResult::Skipped { .. }));
     }
 
@@ -604,7 +618,8 @@ mod tests {
 
         // Store a reference vector
         let reference = vec![1.0, 0.0, 0.0, 0.0];
-        save_reference_vec(&data_dir, &reference).expect("save ref");
+        let clock = SeededClock::new();
+        save_reference_vec(&data_dir, &reference, &clock).expect("save ref");
 
         // Canary vector that's very different (orthogonal)
         let bad_canary = vec![0.0, 1.0, 0.0, 0.0];
@@ -612,7 +627,6 @@ mod tests {
         let bm25 = make_bm25_with_canary(tmp.path());
         let pipeline = make_pipeline(bm25);
         let mut cascade = DegradationCascade::new(false);
-        let clock = SeededClock::new();
         let config = StartupConfig {
             project_data_dir: Some(data_dir),
             ..StartupConfig::default()

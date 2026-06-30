@@ -50,7 +50,7 @@ pub struct MemoryNote {
 impl MemoryNote {
     /// Generate a fresh UUIDv4 hex string for `note_id`.
     pub fn new_id() -> String {
-        uuid::Uuid::new_v4().to_string()
+        uuid::Uuid::new_v4().to_string() // entropy-allow: opaque primary-key row id, never byte-compared by replay (matches orchestrator audit_id/request_id precedent)
     }
 
     /// Cheap invariant check before insert.
