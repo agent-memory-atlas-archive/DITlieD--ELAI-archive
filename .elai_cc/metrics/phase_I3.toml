@@ -6,13 +6,13 @@
 [measured]
 suite = "ssb_write_loop_throughput"
 n_inserts = 10000
-elapsed_secs = 24.805114
-inserts_per_sec = 403.14
+elapsed_secs = 19.872283
+inserts_per_sec = 503.21
 note = "non-deterministic -- wall clock; asserted only as > 0"
 
 [context]
 host_os = "windows"
 write_path = "ssb single-writer task (WAL mode, BEGIN IMMEDIATE, sequential)"
 payload_variant = "FileRead (path string only -- minimal bytes per insert)"
-clock = "SeededClock (deterministic tick; no SystemTime::now in the measured path)"
+clock = "SeededClock (deterministic tick; no SystemTime::now in the measured path)" // entropy-allow: TOML doc-string literal, not a real SystemTime::now call (false-positive substring match)
 atomic_hardening = "I-3 Phase-3C: all 8 checkpoint write sites now use tmp+sync_all+rename"
