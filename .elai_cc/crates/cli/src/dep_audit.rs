@@ -16,6 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
+use elai_core::paths::metrics_dir_path as core_metrics_dir_path;
 use elai_core::ClockProvider;
 use elai_orchestrator::{CatchLayer, StaleApiCatch};
 use elai_rules::schema::{open_rules_db, upsert_deprecated_pattern};
@@ -753,7 +754,7 @@ pub fn run_dep_audit(
         errors: all_errors,
     };
 
-    let metrics_dir = project_dir.join("metrics");
+    let metrics_dir = core_metrics_dir_path(project_dir);
     if !metrics_dir.exists() {
         fs::create_dir_all(&metrics_dir)
             .context("creating metrics directory")?;

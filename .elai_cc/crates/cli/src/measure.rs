@@ -46,6 +46,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use elai_core::paths::metrics_dir_path as core_metrics_dir_path;
 use elai_core::OsClock;
 use elai_orchestrator::{
     check_constraints, AutonomousEvidence, AutonomousGate, AutonomousGateConfig,
@@ -91,7 +92,7 @@ async fn run_measure(
     cloud: bool,
     project_root: PathBuf,
 ) -> Result<(), anyhow::Error> {
-    let metrics_dir = project_root.join("metrics");
+    let metrics_dir = core_metrics_dir_path(&project_root);
     std::fs::create_dir_all(&metrics_dir).with_context(|| {
         format!(
             "elai measure: failed to create metrics dir: {}",

@@ -2,7 +2,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use elai_core::paths::models_dir_path as core_models_dir_path;
+use elai_core::paths::{metrics_dir_path as core_metrics_dir_path, models_dir_path as core_models_dir_path, rules_db_path as core_rules_db_path};
 use elai_orchestrator::{
     ConfigLoader, ProjectContext, load_oauth_credentials, resolve_sandbox_status, RuntimeConfig,
 };
@@ -416,7 +416,7 @@ pub(crate) fn run_dep_audit_command(
     output_format: CliOutputFormat,
 ) -> Result<(), anyhow::Error> {
     let clock = elai_core::OsClock;
-    let rules_db_path = project_dir.join("rules.db");
+    let rules_db_path = core_rules_db_path(project_dir);
     let result = dep_audit::run_dep_audit(project_dir, &rules_db_path, &clock)?;
 
     // Trigger steering vector recomputation when deprecated_patterns changed.
@@ -426,7 +426,7 @@ pub(crate) fn run_dep_audit_command(
             count = result.total_outdated,
             "deprecated_patterns changed, triggering steering vector recomputation"
         );
-        let script_path = project_dir.join("metrics").join("compute_steering_vector.py");
+        let script_path = core_metrics_dir_path(project_dir).join("compute_steering_vector.py");
         let status = Command::new("python")
             .arg(&script_path)
             .arg("--batch")
@@ -483,13 +483,12 @@ pub(crate) fn run_dep_audit_command(
             }))?
         ),
         // C-21 Task 6 — `--output-format toml`. The TOML report is always
-        // emitted to `metrics/dep_audit_<YYYY-MM-DD>.toml` inside
+        // emitted to `<metrics_dir>/dep_audit_<YYYY-MM-DD>.toml` inside
         // `run_dep_audit`. In Toml mode we additionally emit
-        // `metrics/dep_audit_latest.toml` (copy of the dated file) so
-        // self_mod_layer1a::trigger_dep_audit_background can locate the
-        // most recent run by a stable path.
+        // `dep_audit_latest.toml` (copy of the dated file) for callers
+        // that locate the most recent run by a stable path.
         CliOutputFormat::Toml => {
-            let metrics_dir = project_dir.join("metrics");
+            let metrics_dir = core_metrics_dir_path(project_dir);
             let date_part = &result.timestamp[..10];
             let dated_path = metrics_dir.join(format!("dep_audit_{date_part}.toml"));
             let latest_path = metrics_dir.join("dep_audit_latest.toml");

@@ -25,6 +25,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use elai_core::clock::{ClockProvider, OsClock};
+use elai_core::paths::metrics_dir_path as core_metrics_dir_path;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
@@ -96,7 +97,7 @@ impl Default for ProgressWeights {
 /// absent or unparseable (degraded-gracefully, not a hard failure; absence
 /// before the first measured run is expected).
 fn load_weights(project_root: &Path) -> ProgressWeights {
-    let path = project_root.join("metrics").join("progress_reward_weights.toml");
+    let path = core_metrics_dir_path(project_root).join("progress_reward_weights.toml");
     match std::fs::read_to_string(&path) {
         Ok(contents) => match toml::from_str::<ProgressWeights>(&contents) {
             Ok(w) => {

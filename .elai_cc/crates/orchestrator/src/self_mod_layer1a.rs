@@ -36,6 +36,7 @@ use crate::ssb::{
 };
 use elai_core::{CommitOutcome, GitBranchPolicy, GitCommitRequest, ToolDispatcher};
 use elai_core::{ClockProvider as _, OsClock};
+use elai_core::paths::metrics_dir_path as core_metrics_dir_path;
 
 // ---------------------------------------------------------------------------
 // Named constants (spec defaults per phase-4H.txt)
@@ -1616,14 +1617,15 @@ const DEP_AUDIT_SENTINEL_NAME: &str = ".dep_audit_last_trigger";
 /// binary on PATH the spawn returns `false` and we tracing::warn the user
 /// to install it. We never panic.
 pub fn trigger_dep_audit_background(rules_db_path: &Path) -> bool {
-    // Walk up to find metrics/ — same heuristic as the steering refresh.
+    // Walk up to find the canonical .elai_cc/metrics/ directory — same
+    // heuristic as the steering refresh, aligned with core::paths.
     let project_root: PathBuf = {
         let mut cursor: Option<&Path> = rules_db_path.parent();
         let mut found: Option<PathBuf> = None;
         for _ in 0..8 {
             match cursor {
                 Some(dir) => {
-                    if dir.join("metrics").is_dir() {
+                    if core_metrics_dir_path(dir).is_dir() {
                         found = Some(dir.to_path_buf());
                         break;
                     }
@@ -1643,7 +1645,7 @@ pub fn trigger_dep_audit_background(rules_db_path: &Path) -> bool {
             }
         }
     };
-    let metrics_dir = project_root.join("metrics");
+    let metrics_dir = core_metrics_dir_path(&project_root);
     let sentinel = metrics_dir.join(DEP_AUDIT_SENTINEL_NAME);
     // Rate limit — skip if sentinel mtime is younger than 24h.
     if let Ok(meta) = std::fs::metadata(&sentinel) {
