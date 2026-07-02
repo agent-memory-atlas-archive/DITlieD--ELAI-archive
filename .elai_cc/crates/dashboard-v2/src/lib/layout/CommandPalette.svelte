@@ -109,13 +109,33 @@
     },
     {
       id: 'session-merge',
-      label: '/session merge <id>  (opens command window — use CLI)',
-      handler: () => workspace.setPrimaryWindow('command'),
+      label: '/session merge <id>',
+      handler: async () => {
+        const branchId = prompt('Enter branch id to merge:');
+        if (branchId) {
+          try {
+            await stub.merge_session_branch(branchId);
+            alert(`Merged session branch: ${branchId}`);
+          } catch (e) {
+            alert(`Failed to merge: ${e}`);
+          }
+        }
+      },
     },
     {
       id: 'session-close',
-      label: '/session close <id>  (opens command window — use CLI)',
-      handler: () => workspace.setPrimaryWindow('command'),
+      label: '/session close <id>',
+      handler: async () => {
+        const branchId = prompt('Enter branch id to close:');
+        if (branchId) {
+          try {
+            await stub.close_session_branch(branchId);
+            alert(`Closed session branch: ${branchId}`);
+          } catch (e) {
+            alert(`Failed to close: ${e}`);
+          }
+        }
+      },
     },
     {
       id: 'session-list',

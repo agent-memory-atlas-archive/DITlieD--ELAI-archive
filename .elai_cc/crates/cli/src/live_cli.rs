@@ -708,6 +708,52 @@ impl Drop for BuiltRuntime {
 // HookAbortMonitor + clock_to_epoch_ms moved to crate::hook_abort (T12a).
 // Re-exported above via `pub(crate) use crate::hook_abort::*;`.
 
+/// B-9 polish: shared ConversationMessage -> TrimmedMessage mapper used by
+/// both `prepare_turn_runtime` (handoff path) and `try_save_snapshot`
+/// (turn-end checkpoint). `last_seq_now` is the SSB writer's current
+/// last_seq captured by the caller (inside the right tokio context for
+/// each site); the helper is otherwise pure so the two persistence paths
+/// cannot drift apart (cycle-2 blocks: Some(_), stub_ssb_seq: Some(_),
+/// role match, content join).
+fn messages_to_trimmed(
+    msgs: &[ConversationMessage],
+    last_seq_now: Option<u64>,
+) -> Vec<elai_orchestrator::TrimmedMessage> {
+    msgs.iter()
+        .enumerate()
+        .map(|(i, msg)| elai_orchestrator::TrimmedMessage {
+            seq: i as u32,
+            role: match msg.role {
+                MessageRole::User => elai_orchestrator::DagMessageRole::User,
+                MessageRole::Assistant => elai_orchestrator::DagMessageRole::Assistant,
+                MessageRole::System => elai_orchestrator::DagMessageRole::System,
+                MessageRole::Tool => elai_orchestrator::DagMessageRole::Tool,
+            },
+            content: msg
+                .blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into_bytes(),
+            is_stubbed: false,
+            // B-9 T1: anchor each persisted message to the SSB sequence
+            // that immediately preceded it. Falls back to a synthetic
+            // monotonic seq derived from the message index when no SSB
+            // writer is present (still Some(_) — the contract).
+            stub_ssb_seq: Some(last_seq_now.unwrap_or(0).saturating_add(i as u64 + 1)),
+            // B-9 cycle 2 (BLOCK-2 fix): preserve the full ContentBlock
+            // vector so /continue rehydrates ToolUse/ToolResult pairs
+            // intact. Without this, the Anthropic API rejects the
+            // continued conversation with 400 invalid_request_error.
+            blocks: Some(msg.blocks.clone()),
+        })
+        .collect()
+}
+
 impl LiveCli {
     pub(crate) fn new(
         model: String,
@@ -1249,35 +1295,8 @@ impl LiveCli {
                         ssb.last_seq().ok().flatten()
                     })
                     .and_then(|s| u64::try_from(s).ok());
-                let trimmed_msgs: Vec<elai_orchestrator::TrimmedMessage> = session
-                    .messages
-                    .iter()
-                    .enumerate()
-                    .map(|(i, msg)| elai_orchestrator::TrimmedMessage {
-                        seq: i as u32,
-                        role: match msg.role {
-                            MessageRole::User => elai_orchestrator::DagMessageRole::User,
-                            MessageRole::Assistant => elai_orchestrator::DagMessageRole::Assistant,
-                            MessageRole::System => elai_orchestrator::DagMessageRole::System,
-                            MessageRole::Tool => elai_orchestrator::DagMessageRole::Tool,
-                        },
-                        content: msg.blocks.iter().filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        }).collect::<Vec<_>>().join("\n").into_bytes(),
-                        is_stubbed: false,
-                        // B-9 T1: anchor each persisted message to the SSB sequence
-                        // that immediately preceded it. Falls back to a synthetic
-                        // monotonic seq derived from the message index when no SSB
-                        // writer is present (still Some(_) — the contract).
-                        stub_ssb_seq: Some(last_seq_now.unwrap_or(0).saturating_add(i as u64 + 1)),
-                        // B-9 cycle 2 (BLOCK-2 fix): preserve the full ContentBlock
-                        // vector so /continue rehydrates ToolUse/ToolResult pairs
-                        // intact. Without this, the Anthropic API rejects the
-                        // continued conversation with 400 invalid_request_error.
-                        blocks: Some(msg.blocks.clone()),
-                    })
-                    .collect();
+                let trimmed_msgs: Vec<elai_orchestrator::TrimmedMessage> =
+                    messages_to_trimmed(&session.messages, last_seq_now);
                 let valid_ssb_seqs: HashSet<u64> = self.ssb.as_ref()
                     .and_then(|ssb| {
                         use elai_orchestrator::SsbReader;
@@ -1468,32 +1487,8 @@ impl LiveCli {
             })
             .and_then(|s| u64::try_from(s).ok())
         });
-        let messages: Vec<elai_orchestrator::TrimmedMessage> = self
-            .runtime
-            .session()
-            .messages
-            .iter()
-            .enumerate()
-            .map(|(i, msg)| elai_orchestrator::TrimmedMessage {
-                seq: i as u32,
-                role: match msg.role {
-                    MessageRole::User => elai_orchestrator::DagMessageRole::User,
-                    MessageRole::Assistant => elai_orchestrator::DagMessageRole::Assistant,
-                    MessageRole::System => elai_orchestrator::DagMessageRole::System,
-                    MessageRole::Tool => elai_orchestrator::DagMessageRole::Tool,
-                },
-                content: msg.blocks.iter().filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                }).collect::<Vec<_>>().join("\n").into_bytes(),
-                is_stubbed: false,
-                // B-9 T1: stub_ssb_seq must be Some(_) on every persisted message.
-                stub_ssb_seq: Some(last_seq_now.unwrap_or(0).saturating_add(i as u64 + 1)),
-                // B-9 cycle 2 (BLOCK-2 fix): preserve full ContentBlock vec so
-                // /continue rehydrates ToolUse/ToolResult pairs intact.
-                blocks: Some(msg.blocks.clone()),
-            })
-            .collect();
+        let messages: Vec<elai_orchestrator::TrimmedMessage> =
+            messages_to_trimmed(&self.runtime.session().messages, last_seq_now);
         let fsm_label = format!("{fsm_state}");
         let propagation_phase = if phase_label.is_empty() { None } else { Some(phase_label.clone()) };
         let snapshot = elai_orchestrator::Snapshot {
