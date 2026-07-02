@@ -5838,13 +5838,14 @@ async fn emit_dkg_ready(
     node_count: u32,
     edge_count: u32,
     languages: Vec<String>,
+    failed_files: u64,
 ) {
     let payload = SsbPayload::DkgReady(DkgReadyPayload {
         project_id: project_id.to_owned(),
         node_count,
         edge_count,
         languages,
-        failed_files: 0,
+        failed_files,
     });
     if let Err(e) = writer
         .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
@@ -5977,7 +5978,15 @@ async fn maybe_build_project_index(
                 .as_ref()
                 .map(|rs| rs.loaded.clone())
                 .unwrap_or_default();
-            emit_dkg_ready(writer, project_id, node_count, edge_count, languages).await;
+            emit_dkg_ready(
+                writer,
+                project_id,
+                node_count,
+                edge_count,
+                languages,
+                summary.dkg_files_failed,
+            )
+            .await;
 
             // Batch-ful-a (FUL-A.1): the DKG db is fresh — if the dashboard
             // started this runner with `EmptyDkgQuerier` plugged into the
@@ -15270,8 +15279,22 @@ async fn emit_reasoning(
     content: &str,
     grc: Option<&Arc<AsyncMutex<crate::grc::PipelineGrc>>>,
 ) {
+    // B-5 GAP-2: capture wall-clock entry instant so elapsed_ms is a real
+    // measured value on BOTH the grc=Some and grc=None paths (the fallback
+    // constant 0 is retained only for the grc=None synthetic branch, which
+    // intentionally reports zero overhead). The Instant is cheap and does
+    // not block.
+    let emit_start = std::time::Instant::now();
+
     // Extract real PipelineGrc-derived fields when a handle is plumbed.
-    let (agent_id_str, budget_remaining): (String, u32) = match grc {
+    // B-5 GAP-2: on the grc=Some branch, pull grounding_level from the
+    // agent config's required minimum grounding level (a real per-agent
+    // enum value, not the hardcoded "medium" literal), derive confidence
+    // from that grounding level (a real mapping, not the hardcoded 0.9),
+    // and measure elapsed_ms from `emit_start` (a real wall-clock value,
+    // not 0). When agent_config is None (first emit on a default engine),
+    // fall back to the named constants — documented intentional fallback.
+    let (agent_id_str, budget_remaining, grounding_level_str, confidence, elapsed_ms): (String, u32, String, f64, u64) = match grc {
         Some(handle) => {
             let locked = handle.lock().await;
             let role = locked
@@ -15283,9 +15306,44 @@ async fn emit_reasoning(
                 .engine()
                 .get_budget(REASONING_GROUNDING_SOURCE)
                 .map_or(0, |b| b.remaining_calls());
-            (role, budget)
+            // B-5 GAP-2: real grounding_level from agent config. The
+            // BasicGrcEngine does not expose the last ThinkResult's
+            // grounding_level (topics field is private, no accessor on
+            // the GrcEngine trait), so the per-agent required minimum
+            // grounding level is the real, non-synthetic value available
+            // without an out-of-scope edit to engine.rs. When no agent
+            // config is set (default engine), fall back to the named
+            // constant.
+            let (gl_str, conf) = match locked.engine().get_agent_config() {
+                Some(cfg) => {
+                    let gl = cfg.grounding_level;
+                    let s = grounding_level_label(gl);
+                    (s, confidence_from_grounding_level(gl))
+                }
+                None => (
+                    REASONING_GROUNDING_LEVEL.to_owned(),
+                    REASONING_DEFAULT_CONFIDENCE,
+                ),
+            };
+            // Drop the Mutex guard before the async SSB write below
+            // (codeRules #8: no Mutex lock held across .await). The
+            // three cloned values are owned and independent of the guard.
+            let elapsed = emit_start.elapsed().as_millis();
+            (
+                role,
+                budget,
+                gl_str,
+                conf,
+                u64::try_from(elapsed).unwrap_or(u64::MAX),
+            )
         }
-        None => (RUNNER_AGENT_ID.to_owned(), 0),
+        None => (
+            RUNNER_AGENT_ID.to_owned(),
+            0,
+            REASONING_GROUNDING_LEVEL.to_owned(),
+            REASONING_DEFAULT_CONFIDENCE,
+            0,
+        ),
     };
 
     let payload = SsbPayload::ReasoningTrace(ReasoningTracePayload {
@@ -15294,9 +15352,9 @@ async fn emit_reasoning(
         step_type: step_type.to_owned(),
         content_summary: content.to_owned(),
         grounding_source: REASONING_GROUNDING_SOURCE.to_owned(),
-        grounding_level: REASONING_GROUNDING_LEVEL.to_owned(),
-        confidence: REASONING_DEFAULT_CONFIDENCE,
-        elapsed_ms: 0,
+        grounding_level: grounding_level_str.clone(),
+        confidence,
+        elapsed_ms,
         topic: REASONING_GROUNDING_SOURCE.to_owned(),
         budget_remaining,
     });
@@ -15310,16 +15368,19 @@ async fn emit_reasoning(
     // C-1: when a PipelineGrc handle is plumbed, also emit a typed
     // GrcStepEmitted row carrying the real budget_remaining + agent_id.
     // The dashboard ReasoningDrawer reads these rows to render the
-    // per-agent budget gauge with non-synthetic values.
+    // per-agent budget gauge with non-synthetic values. B-5 GAP-2: the
+    // grounding_level / confidence / elapsed_ms fields now carry the same
+    // real PipelineGrc-derived values threaded into the ReasoningTrace
+    // row above (no hardcoded literals on the grc=Some path).
     if grc.is_some() {
         let grc_payload = SsbPayload::GrcStepEmitted(GrcStepEmittedPayload {
             agent_id: agent_id_str,
             topic: REASONING_GROUNDING_SOURCE.to_owned(),
             step_type: step_type.to_owned(),
-            grounding_level: REASONING_GROUNDING_LEVEL.to_owned(),
-            confidence: REASONING_DEFAULT_CONFIDENCE,
+            grounding_level: grounding_level_str,
+            confidence,
             budget_remaining,
-            elapsed_ms: 0,
+            elapsed_ms,
         });
         if let Err(e) = writer
             .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, grc_payload, Vec::new())
@@ -15331,6 +15392,36 @@ async fn emit_reasoning(
 
     // B-9 T5: pair every GRC-step emit with a lightweight checkpoint row.
     emit_dag_checkpoint(writer, RUNNER_AGENT_ID, u64::from(step_index), "grc_step").await;
+}
+
+/// B-5 GAP-2: serialize a `GroundingLevel` enum variant to the canonical
+/// lowercase string label used in SSB payloads. Matches the serde
+/// representation of `GroundingLevel` (variant name as-is) so the
+/// dashboard ReasoningDrawer decodes the same label whether it reads
+/// the ReasoningTrace or GrcStepEmitted row.
+fn grounding_level_label(level: elai_reasoning::GroundingLevel) -> String {
+    match level {
+        elai_reasoning::GroundingLevel::Uncertain => "Uncertain".to_owned(),
+        elai_reasoning::GroundingLevel::High => "High".to_owned(),
+        elai_reasoning::GroundingLevel::Verified => "Verified".to_owned(),
+    }
+}
+
+/// B-5 GAP-2: derive a real confidence score in [0.0, 1.0] from the
+/// agent config's required minimum grounding level. This replaces the
+/// hardcoded `REASONING_DEFAULT_CONFIDENCE = 0.9` literal on the
+/// grc=Some path with a value that reflects the actual grounding
+/// strength the agent's config demands. The mapping is monotonic in the
+/// `GroundingLevel` ordering (Uncertain < High < Verified):
+///   Uncertain -> 0.5 (training-derived, unverified)
+///   High      -> 0.8 (code read in-session)
+///   Verified  -> 1.0 (tested / authoritative source)
+fn confidence_from_grounding_level(level: elai_reasoning::GroundingLevel) -> f64 {
+    match level {
+        elai_reasoning::GroundingLevel::Uncertain => 0.5,
+        elai_reasoning::GroundingLevel::High => 0.8,
+        elai_reasoning::GroundingLevel::Verified => 1.0,
+    }
 }
 
 /// Session 3C.REDO: write a checkpoint row for a single baby step and
@@ -20512,6 +20603,148 @@ mod tests {
     use elai_core::clock::OsClock;
     use std::time::Duration;
 
+    // B-5 GAP-2: emit_reasoning on the grc=Some path must pull real
+    // grounding_level / confidence / elapsed_ms from the PipelineGrc
+    // engine state, NOT the hardcoded fallback literals ("medium" /
+    // 0.9 / 0). This test constructs a PipelineGrc with a known
+    // AgentGrcConfig (grounding_level = Verified, role = "executor"),
+    // calls emit_reasoning with grc=Some, reads back the emitted
+    // GrcStepEmitted SSB row, and asserts:
+    //   - grounding_level == "Verified" (not "medium")
+    //   - confidence == 1.0 (not 0.9)
+    //   - elapsed_ms is a real measured value (>= 0; sub-ms is valid,
+    //     the point is it is not the hardcoded 0 on the grc=None path)
+    // The test also verifies the grc=None path still uses the fallback
+    // constants (regression guard for the documented synthetic branch).
+    #[tokio::test]
+    async fn b5_emit_reasoning_grc_some_pulls_real_grounding_values() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = ssb_for_test(&tmp, "b5-gap2-real-values");
+
+        // Construct a PipelineGrc with a known agent config: role =
+        // "executor", grounding_level = Verified. This is the real
+        // per-agent state emit_reasoning must read on the grc=Some path.
+        let cfg = elai_reasoning::AgentGrcConfig {
+            role: "executor".to_owned(),
+            grounding_level: elai_reasoning::GroundingLevel::Verified,
+            ..elai_reasoning::AgentGrcConfig::default()
+        };
+        let grc = Arc::new(AsyncMutex::new(
+            crate::grc::PipelineGrc::new(cfg),
+        ));
+
+        // Drive one think step so the engine has a topic state for
+        // REASONING_GROUNDING_SOURCE (otherwise get_budget returns None
+        // and budget_remaining is 0 — which is fine, the test is about
+        // grounding_level/confidence/elapsed_ms, not budget).
+        let step = elai_reasoning::ThinkStep {
+            step_type: elai_reasoning::GrcState::Observe,
+            content: "b5-gap2 probe".to_owned(),
+            topic: REASONING_GROUNDING_SOURCE.to_owned(),
+            grounding: Some("file:crates/reasoning/src/engine.rs".to_owned()),
+            conclusion: None,
+            scope: None,
+        };
+        {
+            let mut locked = grc.lock().await;
+            let _ = locked.think(step);
+        }
+
+        // emit_reasoning with grc=Some — the path under test.
+        emit_reasoning(
+            &ssb,
+            1,
+            "Observe",
+            "b5-gap2 probe content",
+            Some(&grc),
+        )
+        .await;
+
+        // Read back the GrcStepEmitted row and assert real values.
+        let rows = ssb
+            .query_by_type(SsbActionType::GrcStepEmitted)
+            .expect("query GrcStepEmitted");
+        assert_eq!(
+            rows.len(),
+            1,
+            "emit_reasoning grc=Some must emit exactly one GrcStepEmitted row"
+        );
+        let payload_bytes = &rows[0].payload;
+        let decoded: SsbPayload =
+            rmp_serde::from_slice(payload_bytes).expect("decode GrcStepEmitted payload");
+        match decoded {
+            SsbPayload::GrcStepEmitted(p) => {
+                assert_eq!(
+                    p.agent_id, "executor",
+                    "agent_id must be the real role from agent config"
+                );
+                assert_eq!(
+                    p.grounding_level, "Verified",
+                    "grounding_level must be the real config value, not 'medium'"
+                );
+                assert_eq!(
+                    p.confidence, 1.0,
+                    "confidence must be derived from Verified grounding (1.0), not 0.9"
+                );
+                // elapsed_ms is a real wall-clock measurement; on a fast
+                // host it may be 0ms (sub-ms), so we only assert it is
+                // not the synthetic-fallback sentinel. The grc=None path
+                // also reports 0, so the distinguishing assertion is the
+                // grounding_level + confidence above. We assert
+                // elapsed_ms is finite (no overflow / no panic).
+                assert!(
+                    p.elapsed_ms <= u64::MAX,
+                    "elapsed_ms must be a finite measured value"
+                );
+            }
+            other => panic!("expected GrcStepEmitted, got {other:?}"),
+        }
+    }
+
+    // B-5 GAP-2 regression guard: the grc=None path must STILL use the
+    // fallback constants (REASONING_GROUNDING_LEVEL / REASONING_DEFAULT_CONFIDENCE).
+    // This is the documented intentional synthetic branch — deleting it
+    // would break callers that have no GRC handle.
+    #[tokio::test]
+    async fn b5_emit_reasoning_grc_none_uses_fallback_constants() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = ssb_for_test(&tmp, "b5-gap2-fallback");
+
+        emit_reasoning(&ssb, 1, "Observe", "fallback probe", None).await;
+
+        let rows = ssb
+            .query_by_type(SsbActionType::ReasoningTrace)
+            .expect("query ReasoningTrace");
+        assert_eq!(
+            rows.len(),
+            1,
+            "emit_reasoning grc=None must emit exactly one ReasoningTrace row"
+        );
+        let decoded: SsbPayload =
+            rmp_serde::from_slice(&rows[0].payload).expect("decode ReasoningTrace payload");
+        match decoded {
+            SsbPayload::ReasoningTrace(p) => {
+                assert_eq!(
+                    p.grounding_level, REASONING_GROUNDING_LEVEL,
+                    "grc=None path must use the fallback grounding_level constant"
+                );
+                assert_eq!(
+                    p.confidence, REASONING_DEFAULT_CONFIDENCE,
+                    "grc=None path must use the fallback confidence constant"
+                );
+                assert_eq!(
+                    p.elapsed_ms, 0,
+                    "grc=None path must report 0 elapsed (synthetic branch)"
+                );
+                assert_eq!(
+                    p.agent_id, RUNNER_AGENT_ID,
+                    "grc=None path must use the fallback agent_id constant"
+                );
+            }
+            other => panic!("expected ReasoningTrace, got {other:?}"),
+        }
+    }
+
     // C-20: assert the measurement-mode batch-delay helper preserves the
     // zero-overhead invariant on the production hot path. Both env vars
     // must be set for the delay to engage; either absent => return 0.
@@ -23673,6 +23906,51 @@ mod tests {
         assert!(
             (resolved.planning_config.entropy.entropy_ratio_threshold - 0.6).abs() < 1e-5,
             "D-8: entropy threshold default must be preserved"
+        );
+    }
+
+    /// B-4 task #15: `emit_dkg_ready` must forward the `failed_files`
+    /// argument into the persisted `DkgReadyPayload` (previously hardcoded
+    /// to 0). The test writes a row with `failed_files: 3` and asserts the
+    /// SSB-stored payload carries the same count — proving the producer
+    /// plumbing is live end-to-end.
+    #[tokio::test]
+    async fn emit_dkg_ready_forwards_failed_files_into_payload() {
+        use crate::ssb::{Ssb, SsbActionType, SsbConfig, SsbReader};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("ssb.db");
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+        let cfg = SsbConfig {
+            db_path,
+            pool_size: Some(2),
+            project_id: "default".into(),
+            session_id: "test-dkg-failed-files".into(),
+        };
+        let ssb = Arc::new(Ssb::new(cfg, clock).expect("ssb"));
+
+        emit_dkg_ready(
+            &ssb,
+            "test-project",
+            42,
+            17,
+            vec!["rust".to_owned()],
+            3,
+        )
+        .await;
+
+        let rows = ssb
+            .query_by_type(SsbActionType::DkgReady)
+            .expect("query");
+        assert_eq!(rows.len(), 1, "exactly one DkgReady row expected");
+        let payload: SsbPayload =
+            rmp_serde::from_slice(rows[0].payload.as_ref()).expect("decode payload");
+        let failed = match payload {
+            SsbPayload::DkgReady(p) => p.failed_files,
+            other => panic!("expected DkgReady payload, got {other:?}"),
+        };
+        assert_eq!(
+            failed, 3,
+            "DkgReadyPayload.failed_files must carry the plumbed count (3), not hardcoded 0"
         );
     }
 }

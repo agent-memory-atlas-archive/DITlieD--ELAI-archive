@@ -133,6 +133,48 @@ async fn fsm_phase_transition_contract_idle_to_planning() {
 }
 
 // ---------------------------------------------------------------------------
+// Consumer-path contract: the dashboard-v2 get_context_state Tauri command
+// reads FSM state via SsbViewer::latest_fsm_state() (commands.rs:9284). This
+// test locks that the viewer path the consumer depends on returns a non-IDLE
+// fsm_state after a transition — guarding against any future rewrite that
+// re-introduces the broken payload_json.get("to_state") traversal (which
+// returned None because SsbPayload is an externally-tagged enum).
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fsm_consumer_path_latest_fsm_state_returns_non_idle_after_transition() {
+    let (_dir, ssb, viewer) = make_ssb_and_viewer();
+    let fsm = Fsm::new(None, 8_000).with_ssb_writer(Arc::clone(&ssb));
+
+    fsm.transition_with_metrics(FsmState::Planning, "plan-phase", Vec::new(), None)
+        .await
+        .expect("IDLE -> PLANNING transition must succeed");
+
+    // Poll until the async SSB write lands.
+    let mut snapshot = viewer
+        .latest_fsm_state()
+        .expect("latest_fsm_state must succeed");
+    for _ in 0..50 {
+        if snapshot.state != "IDLE" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        snapshot = viewer
+            .latest_fsm_state()
+            .expect("latest_fsm_state must succeed");
+    }
+    assert_ne!(
+        snapshot.state, "IDLE",
+        "consumer path: latest_fsm_state().state must be non-IDLE after a transition \
+         (dashboard-v2 get_context_state reads this value into ContextStateDto.fsm_state)",
+    );
+    assert_eq!(
+        snapshot.state, "PLANNING",
+        "consumer path: latest_fsm_state().state must be PLANNING after IDLE->PLANNING",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Compile-time anchor: PhaseTransition variant + action_type round-trip.
 // Locks the SSB type-shape that the Fsm engine writes; if the variant goes
 // away or the action_type string drifts, this test fails to compile.

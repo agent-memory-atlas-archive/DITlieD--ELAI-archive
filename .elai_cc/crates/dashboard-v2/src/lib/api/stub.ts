@@ -147,6 +147,8 @@ import type {
   // B-5 — full CSQ verdict log row + per-role GRC config row.
   CsqLogRow,
   GrcConfigRow,
+  // B-5 GAP-1 — anti-rubber-stamp rejection log row.
+  AuditorRubberStampRejectionRow,
   // B-3 — feature-flag + query-tier + rule-transition surfaces.
   FeatureFlags,
   QueryTierStats,
@@ -755,6 +757,61 @@ export async function get_query_trace_recent(n: number): Promise<QueryTrace[]> {
   return QUERY_TRACES.slice(0, n);
 }
 
+// B-4 task #5: singular per-query QueryTrace inspector. Returns the
+// aggregate SSB row (query_id / tier / stage_count / result_count /
+// total_latency_ms) for one query, or {known:false} when no match.
+export interface QueryTraceDetail {
+  known: boolean;
+  seq?: number;
+  ts?: number;
+  query_id?: string;
+  tier?: string;
+  stage_count?: number;
+  result_count?: number;
+  total_latency_ms?: number;
+}
+
+export async function get_query_trace(query_id: string): Promise<QueryTraceDetail> {
+  logStub('get_query_trace', { query_id });
+  const live = await tryInvoke<QueryTraceDetail>('get_query_trace', { query_id });
+  if (live) return live;
+  await delay();
+  return { known: false };
+}
+
+// B-4 task #13: index version + upgrade-action surface.
+export interface IndexVersionSnapshot {
+  known: boolean;
+  version?: number;
+  dkg_schema_version?: number;
+  vector_dimensions?: { code: number; text: number };
+  bm25_format?: string;
+  created_at?: number;
+  error?: string;
+}
+
+export async function get_index_version(): Promise<IndexVersionSnapshot> {
+  logStub('get_index_version');
+  const live = await tryInvoke<IndexVersionSnapshot>('get_index_version');
+  if (live) return live;
+  await delay();
+  return { known: false };
+}
+
+export interface UpgradeActionSnapshot {
+  known: boolean;
+  action?: 'Reuse' | 'RebuildBm25Only' | 'FullRebuild';
+  error?: string;
+}
+
+export async function get_upgrade_action(): Promise<UpgradeActionSnapshot> {
+  logStub('get_upgrade_action');
+  const live = await tryInvoke<UpgradeActionSnapshot>('get_upgrade_action');
+  if (live) return live;
+  await delay();
+  return { known: false };
+}
+
 // B-4: HyDE hypothesis-preview feed for the QueryTrace inspector. Falls
 // back to [] in browser-only mode (no Tauri runtime) — "no HyDE rows yet"
 // is a legitimate steady state, not a mock-worthy scenario.
@@ -1061,6 +1118,24 @@ export async function get_gg_signals(): Promise<GgSignals> {
   if (live) return live;
   await delay();
   return GG_SIGNALS;
+}
+
+// B-5 GAP-1: anti-rubber-stamp rejection log. Returns recent
+// `auditor_rubber_stamp_rejected` SSB rows so the ReasoningDrawer can
+// render "Auditor: N rubber stamps rejected this session". Falls back
+// to [] in browser-only mode (no Tauri runtime); "no rejections yet"
+// is a legitimate steady state (the counter shows 0).
+export async function get_auditor_rubber_stamp_rejections(
+  limit?: number,
+): Promise<AuditorRubberStampRejectionRow[]> {
+  logStub('get_auditor_rubber_stamp_rejections');
+  const live = await tryInvoke<AuditorRubberStampRejectionRow[]>(
+    'get_auditor_rubber_stamp_rejections',
+    limit !== undefined ? { limit } : undefined,
+  );
+  if (live) return live;
+  await delay();
+  return [];
 }
 
 // ------------------------------------------------------------------

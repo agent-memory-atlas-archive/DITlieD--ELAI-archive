@@ -70,6 +70,8 @@ import type {
   // B-5 — full CSQ verdict log row + per-role GRC config row.
   CsqLogRow,
   GrcConfigRow,
+  // B-5 GAP-1 — anti-rubber-stamp rejection log row.
+  AuditorRubberStampRejectionRow,
   // B-3 #11 — RulesDrawer rule_transition feed.
   RuleTransitionRow,
   // F-8 / Slice A5 — SCF symbolic-conflict feed row.
@@ -294,9 +296,15 @@ function createReasoning() {
   // darwinian-evolve. CladeMetaproductivity / ImmediateScoreFallback.
   let cladeSelections = $state<CladeSelection[]>([]);
 
+  // B-5 GAP-1 — anti-rubber-stamp rejection rows. Empty in steady state
+  // (no auditor rubber-stamp rejections have fired yet). The
+  // ReasoningDrawer renders "Auditor: N rubber stamps rejected this
+  // session" from the array length.
+  let auditorRubberStampsRejected = $state<AuditorRubberStampRejectionRow[]>([]);
+
   async function refresh() {
     try {
-      const [budgets, sweep, csqs, gg, mistakes, feas, reflect, conflicts, admits, clades] = await Promise.all([
+      const [budgets, sweep, csqs, gg, mistakes, feas, reflect, conflicts, admits, clades, rejections] = await Promise.all([
         stub.get_grc_budgets(),
         stub.get_grounding_sweep(),
         stub.get_csq_pending(),
@@ -307,12 +315,14 @@ function createReasoning() {
         stub.get_symbolic_conflicts(),
         stub.get_darwinian_admits(),
         stub.get_clade_selections(),
+        stub.get_auditor_rubber_stamp_rejections(),
       ]);
       grcBudgets = budgets;
       groundingSweep = sweep;
       csqPending = csqs;
       ggSignals = gg;
       mistakePreview = mistakes.slice(0, 3);
+      auditorRubberStampsRejected = rejections;
       feasibility = {
         overall: (feas.overall as 'PASS' | 'FAIL' | 'BLOCKED') ?? 'PASS',
         results: (feas.results ?? []).map((r) => ({
@@ -349,6 +359,8 @@ function createReasoning() {
     get darwinianAdmits() { return darwinianAdmits; },
     // H-46 — CMP parent-selection rows (CladeMetaproductivity / ImmediateScoreFallback).
     get cladeSelections() { return cladeSelections; },
+    // B-5 GAP-1 — anti-rubber-stamp rejection rows. Empty in steady state.
+    get auditorRubberStampsRejected() { return auditorRubberStampsRejected; },
     unwired: {
       groundingSweep: false, // C-1: get_grounding_sweep reads SSB grounding_sweep_result rows
       csqPending: false,     // C-1: get_csq_pending reads SSB csq_evaluated rows where blocked=true
@@ -427,8 +439,8 @@ function createOrchestration() {
     get antiSpiral() { return antiSpiral; },
     get heartbeats() { return heartbeats; },
     unwired: {
-      antiSpiral: true,   // counter returns zeros (no producer)
-      heartbeats: true,   // returns []
+      antiSpiral: false,  // B-6: wired to latest_anti_spiral_hit SSB row
+      heartbeats: true,   // returns [] — no heartbeat SSB producer yet
     },
     bootstrap: rc.bootstrap,
     teardown: rc.teardown,
@@ -880,7 +892,7 @@ function createAntiStaleness() {
     unwired: {
       depAudit: true,         // returns []
       baselineResults: false, // wired in PART11; commands.rs:1757 returns measured metrics from phase_A1_baseline.toml
-      antiSpiral: true,
+      antiSpiral: false,  // B-6: wired to latest_anti_spiral_hit SSB row via get_anti_spiral_counter
     },
     bootstrap: rc.bootstrap,
     teardown: rc.teardown,

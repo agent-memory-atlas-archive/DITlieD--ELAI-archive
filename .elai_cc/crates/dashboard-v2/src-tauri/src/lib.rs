@@ -639,6 +639,8 @@ pub fn run() {
             commands::set_mcp_enabled,
             // KNOWLEDGE
             commands::get_query_trace_recent,
+            // B-4 task #5: singular per-query QueryTrace inspector.
+            commands::get_query_trace,
             // B-4: HyDE hypothesis-preview feed for the QueryTrace inspector.
             commands::get_hyde_query_recent,
             commands::get_search_mode,
@@ -678,6 +680,11 @@ pub fn run() {
             commands::get_rrf_quality_gate_recent,
             commands::get_hyde_skipped_code_query_recent,
             commands::get_rrf_component_weights_recent,
+            // B-4 task #13: index version + upgrade-action surface for
+            // the SettingsWindow panel. Reads on-disk index_version.toml
+            // via elai_knowledge::index_version (no SSB involved).
+            commands::get_index_version,
+            commands::get_upgrade_action,
             // E-8: self-evolving prompts dashboard surface. Reads the
             // prompt_optimization_completed SSB stream + surfaces
             // val/held-out lift + overfit-risk + reflection-LM-too-
@@ -695,6 +702,11 @@ pub fn run() {
             commands::get_csq_log,
             commands::get_feasibility_log,
             commands::get_agent_grc_config,
+            // B-5 GAP-1: anti-rubber-stamp counter read-side command.
+            // Returns recent auditor_rubber_stamp_rejected SSB rows so
+            // the ReasoningDrawer can render "Auditor: N rubber stamps
+            // rejected this session".
+            commands::get_auditor_rubber_stamp_rejections,
             // ORCHESTRATION
             commands::get_evidence_gates,
             commands::get_agents,

@@ -121,8 +121,8 @@ impl VectorModule for OrtVectorModule {
     }
 
     fn readiness(&self) -> ReadinessStatus {
-        let code_ok = self.code_session.embed("test").is_ok();
-        let text_ok = self.text_session.embed("test").is_ok();
+        let code_ok = self.code_session.embed("fn main()").is_ok();
+        let text_ok = self.text_session.embed("fn main()").is_ok();
         match (code_ok, text_ok) {
             (true, true) => ReadinessStatus::Ready,
             (false, false) => ReadinessStatus::Unavailable,
@@ -614,6 +614,31 @@ mod tests {
         assert!(
             (score_0 - score_1).abs() < 1e-6,
             "doc 0 and doc 1 should have equal RRF scores"
+        );
+    }
+
+    #[test]
+    fn readiness_canary_probe_uses_spec_mandated_fn_main() {
+        // Spec knowledge.txt L208: the canary probe in OrtVectorModule::readiness()
+        // must be embed("fn main()"), not embed("test"). The drift-check
+        // cosine-similarity comparison (spec L209-211) uses the same probe
+        // string against a reference embedding persisted in index_version.toml,
+        // so a mismatched probe string would make the drift check meaningless.
+        // OrtVectorModule::readiness() calls OrtSession::embed directly (not
+        // the VectorModule trait), which requires real ONNX models to
+        // construct; this source-level contract test locks the probe string.
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains("self.code_session.embed(\"fn main()\").is_ok()"),
+            "readiness() must probe code_session with \"fn main()\" per spec knowledge.txt L208"
+        );
+        assert!(
+            source.contains("self.text_session.embed(\"fn main()\").is_ok()"),
+            "readiness() must probe text_session with \"fn main()\" per spec knowledge.txt L208"
+        );
+        assert!(
+            !source.contains("embed(\"test\").is_ok()"),
+            "readiness() must NOT use legacy \"test\" probe string"
         );
     }
 }

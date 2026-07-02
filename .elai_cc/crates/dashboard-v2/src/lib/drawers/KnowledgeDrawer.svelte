@@ -12,10 +12,12 @@
     get_canary_drift,
     get_freshness_state,
     get_vector_cache_hit_rate,
+    get_query_trace,
     type ImpactAnalysis,
     type CanaryDriftSnapshot,
     type FreshnessStateSnapshot,
     type VectorCacheHitRateSnapshot,
+    type QueryTraceDetail,
   } from '../api/stub';
   // B-33 — Visualize button cross-link: open GraphWindow + push impact target.
   import { graph } from '../state/graph.svelte';
@@ -77,6 +79,13 @@
     hit_rate_pct: 0.0,
     ts: 0,
   });
+  // B-4 task #5: singular per-query QueryTrace inspector. Polls the
+  // latest query_trace SSB row by query_id. The panel renders the
+  // aggregate fields (tier / stage_count / result_count /
+  // total_latency_ms) with a tier badge + latency bar. `known:false`
+  // until the first row lands.
+  let lastQueryId = $state<string>('');
+  let queryTraceDetail = $state<QueryTraceDetail>({ known: false });
 
   onMount(() => {
     knowledgeData.bootstrap();
@@ -107,6 +116,15 @@
         vectorCacheHitRate = await get_vector_cache_hit_rate();
       } catch (e) {
         // wrapper falls back to known:false; suppress spam.
+      }
+      // B-4 task #5: poll the singular QueryTrace inspector for the
+      // last-entered query_id. Empty string => known:false (no query yet).
+      if (lastQueryId) {
+        try {
+          queryTraceDetail = await get_query_trace(lastQueryId);
+        } catch (e) {
+          // wrapper falls back to known:false; suppress spam.
+        }
       }
     };
     refresh();
@@ -412,6 +430,44 @@
         <span class="ghost-text">no HyDE rows yet — run a STANDARD/DEEP non-code query.</span>
       {/if}
     </div>
+  </Card>
+
+  <!-- B-4 task #5: LAST QUERY inspector (singular per-query by query_id).
+       Renders the aggregate SSB QueryTrace row: tier badge, stage_count,
+       result_count, total_latency_ms bar. The per-stage StageTrace data
+       is emitted via tracing::debug! (not persisted in SSB), so the panel
+       surfaces the aggregate fields the SSB row carries. -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">LAST QUERY INSPECTOR</div>
+    <div class="lq-runner">
+      <input
+        class="lq-runner__input mono"
+        type="text"
+        placeholder="query_id (UUID from QUERY TRACE)"
+        bind:value={lastQueryId}
+        data-testid="last-query-id-input"
+      />
+    </div>
+    {#if queryTraceDetail.known}
+      <div class="lq-detail">
+        <div class="lq-row">
+          <Badge tone={queryTraceDetail.tier === 'DEEP' ? 'warn' : 'teal'} size="xs">
+            {queryTraceDetail.tier ?? 'unknown'}
+          </Badge>
+          <span class="lq-meta">{queryTraceDetail.stage_count ?? 0} stages</span>
+          <span class="lq-meta">{queryTraceDetail.result_count ?? 0} hits</span>
+        </div>
+        <div class="lq-latency-bar-wrap">
+          <div class="lq-latency-bar" style="width: {Math.min((queryTraceDetail.total_latency_ms ?? 0) / 10, 100)}%;"></div>
+        </div>
+        <div class="lq-row">
+          <span class="lq-latency">{queryTraceDetail.total_latency_ms ?? 0} ms total</span>
+          <span class="lq-seq mono">seq {queryTraceDetail.seq ?? 0}</span>
+        </div>
+      </div>
+    {:else}
+      <span class="ghost-text">no query trace for this id — paste a query_id from QUERY TRACE above.</span>
+    {/if}
   </Card>
 
   <!-- E-17 SP4 — RAG retrieval-quality beacons (4 cards).
@@ -1363,5 +1419,59 @@
   .rag-retry-btn:hover {
     background: var(--teal-ghost);
     color: var(--teal-bright);
+  }
+
+  /* B-4 task #5: LAST QUERY inspector panel. */
+  .lq-runner {
+    margin-bottom: 6px;
+  }
+  .lq-runner__input {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-xs);
+    color: var(--text-primary);
+    font-size: 10px;
+    padding: 3px 8px;
+    outline: none;
+    transition: border-color var(--dur-fast) var(--ease-std);
+  }
+  .lq-runner__input:focus { border-color: var(--teal); }
+  .lq-runner__input::placeholder { color: var(--text-ghost); }
+  .lq-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .lq-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .lq-meta {
+    color: var(--text-secondary);
+  }
+  .lq-latency-bar-wrap {
+    width: 100%;
+    height: 4px;
+    border-radius: var(--r-xs);
+    background: var(--bg-input);
+    overflow: hidden;
+  }
+  .lq-latency-bar {
+    height: 100%;
+    background: var(--teal-bright);
+    min-width: 2px;
+  }
+  .lq-latency {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+  }
+  .lq-seq {
+    margin-left: auto;
+    color: var(--text-ghost);
   }
 </style>

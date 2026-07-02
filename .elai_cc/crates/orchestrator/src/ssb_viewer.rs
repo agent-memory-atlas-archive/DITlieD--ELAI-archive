@@ -3958,6 +3958,35 @@ impl SsbViewer {
         Ok(out)
     }
 
+    /// B-6: returns the latest [`crate::ssb::AntiSpiralHitPayload`] or `None`
+    /// when no anti-spiral hit has been recorded yet. Used by the dashboard
+    /// `get_anti_spiral_counter` Tauri command to surface the live counter
+    /// instead of the hardcoded zero stub.
+    pub fn latest_anti_spiral_hit(
+        &self,
+    ) -> Result<Option<crate::ssb::AntiSpiralHitPayload>, SsbViewerError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(
+            params![SsbActionType::AntiSpiralHit.as_sql_str()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        if let Some(row) = rows.next() {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::AntiSpiralHit(p) = payload {
+                return Ok(Some(p));
+            }
+            tracing::warn!(
+                "latest_anti_spiral_hit: payload variant mismatch (schema drift / corrupted row); returning None"
+            );
+        }
+        Ok(None)
+    }
+
     /// C-2: returns up to `limit` recent ambiguity rows. Used by the
     /// dashboard `get_ambiguity_state` Tauri command. Returns the latest
     /// [`crate::ssb::AmbiguityScoredPayload`] plus optional last
@@ -5964,7 +5993,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::ssb::{InterventionKeyword, Ssb, SsbConfig};
+    use crate::ssb::{AntiSpiralHitPayload, InterventionKeyword, Ssb, SsbConfig};
 
     fn test_config(dir: &TempDir) -> SsbConfig {
         SsbConfig {
@@ -6067,6 +6096,54 @@ mod tests {
                 row.summary.chars().count()
             );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn latest_anti_spiral_hit_returns_most_recent_row() {
+        let dir = TempDir::new().expect("tempdir");
+        let config = test_config(&dir);
+        let db_path = config.db_path.clone();
+        let ssb = Ssb::new(config, test_clock()).expect("ssb init");
+
+        let first = SsbPayload::AntiSpiralHit(AntiSpiralHitPayload {
+            agent_id: "executor".into(),
+            step_hash: "abc123".into(),
+            count: 1,
+        });
+        let second = SsbPayload::AntiSpiralHit(AntiSpiralHitPayload {
+            agent_id: "executor".into(),
+            step_hash: "def456".into(),
+            count: 3,
+        });
+        ssb.write_payload("agent-0", 0, first, vec![])
+            .await
+            .expect("write first anti_spiral_hit");
+        ssb.write_payload("agent-0", 0, second, vec![])
+            .await
+            .expect("write second anti_spiral_hit");
+        drop(ssb);
+
+        let viewer = SsbViewer::open(&db_path).expect("viewer open");
+        let hit = viewer
+            .latest_anti_spiral_hit()
+            .expect("viewer query")
+            .expect("at least one row");
+        assert_eq!(hit.agent_id, "executor");
+        assert_eq!(hit.step_hash, "def456");
+        assert_eq!(hit.count, 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn latest_anti_spiral_hit_returns_none_when_empty() {
+        let dir = TempDir::new().expect("tempdir");
+        let config = test_config(&dir);
+        let db_path = config.db_path.clone();
+        let ssb = Ssb::new(config, test_clock()).expect("ssb init");
+        drop(ssb);
+
+        let viewer = SsbViewer::open(&db_path).expect("viewer open");
+        let hit = viewer.latest_anti_spiral_hit().expect("viewer query");
+        assert!(hit.is_none(), "no anti_spiral_hit rows yet -> None");
     }
 
     #[test]

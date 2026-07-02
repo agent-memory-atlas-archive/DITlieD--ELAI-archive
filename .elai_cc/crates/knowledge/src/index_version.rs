@@ -59,7 +59,8 @@ pub struct IndexVersionFile {
 
 /// What the caller should do after comparing the on-disk version against the
 /// running binary's version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum UpgradeAction {
     /// Index matches current version — reuse as-is.
     Reuse,
@@ -580,5 +581,35 @@ mod tests {
         );
         // But dkg.db should be.
         assert!(archive.join("dkg.db").exists());
+    }
+
+    // -- B-4 task #13: UpgradeAction serialises to PascalCase strings so
+    // the dashboard get_upgrade_action Tauri command can forward it as a
+    // JSON string the SettingsWindow panel renders. --
+    #[test]
+    fn upgrade_action_serialises_to_pascal_case() {
+        assert_eq!(
+            serde_json::to_string(&UpgradeAction::Reuse).unwrap(),
+            "\"Reuse\""
+        );
+        assert_eq!(
+            serde_json::to_string(&UpgradeAction::RebuildBm25Only).unwrap(),
+            "\"RebuildBm25Only\""
+        );
+        assert_eq!(
+            serde_json::to_string(&UpgradeAction::FullRebuild).unwrap(),
+            "\"FullRebuild\""
+        );
+    }
+
+    // -- B-4 task #13: UpgradeAction deserialises back from PascalCase. --
+    #[test]
+    fn upgrade_action_deserialises_from_pascal_case() {
+        let reuse: UpgradeAction = serde_json::from_str("\"Reuse\"").unwrap();
+        assert_eq!(reuse, UpgradeAction::Reuse);
+        let bm25: UpgradeAction = serde_json::from_str("\"RebuildBm25Only\"").unwrap();
+        assert_eq!(bm25, UpgradeAction::RebuildBm25Only);
+        let full: UpgradeAction = serde_json::from_str("\"FullRebuild\"").unwrap();
+        assert_eq!(full, UpgradeAction::FullRebuild);
     }
 }

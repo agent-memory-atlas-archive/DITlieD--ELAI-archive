@@ -244,15 +244,7 @@ impl Bm25Index {
         };
         let count = chunks.len();
         let path_str = path.to_string_lossy();
-        for chunk in &chunks {
-            self.writer.add_document(doc!(
-                self.fields.path => path_str.as_ref(),
-                self.fields.content => chunk.content.as_str(),
-                self.fields.line_start => chunk.line_start as u64,
-                self.fields.line_end => chunk.line_end as u64,
-                self.fields.chunk_kind => chunk.kind.as_str()
-            ))?;
-        }
+        self.add_chunks_documents(&path_str, &chunks)?;
         self.writer.commit()?;
         self.reader.reload()?;
         Ok(count)
@@ -378,15 +370,7 @@ impl Bm25Index {
             None => self.chunk_file(path)?,
         };
         let count = chunks.len();
-        for chunk in &chunks {
-            self.writer.add_document(doc!(
-                self.fields.path => path_str.as_ref(),
-                self.fields.content => chunk.content.as_str(),
-                self.fields.line_start => chunk.line_start as u64,
-                self.fields.line_end => chunk.line_end as u64,
-                self.fields.chunk_kind => chunk.kind.as_str()
-            ))?;
-        }
+        self.add_chunks_documents(&path_str, &chunks)?;
         self.writer.commit()?;
         self.reader.reload()?;
         Ok(count)
@@ -399,6 +383,26 @@ impl Bm25Index {
     fn is_binary(data: &[u8]) -> bool {
         let check_len = data.len().min(BINARY_DETECT_BYTES);
         data[..check_len].contains(&0)
+    }
+
+    /// Add `chunks` as tantivy documents under `path_str`. Shared by
+    /// `index_file`, `update_file`, and `walk_dir` to keep the doc! schema
+    /// mapping in exactly one place.
+    fn add_chunks_documents(
+        &mut self,
+        path_str: &str,
+        chunks: &[BM25Chunk],
+    ) -> Result<(), KnowledgeError> {
+        for chunk in chunks {
+            self.writer.add_document(doc!(
+                self.fields.path => path_str,
+                self.fields.content => chunk.content.as_str(),
+                self.fields.line_start => chunk.line_start as u64,
+                self.fields.line_end => chunk.line_end as u64,
+                self.fields.chunk_kind => chunk.kind.as_str()
+            ))?;
+        }
+        Ok(())
     }
 
     fn chunk_file(&self, path: &Path) -> Result<Vec<BM25Chunk>, KnowledgeError> {
@@ -523,15 +527,7 @@ impl Bm25Index {
                 let lines: Vec<&str> = content.lines().collect();
                 let chunks = Self::make_chunks_from_content(&path, &lines, &content);
                 let path_str = path.to_string_lossy();
-                for chunk in &chunks {
-                    self.writer.add_document(doc!(
-                        self.fields.path => path_str.as_ref(),
-                        self.fields.content => chunk.content.as_str(),
-                        self.fields.line_start => chunk.line_start as u64,
-                        self.fields.line_end => chunk.line_end as u64,
-                        self.fields.chunk_kind => chunk.kind.as_str()
-                    ))?;
-                }
+                self.add_chunks_documents(&path_str, &chunks)?;
                 stats.files_indexed += 1;
                 stats.chunks_indexed += chunks.len();
             }

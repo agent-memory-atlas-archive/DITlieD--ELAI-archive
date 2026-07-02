@@ -40,7 +40,7 @@ use anyhow::Context;
 use elai_core::ClockProvider;
 use elai_knowledge::pipeline::PipelineStage;
 use elai_knowledge::QueryTier;
-use elai_orchestrator::{BackendConfig, BackendMode};
+use elai_orchestrator::{BackendConfig, BackendMode, Ssb, SsbConfig};
 use serde::Serialize;
 
 use crate::live_cli::LiveCli;
@@ -134,22 +134,69 @@ pub(crate) fn run(
     let session_id = "bench-rag";
     let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
 
-    // No ssb wired here: bench_rag is meant to run against an existing
-    // index. If the harness wants SSB beacons, the dashboard wires them
-    // in production runs via `live_cli` — the bench surface is the JSON
-    // stdout payload. (Confirmed: not needed for SP6 monotonicity contract.)
-    // 1I-R1: bench passes None ssb so the cascade loop never spawns; the shared
-    // mode handle is required by the signature but unused on this path.
+    // B-4: wire a real SSB so `query_trace` (and the other knowledge SSB
+    // beacons) are emitted to ssb.db on every run. The SSB db path is
+    // `<project_root>/sessions/ssb.db` — this matches the
+    // wiring_contract_check's first candidate path, so the
+    // observable_effect.expect_ssb leg can find the query_trace row.
+    let db_path = project_root.join("sessions").join("ssb.db");
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create sessions dir for ssb.db at {}", parent.display())
+        })?;
+    }
+    let ssb_cfg = SsbConfig {
+        db_path: db_path.clone(),
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: session_id.to_string(),
+    };
+
     let bench_search_mode = std::sync::Arc::new(std::sync::Mutex::new(
         elai_knowledge::degradation::SearchMode::Hybrid,
     ));
-    let (pipeline_opt, _indexing) = LiveCli::build_local_knowledge_stack(
-        &backend_cfg,
-        session_id,
-        &clock,
-        None,
-        bench_search_mode,
-    );
+
+    // B-4: Ssb::new spawns a single-writer tokio task, so it MUST be
+    // constructed inside a live reactor. `build_local_knowledge_stack` also
+    // calls `tokio::spawn` (cascade evaluator loop, startup SSB emits), so
+    // the pipeline construction needs a runtime context too. However,
+    // `sidecar::sidecar_probe_ok` inside `build_local_knowledge_stack` creates
+    // a `reqwest::blocking::Client` which has its own internal tokio runtime —
+    // dropping that inside a `block_on` context panics. We use
+    // `Handle::enter()` for the pipeline construction: it sets up the runtime
+    // context for `tokio::spawn` without entering `block_on`, so the reqwest
+    // blocking client's internal runtime is not nested inside ours.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to build tokio runtime for bench_rag SSB")?;
+
+    let ssb_handle = rt.handle().clone();
+
+    // Construct SSB inside the runtime (Ssb::new spawns a tokio task).
+    let ssb_opt = rt.block_on(async {
+        match Ssb::new(ssb_cfg, clock.clone()) {
+            Ok(s) => Some(Arc::new(s)),
+            Err(e) => {
+                eprintln!("warn: bench_rag Ssb::new failed: {e}; proceeding without SSB");
+                None
+            }
+        }
+    });
+
+    // Construct the pipeline with `Handle::enter()` so `tokio::spawn`
+    // inside `build_local_knowledge_stack` resolves to our runtime, but
+    // we're not inside `block_on` so reqwest::blocking::Client drops cleanly.
+    let (pipeline_opt, _indexing) = {
+        let _guard = ssb_handle.enter();
+        LiveCli::build_local_knowledge_stack(
+            &backend_cfg,
+            session_id,
+            &clock,
+            ssb_opt.clone(),
+            bench_search_mode,
+        )
+    };
 
     let Some(pipeline) = pipeline_opt else {
         let output = BenchRagOutput {
@@ -166,38 +213,67 @@ pub(crate) fn run(
             ),
         };
         emit(&output, json)?;
+        drop(ssb_opt);
         return Ok(());
     };
 
-    let stages = pipeline
-        .query_with_tier(&query, resolved_tier)
-        .with_context(|| format!("query_with_tier({}, {tier}) failed", query.chars().take(80).collect::<String>()))?;
+    // Run the query inside the runtime so the SSB sink's `tokio::spawn`
+    // dispatch finds a live reactor and the query_trace row is written.
+    let query_result = rt.block_on(async {
+        let stages = pipeline
+            .query_with_tier(&query, resolved_tier)
+            .with_context(|| format!("query_with_tier({}, {tier}) failed", query.chars().take(80).collect::<String>()))?;
 
-    let final_results = collect_final_results(&stages, top_k);
-    let final_stage = stages.last().map(|s| s.stage.clone());
-    let stage_rows = stages
-        .iter()
-        .map(|s| StageRow {
-            stage: s.stage.clone(),
-            result_count: s.results.len(),
-            latency_ms: s.latency_ms,
-            error: s.error.clone(),
-            circuit_breaker_state: s.circuit_breaker_state.clone(),
-        })
-        .collect();
+        let final_results = collect_final_results(&stages, top_k);
+        let final_stage = stages.last().map(|s| s.stage.clone());
+        let stage_rows = stages
+            .iter()
+            .map(|s| StageRow {
+                stage: s.stage.clone(),
+                result_count: s.results.len(),
+                latency_ms: s.latency_ms,
+                error: s.error.clone(),
+                circuit_breaker_state: s.circuit_breaker_state.clone(),
+            })
+            .collect();
 
-    let output = BenchRagOutput {
-        tier,
-        top_k,
-        query,
-        project_root: project_root.display().to_string(),
-        total_stages: stages.len(),
-        final_stage,
-        final_results,
-        stages: stage_rows,
-        pipeline_unavailable: None,
-    };
+        let output = BenchRagOutput {
+            tier,
+            top_k,
+            query,
+            project_root: project_root.display().to_string(),
+            total_stages: stages.len(),
+            final_stage,
+            final_results,
+            stages: stage_rows,
+            pipeline_unavailable: None,
+        };
+        Ok::<BenchRagOutput, anyhow::Error>(output)
+    });
+
+    let output = query_result?;
     emit(&output, json)?;
+
+    // B-4: drain spawned SSB write tasks (query_trace + vector_cache_hit_rate
+    // + any degradation beacons) before the runtime drops, so the rows
+    // actually land in ssb.db. The SSB sink spawns fire-and-forget tasks
+    // via `tokio::spawn`; we must keep the Ssb alive and yield to the
+    // runtime so those tasks get polled and send their messages to the
+    // single-writer. Only after the drain do we drop the Ssb handle.
+    rt.block_on(async {
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    });
+    drop(ssb_opt);
+
+    // Drop the pipeline AFTER the runtime so any reqwest::blocking clients
+    // inside it are not dropped inside our runtime's context.
+    drop(pipeline);
+    drop(_indexing);
+    drop(rt);
+
     Ok(())
 }
 

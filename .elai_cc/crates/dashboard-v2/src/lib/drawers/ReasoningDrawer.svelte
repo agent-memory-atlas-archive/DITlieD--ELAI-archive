@@ -200,6 +200,11 @@
   // CSQ entries
   const hasCsqs = $derived(d.csqPending.length > 0);
 
+  // B-5 GAP-1 — anti-rubber-stamp rejection count. The counter badge
+  // renders "Auditor: N rubber stamps rejected this session" from the
+  // reasoningData.auditorRubberStampsRejected feed (10s poll).
+  const rubberStampRejectCount = $derived(d.auditorRubberStampsRejected.length);
+
   // F-8 / Slice A5 — held-pending SCF symbolic conflicts.
   const hasSymbolicConflicts = $derived(d.symbolicConflicts.length > 0);
 
@@ -414,6 +419,40 @@
       </div>
     {:else}
       <span class="ghost-text">no pending CSQs</span>
+    {/if}
+  </Card>
+
+  <!-- 3a. B-5 GAP-1 ANTI-RUBBER-STAMP COUNTER — surfaces the count of
+       auditor_rubber_stamp_rejected SSB rows fired by
+       run_per_level_audit_hook when a synthetic Allow is recorded for an
+       Auditor* tier boundary without any prior FINDING: Verify step.
+       The BasicGrcEngine InsufficientFindings enforcement (engine.rs)
+       rejects the converge; this counter makes that rejection visible
+       in the dashboard. Sourced from reasoningData.auditorRubberStampsRejected
+       (get_auditor_rubber_stamp_rejections, 10s poll). Empty = steady
+       state (no rubber-stamp rejections this session). -->
+  <Card variant={rubberStampRejectCount > 0 ? 'error' : 'plain'} padding={12}>
+    <div class="section-label">AUDITOR ANTI-RUBBER-STAMP</div>
+    <div class="rubber-stamp-counter">
+      <Badge
+        tone={rubberStampRejectCount > 0 ? 'fail' : 'steel'}
+        size="sm"
+      >{rubberStampRejectCount}</Badge>
+      <span class="rubber-stamp-label">
+        Auditor: {rubberStampRejectCount} rubber stamp{rubberStampRejectCount === 1 ? '' : 's'} rejected this session
+      </span>
+    </div>
+    {#if rubberStampRejectCount > 0}
+      <div class="rubber-stamp-list">
+        {#each d.auditorRubberStampsRejected as r (r.seq)}
+          <div class="rubber-stamp-entry">
+            <span class="rubber-stamp-role">{r.role}</span>
+            <span class="rubber-stamp-detail">
+              {r.finding_count}/{r.expected_min} findings (min not met)
+            </span>
+          </div>
+        {/each}
+      </div>
     {/if}
   </Card>
 
@@ -927,6 +966,42 @@
   .csq-actions {
     display: flex;
     gap: 4px;
+  }
+
+  /* B-5 GAP-1 — anti-rubber-stamp counter */
+  .rubber-stamp-counter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .rubber-stamp-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .rubber-stamp-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+  }
+
+  .rubber-stamp-entry {
+    display: flex;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+
+  .rubber-stamp-role {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .rubber-stamp-detail {
+    color: var(--text-secondary);
   }
 
   /* F-8 / Slice A5 — symbolic conflicts */

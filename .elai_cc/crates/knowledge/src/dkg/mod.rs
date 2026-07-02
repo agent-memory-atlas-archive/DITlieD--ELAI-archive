@@ -7,7 +7,6 @@ pub use resolution::{ImportResolver, JvmResolver, CsNamespaceResolver, GoModuleR
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use blake3;
 use regex::Regex;
 use rusqlite::Connection;
 
@@ -293,31 +292,17 @@ impl DkgEngine {
         }
 
         let mut registry = LanguageRegistry::new();
-        let _ = registry.try_register("rust", || Box::new(RustGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("python", || Box::new(PythonGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("go", || Box::new(GoGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("typescript", || Box::new(TypeScriptGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("tsx", || Box::new(TsxGrammar) as Box<dyn LanguageGrammar>);
-        // C-pack C1: Svelte uses tree-sitter-svelte-ng. The grammar reuses the
-        // TypeScript node-extraction walker because Svelte's tree-sitter grammar
-        // embeds JS/TS declaration nodes inside `<script>` blocks.
-        let _ = registry.try_register("svelte", || Box::new(SvelteGrammar) as Box<dyn LanguageGrammar>);
-        // Pass D: Vue SFC composite — outer HTML parse + TS reparse of <script>
-        // blocks + CSS @import extraction from <style> blocks.
-        let _ = registry.try_register("vue", || Box::new(VueGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("java", || Box::new(JavaGrammar) as Box<dyn LanguageGrammar>);
-        // C-17: Kotlin (.kt / .kts) via tree-sitter-kotlin-ng. Closes B-30
-        // MISSING gap for JVM coverage parity with Java/Scala.
-        let _ = registry.try_register("kotlin", || Box::new(KotlinGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("csharp", || Box::new(CSharpGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("ruby", || Box::new(RubyGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("javascript", || Box::new(JavaScriptGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("c", || Box::new(CGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("cpp", || Box::new(CppGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("scala", || Box::new(ScalaGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("php", || Box::new(PhpGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("swift", || Box::new(SwiftGrammar) as Box<dyn LanguageGrammar>);
-        let _ = registry.try_register("bash", || Box::new(BashGrammar) as Box<dyn LanguageGrammar>);
+        // Reuse the canonical Tier-A registration helper instead of duplicating
+        // the 18-grammar `try_register` block inline. The helper covers every
+        // TIER_A_GRAMMARS entry plus Vue (composite-reparse special case) and
+        // is the single source of truth consumed by audits / dashboard surfaces.
+        // Per-grammar failures are recorded inside the helper; we mirror the
+        // previous `let _ = …` swallow by ignoring the per-language outcome here.
+        let _ = crate::tree_sitter_health::registration::register_tier_a_languages(&mut registry);
+        // Tier-B (scala/swift/php/bash) is registered flat for backwards
+        // compatibility with the pre-tier split; the experimental_grammars
+        // feature gate inside the helper keeps it a no-op unless opted in.
+        let _ = crate::tree_sitter_health::registration::register_tier_b_languages(&mut registry);
 
         let status = registry.status();
         tracing::info!(

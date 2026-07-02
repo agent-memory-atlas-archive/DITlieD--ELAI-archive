@@ -679,6 +679,21 @@ export interface GrcConfigRow {
   topic_prefix: string;
 }
 
+// B-5 GAP-1: one row from the anti-rubber-stamp rejection log
+// (`get_auditor_rubber_stamp_rejections` -> SSB
+// `auditor_rubber_stamp_rejected` rows). The ReasoningDrawer renders
+// "Auditor: N rubber stamps rejected this session" from the array
+// length. `role` is the auditor role string (always "auditor" today),
+// `finding_count` is the observed FINDING count, `expected_min` is the
+// gate threshold that was not met.
+export interface AuditorRubberStampRejectionRow {
+  seq: number;
+  ts_ms: number;
+  role: string;
+  finding_count: number;
+  expected_min: number;
+}
+
 // GG Sidecar logit signals
 export interface GgSignals {
   mean_logprob: number;

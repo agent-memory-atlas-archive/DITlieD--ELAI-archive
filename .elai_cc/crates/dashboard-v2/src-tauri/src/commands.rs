@@ -1484,6 +1484,122 @@ pub fn get_query_trace_recent(state: State<'_, AppState>, n: u32) -> CmdResult<V
 /// caller passes `n=0`. Named constant per codeRules baseline.
 const QUERY_TRACE_DEFAULT_LIMIT: usize = 20;
 
+/// B-4 task #5: singular per-query QueryTrace inspector. Reads the most
+/// recent `query_trace` SSB rows and returns the one whose `query_id`
+/// matches the argument. The SSB `QueryTracePayload` (payloads.rs:5010)
+/// carries `query_id` / `tier` / `stage_count` / `result_count` /
+/// `total_latency_ms` — aggregate fields only (per-stage `StageTrace`
+/// data is emitted via `tracing::debug!`, not persisted in SSB). The
+/// KnowledgeDrawer "Last query" panel renders these aggregate fields
+/// with a tier badge + total-latency bar.
+///
+/// Returns `{known:false}` when no SSB DB is reachable OR no row matches
+/// the given `query_id` (cold start / unknown id) so the panel renders
+/// "(no data)" instead of crashing on null.
+#[tauri::command]
+pub fn get_query_trace(state: State<'_, AppState>, query_id: String) -> CmdResult<Value> {
+    let trimmed = query_id.trim();
+    if trimmed.is_empty() {
+        return Ok(json!({ "known": false }));
+    }
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({ "known": false }));
+    };
+    let rows = viewer
+        .recent_rows_of_type(SsbActionType::QueryTrace.as_sql_str(), QUERY_TRACE_DEFAULT_LIMIT)
+        .unwrap_or_default();
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("QueryTrace")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        let id = inner.get("query_id").and_then(|v| v.as_str()).unwrap_or("");
+        if id == trimmed {
+            return Ok(json!({
+                "known": true,
+                "seq": detail.seq,
+                "ts": detail.ts,
+                "query_id": id,
+                "tier": inner.get("tier").cloned().unwrap_or(Value::Null),
+                "stage_count": inner.get("stage_count").and_then(|v| v.as_u64()).unwrap_or(0),
+                "result_count": inner
+                    .get("result_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                "total_latency_ms": inner
+                    .get("total_latency_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            }));
+        }
+    }
+    Ok(json!({ "known": false }))
+}
+
+/// B-4 task #13: read the on-disk `index_version.toml` for the active
+/// project and return the structured `IndexVersionSchema` (version /
+/// dkg_schema_version / vector_dimensions / bm25_format / created_at).
+/// Returns `{known:false, error:"..."}` when the file is absent (first
+/// run) or unreadable so the SettingsWindow panel renders "(no index
+/// version yet)" instead of erroring.
+#[tauri::command]
+pub fn get_index_version(state: State<'_, AppState>) -> CmdResult<Value> {
+    let project_root = state.project_root_snapshot();
+    let indexes_dir = project_root.join(".elai_cc").join("indexes");
+    let version_path = indexes_dir.join("index_version.toml");
+    match elai_knowledge::index_version::read(&version_path) {
+        Ok(Some(file)) => Ok(json!({
+            "known": true,
+            "version": file.index.version,
+            "dkg_schema_version": file.index.dkg_schema_version,
+            "vector_dimensions": {
+                "code": file.index.vector_dimensions.code,
+                "text": file.index.vector_dimensions.text,
+            },
+            "bm25_format": file.index.bm25_format,
+            "created_at": file.index.created_at,
+        })),
+        Ok(None) => Ok(json!({
+            "known": false,
+            "error": "index_version.toml not found (first run)",
+        })),
+        Err(e) => Ok(json!({
+            "known": false,
+            "error": format!("index_version read failed: {e}"),
+        })),
+    }
+}
+
+/// B-4 task #13: compare the on-disk `index_version.toml` against the
+/// current binary's expectations and return the `UpgradeAction` verdict
+/// (`Reuse` / `RebuildBm25Only` / `FullRebuild`). Returns
+/// `{known:false, error:"..."}` when the file is absent or unreadable so
+/// the SettingsWindow panel renders "(no upgrade decision yet)".
+#[tauri::command]
+pub fn get_upgrade_action(state: State<'_, AppState>) -> CmdResult<Value> {
+    let project_root = state.project_root_snapshot();
+    let indexes_dir = project_root.join(".elai_cc").join("indexes");
+    let version_path = indexes_dir.join("index_version.toml");
+    match elai_knowledge::index_version::read(&version_path) {
+        Ok(Some(file)) => {
+            let action = elai_knowledge::index_version::compare(&file.index);
+            Ok(json!({
+                "known": true,
+                "action": action,
+            }))
+        }
+        Ok(None) => Ok(json!({
+            "known": false,
+            "error": "index_version.toml not found (first run)",
+        })),
+        Err(e) => Ok(json!({
+            "known": false,
+            "error": format!("index_version read failed: {e}"),
+        })),
+    }
+}
+
 /// B-4: default row count returned by `get_hyde_query_recent` when the
 /// caller passes `n=0`. Matches `QUERY_TRACE_DEFAULT_LIMIT` — the
 /// KnowledgeDrawer hypothesis-preview panel shows the latest event plus a
@@ -3007,6 +3123,13 @@ const CSQ_PENDING_QUERY_LIMIT: usize = 50;
 /// every blocked row is also in the log.
 const CSQ_LOG_QUERY_LIMIT: usize = 50;
 
+/// B-5 GAP-1: row cap for `get_auditor_rubber_stamp_rejections`. The
+/// ReasoningDrawer counter only needs the count, but the full row list
+/// is returned so the drawer can render a recent-rejections breakdown.
+/// Capped at 200 to bound the JSON payload (dashboardRules #14 / S4
+/// guardrail: clamp limit param to <=200).
+const AUDITOR_RUBBER_STAMP_QUERY_LIMIT: usize = 50;
+
 /// C-3: row cap for `get_feasibility_log`. The existing
 /// `get_feasibility_report` command reads up to 64 rows for the v2
 /// PASS/FAIL summary; the raw log is bounded smaller because it ships
@@ -3051,6 +3174,58 @@ pub fn get_csq_log(state: State<'_, AppState>) -> CmdResult<Value> {
                 .unwrap_or(false),
             "check_count": inner
                 .get("check_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// B-5 GAP-1: read-side command for the anti-rubber-stamp counter.
+/// Returns the most recent N `auditor_rubber_stamp_rejected` SSB rows
+/// (reshaped into `AuditorRubberStampRejectionRow` JSON). The
+/// ReasoningDrawer renders "Auditor: N rubber stamps rejected this
+/// session" from `.length` of the returned array. Returns `[]` when no
+/// SSB DB is reachable OR no rejections have fired yet (steady state).
+///
+/// `limit` is clamped to `AUDITOR_RUBBER_STAMP_QUERY_LIMIT` (50) to
+/// bound the payload; `None` uses the default. Mirrors the
+/// `get_csq_log` reshape pattern (inner payload key
+/// `"AuditorRubberStampRejected"`).
+#[tauri::command]
+pub fn get_auditor_rubber_stamp_rejections(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let effective_limit = limit
+        .unwrap_or(AUDITOR_RUBBER_STAMP_QUERY_LIMIT)
+        .min(AUDITOR_RUBBER_STAMP_QUERY_LIMIT);
+    let rows = viewer
+        .recent_rows_of_type(
+            SsbActionType::AuditorRubberStampRejected.as_sql_str(),
+            effective_limit,
+        )
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("AuditorRubberStampRejected")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        out.push(json!({
+            "seq": detail.seq,
+            "ts_ms": detail.ts,
+            "role": inner.get("role").and_then(|v| v.as_str()).unwrap_or("auditor"),
+            "finding_count": inner
+                .get("finding_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            "expected_min": inner
+                .get("expected_min")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
         }));
@@ -3781,14 +3956,35 @@ pub async fn load_handoff(state: State<'_, AppState>) -> CmdResult<Value> {
 }
 
 #[tauri::command]
-pub fn get_anti_spiral_counter(_state: State<'_, AppState>) -> CmdResult<Value> {
-    Ok(json!({
-        "step_id": "",
-        "edit_count": 0,
-        "threshold": 3,
-        "triggered": false,
-        "last_hash": "",
-    }))
+pub fn get_anti_spiral_counter(state: State<'_, AppState>) -> CmdResult<Value> {
+    // B-6: read the latest AntiSpiralHit SSB row. When no row exists yet
+    // (pre-task or no spiral detected), return the zero counter so the
+    // dashboard renders a "no spiral" state rather than misleading zeros
+    // that look like a wired-but-empty producer.
+    let hit = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.latest_anti_spiral_hit().ok().flatten());
+
+    match hit {
+        Some(p) => Ok(json!({
+            // AntiSpiralHitPayload carries agent_id (the triggering agent) and
+            // step_hash (Blake3 hex of step content); it has no baby-step id,
+            // so step_id is left empty rather than mislabeling agent_id.
+            "step_id": "",
+            "edit_count": p.count,
+            "threshold": elai_orchestrator::SPIRAL_THRESHOLD,
+            "triggered": p.count >= elai_orchestrator::SPIRAL_THRESHOLD,
+            "last_hash": &p.step_hash,
+        })),
+        None => Ok(json!({
+            "step_id": "",
+            "edit_count": 0,
+            "threshold": elai_orchestrator::SPIRAL_THRESHOLD,
+            "triggered": false,
+            "last_hash": "",
+        })),
+    }
 }
 
 #[tauri::command]
@@ -9274,14 +9470,20 @@ pub async fn get_context_state(state: State<'_, AppState>) -> CmdResult<ContextS
         return Ok(dto);
     };
 
-    // FSM state: read the latest phase_transition row's `to` field. The
-    // SsbViewer already has a recent_rows_of_type entry; reuse it so we
-    // do not duplicate SQL.
+    // FSM state: delegate to the contract-tested SsbViewer::latest_fsm_state
+    // (msgpack decode path) — see fsm_phase_transition_contract.rs.
+    if let Ok(snap) = viewer.latest_fsm_state() {
+        if !snap.state.is_empty() {
+            dto.fsm_state = snap.state;
+        }
+    }
+
+    // Substate: the latest phase_transition row may carry a `substate` field
+    // in its payload_json (externally-tagged enum shape). The
+    // latest_fsm_state() snapshot does not surface substate, so we re-read
+    // the raw row here to preserve the pre-refactor substate population.
     if let Ok(rows) = viewer.recent_rows_of_type("phase_transition", 1) {
         if let Some(row) = rows.first() {
-            if let Some(to) = row.payload_json.get("to").and_then(|v| v.as_str()) {
-                dto.fsm_state = to.to_owned();
-            }
             if let Some(sub) = row.payload_json.get("substate").and_then(|v| v.as_str()) {
                 dto.substate = Some(sub.to_owned());
             }

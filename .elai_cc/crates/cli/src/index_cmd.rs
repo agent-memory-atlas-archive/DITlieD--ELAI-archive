@@ -29,8 +29,107 @@
 //! by the embedding model + a single file's chunks, never the whole corpus.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::indexing_service::{IndexingService, ELAI_BULK_VECTOR_BUILD_ENV};
+use elai_orchestrator::ssb::{Ssb, SsbConfig};
+
+/// Construct an SSB writer for `run_full_index` observability, or `None` on
+/// init failure (the build proceeds without observability rows in that case).
+///
+/// `Ssb::new` calls `tokio::spawn`, spawning the single-writer `write_loop`
+/// task. A `current_thread` runtime only polls spawned tasks while something
+/// is actively driving it via `block_on`/`run` on that same thread — merely
+/// `.enter()`-ing it (the previous design) sets thread-local context but never
+/// polls, so the write_loop task is scheduled and then starved forever. The
+/// fix: own the runtime on a dedicated background OS thread that `block_on`s
+/// an async future for the caller's entire synchronous work window, so the
+/// write_loop task keeps getting polled the whole time.
+fn build_index_ssb(project_root: &std::path::Path) -> anyhow::Result<(Option<Arc<Ssb>>, SsbRuntime)> {
+    let ssb_db_path = elai_core::paths::sessions_dir_path(project_root).join("ssb.db");
+    let project_id = elai_core::project_id_from_cwd()
+        .unwrap_or_else(|| format!("{}unknown", elai_core::PROJECT_ID_PREFIX));
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Option<Arc<Ssb>>>();
+    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
+
+    let thread = std::thread::Builder::new()
+        .name("elai-index-ssb-rt".to_string())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::warn!(error = %e, "building tokio runtime for SSB");
+                    let _ = ready_tx.send(None);
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let ssb_config = SsbConfig {
+                    db_path: ssb_db_path,
+                    pool_size: None,
+                    project_id,
+                    session_id: "cli-index-build".to_string(),
+                };
+                let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+                let ssb = match Ssb::new(ssb_config, clock) {
+                    Ok(ssb) => Some(Arc::new(ssb)),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "SSB init failed; index build proceeds without observability rows");
+                        None
+                    }
+                };
+                let _ = ready_tx.send(ssb);
+                // Keep this future (and therefore the runtime driving the
+                // spawned write_loop task) alive until the caller's
+                // synchronous `run_full_index()` finishes and signals shutdown.
+                let _ = shutdown_rx.recv();
+            });
+        })
+        .map_err(|e| anyhow::anyhow!("spawning SSB runtime thread: {e}"))?;
+
+    let ssb = ready_rx
+        .recv()
+        .map_err(|e| anyhow::anyhow!("SSB runtime thread died before init: {e}"))?;
+
+    Ok((
+        ssb,
+        SsbRuntime {
+            thread: Some(thread),
+            shutdown_tx: Some(shutdown_tx),
+        },
+    ))
+}
+
+/// Owns the background thread + shutdown signal that keep the SSB write_loop
+/// task alive for the duration of the index build. Dropping/shutting this
+/// down signals the thread to exit and joins it with a bounded timeout so the
+/// CLI process never hangs waiting on it.
+struct SsbRuntime {
+    thread: Option<std::thread::JoinHandle<()>>,
+    shutdown_tx: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl SsbRuntime {
+    /// Signal the background runtime thread to stop driving the write_loop
+    /// task and join it, bounded so a stuck thread can't hang the CLI.
+    fn shutdown(mut self) {
+        const JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+        drop(self.shutdown_tx.take());
+        if let Some(handle) = self.thread.take() {
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let waiter = std::thread::spawn(move || {
+                let _ = handle.join();
+                let _ = done_tx.send(());
+            });
+            if done_rx.recv_timeout(JOIN_TIMEOUT).is_err() {
+                tracing::warn!("SSB runtime thread did not exit within timeout; proceeding without join");
+            }
+            let _ = waiter.join();
+        }
+    }
+}
 
 /// Run a full, non-interactive index build at `project_root`.
 ///
@@ -50,11 +149,19 @@ pub(crate) fn run_index_build(
     }
 
     let indexes_dir = elai_core::paths::indexes_dir_path(&project_root);
-    let mut service = IndexingService::new(project_root.clone(), indexes_dir.clone());
+    let (ssb, ssb_rt) = build_index_ssb(&project_root)?;
 
-    let summary = service
-        .run_full_index()
-        .map_err(|e| anyhow::anyhow!("index build failed: {e}"))?;
+    let mut service = IndexingService::new(project_root.clone(), indexes_dir.clone());
+    if let Some(ref writer) = ssb {
+        service = service.with_ssb_writer(Arc::clone(writer));
+    }
+
+    let summary = service.run_full_index();
+    // Signal the background SSB runtime thread to stop driving the
+    // write_loop task now that the synchronous build work is done, and join
+    // it with a bounded timeout (never hang the CLI on this).
+    ssb_rt.shutdown();
+    let summary = summary.map_err(|e| anyhow::anyhow!("index build failed: {e}"))?;
 
     if json {
         let body = serde_json::json!({

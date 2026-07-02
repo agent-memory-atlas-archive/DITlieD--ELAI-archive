@@ -685,7 +685,13 @@
   onMount(() => {
     let alive = true;
     void refreshCanaryDrift();
-    const t = setInterval(() => { if (alive) void refreshCanaryDrift(); }, 10_000);
+    void refreshIndexVersion();
+    const t = setInterval(() => {
+      if (alive) {
+        void refreshCanaryDrift();
+        void refreshIndexVersion();
+      }
+    }, 10_000);
     return () => { alive = false; clearInterval(t); };
   });
   async function recomputeCanary() {
@@ -700,6 +706,22 @@
       // Best-effort: surface failure in console; the next periodic
       // poll will reflect any new state.
       console.debug('[SettingsWindow] canary recompute failed', e);
+    }
+  }
+
+  // B-4 task #13: index version + UpgradeAction panel. Reads the on-disk
+  // index_version.toml via get_index_version + get_upgrade_action Tauri
+  // commands. Shows current schema version + pending upgrade decision
+  // (Reuse / RebuildBm25Only / FullRebuild). Same 10s poll cadence as
+  // the canary drift panel.
+  let indexVersionState = $state<stub.IndexVersionSnapshot>({ known: false });
+  let upgradeActionState = $state<stub.UpgradeActionSnapshot>({ known: false });
+  async function refreshIndexVersion() {
+    try {
+      indexVersionState = await stub.get_index_version();
+      upgradeActionState = await stub.get_upgrade_action();
+    } catch (e) {
+      // wrappers fall back to known:false; suppress console spam.
     }
   }
   async function toggleMcp() {
@@ -1402,6 +1424,35 @@
           {:else}
             <span class="s-ping mono">no snapshot yet</span>
             <button class="link-btn" onclick={recomputeCanary}>recompute</button>
+          {/if}
+        </div>
+      </div>
+
+      <!-- B-4 task #13: INDEX VERSION + UpgradeAction -->
+      <div class="s-row">
+        <span class="s-label">Index version</span>
+        <div class="s-control s-control--inline-gap">
+          {#if indexVersionState.known}
+            <span class="s-ping mono">
+              v{indexVersionState.version}
+              / dkg v{indexVersionState.dkg_schema_version}
+              / bm25 {indexVersionState.bm25_format}
+            </span>
+          {:else}
+            <span class="s-ping mono">{indexVersionState.error ?? 'no index_version.toml yet'}</span>
+          {/if}
+        </div>
+      </div>
+
+      <div class="s-row">
+        <span class="s-label">Upgrade action</span>
+        <div class="s-control s-control--inline-gap">
+          {#if upgradeActionState.known}
+            <span class="s-ping mono" class:s-error={upgradeActionState.action !== 'Reuse'}>
+              {upgradeActionState.action}
+            </span>
+          {:else}
+            <span class="s-ping mono">{upgradeActionState.error ?? 'no upgrade decision yet'}</span>
           {/if}
         </div>
       </div>
