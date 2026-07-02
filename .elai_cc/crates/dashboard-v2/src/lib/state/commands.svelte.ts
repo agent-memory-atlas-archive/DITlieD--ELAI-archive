@@ -320,6 +320,15 @@ function createCommands() {
         {
           thinkingEnabled: session.thinkingEnabled,
           effortLevel: session.effortLevel,
+          // B-14 wiring-close: surface server-side intent (from the Rust
+          // classify_intent call in stream_chat) for observability. The TS
+          // classifier (utils/intent.ts) still owns frontend routing; this
+          // is server-side metadata logged for cross-classifier alignment.
+          onStarted: (serverIntent) => {
+            if (serverIntent) {
+              logStub('commands.stream.serverIntent', { requestId, serverIntent, tsIntent: intent });
+            }
+          },
         },
       );
     } catch (err) {

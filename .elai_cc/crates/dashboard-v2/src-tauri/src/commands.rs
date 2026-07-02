@@ -5843,6 +5843,52 @@ pub async fn emit_chat_response(
     Ok(json!({ "seq": seq }))
 }
 
+/// B-14 guardrail #3: remove an `active_streams` entry after natural task
+/// completion (cancel_stream handles the abort path). Held lock is minimum
+/// duration — no `.await` while locked. Silent on missing key (cancel may
+/// have raced ahead).
+fn cleanup_stream_entry(
+    streams: &std::sync::Arc<std::sync::Mutex<BTreeMap<String, tokio::task::AbortHandle>>>,
+    stream_id: &str,
+) {
+    if let Ok(mut g) = streams.lock() {
+        g.remove(stream_id);
+    }
+}
+
+/// B-14 wiring-close: build the sidecar `/v1/messages` request body with
+/// optional thinking/effort forwarding. Extracted from `stream_chat` so the
+/// thinking-block injection logic is unit-testable without a Tauri runtime.
+/// `thinking_enabled` injects an Anthropic-style `thinking` block;
+/// `effort_level` maps to budget tokens (low=2048, medium=4096, high=8192,
+/// max=16384, default=4096). Mirrors `start_chat_stream` effort mapping.
+fn build_stream_request_body(
+    message: &str,
+    thinking_enabled: bool,
+    effort_level: Option<&str>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": "qwen",
+        "messages": [{"role": "user", "content": message}],
+        "stream": true,
+        "max_tokens": 512
+    });
+    if thinking_enabled {
+        let budget = match effort_level {
+            Some("low") => 2048,
+            Some("medium") => 4096,
+            Some("high") => 8192,
+            Some("max") => 16384,
+            _ => 4096,
+        };
+        body["thinking"] = serde_json::json!({
+            "type": "enabled",
+            "budget_tokens": budget
+        });
+    }
+    body
+}
+
 /// B-14 STEP 1: Stream real LLM tokens from the sidecar `/v1/messages` SSE
 /// endpoint to the frontend via Tauri events. Emits `"chat_event"` with
 /// `{ stream_id, event_type, ... }` payloads where `event_type` is one of:
@@ -5852,12 +5898,21 @@ pub async fn emit_chat_response(
 /// `listen("chat_event", ...)` before the first token arrives. The streaming
 /// task runs in a detached tokio task whose `AbortHandle` is stored in
 /// `state.active_streams[stream_id]` so `cancel_stream` can abort it.
+///
+/// B-14 wiring-close: `thinking_enabled` / `effort_level` are forwarded into
+/// the sidecar request body (the same options `start_chat_stream` accepts).
+/// The server-side `classify_intent` is called before streaming so the
+/// `streaming_started` event carries the deterministic intent category —
+/// the frontend TS classifier still owns routing, the Rust classifier
+/// supplies server-side metadata (additive `intent` field, nullable).
 #[tauri::command]
 pub async fn stream_chat(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     message: String,
     session_id: Option<String>,
+    thinking_enabled: Option<bool>,
+    effort_level: Option<String>,
 ) -> CmdResult<Value> {
     let sidecar_url = state
         .sidecar_url
@@ -5876,12 +5931,22 @@ pub async fn stream_chat(
             .as_nanos()
     );
 
+    // B-14 wiring-close: classify intent server-side via the canonical
+    // orchestrator classifier (deterministic floor). The frontend TS
+    // classifier (utils/intent.ts) still owns routing; this supplies
+    // server-side intent metadata in the streaming_started event.
+    let intent_label = elai_orchestrator::intent_classifier::classify_intent(&message)
+        .as_str()
+        .to_string();
+
     // Emit streaming_started event so the frontend can bind its listener.
+    // The `intent` field is additive (nullable for older frontends).
     app.emit(
         "chat_event",
         json!({
             "stream_id": stream_id,
-            "event_type": "streaming_started"
+            "event_type": "streaming_started",
+            "intent": intent_label
         }),
     )
     .map_err(|e| format!("emit failed: {e}"))?;
@@ -5895,14 +5960,21 @@ pub async fn stream_chat(
     let stream_id_clone = stream_id.clone();
     let sidecar_url_clone = sidecar_url.clone();
     let message_clone = message.clone();
+    let thinking_clone = thinking_enabled.unwrap_or(false);
+    let effort_clone = effort_level.clone();
+    // B-14 guardrail #3: clone active_streams Arc into the task so it can
+    // remove its own entry on natural completion (cancel_stream handles the
+    // abort path). Without this, a completed stream leaks its AbortHandle.
+    let active_streams_clone = state.active_streams.clone();
 
     let handle = tokio::task::spawn(async move {
-        let request_body = serde_json::json!({
-            "model": "qwen",
-            "messages": [{"role": "user", "content": message_clone}],
-            "stream": true,
-            "max_tokens": 512
-        });
+        // B-14 wiring-close: forward thinking/effort into the sidecar
+        // request body via the extracted helper (unit-tested).
+        let request_body = build_stream_request_body(
+            &message_clone,
+            thinking_clone,
+            effort_clone.as_deref(),
+        );
 
         let mut response = match streaming_http
             .post(format!("{}/v1/messages", sidecar_url_clone))
@@ -5920,6 +5992,7 @@ pub async fn stream_chat(
                         "error": format!("sidecar connect failed: {e}")
                     }),
                 );
+                cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
                 return;
             }
         };
@@ -5934,6 +6007,7 @@ pub async fn stream_chat(
                     "error": format!("sidecar returned {}", status)
                 }),
             );
+            cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
             return;
         }
 
@@ -5964,6 +6038,7 @@ pub async fn stream_chat(
                                     "event_type": "response_complete"
                                 }),
                             );
+                            cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
                             return;
                         }
                     }
@@ -5976,6 +6051,7 @@ pub async fn stream_chat(
                             "event_type": "response_complete"
                         }),
                     );
+                    cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
                     return;
                 }
                 Err(e) => {
@@ -5987,6 +6063,7 @@ pub async fn stream_chat(
                             "error": format!("stream error: {e}")
                         }),
                     );
+                    cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
                     return;
                 }
             }
@@ -12284,4 +12361,52 @@ pub fn get_lora_ship_gate_status(
         "confirm_user_understanding": confirm_user_understanding,
         "rows": rows_out,
     }))
+}
+
+#[cfg(test)]
+mod b14_stream_chat_tests {
+    use super::build_stream_request_body;
+
+    #[test]
+    fn request_body_without_thinking_has_no_thinking_block() {
+        let body = build_stream_request_body("hello", false, None);
+        assert!(body.get("thinking").is_none(), "thinking block absent");
+        assert_eq!(
+            body["messages"][0]["content"].as_str(),
+            Some("hello")
+        );
+        assert_eq!(body["stream"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn request_body_with_thinking_injects_thinking_block() {
+        let body = build_stream_request_body("hello", true, Some("high"));
+        let thinking = body.get("thinking").expect("thinking block present");
+        assert_eq!(thinking["type"].as_str(), Some("enabled"));
+        assert_eq!(thinking["budget_tokens"].as_u64(), Some(8192));
+    }
+
+    #[test]
+    fn effort_level_maps_to_budget_tokens() {
+        assert_eq!(
+            build_stream_request_body("x", true, Some("low"))["thinking"]["budget_tokens"]
+                .as_u64(),
+            Some(2048)
+        );
+        assert_eq!(
+            build_stream_request_body("x", true, Some("medium"))["thinking"]["budget_tokens"]
+                .as_u64(),
+            Some(4096)
+        );
+        assert_eq!(
+            build_stream_request_body("x", true, Some("max"))["thinking"]["budget_tokens"]
+                .as_u64(),
+            Some(16384)
+        );
+        // Unknown effort defaults to medium (4096).
+        assert_eq!(
+            build_stream_request_body("x", true, None)["thinking"]["budget_tokens"].as_u64(),
+            Some(4096)
+        );
+    }
 }

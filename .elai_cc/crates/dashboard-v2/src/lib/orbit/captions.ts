@@ -34,7 +34,9 @@ export const CAPTION_TABLE: ReadonlyArray<CaptionRow> = Object.freeze([
 
   // RESEARCHING
   { fsm: 'RESEARCHING', grc: 'observe',     template: (c) => `Reading how ${c.research_topic ?? c.baby_step_label} actually works` },
-  { fsm: 'RESEARCHING', grc: 'hypothesize', template: (c) => `Forming a hypothesis about ${c.research_topic ?? c.baby_step_label}` },
+  // HANDOFF-orbit.md:343 canonical: "Trying to figure out {question}".
+  // {question} maps to CaptionContext.research_topic (the research question).
+  { fsm: 'RESEARCHING', grc: 'hypothesize', template: (c) => `Trying to figure out ${c.research_topic ?? c.baby_step_label}` },
   { fsm: 'RESEARCHING', grc: 'verify',      template: (c) => `Cross-checking sources on ${c.research_topic ?? c.baby_step_label}` },
   { fsm: 'RESEARCHING', grc: 'converge',    template: (c) => `Wrapping up research on ${c.research_topic ?? c.baby_step_label}` },
   { fsm: 'RESEARCHING', grc: 'status',      template: (c) => `researcher fetching: ${c.research_topic ?? c.baby_step_label}` },

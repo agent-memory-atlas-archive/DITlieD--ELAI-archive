@@ -2233,12 +2233,14 @@ export async function stream_chat(
   // WIRE-1) which streams real sidecar `/v1/messages` SSE tokens over the
   // unified `chat_event` channel. The server generates the stream_id and
   // returns it; the frontend filters `chat_event` payloads by that id.
-  // thinkingEnabled/effortLevel are not yet forwarded (full
-  // ConversationRuntime integration is a later step); the new command
-  // signature is (message, session_id).
+  // B-14 wiring-close: thinkingEnabled/effortLevel are now forwarded into
+  // the Tauri invoke payload; the Rust command injects them into the
+  // sidecar request body (thinking block + budget tokens).
   const live = await tryInvoke<{ stream_id: string }>('stream_chat', {
     message,
     sessionId: `dash-v2-${requestId}`,
+    thinkingEnabled: options?.thinkingEnabled ?? false,
+    effortLevel: options?.effortLevel ?? null,
   });
   if (live) return { streamId: live.stream_id };
   // Browser-dev mock: keep the requestId as streamId so the mock drip
@@ -2278,7 +2280,7 @@ export async function streamChat(
   onToken: (text: string) => void,
   onEnd: (stopReason: string) => void,
   onError: (message: string, offline: boolean) => void,
-  options?: { thinkingEnabled?: boolean; effortLevel?: string },
+  options?: { thinkingEnabled?: boolean; effortLevel?: string; onStarted?: (intent: string | null) => void },
 ): Promise<() => void> {
   if (!TAURI_AVAILABLE) {
     // Browser-dev mock: drip tokens with 80ms delay.
@@ -2312,6 +2314,7 @@ export async function streamChat(
     event_type: 'streaming_started' | 'token' | 'response_complete' | 'error';
     token?: string;
     error?: string;
+    intent?: string;
   };
 
   let resolvedStreamId: string | null = null;
@@ -2346,8 +2349,11 @@ export async function streamChat(
         break;
       }
       case 'streaming_started':
-        // No content; the typing indicator is driven by streaming=true on
-        // the response card (SkeletonBubble pre-TTFT, CursorSentinel after).
+        // B-14 wiring-close: surface server-side intent (from the Rust
+        // classify_intent call) to the store via the optional onStarted
+        // callback. The TS classifier still owns frontend routing; this
+        // supplies server-side metadata (additive, nullable).
+        if (options?.onStarted) options.onStarted(e.payload.intent ?? null);
         break;
     }
   });
