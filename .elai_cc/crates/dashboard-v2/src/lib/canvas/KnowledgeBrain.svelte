@@ -150,7 +150,7 @@
   }
   .brain-title { font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--text); }
   .brain-meta { color: var(--dim); font-size: 10px; }
-  .brain-note-pending { margin-left: auto; color: var(--dim); font-size: 9px; font-style: italic; }
+  .brain-note-pending { margin-left: auto; color: var(--dim); font-size: 10px; font-style: italic; }
 
   .brain-surface-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
   .brain-surface { position: relative; }
@@ -187,7 +187,7 @@
   }
   .note-title { font-size: 10px; color: var(--text); font-weight: 500; }
   .note-body {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--read);
     line-height: var(--leading-text);
     overflow: hidden;
@@ -205,8 +205,8 @@
     border-top: 1px solid var(--line);
     flex-shrink: 0;
   }
-  .legend { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 9px; }
+  .legend { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 10px; }
   .lk { width: 16px; height: 0; border-top: 1.4px solid var(--d-teal-soft); }
   .lk.dash { border-top-style: dashed; border-color: var(--line2); }
-  .brain-hint { margin-left: auto; color: var(--ghost); font-size: 9px; font-style: italic; }
+  .brain-hint { margin-left: auto; color: var(--ghost); font-size: 10px; font-style: italic; }
 </style>

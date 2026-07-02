@@ -261,7 +261,7 @@
 
   .stage-badge {
     color: var(--dim);
-    font-size: 9px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.12em;
   }
@@ -284,7 +284,7 @@
   .stub-note {
     display: block;
     margin-top: 8px;
-    font-size: 9px;
+    font-size: 10px;
     color: var(--ghost);
     font-style: italic;
   }
@@ -320,7 +320,7 @@
   }
 
   .root-sources {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--dim);
     flex-shrink: 0;
   }
@@ -359,7 +359,7 @@
   }
 
   .node-sources {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--dim);
     flex-shrink: 0;
   }

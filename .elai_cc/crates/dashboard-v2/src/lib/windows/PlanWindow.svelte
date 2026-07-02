@@ -1259,7 +1259,7 @@
   }
 
   .cascade-node-count {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
     background: rgba(255, 255, 255, 0.06);
     border-radius: var(--r-pill);
@@ -1297,7 +1297,7 @@
   }
 
   .cascade-arrow-count {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
     background: rgba(255, 255, 255, 0.06);
     border-radius: var(--r-pill);
@@ -1734,7 +1734,7 @@
 
   .retry-reason {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--read);
     line-height: var(--leading-code);
     word-break: break-word;
@@ -1932,13 +1932,13 @@
 
   .dag-node-label {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     fill: var(--text);
   }
 
   .dag-subhead {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.08em;
     color: var(--dim);

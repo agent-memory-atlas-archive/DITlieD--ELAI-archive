@@ -262,7 +262,7 @@
   .node-status { flex-shrink: 0; display: inline-flex; }
 
   .node-elapsed {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--ghost);
     flex-shrink: 0;
   }

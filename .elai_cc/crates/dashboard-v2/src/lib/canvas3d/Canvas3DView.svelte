@@ -195,7 +195,7 @@
     padding: 6px 12px;
     background: var(--bg-overlay);
     border-bottom: var(--border-width) solid var(--teal-line);
-    font-size: 11px;
+    font-size: 10px;
     letter-spacing: 0.12em;
     color: var(--text-primary);
     user-select: none;
@@ -249,7 +249,7 @@
     background: var(--bg-overlay);
     border: var(--border-width) solid var(--teal-line);
     padding: 6px 9px;
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     max-width: 240px;
     z-index: 3;
@@ -266,7 +266,7 @@
     background: var(--bg-overlay);
     border: var(--border-width) solid var(--teal-line);
     padding: 8px 10px;
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     letter-spacing: 0.08em;
   }

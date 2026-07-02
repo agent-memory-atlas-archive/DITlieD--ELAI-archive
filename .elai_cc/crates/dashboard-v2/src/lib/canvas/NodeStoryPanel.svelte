@@ -176,7 +176,7 @@
     padding: 8px 12px 4px;
   }
   .story-kicker {
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.16em;
     color: var(--dim);
     flex: none;
@@ -194,7 +194,7 @@
   .explain-toggle {
     flex: none;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.08em;
     padding: 2px 8px;
     background: none;
@@ -234,7 +234,7 @@
     position: relative;
     padding: 6px 9px 8px;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.12em;
     background: none;
     border: none;
@@ -269,14 +269,14 @@
     padding-left: 10px;
   }
   .hist-top { display: flex; align-items: baseline; gap: 8px; }
-  .hist-ts { color: var(--dim); font-size: 9px; }
+  .hist-ts { color: var(--dim); font-size: 10px; }
   .hist-conf { font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase; }
   .hist-conf--high { color: var(--d-teal-bright); }
   .hist-conf--medium { color: var(--read); }
   .hist-conf--low { color: var(--dim); }
   .hist-summary { color: var(--text); font-size: 10px; margin: 2px 0; line-height: var(--leading-text); }
   .hist-why { color: var(--read); font-size: 10px; line-height: var(--leading-text); }
-  .hist-scope { color: var(--dim); font-size: 9px; margin-top: 3px; }
+  .hist-scope { color: var(--dim); font-size: 10px; margin-top: 3px; }
   .hist-receipts { display: flex; flex-wrap: wrap; gap: 4px; margin: 5px 0 3px; }
   .rchip {
     font-size: 8px;
@@ -288,7 +288,7 @@
   .diff-toggle {
     background: none; border: none;
     color: var(--dim); font-family: var(--font-mono);
-    font-size: 9px; cursor: pointer; padding: 2px 0;
+    font-size: 10px; cursor: pointer; padding: 2px 0;
     transition: color var(--dur-fast) var(--ease-out);
   }
   .diff-toggle:hover { color: var(--text); }
@@ -306,22 +306,22 @@
 
   /* EXPLAIN */
   .explain-body { color: var(--text); font-size: 12px; line-height: 1.6; margin: 0 0 8px; }
-  .explain-note { color: var(--dim); font-size: 9px; font-style: italic; }
+  .explain-note { color: var(--dim); font-size: 10px; font-style: italic; }
 
   /* WIRING / RECEIPTS / ACTIVITY rows */
   .wiring, .receipts, .activity { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .wire-row, .receipt-row { display: flex; align-items: center; gap: 8px; }
-  .wire-label, .receipt-gate { color: var(--dim); font-size: 9px; min-width: 92px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .wire-label, .receipt-gate { color: var(--dim); font-size: 10px; min-width: 92px; text-transform: uppercase; letter-spacing: 0.06em; }
   .wire-val, .receipt-detail { color: var(--read); font-size: 10px; overflow-wrap: anywhere; }
 
   .act-row { display: flex; gap: 10px; }
-  .act-ts { color: var(--dim); font-size: 9px; min-width: 64px; flex: none; }
+  .act-ts { color: var(--dim); font-size: 10px; min-width: 64px; flex: none; }
   .act-line { color: var(--read); font-size: 10px; }
 
   /* COST */
   .cost { display: flex; flex-direction: column; gap: 5px; }
   .cost-row { display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--line); }
-  .cost-label { color: var(--ghost); font-size: 9px; letter-spacing: 0.1em; min-width: 84px; flex: none; }
+  .cost-label { color: var(--ghost); font-size: 10px; letter-spacing: 0.1em; min-width: 84px; flex: none; }
   .cost-val { color: var(--read); font-size: 10px; }
   .cost-usd { color: var(--d-teal-bright); }
 </style>

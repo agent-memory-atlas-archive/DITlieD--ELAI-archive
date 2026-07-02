@@ -196,7 +196,7 @@
 
   .avg-cell-label {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
     letter-spacing: 0.06em;
   }
@@ -223,7 +223,7 @@
 
   .avg-err-chip {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     padding: 1px 5px;
     border-radius: var(--r-xs);
     background: rgba(220, 60, 60, 0.12);
@@ -232,7 +232,7 @@
 
   .avg-err-more {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 

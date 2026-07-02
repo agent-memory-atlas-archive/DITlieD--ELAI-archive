@@ -281,13 +281,13 @@
   .sys-broken { color: var(--text); margin-left: 6px; }
   .sys-pending-note {
     color: var(--dim);
-    font-size: 9px;
+    font-size: 10px;
     font-style: italic;
   }
   .sys-statepick { margin-left: auto; display: flex; gap: 1px; }
   .state-btn {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     padding: 2px 6px;
     background: none;
     color: var(--ghost);
@@ -382,7 +382,7 @@
     text-overflow: ellipsis;
   }
   .node-ref {
-    font-size: 9px;
+    font-size: 10px;
     color: var(--dim);
     white-space: nowrap;
     overflow: hidden;
@@ -418,7 +418,7 @@
   }
   .insp-close:hover { color: var(--text); }
   .insp-kind {
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.14em;
     color: var(--dim);
   }
@@ -449,7 +449,7 @@
     border-bottom: 1px solid var(--line);
   }
   .insp-label {
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.1em;
     color: var(--ghost);
     min-width: 72px;
