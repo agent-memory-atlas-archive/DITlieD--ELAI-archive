@@ -1,32 +1,28 @@
 // canvas3d/theme.ts — ELAI palette for the 3D view.
 //
-// three.js needs numeric colors, so we read the design tokens off :root at
-// runtime (tokens.css stays the single source of truth) and fall back to
-// the token values verbatim when running headless / before styles mount.
-// Fallback hexes mirror tokens.css and must not drift from it.
+// PINNED to the DESIGN.md §3 ramp (workflow/design/DESIGN.md, v1.5) — ONE
+// teal family on near-black #0a0f0e, red/amber BANNED as status colors.
+// State language per §6: done = teal-deep, active = teal-bright pulsing,
+// pending = dim, warn = white whisper, fail = MONO INVERSION white-hot.
+//
+// HDR: the scene renders through an UnrealBloom pass. Anything whose
+// color exceeds the bloom threshold GLOWS FROM ITSELF — node cores,
+// beams, packets. Slab decor sits far below the threshold so structure
+// reads as a faint hologram, never competing with data. This module is
+// the single color source for the 3D scene (three.js needs numerics;
+// dashboard tokens.css still carries the pre-DESIGN.md ramp, so we do
+// not read it).
 
 import * as THREE from 'three';
 import type { QuinaryState } from '../canvas/canvas_state';
 
-const FALLBACK: Record<string, string> = {
-  '--bg-void': '#0a0e12',
-  '--teal': '#1B7A6E',
-  '--teal-bright': '#24a08e',
-  '--steel': '#5A7A9E',
-  '--purple': '#7C5CBF',
-  '--warn': '#c49b2a',
-  '--fail': '#c44040',
-  '--text-primary': '#d0d7de',
-  '--text-secondary': '#6e7681',
-};
-
-function cssColor(token: string): THREE.Color {
-  let raw = '';
-  if (typeof document !== 'undefined') {
-    raw = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
-  }
-  return new THREE.Color(raw !== '' ? raw : FALLBACK[token]);
-}
+// DESIGN.md §3 anchors
+const BG = '#0a0f0e';
+const TEAL = '#2BBBA4';
+const TEAL_BRIGHT = '#34C2AA';
+const TEAL_DEEP = '#1B7A6E';
+const TEXT = '#f2f5f4';
+const DIM = '#79827e';
 
 export interface C3Theme {
   background: THREE.Color;
@@ -39,30 +35,28 @@ export interface C3Theme {
 }
 
 export function readTheme(): C3Theme {
-  const teal = cssColor('--teal');
-  const tealBright = cssColor('--teal-bright');
-  const steel = cssColor('--steel');
-  const purple = cssColor('--purple');
-  const warn = cssColor('--warn');
-  const fail = cssColor('--fail');
+  const teal = new THREE.Color(TEAL);
+  const tealBright = new THREE.Color(TEAL_BRIGHT);
+  const tealDeep = new THREE.Color(TEAL_DEEP);
+  const text = new THREE.Color(TEXT);
   return {
-    background: cssColor('--bg-void').multiplyScalar(0.55),
-    gridFaint: teal.clone().multiplyScalar(0.4),
+    background: new THREE.Color(BG),
+    gridFaint: teal.clone().multiplyScalar(0.72),
     gridBright: tealBright.clone(),
     stateColors: {
-      done: teal.clone(),
-      active: tealBright.clone().multiplyScalar(1.35),
-      pending: steel.clone().multiplyScalar(0.65),
-      warn: warn.clone(),
-      fail: fail.clone(),
+      done: tealDeep.clone().multiplyScalar(1.6),
+      active: tealBright.clone().multiplyScalar(2.3), // hot emissive, pulses
+      pending: new THREE.Color(DIM).multiplyScalar(0.75),
+      warn: text.clone().multiplyScalar(1.05),
+      fail: text.clone().multiplyScalar(2.6), // mono inversion: blooms white
     },
-    spawnBeam: tealBright.clone().multiplyScalar(1.2),
-    treeTrace: teal.clone(),
-    selection: purple.clone(),
+    spawnBeam: tealBright.clone().lerp(text, 0.45).multiplyScalar(1.8),
+    treeTrace: teal.clone().multiplyScalar(1.1),
+    selection: tealBright.clone().multiplyScalar(2.4),
   };
 }
 
-/** Shared radial-falloff sprite texture for glow points (drawn once). */
+/** Shared radial-falloff sprite texture (dust, packets, atmosphere). */
 export function makeGlowTexture(): THREE.Texture {
   const size = 64;
   const cnv = document.createElement('canvas');

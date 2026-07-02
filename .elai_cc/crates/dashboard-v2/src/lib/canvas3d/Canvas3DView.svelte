@@ -33,7 +33,6 @@
 
   let paused = $state(false);
   let follow = $state(false);
-  let pixelFactor = $state(3);
   let fps = $state(0);
   let nodeCount = $state(0);
   let layerCount = $state(0);
@@ -107,9 +106,6 @@
   });
 
   $effect(() => {
-    scene?.setPixelFactor(pixelFactor);
-  });
-  $effect(() => {
     scene?.setFollowActive(follow);
   });
 </script>
@@ -127,11 +123,6 @@
       {paused ? 'RESUME' : 'PAUSE'}
     </button>
     <button class="c3-btn" onclick={() => scene?.resetCamera()}>RESET CAM</button>
-    <span class="c3-px">
-      PX
-      <input type="range" min="1" max="6" step="1" bind:value={pixelFactor} />
-      {pixelFactor}
-    </span>
   </div>
 
   <!-- legend -->
@@ -191,7 +182,6 @@
     display: block;
     width: 100%;
     height: 100%;
-    image-rendering: pixelated;
   }
 
   .c3-bar {
@@ -216,13 +206,6 @@
   }
   .c3-stat { color: var(--text-secondary); }
   .c3-spacer { flex: 1; }
-  .c3-px {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-secondary);
-  }
-  .c3-px input { width: 72px; accent-color: var(--teal); }
 
   .c3-btn {
     background: transparent;
@@ -251,12 +234,13 @@
     user-select: none;
   }
   .c3-key { display: inline-flex; align-items: center; gap: 5px; }
+  /* DESIGN.md §6: one teal family + mono inversion; red/amber are dead */
   .dot { width: 7px; height: 7px; display: inline-block; }
-  .dot.done { background: var(--pass); }
+  .dot.done { background: var(--teal); }
   .dot.active { background: var(--teal-bright); box-shadow: 0 0 6px var(--teal-bright); }
-  .dot.pending { background: var(--steel); opacity: 0.6; }
-  .dot.warn { background: var(--warn); }
-  .dot.fail { background: var(--fail); }
+  .dot.pending { background: var(--text-secondary); opacity: 0.55; }
+  .dot.warn { background: transparent; border: 1px solid var(--text-primary); }
+  .dot.fail { background: var(--text-primary); box-shadow: 0 0 6px var(--text-primary); }
   .dot.beam { background: var(--teal-bright); height: 2px; width: 14px; }
 
   .c3-tip {
@@ -301,8 +285,8 @@
   }
   .p-row b { color: var(--text-primary); font-weight: 600; }
   .p-row .st-active { color: var(--teal-bright); }
-  .p-row .st-done { color: var(--pass); }
-  .p-row .st-warn { color: var(--warn); }
-  .p-row .st-fail { color: var(--fail); }
+  .p-row .st-done { color: var(--teal); }
+  .p-row .st-warn { color: var(--text-primary); }
+  .p-row .st-fail { background: var(--text-primary); color: var(--bg-void); padding: 0 4px; }
   .p-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 </style>

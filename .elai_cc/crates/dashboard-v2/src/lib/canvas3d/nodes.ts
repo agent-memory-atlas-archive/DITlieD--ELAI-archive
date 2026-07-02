@@ -1,172 +1,201 @@
-// canvas3d/nodes.ts — node rendering: instanced cores + a glow point cloud.
-//
-// Two draw calls total regardless of node count:
-//   1. InstancedMesh of small boxes (the solid cores, raycast target)
-//   2. THREE.Points with a radial sprite texture (the bloom-free glow;
-//      active nodes pulse via a per-point phase attribute + time uniform)
-// Rebuilt wholesale on graph rev change (hundreds of nodes — trivial);
-// only the time uniform updates per frame.
+// canvas3d/nodes.ts — holographic node constructs, three instanced draws:
+//   1. CAGE: a real-thickness wireframe cube (12 merged edge bars) — the
+//      containment lattice, teal, translucent.
+//   2. CORE: a floating octahedron suspended inside the cage, HDR state
+//      color, slowly spinning; the bloom pass makes it a live energy gem.
+//      Active/fail cores pulse their emissive level.
+//   3. PICK PROXY: an invisible solid cube (colorWrite off) so raycast
+//      picking hits a full volume instead of thin bars.
+// Matrix / GitS "virtual construct" language — no physical-hardware look.
 
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { C3Graph } from './types';
 import { fnvHash } from './types';
-import type { LayoutResult } from './layout';
 import type { C3Theme } from './theme';
 
-const CORE_SIZE = 3.4;
-const MAX_INSTANCES = 2048;
+const NODE_SIZE = 5.2;
+const BAR = 0.34; // cage bar thickness
 
-const GLOW_VERT = /* glsl */ `
-  attribute float aSize;
-  attribute vec3 aColor;
-  attribute float aPhase;
-  attribute float aPulse;
-  uniform float uTime;
-  varying vec3 vColor;
-  varying float vBoost;
-  void main() {
-    float pulse = aPulse * (0.5 + 0.5 * sin(uTime * 2.6 + aPhase));
-    vBoost = 1.0 + pulse * 0.9;
-    vColor = aColor;
-    vec4 mv = modelViewMatrix * vec4(position, 1.0);
-    gl_PointSize = aSize * vBoost * (240.0 / -mv.z);
-    gl_Position = projectionMatrix * mv;
+/** 12 edge bars of a cube, merged into one geometry */
+function cageGeometry(size: number, bar: number): THREE.BufferGeometry {
+  const h = size / 2;
+  const parts: THREE.BoxGeometry[] = [];
+  const mk = (sx: number, sy: number, sz: number, x: number, y: number, z: number) => {
+    const g = new THREE.BoxGeometry(sx, sy, sz);
+    g.translate(x, y, z);
+    parts.push(g);
+  };
+  for (const y of [-h, h]) {
+    for (const z of [-h, h]) mk(size + bar, bar, bar, 0, y, z);
+    for (const x of [-h, h]) mk(bar, bar, size + bar, x, y, 0);
   }
-`;
+  for (const x of [-h, h]) {
+    for (const z of [-h, h]) mk(bar, size + bar, bar, x, 0, z);
+  }
+  const merged = mergeGeometries(parts);
+  for (const p of parts) p.dispose();
+  return merged;
+}
 
-const GLOW_FRAG = /* glsl */ `
-  uniform sampler2D uTex;
-  varying vec3 vColor;
-  varying float vBoost;
-  void main() {
-    float a = texture2D(uTex, gl_PointCoord).a;
-    gl_FragColor = vec4(vColor * vBoost, a);
-  }
-`;
+export interface NodeTransform {
+  pos: THREE.Vector3;
+  /** 0..1 birth scale */
+  scale: number;
+}
 
 export interface NodeBuffers {
-  cores: THREE.InstancedMesh;
-  glow: THREE.Points;
-  /** instanceId -> nodeId, for raycast picking */
+  /** parent of cage + core + proxy; add/remove this */
+  group: THREE.Group;
+  /** raycast target (instanceId -> pickIndex) */
+  pickMesh: THREE.InstancedMesh;
   pickIndex: string[];
   dispose(): void;
+  /** per-frame, BEFORE updateTransforms: drives pulse + core spin */
   setTime(t: number): void;
-  /** rewrite one node's tint (selection highlight) without a full rebuild */
+  updateTransforms(get: (id: string) => NodeTransform | null): void;
   highlight(nodeId: string | null, theme: C3Theme): void;
 }
 
 export function buildNodes(
   g: C3Graph,
-  layout: LayoutResult,
+  ids: string[],
   theme: C3Theme,
-  glowTexture: THREE.Texture,
+  _glowTexture: THREE.Texture,
 ): NodeBuffers {
-  const ids: string[] = [];
-  for (const id of layout.visible) {
-    if (layout.placements.has(id)) ids.push(id);
-  }
-  ids.sort(); // deterministic instance order
-  const count = Math.min(ids.length, MAX_INSTANCES);
+  const count = ids.length;
+  const cap = Math.max(1, count);
 
-  // --- cores ---
-  const coreGeo = new THREE.BoxGeometry(CORE_SIZE, CORE_SIZE * 0.62, CORE_SIZE);
-  const coreMat = new THREE.MeshBasicMaterial({
+  const cageGeo = cageGeometry(NODE_SIZE, BAR);
+  const cageMat = new THREE.MeshBasicMaterial({
     transparent: true,
-    opacity: 0.92,
+    opacity: 0.9,
     toneMapped: false,
   });
-  const cores = new THREE.InstancedMesh(coreGeo, coreMat, count);
-  cores.renderOrder = 3;
+  const cage = new THREE.InstancedMesh(cageGeo, cageMat, cap);
+  cage.renderOrder = 3;
+  cage.frustumCulled = false;
 
-  // --- glow ---
-  const gPos = new Float32Array(count * 3);
-  const gSize = new Float32Array(count);
-  const gColor = new Float32Array(count * 3);
-  const gPhase = new Float32Array(count);
-  const gPulse = new Float32Array(count);
+  const coreGeo = new THREE.OctahedronGeometry(NODE_SIZE * 0.36, 0);
+  const coreMat = new THREE.MeshBasicMaterial({ toneMapped: false });
+  const core = new THREE.InstancedMesh(coreGeo, coreMat, cap);
+  core.renderOrder = 4;
+  core.frustumCulled = false;
 
-  const m = new THREE.Matrix4();
-  const baseColors = new Map<string, THREE.Color>();
+  const proxyGeo = new THREE.BoxGeometry(NODE_SIZE * 1.15, NODE_SIZE * 1.15, NODE_SIZE * 1.15);
+  const proxyMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+  const proxy = new THREE.InstancedMesh(proxyGeo, proxyMat, cap);
+  proxy.frustumCulled = false;
 
+  const group = new THREE.Group();
+  group.add(cage, core, proxy);
+
+  const coreBase: THREE.Color[] = new Array(count);
+  const cageBase: THREE.Color[] = new Array(count);
+  const bigScale = new Float32Array(count);
+  const phase = new Float32Array(count);
+  const pulse = new Float32Array(count);
+  const pulsing: number[] = [];
+
+  const cageTint = theme.gridBright.clone().multiplyScalar(0.55);
   for (let i = 0; i < count; i++) {
     const id = ids[i];
     const node = g.nodes.get(id);
-    const place = layout.placements.get(id);
-    if (!node || !place) continue;
-    const [x, y, z] = place.pos;
-    const cy = y + CORE_SIZE * 0.31; // core rests on the slab top
-    m.makeTranslation(x, cy, z);
-    // roots / spawners read bigger
-    const big = node.parentId === null || node.spawnedLayerId !== null;
-    if (big) {
-      m.multiply(new THREE.Matrix4().makeScale(1.7, 1.5, 1.7));
+    const state = node?.state ?? 'pending';
+    const big = node !== undefined && (node.parentId === null || node.spawnedLayerId !== null);
+    bigScale[i] = big ? 1.6 : 1;
+    coreBase[i] = theme.stateColors[state];
+    // the cage echoes the state faintly; the core carries the voltage
+    cageBase[i] =
+      state === 'fail' || state === 'warn'
+        ? coreBase[i].clone().multiplyScalar(0.4)
+        : cageTint;
+    cage.setColorAt(i, cageBase[i]);
+    core.setColorAt(i, coreBase[i]);
+    phase[i] = (fnvHash(id) % 628) / 100;
+    if (state === 'active') {
+      pulse[i] = 0.5;
+      pulsing.push(i);
+    } else if (state === 'fail') {
+      pulse[i] = 0.35;
+      pulsing.push(i);
     }
-    cores.setMatrixAt(i, m);
-    const c = theme.stateColors[node.state];
-    baseColors.set(id, c);
-    cores.setColorAt(i, c);
-
-    gPos[i * 3] = x;
-    gPos[i * 3 + 1] = cy + 0.4;
-    gPos[i * 3 + 2] = z;
-    const active = node.state === 'active';
-    gSize[i] = (big ? 24 : 13) * (active ? 1.35 : 1);
-    gColor[i * 3] = c.r;
-    gColor[i * 3 + 1] = c.g;
-    gColor[i * 3 + 2] = c.b;
-    gPhase[i] = (fnvHash(id) % 628) / 100;
-    gPulse[i] = active ? 1 : node.state === 'fail' ? 0.6 : 0;
   }
-  cores.instanceMatrix.needsUpdate = true;
-  if (cores.instanceColor) cores.instanceColor.needsUpdate = true;
-
-  const glowGeo = new THREE.BufferGeometry();
-  glowGeo.setAttribute('position', new THREE.BufferAttribute(gPos, 3));
-  glowGeo.setAttribute('aSize', new THREE.BufferAttribute(gSize, 1));
-  glowGeo.setAttribute('aColor', new THREE.BufferAttribute(gColor, 3));
-  glowGeo.setAttribute('aPhase', new THREE.BufferAttribute(gPhase, 1));
-  glowGeo.setAttribute('aPulse', new THREE.BufferAttribute(gPulse, 1));
-  const glowMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uTex: { value: glowTexture } },
-    vertexShader: GLOW_VERT,
-    fragmentShader: GLOW_FRAG,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const glow = new THREE.Points(glowGeo, glowMat);
-  glow.renderOrder = 4;
-  glow.frustumCulled = false;
+  if (cage.instanceColor) cage.instanceColor.needsUpdate = true;
+  if (core.instanceColor) core.instanceColor.needsUpdate = true;
 
   const idToInstance = new Map<string, number>();
   for (let i = 0; i < count; i++) idToInstance.set(ids[i], i);
   let highlighted: string | null = null;
+  let now = 0;
+
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const eul = new THREE.Euler();
+  const sv = new THREE.Vector3();
+  const tmpC = new THREE.Color();
 
   return {
-    cores,
-    glow,
+    group,
+    pickMesh: proxy,
     pickIndex: ids,
     setTime(t: number) {
-      glowMat.uniforms.uTime.value = t;
+      now = t;
+      for (const i of pulsing) {
+        const k = 1 + pulse[i] * Math.sin(t * 3.1 + phase[i]);
+        tmpC.copy(coreBase[i]).multiplyScalar(k);
+        core.setColorAt(i, tmpC);
+      }
+      if (pulsing.length > 0 && core.instanceColor) core.instanceColor.needsUpdate = true;
+    },
+    updateTransforms(get: (id: string) => NodeTransform | null) {
+      for (let i = 0; i < count; i++) {
+        const tr = get(ids[i]);
+        if (tr === null) continue;
+        const s = Math.max(0.001, tr.scale) * bigScale[i];
+        // cage + proxy: axis-aligned
+        m.makeScale(s, s, s);
+        m.setPosition(tr.pos.x, tr.pos.y, tr.pos.z);
+        cage.setMatrixAt(i, m);
+        proxy.setMatrixAt(i, m);
+        // core: slow holographic spin + gentle bob
+        eul.set(0, now * 0.7 + phase[i], 0);
+        q.setFromEuler(eul);
+        sv.setScalar(s);
+        m.compose(
+          new THREE.Vector3(
+            tr.pos.x,
+            tr.pos.y + Math.sin(now * 1.3 + phase[i]) * 0.35 * s,
+            tr.pos.z,
+          ),
+          q,
+          sv,
+        );
+        core.setMatrixAt(i, m);
+      }
+      cage.instanceMatrix.needsUpdate = true;
+      core.instanceMatrix.needsUpdate = true;
+      proxy.instanceMatrix.needsUpdate = true;
     },
     highlight(nodeId: string | null, th: C3Theme) {
       if (highlighted !== null) {
         const prev = idToInstance.get(highlighted);
-        const base = baseColors.get(highlighted);
-        if (prev !== undefined && base) cores.setColorAt(prev, base);
+        if (prev !== undefined) cage.setColorAt(prev, cageBase[prev]);
       }
       highlighted = nodeId;
       if (nodeId !== null) {
         const idx = idToInstance.get(nodeId);
-        if (idx !== undefined) cores.setColorAt(idx, th.selection);
+        if (idx !== undefined) cage.setColorAt(idx, th.selection);
       }
-      if (cores.instanceColor) cores.instanceColor.needsUpdate = true;
+      if (cage.instanceColor) cage.instanceColor.needsUpdate = true;
     },
     dispose() {
+      cageGeo.dispose();
+      cageMat.dispose();
       coreGeo.dispose();
       coreMat.dispose();
-      glowGeo.dispose();
-      glowMat.dispose();
+      proxyGeo.dispose();
+      proxyMat.dispose();
     },
   };
 }

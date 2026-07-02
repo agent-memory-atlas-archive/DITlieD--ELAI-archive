@@ -32,7 +32,10 @@ function mulberry32(seed: number): () => number {
 
 export interface SimOptions {
   seed?: number;
-  maxLayers?: number;
+  /** cap on spawned trees (each tree = one vertical beam) */
+  maxTrees?: number;
+  /** deepest slab plane (0-based) */
+  maxDepth?: number;
   maxNodes?: number;
 }
 
@@ -40,15 +43,17 @@ export class CanvasSim {
   readonly graph: C3Graph;
   private rnd: () => number;
   private nextId = 0;
-  private maxLayers: number;
+  private maxTrees: number;
+  private maxDepth: number;
   private maxNodes: number;
   /** ticks a node has spent active, keyed by id */
   private activeAge = new Map<string, number>();
 
   constructor(opts: SimOptions = {}) {
     this.rnd = mulberry32(opts.seed ?? 0xe1a1);
-    this.maxLayers = opts.maxLayers ?? 6;
-    this.maxNodes = opts.maxNodes ?? 420;
+    this.maxTrees = opts.maxTrees ?? 16;
+    this.maxDepth = opts.maxDepth ?? 4;
+    this.maxNodes = opts.maxNodes ?? 480;
     this.graph = emptyGraph();
     this.bootstrap();
   }
@@ -89,8 +94,7 @@ export class CanvasSim {
     return n;
   }
 
-  private addLayer(title: string, spawnerNodeId: string | null): string {
-    const depth = this.graph.layerOrder.length;
+  private addLayer(title: string, spawnerNodeId: string | null, depth: number): string {
     const layerId = this.id('layer');
     const root = this.addNode('model', layerId, null);
     root.state = 'active';
@@ -112,7 +116,7 @@ export class CanvasSim {
   }
 
   private bootstrap(): void {
-    this.addLayer('elai-root', null);
+    this.addLayer('elai-root', null, 0);
     // pre-warm: a few growth ticks so the first frame already looks alive
     for (let i = 0; i < 26; i++) this.tick();
     this.graph.rev++;
@@ -145,14 +149,18 @@ export class CanvasSim {
           changed = true;
         }
 
-        // spawn: an active model/agent may fork its own sub-layer
+        // spawn: an active model/agent may fork its own sub-tree one plane
+        // down — many nodes can spawn onto the SAME plane, so several
+        // vertical beams drop between adjacent slabs (the reference look)
+        const ownLayer = g.layers.get(n.layerId);
         const canSpawn =
           (n.kind === 'model' || n.kind === 'agent') &&
           n.spawnedLayerId === null &&
-          g.layerOrder.length < this.maxLayers &&
+          ownLayer !== undefined && ownLayer.depth < this.maxDepth &&
+          g.layerOrder.length < this.maxTrees &&
           g.nodes.size < this.maxNodes;
-        if (canSpawn && this.rnd() < 0.018) {
-          this.addLayer(`${n.label}/sub`, n.id);
+        if (canSpawn && this.rnd() < 0.05) {
+          this.addLayer(`${n.label}/sub`, n.id, ownLayer.depth + 1);
           changed = true;
         }
 

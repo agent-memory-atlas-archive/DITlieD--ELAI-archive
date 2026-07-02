@@ -1,73 +1,85 @@
-// canvas3d/layout.ts — deterministic slab-grid layout + manhattan routing.
+// canvas3d/layout.ts — depth-plane square adaptive layout + trace metas.
 //
-// Every layer is a COLS x ROWS grid of cells on a slab. Nodes snap to cell
-// centers (the pixel-aligned circuit-board look); children are placed on
-// the nearest free cell ring-scanned around their parent, with the scan
-// start angle derived from the node id hash, so the same graph always
-// lays out identically. Tree traces run manhattan (axis-aligned with one
-// bend) just above the slab surface; spawn traces drop vertically to the
-// spawned layer, whose root is seeded at the spawner's cell.
+// v2 model: a SLAB is a DEPTH PLANE, and every spawned tree whose spawner
+// sits at depth d-1 is planted on the SAME plane d — so multiple vertical
+// beams drop between adjacent slabs (one per spawning node), matching the
+// reference image. The footprint is a SQUARE whose side adapts to the
+// densest plane: few nodes = tight square, growth = the square grows.
+// Placement stays deterministic (FNV ring-scan); the scene lerps nodes
+// between successive placements so relocations glide instead of jump.
+//
+// Routes have FIXED TOPOLOGY (tree = 3 waypoints, spawn = 4, degenerate
+// segments allowed) so the trace buffers can follow animated node
+// positions every frame without reallocation.
 
 import { fnvHash, visibleNodeIds } from './types';
-import type { C3Graph, C3Layer } from './types';
+import type { C3Graph } from './types';
 
-export const COLS = 30;
-export const ROWS = 20;
 export const CELL = 10;
-export const SLAB_W = COLS * CELL;
-export const SLAB_D = ROWS * CELL;
-export const SLAB_THICK = 7;
-export const LAYER_DY = 66;
-/** traces hover this far above the slab top surface */
-export const TRACE_LIFT = 2.2;
+export const SLAB_THICK = 16;
+/** top-surface to top-surface distance; gap between slabs = LAYER_DY - SLAB_THICK */
+export const LAYER_DY = 28;
+export const TRACE_LIFT = 2.0;
+const MIN_SIDE = 8;
+const MAX_SIDE = 44;
+/** grid cells provisioned per node on the densest plane */
+const SPREAD = 1.4;
 
 export interface NodePlacement {
   col: number;
   row: number;
-  /** world position of the node center (sits on the slab top) */
+  depth: number;
   pos: [number, number, number];
 }
 
-export interface RoutedEdge {
+export interface TraceMeta {
   id: string;
   kind: 'tree' | 'spawn';
   aId: string;
   bId: string;
-  /** polyline waypoints in world space */
-  points: [number, number, number][];
+  /** manhattan bend order for tree traces */
+  xFirst: boolean;
 }
 
 export interface LayoutResult {
   placements: Map<string, NodePlacement>;
-  routes: RoutedEdge[];
+  traces: TraceMeta[];
   visible: Set<string>;
+  /** square side in cells (uniform across planes this rev) */
+  side: number;
+  worldSize: number;
+  /** number of occupied depth planes */
+  depthCount: number;
 }
 
 export function layerTopY(depth: number): number {
   return -depth * LAYER_DY;
 }
 
-function cellToWorld(col: number, row: number, depth: number): [number, number, number] {
-  return [
-    (col + 0.5) * CELL - SLAB_W / 2,
-    layerTopY(depth),
-    (row + 0.5) * CELL - SLAB_D / 2,
-  ];
+function cellToWorld(col: number, row: number, depth: number, side: number): [number, number, number] {
+  const half = (side * CELL) / 2;
+  // nodes live INSIDE the slab volume (mid-thickness), not on its surface
+  return [(col + 0.5) * CELL - half, layerTopY(depth) - SLAB_THICK * 0.5, (row + 0.5) * CELL - half];
 }
 
-const inBounds = (c: number, r: number) => c >= 1 && c < COLS - 1 && r >= 1 && r < ROWS - 1;
+function worldToCell(x: number, z: number, side: number): [number, number] {
+  const half = (side * CELL) / 2;
+  const clampCell = (v: number) => Math.min(side - 2, Math.max(1, Math.floor(v)));
+  return [clampCell((x + half) / CELL), clampCell((z + half) / CELL)];
+}
 
-/** Ring-scan outward from (pc,pr); start direction from hash. Returns
- *  first free in-bounds cell, or null when the slab is saturated. */
 function nearestFreeCell(
   pc: number,
   pr: number,
   hash: number,
   occupied: Set<number>,
+  side: number,
 ): [number, number] | null {
+  const inBounds = (c: number, r: number) => c >= 1 && c < side - 1 && r >= 1 && r < side - 1;
+  if (inBounds(pc, pr) && !occupied.has(pr * side + pc)) return [pc, pr];
   // start at radius 2: one clear cell between parent and child keeps the
   // manhattan traces readable instead of glow-on-glow adjacency
-  for (let radius = 2; radius < Math.max(COLS, ROWS); radius++) {
+  for (let radius = 2; radius < side; radius++) {
     const ring: [number, number][] = [];
     for (let dc = -radius; dc <= radius; dc++) {
       for (let dr = -radius; dr <= radius; dr++) {
@@ -78,118 +90,81 @@ function nearestFreeCell(
     const start = hash % ring.length;
     for (let i = 0; i < ring.length; i++) {
       const [c, r] = ring[(start + i) % ring.length];
-      if (inBounds(c, r) && !occupied.has(r * COLS + c)) return [c, r];
+      if (inBounds(c, r) && !occupied.has(r * side + c)) return [c, r];
     }
   }
   return null;
-}
-
-function placeLayer(
-  g: C3Graph,
-  layer: C3Layer,
-  visible: Set<string>,
-  placements: Map<string, NodePlacement>,
-  preferred: [number, number] | null,
-): void {
-  const occupied = new Set<number>();
-  const rootHash = fnvHash(layer.rootId);
-  let rc: number;
-  let rr: number;
-  if (preferred !== null && inBounds(preferred[0], preferred[1])) {
-    [rc, rr] = preferred;
-  } else {
-    rc = Math.floor(COLS / 2) + ((rootHash % 7) - 3);
-    rr = Math.floor(ROWS / 2) + ((Math.floor(rootHash / 7) % 5) - 2);
-  }
-  const put = (id: string, c: number, r: number) => {
-    occupied.add(r * COLS + c);
-    placements.set(id, { col: c, row: r, pos: cellToWorld(c, r, layer.depth) });
-  };
-  if (!visible.has(layer.rootId)) return;
-  put(layer.rootId, rc, rr);
-
-  const queue = [layer.rootId];
-  while (queue.length > 0) {
-    const id = queue.shift() as string;
-    const n = g.nodes.get(id);
-    const parentPlace = placements.get(id);
-    if (!n || !parentPlace) continue;
-    for (const childId of n.childIds) {
-      if (!visible.has(childId) || placements.has(childId)) continue;
-      const cell = nearestFreeCell(parentPlace.col, parentPlace.row, fnvHash(childId), occupied);
-      if (cell === null) continue; // slab saturated; child stays unplaced this rev
-      put(childId, cell[0], cell[1]);
-      queue.push(childId);
-    }
-  }
-}
-
-/** Manhattan polyline between two placements on the same layer, lifted
- *  above the slab. Bend order (x-first vs z-first) comes from the edge
- *  id hash so parallel edges don't all stack on the same channel. */
-function routeTree(
-  a: NodePlacement,
-  b: NodePlacement,
-  depth: number,
-  edgeId: string,
-): [number, number, number][] {
-  const y = layerTopY(depth) + TRACE_LIFT;
-  const [ax, , az] = a.pos;
-  const [bx, , bz] = b.pos;
-  if (a.col === b.col || a.row === b.row) {
-    return [[ax, y, az], [bx, y, bz]];
-  }
-  const xFirst = (fnvHash(edgeId) & 1) === 0;
-  const bend: [number, number, number] = xFirst ? [bx, y, az] : [ax, y, bz];
-  return [[ax, y, az], bend, [bx, y, bz]];
-}
-
-/** Vertical drop from spawner to the spawned layer, then a manhattan run
- *  to the spawned root if the seed cell was taken. */
-function routeSpawn(
-  a: NodePlacement,
-  b: NodePlacement,
-  bDepth: number,
-): [number, number, number][] {
-  const [ax, ay, az] = a.pos;
-  const yLow = layerTopY(bDepth) + TRACE_LIFT;
-  const [bx, , bz] = b.pos;
-  const pts: [number, number, number][] = [[ax, ay, az], [ax, yLow, az]];
-  if (Math.abs(ax - bx) > 0.01 || Math.abs(az - bz) > 0.01) {
-    pts.push([bx, yLow, az]);
-    if (Math.abs(az - bz) > 0.01) pts.push([bx, yLow, bz]);
-  }
-  return pts;
 }
 
 export function layoutGraph(g: C3Graph): LayoutResult {
   const visible = visibleNodeIds(g);
   const placements = new Map<string, NodePlacement>();
 
-  for (const layerId of g.layerOrder) {
-    const layer = g.layers.get(layerId);
+  // ---- adaptive square side from the densest depth plane
+  const perDepth = new Map<number, number>();
+  for (const id of visible) {
+    const n = g.nodes.get(id);
+    const layer = n ? g.layers.get(n.layerId) : undefined;
     if (!layer) continue;
-    let preferred: [number, number] | null = null;
-    if (layer.spawnerNodeId !== null) {
-      const sp = placements.get(layer.spawnerNodeId);
-      if (sp === undefined) continue; // spawner hidden -> layer hidden
-      preferred = [sp.col, sp.row];
+    perDepth.set(layer.depth, (perDepth.get(layer.depth) ?? 0) + 1);
+  }
+  let maxCount = 0;
+  let depthCount = 0;
+  for (const [d, c] of perDepth) {
+    maxCount = Math.max(maxCount, c);
+    depthCount = Math.max(depthCount, d + 1);
+  }
+  // even side reduces re-layout churn as counts creep up
+  let side = Math.ceil(Math.sqrt(maxCount * SPREAD));
+  side = Math.min(MAX_SIDE, Math.max(MIN_SIDE, side + (side % 2)));
+
+  // ---- place plane by plane (top down) so spawner cells exist first
+  const depths = [...perDepth.keys()].sort((a, b) => a - b);
+  for (const depth of depths) {
+    const occupied = new Set<number>();
+    const queue: string[] = [];
+    const put = (id: string, c: number, r: number) => {
+      occupied.add(r * side + c);
+      placements.set(id, { col: c, row: r, depth, pos: cellToWorld(c, r, depth, side) });
+      queue.push(id);
+    };
+    // roots of every tree living on this plane, in stable layer order
+    for (const layerId of g.layerOrder) {
+      const layer = g.layers.get(layerId);
+      if (!layer || layer.depth !== depth || !visible.has(layer.rootId)) continue;
+      let pc: number;
+      let pr: number;
+      if (layer.spawnerNodeId !== null) {
+        const sp = placements.get(layer.spawnerNodeId);
+        if (!sp) continue; // spawner hidden this rev
+        [pc, pr] = worldToCell(sp.pos[0], sp.pos[2], side);
+      } else {
+        const h = fnvHash(layer.rootId);
+        pc = Math.floor(side / 2) + ((h % 5) - 2);
+        pr = Math.floor(side / 2) + ((Math.floor(h / 5) % 5) - 2);
+      }
+      const cell = nearestFreeCell(pc, pr, fnvHash(layer.rootId), occupied, side);
+      if (cell) put(layer.rootId, cell[0], cell[1]);
     }
-    placeLayer(g, layer, visible, placements, preferred);
+    // BFS the plane's trees together over the shared occupancy grid
+    while (queue.length > 0) {
+      const id = queue.shift() as string;
+      const n = g.nodes.get(id);
+      const pp = placements.get(id);
+      if (!n || !pp) continue;
+      for (const childId of n.childIds) {
+        if (!visible.has(childId) || placements.has(childId)) continue;
+        const cell = nearestFreeCell(pp.col, pp.row, fnvHash(childId), occupied, side);
+        if (cell === null) continue;
+        put(childId, cell[0], cell[1]);
+      }
+    }
   }
 
-  const routes: RoutedEdge[] = [];
+  const traces: TraceMeta[] = [];
   for (const e of g.edges.values()) {
-    const pa = placements.get(e.a);
-    const pb = placements.get(e.b);
-    if (!pa || !pb) continue;
-    const nb = g.nodes.get(e.b);
-    if (!nb) continue;
-    const layer = g.layers.get(nb.layerId);
-    if (!layer) continue;
-    const points =
-      e.kind === 'spawn' ? routeSpawn(pa, pb, layer.depth) : routeTree(pa, pb, layer.depth, e.id);
-    routes.push({ id: e.id, kind: e.kind, aId: e.a, bId: e.b, points });
+    if (!placements.has(e.a) || !placements.has(e.b)) continue;
+    traces.push({ id: e.id, kind: e.kind, aId: e.a, bId: e.b, xFirst: (fnvHash(e.id) & 1) === 0 });
   }
-  return { placements, routes, visible };
+  return { placements, traces, visible, side, worldSize: side * CELL, depthCount };
 }

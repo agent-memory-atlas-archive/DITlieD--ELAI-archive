@@ -1,135 +1,246 @@
-// canvas3d/traces.ts — the bright animated traces connecting nodes.
+// canvas3d/traces.ts — the data lines, ephemeral hologram style.
 //
-// ALL edges render as ONE LineSegments draw call with a custom shader:
-// each vertex carries its normalized distance along its edge (aT), a
-// per-edge phase seed (aSeed), and an activity level (aLive). The
-// fragment brightness = dim base + a light packet that travels the edge
-// (gaussian around fract(time+seed)). Spawn beams get a hotter base so
-// the vertical inter-layer pillars read like the reference image.
-// 1px GL lines fatten into chunky pixels under the low-res retro pass.
+// Three draws total:
+//   - tree traces: fat DASHED lines whose dash offset flows continuously
+//     (a stream of light fragments, not a soldered circuit track)
+//   - spawn beams: fat solid lines, HDR — the bloom pass turns them into
+//     energy pillars
+//   - packets: one bright blob riding each live edge (Points)
+// Positions + colors rewrite every frame so lines follow the animated
+// nodes and new edges fade in. Widths are real pixels (LineMaterial),
+// not 1px GL lines.
 
 import * as THREE from 'three';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import type { C3Graph } from './types';
 import { fnvHash } from './types';
-import type { LayoutResult, RoutedEdge } from './layout';
+import type { TraceMeta } from './layout';
 import type { C3Theme } from './theme';
 
-const TRACE_VERT = /* glsl */ `
-  attribute float aT;
-  attribute float aSeed;
-  attribute float aLive;
+const PACKET_VERT = /* glsl */ `
+  attribute float aSize;
   attribute vec3 aColor;
-  varying float vT;
-  varying float vSeed;
-  varying float vLive;
   varying vec3 vColor;
   void main() {
-    vT = aT;
-    vSeed = aSeed;
-    vLive = aLive;
     vColor = aColor;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = aSize * (430.0 / -mv.z);
+    gl_Position = projectionMatrix * mv;
   }
 `;
 
-const TRACE_FRAG = /* glsl */ `
-  uniform float uTime;
-  varying float vT;
-  varying float vSeed;
-  varying float vLive;
+const PACKET_FRAG = /* glsl */ `
+  uniform sampler2D uTex;
   varying vec3 vColor;
   void main() {
-    float base = 0.42 + vLive * 0.40;
-    // light packet travelling a->b, wrapped; live edges run faster
-    float speed = 0.10 + vLive * 0.22;
-    float head = fract(uTime * speed + vSeed);
-    float d = vT - head;
-    d -= floor(d + 0.5); // wrap to nearest
-    float packet = exp(-d * d * 520.0) * (0.9 + vLive * 1.4);
-    float glow = base + packet;
-    gl_FragColor = vec4(vColor * glow, min(1.0, glow));
+    float a = texture2D(uTex, gl_PointCoord).a;
+    gl_FragColor = vec4(vColor, a);
   }
 `;
 
-/** An edge is "live" when either endpoint is active — its packet runs
- *  hot and fast; settled edges keep a slow dim heartbeat. */
-function liveness(g: C3Graph, e: RoutedEdge): number {
-  const a = g.nodes.get(e.aId);
-  const b = g.nodes.get(e.bId);
+/** waypoint count per edge kind (fixed topology) */
+const PTS: Record<TraceMeta['kind'], number> = { tree: 3, spawn: 4 };
+
+function liveness(g: C3Graph, meta: TraceMeta): number {
+  const a = g.nodes.get(meta.aId);
+  const b = g.nodes.get(meta.bId);
   const active = (a && a.state === 'active') || (b && b.state === 'active');
   const failed = (a && a.state === 'fail') || (b && b.state === 'fail');
   if (active) return 1;
-  if (failed) return 0.45;
+  if (failed) return 0.5;
   return 0;
 }
 
 export interface TraceBuffers {
-  lines: THREE.LineSegments;
+  group: THREE.Group;
   dispose(): void;
-  setTime(t: number): void;
+  setResolution(w: number, h: number): void;
+  /** per-frame: follow animated nodes, fade births, flow dashes, ride packets */
+  update(getPos: (id: string) => THREE.Vector3 | null, t: number): void;
 }
 
-export function buildTraces(g: C3Graph, layout: LayoutResult, theme: C3Theme): TraceBuffers {
-  const pos: number[] = [];
-  const t: number[] = [];
-  const seed: number[] = [];
-  const live: number[] = [];
-  const col: number[] = [];
+export function buildTraces(
+  g: C3Graph,
+  metas: TraceMeta[],
+  theme: C3Theme,
+  birthOf: (edgeId: string) => number,
+  glowTex: THREE.Texture,
+): TraceBuffers {
+  const tree = metas.filter((m) => m.kind === 'tree');
+  const spawn = metas.filter((m) => m.kind === 'spawn');
 
-  for (const edge of layout.routes) {
-    const pts = edge.points;
-    if (pts.length < 2) continue;
-    // cumulative length for aT normalization
-    const cum: number[] = [0];
-    for (let i = 1; i < pts.length; i++) {
-      const dx = pts[i][0] - pts[i - 1][0];
-      const dy = pts[i][1] - pts[i - 1][1];
-      const dz = pts[i][2] - pts[i - 1][2];
-      cum.push(cum[i - 1] + Math.hypot(dx, dy, dz));
-    }
-    const total = cum[cum.length - 1];
-    if (total < 0.01) continue;
-    const isSpawn = edge.kind === 'spawn';
-    const lv = Math.max(liveness(g, edge), isSpawn ? 0.75 : 0);
-    const sd = (fnvHash(edge.id) % 1000) / 1000;
-    const c = isSpawn ? theme.spawnBeam : theme.treeTrace;
+  const mkFat = (width: number, opacity: number, dashed: boolean) => {
+    const geo = new LineSegmentsGeometry();
+    geo.setPositions([0, 10000, 0, 0, 10000, 0]);
+    const mat = new LineMaterial({
+      vertexColors: true,
+      linewidth: width,
+      worldUnits: false,
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      dashed,
+      dashSize: 3,
+      gapSize: 2.4,
+    });
+    const obj = new LineSegments2(geo, mat);
+    obj.renderOrder = 2;
+    obj.frustumCulled = false;
+    return { obj, geo, mat };
+  };
+  const treeL = mkFat(2.4, 0.75, true);
+  const beamL = mkFat(3.6, 0.85, false);
 
-    for (let i = 1; i < pts.length; i++) {
-      pos.push(...pts[i - 1], ...pts[i]);
-      t.push(cum[i - 1] / total, cum[i] / total);
-      seed.push(sd, sd);
-      live.push(lv, lv);
-      col.push(c.r, c.g, c.b, c.r, c.g, c.b);
-    }
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('aT', new THREE.Float32BufferAttribute(t, 1));
-  geo.setAttribute('aSeed', new THREE.Float32BufferAttribute(seed, 1));
-  geo.setAttribute('aLive', new THREE.Float32BufferAttribute(live, 1));
-  geo.setAttribute('aColor', new THREE.Float32BufferAttribute(col, 3));
-
-  const mat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
-    vertexShader: TRACE_VERT,
-    fragmentShader: TRACE_FRAG,
+  // one packet per edge
+  const pk = Math.max(1, metas.length);
+  const pkPos = new Float32Array(pk * 3).fill(10000);
+  const pkSize = new Float32Array(pk);
+  const pkColor = new Float32Array(pk * 3);
+  const pkGeo = new THREE.BufferGeometry();
+  const pkPosAttr = new THREE.BufferAttribute(pkPos, 3);
+  const pkSizeAttr = new THREE.BufferAttribute(pkSize, 1);
+  pkPosAttr.setUsage(THREE.DynamicDrawUsage);
+  pkSizeAttr.setUsage(THREE.DynamicDrawUsage);
+  pkGeo.setAttribute('position', pkPosAttr);
+  pkGeo.setAttribute('aSize', pkSizeAttr);
+  pkGeo.setAttribute('aColor', new THREE.BufferAttribute(pkColor, 3));
+  const pkMat = new THREE.ShaderMaterial({
+    uniforms: { uTex: { value: glowTex } },
+    vertexShader: PACKET_VERT,
+    fragmentShader: PACKET_FRAG,
     transparent: true,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
-  const lines = new THREE.LineSegments(geo, mat);
-  lines.renderOrder = 2;
-  lines.frustumCulled = false;
+  const packets = new THREE.Points(pkGeo, pkMat);
+  packets.renderOrder = 5;
+  packets.frustumCulled = false;
+
+  const packetColor = theme.spawnBeam.clone().multiplyScalar(1.4);
+  for (let i = 0; i < metas.length; i++) {
+    pkColor[i * 3] = packetColor.r;
+    pkColor[i * 3 + 1] = packetColor.g;
+    pkColor[i * 3 + 2] = packetColor.b;
+  }
+
+  const group = new THREE.Group();
+  group.add(treeL.obj, beamL.obj, packets);
+
+  const wp: THREE.Vector3[] = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  const seedOf = (id: string) => (fnvHash(id) % 1000) / 1000;
+
+  /** waypoints for a meta from current positions; false if an end is hidden */
+  function waypoints(meta: TraceMeta, getPos: (id: string) => THREE.Vector3 | null): boolean {
+    const pa = getPos(meta.aId);
+    const pb = getPos(meta.bId);
+    if (pa === null || pb === null) return false;
+    if (meta.kind === 'tree') {
+      wp[0].set(pa.x, pa.y, pa.z);
+      wp[1].set(meta.xFirst ? pb.x : pa.x, pa.y, meta.xFirst ? pa.z : pb.z);
+      wp[2].set(pb.x, pb.y, pb.z);
+    } else {
+      wp[0].set(pa.x, pa.y, pa.z);
+      wp[1].set(pa.x, pb.y, pa.z);
+      wp[2].set(pb.x, pb.y, pa.z);
+      wp[3].set(pb.x, pb.y, pb.z);
+    }
+    return true;
+  }
+
+  function fillGroup(
+    list: TraceMeta[],
+    fat: { obj: LineSegments2; geo: LineSegmentsGeometry },
+    getPos: (id: string) => THREE.Vector3 | null,
+    t: number,
+    baseColor: THREE.Color,
+    liveBoost: number,
+    dashed: boolean,
+  ): void {
+    const segsPer = list.length > 0 ? PTS[list[0].kind] - 1 : 1;
+    const n = Math.max(1, list.length * segsPer);
+    const pos = new Float32Array(n * 6);
+    const col = new Float32Array(n * 6);
+    pos.fill(10000);
+    let o = 0;
+    for (const meta of list) {
+      const nPts = PTS[meta.kind];
+      if (!waypoints(meta, getPos)) {
+        o += (nPts - 1) * 6;
+        continue;
+      }
+      const lv = liveness(g, meta);
+      const fade = Math.min(1, Math.max(0, (t - birthOf(meta.id)) * 1.4));
+      const lum = fade * (1 + lv * liveBoost);
+      for (let s = 0; s < nPts - 1; s++) {
+        pos[o] = wp[s].x; pos[o + 1] = wp[s].y; pos[o + 2] = wp[s].z;
+        pos[o + 3] = wp[s + 1].x; pos[o + 4] = wp[s + 1].y; pos[o + 5] = wp[s + 1].z;
+        for (let k = 0; k < 2; k++) {
+          col[o + k * 3] = baseColor.r * lum;
+          col[o + k * 3 + 1] = baseColor.g * lum;
+          col[o + k * 3 + 2] = baseColor.b * lum;
+        }
+        o += 6;
+      }
+    }
+    fat.geo.setPositions(pos as unknown as number[]);
+    fat.geo.setColors(col as unknown as number[]);
+    if (dashed) fat.obj.computeLineDistances();
+  }
 
   return {
-    lines,
-    setTime(time: number) {
-      mat.uniforms.uTime.value = time;
+    group,
+    setResolution(w: number, h: number) {
+      treeL.mat.resolution.set(w, h);
+      beamL.mat.resolution.set(w, h);
+    },
+    update(getPos: (id: string) => THREE.Vector3 | null, t: number) {
+      fillGroup(tree, treeL, getPos, t, theme.treeTrace, 0.6, true);
+      fillGroup(spawn, beamL, getPos, t, theme.spawnBeam, 0.35, false);
+      // the dash field flows — light streaming along the path
+      treeL.mat.dashOffset = -t * 7;
+
+      for (let i = 0; i < metas.length; i++) {
+        const meta = metas[i];
+        const lv = liveness(g, meta);
+        const isBeam = meta.kind === 'spawn';
+        if ((lv < 0.9 && !isBeam) || !waypoints(meta, getPos)) {
+          pkPos[i * 3 + 1] = 10000;
+          continue;
+        }
+        const nPts = PTS[meta.kind];
+        let total = 0;
+        const cum = [0];
+        for (let s = 1; s < nPts; s++) {
+          total += wp[s].distanceTo(wp[s - 1]);
+          cum.push(total);
+        }
+        if (total < 0.01) {
+          pkPos[i * 3 + 1] = 10000;
+          continue;
+        }
+        const speed = isBeam ? 0.28 : 0.45;
+        const head = ((t * speed + seedOf(meta.id)) % 1) * total;
+        let s = 0;
+        while (s < nPts - 2 && cum[s + 1] < head) s++;
+        const f = (head - cum[s]) / Math.max(0.01, cum[s + 1] - cum[s]);
+        pkPos[i * 3] = wp[s].x + (wp[s + 1].x - wp[s].x) * f;
+        pkPos[i * 3 + 1] = wp[s].y + (wp[s + 1].y - wp[s].y) * f;
+        pkPos[i * 3 + 2] = wp[s].z + (wp[s + 1].z - wp[s].z) * f;
+        pkSize[i] = isBeam ? 7 : 5;
+      }
+      pkPosAttr.needsUpdate = true;
+      pkSizeAttr.needsUpdate = true;
     },
     dispose() {
-      geo.dispose();
-      mat.dispose();
+      treeL.geo.dispose();
+      treeL.mat.dispose();
+      beamL.geo.dispose();
+      beamL.mat.dispose();
+      pkGeo.dispose();
+      pkMat.dispose();
     },
   };
 }
