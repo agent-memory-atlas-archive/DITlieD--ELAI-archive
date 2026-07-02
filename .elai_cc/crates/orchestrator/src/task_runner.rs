@@ -3646,17 +3646,25 @@ impl ResolvedConfig {
         // B-10 (DECISION-A / DECISION-F): resolve the ModelCapabilityProfile once
         // at construction. Construction sites may pass `Some(...)` to override;
         // otherwise we infer from `backend_config.model` via substring matching.
-        // VRAM tier defaulted to 12GB (the primary deployment tier per spec).
-        // Future B-task may wire detect_vram_tier into this bootstrap.
+        // B-10 (Task 1 / S2 gap): wire real VRAM tier detection via
+        // `elai_providers::detect_vram_tier_or_default` (env override > NVML >
+        // Vram8Gb) instead of the hardcoded Vram12Gb default. On detection
+        // failure we fall back to Vram12Gb (the primary deployment tier per
+        // spec) so the 3B branch of `detect_model_capability_profile` keeps
+        // its 12GB default behaviour on hosts without NVML.
         let resolved_backend_config = cfg
             .backend_config
             .clone()
             .unwrap_or_else(crate::dispatcher::BackendConfig::default);
+        let detected_vram_tier = elai_providers::detect_vram_tier_or_default(
+            elai_core::VramTier::Vram12Gb,
+            "orchestrator::task_runner",
+        );
         let model_capability_profile: Arc<crate::context_budget::ModelCapabilityProfile> =
             cfg.model_capability_profile.unwrap_or_else(|| {
                 Arc::new(crate::context_budget::detect_model_capability_profile(
                     &resolved_backend_config.model,
-                    elai_core::VramTier::Vram12Gb,
+                    detected_vram_tier,
                 ))
             });
         // B-28 WIRING-2 (item I): construct the production DependencyResolver.

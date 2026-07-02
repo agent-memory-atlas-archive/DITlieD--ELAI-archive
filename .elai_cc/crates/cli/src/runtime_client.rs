@@ -284,10 +284,19 @@ impl ApiClient for RuntimeClient {
                     // ModelCapabilityProfile so the REPL pathway uses the same
                     // per-tier slot weights as the TaskRunner pathway. Detected
                     // via substring matching on `self.model` per DECISION-F.
+                    // B-10 (Task 1 / S2 gap): wire real VRAM tier detection
+                    // (env override > NVML > Vram8Gb) instead of hardcoded
+                    // Vram12Gb, mirroring the TaskRunner ResolvedConfig::from
+                    // seam. On detection failure fall back to Vram12Gb so the
+                    // 3B branch keeps its 12GB default on hosts without NVML.
+                    let repl_vram_tier = elai_providers::detect_vram_tier_or_default(
+                        elai_core::VramTier::Vram12Gb,
+                        "cli::dispatch",
+                    );
                     let repl_profile =
                         elai_orchestrator::context_budget::detect_model_capability_profile(
                             &self.model,
-                            elai_core::VramTier::Vram12Gb,
+                            repl_vram_tier,
                         );
                     match elai_orchestrator::build_dispatch_context(
                         fsm_state,

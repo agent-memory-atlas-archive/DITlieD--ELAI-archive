@@ -98,7 +98,7 @@ pub use pricing::{
     estimate_cost_usd, estimate_cost_usd_with_pricing, format_usd, pricing_for_model,
     summary_lines, summary_lines_for_model, ModelPricing, UsageCostEstimate,
 };
-pub use vram_tier::{detect_vram_gb, detect_vram_tier, VramDetectionError};
+pub use vram_tier::{detect_vram_gb, detect_vram_tier, detect_vram_tier_or_default, VramDetectionError};
 // I-51 — model catalog public surface.
 pub use model_catalog::{CatalogVramThresholds, ModelCatalog, ModelCatalogError, ModelEntry};
 pub use types::{

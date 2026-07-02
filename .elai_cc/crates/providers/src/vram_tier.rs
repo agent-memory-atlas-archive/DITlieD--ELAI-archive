@@ -96,6 +96,39 @@ pub fn detect_vram_tier() -> Result<VramTier, VramDetectionError> {
     }
 }
 
+/// Resolve a VramTier with a caller-supplied fallback on detection failure.
+///
+/// This is the canonical seam for consumers that need a *deterministic* tier
+/// (e.g. `ModelCapabilityProfile` resolution in the orchestrator and REPL).
+/// `detect_vram_tier` only errors on an invalid `ELAI_VRAM_OVERRIDE`; on
+/// non-NVIDIA hosts it returns `Ok(Vram8Gb)`. Callers that want a different
+/// default (e.g. `Vram12Gb` to preserve the 3B-branch profile on hosts
+/// without NVML) pass it here so the fallback policy lives in the layer that
+/// owns the detector contract instead of being copy-pasted at each call site.
+///
+/// On `Err` the function emits a `tracing::warn!` carrying `caller` (the
+/// `log_target` argument, e.g. `"orchestrator::task_runner"`,
+/// `"cli::dispatch"`) as a structured field so callers do not need to
+/// duplicate the warn block either.
+pub fn detect_vram_tier_or_default(
+    default: VramTier,
+    log_target: &str,
+) -> VramTier {
+    match detect_vram_tier() {
+        Ok(tier) => tier,
+        Err(e) => {
+            tracing::warn!(
+                target: "elai_providers::vram_tier",
+                caller = log_target,
+                error = %e,
+                fallback = ?default,
+                "detect_vram_tier failed; using caller-supplied default tier"
+            );
+            default
+        }
+    }
+}
+
 /// Bytes-per-gibibyte for GB conversion in observational consumers (RouteDecisionEvent
 /// cloud_mode emit). Named constant per CLAUDE.md anti-magic-number rule.
 const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
