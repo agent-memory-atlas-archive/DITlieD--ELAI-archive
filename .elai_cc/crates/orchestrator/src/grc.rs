@@ -30,6 +30,15 @@ use elai_reasoning::{
 /// `ELAI_DISABLE_PROVIDER_SIGNALS` and `ELAI_DISABLE_IRREVERSIBLE_CLASSIFIER`.
 pub const ELAI_DISABLE_PIPELINE_GRC_ENV: &str = "ELAI_DISABLE_PIPELINE_GRC";
 
+/// Canonical reason string embedded in the synthetic
+/// `BabyStepOutcome::Failed` when `generate_csq` returns a Critical severity
+/// without a guard (B-8 W1 fix). Held as a shared `pub const` so the
+/// `safety_gate_integration` test can assert against the same symbol the
+/// production path uses — a drift in either direction breaks the test.
+/// The full Failed reason is `format!("{tag}: {CSQ_CRITICAL_BLOCK_REASON}")`
+/// where `tag` is the `BlockSource::reason_tag()` tier label.
+pub const CSQ_CRITICAL_BLOCK_REASON: &str = "CSQ Critical-without-guard blocked baby step";
+
 /// Returns true when the kill switch env-var is set to "1" or "true"
 /// (case-insensitive). All other values (including absent / empty / "0") are
 /// treated as the gate being enabled.

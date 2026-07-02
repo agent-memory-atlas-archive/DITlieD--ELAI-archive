@@ -308,11 +308,16 @@ fn check_inline_feasibility_blocked_on_contradiction_marker() {
     // builds a BabyStepOutcome::Failed with a reason prefix that matches the
     // emit_finding category so downstream tooling can attribute the failure
     // to the inline-feasibility gate (not a generic agent error or hook
-    // block).
+    // block). B-8 W2 fix: use the production `truncate_for_log` helper
+    // (re-exported from elai_orchestrator) instead of inlining a divergent
+    // truncation — the production path at task_runner.rs applies
+    // truncate_for_log(&feas.claim, 240) and this test now references the
+    // same symbol so a drift in either direction breaks the assertion.
     use elai_orchestrator::pipeline_tree_navigator::BabyStepOutcome;
+    use elai_orchestrator::truncate_for_log;
     let synthetic_outcome = if result.outcome == FeasibilityOutcome::Blocked {
         BabyStepOutcome::Failed {
-            reason: format!("inline_feasibility_blocked: {}", result.claim),
+            reason: format!("inline_feasibility_blocked: {}", truncate_for_log(&result.claim, 240)),
         }
     } else {
         BabyStepOutcome::Passed
@@ -563,13 +568,13 @@ fn serialize_decomposition_does_not_inject_synthetic_grounding_for_rust_mention(
 
 #[test]
 fn csq_block_reason_string_is_distinguishable_from_generic_hook_block() {
-    // Arrange: replicate the exact string the runner inserts into
-    // BabyStepOutcome::Failed.reason at task_runner.rs:3742 (cycle-2 fix).
-    // We do not invoke the runner end-to-end (that would require a full
-    // BspEngine + executor harness); instead we assert on the canonical
-    // string the production code now uses so a future drift back to the
-    // generic "PreToolUse hook blocked baby step" string is caught here.
-    let csq_reason = "CSQ Critical-without-guard blocked baby step";
+    // Arrange: reference the SAME pub const the production path uses at
+    // task_runner.rs (BlockSource::CsqCritical branch). This is the B-8 W1
+    // fix: previously the test asserted against a local string literal that
+    // could silently drift from production. Now any drift in the const breaks
+    // this test.
+    use elai_orchestrator::CSQ_CRITICAL_BLOCK_REASON;
+    let csq_reason = CSQ_CRITICAL_BLOCK_REASON;
 
     assert!(
         csq_reason.contains("CSQ"),

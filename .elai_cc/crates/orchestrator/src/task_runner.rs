@@ -9628,7 +9628,7 @@ async fn drive_task(
                     format!("{tag}: generic PreToolUse rejection (irreversible/classifier)")
                 }
                 BlockSource::CsqCritical | BlockSource::None => {
-                    format!("{tag}: CSQ Critical-without-guard blocked baby step")
+                    format!("{}: {}", tag, crate::grc::CSQ_CRITICAL_BLOCK_REASON)
                 }
             };
             BabyStepExecutionResult {
@@ -9835,6 +9835,14 @@ async fn drive_task(
             );
             emit_finding(writer, "error", AGENT_FAILED_CATEGORY, &msg).await;
         }
+        // B-8 W3 fix: track whether the generic agent_failed Finding already
+        // attributed this step's failure. The inline-feasibility block below
+        // emits its own `inline_feasibility_blocked` Finding when it detects a
+        // novel-claim contradiction; without this flag the MistakeBook would
+        // record two Findings for the same step. The feasibility block checks
+        // this flag and skips its Finding emission when agent_failed already
+        // fired — the outcome flip to Failed still happens regardless.
+        let agent_failed_emitted = !outcome_passed;
 
         // C-32 §Task 5 — full per-blank dispatch chain (closes audit-C32 W1).
         // For each pre-computed SkeletonSpec, walk:
@@ -10237,16 +10245,24 @@ async fn drive_task(
                             baby_step = bs_id.0,
                             "task_runner: inline_feasibility Blocked — flagging step for replan"
                         );
-                        emit_finding(
-                            writer,
-                            "error",
-                            "inline_feasibility_blocked",
-                            &format!(
-                                "baby_step {} inline feasibility Blocked: novel claim contradicts plan",
-                                bs_id.0
-                            ),
-                        )
-                        .await;
+                        // B-8 W3 fix: skip the inline_feasibility_blocked
+                        // Finding when the generic agent_failed Finding
+                        // already attributed this step's failure — avoids
+                        // double-Finding emission into the MistakeBook. The
+                        // outcome flip to Failed below still happens so the
+                        // BabyStepResult carries the failure forward.
+                        if !agent_failed_emitted {
+                            emit_finding(
+                                writer,
+                                "error",
+                                "inline_feasibility_blocked",
+                                &format!(
+                                    "baby_step {} inline feasibility Blocked: novel claim contradicts plan",
+                                    bs_id.0
+                                ),
+                            )
+                            .await;
+                        }
                         // TODO(B-future): submit ReplanRequest::Major via fsm.submit_replan. stub-ban-allow: B-future plan item
                         // once ResolvedConfig carries an FsmHandle (fsm.rs:644). Until then we surface the
                         // block by flipping outcome_passed AND rewriting
@@ -20543,7 +20559,7 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-fn truncate_for_log(s: &str, max_chars: usize) -> String {
+pub fn truncate_for_log(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars).collect();
     if s.chars().count() > max_chars {
         out.push_str("...");
