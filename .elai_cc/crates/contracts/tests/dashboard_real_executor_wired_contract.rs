@@ -157,6 +157,9 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
         adversary_runtime: None,
         // E-46 D-8: contract fixture — module-constant defaults.
         planning_config: Default::default(),
+        // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+        #[cfg(feature = "empire")]
+        empire_bridge: None,
     };
 
     assert!(
@@ -228,6 +231,9 @@ fn contract_task_runner_config_synthetic_fallback_shape() {
         adversary_runtime: None,
         // E-46 D-8: contract fixture — module-constant defaults.
         planning_config: Default::default(),
+        // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+        #[cfg(feature = "empire")]
+        empire_bridge: None,
     };
     assert!(cfg.baby_step_executor.is_none());
     assert!(!cfg.anti_spiral_enabled);

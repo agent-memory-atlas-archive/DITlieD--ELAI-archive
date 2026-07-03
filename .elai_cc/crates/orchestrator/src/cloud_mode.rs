@@ -638,6 +638,84 @@ pub fn warn_limit_reached(config: &CloudConfig, day_usd: f64) -> bool {
     }
 }
 
+/// B-27 D-4 item 16: HYBRID escalation routing for a single failed local
+/// step. Called from the task_runner baby-step loop when
+/// [`ExecMode::Auto`] (HYBRID local-first) and the local executor returned
+/// `BabyStepOutcome::Failed`. This function:
+///   1. Re-runs the router with [`ExecMode::Cloud`] + the supplied spend
+///      snapshot so the daily/monthly hard caps still gate the escalation
+///      (G3 — caps win over escalation).
+///   2. On `Ok(RoutedProvider::Cloud { .. })` returns the routed provider
+///      so the caller can re-invoke the (redaction-wrapped) baby-step
+///      executor exactly once for this step. The redaction wrap is on the
+///      executor itself (installed at `runtime_setup.rs:945`), so the
+///      escalated call is already scrubbed before network egress (G2).
+///   3. On `Err(_)` returns the typed error so the caller can emit a
+///      `RouteBlocked` SSB row and continue with local failure handling
+///      (no re-loop, no retry storm — single cloud call per failed step).
+///
+/// This function is sync + pure (no I/O, no SSB write) — the caller owns
+/// the SSB emission of `EscalateToCloud` and `RouteBlocked` so this stays
+/// unit-testable without a writer fixture. Air-gapped mode is handled
+/// inside `route_with_spend` (returns `AirGappedConflict`), which the
+/// caller maps to a `RouteBlocked` row with reason `air_gapped`.
+#[must_use]
+pub fn escalate_hybrid_step_to_cloud(
+    router: &CloudModeRouter,
+    credentials: Option<CloudCredentials>,
+    spend: Option<SpendSnapshotInput>,
+) -> Result<RoutedProvider, CloudModeError> {
+    router.route_with_spend(ExecMode::Cloud, credentials, spend)
+}
+
+/// B-27 D-4 item 17: pre-task cost-estimate interactive gate. Called from
+/// the task_runner cloud pre-dispatch hook after the `CostEstimate` SSB
+/// row is emitted. Presents a "Proceed? [y/n]" prompt to the supplied
+/// [`crate::gate::InteractiveGate`] using a synthetic [`EvidenceSummary`]
+/// that carries the cost range in its `phase_label` and a single passing
+/// gate result describing the estimate.
+///
+/// Returns `true` when the gate approves (proceed with the cloud step)
+/// and `false` when the gate rejects (caller aborts the step / emits a
+/// `RouteBlocked` row). When `gate` is `None` (dashboard / non-interactive
+/// entrypoint), the function auto-approves — the dashboard has no stdin,
+/// so the SSB `CostEstimate` row is the only surface and the human
+/// approves via the dashboard UI (G4 cross-language contract).
+///
+/// Risk level is [`crate::gate::RiskLevel::Medium`] so the CLI
+/// `CliInteractiveGate` actually pauses (LOW auto-advances per gate.rs
+/// `present_gate` semantics). The phase_label embeds the dollar range so
+/// the CLI prompt line is self-describing without a separate formatter.
+#[must_use]
+pub fn prompt_cost_estimate_gate(
+    gate: Option<&dyn crate::gate::InteractiveGate>,
+    low_usd: f64,
+    high_usd: f64,
+    model: &str,
+) -> bool {
+    let Some(g) = gate else {
+        // Non-interactive entrypoint (dashboard): auto-proceed. The
+        // CostEstimate SSB row is the audit artifact; the human approves
+        // via the dashboard CloudPanel, not stdin.
+        return true;
+    };
+    use crate::gate::{EvidenceSummary, GateResult, RiskLevel};
+    let summary = EvidenceSummary {
+        source: crate::FsmState::Planning,
+        target: crate::FsmState::TestingFirst,
+        phase_label: format!(
+            "Estimated cloud cost: ${low_usd:.2}-${high_usd:.2} (model={model}). Proceed?"
+        ),
+        gate_results: vec![GateResult {
+            gate_name: "cost_estimate".to_string(),
+            passed: true,
+            detail: format!("low=${low_usd:.4} high=${high_usd:.4} model={model}"),
+        }],
+        all_gates_passed: true,
+    };
+    matches!(g.present_gate(&summary, RiskLevel::Medium), crate::gate::GateDecision::Approve)
+}
+
 /// Dual-rate per-step spend accumulator (D-4:303-305). Construct one
 /// per task, call `accumulate` after every cloud round-trip, call
 /// `finalize` once at task end and write the resulting
@@ -1135,5 +1213,71 @@ mod tests {
             / (1.0 - COST_ESTIMATE_SPREAD_RATIO);
         let actual_ratio = high / low;
         assert!((actual_ratio - expected_ratio).abs() < 1e-9);
+    }
+
+    // B-27 D-4 item 16: HYBRID escalation routing.
+    #[test]
+    fn escalate_hybrid_step_to_cloud_routes_cloud_when_creds_present() {
+        let router = CloudModeRouter::new(CloudConfig::default());
+        let creds = Some(CloudCredentials::for_test_with_token("dummy"));
+        let outcome = escalate_hybrid_step_to_cloud(&router, creds, None);
+        assert!(matches!(outcome, Ok(RoutedProvider::Cloud { .. })));
+    }
+
+    #[test]
+    fn escalate_hybrid_step_to_cloud_blocks_when_air_gapped() {
+        let mut cfg = CloudConfig::default();
+        cfg.air_gapped = true;
+        let router = CloudModeRouter::new(cfg);
+        let creds = Some(CloudCredentials::for_test_with_token("dummy"));
+        let outcome = escalate_hybrid_step_to_cloud(&router, creds, None);
+        assert_eq!(outcome, Err(CloudModeError::AirGappedConflict));
+    }
+
+    #[test]
+    fn escalate_hybrid_step_to_cloud_blocks_when_daily_cap_exceeded() {
+        let mut cfg = CloudConfig::default();
+        cfg.spend_cap_daily_usd = Some(1.0);
+        let router = CloudModeRouter::new(cfg);
+        let creds = Some(CloudCredentials::for_test_with_token("dummy"));
+        let spend = Some(SpendSnapshotInput::from_day_usd(2.0));
+        let outcome = escalate_hybrid_step_to_cloud(&router, creds, spend);
+        assert!(matches!(
+            outcome,
+            Err(CloudModeError::DailySpendCapExceeded { .. })
+        ));
+    }
+
+    // B-27 D-4 item 17: pre-task cost-estimate interactive gate.
+    #[test]
+    fn prompt_cost_estimate_gate_auto_approves_when_no_gate() {
+        // Dashboard / non-interactive entrypoint: no stdin => auto-proceed.
+        assert!(prompt_cost_estimate_gate(None, 0.12, 0.35, "claude-sonnet-4-6"));
+    }
+
+    #[test]
+    fn prompt_cost_estimate_gate_approves_on_approve_decision() {
+        use crate::gate::{GateDecision, MockInteractiveGate};
+        let mock = MockInteractiveGate::new(vec![GateDecision::Approve]);
+        let proceed = prompt_cost_estimate_gate(Some(&mock), 0.12, 0.35, "claude-sonnet-4-6");
+        assert!(proceed);
+        // Verify the gate was actually called (not short-circuited).
+        assert_eq!(mock.call_count(), 1);
+        // Verify the summary carried the cost range in phase_label.
+        let summaries = mock.presented_summaries();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].phase_label.contains("0.12"));
+        assert!(summaries[0].phase_label.contains("0.35"));
+        assert_eq!(summaries[0].gate_results.len(), 1);
+        assert!(summaries[0].gate_results[0].passed);
+    }
+
+    #[test]
+    fn prompt_cost_estimate_gate_rejects_on_reject_decision() {
+        use crate::gate::{GateDecision, MockInteractiveGate};
+        let mock = MockInteractiveGate::new(vec![GateDecision::Reject]);
+        let proceed = prompt_cost_estimate_gate(Some(&mock), 0.12, 0.35, "claude-sonnet-4-6");
+        assert!(!proceed);
+        assert_eq!(mock.call_count(), 1);
     }
 }

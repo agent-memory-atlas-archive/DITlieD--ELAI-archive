@@ -1,5 +1,6 @@
 <script lang="ts">
   import { X, Plus } from '@lucide/svelte';
+  import { fade } from 'svelte/transition';
   import WindowHost from './WindowHost.svelte';
   import { workspace } from '../state/workspace.svelte';
 
@@ -332,7 +333,7 @@
   >
     {#if activeTab}
       {#key activeTabId}
-        <div class="window-host anim-panel-in">
+        <div class="window-host anim-panel-in" out:fade={{ duration: 80 }}>
           <WindowHost type={activeTab.type} />
         </div>
       {/key}

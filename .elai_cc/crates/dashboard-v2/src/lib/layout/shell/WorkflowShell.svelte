@@ -18,7 +18,9 @@
   //           passed in via the `overlay` snippet.
   import { onMount } from 'svelte';
   import type { Snippet } from 'svelte';
+  import { fade } from 'svelte/transition';
   import { shell } from '../../state/shell.svelte';
+  import { workspace } from '../../state/workspace.svelte';
   import TopRightControls from '../../chrome/TopRightControls.svelte';
   import WindowHost from '../WindowHost.svelte';
   import TabBar from './TabBar.svelte';
@@ -100,25 +102,29 @@
   <div class="shell-body" bind:this={shellBodyEl}>
     <IconRail onMenu={openMenu} onFiles={openFiles} />
 
-    <aside class="chat-pane" style="width: {shell.chatWidth}px">
-      <WindowHost type="command" />
-    </aside>
+    {#if !workspace.secondaryCollapsed}
+      <aside class="chat-pane" style="width: {shell.chatWidth}px">
+        <WindowHost type="command" />
+      </aside>
 
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="splitter"
-      class:splitter--drag={dragging}
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Resize chat"
-      onpointerdown={onSplitterDown}
-      onpointermove={onSplitterMove}
-      onpointerup={onSplitterUp}
-    ></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="splitter"
+        class:splitter--drag={dragging}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize chat"
+        onpointerdown={onSplitterDown}
+        onpointermove={onSplitterMove}
+        onpointerup={onSplitterUp}
+      ></div>
+    {/if}
 
     <main class="main-pane">
       {#key shell.activeTab}
-        <WindowHost type={shell.activeWindow} />
+        <div out:fade={{ duration: 80 }}>
+          <WindowHost type={shell.activeWindow} />
+        </div>
       {/key}
     </main>
   </div>

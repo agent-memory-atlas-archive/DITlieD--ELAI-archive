@@ -273,5 +273,8 @@ fn build_minimal_wiring(root: &std::path::Path) -> RuntimeWiring {
         reflection_client: None,
         // P0-1: legacy contract fixture -- no adversary runtime.
         adversary_runtime: None,
+        // B-25 Phase 4J: legacy contract fixture -- no EmpireBridge handle.
+        #[cfg(feature = "empire")]
+        empire_bridge: None,
     }
 }

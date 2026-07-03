@@ -72,7 +72,20 @@
     plan.bootstrap();
     activity.bootstrap();
 
+    // B-26 T6: auto-collapse the secondary panel below 800px viewport.
+    // workspace.setSecondaryCollapsed is the canonical API (workspace.svelte.ts:622);
+    // base.css:245 @media (max-width:799px) targets .secondary-collapsed.
+    // Mirror Sidebar.svelte:72 resize-listener shape with passive + cleanup.
+    const SECONDARY_COLLAPSE_PX = 800;
+    function syncSecondaryCollapse() {
+      if (typeof window === 'undefined') return;
+      workspace.setSecondaryCollapsed(window.innerWidth < SECONDARY_COLLAPSE_PX);
+    }
+    syncSecondaryCollapse();
+    window.addEventListener('resize', syncSecondaryCollapse, { passive: true });
+
     return () => {
+      window.removeEventListener('resize', syncSecondaryCollapse);
       fsm.teardown();
       plan.teardown();
       activity.teardown();

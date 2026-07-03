@@ -199,6 +199,9 @@ async fn web_research_task_emits_web_research_step_rows() {
             adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
+            // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         },
     );
 
@@ -314,6 +317,9 @@ async fn web_research_task_without_runner_emits_finding() {
             adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
+            // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         },
     );
 
@@ -434,6 +440,9 @@ async fn web_research_runner_invoked_once_per_task() {
             adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
+            // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         },
     );
 

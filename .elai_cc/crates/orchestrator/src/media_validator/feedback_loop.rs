@@ -360,8 +360,34 @@ impl VisualFeedbackLoop {
 
         for iter_idx in 0..self.max_iterations {
             // 2.1. Render.
+            let render_start = std::time::Instant::now();
             let frames = adapter.render(artifact, config).await?;
-            debug!(iter = iter_idx, frame_count = frames.len(), "rendered");
+            let render_latency_ms = u64::try_from(render_start.elapsed().as_millis())
+                .unwrap_or(u64::MAX);
+            let frame_count = u32::try_from(frames.len()).unwrap_or(u32::MAX);
+            debug!(iter = iter_idx, frame_count = frame_count, "rendered");
+            // B-24 Phase 4I: emit one render_complete SSB action per
+            // iteration so the dashboard MediaValidationPanel can
+            // surface render preview thumbnails + per-step render
+            // telemetry (spec phase-4I.txt L493-494). When sink is
+            // None, fall back to a tracing::info! line so production
+            // callers without an SSB still leave an audit trail.
+            let adapter_name = adapter.name();
+            match sink {
+                Some(s) => s.on_render_complete(
+                    step_id,
+                    adapter_name,
+                    frame_count,
+                    render_latency_ms,
+                ),
+                None => info!(
+                    step_id,
+                    adapter_name,
+                    frame_count,
+                    latency_ms = render_latency_ms,
+                    "render_complete"
+                ),
+            }
 
             // 2.2. Evaluate (Tier1 + optional Tier2). Async closure so
             // Tier1Validator's awaited futures don't need a nested

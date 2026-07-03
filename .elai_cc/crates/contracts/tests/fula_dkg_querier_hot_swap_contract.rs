@@ -204,6 +204,9 @@ fn task_runner_config_accepts_dkg_querier_swap() {
         adversary_runtime: None,
         // E-46 D-8: contract fixture — module-constant defaults.
         planning_config: Default::default(),
+        // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+        #[cfg(feature = "empire")]
+        empire_bridge: None,
     };
     assert!(populated.dkg_querier_swap.is_some());
 }

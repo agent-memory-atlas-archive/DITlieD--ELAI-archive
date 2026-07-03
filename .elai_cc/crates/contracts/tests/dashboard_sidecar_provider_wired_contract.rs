@@ -161,6 +161,9 @@ async fn contract_task_runner_accepts_llm_provider() {
             adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
+            // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         },
     );
 

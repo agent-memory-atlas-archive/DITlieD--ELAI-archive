@@ -92,6 +92,11 @@ mcp = ["elai-plugins/mcp", "elai-orchestrator/mcp"]
 # external deps). Required for `elai darwin-loop`. See
 # workflow/reasoning/E-7-decisions.md DECISION-13.
 darwinian-evolve = ["elai-orchestrator/darwinian-evolve"]
+# B-25 Phase 4J: enable the Empire integration activation seam in the CLI.
+# Pass-through to elai-orchestrator/empire so the `#[cfg(feature = "empire")]`
+# branch in run_subcommand.rs compiles and `elai run --empire` constructs
+# an EmpireBridge. Non-empire CLI builds pay zero cost.
+empire = ["elai-orchestrator/empire"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

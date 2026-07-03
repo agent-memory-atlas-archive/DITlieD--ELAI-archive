@@ -38,7 +38,7 @@ use thiserror::Error;
 
 use crate::focus_tunnel::{
     DiffParseError, DiffParser, FileReadWrite, FimContext, FimPromptAssembler, FimPromptError,
-    ModeSelection,
+    LanguageHint, ModeSelection, StreamingValidator, StreamingValidatorConfig, ValidationDecision,
 };
 use crate::task_runner::BabyStepExecutionCtx;
 use elai_providers::{LlmProvider, OllamaConfig};
@@ -106,6 +106,18 @@ pub enum FocusTunnelExecError {
     /// anchor). Caller routes to STRUCTURED.
     #[error("focus-tunnel exec diff replay rejected hunk(s): {0}")]
     DiffReplay(String),
+
+    /// Streaming validator (B-28 E-4) terminated generation early. The
+    /// caller routes to STRUCTURED + emits a `StreamingEarlyTerminated`
+    /// SSB row using the carried wire-form reason + token count. This
+    /// variant is the load-bearing signal that the
+    /// [`StreamingValidator`] gate fired on the post-completion
+    /// validation pass over the provider's raw output.
+    #[error("focus-tunnel exec streaming early-term: reason={reason}, tokens={token_count}")]
+    StreamingEarlyTerm {
+        reason: String,
+        token_count: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +145,103 @@ pub async fn run_diff_step(
 // ---------------------------------------------------------------------------
 // WIRING-2 entry points — real bodies.
 // ---------------------------------------------------------------------------
+
+/// Infer the streaming-validator language hint from a file extension.
+/// Returns [`LanguageHint::Generic`] for unknown extensions so the
+/// validator still runs the brace-balance + OutputTooLong gates even
+/// when the lazy-pattern gate is language-filtered out.
+fn infer_language_hint(path: Option<&Path>) -> LanguageHint {
+    let Some(path) = path else { return LanguageHint::Generic; };
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("rs") => LanguageHint::Rust,
+        Some("py") => LanguageHint::Python,
+        _ => LanguageHint::Generic,
+    }
+}
+
+/// B-28 E-4 WIRING helper — drive a [`StreamingValidator`] over the
+/// provider's raw completion text as an internal post-completion pass.
+///
+/// The `LlmProvider` trait (`elai_providers::LlmProvider`) exposes only
+/// `complete` (returning `Vec<String>`); there is no live token stream
+/// seam today. To honour the library-tier posture of E-4 (sync, no I/O)
+/// while still giving [`StreamingValidator`] a production call site
+/// reachable from `drive_task`, this helper feeds the raw output through
+/// the validator token-by-token (split on whitespace boundaries, which
+/// is the same granularity the sidecar SSE stream would emit), runs one
+/// `on_chunk` pass for the tree-sitter + deprecated-import gates, then
+/// finalizes with `on_complete`. An `EarlyTerm` decision surfaces as
+/// [`FocusTunnelExecError::StreamingEarlyTerm`] so the caller falls back
+/// to STRUCTURED and emits the `StreamingEarlyTerminated` SSB row.
+///
+/// `mode` is `"fim"` / `"diff"` / `"structured"` and is emitted with the
+/// SSB row. `baby_step_id` is formatted into the validator's `step_id`
+/// so the SSB row can be linked to its originating step.
+fn validate_streaming_output(
+    raw: &str,
+    mode: &str,
+    baby_step_id: u64,
+    language: LanguageHint,
+) -> Result<(), FocusTunnelExecError> {
+    // Empty output short-circuits — the validator must not panic on an
+    // empty stream (edge case (a) in the impact briefing).
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let config = StreamingValidatorConfig {
+        language,
+        max_gen_tokens: DEFAULT_FIM_MAX_GEN_TOKENS as u32,
+        step_id: format!("baby_step_{baby_step_id}"),
+        mode: mode.to_string(),
+        ..StreamingValidatorConfig::default()
+    };
+    let mut validator = StreamingValidator::new(config);
+    let chunk_tokens = validator.chunk_tokens();
+    let mut tokens_since_chunk: u32 = 0;
+    let mut early_term: Option<(String, u32)> = None;
+    for fragment in raw.split_whitespace() {
+        let decision = validator.on_token(fragment);
+        if let ValidationDecision::EarlyTerm { reason, token_count } = decision {
+            early_term = Some((reason.ssb_wire_str().to_string(), token_count));
+            break;
+        }
+        tokens_since_chunk = tokens_since_chunk.saturating_add(1);
+        if tokens_since_chunk >= chunk_tokens {
+            let decision = validator.on_chunk(raw);
+            if let ValidationDecision::EarlyTerm { reason, token_count } = decision {
+                early_term = Some((reason.ssb_wire_str().to_string(), token_count));
+                break;
+            }
+            tokens_since_chunk = 0;
+        }
+    }
+    // If the stream ended without an early-term, run a final chunk pass
+    // over the full output so the deprecated-import + tree-sitter gates
+    // get a chance to inspect the complete text.
+    if early_term.is_none() {
+        let decision = validator.on_chunk(raw);
+        if let ValidationDecision::EarlyTerm { reason, token_count } = decision {
+            early_term = Some((reason.ssb_wire_str().to_string(), token_count));
+        }
+    }
+    match early_term {
+        Some((reason, token_count)) => {
+            // on_complete is not called here because the validator is
+            // already in the terminated state; the captured reason is
+            // surfaced directly. The caller's SSB emission uses the
+            // wire-form reason + token_count.
+            let _ = validator.on_complete();
+            Err(FocusTunnelExecError::StreamingEarlyTerm { reason, token_count })
+        }
+        None => {
+            // Natural completion — on_complete returns Ok for a clean
+            // stream. We discard the Ok payload (total_tokens) since the
+            // caller does not consume it today.
+            let _ = validator.on_complete();
+            Ok(())
+        }
+    }
+}
 
 /// Execute one baby step in FIM mode against the focus-tunnel provider path.
 ///
@@ -220,6 +329,20 @@ pub async fn run_fim_step_with_provider(
         .map_err(|e| FocusTunnelExecError::Provider(format!("{e:?}")))?;
     let raw = completions.into_iter().next().unwrap_or_default();
 
+    // Step 4b: B-28 E-4 WIRING — run the streaming validator over the
+    // provider output as an internal detail. The LlmProvider trait
+    // exposes only `complete` (no live token stream), so the validator
+    // is driven post-completion: each whitespace-separated fragment is
+    // fed to on_token, then a single on_chunk pass runs the tree-sitter
+    // + deprecated-import gates, then on_complete. An EarlyTerm decision
+    // surfaces as FocusTunnelExecError::StreamingEarlyTerm so the caller
+    // falls back to STRUCTURED and emits the StreamingEarlyTerminated
+    // SSB row. This is the production call site that makes
+    // StreamingValidator reachable from drive_task when
+    // ELAI_FOCUS_TUNNEL_EXECUTE=1.
+    let lang = infer_language_hint(Some(target_file));
+    validate_streaming_output(&raw, "fim", _ctx.baby_step_id, lang)?;
+
     // Step 5: strip sentinels via scaffold::fim helper.
     let middle = scaffold::fim::strip_fim_artifacts(&raw);
 
@@ -281,6 +404,16 @@ pub async fn run_diff_step_with_provider(
         .await
         .map_err(|e| FocusTunnelExecError::Provider(format!("{e:?}")))?;
     let raw = completions.into_iter().next().unwrap_or_default();
+
+    // Step 2b: B-28 E-4 WIRING — streaming validator over the raw diff
+    // output (same internal-detail pass as FIM). Catches lazy patterns
+    // (todo!/pass/etc.) before the diff parser runs. EarlyTerm surfaces
+    // as StreamingEarlyTerm so the caller falls back to STRUCTURED.
+    // DIFF mode has no single target file (multi-region), so the
+    // language hint defaults to Generic — the brace-balance +
+    // OutputTooLong gates still run; language-filtered lazy patterns
+    // are not checked on the DIFF path.
+    validate_streaming_output(&raw, "diff", _ctx.baby_step_id, LanguageHint::Generic)?;
 
     // Step 3: parse with DiffParser.
     let parser = DiffParser::new();
@@ -409,6 +542,126 @@ mod tests {
             .await
             .expect_err("no provider");
         assert!(matches!(err, FocusTunnelExecError::MissingProvider));
+    }
+
+    /// B-28 E-4 WIRING unit test — the streaming validator must be
+    /// invoked inside `run_fim_step_with_provider` and surface a
+    /// `StreamingEarlyTerm` error when the provider output contains a
+    /// lazy pattern (`todo!()`). Uses a stub provider that returns the
+    /// lazy token; the FIM region is valid so the only failure path is
+    /// the validator gate. This pins the production call site that
+    /// makes `StreamingValidator` reachable from `drive_task`.
+    #[tokio::test]
+    async fn fim_step_streaming_validator_terminates_on_lazy_pattern() {
+        use elai_providers::{LlmFuture, LlmProvider, OllamaConfig};
+
+        struct LazyProvider;
+        impl LlmProvider for LazyProvider {
+            fn complete<'a>(
+                &'a self,
+                _prompt: &'a str,
+                _config: &'a OllamaConfig,
+            ) -> LlmFuture<'a, Vec<String>> {
+                Box::pin(async move { Ok(vec!["todo!()".to_string()]) })
+            }
+            fn embed<'a>(&'a self, _text: &'a str) -> LlmFuture<'a, Vec<f32>> {
+                Box::pin(async move { Ok(vec![]) })
+            }
+            fn token_count(&self, _text: &str) -> Result<usize, elai_providers::ApiError> {
+                Ok(0)
+            }
+            fn token_count_estimate(&self, text: &str) -> usize {
+                text.len() / 4
+            }
+            fn model_name(&self) -> &str {
+                "stub-lazy"
+            }
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("lazy.rs");
+        std::fs::write(&file, "fn before() {}\n// HERE\nfn after() {}\n").expect("seed file");
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(LazyProvider);
+        let sel = dummy_selection(GenerationMode::Fim, SelectionRule::FimAllConditionsMet);
+        let ctx = BabyStepExecutionCtx {
+            baby_step_id: 77,
+            task_summary: "lazy test".to_string(),
+            escalation_message: None,
+            mode_selection: Some(sel.clone()),
+            session_credentials: std::collections::BTreeMap::new(),
+        };
+        let region = crate::focus_tunnel::EditRegion { start_line: 2, end_line: 3 };
+        let err = run_fim_step_with_provider(
+            &ctx,
+            &sel,
+            Some(provider),
+            Some(&file),
+            Some(region),
+            None,
+        )
+        .await
+        .expect_err("lazy pattern must early-term");
+        assert!(
+            matches!(err, FocusTunnelExecError::StreamingEarlyTerm { .. }),
+            "expected StreamingEarlyTerm; got {err:?}"
+        );
+    }
+
+    /// B-28 E-4 WIRING unit test — DIFF path: streaming validator runs
+    /// but does NOT false-positive on a clean unified diff. The DIFF
+    /// path uses `LanguageHint::Generic` (no single target file), so
+    /// language-filtered lazy patterns are not checked; the
+    /// brace-balance + OutputTooLong gates still run. A clean diff
+    /// must pass through without `StreamingEarlyTerm`.
+    #[tokio::test]
+    async fn diff_step_streaming_validator_passes_clean_diff() {
+        use elai_providers::{LlmFuture, LlmProvider, OllamaConfig};
+
+        struct CleanDiffProvider;
+        impl LlmProvider for CleanDiffProvider {
+            fn complete<'a>(
+                &'a self,
+                _prompt: &'a str,
+                _config: &'a OllamaConfig,
+            ) -> LlmFuture<'a, Vec<String>> {
+                let diff = "--- a/foo.rs\n+++ b/foo.rs\n@@ -1,1 +1,2 @@\n fn hello() {}\n+fn world() {}\n";
+                Box::pin(async move { Ok(vec![diff.to_string()]) })
+            }
+            fn embed<'a>(&'a self, _text: &'a str) -> LlmFuture<'a, Vec<f32>> {
+                Box::pin(async move { Ok(vec![]) })
+            }
+            fn token_count(&self, _text: &str) -> Result<usize, elai_providers::ApiError> {
+                Ok(0)
+            }
+            fn token_count_estimate(&self, text: &str) -> usize {
+                text.len() / 4
+            }
+            fn model_name(&self) -> &str {
+                "stub-clean-diff"
+            }
+        }
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(CleanDiffProvider);
+        let sel = dummy_selection(GenerationMode::Diff, SelectionRule::MultiRegionDiff);
+        let ctx = BabyStepExecutionCtx {
+            baby_step_id: 79,
+            task_summary: "clean diff test".to_string(),
+            escalation_message: None,
+            mode_selection: Some(sel.clone()),
+            session_credentials: std::collections::BTreeMap::new(),
+        };
+        // The DIFF path will return UnsupportedMode (no editor injected)
+        // — but that happens AFTER the streaming validator runs. So the
+        // error must NOT be StreamingEarlyTerm; it should be
+        // UnsupportedMode, proving the validator passed the clean diff.
+        let err = run_diff_step_with_provider(&ctx, &sel, Some(provider), None)
+            .await
+            .expect_err("no editor injected");
+        assert!(
+            !matches!(err, FocusTunnelExecError::StreamingEarlyTerm { .. }),
+            "clean diff must not early-term; got {err:?}"
+        );
     }
 }
 

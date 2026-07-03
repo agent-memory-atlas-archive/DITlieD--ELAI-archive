@@ -181,6 +181,11 @@ pub fn is_enabled() -> bool {
 #[must_use]
 pub fn neutralize_query(executor_intent: &str) -> NeutralPrompt {
     let mut current = executor_intent.to_owned();
+    // Bridging words between non-contiguous leading patterns (e.g.
+    // "foo." in "This is the foo. As requested, bar.") are preserved
+    // here so the substantive content tail is not lost when the scan
+    // advances past a non-pattern sentence start.
+    let mut retained = String::new();
     let mut removed: BTreeSet<String> = BTreeSet::new();
 
     loop {
@@ -209,12 +214,50 @@ pub fn neutralize_query(executor_intent: &str) -> NeutralPrompt {
                     .to_owned();
                 removed.insert(pat.to_string());
             }
-            None => break,
+            None => {
+                // No leading pattern at the current head. Scan forward
+                // for the next sentence boundary (`.`, `!`, `?`) and
+                // check whether a leading pattern begins at the next
+                // non-whitespace position. If so, preserve the
+                // bridging tokens in `retained` and resume the strip
+                // pass at that sentence start. If no subsequent
+                // sentence start carries a leading pattern, the
+                // remainder is substantive content and the loop ends.
+                let lower = current.to_ascii_lowercase();
+                let bytes = current.as_bytes();
+                let mut next_start: Option<usize> = None;
+                let mut i = 0;
+                while i < bytes.len() {
+                    let c = bytes[i];
+                    if c == b'.' || c == b'!' || c == b'?' {
+                        let mut j = i + 1;
+                        while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                            j += 1;
+                        }
+                        if j < bytes.len() {
+                            let rest_lower = &lower[j..];
+                            if LEADING_PATTERNS.iter().any(|p| rest_lower.starts_with(p)) {
+                                next_start = Some(j);
+                                break;
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                match next_start {
+                    Some(j) => {
+                        retained.push_str(&current[..j]);
+                        current = current[j..].to_owned();
+                    }
+                    None => break,
+                }
+            }
         }
     }
 
+    let stripped = format!("{retained}{current}");
     NeutralPrompt {
-        stripped: current,
+        stripped,
         removed_tokens: removed.into_iter().collect(),
     }
 }

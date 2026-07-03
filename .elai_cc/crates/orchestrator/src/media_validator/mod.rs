@@ -103,12 +103,10 @@ impl std::fmt::Debug for MediaValidator {
 /// B-24 plan greps for `fn new_if_media_steps`; this name satisfies the
 /// invariant.
 ///
-/// TODO (Group C5 / task_runner wiring): the actual. stub-ban-allow: Group C5 follow-up
-/// `TaskRunner` / `PipelineFactory` does not yet call this constructor
-/// — the wiring lands when the dispatcher swaps the
-/// `new_if_media_steps_stub` placeholder. See
-/// workflow/reasoning/B-24-decisions.md #44 and the elai.map entry
-/// for `TaskRunner::build`.
+/// `TaskRunner` calls this constructor at task_runner.rs:7348 when
+/// `spec.media` is non-empty (lazy gate at 7343). The per-step
+/// invocation of `validate_with_sink_async` is wired in the same
+/// region; see `wire_media_validator_for_spec`.
 pub fn new_if_media_steps(
     has_media: bool,
     capabilities: ToolCapabilityFlags,
@@ -263,6 +261,24 @@ pub mod pipeline {
             _iteration: u32,
             _issue_count: u32,
             _converged: bool,
+        ) {
+            // Default no-op — concrete sinks (Arc<Ssb>) override.
+        }
+        /// B-24 Phase 4I: render adapter (web / blender / animation /
+        /// ui / comfyui) finished producing a captured-frame set.
+        /// Carries `step_id`, `adapter_name`, `frame_count`, and
+        /// `latency_ms` so the dashboard `MediaValidationPanel` can
+        /// surface render preview thumbnails + per-step render
+        /// telemetry (spec phase-4I.txt L493-494). Default impl is a
+        /// no-op so existing test sinks don't need to implement it;
+        /// production SSB sinks override it to write a
+        /// `RenderCompletePayload` to the bus.
+        fn on_render_complete(
+            &self,
+            _step_id: &str,
+            _adapter_name: &str,
+            _frame_count: u32,
+            _latency_ms: u64,
         ) {
             // Default no-op — concrete sinks (Arc<Ssb>) override.
         }
@@ -1410,6 +1426,23 @@ impl pipeline::MediaSsbSink for SsbMediaSink {
                 iteration,
                 issue_count,
                 converged,
+            },
+        ));
+    }
+
+    fn on_render_complete(
+        &self,
+        step_id: &str,
+        adapter_name: &str,
+        frame_count: u32,
+        latency_ms: u64,
+    ) {
+        self.spawn_write(crate::ssb::SsbPayload::RenderComplete(
+            crate::ssb::RenderCompletePayload {
+                step_id: step_id.to_owned(),
+                adapter_name: adapter_name.to_owned(),
+                frame_count,
+                latency_ms,
             },
         ));
     }

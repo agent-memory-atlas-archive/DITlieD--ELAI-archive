@@ -457,6 +457,9 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         reflection_client: None,
         // P0-1: legacy contract path -- no adversary runtime in pre-P0 tests.
         adversary_runtime: None,
+        // B-25 Phase 4J: legacy contract fixture -- no EmpireBridge handle.
+        #[cfg(feature = "empire")]
+        empire_bridge: None,
     };
     let cfg_none = apply_task_runner_wiring(root.join("cursor.json"), &wiring_none);
     assert!(
@@ -496,6 +499,9 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         reflection_client: None,
         // P0-1: legacy contract path -- no adversary runtime in pre-P0 tests.
         adversary_runtime: None,
+        // B-25 Phase 4J: legacy contract fixture -- no EmpireBridge handle.
+        #[cfg(feature = "empire")]
+        empire_bridge: None,
     };
     let cfg_inter = apply_task_runner_wiring(root.join("cursor.json"), &wiring_inter);
     let gate = cfg_inter
@@ -536,6 +542,9 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         reflection_client: None,
         // P0-1: legacy contract path -- no adversary runtime in pre-P0 tests.
         adversary_runtime: None,
+        // B-25 Phase 4J: legacy contract fixture -- no EmpireBridge handle.
+        #[cfg(feature = "empire")]
+        empire_bridge: None,
     };
     let cfg_auto = apply_task_runner_wiring(root.join("cursor.json"), &wiring_auto);
     let gate_auto = cfg_auto

@@ -259,6 +259,9 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
+            // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         },
     );
 
@@ -372,6 +375,9 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
+            // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         },
     );
 
@@ -481,6 +487,9 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             adversary_runtime: None,
             // E-46 D-8: contract fixture — module-constant defaults.
             planning_config: Default::default(),
+            // B-25 Phase 4J: contract fixture — no EmpireBridge handle.
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         },
     );
 
