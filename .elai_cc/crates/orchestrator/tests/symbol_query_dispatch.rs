@@ -154,8 +154,29 @@ fn build_full_symbol_graph(project_root: &Path) {
 // ---------------------------------------------------------------------------
 
 fn make_ssb_and_viewer() -> (TempDir, Arc<Ssb>, SsbViewer, PathBuf) {
-    let dir = TempDir::new().expect("tempdir creation");
-    let db_path = dir.path().join("c18_symbol_query_dispatch.db");
+    // B-29 WIRING_CONTRACT trigger (cargo test ... symbol_query_dispatch_writes_
+    // ssb_row_for_each_tool) runs this. When ELAI_SSB_SMOKE_DB is set the test
+    // writes the SymbolQuery rows to that canonical db path so the off-agent
+    // wiring_contract_check.py expect_ssb leg can observe them; otherwise a
+    // TempDir db is used (unit-test default). Mirrors the B-23 ssb_emission_smoke
+    // pattern in self_mod_layer1a.rs:2004.
+    let (dir, db_path) = match std::env::var("ELAI_SSB_SMOKE_DB") {
+        Ok(path) if !path.is_empty() => {
+            let db_path = std::path::PathBuf::from(path);
+            if let Some(parent) = db_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // Reuse the same TempDir handle for lifecycle parity with the
+            // default branch; the smoke-db path itself is outside the tempdir.
+            let dir = TempDir::new().expect("tempdir creation (smoke-db mode)");
+            (dir, db_path)
+        }
+        _ => {
+            let dir = TempDir::new().expect("tempdir creation");
+            let db_path = dir.path().join("c18_symbol_query_dispatch.db");
+            (dir, db_path)
+        }
+    };
     let config = SsbConfig {
         db_path: db_path.clone(),
         project_id: "c18-symbol-query".to_owned(),
