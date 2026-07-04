@@ -177,23 +177,27 @@ pub struct AgentPoolConfig {
 /// Env override for the agent sandbox default. When set to a truthy value
 /// (`1`/`true`/`on`), `enable_sandbox` is forced ON regardless of platform;
 /// when set to a falsy value (`0`/`false`/`off`), it is forced OFF. When the
-/// var is UNSET the platform default (`cfg!(target_os = "windows")`) holds, so
-/// existing behaviour — and the `default_enable_sandbox_matches_platform`
-/// contract — is unchanged. This is the opt-in Linux path that B-18B will
-/// promote to a platform default once clone3+seccomp isolation lands; it is
-/// registered in `wire-dark-allowlist.toml` (R9) with promotion_plan_id=B-18B.
+/// var is UNSET the platform default (`true`) holds on every host. B-18B
+/// promoted the Linux clone3+seccomp path to a platform default; the env
+/// override remains the opt-out seam (`ELAI_SANDBOX_ENABLE=0`). On Linux hosts
+/// without CAP_SYS_ADMIN, `LinuxSandbox::launch_agent` returns
+/// `SandboxError::ProcessLaunchFailed` (EPERM) rather than silently falling
+/// back to a plain `Command::spawn` — callers must propagate the error.
 pub const ELAI_SANDBOX_ENABLE_ENV: &str = "ELAI_SANDBOX_ENABLE";
 
-/// Resolve the sandbox default: explicit env override wins, else platform.
-fn sandbox_default_enabled() -> bool {
+/// Resolve the sandbox default: explicit env override wins, else `true`.
+/// B-18B: Linux default flipped ON (clone3+seccomp path activated). The env
+/// override `ELAI_SANDBOX_ENABLE=0` remains the supported opt-out for hosts
+/// where the unprivileged clone3 namespaces are unavailable.
+pub(crate) fn sandbox_default_enabled() -> bool {
     match std::env::var(ELAI_SANDBOX_ENABLE_ENV) {
         Ok(v) => match v.trim() {
             "1" | "true" | "TRUE" | "on" | "ON" => true,
             "0" | "false" | "FALSE" | "off" | "OFF" => false,
-            // Unrecognised value: ignore the override, keep platform default.
-            _ => cfg!(target_os = "windows"),
+            // Unrecognised value: ignore the override, keep default ON.
+            _ => true,
         },
-        Err(_) => cfg!(target_os = "windows"),
+        Err(_) => true,
     }
 }
 
@@ -203,14 +207,12 @@ impl Default for AgentPoolConfig {
             scratch_base: PathBuf::from(".elai_cc/sessions/default/agents"),
             vram_required_bytes: VRAM_MIN_BYTES,
             project_path: PathBuf::from("."), // Default to current directory
-            // B-18A Task 7: enable AppContainer-based isolation on Windows by
-            // default. Linux/macOS stay false until B-18B+ wires clone3+seccomp
-            // through launch_agent_process. The factory in
-            // create_sandbox() falls back to a non-isolating Job+RestrictedToken
-            // path on hosts where AppContainer is unavailable, so this default
-            // is safe even on older Windows. ELAI_SANDBOX_ENABLE overrides this
-            // (opt-in Linux path); unset = platform default (see
-            // sandbox_default_enabled).
+            // B-18A/B-18B: sandbox isolation is ON by default on every host.
+            // Windows uses AppContainer (with a non-isolating Job+RestrictedToken
+            // fallback when AppContainer is unavailable); Linux uses
+            // clone3+seccomp namespaces (requires CAP_SYS_ADMIN or a userns
+            // outer container; EPERM propagates as SandboxError, no silent
+            // fallback). ELAI_SANDBOX_ENABLE=0 is the supported opt-out.
             enable_sandbox: sandbox_default_enabled(),
         }
     }

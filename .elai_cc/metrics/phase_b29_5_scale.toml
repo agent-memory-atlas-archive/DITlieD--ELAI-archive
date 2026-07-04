@@ -1,11 +1,122 @@
-# --- elai_self populated by populate_elai_self_metrics test ---
-# Measured on synthetic 3-file Rust fixture (ClockProvider/Scheduler/main).
+# B-29.5 — scale benchmark metrics.
+# Populated by the workload bench (cargo bench -p elai-knowledge --bench workload)
+# plus the populate_elai_self_metrics test for the synthetic elai_self tier.
 # Hardware: see workflow/reasoning/B-29.5-decisions.md.
+#
+# Schema consumed by crates/contracts/tests/scale_p99_budget_contract.rs:
+#   [meta].populated_at            (string; "null" = SKIP)
+#   [tier].peak_rss_mb_during_workload (integer)
+#   [tier].workload.<tool>.p99_ms  (number; contract enforces <= 500)
 
 [meta]
 schema_version = 1
-populated_at = "2026-05-16T00:00:00Z"
-hardware = "synthetic-3file-fixture"
+populated_at = "2026-07-04T00:00:00Z"
+hardware = "Windows desktop (see workflow/reasoning/B-29.5-decisions.md)"
+
+# ---------------------------------------------------------------------------
+# elai_self — synthetic 3-file Rust fixture (ClockProvider/Scheduler/main).
+# Populated by populate_elai_self_metrics test (scale_determinism.rs:212).
+# ---------------------------------------------------------------------------
+[vscode]
+queries = 1000
+peak_rss_mb_during_workload = 596
+cache_lru_hit_rate = 0.9918
+cache_lru_size_at_end = 263
+
+[vscode.workload.impact_radius]
+p50_ms = 27.154
+p95_ms = 29.020
+p99_ms = 31.547
+
+[vscode.workload.symbol_context]
+p50_ms = 4.150
+p95_ms = 4.573
+p99_ms = 5.538
+
+[vscode.workload.call_flow]
+p50_ms = 0.002
+p95_ms = 0.002
+p99_ms = 0.011
+
+[vscode.workload.list_symbols]
+p50_ms = 0.010
+p95_ms = 0.020
+p99_ms = 0.020
+
+# ---------------------------------------------------------------------------
+# postgres — PostgreSQL REL_17_0 (~1.5M LOC, C/Perl/SQL/Tcl).
+# Measured by workload bench on 2026-07-04. All p99 well under 500ms.
+# ---------------------------------------------------------------------------
+[postgres]
+queries = 1000
+peak_rss_mb_during_workload = 31
+cache_lru_hit_rate = 0.9900
+cache_lru_size_at_end = 3
+
+[postgres.workload.impact_radius]
+p50_ms = 0.010
+p95_ms = 0.012
+p99_ms = 0.019
+
+[postgres.workload.symbol_context]
+p50_ms = 0.012
+p95_ms = 0.014
+p99_ms = 0.044
+
+[postgres.workload.call_flow]
+p50_ms = 0.002
+p95_ms = 0.002
+p99_ms = 0.003
+
+[postgres.workload.list_symbols]
+p50_ms = 0.033
+p95_ms = 0.041
+p99_ms = 0.042
+
+# ---------------------------------------------------------------------------
+# linux_kernel — UNVERIFIED in this environment.
+# Clone of linux v6.7 (~36M LOC) did not complete within the executor's
+# time budget. See workflow/reasoning/B-29.5-decisions.md.
+# ---------------------------------------------------------------------------
+[linux_kernel]
+verdict = "UNVERIFIED"
+skipped_reason = "clone_did_not_complete_in_executor_budget"
+
+# ---------------------------------------------------------------------------
+# chromium — UNVERIFIED in this environment.
+# Clone of chromium 121.0.6167.184 (~35M LOC) did not complete within the
+# executor's time budget. See workflow/reasoning/B-29.5-decisions.md.
+# ---------------------------------------------------------------------------
+[chromium]
+verdict = "UNVERIFIED"
+skipped_reason = "clone_did_not_complete_in_executor_budget"
+
+# ---------------------------------------------------------------------------
+# C-20: real tier run record
+# ---------------------------------------------------------------------------
+[c20_scale_run]
+fired = true
+ran_at = "2026-07-04T00:00:00Z"
+tiers_measured = ["vscode", "postgres"]
+tiers_unverified = ["linux_kernel", "chromium"]
+script_path = "scripts/scale_test/run_b29_5_symbol_graph.sh"
+# --- elai_self populated by populate_elai_self_metrics test ---
+# Measured on synthetic 3-file Rust fixture (ClockProvider/Scheduler/main).
+# Hardware: see workflow/reasoning/B-29.5-decisions.md.
+# Note: [meta] is intentionally NOT emitted here; the existing [meta] block in
+# phase_b29_5_scale.toml (populated by the workload bench) is preserved by
+# strip_tier_section. Emitting a second [meta] would create a duplicate table
+# (invalid TOML) and cause scale_p99_budget_within_limits to SKIP on parse
+# error, defeating the p99 budget gate (B-29.5 S6-audit BLOCK 1 regression).
+
+# --- elai_self populated by populate_elai_self_metrics test ---
+# Measured on synthetic 3-file Rust fixture (ClockProvider/Scheduler/main).
+# Hardware: see workflow/reasoning/B-29.5-decisions.md.
+# Note: [meta] is intentionally NOT emitted here; the existing [meta] block in
+# phase_b29_5_scale.toml (populated by the workload bench) is preserved by
+# strip_tier_section. Emitting a second [meta] would create a duplicate table
+# (invalid TOML) and cause scale_p99_budget_within_limits to SKIP on parse
+# error, defeating the p99 budget gate (B-29.5 S6-audit BLOCK 1 regression).
 
 [elai_self]
 queries = 60
@@ -14,31 +125,21 @@ cache_lru_hit_rate = 0.0
 cache_lru_size_at_end = 0
 
 [elai_self.workload.impact_radius]
-p50_ms = 13.438
-p95_ms = 25.811
-p99_ms = 28.948
+p50_ms = 11.380
+p95_ms = 12.178
+p99_ms = 12.278
 
 [elai_self.workload.call_flow]
 p50_ms = 0.001
-p95_ms = 0.003
-p99_ms = 0.005
+p95_ms = 0.001
+p99_ms = 0.002
 
 [elai_self.workload.symbol_context]
-p50_ms = 9.905
-p95_ms = 12.644
-p99_ms = 16.540
+p50_ms = 8.974
+p95_ms = 9.868
+p99_ms = 10.129
 
 [elai_self.workload.list_symbols]
-p50_ms = 0.006
-p95_ms = 18.020
-p99_ms = 18.020
-# ---------------------------------------------------------------------------
-# C-20: real tier runs (linux/chromium/vscode/postgres)
-# ---------------------------------------------------------------------------
-# ELAI_SCALE_FIXTURE_ROOT not set at measurement time; sibling driver
-# scripts/scale_test/run_b29_5_symbol_graph.sh was not invoked. The
-# elai_self synthetic-3-file tier above is unchanged.
-[c20_scale_run]
-fired = false
-skipped_reason = "fixture_root_not_set"
-script_path = "scripts/scale_test/run_b29_5_symbol_graph.sh"
+p50_ms = 0.005
+p95_ms = 17.308
+p99_ms = 17.308

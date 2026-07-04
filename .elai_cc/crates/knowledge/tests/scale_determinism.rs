@@ -282,18 +282,16 @@ fn populate_elai_self_metrics() {
     sc_ns.sort_unstable();
     ls_ns.sort_unstable();
 
-    let now_str = "2026-05-16T00:00:00Z";
-
     let toml_patch = format!(
         r#"
 # --- elai_self populated by populate_elai_self_metrics test ---
 # Measured on synthetic 3-file Rust fixture (ClockProvider/Scheduler/main).
 # Hardware: see workflow/reasoning/B-29.5-decisions.md.
-
-[meta]
-schema_version = 1
-populated_at = "{now}"
-hardware = "synthetic-3file-fixture"
+# Note: [meta] is intentionally NOT emitted here; the existing [meta] block in
+# phase_b29_5_scale.toml (populated by the workload bench) is preserved by
+# strip_tier_section. Emitting a second [meta] would create a duplicate table
+# (invalid TOML) and cause scale_p99_budget_within_limits to SKIP on parse
+# error, defeating the p99 budget gate (B-29.5 S6-audit BLOCK 1 regression).
 
 [elai_self]
 queries = {q}
@@ -321,7 +319,6 @@ p50_ms = {ls50:.3}
 p95_ms = {ls95:.3}
 p99_ms = {ls99:.3}
 "#,
-        now = now_str,
         q = SAMPLES * targets.len(),
         ir50 = percentile_ns(&ir_ns, 50.0),
         ir95 = percentile_ns(&ir_ns, 95.0),
@@ -339,11 +336,61 @@ p99_ms = {ls99:.3}
 
     eprintln!("[populate_elai_self] measurements:\n{toml_patch}");
 
-    // Write the measured values back to phase_b29_5_scale.toml.
-    // We overwrite the entire file with the scaffold + populated elai_self section.
+    // Merge the measured elai_self section into phase_b29_5_scale.toml.
+    // Read-modify-write: preserve every other tier (vscode/postgres/linux_kernel/
+    // chromium) and the [meta]/[c20_scale_run] sections. The previous
+    // implementation overwrote the entire file, destroying real-tier measurements
+    // populated by the executor's workload bench run (B-29.5 audit BLOCK 1).
     let toml_path = scale_toml_path();
-    match std::fs::write(&toml_path, toml_patch.trim_start()) {
-        Ok(_) => eprintln!("[populate_elai_self] wrote {}", toml_path.display()),
-        Err(e) => eprintln!("[populate_elai_self] could not write {}: {e}", toml_path.display()),
+    let existing = std::fs::read_to_string(&toml_path).unwrap_or_default();
+
+    // Strip any pre-existing [elai_self] block (and its sub-tables) from the
+    // existing file before appending the fresh measurement block. We split on
+    // section headers and drop any section whose top-level table is elai_self.
+    let preserved: String = strip_tier_section(&existing, "elai_self");
+
+    let mut merged = String::with_capacity(preserved.len() + toml_patch.len());
+    merged.push_str(&preserved);
+    if !merged.ends_with('\n') {
+        merged.push('\n');
     }
+    merged.push_str(toml_patch.trim_start());
+
+    match std::fs::write(&toml_path, merged) {
+        Ok(_) => eprintln!(
+            "[populate_elai_self] merged elai_self into {} (other tiers preserved)",
+            toml_path.display()
+        ),
+        Err(e) => eprintln!(
+            "[populate_elai_self] could not write {}: {e}",
+            toml_path.display()
+        ),
+    }
+}
+
+/// Remove every `[tier]` and `[tier.*]` section from a TOML document string,
+/// returning the remaining text with the named tier's sections excised.
+/// Section headers are detected by a line starting with `[` followed by the
+/// tier name as the first path segment. Lines before the first header
+/// (leading comments/blank lines) are preserved.
+fn strip_tier_section(doc: &str, tier: &str) -> String {
+    let mut out = String::with_capacity(doc.len());
+    let mut skipping = false;
+    let tier_prefix = format!("[{}", tier);
+
+    for line in doc.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            // Is this a [tier] or [tier.*] header?
+            skipping = trimmed.starts_with(&tier_prefix)
+                && (trimmed.len() == tier_prefix.len()
+                    || trimmed.as_bytes().get(tier_prefix.len()) == Some(&b'.')
+                    || trimmed.as_bytes().get(tier_prefix.len()) == Some(&b']'));
+        }
+        if !skipping {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }

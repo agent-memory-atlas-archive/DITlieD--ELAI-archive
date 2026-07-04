@@ -1,7 +1,9 @@
-//! B-18A Tier C Sandbox subset — Tasks 7+8 wire-up tests.
+//! B-18A/B-18B Tier C Sandbox subset — Tasks 7+8 wire-up tests.
 //!
 //! Coverage:
-//!   (a) AgentPoolConfig::default().enable_sandbox follows cfg!(target_os="windows")
+//!   (a) AgentPoolConfig::default().enable_sandbox is ON on every host (B-18B
+//!       promoted the Linux clone3+seccomp path to a platform default; the
+//!       env override ELAI_SANDBOX_ENABLE=0 is the supported opt-out)
 //!   (b) AgentSandbox trait extension compiles: kill_agent + wait_agent + scratch_dir
 //!       parameter on launch_agent (verified via TestSandbox impl)
 //!   (c) WindowsAppContainerSandbox::launch_agent honours the caller-supplied
@@ -27,16 +29,35 @@ use elai_orchestrator::sandbox::{
 };
 
 // ---------------------------------------------------------------------------
-// (a) Default enable_sandbox follows platform.
+// (a) Default enable_sandbox is ON on every host (B-18B promoted the Linux
+//     clone3+seccomp path to a platform default). The env override
+//     ELAI_SANDBOX_ENABLE=0 remains the supported opt-out for hosts where
+//     unprivileged clone3 namespaces are unavailable.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn default_enable_sandbox_matches_platform() {
+    // B-18B: sandbox isolation is ON by default on every host. The previous
+    // B-18A contract (cfg!(target_os="windows")) was retired when the Linux
+    // clone3+seccomp path was promoted to a platform default. Env override
+    // ELAI_SANDBOX_ENABLE=0 still wins (verified separately by the env-override
+    // tests); here we assert the unset-env default is `true` regardless of
+    // platform.
+    if std::env::var(elai_orchestrator::agent_pool::ELAI_SANDBOX_ENABLE_ENV).is_ok() {
+        // If the env override is set in this process, the default resolver
+        // honours it; skip the unset-env assertion to avoid a false negative.
+        eprintln!(
+            "skipping default_enable_sandbox_matches_platform: {} is set",
+            elai_orchestrator::agent_pool::ELAI_SANDBOX_ENABLE_ENV
+        );
+        return;
+    }
     let cfg = AgentPoolConfig::default();
-    assert_eq!(
+    assert!(
         cfg.enable_sandbox,
-        cfg!(target_os = "windows"),
-        "B-18A Task 7: enable_sandbox default must equal cfg!(target_os=\"windows\")"
+        "B-18B: enable_sandbox default must be true on every host \
+         (Linux clone3+seccomp + Windows AppContainer both activated by default; \
+         ELAI_SANDBOX_ENABLE=0 is the supported opt-out)"
     );
 }
 
@@ -285,13 +306,26 @@ fn windows_sandbox_uses_caller_scratch_dir() {
 
 #[test]
 fn pool_config_branch_consistency() {
-    // The default config must be in a coherent state on every platform.
-    let cfg = AgentPoolConfig::default();
-    if cfg!(target_os = "windows") {
-        assert!(cfg.enable_sandbox, "Windows default must enable sandbox");
-    } else {
-        assert!(!cfg.enable_sandbox, "non-Windows default must disable sandbox until B-18B+");
+    // B-18B: the default config must be in a coherent state on every platform.
+    // Sandbox isolation is ON by default on every host (Linux clone3+seccomp +
+    // Windows AppContainer). ELAI_SANDBOX_ENABLE=0 is the supported opt-out
+    // for hosts where the unprivileged clone3 namespaces are unavailable.
+    if std::env::var(elai_orchestrator::agent_pool::ELAI_SANDBOX_ENABLE_ENV).is_ok() {
+        // Env override is set in this process; the default resolver honours it,
+        // so the unset-env default assertion below would be a false negative.
+        eprintln!(
+            "skipping pool_config_branch_consistency: {} is set",
+            elai_orchestrator::agent_pool::ELAI_SANDBOX_ENABLE_ENV
+        );
+        return;
     }
+    let cfg = AgentPoolConfig::default();
+    assert!(
+        cfg.enable_sandbox,
+        "B-18B: default config must enable sandbox on every platform \
+         (Linux clone3+seccomp + Windows AppContainer activated by default; \
+         ELAI_SANDBOX_ENABLE=0 is the supported opt-out)"
+    );
 }
 
 // ---------------------------------------------------------------------------

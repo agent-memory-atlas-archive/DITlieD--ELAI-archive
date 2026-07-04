@@ -1,0 +1,40 @@
+# B-29.5 — per-tier indexing metrics: postgres.
+# Produced by the Phase 3 step 7 indexing run (cargo run --release --
+# symbol_graph build <fixture_path>) for PostgreSQL REL_17_0.
+# Hardware: see workflow/reasoning/B-29.5-decisions.md.
+#
+# Schema (per plan Phase 3 step 7):
+#   [meta].tier           — tier name
+#   [meta].fixture_pin    — pinned repo tag
+#   [index].wall_clock_s  — total indexing wall-clock time (seconds)
+#   [index].peak_rss_mb   — peak process RSS during indexing (MB)
+#   [dkg].node_count      — number of DKG nodes (symbols)
+#   [dkg].edge_count      — number of DKG edges (relations)
+#   [dkg].file_count      — number of source files indexed
+#   [symbol_graph_meta]   — symbol_graph build metadata
+
+[meta]
+tier = "postgres"
+fixture_pin = "REL_17_0"
+repo = "https://github.com/postgres/postgres"
+indexed_at = "2026-07-04T00:00:00Z"
+verdict = "MEASURED"
+
+[index]
+# wall_clock_s and peak_rss_mb were not captured by the executor's run
+# (the indexing step was not wrapped in a timer/RSS sampler). The DKG
+# node/edge/file counts below ARE real (read from the built dkg.db).
+# Marking UNVERIFIED rather than fabricating. See B-29.5-decisions.md.
+wall_clock_s = "UNVERIFIED"
+wall_clock_skipped_reason = "indexing_step_not_wrapped_in_timer"
+peak_rss_mb = "UNVERIFIED"
+peak_rss_skipped_reason = "indexing_step_not_wrapped_in_rss_sampler"
+
+[dkg]
+node_count = 47143
+edge_count = 102
+file_count = 1448
+
+[symbol_graph_meta]
+project_id_source = "blake3 project_id_from_path"
+build_pipeline = "elai_knowledge::symbol_graph::build_pipeline::build_symbol_graph"

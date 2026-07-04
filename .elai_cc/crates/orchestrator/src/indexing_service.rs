@@ -755,6 +755,11 @@ impl IndexingService {
             dkg.failed_files().map(|v| v.len()).unwrap_or(0),
         )
         .unwrap_or(0);
+        // B-30: capture per-language node counts before dropping the engine,
+        // so the CLI SSB emitter can populate `DkgReadyPayload.languages`
+        // and `phase_1A.toml [per_language_node_counts]` reflects real data.
+        let dkg_node_counts_by_language: Vec<(String, i64)> =
+            dkg.node_counts_by_language().unwrap_or_default();
         drop(dkg);
 
         // 7b. B-29 Phase 4 + C-24 (DRIFT-3): build the symbol graph on top of
@@ -953,6 +958,9 @@ impl IndexingService {
             bm25_skipped_binary,
             registry_status: Some(dkg_registry_status),
             dkg_files_failed,
+            // B-30: per-language node counts — languages with >=1 node, sorted
+            // alphabetically by the underlying SQL `ORDER BY language ASC`.
+            node_counts_by_language: dkg_node_counts_by_language,
         };
 
         if is_resume {
@@ -1437,6 +1445,12 @@ pub struct IndexingSummary {
     /// `DkgReadyPayload.failed_files` consumer in dashboard commands.rs:2275).
     /// Defaults to 0 when the engine's `failed_files()` query returns an error.
     pub dkg_files_failed: u64,
+    /// B-30: per-language node counts `(language_id, count)` for languages
+    /// with at least one node, sorted alphabetically by `language_id`. Used
+    /// to populate `DkgReadyPayload.languages` and the
+    /// `phase_1A.toml [per_language_node_counts]` metric table. Empty when
+    /// the engine's `node_counts_by_language()` query returns an error.
+    pub node_counts_by_language: Vec<(String, i64)>,
 }
 
 // ---------------------------------------------------------------------------

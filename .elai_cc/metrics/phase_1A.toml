@@ -1,34 +1,33 @@
 # ELAI phase 1A DKG metrics — 2026-04-07
-build_time_ms = 9670
-query_p50_ms = 0.009
-query_p99_ms = 0.018
-db_size_bytes = 2842624
-total_nodes = 8075
-total_edges = 4148
-files_parsed = 135
-files_skipped = 0
-edges_imports = 249
-edges_contains = 3830
-edges_implements = 69
-signatures_populated = 8075
+build_time_ms = 751782
+query_p50_ms = 0.019
+query_p99_ms = 0.056
+db_size_bytes = 158720000
+total_nodes = 322134
+total_edges = 145188
+files_parsed = 11933
+files_skipped = 72
+edges_imports = 4058
+edges_contains = 140509
+edges_implements = 621
+signatures_populated = 322134
 
-# Per-language node counts (Pass D schema addition).
-# Zero values are honest — the Phase 1A fixture was Rust-only (.elai_cc source).
-# These update after the next full-codebase smoke run.
+# Per-language node counts (B-30 Pass D schema addition).
+# Populated by `cargo run --example measure` from `SELECT language, COUNT(*) FROM dkg_nodes GROUP BY language`.
 [per_language_node_counts]
-rust = 8075
-python = 0
-go = 0
-typescript = 0
+rust = 51692
+python = 265760
+go = 12
+typescript = 4034
 tsx = 0
 svelte = 0
 vue = 0
 java = 0
 csharp = 0
 ruby = 0
-javascript = 0
-c = 0
-cpp = 0
+javascript = 68
+c = 8
+cpp = 560
 scala = 0
 php = 0
 swift = 0

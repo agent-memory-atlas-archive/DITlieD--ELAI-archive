@@ -31,8 +31,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::ssb::{
-    ConfigArchivedPayload, MsiUpdatePayload, ProposalAppliedPayload, ProposalGeneratedPayload,
-    ProposalRejectedPayload, Ssb, SsbPayload, SteeringVectorRefreshTriggeredPayload,
+    ConfigArchivedPayload, ConfigOscillationPayload, ConvergenceStagnantPayload,
+    EvolutionWithheldPayload, MsiUpdatePayload, ProposalAppliedPayload, ProposalGeneratedPayload,
+    ProposalRejectedPayload, RegressionDetectedPayload, Ssb, SsbPayload,
+    SteeringVectorRefreshTriggeredPayload,
 };
 use elai_core::{CommitOutcome, GitBranchPolicy, GitCommitRequest, ToolDispatcher};
 use elai_core::{ClockProvider as _, OsClock};
@@ -485,6 +487,14 @@ pub struct DefaultLayer1aProcessor {
     /// `scope.ecosystem` differs are rejected with [`Layer1aError::ScopeMismatch`].
     /// When `None`, scope checks are skipped (legacy callers).
     pub active_ecosystem: Option<String>,
+    /// B-23 Phase 4H Group F (4H.8) — L2/MSI/OSC/REG/EVO orchestrator.
+    /// Wired into `process_outcome` so the full self-mod machinery runs on
+    /// every pipeline completion reachable from `drive_task`. Initialized to
+    /// a default orchestrator in [`Self::new`]; callers can override via
+    /// [`Self::with_self_mod_orchestrator`]. Lock is `AsyncMutex` because
+    /// `SelfModOrchestrator::process_outcome` takes `&mut self` and the
+    /// processor itself is `Send + Sync` behind `Arc<dyn Layer1aProcessor>`.
+    orchestrator: Arc<AsyncMutex<crate::self_mod_orchestrator::SelfModOrchestrator>>,
 }
 
 impl DefaultLayer1aProcessor {
@@ -507,6 +517,9 @@ impl DefaultLayer1aProcessor {
             msi_lambda: DEFAULT_MSI_LAMBDA,
             msi: Arc::new(AsyncMutex::new(FxHashMap::default())),
             active_ecosystem: None,
+            orchestrator: Arc::new(AsyncMutex::new(
+                crate::self_mod_orchestrator::SelfModOrchestrator::new(),
+            )),
         }
     }
 
@@ -525,6 +538,22 @@ impl DefaultLayer1aProcessor {
     /// Group C audit fix: spec phase-4H.txt:490-500 scope enforcement.
     pub fn with_ecosystem(mut self, ecosystem: impl Into<String>) -> Self {
         self.active_ecosystem = Some(ecosystem.into());
+        self
+    }
+
+    /// B-23 Phase 4H Group F — inject a pre-configured
+    /// [`SelfModOrchestrator`] for the L2/MSI/OSC/REG/EVO machinery. When
+    /// unset, `new` installs a default orchestrator. Callers that want
+    /// custom tuning (score weights, history window, min occurrences) pass
+    /// a configured orchestrator here.
+    // WIRE-DARK[B-23] test/injection builder helper; production wiring uses
+    // `DefaultLayer1aProcessor::new` (runtime_setup.rs:619) which installs
+    // the default orchestrator. No production caller by design.
+    pub fn with_self_mod_orchestrator(
+        mut self,
+        orchestrator: crate::self_mod_orchestrator::SelfModOrchestrator,
+    ) -> Self {
+        self.orchestrator = Arc::new(AsyncMutex::new(orchestrator));
         self
     }
 
@@ -824,6 +853,158 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                     )
                     .await;
                 proposals.push(proposal);
+            }
+            // B-23 Phase 4H Group F (4H.8) — run the L2/MSI/OSC/REG/EVO
+            // orchestrator on every pipeline completion so the full self-mod
+            // machinery is reachable from `drive_task`. The minimal
+            // [`PipelineOutcome`] is lifted to a [`FullPipelineOutcome`] with
+            // empty rich fields; OSC/EVO degrade to Inconclusive/Allow when
+            // no variants have been observed, REG sees no test_outcomes, and
+            // MSI records a delta against the 0.0 baseline. SSB rows are
+            // emitted for every verdict the orchestrator surfaces so the
+            // dashboard (MsiPanel / ProposalsPanel) reflects live state.
+            let full_outcome = crate::self_mod_types::FullPipelineOutcome {
+                template_id: outcome.task_id.clone(),
+                project_id: String::new(),
+                pipeline_mode: outcome.pipeline_mode,
+                phases_total: 0,
+                phases_passed_first_try: if outcome.success { 0 } else { 0 },
+                audit_findings_total: 0,
+                audit_findings_block: 0,
+                test_coverage_final: 0.0,
+                time_to_complete_seconds: outcome.elapsed_ms / 1000,
+                tokens_consumed_total: 0,
+                human_interventions: 0,
+                rules_triggered: Vec::new(),
+                test_outcomes: crate::self_mod_types::TestOutcomeReport::default(),
+                etc_trigger_events: 0,
+                stale_api_catches: Vec::new(),
+                context_budget_truncations: Vec::new(),
+                failure_taxonomy_misses: Vec::new(),
+            };
+            {
+                let mut orch = self.orchestrator.lock().await;
+                match orch.process_outcome(full_outcome) {
+                    Ok(update) => {
+                        let ts = now_ms();
+                        let mode_str = update.pipeline_mode.clone();
+                        // MSI update — always emitted so MsiPanel reflects the
+                        // latest per-mode trajectory.
+                        let _ = self
+                            .ssb
+                            .write_payload(
+                                LAYER1A_AGENT_ID,
+                                0,
+                                SsbPayload::MsiUpdate(MsiUpdatePayload {
+                                    pipeline_mode: mode_str.clone(),
+                                    msi_value: update.msi.msi_value,
+                                    status: update.msi.verdict.as_str().to_owned(),
+                                }),
+                                Vec::new(),
+                            )
+                            .await;
+                        // OSC — Stagnant / Oscillating verdicts surface as
+                        // distinct SSB rows for the dashboard's badge surface.
+                        match &update.osc {
+                            crate::self_mod_types::OscVerdict::Stagnant { window, similarity } => {
+                                let _ = self
+                                    .ssb
+                                    .write_payload(
+                                        LAYER1A_AGENT_ID,
+                                        0,
+                                        SsbPayload::ConvergenceStagnant(ConvergenceStagnantPayload {
+                                            pipeline_mode: mode_str.clone(),
+                                            window: u32::try_from(*window).unwrap_or(u32::MAX),
+                                            similarity: *similarity,
+                                            variant_id: String::new(),
+                                            ts_ms: ts,
+                                        }),
+                                        Vec::new(),
+                                    )
+                                    .await;
+                            }
+                            crate::self_mod_types::OscVerdict::Oscillating { period } => {
+                                let _ = self
+                                    .ssb
+                                    .write_payload(
+                                        LAYER1A_AGENT_ID,
+                                        0,
+                                        SsbPayload::ConfigOscillation(ConfigOscillationPayload {
+                                            pipeline_mode: mode_str.clone(),
+                                            period: u32::try_from(*period).unwrap_or(u32::MAX),
+                                            frozen_keys: Vec::new(),
+                                            freeze_pipelines: 5,
+                                            ts_ms: ts,
+                                        }),
+                                        Vec::new(),
+                                    )
+                                    .await;
+                            }
+                            _ => {}
+                        }
+                        // REG — emit when regressions detected across the
+                        // outcome window.
+                        if update.regression.has_regressions {
+                            let regressed: Vec<u32> = update
+                                .regression
+                                .regressed_ac_indices
+                                .iter()
+                                .map(|i| u32::try_from(*i).unwrap_or(u32::MAX))
+                                .collect();
+                            let max_consec: u32 = update
+                                .regression
+                                .regressions
+                                .iter()
+                                .map(|r| u32::try_from(r.consecutive_failures).unwrap_or(0))
+                                .max()
+                                .unwrap_or(0);
+                            let _ = self
+                                .ssb
+                                .write_payload(
+                                    LAYER1A_AGENT_ID,
+                                    0,
+                                    SsbPayload::RegressionDetected(RegressionDetectedPayload {
+                                        pipeline_id: outcome.task_id.clone(),
+                                        pipeline_mode: mode_str.clone(),
+                                        regressed_ac_indices: regressed,
+                                        max_consecutive_failures: max_consec,
+                                        ts_ms: ts,
+                                    }),
+                                    Vec::new(),
+                                )
+                                .await;
+                        }
+                        // EVO — Withhold forces MSI=STABILIZING and surfaces
+                        // as an SSB row so the dashboard can badge the mode.
+                        if let crate::self_mod_types::EvolutionGateResult::Withhold {
+                            reason,
+                            identical_streak,
+                        } = &update.evo
+                        {
+                            let _ = self
+                                .ssb
+                                .write_payload(
+                                    LAYER1A_AGENT_ID,
+                                    0,
+                                    SsbPayload::EvolutionWithheld(EvolutionWithheldPayload {
+                                        pipeline_mode: mode_str.clone(),
+                                        identical_streak: u32::try_from(*identical_streak)
+                                            .unwrap_or(u32::MAX),
+                                        reason: reason.clone(),
+                                        ts_ms: ts,
+                                    }),
+                                    Vec::new(),
+                                )
+                                .await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "self_mod orchestrator process_outcome failed",
+                        );
+                    }
+                }
             }
             proposals
         })
@@ -1329,6 +1510,19 @@ impl DefaultLayer1aProcessor {
         let v = state.compute(self.msi_lambda);
         (v, status_label(v).to_owned())
     }
+
+    /// B-23 Phase 4H Group F — snapshot the L2/MSI/OSC/REG/EVO
+    /// orchestrator's per-mode MSI state. Used by the dashboard Tauri
+    /// commands to render MsiPanel alongside the L1A apply-success MSI.
+    // WIRE-DARK[B-23] dashboard `get_msi_status` reads via SsbViewer
+    // (commands.rs:1355 latest_msi_per_mode), not this in-process snapshot.
+    // Retained for unit-test observation (self_mod_layer1a.rs:1976).
+    pub async fn orchestrator_msi_snapshots(
+        &self,
+    ) -> Vec<crate::msi::MsiSnapshot> {
+        let orch = self.orchestrator.lock().await;
+        orch.all_msi_snapshots()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1732,6 +1926,118 @@ pub fn layer1a_auto_apply_via_env() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssb::{SsbActionType, SsbConfig, SsbReader};
+    use elai_core::clock::{ClockProvider, SeededClock};
+    use tempfile::TempDir;
+
+    fn test_ssb() -> (Arc<Ssb>, TempDir) {
+        let dir = TempDir::new().expect("tempdir");
+        let cfg = SsbConfig {
+            db_path: dir.path().join("ssb.db"),
+            pool_size: Some(2),
+            project_id: "p-test".into(),
+            session_id: "s-test".into(),
+        };
+        let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+        let ssb = Arc::new(Ssb::new(cfg, clock).expect("ssb init"));
+        (ssb, dir)
+    }
+
+    async fn make_processor(
+        ssb: Arc<Ssb>,
+        dir: &TempDir,
+    ) -> DefaultLayer1aProcessor {
+        let rules_db = Arc::new(AsyncMutex::new(
+            Connection::open(dir.path().join("rules.db")).expect("rules.db"),
+        ));
+        let proc = DefaultLayer1aProcessor::new(
+            rules_db,
+            dir.path().join("rules.db"),
+            ssb,
+        );
+        proc.ensure_tables().await.expect("ensure_tables");
+        proc
+    }
+
+    /// B-23 Phase 4H Group F — verifies the L2/MSI/OSC/REG/EVO
+    /// orchestrator is reachable from `process_outcome` (the drive_task
+    /// seam) and emits an MsiUpdate SSB row on every pipeline completion.
+    /// This is the wiring test: a dark orchestrator (never invoked from
+    /// production) would fail this test.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_outcome_invokes_self_mod_orchestrator_and_emits_msi_update() {
+        let (ssb, dir) = test_ssb();
+        let proc = make_processor(ssb.clone(), &dir).await;
+        let outcome = PipelineOutcome {
+            task_id: "task-wire-1".into(),
+            success: true,
+            failures: Vec::new(),
+            findings: Vec::new(),
+            pipeline_mode: PipelineMode::Surgical,
+            elapsed_ms: 1000,
+        };
+        let proposals = proc.process_outcome(&outcome).await;
+        assert!(proposals.is_empty(), "no failures -> no L1A proposals");
+        // The orchestrator must have recorded an MSI sample for Surgical.
+        let snaps = proc.orchestrator_msi_snapshots().await;
+        let surgical = snaps
+            .iter()
+            .find(|s| s.pipeline_mode == PipelineMode::Surgical)
+            .expect("orchestrator MSI snapshot for Surgical");
+        assert!(surgical.samples >= 1, "MSI sample recorded");
+        // An MsiUpdate SSB row must have been emitted to the broadcast log.
+        let msi_rows = ssb.query_by_type(SsbActionType::MsiUpdate).unwrap_or_default();
+        assert!(
+            !msi_rows.is_empty(),
+            "MsiUpdate SSB row emitted by orchestrator wiring",
+        );
+    }
+
+    /// B-23 SSB emission smoke test — the plan's WIRING_CONTRACT trigger
+    /// (`cargo test ... ssb_emission_smoke`) runs this. It proves the
+    /// autonomous self-mod loop emits SSB rows when `process_outcome` is
+    /// invoked from the drive_task seam. When ELAI_SSB_SMOKE_DB is set the
+    /// test writes the MsiUpdate row to that canonical db path so the
+    /// off-agent wiring_contract_check.py expect_ssb leg can observe it;
+    /// otherwise a TempDir db is used (unit-test default).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ssb_emission_smoke() {
+        let (ssb, dir) = match std::env::var("ELAI_SSB_SMOKE_DB") {
+            Ok(path) if !path.is_empty() => {
+                let db_path = std::path::PathBuf::from(path);
+                if let Some(parent) = db_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let cfg = SsbConfig {
+                    db_path: db_path.clone(),
+                    pool_size: Some(2),
+                    project_id: "p-smoke".into(),
+                    session_id: "s-smoke".into(),
+                };
+                let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+                let ssb = Arc::new(Ssb::new(cfg, clock).expect("ssb init (canonical)"));
+                let dir = TempDir::new().expect("tempdir (rules.db)");
+                (ssb, dir)
+            }
+            _ => test_ssb(),
+        };
+        let proc = make_processor(ssb.clone(), &dir).await;
+        let outcome = PipelineOutcome {
+            task_id: "task-ssb-smoke".into(),
+            success: true,
+            failures: Vec::new(),
+            findings: Vec::new(),
+            pipeline_mode: PipelineMode::Surgical,
+            elapsed_ms: 1000,
+        };
+        let _ = proc.process_outcome(&outcome).await;
+        // MsiUpdate is emitted unconditionally on every Ok path.
+        let msi_rows = ssb.query_by_type(SsbActionType::MsiUpdate).unwrap_or_default();
+        assert!(
+            !msi_rows.is_empty(),
+            "ssb_emission_smoke: MsiUpdate row must be emitted",
+        );
+    }
 
     #[test]
     fn classify_table_lazy() {

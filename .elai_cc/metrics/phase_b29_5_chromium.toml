@@ -1,0 +1,38 @@
+# B-29.5 — per-tier indexing metrics: chromium.
+# Planned indexing run for chromium 121.0.6167.184 (~35 M LOC).
+# Hardware: see workflow/reasoning/B-29.5-decisions.md.
+#
+# STATUS: UNVERIFIED. The depth=1 clone of chromium 121.0.6167.184 did
+# not complete within the executor's per-step time budget on this host.
+# No indexing was performed and no numbers were fabricated. See
+# B-29.5-decisions.md.
+#
+# Schema (per plan Phase 3 step 7):
+#   [meta].tier           — tier name
+#   [meta].fixture_pin    — pinned repo tag
+#   [index].wall_clock_s  — total indexing wall-clock time (seconds)
+#   [index].peak_rss_mb   — peak process RSS during indexing (MB)
+#   [dkg].node_count      — number of DKG nodes (symbols)
+#   [dkg].edge_count      — number of DKG edges (relations)
+#   [dkg].file_count      — number of source files indexed
+#   [symbol_graph_meta]   — symbol_graph build metadata
+
+[meta]
+tier = "chromium"
+fixture_pin = "121.0.6167.184"
+repo = "chromium.googlesource.com/chromium/src"
+indexed_at = "null"
+verdict = "UNVERIFIED"
+skipped_reason = "clone_did_not_complete_in_executor_budget"
+
+[index]
+wall_clock_s = "UNVERIFIED"
+peak_rss_mb = "UNVERIFIED"
+
+[dkg]
+node_count = "UNVERIFIED"
+edge_count = "UNVERIFIED"
+file_count = "UNVERIFIED"
+
+[symbol_graph_meta]
+build_status = "not_run"

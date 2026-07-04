@@ -57,6 +57,9 @@ fn emit_indexing_ssb(
     grammar_status: Option<LanguageRegistryStatus>,
     // B-4: failed-file count for DkgReadyPayload; 0 when dkg is None.
     dkg_failed_files: u64,
+    // B-30: per-language node counts — populates `DkgReadyPayload.languages`
+    // with the set of languages that have >=1 node. Empty when dkg is None.
+    dkg_languages: Vec<String>,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -131,7 +134,7 @@ fn emit_indexing_ssb(
                 project_id: project_id.clone(),
                 node_count,
                 edge_count,
-                languages: Vec::new(),
+                languages: dkg_languages,
                 failed_files: dkg_failed_files,
             });
             if let Err(e) = writer
@@ -195,7 +198,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
         // Fresh index path: emit start, run, emit complete + DkgReady.
         let start_ms = now_unix_ms();
         if let Some(writer) = ssb {
-            emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None, 0);
+            emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None, 0, Vec::new());
         }
         match svc.run_full_index() {
             Ok(summary) => {
@@ -211,6 +214,14 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                     "IndexingService: full index complete"
                 );
                 if let Some(writer) = ssb {
+                    // B-30: populate DkgReadyPayload.languages from the
+                    // per-language node counts (languages with >=1 node).
+                    let langs: Vec<String> = summary
+                        .node_counts_by_language
+                        .iter()
+                        .filter(|(_, c)| *c > 0)
+                        .map(|(lang, _)| lang.clone())
+                        .collect();
                     emit_indexing_ssb(
                         writer,
                         &project_id,
@@ -221,6 +232,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                         Some((node_count, edge_count)),
                         summary.registry_status,
                         summary.dkg_files_failed,
+                        langs,
                     );
                 }
             }
@@ -239,6 +251,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                         None,
                         None,
                         0,
+                        Vec::new(),
                     );
                 }
             }
@@ -254,7 +267,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                 // Schema-rebuild path: emit start, run, emit complete + DkgReady.
                 let start_ms = now_unix_ms();
                 if let Some(writer) = ssb {
-                    emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None, 0);
+                    emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None, 0, Vec::new());
                 }
                 match svc.run_full_index() {
                     Ok(summary) => {
@@ -268,6 +281,12 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                             "IndexingService: rebuild complete"
                         );
                         if let Some(writer) = ssb {
+                            let langs: Vec<String> = summary
+                                .node_counts_by_language
+                                .iter()
+                                .filter(|(_, c)| *c > 0)
+                                .map(|(lang, _)| lang.clone())
+                                .collect();
                             emit_indexing_ssb(
                                 writer,
                                 &project_id,
@@ -278,6 +297,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                                 Some((node_count, edge_count)),
                                 summary.registry_status,
                                 summary.dkg_files_failed,
+                                langs,
                             );
                         }
                     }
@@ -295,6 +315,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                                 None,
                                 None,
                                 0,
+                                Vec::new(),
                             );
                         }
                     }

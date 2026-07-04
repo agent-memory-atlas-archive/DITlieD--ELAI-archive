@@ -25,6 +25,7 @@ import type {
   GroundingSweep,
   CsqEntry,
   EvidenceGate,
+  GateVerdictCount,
   AgentEntry,
   SupervisionEvent,
   ContextBudget,
@@ -1174,6 +1175,16 @@ export async function get_evidence_gates(): Promise<EvidenceGate[]> {
   if (live) return live;
   await delay();
   return EVIDENCE_GATES;
+}
+
+// B-17 Task 2: per-gate verdict frequency counts. Empty array fallback so
+// the drawer renders a "no data" note on cold-start rather than crashing.
+export async function get_gate_verdict_counts(): Promise<GateVerdictCount[]> {
+  logStub('get_gate_verdict_counts');
+  const live = await tryInvoke<GateVerdictCount[]>('get_gate_verdict_counts');
+  if (live) return live;
+  await delay();
+  return [];
 }
 
 export async function get_agents(): Promise<AgentEntry[]> {

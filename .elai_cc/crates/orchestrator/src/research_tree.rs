@@ -2685,7 +2685,7 @@ impl DecompositionTreeEmitter for SsbDecompositionEmitter {
 /// Arc<Ssb> and emits `package_ref_verified` rows via `tokio::spawn`
 /// (fire-and-forget, advisory). `verify_packages_with_emitter` is never
 /// blocked on SSB I/O.
-// WIRE-DARK[B-7]: production consumer = task_runner research-step dispatch passing Some(&emitter) to verify_packages_with_emitter; lands in B-7-promotion
+// WIRE-DARK[B-7]: production consumer = task_runner research-step dispatch passing Some(&emitter) to verify_packages_with_emitter; emitter substrate SHIPPED, producer data-flow DEFERRED to B-7-followup (drive_task's decomposition flow has no PackageRef materialization site)
 pub struct SsbPackageRefVerifiedEmitter {
     ssb: Arc<Ssb>,
     agent_id: String,
@@ -2725,7 +2725,7 @@ impl PackageRefVerifiedEmitter for SsbPackageRefVerifiedEmitter {
 /// Arc<Ssb> and emits `tech_stack_decided` rows via `tokio::spawn`
 /// (fire-and-forget, advisory). `new_tech_stack_decision` is never blocked
 /// on SSB I/O.
-// WIRE-DARK[B-7]: production consumer = task_runner research-step dispatch passing Some(&emitter) to new_tech_stack_decision; lands in B-7-promotion
+// WIRE-DARK[B-7]: production consumer = task_runner research-step dispatch passing Some(&emitter) to new_tech_stack_decision; emitter substrate SHIPPED, producer data-flow DEFERRED to B-7-followup (drive_task's decomposition flow has no TechStackDecision materialization site)
 pub struct SsbTechStackDecidedEmitter {
     ssb: Arc<Ssb>,
     agent_id: String,

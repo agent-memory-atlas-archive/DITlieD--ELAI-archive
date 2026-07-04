@@ -6,8 +6,8 @@
 [measured]
 suite = "ssb_write_loop_throughput"
 n_inserts = 10000
-elapsed_secs = 21.681515
-inserts_per_sec = 461.22
+elapsed_secs = 28.285171
+inserts_per_sec = 353.54
 note = "non-deterministic -- wall clock; asserted only as > 0"
 
 [context]

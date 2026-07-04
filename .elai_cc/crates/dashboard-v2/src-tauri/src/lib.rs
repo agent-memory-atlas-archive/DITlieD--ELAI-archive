@@ -543,6 +543,18 @@ pub fn run() {
         .expect("failed to build tokio runtime for AppState::new() (write_loop spawn)");
     let app_state = rt.block_on(async {
         let state = AppState::new();
+        // B-25 GAP-2: install the EmpireBridge handle so the dashboard
+        // EmpireBridgePanel renders live state instead of the Disconnected
+        // fallback. Under cfg(feature="empire"), construct a fresh
+        // EmpireBridge (Disconnected state — connect() is EMPIRE-PENDING)
+        // and chain with_empire_bridge. Under cfg(not(feature="empire")),
+        // no change — empire_bridge stays None and the panel shows the
+        // "Empire bridge unavailable" message.
+        #[cfg(feature = "empire")]
+        let state = {
+            let bridge = std::sync::Arc::new(elai_orchestrator::empire::EmpireBridge::new());
+            state.with_empire_bridge(bridge)
+        };
         // C-47b: spawn a background rehydrate task on the leaked runtime so
         // the cold-tier persist store is drained into the LRU before the first
         // tool-calibration query lands. Fire-and-forget; errors are traced as
@@ -709,6 +721,7 @@ pub fn run() {
             commands::get_auditor_rubber_stamp_rejections,
             // ORCHESTRATION
             commands::get_evidence_gates,
+            commands::get_gate_verdict_counts,
             commands::get_agents,
             commands::get_supervision_log,
             commands::get_context_budget,
@@ -1754,12 +1767,14 @@ pub fn run() {
                                         )
                                     };
                                     let executor =
-                                        elai_orchestrator::build_default_baby_step_executor(
+                                        elai_orchestrator::build_default_baby_step_executor_with_ipc_hooks(
                                             elai_core::OsEntropy,
                                             agent_bin.clone(),
                                             ipc_dir,
                                             gateway,
                                             rpc_server,
+                                            elai_orchestrator::runtime_setup::build_stub_tiered_analysis(),
+                                            wiring.ssb.clone(),
                                         );
                                     wiring.baby_step_executor = Some(executor);
                                     tracing::info!(
@@ -2259,5 +2274,31 @@ fn load_cloud_config_from_toml(
             .and_then(|s| s.warn_at_percent)
             .or(default.warn_at_percent),
         custom_endpoint: section.custom_endpoint,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // B-25 GAP-2: verify AppState::new() + with_empire_bridge installs a
+    // non-None empire_bridge handle under cfg(feature="empire"). The
+    // dashboard EmpireBridgePanel reads empire_bridge_snapshot() — it must
+    // return Some after with_empire_bridge is called.
+    #[cfg(feature = "empire")]
+    #[test]
+    fn empire_bridge_installed_via_with_empire_bridge() {
+        use std::sync::Arc;
+        let state = crate::AppState::new();
+        // Before with_empire_bridge, empire_bridge is None.
+        assert!(
+            state.empire_bridge_snapshot().is_none(),
+            "empire_bridge should be None before with_empire_bridge"
+        );
+        let bridge = Arc::new(elai_orchestrator::empire::EmpireBridge::new());
+        let state = state.with_empire_bridge(bridge);
+        // After with_empire_bridge, empire_bridge_snapshot returns Some.
+        assert!(
+            state.empire_bridge_snapshot().is_some(),
+            "empire_bridge_snapshot must return Some after with_empire_bridge"
+        );
     }
 }

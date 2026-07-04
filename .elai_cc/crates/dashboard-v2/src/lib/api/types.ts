@@ -716,6 +716,14 @@ export interface EvidenceGate {
   checked_at?: number;
 }
 
+// B-17 Task 2: per-gate aggregated verdict counts.
+export interface GateVerdictCount {
+  gate_id: string;
+  pass_count: number;
+  block_count: number;
+  total: number;
+}
+
 // ------------------------------------------------------------------
 // Plan / Decomposition
 // ------------------------------------------------------------------

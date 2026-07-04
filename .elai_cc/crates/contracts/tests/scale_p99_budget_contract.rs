@@ -160,6 +160,97 @@ fn scale_p99_budget_within_limits() {
 }
 
 // ---------------------------------------------------------------------------
+// Raw bench p99 budget gate (B-29.5 audit BLOCK 2).
+//
+// The plan ACCEPTANCE promises "p99 latency <= 500ms across ALL four traversal
+// tools on ALL four tiers" without qualifying which bench. The workload bench
+// (phase_b29_5_scale.toml) is checked by scale_p99_budget_within_limits above.
+// The raw bench (phase_b29_5_bench_raw.json, written by symbol_graph_scale.rs)
+// is checked here against the same 500ms p99 budget so the contract gate
+// enforces what the plan promises. SKIP behaviour mirrors the workload test:
+// if the file is absent, the test returns successfully.
+// ---------------------------------------------------------------------------
+
+/// Resolve metrics/phase_b29_5_bench_raw.json relative to the workspace root.
+fn bench_raw_path() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(&manifest)
+        .ancestors()
+        .nth(2) // workspace root (.elai_cc)
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("metrics")
+        .join("phase_b29_5_bench_raw.json")
+}
+
+#[derive(serde::Deserialize)]
+struct RawBenchTool {
+    tool: String,
+    p99_ms: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct RawBenchTier {
+    tier: String,
+    tools: Vec<RawBenchTool>,
+}
+
+#[test]
+#[ignore]
+fn scale_p99_raw_bench_budget_within_limits() {
+    let path = bench_raw_path();
+
+    if !path.exists() {
+        eprintln!(
+            "[scale_p99_raw_bench] metrics/phase_b29_5_bench_raw.json not found at {} — SKIP",
+            path.display()
+        );
+        return;
+    }
+
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[scale_p99_raw_bench] Could not read raw bench file: {e} — SKIP");
+            return;
+        }
+    };
+
+    let tiers: Vec<RawBenchTier> = match serde_json::from_str(&contents) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[scale_p99_raw_bench] JSON parse error: {e} — SKIP");
+            return;
+        }
+    };
+
+    let mut violations: Vec<String> = Vec::new();
+    for tier in &tiers {
+        for tool in &tier.tools {
+            if tool.p99_ms > 500.0 {
+                violations.push(format!(
+                    "{}.{}: p99_ms={:.1} > 500 ms budget (raw bench)",
+                    tier.tier, tool.tool, tool.p99_ms
+                ));
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        eprintln!("[scale_p99_raw_bench] All raw-bench p99 budgets within limits.");
+    } else {
+        for v in &violations {
+            eprintln!("[scale_p99_raw_bench] VIOLATION: {v}");
+        }
+        assert!(
+            violations.is_empty(),
+            "scale_p99_raw_bench_budget_contract: {} raw-bench budget violation(s):\n  {}",
+            violations.len(),
+            violations.join("\n  ")
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Compile-time smoke test: toml crate is accessible
 // ---------------------------------------------------------------------------
 

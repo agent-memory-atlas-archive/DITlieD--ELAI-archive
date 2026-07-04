@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use elai_core::project_id_from_path;
 use elai_knowledge::symbol_graph::cache::{CacheStats, SymbolGraphCache};
 use elai_knowledge::symbol_graph::sharding::SYMBOL_FILE_LRU_SIZE;
 use elai_knowledge::symbol_graph::traversal::{compute_impact_radius, list_symbols, SymbolFilter};
@@ -147,38 +148,34 @@ fn resolve_db(fixture_root: &Path, subdir: &str) -> PathBuf {
         .join("dkg.db")
 }
 
-fn elai_self_db() -> PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(&manifest)
-        .ancestors()
-        .nth(2)
-        .unwrap_or_else(|| Path::new("."))
-        .join("indexes")
-        .join("dkg.db")
-}
-
 fn main() {
     let fixture_root_env = std::env::var("ELAI_SCALE_FIXTURE_ROOT").unwrap_or_default();
     let fixture_root = PathBuf::from(&fixture_root_env);
 
-    let candidates: Vec<(&str, PathBuf, &str)> = vec![
+    // B-29.5 fix: project_id MUST be the blake3-derived id the CLI builder
+    // writes (crates/cli/src/symbol_graph.rs:47). The previous literal tier
+    // names produced no symbol_graph_meta row and every tier was skipped.
+    let candidates: Vec<(&str, PathBuf, String)> = vec![
         (
             "linux_kernel",
             resolve_db(&fixture_root, "linux"),
-            "linux",
+            project_id_from_path(&fixture_root.join("linux")),
         ),
         (
             "chromium",
             resolve_db(&fixture_root, "chromium"),
-            "chromium",
+            project_id_from_path(&fixture_root.join("chromium")),
         ),
-        ("vscode", resolve_db(&fixture_root, "vscode"), "vscode"),
+        (
+            "vscode",
+            resolve_db(&fixture_root, "vscode"),
+            project_id_from_path(&fixture_root.join("vscode")),
+        ),
         (
             "postgres",
             resolve_db(&fixture_root, "postgres"),
-            "postgres",
+            project_id_from_path(&fixture_root.join("postgres")),
         ),
-        ("elai_self", elai_self_db(), "elai_self"),
     ];
 
     let mut any_run = false;

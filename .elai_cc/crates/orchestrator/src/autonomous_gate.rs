@@ -1638,6 +1638,15 @@ mod tests {
     // are the only coverage of the step-7.5 RequestHuman branch.
     // -----------------------------------------------------------------------
 
+    // Serialize the four barrier tests: one mutates the
+    // ELAI_SKILL_AUTONOMY_BARRIER_DISABLE env var (process-global under the
+    // unsafe set_var precedent) and the other three read it via
+    // `skill_autonomy_barrier_disabled()`. Without serialization the
+    // kill-switch test can flip the env var while a sibling reads it,
+    // producing a flaky AutoAdvance in the sub-S4 test. Mirrors the
+    // ENV_MUTEX idiom in context_policy.rs (BLOCK-5 fix); no external dep.
+    static BARRIER_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// RAII env-gate guard for the kill-switch test. Restores the prior value
     /// on drop. Mirrors the `EnvGuard` precedent in `compaction_ladder.rs`.
     struct BarrierEnvGuard {
@@ -1683,6 +1692,10 @@ mod tests {
     async fn skill_barrier_sub_s4_candidate_requests_human() {
         // A sub-S4 learned skill in play at an otherwise-auto-advancing step
         // must route to a human (the F-6 observable_effect).
+        let _lock = BARRIER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // Explicitly clear the kill-switch so this test is order-independent
+        // with respect to skill_barrier_kill_switch_overrides_sub_s4.
+        unsafe { std::env::remove_var(ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV) };
         let gate = autonomous_gate_for_barrier();
         let mut ctx = ctx_with(PipelineLevel::BabyStep, RiskLevel::Low);
         ctx.candidate_skill_tier = Some(SkillTrustTier::S3);
@@ -1702,6 +1715,8 @@ mod tests {
     async fn skill_barrier_apex_s4_candidate_auto_advances() {
         // An apex S4 (human-granted) skill is cleared for autonomous dispatch:
         // step 7.5 does not fire, the happy path auto-advances.
+        let _lock = BARRIER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var(ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV) };
         let gate = autonomous_gate_for_barrier();
         let mut ctx = ctx_with(PipelineLevel::BabyStep, RiskLevel::Low);
         ctx.candidate_skill_tier = Some(SkillTrustTier::S4);
@@ -1713,6 +1728,8 @@ mod tests {
     async fn skill_barrier_none_candidate_passes_step_7_5() {
         // `None` = no learned skill in play; the barrier is dormant and the
         // step auto-advances exactly as it did pre-F-6.
+        let _lock = BARRIER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var(ELAI_SKILL_AUTONOMY_BARRIER_DISABLE_ENV) };
         let gate = autonomous_gate_for_barrier();
         let mut ctx = ctx_with(PipelineLevel::BabyStep, RiskLevel::Low);
         ctx.candidate_skill_tier = None;
@@ -1725,6 +1742,7 @@ mod tests {
         // The default-ON barrier is disabled by
         // ELAI_SKILL_AUTONOMY_BARRIER_DISABLE: a sub-S4 candidate then
         // auto-advances (pre-F-6 behaviour) instead of routing to a human.
+        let _lock = BARRIER_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _g = BarrierEnvGuard::set("1");
         let gate = autonomous_gate_for_barrier();
         let mut ctx = ctx_with(PipelineLevel::BabyStep, RiskLevel::Low);

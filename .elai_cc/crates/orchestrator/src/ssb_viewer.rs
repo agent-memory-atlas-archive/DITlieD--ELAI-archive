@@ -227,6 +227,16 @@ pub struct TaskSummary {
     pub project_id: String,
 }
 
+/// B-17 Task 2: per-gate aggregated verdict counts derived from
+/// `evidence_gate_evaluated` SSB rows. One row per distinct `gate_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateVerdictCount {
+    pub gate_id: String,
+    pub pass_count: u64,
+    pub block_count: u64,
+    pub total: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Tier 2 Track B DTOs (dashboard-wiring §6:417..480)
 //
@@ -3616,6 +3626,39 @@ impl SsbViewer {
                 out.push(p);
             }
         }
+        Ok(out)
+    }
+
+    /// B-17 Task 2: aggregates `evidence_gate_evaluated` rows (capped at
+    /// [`DRAWER_QUERY_HARD_CAP`]) into per-gate verdict counts. Returns one
+    /// [`GateVerdictCount`] per distinct `gate_id` encountered in the SSB,
+    /// grouped by `gate_id` with `pass_count`, `block_count`, and `total`.
+    /// Gates with no rows are NOT included — callers render only the gates
+    /// that have actually fired. Empty SSB returns an empty Vec.
+    pub fn aggregate_gate_verdict_counts(
+        &self,
+    ) -> Result<Vec<GateVerdictCount>, SsbViewerError> {
+        let rows = self.recent_evidence_gates(DRAWER_QUERY_HARD_CAP)?;
+        let mut counts: std::collections::HashMap<String, GateVerdictCount> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let entry = counts.entry(row.gate_id.clone()).or_insert_with(|| {
+                GateVerdictCount {
+                    gate_id: row.gate_id.clone(),
+                    pass_count: 0,
+                    block_count: 0,
+                    total: 0,
+                }
+            });
+            entry.total += 1;
+            if row.verdict == "pass" {
+                entry.pass_count += 1;
+            } else if row.verdict == "block" {
+                entry.block_count += 1;
+            }
+        }
+        let mut out: Vec<GateVerdictCount> = counts.into_values().collect();
+        out.sort_by(|a, b| b.total.cmp(&a.total).then_with(|| a.gate_id.cmp(&b.gate_id)));
         Ok(out)
     }
 

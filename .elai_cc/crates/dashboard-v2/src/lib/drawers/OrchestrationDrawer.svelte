@@ -411,6 +411,23 @@
         </div>
       {/each}
     </div>
+
+    <!-- B-17 Task 2: per-gate verdict frequency counts -->
+    <div class="gate-counts">
+      <div class="gate-counts-label">VERDICT COUNTS</div>
+      {#if d.gateVerdictCounts.length === 0}
+        <div class="gate-counts-empty">No gate verdicts recorded yet.</div>
+      {:else}
+        {#each d.gateVerdictCounts as cnt}
+          <div class="gate-count-row">
+            <span class="gate-name">{cnt.gate_id}</span>
+            <span class="gate-count-stat gate-count-pass">{cnt.pass_count} PASS</span>
+            <span class="gate-count-stat gate-count-block">{cnt.block_count} BLOCK</span>
+            <span class="gate-count-stat gate-count-total">({cnt.total} total)</span>
+          </div>
+        {/each}
+      {/if}
+    </div>
   </Card>
 
   <!-- 2b. AMBIGUITY GATE (C-2) — mirrors GatesPanel layout at

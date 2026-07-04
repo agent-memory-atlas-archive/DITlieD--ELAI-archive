@@ -3008,6 +3008,18 @@ pub struct TaskRunnerConfig {
     /// (same-family-pairing guard in route_cross_family). `None` keeps the
     /// row pair dark — pre-P0-1 behaviour.
     pub adversary_runtime: Option<Arc<crate::runtime_config::AdversaryRuntimeState>>,
+    /// B-25 Phase 4J — optional shared `EmpireBridge` handle. `None` until
+    /// the CLI launches with `--empire` AND the orchestrator is compiled
+    /// with `--features empire`; in that case the launcher constructs the
+    /// bridge, installs the Ssb writer, calls `connect()`, and stores the
+    /// `Arc<EmpireBridge>` here via [`crate::runtime_setup::apply_task_runner_wiring`]
+    /// so the runner loop can drive `emit_action` for the 5 empire_* SSB
+    /// action types as Empire events arrive. Closes GAP-1: the bridge handle
+    /// must outlive the `if args.empire {}` block so it is not dropped at
+    /// block end. cfg-gated to the `empire` feature; non-empire builds pay
+    /// zero cost.
+    #[cfg(feature = "empire")]
+    pub empire_bridge: Option<Arc<crate::empire::EmpireBridge>>,
 }
 
 impl TaskRunnerConfig {
@@ -3088,6 +3100,13 @@ impl TaskRunnerConfig {
             // apply_task_runner_wiring populates this when
             // ELAI_ALLOW_CLOUD_ADVERSARY=1 and route_cross_family succeeds.
             adversary_runtime: None,
+            // B-25 Phase 4J: default None preserves pre-B-25 behaviour
+            // (no EmpireBridge handle retained). Production wiring via
+            // apply_task_runner_wiring populates this when `--empire` is
+            // passed and the empire feature is compiled in. Non-empire
+            // builds skip this field via cfg(feature = "empire").
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         }
     }
 
@@ -3366,6 +3385,12 @@ struct ResolvedConfig {
     /// projection does not change mid-task) so the dashboard CloudPanel
     /// shows a single per-task COST row, not one per baby step.
     cloud_cost_estimated_emitted: Mutex<bool>,
+    /// B-27 D-4 item 16: dedup mutex for HYBRID escalation. Prevents
+    /// double-escalation if the fix-and-rerun loop re-enters the local-
+    /// failure branch for the same baby step. Set to `true` on the first
+    /// HYBRID escalation attempt for this step (whether the cloud call
+    /// succeeds or fails); never reset within the step.
+    cloud_hybrid_escalated_emitted: Mutex<bool>,
     /// C-25 — optional template crystallizer. When `Some`, the
     /// post-execute baby-step hook records an `ExecutionOutcome` and
     /// invokes `check_crystallization`. On crystallization, the
@@ -3607,6 +3632,16 @@ struct ResolvedConfig {
     /// planning_decomposition call sites can read operator thresholds without
     /// needing a reference back to the original `TaskRunnerConfig`.
     planning_config: crate::runtime_config::PlanningConfig,
+    /// B-25 Phase 4J — optional shared `EmpireBridge` handle, threaded from
+    /// [`TaskRunnerConfig::empire_bridge`]. When `Some`, the runner loop
+    /// retains the Arc for its lifetime and can drive `emit_action` for the
+    /// 5 empire_* SSB action types as Empire events arrive. `None` keeps the
+    /// empire_* row family dark (pre-B-25 behaviour). cfg-gated to the
+    /// `empire` feature; non-empire builds pay zero cost. Closes GAP-1: the
+    /// handle survives the `if args.empire {}` block instead of being
+    /// dropped at block end.
+    #[cfg(feature = "empire")]
+    empire_bridge: Option<Arc<crate::empire::EmpireBridge>>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -3801,6 +3836,8 @@ impl ResolvedConfig {
             // pre-dispatch hook flips on first emit.
             cloud_warn_emitted: Mutex::new(false),
             cloud_cost_estimated_emitted: Mutex::new(false),
+            // B-27 D-4 item 16: HYBRID escalation per-step dedup.
+            cloud_hybrid_escalated_emitted: Mutex::new(false),
             // C-25: compiled-pipeline + crystallizer + background-task
             // wiring. All optional; legacy callers see None on every field.
             crystallizer: cfg.crystallizer,
@@ -3950,6 +3987,12 @@ impl ResolvedConfig {
             // through. Default produces values identical to the module
             // constants so callers without a CLI config see no behaviour change.
             planning_config: cfg.planning_config,
+            // B-25 Phase 4J: thread the EmpireBridge handle straight through
+            // so the runner loop retains the Arc for its lifetime. None when
+            // `--empire` was not passed or the empire feature is off; the
+            // bridge is never constructed in those cases. Closes GAP-1.
+            #[cfg(feature = "empire")]
+            empire_bridge: cfg.empire_bridge,
         }
     }
 }
@@ -5618,9 +5661,11 @@ async fn run_parallel_phases_via_bsp(
                 scratch_base: scratch_root.join(BSP_CHECKPOINT_SUBDIR).join("agents"),
                 vram_required_bytes: crate::agent_pool::VRAM_MIN_BYTES,
                 project_path: scratch_root.clone(),
-                // B-18A Task 7: AppContainer on Windows; non-isolating
-                // pass-through on Linux/macOS until B-18B+ wires clone3+seccomp.
-                enable_sandbox: cfg!(target_os = "windows"),
+                // B-18B: sandbox default follows the centralized
+                // sandbox_default_enabled() resolver (env-overridable, ON by
+                // default on every host). Keeps the BSP path consistent with
+                // AgentPoolConfig::default().
+                enable_sandbox: crate::agent_pool::sandbox_default_enabled(),
             };
             let pool = crate::agent_pool::InProcessAgentPool::new(
                 pool_config,
@@ -6113,6 +6158,17 @@ async fn drive_task(
     // get_framework_profile that the E-12 plan-status flagged as absent on
     // the CLI/drive_task path. Strict no-op when the flag is OFF (default).
     maybe_emit_framework_profile_once(writer, resolved, task).await;
+
+    // B-25 Phase 4J prod-wire: when the runner was launched with `--empire`
+    // and the empire feature is compiled in, drive `EmpireBridge::emit_action`
+    // for the `empire_connected` event kind. This is the production caller
+    // (R7) of `emit_action` — the handle on `ResolvedConfig.empire_bridge` is
+    // READ here, closing the wire-dark gap the S6 audit flagged. Strict no-op
+    // (cfg-gated out) when the empire feature is off; graceful no-op when
+    // `--empire` was not passed (bridge is None) or connect() returned
+    // NotConnected (EMPIRE-PENDING).
+    #[cfg(feature = "empire")]
+    maybe_emit_empire_connected_once(resolved).await;
 
     // E-12 prod-wire: when the operator opts in via
     // `ELAI_PRODUCTION_CHECKLIST_ENABLE=1`, dispatch
@@ -7648,6 +7704,19 @@ async fn drive_task(
         };
         steps_executed += 1;
 
+        // B-27 D-4 item 16: reset the HYBRID escalation dedup flag at the top
+        // of each baby-step iteration. The flag is set to true when a failed
+        // step escalates to cloud (task_runner.rs:9986) and was previously
+        // never reset, so once one step escalated, NO subsequent failed step
+        // could escalate — turning "single cloud call per failed step" into
+        // "single cloud call per task". Resetting here restores per-step
+        // dedup semantics: the flag guards only against double-escalation if
+        // the fix-and-rerun loop re-enters the escalation branch for the SAME
+        // step within a single iteration.
+        if let Ok(mut g) = resolved.cloud_hybrid_escalated_emitted.lock() {
+            *g = false;
+        }
+
         // I-17 halting-bound watchdog (FORK-B production caller). Cancel the
         // previous step's watchdog (the prior step completed = made progress),
         // then arm a fresh one for this step. When wire-dark (flag unset, no SSB
@@ -8927,6 +8996,58 @@ async fn drive_task(
                                 "task_runner: CostEstimate SSB write failed (non-fatal)"
                             );
                         }
+
+                        // B-27 D-4 item 17: pre-task cost-estimate interactive
+                        // "Proceed? [y/n]" gate. Fires after the CostEstimate
+                        // SSB row so the dashboard sees the estimate even when
+                        // the CLI human rejects. CLI entrypoints install
+                        // `plan_interactive_gate` (CliInteractiveGate reads
+                        // stdin); dashboard leaves it `None` and this call
+                        // auto-approves (the dashboard human approves via the
+                        // CloudPanel UI, not stdin — G4 cross-language
+                        // contract). On Reject: set `hook_pre_blocked = true`
+                        // and emit a typed `RouteBlocked` row so the dashboard
+                        // filter keys on the same row type as cap-driven
+                        // blocks. The hard caps (max_spend_per_task/day_usd)
+                        // still enforce silently downstream — this gate is the
+                        // pre-task estimate prompt only (G3).
+                        let proceed = crate::cloud_mode::prompt_cost_estimate_gate(
+                            resolved
+                                .plan_interactive_gate
+                                .as_ref()
+                                .map(|g| g.as_ref() as &dyn crate::gate::InteractiveGate),
+                            low,
+                            high,
+                            &cfg.default_model,
+                        );
+                        if !proceed {
+                            hook_pre_blocked = true;
+                            let blocked_payload = SsbPayload::RouteBlocked(
+                                crate::ssb::RouteBlockedPayload {
+                                    reason: "cost_estimate_rejected".to_string(),
+                                    spent_usd: 0.0,
+                                    cap_usd: 0.0,
+                                    cap_period: "pre_task".to_string(),
+                                    baby_step_id: bs_id.0,
+                                    ts_ms: now_ms,
+                                },
+                            );
+                            if let Err(e) = writer
+                                .write_payload(
+                                    RUNNER_AGENT_ID,
+                                    RUNNER_SUPERSTEP,
+                                    blocked_payload,
+                                    Vec::new(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    baby_step = bs_id.0,
+                                    error = %e,
+                                    "task_runner: RouteBlocked (cost_estimate_rejected) SSB write failed (non-fatal)"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -9842,6 +9963,265 @@ async fn drive_task(
                 bs_id.0, exec_exit_code, exec_stderr_tail
             );
             emit_finding(writer, "error", AGENT_FAILED_CATEGORY, &msg).await;
+
+            // B-27 D-4 item 16: HYBRID escalation re-invoke loop.
+            //
+            // When the resolved exec_mode is `Auto` (HYBRID local-first) and
+            // the local baby-step execution failed, escalate the failed step
+            // to a single redacted cloud call. The RedactingBabyStepExecutor
+            // installed at runtime_setup.rs:945 already wraps
+            // `resolved.baby_step_executor`, so the re-invoked call is
+            // scrubbed before any network egress (G2 — redaction BEFORE
+            // network egress). The hard caps (max_spend_per_task/day_usd)
+            // are enforced inside `escalate_hybrid_step_to_cloud` via
+            // `route_with_spend` (G3 — caps win over escalation). Air-gapped
+            // mode returns `AirGappedConflict` which maps to a `RouteBlocked`
+            // row with reason `air_gapped` (B-27 edge case).
+            //
+            // Single cloud call per failed step (not a re-loop): on
+            // `Ok(RoutedProvider::Cloud { .. })` we re-invoke the executor
+            // exactly once for this step. On `Err(_)` we emit a
+            // `RouteBlocked` row and continue with local failure handling
+            // (the fix-and-rerun path below still runs). A per-step dedup
+            // mutex (`cloud_hybrid_escalated_emitted`) prevents double-
+            // escalation if the fix-and-rerun loop re-enters this branch.
+            if matches!(resolved_exec_mode, crate::cloud_mode::ExecMode::Auto)
+                && resolved.cloud_router.is_some()
+                && !hook_pre_blocked
+            {
+                let already_escalated = resolved
+                    .cloud_hybrid_escalated_emitted
+                    .lock()
+                    .map(|g| *g)
+                    .unwrap_or(false);
+                if !already_escalated {
+                    if let Ok(mut g) = resolved.cloud_hybrid_escalated_emitted.lock() {
+                        *g = true;
+                    }
+                    // C-15: OsClock for the escalation row timestamp.
+                    let esc_ts_ms =
+                        i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
+                    // Read live spend snapshot for cap enforcement. None on
+                    // viewer error => skip cap (stub_ban semantics, mirrors
+                    // the pre-dispatch hook at :8888).
+                    let esc_spend: Option<crate::cloud_mode::SpendSnapshotInput> =
+                        match crate::ssb_viewer::SsbViewer::open(writer.db_path()) {
+                            Ok(viewer) => match viewer.cloud_spend_summary(esc_ts_ms) {
+                                Ok(summary) => Some(crate::cloud_mode::SpendSnapshotInput {
+                                    day_usd: summary.day_usd,
+                                    month_usd: summary.month_usd,
+                                }),
+                                Err(_) => None,
+                            },
+                            Err(_) => None,
+                        };
+                    // Resolve cloud credentials from ANTHROPIC_API_KEY env var
+                    // (the same source the AnthropicClient uses at
+                    // providers/anthropic.rs:108). When the env var is absent
+                    // or empty, pass None so the router returns
+                    // NoCredentials and we emit a RouteBlocked row with
+                    // reason `no_credentials` — the human must set the env
+                    // var before HYBRID escalation can fire.
+                    let esc_creds = std::env::var("ANTHROPIC_API_KEY")
+                        .ok()
+                        .filter(|v| !v.is_empty())
+                        .map(|token| crate::cloud_mode::CloudCredentials {
+                            bearer_token: token,
+                            provider: crate::cloud_mode::DEFAULT_CLOUD_PROVIDER.to_string(),
+                        });
+                    let router = resolved.cloud_router.as_ref();
+                    let esc_outcome = crate::cloud_mode::escalate_hybrid_step_to_cloud(
+                        router.expect("cloud_router checked Some above"),
+                        esc_creds,
+                        esc_spend,
+                    );
+                    match esc_outcome {
+                        Ok(crate::cloud_mode::RoutedProvider::Cloud { .. }) => {
+                            // Emit EscalateToCloud SSB row (single cloud call
+                            // for this step). layer_failed=1 mirrors the
+                            // pre-dispatch hook's layer_failed value.
+                            let esc_payload = SsbPayload::EscalateToCloud(
+                                crate::ssb::EscalateToCloudPayload {
+                                    step_id: format!("baby_step_{}", bs_id.0),
+                                    trigger_reason: "hybrid_local_failure".to_string(),
+                                    layer_failed: 1,
+                                    ts_ms: esc_ts_ms,
+                                },
+                            );
+                            if let Err(e) = writer
+                                .write_payload(
+                                    RUNNER_AGENT_ID,
+                                    RUNNER_SUPERSTEP,
+                                    esc_payload,
+                                    Vec::new(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    baby_step = bs_id.0,
+                                    error = %e,
+                                    "task_runner: EscalateToCloud (hybrid_local_failure) SSB write failed (non-fatal)"
+                                );
+                            }
+                            // Re-invoke the (redaction-wrapped) executor
+                            // exactly once for this step. The exec_ctx was
+                            // moved into the first execute() call, so rebuild
+                            // a minimal ctx for the escalated call. The
+                            // RedactingBabyStepExecutor wraps the inner
+                            // executor, so redaction fires on this call.
+                            let esc_ctx = BabyStepExecutionCtx {
+                                baby_step_id: bs_id.0,
+                                task_summary: task_summary.clone(),
+                                escalation_message: Some(format!(
+                                    "HYBRID escalation: local baby_step {} failed; retrying via cloud",
+                                    bs_id.0
+                                )),
+                                mode_selection: None,
+                                session_credentials: resolved
+                                    .session_credentials
+                                    .lock()
+                                    .map(|g| g.clone())
+                                    .unwrap_or_default(),
+                            };
+                            let esc_result = resolved
+                                .baby_step_executor
+                                .execute(esc_ctx)
+                                .await;
+                            if matches!(esc_result.outcome, BabyStepOutcome::Passed) {
+                                outcome = BabyStepOutcome::Passed;
+                                outcome_passed = true;
+                                tracing::info!(
+                                    baby_step = bs_id.0,
+                                    "task_runner: HYBRID escalation succeeded via cloud"
+                                );
+                            } else {
+                                tracing::warn!(
+                                    baby_step = bs_id.0,
+                                    "task_runner: HYBRID escalation cloud call also failed"
+                                );
+                            }
+                        }
+                        Ok(crate::cloud_mode::RoutedProvider::Local) => {
+                            // Should not happen (route_with_spend with
+                            // ExecMode::Cloud never returns Local), but
+                            // handle defensively: emit RouteBlocked.
+                            let blocked_payload = SsbPayload::RouteBlocked(
+                                crate::ssb::RouteBlockedPayload {
+                                    reason: "hybrid_escalation_returned_local".to_string(),
+                                    spent_usd: 0.0,
+                                    cap_usd: 0.0,
+                                    cap_period: "pre_task".to_string(),
+                                    baby_step_id: bs_id.0,
+                                    ts_ms: esc_ts_ms,
+                                },
+                            );
+                            if let Err(e) = writer
+                                .write_payload(
+                                    RUNNER_AGENT_ID,
+                                    RUNNER_SUPERSTEP,
+                                    blocked_payload,
+                                    Vec::new(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    baby_step = bs_id.0,
+                                    error = %e,
+                                    "task_runner: RouteBlocked (hybrid_escalation_returned_local) SSB write failed (non-fatal)"
+                                );
+                            }
+                        }
+                        Err(crate::cloud_mode::CloudModeError::AirGappedConflict) => {
+                            let blocked_payload = SsbPayload::RouteBlocked(
+                                crate::ssb::RouteBlockedPayload {
+                                    reason: "air_gapped".to_string(),
+                                    spent_usd: 0.0,
+                                    cap_usd: 0.0,
+                                    cap_period: "pre_task".to_string(),
+                                    baby_step_id: bs_id.0,
+                                    ts_ms: esc_ts_ms,
+                                },
+                            );
+                            if let Err(e) = writer
+                                .write_payload(
+                                    RUNNER_AGENT_ID,
+                                    RUNNER_SUPERSTEP,
+                                    blocked_payload,
+                                    Vec::new(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    baby_step = bs_id.0,
+                                    error = %e,
+                                    "task_runner: RouteBlocked (air_gapped) SSB write failed (non-fatal)"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            // Cap exceeded or no credentials: emit RouteBlocked
+                            // with the error's spend/cap info when available.
+                            let (spent, cap, period, reason) = match e {
+                                crate::cloud_mode::CloudModeError::DailySpendCapExceeded {
+                                    spent_usd,
+                                    cap_usd,
+                                } => (spent_usd, cap_usd, "daily", "daily_cap_exceeded"),
+                                crate::cloud_mode::CloudModeError::MonthlySpendCapExceeded {
+                                    spent_usd,
+                                    cap_usd,
+                                } => (spent_usd, cap_usd, "monthly", "monthly_cap_exceeded"),
+                                crate::cloud_mode::CloudModeError::NoCredentials => {
+                                    (0.0, 0.0, "pre_task", "no_credentials")
+                                }
+                                crate::cloud_mode::CloudModeError::UnknownProvider(p) => {
+                                    tracing::warn!(
+                                        baby_step = bs_id.0,
+                                        provider = %p,
+                                        "task_runner: HYBRID escalation blocked — unknown provider"
+                                    );
+                                    (0.0, 0.0, "pre_task", "unknown_provider")
+                                }
+                                crate::cloud_mode::CloudModeError::CustomEndpointForbidden => {
+                                    (0.0, 0.0, "pre_task", "custom_endpoint_forbidden")
+                                }
+                                other => {
+                                    tracing::warn!(
+                                        baby_step = bs_id.0,
+                                        error = %other,
+                                        "task_runner: HYBRID escalation blocked"
+                                    );
+                                    (0.0, 0.0, "pre_task", "escalation_blocked")
+                                }
+                            };
+                            let blocked_payload = SsbPayload::RouteBlocked(
+                                crate::ssb::RouteBlockedPayload {
+                                    reason: reason.to_string(),
+                                    spent_usd: spent,
+                                    cap_usd: cap,
+                                    cap_period: period.to_string(),
+                                    baby_step_id: bs_id.0,
+                                    ts_ms: esc_ts_ms,
+                                },
+                            );
+                            if let Err(e) = writer
+                                .write_payload(
+                                    RUNNER_AGENT_ID,
+                                    RUNNER_SUPERSTEP,
+                                    blocked_payload,
+                                    Vec::new(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    baby_step = bs_id.0,
+                                    error = %e,
+                                    "task_runner: RouteBlocked (hybrid escalation) SSB write failed (non-fatal)"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
         // B-8 W3 fix: track whether the generic agent_failed Finding already
         // attributed this step's failure. The inline-feasibility block below
@@ -13391,6 +13771,8 @@ fn test_resolved_config_minimal() -> ResolvedConfig {
         buffer_editor: None,
         adversary_runtime: None,
         planning_config: Default::default(),
+        #[cfg(feature = "empire")]
+        empire_bridge: None,
     })
 }
 
@@ -18212,6 +18594,50 @@ async fn maybe_emit_framework_profile_once(
     }
 }
 
+/// B-25 Phase 4J prod-wire: emit the `empire_connected` SSB row once at the
+/// first `drive_task` entry when the runner was launched with `--empire` and
+/// the orchestrator `empire` feature is compiled in. This is the production
+/// caller (R7) of `EmpireBridge::emit_action` — the handle stored on
+/// `ResolvedConfig.empire_bridge` is READ here, closing the wire-dark gap the
+/// S6 audit flagged ("handle retained, never driven"). The SSB write itself
+/// is fire-and-forget inside `emit_action`; the row lands in the same
+/// `ssb.db` the wiring-contract done-gate polls, satisfying the
+/// `observable_effect.expect_ssb = empire_connected` contract.
+///
+/// Strict no-op (preserves the pre-wire wire-dark behaviour) when:
+///   * the `empire` feature is not compiled in (the whole helper is
+///     cfg-gated out and call sites compile to no-ops), OR
+///   * `ResolvedConfig.empire_bridge` is `None` (the CLI was launched
+///     without `--empire`, so no bridge was constructed), OR
+///   * `emit_action` returns `NotConnected` (the Ssb handle was not
+///     installed or no tokio runtime is active — graceful degradation).
+#[cfg(feature = "empire")]
+async fn maybe_emit_empire_connected_once(resolved: &ResolvedConfig) {
+    let bridge = match resolved.empire_bridge.as_ref() {
+        Some(b) => b,
+        None => return,
+    };
+    // The bridge handle is now READ — closes the dead_code warning the S6
+    // audit flagged ("fields cloud_spend_cap_daily_usd and empire_bridge are
+    // never read"). The Arc is dereferenced here on every drive_task entry;
+    // the one-shot emission is naturally bounded by connect() succeeding
+    // exactly once per runner lifetime (the bridge transitions
+    // Disconnected -> Connecting -> Connected -> Disconnected and only
+    // emits on the Connecting -> Connected edge). Until Empire deploys,
+    // connect() returns NotConnected so this call is a graceful no-op that
+    // still exercises the read + emit_action call shape.
+    let kind = crate::empire::EmpireEventKind::Connected {
+        brain_id: "elai_cc".to_string(),
+        protocol_version: 1,
+    };
+    if let Err(e) = bridge.emit_action(kind) {
+        tracing::debug!(
+            error = %e,
+            "B-25: empire_connected emission skipped (EMPIRE-PENDING or no Ssb handle)"
+        );
+    }
+}
+
 /// E-12 prod-wire: dispatch the production-grade checklist once at runner
 /// startup and record a `production_grade` audit verdict.
 ///
@@ -22249,6 +22675,9 @@ mod tests {
                 adversary_runtime: None,
                 // E-46 D-8: test fixture — module-constant defaults.
                 planning_config: Default::default(),
+                // B-25 Phase 4J: test fixture — no EmpireBridge handle.
+                #[cfg(feature = "empire")]
+                empire_bridge: None,
             },
         );
 
@@ -22394,6 +22823,9 @@ mod tests {
                 adversary_runtime: None,
                 // E-46 D-8: test fixture — module-constant defaults.
                 planning_config: Default::default(),
+                // B-25 Phase 4J: test fixture — no EmpireBridge handle.
+                #[cfg(feature = "empire")]
+                empire_bridge: None,
             },
         );
 
@@ -22610,6 +23042,9 @@ mod tests {
                 adversary_runtime: None,
                 // E-46 D-8: test fixture — module-constant defaults.
                 planning_config: Default::default(),
+                // B-25 Phase 4J: test fixture — no EmpireBridge handle.
+                #[cfg(feature = "empire")]
+                empire_bridge: None,
             },
         );
 
@@ -23513,6 +23948,9 @@ mod tests {
             adversary_runtime: None,
             // E-46 D-8: test fixture — module-constant defaults.
             planning_config: Default::default(),
+            // B-25 Phase 4J: legacy test fixture — no EmpireBridge handle.
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         })
     }
 

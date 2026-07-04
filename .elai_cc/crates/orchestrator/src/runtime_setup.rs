@@ -241,6 +241,18 @@ pub struct RuntimeWiring {
     /// `TaskRunnerConfig::adversary_runtime` so `dispatch_adversarial_pass`
     /// sees a live `AdversaryRuntimeState` (still gated by `ELAI_ADVERSARY_ENABLE`).
     pub adversary_runtime: Option<Arc<crate::runtime_config::AdversaryRuntimeState>>,
+    /// B-25 Phase 4J — optional shared `EmpireBridge` handle. `None` until
+    /// the CLI launches with `--empire` AND the orchestrator is compiled
+    /// with `--features empire`; in that case the launcher constructs the
+    /// bridge, installs the Ssb writer, calls `connect()`, and stores the
+    /// `Arc<EmpireBridge>` here BEFORE calling [`apply_task_runner_wiring`]
+    /// so the bridge survives for the lifetime of the runner and the
+    /// runner loop can drive `emit_action` for the 5 empire_* SSB action
+    /// types as Empire events arrive. Closes GAP-1: the bridge handle must
+    /// outlive the `if args.empire {}` block so it is not dropped at block
+    /// end. cfg-gated to `empire` feature; non-empire builds pay zero cost.
+    #[cfg(feature = "empire")]
+    pub empire_bridge: Option<Arc<crate::empire::EmpireBridge>>,
 }
 
 /// Build the production wiring bundle for `start_task_runner`.
@@ -316,6 +328,17 @@ pub async fn build_task_runner_wiring(
     // even when this is never called (only the SSB row is then dropped).
     #[cfg(feature = "mcp")]
     crate::mcp_rugpull_gate::install_ssb_writer(Arc::clone(&ssb));
+
+    // B-31.5: install the process-global SSB writer for the cross-process
+    // IndexLock (LockAcquired / LockContested rows) and the startup auto-resume
+    // / graceful_shutdown paths (IndexResume / IndexCancel rows). Mirrors the
+    // mcp_rugpull_gate slot above — the per-run `Arc<Ssb>` is the canonical
+    // writer for every B-31 SSB emit. When unset the emits are debug-log
+    // no-ops; installing here covers BOTH the CLI `elai run` path (lock emits
+    // during the run phase) and the dashboard path (auto_resume at lib.rs:1950
+    // runs after this wiring at :1544). Idempotent.
+    crate::lock::install_ssb_writer(Arc::clone(&ssb));
+    crate::startup::install_ssb_writer(Arc::clone(&ssb));
 
     // 3. Construct the production feasibility prober. Mirrors
     //    `dashboard-v2/src-tauri/src/state.rs:381-383`.
@@ -837,6 +860,12 @@ pub async fn build_task_runner_wiring(
         // P0-1 — adversary runtime constructed above; None for single-family
         // deploys or when ELAI_ALLOW_CLOUD_ADVERSARY is unset.
         adversary_runtime,
+        // B-25 Phase 4J — default None; the CLI run_subcommand populates
+        // this when `--empire` is set so the bridge handle survives for the
+        // runner lifetime. Non-empire builds skip this field entirely via
+        // cfg(feature = "empire").
+        #[cfg(feature = "empire")]
+        empire_bridge: None,
     })
 }
 
@@ -1069,6 +1098,17 @@ pub fn apply_task_runner_wiring(
     // or route_cross_family found no cross-family pool (single-family deploy).
     cfg.adversary_runtime = wiring.adversary_runtime.clone();
 
+    // B-25 Phase 4J — thread the EmpireBridge handle from RuntimeWiring onto
+    // TaskRunnerConfig so the runner loop retains the Arc for its lifetime and
+    // can drive `emit_action` for the 5 empire_* SSB action types. None when
+    // `--empire` was not passed or the empire feature is off; the bridge is
+    // never constructed in those cases. Closes GAP-1: the handle must outlive
+    // the `if args.empire {}` block in run_subcommand.rs.
+    #[cfg(feature = "empire")]
+    {
+        cfg.empire_bridge = wiring.empire_bridge.clone();
+    }
+
     cfg
 }
 
@@ -1147,6 +1187,73 @@ where
         gateway,
         rpc_server,
     ))
+}
+
+/// B-18 task #12 — build the production [`AgentPoolBabyStepExecutor`] WITH
+/// the IPC hook dispatcher installed on the executor's sync
+/// `hook_dispatcher` field, so `run_agent_session` (ipc_accept.rs:463) fires
+/// `pre_tool_use` / `post_tool_use` on every `FrameRouteResult::ToolRequest`.
+/// This is the "wire IpcHookDispatcher to fire via IPC frame interception"
+/// path B-18 task #12 requires.
+///
+/// Identical to [`build_default_baby_step_executor`] except the returned
+/// executor has `.with_hook_dispatcher(...)` chained before the `Arc::new`
+/// wrap. The `tiered` bundle + `ssb` handle are threaded in by the caller
+/// (the CLI/dashboard bootstrap sites that already have `wiring.ssb`).
+///
+/// Anti-stub: no `.unwrap()` / `.expect()` / `panic!`; the pool + executor
+/// + dispatcher constructors are infallible and nothing is run here.
+#[must_use]
+pub fn build_default_baby_step_executor_with_ipc_hooks<E>(
+    entropy: E,
+    agent_binary_path: std::path::PathBuf,
+    socket_dir: std::path::PathBuf,
+    gateway: Arc<tokio::sync::Mutex<IpcGateway>>,
+    rpc_server: Arc<dyn AgentRpcServer + Send + Sync + 'static>,
+    tiered: elai_plugins::tiered_analysis::TieredAnalysis,
+    ssb: Arc<Ssb>,
+) -> Arc<dyn BabyStepExecutor>
+where
+    E: elai_core::EntropySource + Send + 'static,
+{
+    let model_pool = crate::task_runner::runtime_model_pool();
+    let pool = Arc::new(tokio::sync::Mutex::new(InProcessAgentPool::new(
+        AgentPoolConfig::default(),
+        entropy,
+        model_pool,
+    )));
+    let executor = crate::task_runner::AgentPoolBabyStepExecutor::new(
+        pool,
+        agent_binary_path,
+        socket_dir,
+        gateway,
+        rpc_server,
+    )
+    .with_hook_dispatcher(build_production_ipc_hook_dispatcher(tiered, ssb));
+    Arc::new(executor)
+}
+
+/// B-18 task #12 — construct a [`TieredAnalysis`] with the orchestrator's
+/// stub-grade AST evaluator + DKG querier (`PassAstEvaluator` +
+/// `EmptyDkgQuerier`). The orchestrator crate cannot depend on
+/// `TreeSitterAstEvaluator` (lives in the CLI crate), so this stub-grade
+/// bundle is the minimum-viable TieredAnalysis for the IPC hook dispatcher
+/// installed on the executor's sync surface. The CLI/dashboard bootstrap
+/// sites that have a real `RuleEngine` should construct their own
+/// `TieredAnalysis` and pass it to
+/// [`build_default_baby_step_executor_with_ipc_hooks`] directly.
+///
+/// `fsm_phase` defaults to [`FsmPhaseBit::EXECUTING`] (the baby-step
+/// executor only runs in EXECUTING).
+#[must_use]
+pub fn build_stub_tiered_analysis() -> elai_plugins::tiered_analysis::TieredAnalysis {
+    use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+    use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+    let engine = Box::new(DefaultRuleEngine::new(
+        Box::new(PassAstEvaluator),
+        Box::new(EmptyDkgQuerier),
+    ));
+    elai_plugins::tiered_analysis::TieredAnalysis::new(engine, FsmPhaseBit::EXECUTING)
 }
 
 /// E-15 — build the production [`AgentPoolBabyStepExecutor`] WITH the
@@ -1317,13 +1424,21 @@ pub fn build_production_hook_dispatcher(
     Arc::new(dispatcher)
 }
 
-/// B-19 — build a production `elai_plugins::IpcHookDispatcher` wrapped in the
-/// `IpcHookAsyncAdapter` so callers can install it as the unified
-/// `Arc<dyn HookDispatcher>` on `RuntimeWiring.hook_dispatcher`. This is the
-/// "keep IpcHookDispatcher live in production" path the B-19 plan task #1
-/// describes — the adapter resolves the sync/async trait mismatch documented
-/// in `workflow/sessions/s-25120/completion-drive/exploration/
-/// B-19_hook_system_unification-exploration.md` GAP-1.
+/// B-18/B-19 — build a production `elai_plugins::IpcHookDispatcher` and
+/// return it as the SYNC `Arc<dyn ipc_accept::IpcHookDispatcher + Send + Sync>`
+/// trait object that `AgentPoolBabyStepExecutor::with_hook_dispatcher`
+/// (task_runner.rs:1441) consumes. This is the "wire IpcHookDispatcher to
+/// fire via IPC frame interception" path B-18 task #12 requires —
+/// `run_agent_session` (ipc_accept.rs:463) fires `pre_tool_use` /
+/// `post_tool_use` on every `FrameRouteResult::ToolRequest` when the
+/// executor's `hook_dispatcher` field is `Some`.
+///
+/// The blanket impl at `ipc_accept.rs:54`
+/// (`impl<T: IpcHookTrait + ?Sized> IpcHookDispatcher for T`) makes the
+/// plugins `IpcHookDispatcher` (which implements `IpcHookTrait`) satisfy
+/// the orchestrator's `ipc_accept::IpcHookDispatcher` trait alias without
+/// an adapter — the sync trait surface is exactly what the IPC accept loop
+/// consumes.
 ///
 /// Production-side wires:
 ///   * `SsbFindingWriter` — `RuntimeSsbFindingWriter` wraps the orchestrator's
@@ -1337,27 +1452,23 @@ pub fn build_production_hook_dispatcher(
 /// The `TieredAnalysis` instance is constructed by the caller (e.g. the CLI
 /// or dashboard bootstrap) and threaded in. Callers without a tiered bundle
 /// today should prefer `build_production_hook_dispatcher` (in-process); the
-/// IPC adapter is reserved for the Tier-C accept-loop callers wired by
+/// IPC dispatcher is reserved for the Tier-C accept-loop callers wired by
 /// `crate::ipc_accept::run_agent_session`.
-///
-/// The B-19 unification is at the DISPATCHER level
-/// (`Arc<dyn HookDispatcher>`), NOT the trait level — both
-/// `InProcessHookDispatcher` and `IpcHookDispatcher` keep their distinct
-/// upstream traits. The adapter is the missing piece that lets either one
-/// plug into the `task_runner` callsite.
 #[must_use]
 pub fn build_production_ipc_hook_dispatcher(
     tiered: elai_plugins::tiered_analysis::TieredAnalysis,
     ssb: Arc<Ssb>,
-) -> Arc<dyn HookDispatcher + Send + Sync> {
+) -> Arc<dyn crate::ipc_accept::IpcHookDispatcher + Send + Sync + 'static> {
     use elai_plugins::{IpcHookDispatcher, NoopLockChecker};
     let writer: Box<dyn elai_plugins::SsbFindingWriter + Send + Sync> =
         Box::new(RuntimeSsbFindingWriter::new(ssb));
     let lock_checker: Box<dyn elai_plugins::CrossSessionLockChecker + Send + Sync> =
         Box::new(NoopLockChecker);
-    let inner: Arc<dyn elai_plugins::IpcHookTrait + Send + Sync> =
-        Arc::new(IpcHookDispatcher::new(tiered, writer, lock_checker));
-    Arc::new(crate::hook_dispatcher::IpcHookAsyncAdapter::new(inner))
+    // The plugins IpcHookDispatcher implements IpcHookTrait; the blanket impl
+    // at ipc_accept.rs:54 lifts it to the orchestrator's IpcHookDispatcher
+    // trait alias. No async adapter needed — the executor's with_hook_dispatcher
+    // field and run_agent_session both consume the sync surface.
+    Arc::new(IpcHookDispatcher::new(tiered, writer, lock_checker))
 }
 
 /// B-19 — production `SsbFindingWriter` implementation wrapping the

@@ -1,0 +1,25 @@
+[vscode]
+queries = 1000
+peak_rss_mb_during_workload = 595
+cache_lru_hit_rate = 0.9918
+cache_lru_size_at_end = 263
+
+[vscode.workload.impact_radius]
+p50_ms = 27.254
+p95_ms = 29.034
+p99_ms = 29.982
+
+[vscode.workload.symbol_context]
+p50_ms = 4.087
+p95_ms = 4.510
+p99_ms = 5.009
+
+[vscode.workload.call_flow]
+p50_ms = 0.002
+p95_ms = 0.002
+p99_ms = 0.007
+
+[vscode.workload.list_symbols]
+p50_ms = 0.010
+p95_ms = 0.019
+p99_ms = 0.019

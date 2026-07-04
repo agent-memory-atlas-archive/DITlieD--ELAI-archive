@@ -3428,6 +3428,32 @@ pub fn get_evidence_gates(state: State<'_, AppState>) -> CmdResult<Value> {
     Ok(Value::Array(arr))
 }
 
+/// B-17 Task 2: per-gate verdict frequency counts aggregated from
+/// `evidence_gate_evaluated` SSB rows. Returns
+/// `[{gate_id, pass_count, block_count, total}]` sorted by total desc.
+/// Empty SSB returns an empty array (drawer renders a "no data" note).
+#[tauri::command]
+pub fn get_gate_verdict_counts(state: State<'_, AppState>) -> CmdResult<Value> {
+    let counts = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.aggregate_gate_verdict_counts().ok())
+        .unwrap_or_default();
+
+    let arr: Vec<Value> = counts
+        .iter()
+        .map(|c| {
+            json!({
+                "gate_id": &c.gate_id,
+                "pass_count": c.pass_count,
+                "block_count": c.block_count,
+                "total": c.total,
+            })
+        })
+        .collect();
+    Ok(Value::Array(arr))
+}
+
 #[tauri::command]
 pub fn get_agents(state: State<'_, AppState>) -> CmdResult<Value> {
     // C-2: live query SSB for the latest `agent_status_changed` row per

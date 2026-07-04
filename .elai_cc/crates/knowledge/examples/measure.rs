@@ -87,6 +87,43 @@ fn main() {
         .map(|m| m.len())
         .unwrap_or(0);
 
+    // B-30: per-language node counts. The DB returns only languages that have
+    // at least one row; we merge against the fixed known key set so the table
+    // is deterministic across runs (no HashMap iteration order churn) and
+    // languages absent from the fixture still appear with `0`.
+    let known_languages: &[&str] = &[
+        "rust", "python", "go", "typescript", "tsx", "svelte", "vue",
+        "java", "csharp", "ruby", "javascript", "c", "cpp", "scala",
+        "php", "swift", "bash",
+    ];
+    let per_lang = engine.node_counts_by_language().unwrap_or_default();
+    let mut lang_counts: std::collections::BTreeMap<String, i64> =
+        std::collections::BTreeMap::new();
+    for &lang in known_languages {
+        lang_counts.insert(lang.to_string(), 0i64);
+    }
+    for (lang, count) in &per_lang {
+        lang_counts.insert(lang.clone(), *count);
+    }
+
+    // Build the [per_language_node_counts] table in the fixed alphabetical
+    // order matching the existing on-disk file (rust, python, go, ...).
+    let mut per_language_table = String::from(
+        "\n# Per-language node counts (B-30 Pass D schema addition).\n\
+         # Populated by `cargo run --example measure` from \
+         `SELECT language, COUNT(*) FROM dkg_nodes GROUP BY language`.\n\
+         [per_language_node_counts]\n",
+    );
+    let ordered_keys: &[&str] = &[
+        "rust", "python", "go", "typescript", "tsx", "svelte", "vue",
+        "java", "csharp", "ruby", "javascript", "c", "cpp", "scala",
+        "php", "swift", "bash",
+    ];
+    for &key in ordered_keys {
+        let count = lang_counts.get(key).copied().unwrap_or(0);
+        per_language_table.push_str(&format!("{key} = {count}\n"));
+    }
+
     // Write TOML
     let toml_content = format!(
         "# ELAI phase 1A DKG metrics — 2026-04-07\n\
@@ -101,7 +138,8 @@ fn main() {
          edges_imports = {edges_imports}\n\
          edges_contains = {edges_contains}\n\
          edges_implements = {edges_implements}\n\
-         signatures_populated = {signatures_populated}\n"
+         signatures_populated = {signatures_populated}\n\
+         {per_language_table}"
     );
 
     // Determine output path
@@ -128,6 +166,19 @@ fn main() {
         eprintln!("VALIDATION FAILED: missing keys: {:?}", missing);
         std::process::exit(1);
     }
+    if !written.contains("[per_language_node_counts]") {
+        eprintln!("VALIDATION FAILED: missing [per_language_node_counts] table");
+        std::process::exit(1);
+    }
+    let non_zero_langs = ordered_keys
+        .iter()
+        .filter(|&&k| {
+            written
+                .lines()
+                .any(|line| line.starts_with(&format!("{k} = ")) && !line.starts_with(&format!("{k} = 0")))
+        })
+        .count();
+    println!("per_language_node_counts: {non_zero_langs} languages with nodes>0");
 
     println!("wrote {}", output_path.display());
     println!("---");

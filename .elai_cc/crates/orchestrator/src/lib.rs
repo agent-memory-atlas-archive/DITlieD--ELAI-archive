@@ -2433,7 +2433,9 @@ pub use rule_loader::load_security_seed_rules_builtin;
 // Contract: `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
 pub use runtime_setup::{
     apply_task_runner_wiring, build_default_baby_step_executor,
+    build_default_baby_step_executor_with_ipc_hooks,
     build_default_baby_step_executor_with_sandbox, build_production_hook_dispatcher,
+    build_production_ipc_hook_dispatcher, build_stub_tiered_analysis,
     build_task_runner_wiring, locate_default_agent_binary, RuntimeWiring,
 };
 // Phase B2 — IPC accept-loop public surface.

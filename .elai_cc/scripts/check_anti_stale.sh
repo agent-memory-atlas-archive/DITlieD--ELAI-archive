@@ -166,7 +166,7 @@ scan 'Box<dyn [A-Za-z_:]*Error[ +>]' "$TMP_BOX"
 # is `//` — this drops `//`, `///`, and `//!` uniformly.
 if [ -s "$TMP_BOX" ]; then
     FILTERED="$(mktemp -t anti_stale_box_f.XXXXXX 2>/dev/null || mktemp)"
-    grep -v -E '[\\/]rules[\\/]src[\\/]schema\.rs:|^[^:]*:[0-9]+:[[:space:]]*//' \
+    grep -v -E '[\\/]rules[\\/]src[\\/]schema\.rs:|:[0-9]+:[[:space:]]*//' \
         "$TMP_BOX" > "$FILTERED" || true
     mv "$FILTERED" "$TMP_BOX"
 fi

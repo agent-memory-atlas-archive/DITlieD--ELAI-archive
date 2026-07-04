@@ -11,11 +11,11 @@
 // the bench falls back to the ELAI workspace itself (resolved from CARGO_MANIFEST_DIR).
 // This lets the harness be validated without cloning multi-gigabyte fixtures.
 
-use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use elai_core::project_id_from_path;
 use elai_knowledge::symbol_graph::cache::SymbolGraphCache;
 use elai_knowledge::symbol_graph::sharding::SYMBOL_FILE_LRU_SIZE;
 use elai_knowledge::symbol_graph::traversal::{
@@ -52,15 +52,17 @@ fn resolve_db_path(fixture_root: &Path, tier_subdir: &str) -> PathBuf {
         .join("dkg.db")
 }
 
-fn elai_self_db_path() -> PathBuf {
-    // CARGO_MANIFEST_DIR = .elai_cc/crates/knowledge at bench time.
+/// Resolve a workspace-relative path (e.g. `metrics/phase_b29_5_bench_raw.json`)
+/// to an absolute path under the workspace root, so the bench can write it
+/// regardless of the CWD cargo bench sets. CARGO_MANIFEST_DIR is
+/// `.elai_cc/crates/knowledge` at bench time; ancestors().nth(2) is `.elai_cc`.
+fn workspace_path(rel: &str) -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(&manifest)
         .ancestors()
-        .nth(2) // .elai_cc
+        .nth(2)
         .unwrap_or_else(|| Path::new("."))
-        .join("indexes")
-        .join("dkg.db")
+        .join(rel)
 }
 
 fn build_tiers() -> Vec<Tier> {
@@ -93,6 +95,7 @@ fn build_tiers() -> Vec<Tier> {
     ];
 
     for (name, subdir, known_targets) in scale_tiers {
+        let tier_root = fixture_root.join(subdir);
         let db_path = resolve_db_path(&fixture_root, subdir);
         if !db_path.exists() {
             eprintln!(
@@ -101,29 +104,27 @@ fn build_tiers() -> Vec<Tier> {
             );
             continue;
         }
+        // B-29.5 fix: project_id MUST match the blake3-derived id the CLI
+        // builder writes (crates/cli/src/symbol_graph.rs:47 calls
+        // project_id_from_path). The previous literal `(*subdir).to_string()`
+        // produced no symbol_graph_meta row and every tier was skipped.
+        let project_id = project_id_from_path(&tier_root);
         tiers.push(Tier {
             name,
             db_path,
-            project_id: (*subdir).to_string(),
+            project_id,
             known_targets: known_targets.clone(),
         });
     }
 
-    // Always include elai_self as the baseline tier (uses the ELAI workspace index).
-    let elai_db = elai_self_db_path();
-    if elai_db.exists() {
-        tiers.push(Tier {
-            name: "elai_self",
-            db_path: elai_db,
-            project_id: "elai_self".to_string(),
-            known_targets: vec!["ClockProvider", "GrcEngine", "DkgEngine", "SymbolGraphCache"],
-        });
-    } else {
-        eprintln!(
-            "[B-29.5] elai_self: DB not found at {} — no baseline tier available",
-            elai_db.display()
-        );
-    }
+    // The synthetic elai_self tier is owned by the populate_elai_self_metrics
+    // test (scale_determinism.rs:212), which builds a tempdir DB with the
+    // literal project_id "elai_self" and writes its numbers directly to
+    // metrics/phase_b29_5_scale.toml. The bench previously pointed at the
+    // ELAI workspace's .elai_cc/indexes/dkg.db, but that DB carries a
+    // different (blake3) project_id, so the cache open always failed. The
+    // bench therefore measures only the real cloned tiers; elai_self numbers
+    // come from the populate test.
 
     tiers
 }
@@ -340,11 +341,11 @@ fn main() {
 
     let json_output = format!("[{}]", tier_results.join(",\n"));
 
-    // Write to metrics file.
-    let out_path = "metrics/phase_b29_5_bench_raw.json";
-    match std::fs::write(out_path, &json_output) {
-        Ok(_) => eprintln!("[B-29.5] Results written to {out_path}"),
-        Err(e) => eprintln!("[B-29.5] Could not write {out_path}: {e}"),
+    // Write to metrics file (absolute path under workspace root).
+    let out_path = workspace_path("metrics/phase_b29_5_bench_raw.json");
+    match std::fs::write(&out_path, &json_output) {
+        Ok(_) => eprintln!("[B-29.5] Results written to {}", out_path.display()),
+        Err(e) => eprintln!("[B-29.5] Could not write {}: {e}", out_path.display()),
     }
 
     // Also echo to stdout for pipe-capture.

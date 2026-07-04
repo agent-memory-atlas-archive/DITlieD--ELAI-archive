@@ -255,6 +255,8 @@ fn contract_task_split_payload_new_fields_roundtrip() {
         sub_task_summaries: Some(vec!["load inputs".into(), "emit outputs".into()]),
         splitter: Some("phase_sizing".into()),
         complexity_estimate: Some(4200),
+        phase_id: Some(7),
+        complexity_reason: Some("token_estimate=8192 > budget*0.6=2457".into()),
     };
     let s = serde_json::to_string(&payload).expect("serialize ok");
     let back: TaskSplitPayload = serde_json::from_str(&s).expect("deserialize ok");

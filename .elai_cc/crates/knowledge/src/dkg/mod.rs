@@ -931,6 +931,26 @@ impl DkgEngine {
         Ok(usize::try_from(count).unwrap_or(0))
     }
 
+    /// B-30: per-language node counts for the `phase_1A.toml`
+    /// `[per_language_node_counts]` metric table. Returns one `(language_id,
+    /// count)` pair per populated language, ordered by `language` ascending so
+    /// the caller can emit a deterministic TOML table. Languages with zero
+    /// nodes are absent from the result; the caller is responsible for filling
+    /// the full known key set with `0` where missing.
+    pub fn node_counts_by_language(&self) -> Result<Vec<(String, i64)>, KnowledgeError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT language, COUNT(*) FROM dkg_nodes GROUP BY language ORDER BY language ASC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut result: Vec<(String, i64)> = Vec::new();
+        for r in rows {
+            result.push(r?);
+        }
+        Ok(result)
+    }
+
     pub fn edges(&self) -> Result<EdgeList, KnowledgeError> {
         let mut stmt = self
             .conn

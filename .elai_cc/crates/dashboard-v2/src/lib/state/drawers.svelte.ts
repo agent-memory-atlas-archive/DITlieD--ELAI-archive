@@ -32,6 +32,7 @@ import type {
   FailureTaxonomyResult,
   FsmSnapshot,
   GgSignals,
+  GateVerdictCount,
   GroundingSweep,
   GrcBudget,
   HookExecution,
@@ -391,6 +392,7 @@ export const reasoningData = createReasoning();
 function createOrchestration() {
   let fsmSnapshot = $state<FsmSnapshot>({ state: 'IDLE', current_step_id: '', progress: 0, history: [] });
   let evidenceGates = $state<EvidenceGate[]>([]);
+  let gateVerdictCounts = $state<GateVerdictCount[]>([]);
   let agents = $state<AgentEntry[]>([]);
   let supervisionLog = $state<SupervisionEvent[]>([]);
   let bspSupersteps = $state<BspSuperstep[]>([]);
@@ -401,9 +403,10 @@ function createOrchestration() {
 
   async function refresh() {
     try {
-      const [snap, gates, ags, supLog, bsp, ctx, branches, spiral, hbs] = await Promise.all([
+      const [snap, gates, gateCounts, ags, supLog, bsp, ctx, branches, spiral, hbs] = await Promise.all([
         stub.get_fsm_state(),
         stub.get_evidence_gates(),
+        stub.get_gate_verdict_counts(),
         stub.get_agents(),
         stub.get_supervision_log(),
         stub.get_bsp_supersteps(),
@@ -414,6 +417,7 @@ function createOrchestration() {
       ]);
       fsmSnapshot = snap;
       evidenceGates = gates;
+      gateVerdictCounts = gateCounts;
       agents = ags;
       supervisionLog = supLog;
       bspSupersteps = bsp;
@@ -431,6 +435,7 @@ function createOrchestration() {
   return {
     get fsmSnapshot() { return fsmSnapshot; },
     get evidenceGates() { return evidenceGates; },
+    get gateVerdictCounts() { return gateVerdictCounts; },
     get agents() { return agents; },
     get supervisionLog() { return supervisionLog; },
     get bspSupersteps() { return bspSupersteps.slice(-8); },

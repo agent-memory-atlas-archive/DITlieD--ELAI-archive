@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::indexing_service::{IndexingService, ELAI_BULK_VECTOR_BUILD_ENV};
-use elai_orchestrator::ssb::{Ssb, SsbConfig};
+use elai_orchestrator::ssb::{LanguageGrammarStatusPayload, Ssb, SsbConfig, SsbPayload};
 
 /// Construct an SSB writer for `run_full_index` observability, or `None` on
 /// init failure (the build proceeds without observability rows in that case).
@@ -47,12 +47,32 @@ use elai_orchestrator::ssb::{Ssb, SsbConfig};
 /// an async future for the caller's entire synchronous work window, so the
 /// write_loop task keeps getting polled the whole time.
 fn build_index_ssb(project_root: &std::path::Path) -> anyhow::Result<(Option<Arc<Ssb>>, SsbRuntime)> {
-    let ssb_db_path = elai_core::paths::sessions_dir_path(project_root).join("ssb.db");
+    let sessions_dir = elai_core::paths::sessions_dir_path(project_root);
+    // B-31: ensure the sessions dir exists before Ssb::new tries to
+    // Connection::open the db file. Without this, the parent dir is absent
+    // on a fresh project, Ssb::new returns Err, build_index_ssb returns
+    // None, and the entire B-31 SSB emit chain (IndexCheckpoint /
+    // IndexResume / IndexCancel via with_ssb_writer) is silently dropped
+    // — the contract's expect_ssb observable_effect can never fire on the
+    // `elai index build` path. Mirrors runtime_setup.rs:288-294.
+    if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
+        tracing::warn!(
+            dir = %sessions_dir.display(),
+            error = %e,
+            "index_cmd: failed to create sessions dir; SSB emits will be dropped"
+        );
+    }
+    let ssb_db_path = sessions_dir.join("ssb.db");
     let project_id = elai_core::project_id_from_cwd()
         .unwrap_or_else(|| format!("{}unknown", elai_core::PROJECT_ID_PREFIX));
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Option<Arc<Ssb>>>();
-    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
+    // B-31: use a tokio mpsc channel for shutdown so the SSB runtime thread's
+    // `recv().await` is async and does NOT block the current-thread runtime
+    // from polling the spawned write_loop task. The prior std::sync::mpsc
+    // `recv()` is a blocking call that froze the entire runtime, so no SSB
+    // rows were ever written on the `elai index build` path.
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     let thread = std::thread::Builder::new()
         .name("elai-index-ssb-rt".to_string())
@@ -84,7 +104,7 @@ fn build_index_ssb(project_root: &std::path::Path) -> anyhow::Result<(Option<Arc
                 // Keep this future (and therefore the runtime driving the
                 // spawned write_loop task) alive until the caller's
                 // synchronous `run_full_index()` finishes and signals shutdown.
-                let _ = shutdown_rx.recv();
+                let _ = shutdown_rx.recv().await;
             });
         })
         .map_err(|e| anyhow::anyhow!("spawning SSB runtime thread: {e}"))?;
@@ -108,7 +128,7 @@ fn build_index_ssb(project_root: &std::path::Path) -> anyhow::Result<(Option<Arc
 /// CLI process never hangs waiting on it.
 struct SsbRuntime {
     thread: Option<std::thread::JoinHandle<()>>,
-    shutdown_tx: Option<std::sync::mpsc::Sender<()>>,
+    shutdown_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl SsbRuntime {
@@ -162,6 +182,47 @@ pub(crate) fn run_index_build(
     // it with a bounded timeout (never hang the CLI on this).
     ssb_rt.shutdown();
     let summary = summary.map_err(|e| anyhow::anyhow!("index build failed: {e}"))?;
+
+    // B-30: emit LanguageGrammarStatus SSB row from the CLI `index build`
+    // path, mirroring the `init_indexing_service` emission in indexing.rs.
+    // The `run_full_index` summary carries the registry status captured at
+    // DKG engine startup; without this emit, the `elai index build` trigger
+    // produces no `language_grammar_status` SSB row (WIRING_CONTRACT
+    // expect_ssb leg).
+    if let (Some(ref writer), Some(ref status)) = (&ssb, &summary.registry_status) {
+        let writer = Arc::clone(writer);
+        let payload = SsbPayload::LanguageGrammarStatus(
+            LanguageGrammarStatusPayload::from(status.clone()),
+        );
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "index_cmd: failed to build tokio runtime for LanguageGrammarStatus emit; skipping"
+                );
+                eprintln!("WARN index_cmd: LanguageGrammarStatus SSB emit skipped: {e}");
+                None
+            }
+        };
+        if let Some(rt) = rt {
+            rt.block_on(async move {
+            if let Err(e) = writer
+                .write_payload("dkg_indexing", 0, payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "index_cmd: write LanguageGrammarStatus failed"
+                );
+                eprintln!("WARN index_cmd: write LanguageGrammarStatus failed: {e}");
+            }
+            });
+        }
+    }
 
     if json {
         let body = serde_json::json!({

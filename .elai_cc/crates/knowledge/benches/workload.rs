@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::hint::black_box;
 
+use elai_core::project_id_from_path;
 use elai_knowledge::symbol_graph::cache::SymbolGraphCache;
 use elai_knowledge::symbol_graph::sharding::SYMBOL_FILE_LRU_SIZE;
 use elai_knowledge::symbol_graph::traversal::{
@@ -289,14 +290,16 @@ fn resolve_db(fixture_root: &Path, subdir: &str) -> PathBuf {
         .join("dkg.db")
 }
 
-fn elai_self_db() -> PathBuf {
+/// Resolve a workspace-relative path to an absolute path under the workspace
+/// root (CARGO_MANIFEST_DIR = .elai_cc/crates/knowledge; ancestors().nth(2)
+/// is .elai_cc). Lets the bench write metrics regardless of CWD.
+fn workspace_path(rel: &str) -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(&manifest)
         .ancestors()
         .nth(2)
         .unwrap_or_else(|| Path::new("."))
-        .join("indexes")
-        .join("dkg.db")
+        .join(rel)
 }
 
 // ---------------------------------------------------------------------------
@@ -312,27 +315,28 @@ fn main() {
         ("chromium", "chromium", vec!["BrowserMain", "NewBrowserContext"]),
         ("vscode", "vscode", vec!["EditorWidget", "CommandService"]),
         ("postgres", "postgres", vec!["PortalRunMulti", "heap_insert"]),
-        ("elai_self", "", vec!["ClockProvider", "GrcEngine", "DkgEngine"]),
     ];
 
     let mut any_run = false;
 
     for (tier_name, subdir, targets) in known_targets {
-        let db_path = if *subdir == "" {
-            elai_self_db()
-        } else {
-            resolve_db(&fixture_root, subdir)
-        };
+        let tier_root = fixture_root.join(subdir);
+        let db_path = resolve_db(&fixture_root, subdir);
 
         if !db_path.exists() {
             eprintln!("[workload] {tier_name}: DB absent at {} — skip", db_path.display());
             continue;
         }
 
+        // B-29.5 fix: project_id MUST match the blake3-derived id the CLI
+        // builder writes (crates/cli/src/symbol_graph.rs:47). The previous
+        // literal `tier_name` produced no symbol_graph_meta row.
+        let project_id = project_id_from_path(&tier_root);
+
         any_run = true;
         eprintln!("[workload] {tier_name}: running {TOTAL_QUERIES}-query workload ...");
 
-        let mut cache = match SymbolGraphCache::new(&db_path, tier_name, SYMBOL_FILE_LRU_SIZE) {
+        let mut cache = match SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[workload] {tier_name}: open error: {e}");
@@ -344,10 +348,10 @@ fn main() {
         let result = run_workload(tier_name, &mut cache, &target_strings);
 
         let toml_out = result_to_toml(&result);
-        let out_path = format!("metrics/phase_b29_5_workload_{tier_name}.toml");
+        let out_path = workspace_path(&format!("metrics/phase_b29_5_workload_{tier_name}.toml"));
         match std::fs::write(&out_path, &toml_out) {
-            Ok(_) => eprintln!("[workload] {tier_name}: results written to {out_path}"),
-            Err(e) => eprintln!("[workload] {tier_name}: could not write {out_path}: {e}"),
+            Ok(_) => eprintln!("[workload] {tier_name}: results written to {}", out_path.display()),
+            Err(e) => eprintln!("[workload] {tier_name}: could not write {}: {e}", out_path.display()),
         }
 
         println!("{toml_out}");

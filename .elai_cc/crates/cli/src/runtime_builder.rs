@@ -684,12 +684,21 @@ pub(crate) async fn install_production_agent_pool(
             session_dir,
         )
     } else {
-        elai_orchestrator::build_default_baby_step_executor(
+        // B-18 task #12: wire the IPC hook dispatcher onto the executor's sync
+        // surface so run_agent_session fires pre_tool_use / post_tool_use on
+        // every ToolRequest frame. The stub-grade TieredAnalysis (no loaded
+        // rules) is the minimum-viable bundle; the SSB finding writer still
+        // emits on BLOCK verdicts. Threading the CLI's real RuleEngine into
+        // the TieredAnalysis is a follow-up (the engine is moved into the
+        // dispatch context above and is not Clone).
+        elai_orchestrator::build_default_baby_step_executor_with_ipc_hooks(
             OsEntropy,
             agent_bin.clone(),
             ipc_dir.clone(),
             gateway,
             rpc_server,
+            elai_orchestrator::runtime_setup::build_stub_tiered_analysis(),
+            wiring.ssb.clone(),
         )
     };
     wiring.baby_step_executor = Some(executor);
