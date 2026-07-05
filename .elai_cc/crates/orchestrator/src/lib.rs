@@ -18,6 +18,8 @@ pub mod agent_template;
 pub mod adversary;
 // P0-1 MR-1 fix: CloudAdversary extracted from adversary.rs; re-exported via adversary.
 pub mod cloud_adversary;
+// SP-3A MR-1 fix: ModelFamily extracted from adversary.rs; re-exported via adversary.
+pub mod model_family;
 // E-6: MAST 14-mode failure taxonomy (Cemri et al. 2025 arXiv:2503.13657).
 // Citation correction from plan's bad cite 2406.12624 (ID_COLLISION)
 // documented in workflow/reasoning/E-6-decisions.md DECISION-1 +

@@ -112,3 +112,20 @@ plan        = "H-54"
 entrypoint  = "elai formal-verify run --target <path> --verifier dafny --demo-escape-hatch"
 expect_ssb  = "trap_behavior_detected"
 flag_default = "on"
+
+# ---- SP-3B codex/gpt-5.5 provider e2e smoke lane (session s-finish-0705) ----
+# AUDITOR-authored (wiring-enforcement role boundary: the SP-3A executor did not
+# write this). Drives the REAL Agent-tool dispatch chain (execute_tool("Agent") ->
+# execute_agent -> build_agent_runtime -> ProviderRuntimeClient::new ->
+# ProviderKind::Gpt55Proxy live HTTP vs bmapi) and asserts the pre-existing I-47
+# PromptHardeningApplied SSB row landed in a real disk-backed ssb.db for this run's
+# agent_id (off-agent artifact; db-not-found / zero rows = FAIL, R1/R2). Provider is
+# PARAMETERIZED via ELAI_PROVIDER_LIVE_SMOKE_MODEL (default gpt-5.5); post-2026-07-15
+# the same smoke runs on claude-sonnet-4-6 -- the gate outlives the bmapi credits.
+# NOTE: added by an executing run -- trips gate_freeze_check.py until re-locked
+# out-of-band (same posture as the H-31 row above).
+[[feature]]
+plan        = "SP-3B"
+entrypoint  = "cargo test -p elai-tools --test gpt55_proxy_live_smoke -- --ignored (ELAI_PROVIDER_LIVE_SMOKE=1; drives elai_tools::execute_tool(\"Agent\", ..))"
+expect_ssb  = "prompt_hardening_applied"
+flag_default = "on"

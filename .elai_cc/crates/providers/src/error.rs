@@ -42,6 +42,14 @@ pub enum ApiError {
         attempt: u32,
         base_delay: Duration,
     },
+    /// SP-3A: a provider's live `/v1/models` catalog responded successfully
+    /// but did not list the model this client was constructed for - the
+    /// proxy is reachable yet misconfigured/mismatched, which is exactly the
+    /// "silently mask a dead proxy" case the live check exists to surface.
+    ModelNotFound {
+        provider: &'static str,
+        model: String,
+    },
 }
 
 impl ApiError {
@@ -67,7 +75,8 @@ impl ApiError {
             | Self::Io(_)
             | Self::Json(_)
             | Self::InvalidSseFrame(_)
-            | Self::BackoffOverflow { .. } => false,
+            | Self::BackoffOverflow { .. }
+            | Self::ModelNotFound { .. } => false,
         }
     }
 }
@@ -126,6 +135,10 @@ impl Display for ApiError {
             } => write!(
                 f,
                 "retry backoff overflowed on attempt {attempt} with base delay {base_delay:?}"
+            ),
+            Self::ModelNotFound { provider, model } => write!(
+                f,
+                "{provider} reports no model named {model:?} in its live /models catalog; verify the model id and the proxy's upstream configuration"
             ),
         }
     }

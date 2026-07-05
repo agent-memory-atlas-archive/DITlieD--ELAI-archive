@@ -1,0 +1,46 @@
+# elai_cc configuration — EXAMPLE template.
+# Copy to elai_cc.toml and edit. All sections are optional — defaults are
+# used when absent. Parsed by load_elai_config() in crates/cli/src/runtime_config.rs.
+
+[tools.routing_rules]
+# enabled = true
+# allow_override_prefix = "!"
+
+[tools.safety_filter]
+# enabled = true
+
+[output]
+# strip_emoji = true
+# strip_sycophancy = true
+# max_response_tokens = 0  # 0 = no truncation
+
+[actions]
+# mode = "Interactive"  # "Interactive" | "Autonomous"
+
+[inference]
+# During-generation feature safety defaults (A-39).
+# All features ship DISABLED until calibration/testing confirms they help.
+steering_enabled = false
+dola_on_32b_only = true
+calibration_target_model = "Qwen2.5-Coder-7B"
+
+# ============================================================================
+# C-9: per-role agent backend stanzas.
+# Each [agents.<role>.backend] stanza selects the inference backend for that
+# role. Accepted values: local | api | hybrid | auto. Defaults to "auto" so
+# a missing stanza preserves the pre-C-9 routing behaviour.
+# ============================================================================
+
+[agents.auditor]
+# deterministic_first: run Build/VersionGate/FileSizeCensus/LazyCode/Completeness
+# checks before LLM auditor. Default: true.
+deterministic_first = true
+
+[agents.auditor.backend]
+backend = "anthropic_api"
+
+[agents.executor.backend]
+backend = "auto"   # local | api | hybrid | auto
+
+[agents.designer.backend]
+backend = "anthropic_api"

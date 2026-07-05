@@ -11,6 +11,7 @@ pub enum ProviderClient {
     Anthropic(AnthropicClient),
     Xai(OpenAiCompatClient),
     OpenAi(OpenAiCompatClient),
+    Gpt55Proxy(OpenAiCompatClient),
 }
 
 impl ProviderClient {
@@ -34,6 +35,9 @@ impl ProviderClient {
             ProviderKind::OpenAi => Ok(Self::OpenAi(OpenAiCompatClient::from_env(
                 OpenAiCompatConfig::openai(),
             )?)),
+            ProviderKind::Gpt55Proxy => Ok(Self::Gpt55Proxy(OpenAiCompatClient::from_env(
+                OpenAiCompatConfig::gpt55_proxy(),
+            )?)),
             ProviderKind::Ollama => Err(ApiError::Auth(
                 "Ollama provider not yet implemented".to_string(),
             )),
@@ -50,6 +54,7 @@ impl ProviderClient {
             Self::Anthropic(_) => ProviderKind::Anthropic,
             Self::Xai(_) => ProviderKind::Xai,
             Self::OpenAi(_) => ProviderKind::OpenAi,
+            Self::Gpt55Proxy(_) => ProviderKind::Gpt55Proxy,
         }
     }
 
@@ -65,7 +70,7 @@ impl ProviderClient {
     pub fn prompt_cache_stats(&self) -> Option<PromptCacheStats> {
         match self {
             Self::Anthropic(client) => client.prompt_cache_stats(),
-            Self::Xai(_) | Self::OpenAi(_) => None,
+            Self::Xai(_) | Self::OpenAi(_) | Self::Gpt55Proxy(_) => None,
         }
     }
 
@@ -73,7 +78,7 @@ impl ProviderClient {
     pub fn take_last_prompt_cache_record(&self) -> Option<PromptCacheRecord> {
         match self {
             Self::Anthropic(client) => client.take_last_prompt_cache_record(),
-            Self::Xai(_) | Self::OpenAi(_) => None,
+            Self::Xai(_) | Self::OpenAi(_) | Self::Gpt55Proxy(_) => None,
         }
     }
 
@@ -83,7 +88,9 @@ impl ProviderClient {
     ) -> Result<MessageResponse, ApiError> {
         match self {
             Self::Anthropic(client) => client.send_message(request).await,
-            Self::Xai(client) | Self::OpenAi(client) => client.send_message(request).await,
+            Self::Xai(client) | Self::OpenAi(client) | Self::Gpt55Proxy(client) => {
+                client.send_message(request).await
+            }
         }
     }
 
@@ -96,7 +103,7 @@ impl ProviderClient {
                 .stream_message(request)
                 .await
                 .map(MessageStream::Anthropic),
-            Self::Xai(client) | Self::OpenAi(client) => client
+            Self::Xai(client) | Self::OpenAi(client) | Self::Gpt55Proxy(client) => client
                 .stream_message(request)
                 .await
                 .map(MessageStream::OpenAiCompat),
@@ -159,5 +166,10 @@ mod tests {
             detect_provider_kind("claude-sonnet-4-6"),
             ProviderKind::Anthropic
         );
+    }
+
+    #[test]
+    fn provider_detection_resolves_gpt55_proxy() {
+        assert_eq!(detect_provider_kind("gpt-5.5"), ProviderKind::Gpt55Proxy);
     }
 }

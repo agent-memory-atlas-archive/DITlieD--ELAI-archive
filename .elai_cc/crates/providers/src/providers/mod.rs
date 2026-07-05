@@ -36,6 +36,15 @@ pub enum ProviderKind {
     Xai,
     OpenAi,
     Ollama,
+    /// SP-3A: bmapi gpt-5.5 OpenAI-compat proxy, reached through the same
+    /// `OpenAiCompatClient` seam as Xai/OpenAi. Named after the model it
+    /// exists to reach (not the vendor, unlike Xai/OpenAi) because the
+    /// underlying bmapi credential can serve several models (gpt-5.4,
+    /// gpt-image-2, ...; confirmed live 2026-07-05) and this integration's
+    /// whole purpose is the gpt-5.5 path specifically. Do not name this
+    /// (or anything it touches) "Codex" - `RuntimeBackend::CodexCli` already
+    /// means "shell out to the codex binary", a different mechanism.
+    Gpt55Proxy,
     #[cfg(feature = "vllm")]
     Vllm,
 }
@@ -127,6 +136,15 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
             default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
         },
     ),
+    (
+        "gpt-5.5",
+        ProviderMetadata {
+            provider: ProviderKind::Gpt55Proxy,
+            auth_env: "BMAPI_API_KEY",
+            base_url_env: "BMAPI_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_BMAPI_BASE_URL,
+        },
+    ),
 ];
 
 #[must_use]
@@ -149,7 +167,7 @@ pub fn resolve_model_alias(model: &str) -> String {
                     "grok-2" => "grok-2",
                     _ => trimmed,
                 },
-                ProviderKind::OpenAi | ProviderKind::Ollama => trimmed,
+                ProviderKind::OpenAi | ProviderKind::Ollama | ProviderKind::Gpt55Proxy => trimmed,
                 #[cfg(feature = "vllm")]
                 ProviderKind::Vllm => trimmed,
             })
@@ -174,6 +192,14 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             auth_env: "XAI_API_KEY",
             base_url_env: "XAI_BASE_URL",
             default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
+        });
+    }
+    if canonical.starts_with("gpt-5.5") {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::Gpt55Proxy,
+            auth_env: "BMAPI_API_KEY",
+            base_url_env: "BMAPI_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_BMAPI_BASE_URL,
         });
     }
     if canonical.contains(':') || is_ollama_model_family(&canonical) {
@@ -243,6 +269,19 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
             max_output_tokens: 64_000,
             context_window_tokens: 131_072,
         }),
+        // SP-3A: "gpt-5.5" (bmapi proxy) deliberately has no entry here, same
+        // as "grok-2" above. Its live `/v1/models` response (verified
+        // 2026-07-05) carries id/type/display_name/created_at only - no
+        // context-length field - so there is no live number to encode and no
+        // grounded source for a static one. Falls through to `None`:
+        // `preflight_message_request` skips enforcement (existing behavior
+        // for any unlisted model) and `max_tokens_for_model`'s heuristic
+        // fallback still applies (64_000, the non-opus branch). The provider
+        // IS checked live - see openai_compat::OpenAiCompatClient::
+        // verify_model_available, wired at construction in
+        // crates/tools/src/lib.rs::ProviderRuntimeClient::new - it just
+        // verifies proxy/model liveness rather than a token ceiling, because
+        // that is the only thing the live endpoint actually exposes.
         _ => None,
     }
 }
@@ -310,6 +349,23 @@ mod tests {
             detect_provider_kind("claude-sonnet-4-6"),
             ProviderKind::Anthropic
         );
+    }
+
+    #[test]
+    fn detects_gpt55_proxy_from_model_name() {
+        assert_eq!(detect_provider_kind("gpt-5.5"), ProviderKind::Gpt55Proxy);
+        assert_eq!(resolve_model_alias("gpt-5.5"), "gpt-5.5");
+    }
+
+    #[test]
+    fn gpt55_proxy_model_has_no_static_context_window() {
+        // SP-3A: deliberately unset (see the match arm comment above) since
+        // the live bmapi /v1/models schema carries no context-length field;
+        // this pins that absence as an intentional, tested fact rather than
+        // a silent gap a future refactor could accidentally "fix" with a
+        // guessed number.
+        assert_eq!(model_token_limit("gpt-5.5"), None);
+        assert_eq!(max_tokens_for_model("gpt-5.5"), 64_000);
     }
 
     #[test]

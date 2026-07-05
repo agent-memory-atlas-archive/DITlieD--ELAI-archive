@@ -4385,9 +4385,24 @@ impl ProviderRuntimeClient {
     #[allow(clippy::needless_pass_by_value)]
     fn new(model: String, allowed_tools: BTreeSet<String>) -> Result<Self, String> {
         let model = resolve_model_alias(&model).clone();
+        let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
         let client = ProviderClient::from_model(&model).map_err(|error| error.to_string())?;
+        // SP-3A: bmapi/gpt-5.5 is checked live against its own `/v1/models`
+        // catalog before being trusted for real traffic, so a dead or
+        // misconfigured proxy fails construction here instead of failing
+        // silently on the first real request (see OpenAiCompatClient::
+        // verify_model_available). `ProviderRuntimeClient::new` already owns
+        // this runtime for the whole client's lifetime, so `block_on` here
+        // costs nothing extra and needs no signature change to the shared,
+        // synchronous `ProviderClient::from_model` factory every provider
+        // goes through.
+        if let ProviderClient::Gpt55Proxy(ref compat_client) = client {
+            runtime
+                .block_on(compat_client.verify_model_available(&model))
+                .map_err(|error| error.to_string())?;
+        }
         Ok(Self {
-            runtime: tokio::runtime::Runtime::new().map_err(|error| error.to_string())?,
+            runtime,
             client,
             model,
             allowed_tools,

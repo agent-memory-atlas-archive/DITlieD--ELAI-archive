@@ -17,6 +17,11 @@ use super::{preflight_message_request, Provider, ProviderFuture};
 
 pub const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+// SP-3A: bmapi gpt-5.5 OpenAI-compat proxy. Base URL + both endpoint paths
+// (`/v1/chat/completions`, `/v1/models`) verified live 2026-07-05 from the
+// codex-vm WSL sandbox's own bmapi credentials; /v1 is baked into the base
+// the same way it is for xAI/OpenAI above (the proxy has no bare-host path).
+pub const DEFAULT_BMAPI_BASE_URL: &str = "https://bmapi.020212.xyz/v1";
 const REQUEST_ID_HEADER: &str = "request-id";
 const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
@@ -33,6 +38,11 @@ pub struct OpenAiCompatConfig {
 
 const XAI_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const OPENAI_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
+// SP-3A: distinct from OPENAI_ENV_VARS on purpose - bmapi is a separate
+// personal proxy credential, not api.openai.com, and reusing OPENAI_API_KEY
+// would make it impossible to configure a real OpenAI key and the bmapi
+// proxy key at the same time (context package SP-3A-context-package.md (c)).
+const BMAPI_ENV_VARS: &[&str] = &["BMAPI_API_KEY"];
 
 impl OpenAiCompatConfig {
     #[must_use]
@@ -54,11 +64,26 @@ impl OpenAiCompatConfig {
             default_base_url: DEFAULT_OPENAI_BASE_URL,
         }
     }
+
+    /// SP-3A: bmapi gpt-5.5 proxy. Named after the model (see `ProviderKind::
+    /// Gpt55Proxy` doc comment) even though `provider_name` itself is the
+    /// service host, not the model - the credential is bmapi's, not
+    /// OpenAI's or gpt-5.5's own.
+    #[must_use]
+    pub const fn gpt55_proxy() -> Self {
+        Self {
+            provider_name: "bmapi",
+            api_key_env: "BMAPI_API_KEY",
+            base_url_env: "BMAPI_BASE_URL",
+            default_base_url: DEFAULT_BMAPI_BASE_URL,
+        }
+    }
     #[must_use]
     pub fn credential_env_vars(self) -> &'static [&'static str] {
         match self.provider_name {
             "xAI" => XAI_ENV_VARS,
             "OpenAI" => OPENAI_ENV_VARS,
+            "bmapi" => BMAPI_ENV_VARS,
             _ => &[],
         }
     }
@@ -241,6 +266,34 @@ impl OpenAiCompatClient {
             }
         }
         map
+    }
+
+    /// SP-3A anti-stale check: GET `{base_url}/models` and confirm `model` is
+    /// in the live catalog before the client is trusted for real traffic.
+    /// Any failure - unreachable proxy, non-2xx status, unparsable body, or a
+    /// 200 that simply does not list `model` - surfaces as an `Err` here
+    /// rather than being discovered on the first real request. This is a
+    /// liveness/catalog check, not a context-window fetch: bmapi's `/models`
+    /// response (verified live 2026-07-05) carries no context-length field,
+    /// see `ModelsListResponse`.
+    pub async fn verify_model_available(&self, model: &str) -> Result<(), ApiError> {
+        let url = models_endpoint(&self.base_url);
+        let response = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+        let response = expect_success(response).await?;
+        let payload = response.json::<ModelsListResponse>().await?;
+        if models_list_contains(&payload, model) {
+            Ok(())
+        } else {
+            Err(ApiError::ModelNotFound {
+                provider: self.config().provider_name,
+                model: model.to_string(),
+            })
+        }
     }
 }
 
@@ -651,6 +704,26 @@ struct OpenAiUsage {
     prompt_tokens: u32,
     #[serde(default)]
     completion_tokens: u32,
+}
+
+/// SP-3A: shape of a live `GET /models` response. Verified against bmapi's
+/// actual payload 2026-07-05 (`{"data":[{"id":...,"type":"model",
+/// "display_name":...,"created_at":...}, ...],"object":"list"}`) - only `id`
+/// is read; `type`/`display_name`/`created_at`/the top-level `object` are
+/// ignored by serde's default (non-`deny_unknown_fields`) behavior.
+#[derive(Debug, Deserialize)]
+struct ModelsListResponse {
+    #[serde(default)]
+    data: Vec<ModelListEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelListEntry {
+    id: String,
+}
+
+fn models_list_contains(payload: &ModelsListResponse, model: &str) -> bool {
+    payload.data.iter().any(|entry| entry.id == model)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1124,6 +1197,15 @@ fn chat_completions_endpoint(base_url: &str) -> String {
     }
 }
 
+fn models_endpoint(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/models") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/models")
+    }
+}
+
 fn request_id_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
     headers
         .get(REQUEST_ID_HEADER)
@@ -1186,9 +1268,10 @@ impl StringExt for String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_completion_request, chat_completions_endpoint, normalize_finish_reason,
-        openai_tool_choice, parse_tool_arguments, parse_tool_arguments_with_telemetry,
-        OpenAiCompatClient, OpenAiCompatConfig,
+        build_chat_completion_request, chat_completions_endpoint, models_endpoint,
+        models_list_contains, normalize_finish_reason, openai_tool_choice, parse_tool_arguments,
+        parse_tool_arguments_with_telemetry, ModelsListResponse, OpenAiCompatClient,
+        OpenAiCompatConfig,
     };
     use crate::error::ApiError;
     use crate::types::{
@@ -1419,6 +1502,33 @@ mod tests {
     }
 
     #[test]
+    fn missing_bmapi_api_key_is_provider_specific() {
+        let _lock = env_lock();
+        std::env::remove_var("BMAPI_API_KEY");
+        let error = OpenAiCompatClient::from_env(OpenAiCompatConfig::gpt55_proxy())
+            .expect_err("missing key should error");
+        assert!(matches!(
+            error,
+            ApiError::MissingCredentials {
+                provider: "bmapi",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn gpt55_proxy_config_matches_bmapi_conventions() {
+        let config = OpenAiCompatConfig::gpt55_proxy();
+        assert_eq!(config.provider_name, "bmapi");
+        assert_eq!(config.api_key_env, "BMAPI_API_KEY");
+        assert_eq!(config.base_url_env, "BMAPI_BASE_URL");
+        assert_eq!(config.default_base_url, "https://bmapi.020212.xyz/v1");
+        let env_vars = config.credential_env_vars();
+        assert_eq!(env_vars.len(), 1);
+        assert_eq!(env_vars[0], "BMAPI_API_KEY");
+    }
+
+    #[test]
     fn endpoint_builder_accepts_base_urls_and_full_endpoints() {
         assert_eq!(
             chat_completions_endpoint("https://api.x.ai/v1"),
@@ -1432,6 +1542,40 @@ mod tests {
             chat_completions_endpoint("https://api.x.ai/v1/chat/completions"),
             "https://api.x.ai/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn models_endpoint_accepts_base_urls_and_full_endpoints() {
+        assert_eq!(
+            models_endpoint("https://bmapi.020212.xyz/v1"),
+            "https://bmapi.020212.xyz/v1/models"
+        );
+        assert_eq!(
+            models_endpoint("https://bmapi.020212.xyz/v1/"),
+            "https://bmapi.020212.xyz/v1/models"
+        );
+        assert_eq!(
+            models_endpoint("https://bmapi.020212.xyz/v1/models"),
+            "https://bmapi.020212.xyz/v1/models"
+        );
+    }
+
+    #[test]
+    fn bmapi_models_list_parses_live_captured_payload() {
+        // Real payload captured 2026-07-05 from https://bmapi.020212.xyz/v1/models
+        // (SP-3A wire-format probe via the codex-vm WSL sandbox), trimmed to
+        // the fields the deserializer reads plus sibling entries to prove
+        // unknown fields don't break parsing.
+        const LIVE_PAYLOAD: &str = r#"{"data":[
+            {"id":"codex-auto-review","type":"model","display_name":"codex-auto-review","created_at":"2024-01-01T00:00:00Z"},
+            {"id":"gpt-5.5","type":"model","display_name":"gpt-5.5","created_at":"2024-01-01T00:00:00Z"},
+            {"id":"gpt-image-2","type":"model","display_name":"gpt-image-2","created_at":"2024-01-01T00:00:00Z"}
+        ],"object":"list"}"#;
+        let payload: ModelsListResponse =
+            serde_json::from_str(LIVE_PAYLOAD).expect("live-captured payload must parse");
+        assert_eq!(payload.data.len(), 3);
+        assert!(models_list_contains(&payload, "gpt-5.5"));
+        assert!(!models_list_contains(&payload, "gpt-6"));
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
