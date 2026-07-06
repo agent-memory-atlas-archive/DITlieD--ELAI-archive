@@ -366,7 +366,8 @@ export type DrawerKey =
   // Surfaces identity_key + drift kind + signals + per_family_delta +
   // affected_template_ids + confirmed_by_fingerprint (GD-5 honest badge).
   // Default-ON (W-2); kill-switch ELAI_MODEL_DRIFT_DISABLE only.
-  | 'model-drift';
+  | 'model-drift'
+  | 'pagerank';
 
 // ------------------------------------------------------------------
 // E-46 D-7 — Decomposition entropy histogram DTOs.

@@ -44,6 +44,7 @@
     { key: 'tools-hooks',          label: 'tools & hooks' },
     { key: 'vibegate',             label: 'vibegate / security' },
     { key: 'session-archive',      label: 'session archive' },
+    { key: 'pagerank',             label: 'pagerank top' },
   ];
 
   let filesEl = $state<HTMLElement | undefined>(undefined);

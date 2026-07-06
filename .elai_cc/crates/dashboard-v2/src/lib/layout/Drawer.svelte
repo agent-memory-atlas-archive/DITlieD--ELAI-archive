@@ -72,6 +72,7 @@
     'safe-delta':           'SAFETY DELTA (G-6)',
     'model-drift':          'MODEL DRIFT (G-10)',
     'decomposition-entropy': 'DECOMPOSITION ENTROPY (E-46)',
+    'pagerank':             'PAGERANK TOP',
   };
 
   function handleBackdropClick(e: MouseEvent) {

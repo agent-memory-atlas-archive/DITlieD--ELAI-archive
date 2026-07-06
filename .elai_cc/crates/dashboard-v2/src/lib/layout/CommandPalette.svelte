@@ -45,6 +45,7 @@
     { id: 'drawer-web-quality',     label: 'Toggle Web Quality Drawer',          handler: () => toggleDrawer('web-quality') },
     // B-42 — Cosmos artifact tier drawer.
     { id: 'drawer-cosmos',          label: 'Open Cosmos Drawer',                 handler: () => toggleDrawer('cosmos') },
+    { id: 'drawer-pagerank',        label: 'Toggle Pagerank Drawer',              handler: () => toggleDrawer('pagerank') },
     {
       id: 'toggle-secondary',
       label: 'Toggle Secondary Panel',
