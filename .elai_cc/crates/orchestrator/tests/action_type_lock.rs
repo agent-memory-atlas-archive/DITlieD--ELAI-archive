@@ -1545,6 +1545,9 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured flat beacon
         // (no Kind discriminator). Emitted by bench_case_reuse::run_inner.
         SsbActionType::RecurrenceHitRateMeasured => (),
+        // K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured flat beacon
+        // (no Kind discriminator). Emitted by bench_gate_tax::run_inner.
+        SsbActionType::GateTaxMeasured => (),
     }
 }
 

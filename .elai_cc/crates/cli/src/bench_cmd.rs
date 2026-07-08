@@ -209,6 +209,16 @@ pub(crate) fn run_bench_case_reuse(
     crate::bench_case_reuse::run(suite, seed, json)
 }
 
+pub(crate) fn run_bench_gate_tax(seed: u64, json: bool, enforce_ceiling: bool) -> anyhow::Result<()> {
+    // K-4 (PS-2 owner, KEYSTONE of K-T3): composed gate-tax budget.
+    // Drives gate_tax_runner over the real session journal (best-effort) or
+    // a labeled fixture composition on a dry journal. Writes
+    // benchmarks/gate_tax/<ts>.json + emits 1 GateTaxMeasured SSB beacon +
+    // a signed .rra manifest (SCHEMA_VERSION 271). `--enforce-ceiling`
+    // (MOVE 3/6, SP2) applies the ceiling-breach exit-code contract. Exits 0/1.
+    crate::bench_gate_tax::run(seed, json, enforce_ceiling)
+}
+
 pub(crate) fn run_bench_ablation(
     tile: String,
     fixtures: String,

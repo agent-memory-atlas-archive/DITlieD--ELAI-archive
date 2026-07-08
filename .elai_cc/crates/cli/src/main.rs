@@ -404,6 +404,14 @@ mod bench_convergence;
 // K-18a follow-on; the beacon was walled off from the runner change at K-18a
 // per ABORT-4, then landed in the coordinated schema-bump follow-on).
 mod bench_case_reuse;
+// K-4 (PS-2 owner, KEYSTONE of K-T3): `elai bench gate-tax [--seed N]
+// [--json] [--enforce-ceiling]` — composed gate-tax budget. Drives
+// gate_tax_runner over the real session journal (best-effort) or a labeled
+// fixture composition on a dry journal, writes a JSON report under
+// benchmarks/gate_tax/, emits 1 GateTaxMeasured SSB flat beacon + a signed
+// .rra manifest per clean run (SCHEMA_VERSION 271). `--enforce-ceiling`
+// (MOVE 3/6, SP2) is the actual "release gate" exit-code contract.
+mod bench_gate_tax;
 // I-38 (SCHEMA_VERSION 235): `elai bench qdelta --config <PATH>` — QDELTA
 // defective-diff rate fixture harness. Statistical floor mechanically enforced
 // (seed_count>=5, paired=true). Emits 1 QdeltaMeasured SSB flat beacon per
@@ -1389,6 +1397,16 @@ fn run() -> Result<(), anyhow::Error> {
         // Exits 0/1.
         CliAction::BenchCaseReuse { suite, seed, json } => {
             bench_cmd::run_bench_case_reuse(suite, seed, json)?;
+        }
+        // K-4 (PS-2 owner, KEYSTONE of K-T3): composed gate-tax budget.
+        // Drives gate_tax_runner over the real session journal or a labeled
+        // fixture composition on a dry journal; writes a JSON report + emits
+        // 1 GateTaxMeasured SSB beacon + signed .rra (SCHEMA_VERSION 271).
+        // `--enforce-ceiling` (MOVE 3/6, SP2) applies the ceiling-breach
+        // exit-code contract (CEILING-PENDING[K-4] fails closed, ABORT-5).
+        // Exits 0/1.
+        CliAction::BenchGateTax { seed, json, enforce_ceiling } => {
+            bench_cmd::run_bench_gate_tax(seed, json, enforce_ceiling)?;
         }
         // I-34 (SCHEMA_VERSION 234): CRANE hybrid grammar-pin gate deterministic
         // fixture harness. Drives the three-layer gate WITHOUT live inference

@@ -1512,6 +1512,13 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // Default-ON (fixture-suite CLI measurement instrument, no kill-switch).
     // 578 -> 579. SCHEMA = -309 + 579 = 270.
     SsbActionType::RecurrenceHitRateMeasured,
+    // K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured -- composed
+    // gate-tax budget flat beacon for `elai bench gate-tax`, the PS-2 owner
+    // number (KEYSTONE of K-T3). Flat beacon (no Kind discriminator), mirrors
+    // RecurrenceHitRateMeasured. Emitted by bench_gate_tax::run from
+    // CliAction::BenchGateTax. Default-ON, no kill-switch.
+    // 579 -> 580. SCHEMA = -309 + 580 = 271.
+    SsbActionType::GateTaxMeasured,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

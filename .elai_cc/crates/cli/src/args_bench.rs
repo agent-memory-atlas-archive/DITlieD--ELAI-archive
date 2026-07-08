@@ -61,6 +61,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "case-reuse" {
         return parse_bench_case_reuse_args(&rest[1..]);
     }
+    if sub == "gate-tax" {
+        return parse_bench_gate_tax_args(&rest[1..]);
+    }
     if sub == "staleness" {
         return parse_bench_staleness_args(&rest[1..]);
     }
@@ -87,7 +90,7 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -997,6 +1000,49 @@ fn parse_bench_case_reuse_args(rest: &[String]) -> Result<CliAction, String> {
     }
     let suite = suite.unwrap_or_else(|| "fixture".to_string());
     Ok(CliAction::BenchCaseReuse { suite, seed, json })
+}
+
+/// K-4 -- parse `elai bench gate-tax [--seed <u64>] [--json] [--enforce-ceiling]`.
+///
+/// No `--suite` flag (gate-tax has no fixture/journal suite toggle; the
+/// runner itself decides Measured vs RunnerPresent from the real journal).
+fn parse_bench_gate_tax_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut seed: u64 = 0;
+    let mut json = false;
+    let mut enforce_ceiling = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--enforce-ceiling" => {
+                enforce_ceiling = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench gate-tax` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchGateTax { seed, json, enforce_ceiling })
 }
 
 /// H-34 -- parse `elai bench mcp-schema-budget [--json]`.

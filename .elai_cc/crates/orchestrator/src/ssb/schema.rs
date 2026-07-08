@@ -5474,7 +5474,13 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- Emitted by bench_case_reuse::run_inner from CliAction::BenchCaseReuse.
         -- Default-ON (fixture-suite CLI measurement instrument, no kill-switch).
         -- TOTAL_VARIANTS 578 -> 579.
-        'recurrence_hit_rate_measured'
+        'recurrence_hit_rate_measured',
+        -- K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured -- composed
+        -- gate-tax budget flat beacon. Flat beacon, one sql_str value.
+        -- Emitted by bench_gate_tax::run from CliAction::BenchGateTax.
+        -- Default-ON (fixture-or-journal CLI measurement instrument).
+        -- TOTAL_VARIANTS 579 -> 580.
+        'gate_tax_measured'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

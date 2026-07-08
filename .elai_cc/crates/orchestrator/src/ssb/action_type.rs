@@ -4707,6 +4707,24 @@ pub enum SsbActionType {
     /// the metric), PS-5 (proof-spine owner number).
     /// TOTAL_VARIANTS 578 -> 579.
     RecurrenceHitRateMeasured,
+    /// K-4 SP1 follow-on (SCHEMA_VERSION 271): composed gate-tax budget flat
+    /// beacon. Flat beacon (no Kind discriminator), mirrors
+    /// [`Self::RecurrenceHitRateMeasured`]. Emitted by
+    /// `crates/cli/src/bench_gate_tax.rs::run` from the
+    /// `CliAction::BenchGateTax` dispatch arm.
+    ///
+    /// Carries `coding_task_gate_tax_ms` + `task_class_label`,
+    /// `audit_gate_tax_ms` (SP2 placeholder) + `audit_unbounded`,
+    /// `over_block_rate`, the RIDER-b coverage counts, up to 3 ranked cost
+    /// contributors, `runner_status` (Measured vs RunnerPresent), `n_gates`,
+    /// `n_fires`. NEVER sums `coding_task_gate_tax_ms` with
+    /// `audit_gate_tax_ms` (rider a, unit honesty).
+    ///
+    /// Default-ON (fixture-or-journal CLI measurement instrument, no
+    /// kill-switch). Composes K-4 `gate_tax_runner` (producer, GD-1), PS-2
+    /// (proof-spine composed-gate-tax owner number).
+    /// TOTAL_VARIANTS 579 -> 580.
+    GateTaxMeasured,
 }
 
 impl SsbActionType {
@@ -5626,6 +5644,8 @@ impl SsbActionType {
             Self::PerceptionScaffoldEvent(_) => "perception_scaffold_event",
             // K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured flat beacon.
             Self::RecurrenceHitRateMeasured => "recurrence_hit_rate_measured",
+            // K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured flat beacon.
+            Self::GateTaxMeasured => "gate_tax_measured",
         }
     }
 }
@@ -6463,6 +6483,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "perception_scaffold_event" => Ok(SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::ScaffoldEmitted)),
         // K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured flat beacon.
         "recurrence_hit_rate_measured" => Ok(SsbActionType::RecurrenceHitRateMeasured),
+        // K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured flat beacon.
+        "gate_tax_measured" => Ok(SsbActionType::GateTaxMeasured),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

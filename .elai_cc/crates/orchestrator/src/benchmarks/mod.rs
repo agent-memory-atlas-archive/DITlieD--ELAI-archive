@@ -115,3 +115,20 @@ pub mod error_amplification_runner;
 // emitted by `crates/cli/src/bench_case_reuse.rs::run_inner` (K-18a
 // follow-on; walled off from the runner change at K-18a per ABORT-4).
 pub mod case_reuse_runner;
+// K-4 (PS-2 owner): composed gate-tax budget — the in-band CODING
+// trust-spine gate friction, measured against a locked ceiling (KEYSTONE of
+// K-T3). Composes the 11 FSM EvidenceGate family (Leg B, microbenched) + the
+// T1/T2/T3 hook tiers (Leg A, journal-native TieredAnalysis.elapsed_us) into
+// coding_task_gate_tax_ms, plus a benign-corpus over-block sweep (FIX-4) and
+// the RIDER-b gate-manifest coverage table. Falls to RunnerStatus::
+// RunnerPresent (never a fabricated MEASURED composition) on a dry journal.
+// The ceiling consts + breach exit-code contract (MOVE 3/6, SP2) are
+// CEILING-PENDING[K-4] until a human confirms a real value (ABORT-5 fail-
+// closed). The SSB beacon (GateTaxMeasured) + CLI wiring are emitted by
+// `crates/cli/src/bench_gate_tax.rs::run`.
+pub mod gate_tax_runner;
+// K-4 SP2: the per-audit checker-timing leg (MOVE 4b), split into its own
+// sibling module so gate_tax_runner.rs stays under the MR-1 1000-line
+// boundary (maintainability-review.md). Internal to gate_tax_runner's
+// composition; not re-exported at the benchmarks:: level.
+pub(crate) mod gate_tax_audit_leg;

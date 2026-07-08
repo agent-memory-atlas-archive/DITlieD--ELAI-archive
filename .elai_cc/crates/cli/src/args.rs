@@ -994,6 +994,26 @@ pub(crate) enum CliAction {
         /// Print the full report JSON to stdout.
         json: bool,
     },
+    /// K-4 (PS-2 owner, KEYSTONE of K-T3): `elai bench gate-tax
+    /// [--seed <u64>] [--json] [--enforce-ceiling]`. Composed gate-tax budget:
+    /// the in-band CODING trust-spine gate friction (11 FSM EvidenceGate
+    /// family + T1/T2/T3 hook tiers) plus a benign-corpus over-block sweep
+    /// (FIX-4) and the RIDER-b gate-manifest coverage table. Falls to a
+    /// labeled fixture composition (never a fabricated MEASURED) on a dry
+    /// journal. Writes a JSON report under benchmarks/gate_tax/. Emits 1
+    /// GateTaxMeasured SSB flat beacon + a signed .rra manifest per clean run
+    /// (SCHEMA_VERSION 271). `--enforce-ceiling` (MOVE 3/6, SP2) is the
+    /// actual "release gate" exit-code contract — CEILING-PENDING[K-4] fails
+    /// closed until a human confirms a real ceiling (ABORT-5).
+    BenchGateTax {
+        /// Deterministic seed (plumbing parity with the bench-family CLI
+        /// shape; does not drive RNG in this runner).
+        seed: u64,
+        /// Print the full report JSON to stdout.
+        json: bool,
+        /// MOVE 3/6 (SP2): apply the ceiling-breach exit-code contract.
+        enforce_ceiling: bool,
+    },
     /// G-10 (SCHEMA_VERSION 218): `elai model-drift baseline|check|show
     /// [--project-root PATH] [--json]` — exogenous model-version behavioral-
     /// regression gate CLI. DISTINCT from `elai drift` (E-45 cross-language

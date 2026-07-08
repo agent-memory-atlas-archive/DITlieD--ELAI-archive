@@ -214,6 +214,7 @@ futility_detected
 futility_output_stagnation
 gate_decision
 gate_self_validation
+gate_tax_measured
 gateway_hitl_pending
 gateway_policy_allowed
 gateway_policy_denied

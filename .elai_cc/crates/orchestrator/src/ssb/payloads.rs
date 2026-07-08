@@ -3723,6 +3723,11 @@ pub enum SsbPayload {
     /// recomputability that K-18a's ABORT-4 deferred.
     /// TOTAL_VARIANTS 578 -> 579.
     RecurrenceHitRateMeasured(RecurrenceHitRateMeasuredPayload),
+    /// K-4 SP1 follow-on (SCHEMA_VERSION 271): composed gate-tax budget flat
+    /// beacon. Emitted by `bench_gate_tax::run` from the
+    /// `CliAction::BenchGateTax` dispatch. PS-2 (proof-spine owner number).
+    /// TOTAL_VARIANTS 579 -> 580.
+    GateTaxMeasured(GateTaxMeasuredPayload),
 }
 
 impl SsbPayload {
@@ -4535,6 +4540,7 @@ impl SsbPayload {
             // rides inside the payload. ScaffoldEmitted is the representative arm.
             Self::PerceptionScaffoldEvent(ref p) => SsbActionType::PerceptionScaffoldEvent(p.kind),
             Self::RecurrenceHitRateMeasured(_) => SsbActionType::RecurrenceHitRateMeasured,
+            Self::GateTaxMeasured(_) => SsbActionType::GateTaxMeasured,
         }
     }
 }
@@ -19850,6 +19856,80 @@ pub struct RecurrenceHitRateMeasuredPayload {
     pub seed: u64,
     /// blake3 hex of the corpus bytes (provenance pin; anti-gaming, GD-2).
     pub corpus_blake3: String,
+    /// Wall-clock milliseconds since UNIX epoch at the moment of emission.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured substrate
+// ---------------------------------------------------------------------------
+
+/// K-4 SP1 (SCHEMA_VERSION 271) -- payload for
+/// [`SsbActionType::GateTaxMeasured`].
+///
+/// Flat beacon (no Kind discriminator, ABORT-4: flat scalars only, no
+/// free-text/nested field), mirrors [`RecurrenceHitRateMeasuredPayload`]'s
+/// shape: ONE row per `elai bench gate-tax` run.
+///
+/// `coding_task_gate_tax_ms` and `audit_gate_tax_ms` are NEVER summed
+/// (rider a, unit honesty — per-task ms and per-audit seconds are different
+/// units); `audit_gate_tax_ms`/`audit_unbounded` are SP2 placeholders
+/// (0.0 / true) until the per-audit checker-timing leg lands.
+/// `runner_status` is `"measured"` or `"runner_present"` (ABORT-2: a dry
+/// journal never emits a fabricated MEASURED composition; the row is still
+/// written, honestly labeled). The `topN_*` fields are the ranked top-3 cost
+/// contributors (RIDER-b coverage counts + the coverage table itself live
+/// only in the on-disk JSON report, not this flat row).
+///
+/// GD-2: `coding_task_gate_tax_ms` recomputes byte-identically from the same
+/// (unit_cost, fire_count) inputs via `gate_tax_runner::compose_gate_tax`
+/// (a pure function); on the fixture/`RunnerPresent` path the whole row is
+/// byte-reproducible across runs.
+///
+/// Composes K-4 `gate_tax_runner` (producer, GD-1: never re-implements the
+/// metric here), PS-2 (proof-spine composed-gate-tax owner number,
+/// `.claude/rules/proof-spine.md`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GateTaxMeasuredPayload {
+    /// Deterministic seed passed to `run_gate_tax` (plumbing parity with the
+    /// bench-family CLI shape; does not drive RNG in this runner).
+    pub seed: u64,
+    /// `"measured"` (real journal fire counts) or `"runner_present"` (dry
+    /// journal, fixture composition — ABORT-2, never a fabricated MEASURED).
+    pub runner_status: String,
+    /// Headline number (rider a: NEVER summed with `audit_gate_tax_ms`).
+    pub coding_task_gate_tax_ms: f64,
+    /// Coarse task-class proxy label (`"all_coding_tasks"` measured /
+    /// `"fixture"` runner_present -- see RESIDUE point 3 in gate_tax_runner.rs).
+    pub task_class_label: String,
+    /// SP2 placeholder (MOVE 4b, per-audit checker-timing leg not built yet).
+    pub audit_gate_tax_ms: f64,
+    pub audit_unbounded: bool,
+    /// Benign-corpus over-block sweep (FIX-4): blocked/total fraction over
+    /// the in-scope-coding gate set.
+    pub over_block_rate: f64,
+    pub over_block_blocked: u32,
+    pub over_block_total: u32,
+    /// RIDER-b coverage counts over the canonical gate-manifest registry.
+    pub n_in_scope_coding: u32,
+    pub n_trading_surface: u32,
+    pub n_offline_audit: u32,
+    pub n_dormant: u32,
+    /// Always 0 on a written row -- an untagged gate is a hard FAIL
+    /// (ABORT-2b) before any row is ever emitted.
+    pub n_untagged: u32,
+    /// Ranked top-3 cost contributors (gate_id or `hook_tier_<T>` label +
+    /// composed cost); empty slots carry `""` / `0.0`.
+    pub top1_gate_id: String,
+    pub top1_cost_ms: f64,
+    pub top2_gate_id: String,
+    pub top2_cost_ms: f64,
+    pub top3_gate_id: String,
+    pub top3_cost_ms: f64,
+    /// Distinct contributor rows composed into `coding_task_gate_tax_ms`.
+    pub n_gates: u32,
+    /// Total fire count summed across all composed contributors.
+    pub n_fires: u64,
     /// Wall-clock milliseconds since UNIX epoch at the moment of emission.
     pub ts_ms: i64,
 }
