@@ -96,3 +96,6 @@ memory/*.sqlite
 /select_parent
 # codegraph live index (SQLite call-graph, ~132MB, machine-local, auto-rebuilt). Never commit.
 .codegraph/
+
+# K-18a: generated case-reuse bench run reports (blake3-pinned JSON + future .rra) are runtime output, not source. Fixtures live under crates/orchestrator/src/benchmarks/case_reuse_fixtures/ and ARE tracked.
+benchmarks/case_reuse/

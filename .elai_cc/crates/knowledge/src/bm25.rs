@@ -873,11 +873,16 @@ fn is_cast_chunker_enabled() -> bool {
 /// `RuntimeAdapter::stream_step` zero-hit bug), but the boolean/phrase/range/
 /// fuzzy/boost/group operators are stripped too so a query like
 /// `Foo<T>(bar)` or `a->b` degrades to its literal identifier fragments
-/// instead of erroring or acquiring unintended boolean semantics. `_` is
+/// instead of erroring or acquiring unintended boolean semantics. `` ` `` and
+/// `'` are also stripped: both are in `tantivy-query-grammar` 0.26's
+/// `SPECIAL_CHARS` (query_grammar.rs), so rustc error text quoted in
+/// backticks (e.g. `` borrow of moved value: `x` ``) previously threw a parse
+/// error instead of matching (K-18a worked around this caller-side). `_` is
 /// deliberately KEPT (snake_case is a single token under the default
 /// tokenizer) and `.` is KEPT (file-extension / method-dot terms).
 const BM25_QUERY_METACHARS: &[char] = &[
     ':', '^', '+', '-', '(', ')', '[', ']', '{', '}', '"', '~', '*', '?', '\\', '!', '<', '>',
+    '`', '\'',
 ];
 
 /// Replace tantivy DSL metacharacters with spaces so a raw code-symbol query
@@ -1476,6 +1481,33 @@ fn helper() -> bool {
         assert_eq!(sanitize_bm25_query("Foo<T>(bar)"), "Foo T  bar ");
         // no metachars -> unchanged (allocation-light identity path).
         assert_eq!(sanitize_bm25_query("plain query"), "plain query");
+        // backtick / apostrophe (rustc error text, e.g. `borrow of moved
+        // value: `x``) -> spaces; both are in tantivy-query-grammar 0.26's
+        // SPECIAL_CHARS and previously threw a QueryParser parse error.
+        assert_eq!(
+            sanitize_bm25_query("borrow of moved value: `x`"),
+            "borrow of moved value   x "
+        );
+        assert_eq!(sanitize_bm25_query("it's `config`"), "it s  config ");
+    }
+
+    // -- A backtick-laden query (rustc error text) parses without error --
+    #[test]
+    fn backtick_query_does_not_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut idx = Bm25Index::new(dir.path(), "backtick-proj").unwrap();
+        let chunks = vec![BM25Chunk {
+            path: p("moved.rs"),
+            content: "error[E0382]: borrow of moved value: `config`".to_string(),
+            line_start: 1,
+            line_end: 1,
+            kind: ChunkKind::Function,
+        }];
+        idx.index_file(&p("moved.rs"), Some(chunks)).unwrap();
+        let hits = idx
+            .query("borrow of moved value: `config`", 10)
+            .expect("backtick query must not throw a QueryParser error");
+        assert!(!hits.is_empty());
     }
 
     // -- A `::` query returns BM25 hits after sanitization (the code-01 fix) --
