@@ -58,6 +58,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "safedelta" {
         return parse_bench_safedelta_args(&rest[1..]);
     }
+    if sub == "case-reuse" {
+        return parse_bench_case_reuse_args(&rest[1..]);
+    }
     if sub == "staleness" {
         return parse_bench_staleness_args(&rest[1..]);
     }
@@ -84,7 +87,7 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -942,6 +945,58 @@ fn parse_bench_safedelta_args(rest: &[String]) -> Result<CliAction, String> {
         suites.push("seccodeplt".to_string());
     }
     Ok(CliAction::BenchSafedelta { suites, seed, json })
+}
+
+/// K-18a — parse `elai bench case-reuse [--suite fixture] [--seed <u64>] [--json]`.
+///
+/// Mirrors the `parse_bench_safedelta_args` grammar. Only the `fixture` suite is
+/// runnable today (the real-journal `journal` suite is F-2 deferred, rejected at
+/// the handler boundary). Default suite is `fixture`; default seed is 0.
+fn parse_bench_case_reuse_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut suite: Option<String> = None;
+    let mut seed: u64 = 0;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--suite" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --suite".to_string())?;
+                suite = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--suite=") => {
+                suite = Some(flag["--suite=".len()..].to_string());
+                i += 1;
+            }
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench case-reuse` argument: {other}"));
+            }
+        }
+    }
+    let suite = suite.unwrap_or_else(|| "fixture".to_string());
+    Ok(CliAction::BenchCaseReuse { suite, seed, json })
 }
 
 /// H-34 -- parse `elai bench mcp-schema-budget [--json]`.

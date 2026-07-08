@@ -396,6 +396,12 @@ mod bench_crane;
 // ConvergenceCurveMeasured SSB flat beacon per clean run. Live per-node
 // compute-spend leg pending I-4 (WIRE-DARK[I-27]).
 mod bench_convergence;
+// K-18a (PS-5 observe arm): `elai bench case-reuse [--suite fixture] [--seed N]
+// [--json]` — recurrence-hit-rate over the shipped BM25 retrieval stack. Drives
+// case_reuse_runner over the embedded fixture corpus, writes a blake3-pinned
+// JSON report under benchmarks/case_reuse/. SSB beacon + .rra DEFERRED (ABORT-4:
+// no reusable bench SSB row; a new SsbActionType is a walled-off schema bump).
+mod bench_case_reuse;
 // I-38 (SCHEMA_VERSION 235): `elai bench qdelta --config <PATH>` — QDELTA
 // defective-diff rate fixture harness. Statistical floor mechanically enforced
 // (seed_count>=5, paired=true). Emits 1 QdeltaMeasured SSB flat beacon per
@@ -1373,6 +1379,13 @@ fn run() -> Result<(), anyhow::Error> {
         // Emits ONE SafetyDeltaMeasured SSB beacon. Exits 0/1.
         CliAction::BenchSafedelta { suites, seed, json } => {
             bench_cmd::run_bench_safedelta(suites, seed, json)?;
+        }
+        // K-18a (PS-5 observe arm): recurrence-hit-rate over the shipped BM25
+        // retrieval stack. Drives case_reuse_runner over the embedded fixture
+        // corpus; writes a blake3-pinned JSON report. SSB beacon + .rra
+        // DEFERRED (ABORT-4: no reusable bench SSB row). Exits 0/1.
+        CliAction::BenchCaseReuse { suite, seed, json } => {
+            bench_cmd::run_bench_case_reuse(suite, seed, json)?;
         }
         // I-34 (SCHEMA_VERSION 234): CRANE hybrid grammar-pin gate deterministic
         // fixture harness. Drives the three-layer gate WITHOUT live inference

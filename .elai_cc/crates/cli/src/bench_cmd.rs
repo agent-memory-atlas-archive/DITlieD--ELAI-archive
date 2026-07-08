@@ -196,6 +196,19 @@ pub(crate) fn run_bench_safedelta(
     crate::bench_safedelta::run(suites, seed, json)
 }
 
+pub(crate) fn run_bench_case_reuse(
+    suite: String,
+    seed: u64,
+    json: bool,
+) -> anyhow::Result<()> {
+    // K-18a (PS-5 observe arm): recurrence-hit-rate over the shipped BM25
+    // retrieval stack. Drives case_reuse_runner over the embedded fixture
+    // corpus, writes benchmarks/case_reuse/<ts>.json (blake3-pinned). SSB
+    // beacon + .rra DEFERRED (ABORT-4: no reusable bench SSB row; a new
+    // SsbActionType is a walled-off schema bump). Exits 0/1.
+    crate::bench_case_reuse::run(suite, seed, json)
+}
+
 pub(crate) fn run_bench_ablation(
     tile: String,
     fixtures: String,

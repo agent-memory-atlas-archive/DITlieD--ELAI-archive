@@ -67,6 +67,15 @@ pub struct DiagnosticResult {
 
 pub struct ClassifyHandler;
 
+/// K-18a: public accessor for the 12-variant failure classification, exposing
+/// the same `detect_category` pattern-matcher the IPC `ClassifyHandler` uses.
+/// Added so the case-reuse recurrence bench can confirm its fixture labels are
+/// classifier-GENERATED (never hand-typed strings). GD-1: composes the shipped
+/// classifier, restates none of it.
+pub fn classify_failure_category(error_output: &str) -> FailureCategory {
+    ClassifyHandler::detect_category(error_output)
+}
+
 impl ClassifyHandler {
     pub fn new() -> Self {
         Self

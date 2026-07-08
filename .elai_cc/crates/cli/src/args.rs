@@ -976,6 +976,23 @@ pub(crate) enum CliAction {
         /// Print the full report JSON to stdout.
         json: bool,
     },
+    /// K-18a (PS-5 observe arm): `elai bench case-reuse [--suite fixture]
+    /// [--seed <u64>] [--json]`. Recurrence-hit-rate over the SHIPPED BM25
+    /// retrieval stack: for each fixture recurrence, does the shipped retrieval
+    /// find the paired proven case (recurrence_hit_rate@{1,3,5}) + the
+    /// false-positive control (false_match_rate@k). ZERO reuse-into-generation
+    /// (K-18 Task 2 is BENCH-PENDING on the unbuilt VCG J-track). Writes a
+    /// blake3-pinned JSON report under benchmarks/case_reuse/. SSB beacon +
+    /// .rra DEFERRED (ABORT-4: no reusable bench SSB row).
+    BenchCaseReuse {
+        /// Suite to run. Only `fixture` is runnable today; the real-journal
+        /// `journal` suite is F-2 deferred.
+        suite: String,
+        /// Deterministic RNG seed (mirrors ELAI_SEED; default 0).
+        seed: u64,
+        /// Print the full report JSON to stdout.
+        json: bool,
+    },
     /// G-10 (SCHEMA_VERSION 218): `elai model-drift baseline|check|show
     /// [--project-root PATH] [--json]` — exogenous model-version behavioral-
     /// regression gate CLI. DISTINCT from `elai drift` (E-45 cross-language

@@ -105,3 +105,13 @@ pub mod ssb_throughput_runner;
 // (R2). Emits exactly one SsbActionType::ErrorAmplificationMeasured beacon from
 // the CLI bench seam (default-ON; no ELAI_*_ENABLE flag).
 pub mod error_amplification_runner;
+// K-18a (PS-5 observe arm): recurrence-hit-rate over the SHIPPED BM25 retrieval
+// stack (elai_knowledge::bm25). For each fixture recurrence, queries the index
+// of proven cases and reports recurrence_hit_rate@{1,3,5} + false_match_rate@k
+// (the false-positive control) + a seeded bootstrap CI. ZERO reuse-into-
+// generation (K-18 Task 2 is BENCH-PENDING on the unbuilt VCG J-track).
+// retrieval_mode="bm25_only" (F-4; hybrid RRF not staged). The SSB beacon +
+// .rra seal are DEFERRED to a coordinated schema-bump follow-on (ABORT-4: no
+// reusable bench SSB row; a new SsbActionType is a walled-off 9-tuple lockstep).
+// This session's off-agent evidence is the blake3-pinned JSON report.
+pub mod case_reuse_runner;
