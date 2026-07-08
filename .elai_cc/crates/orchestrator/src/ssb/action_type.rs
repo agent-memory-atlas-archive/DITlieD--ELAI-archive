@@ -4687,6 +4687,26 @@ pub enum SsbActionType {
     /// See workflow/reasoning/J-1-decisions.md (T4).
     /// TOTAL_VARIANTS 577 -> 578.
     PerceptionScaffoldEvent(PerceptionScaffoldEventKind),
+    /// K-18a follow-on (SCHEMA_VERSION 270): PS-5 recurrence-hit-rate flat
+    /// beacon, restoring GD-2 journal-recomputability + dashboard-ability
+    /// for `elai bench case-reuse` (K-18a shipped the runner + JSON report
+    /// but explicitly DEFERRED the SSB beacon, ABORT-4: coordinated
+    /// schema-bump walled off from the runner change).
+    ///
+    /// Flat beacon (no Kind discriminator), mirrors [`Self::ConvergenceCurveMeasured`].
+    /// Emitted by `crates/cli/src/bench_case_reuse.rs::run_inner` from the
+    /// `CliAction::BenchCaseReuse` dispatch arm.
+    ///
+    /// The row carries `recurrence_hit_rate_at{1,3,5}` / `false_match_rate_at{1,3,5}`,
+    /// the seeded bootstrap CI on hit_rate@ref_k, corpus cardinality, and
+    /// `corpus_blake3` (GD-2: recomputable byte-identically under the pinned seed).
+    ///
+    /// Default-ON (fixture-suite CLI measurement instrument, no kill-switch;
+    /// mirrors ConvergenceCurveMeasured's always-available fixture leg).
+    /// Composes K-18a `case_reuse_runner` (producer, GD-1: never re-implements
+    /// the metric), PS-5 (proof-spine owner number).
+    /// TOTAL_VARIANTS 578 -> 579.
+    RecurrenceHitRateMeasured,
 }
 
 impl SsbActionType {
@@ -5604,6 +5624,8 @@ impl SsbActionType {
             // payload (mirrors DocumentVisionRagEvent). Wire-dark unless
             // ELAI_PERCEPTION_GATEWAY_ENABLE=1.
             Self::PerceptionScaffoldEvent(_) => "perception_scaffold_event",
+            // K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured flat beacon.
+            Self::RecurrenceHitRateMeasured => "recurrence_hit_rate_measured",
         }
     }
 }
@@ -6439,6 +6461,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // Kind discriminator rides inside the payload. ScaffoldEmitted is the
         // representative arm (the success path, most-semantic).
         "perception_scaffold_event" => Ok(SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::ScaffoldEmitted)),
+        // K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured flat beacon.
+        "recurrence_hit_rate_measured" => Ok(SsbActionType::RecurrenceHitRateMeasured),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

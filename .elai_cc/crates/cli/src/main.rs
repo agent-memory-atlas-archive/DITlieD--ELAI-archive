@@ -399,8 +399,10 @@ mod bench_convergence;
 // K-18a (PS-5 observe arm): `elai bench case-reuse [--suite fixture] [--seed N]
 // [--json]` — recurrence-hit-rate over the shipped BM25 retrieval stack. Drives
 // case_reuse_runner over the embedded fixture corpus, writes a blake3-pinned
-// JSON report under benchmarks/case_reuse/. SSB beacon + .rra DEFERRED (ABORT-4:
-// no reusable bench SSB row; a new SsbActionType is a walled-off schema bump).
+// JSON report under benchmarks/case_reuse/. Emits 1 RecurrenceHitRateMeasured
+// SSB flat beacon + a signed .rra manifest per clean run (SCHEMA_VERSION 270,
+// K-18a follow-on; the beacon was walled off from the runner change at K-18a
+// per ABORT-4, then landed in the coordinated schema-bump follow-on).
 mod bench_case_reuse;
 // I-38 (SCHEMA_VERSION 235): `elai bench qdelta --config <PATH>` — QDELTA
 // defective-diff rate fixture harness. Statistical floor mechanically enforced
@@ -1382,8 +1384,9 @@ fn run() -> Result<(), anyhow::Error> {
         }
         // K-18a (PS-5 observe arm): recurrence-hit-rate over the shipped BM25
         // retrieval stack. Drives case_reuse_runner over the embedded fixture
-        // corpus; writes a blake3-pinned JSON report. SSB beacon + .rra
-        // DEFERRED (ABORT-4: no reusable bench SSB row). Exits 0/1.
+        // corpus; writes a blake3-pinned JSON report + emits 1
+        // RecurrenceHitRateMeasured SSB beacon + signed .rra (SCHEMA_VERSION 270).
+        // Exits 0/1.
         CliAction::BenchCaseReuse { suite, seed, json } => {
             bench_cmd::run_bench_case_reuse(suite, seed, json)?;
         }

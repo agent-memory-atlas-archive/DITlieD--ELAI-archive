@@ -1542,6 +1542,9 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // SSB_ACTION_TYPES carries the single representative
         // PerceptionScaffoldEvent(PerceptionScaffoldEventKind::ScaffoldEmitted) arm.
         SsbActionType::PerceptionScaffoldEvent(_) => (),
+        // K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured flat beacon
+        // (no Kind discriminator). Emitted by bench_case_reuse::run_inner.
+        SsbActionType::RecurrenceHitRateMeasured => (),
     }
 }
 

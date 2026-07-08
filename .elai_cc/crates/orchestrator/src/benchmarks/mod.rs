@@ -110,8 +110,8 @@ pub mod error_amplification_runner;
 // of proven cases and reports recurrence_hit_rate@{1,3,5} + false_match_rate@k
 // (the false-positive control) + a seeded bootstrap CI. ZERO reuse-into-
 // generation (K-18 Task 2 is BENCH-PENDING on the unbuilt VCG J-track).
-// retrieval_mode="bm25_only" (F-4; hybrid RRF not staged). The SSB beacon +
-// .rra seal are DEFERRED to a coordinated schema-bump follow-on (ABORT-4: no
-// reusable bench SSB row; a new SsbActionType is a walled-off 9-tuple lockstep).
-// This session's off-agent evidence is the blake3-pinned JSON report.
+// retrieval_mode="bm25_only" (F-4; hybrid RRF not staged). The SSB beacon
+// (RecurrenceHitRateMeasured, SCHEMA_VERSION 270) + signed .rra seal are
+// emitted by `crates/cli/src/bench_case_reuse.rs::run_inner` (K-18a
+// follow-on; walled off from the runner change at K-18a per ABORT-4).
 pub mod case_reuse_runner;

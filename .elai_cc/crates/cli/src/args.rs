@@ -982,8 +982,9 @@ pub(crate) enum CliAction {
     /// find the paired proven case (recurrence_hit_rate@{1,3,5}) + the
     /// false-positive control (false_match_rate@k). ZERO reuse-into-generation
     /// (K-18 Task 2 is BENCH-PENDING on the unbuilt VCG J-track). Writes a
-    /// blake3-pinned JSON report under benchmarks/case_reuse/. SSB beacon +
-    /// .rra DEFERRED (ABORT-4: no reusable bench SSB row).
+    /// blake3-pinned JSON report under benchmarks/case_reuse/. Emits 1
+    /// RecurrenceHitRateMeasured SSB flat beacon + a signed .rra manifest
+    /// per clean run (SCHEMA_VERSION 270, K-18a follow-on).
     BenchCaseReuse {
         /// Suite to run. Only `fixture` is runnable today; the real-journal
         /// `journal` suite is F-2 deferred.

@@ -3717,6 +3717,12 @@ pub enum SsbPayload {
     /// does NOT re-gate). Reuses [`crate::perception::ELAI_PERCEPTION_GATEWAY_ENABLE_ENV`].
     /// TOTAL_VARIANTS 577 -> 578.
     PerceptionScaffoldEvent(PerceptionScaffoldEventPayload),
+    /// K-18a follow-on (SCHEMA_VERSION 270): PS-5 recurrence-hit-rate flat
+    /// beacon. Emitted by `bench_case_reuse::run_inner` from the
+    /// `CliAction::BenchCaseReuse` dispatch. Restores GD-2 journal-
+    /// recomputability that K-18a's ABORT-4 deferred.
+    /// TOTAL_VARIANTS 578 -> 579.
+    RecurrenceHitRateMeasured(RecurrenceHitRateMeasuredPayload),
 }
 
 impl SsbPayload {
@@ -4528,6 +4534,7 @@ impl SsbPayload {
             // (4-arm Pattern-2 single-variant). Single sql_str; the Kind discriminator
             // rides inside the payload. ScaffoldEmitted is the representative arm.
             Self::PerceptionScaffoldEvent(ref p) => SsbActionType::PerceptionScaffoldEvent(p.kind),
+            Self::RecurrenceHitRateMeasured(_) => SsbActionType::RecurrenceHitRateMeasured,
         }
     }
 }
@@ -19786,5 +19793,63 @@ pub struct PerceptionScaffoldEventPayload {
     /// `degraded_passthrough` -> `reason`, `source` ("scaffold" / "router").
     pub details_json: serde_json::Value,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured substrate
+// ---------------------------------------------------------------------------
+
+/// K-18a follow-on (SCHEMA_VERSION 270) -- payload for
+/// [`SsbActionType::RecurrenceHitRateMeasured`].
+///
+/// Flat beacon (no Kind discriminator), mirrors
+/// [`ConvergenceCurveMeasuredPayload`]'s shape: ONE row per
+/// `elai bench case-reuse` run, all scalars (no free-text field, so the
+/// redaction catch-all covers the whole struct).
+///
+/// GD-2: `recurrence_hit_rate_at{1,3,5}` / `false_match_rate_at{1,3,5}` and
+/// the bootstrap CI recompute byte-identically from the embedded fixture
+/// under the pinned `seed` (K-18a `case_reuse_runner::run_case_reuse`).
+///
+/// Composes K-18a `case_reuse_runner` (producer, GD-1: never re-implements
+/// the metric here), PS-5 (proof-spine case-reuse-compounding owner number,
+/// `.claude/rules/proof-spine.md`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RecurrenceHitRateMeasuredPayload {
+    /// Suite label (only `"fixture"` is runnable at K-18a; `"journal"` is
+    /// F-2 deferred).
+    pub suite: String,
+    /// Honest retrieval-mode tag (`"bm25_only"`; hybrid RRF not staged, F-4).
+    pub retrieval_mode: String,
+    /// Fraction of recurrences whose paired proven case is retrieved in
+    /// top-1 at/above the score floor.
+    pub recurrence_hit_rate_at1: f64,
+    /// Same, top-3.
+    pub recurrence_hit_rate_at3: f64,
+    /// Same, top-5.
+    pub recurrence_hit_rate_at5: f64,
+    /// Fraction of distractors that retrieve any proven case in top-1
+    /// at/above the score floor (false-positive control).
+    pub false_match_rate_at1: f64,
+    /// Same, top-3.
+    pub false_match_rate_at3: f64,
+    /// Same, top-5.
+    pub false_match_rate_at5: f64,
+    /// Seeded bootstrap 95% CI lower bound on `recurrence_hit_rate@ref_k`.
+    pub hit_rate_ci_low: f64,
+    /// Seeded bootstrap 95% CI upper bound.
+    pub hit_rate_ci_high: f64,
+    /// Number of recurrence fixtures in the corpus.
+    pub n_recurrences: u32,
+    /// Number of distractor fixtures in the corpus.
+    pub n_distractors: u32,
+    /// Distinct proven-case failure classes (>= 4 by fixture contract).
+    pub class_count: u32,
+    /// Deterministic RNG seed used (ELAI_SEED override; default 0).
+    pub seed: u64,
+    /// blake3 hex of the corpus bytes (provenance pin; anti-gaming, GD-2).
+    pub corpus_blake3: String,
+    /// Wall-clock milliseconds since UNIX epoch at the moment of emission.
     pub ts_ms: i64,
 }

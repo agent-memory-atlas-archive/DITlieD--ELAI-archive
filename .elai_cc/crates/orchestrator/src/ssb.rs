@@ -1504,6 +1504,14 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // ScaffoldEmitted is the representative arm (ONE SSB_ACTION_TYPES entry). 577 -> 578.
     // SCHEMA = -309 + 578 = 269.
     SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::ScaffoldEmitted),
+    // K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured -- PS-5
+    // recurrence-hit-rate flat beacon for `elai bench case-reuse`, restoring
+    // GD-2 journal-recomputability that K-18a's ABORT-4 explicitly deferred.
+    // Flat beacon (no Kind discriminator), mirrors ConvergenceCurveMeasured.
+    // Emitted by bench_case_reuse::run_inner from CliAction::BenchCaseReuse.
+    // Default-ON (fixture-suite CLI measurement instrument, no kill-switch).
+    // 578 -> 579. SCHEMA = -309 + 579 = 270.
+    SsbActionType::RecurrenceHitRateMeasured,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

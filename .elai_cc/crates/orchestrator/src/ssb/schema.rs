@@ -5466,7 +5466,15 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- PerceptionScaffoldEventKind discriminator rides inside the payload.
         -- Wire-dark unless ELAI_PERCEPTION_GATEWAY_ENABLE=1.
         -- TOTAL_VARIANTS 577 -> 578.
-        'perception_scaffold_event'
+        'perception_scaffold_event',
+        -- K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured -- PS-5
+        -- recurrence-hit-rate flat beacon for `elai bench case-reuse`. Flat beacon
+        -- (no Kind discriminator), one sql_str value. Restores GD-2 journal-
+        -- recomputability that K-18a's ABORT-4 explicitly deferred.
+        -- Emitted by bench_case_reuse::run_inner from CliAction::BenchCaseReuse.
+        -- Default-ON (fixture-suite CLI measurement instrument, no kill-switch).
+        -- TOTAL_VARIANTS 578 -> 579.
+        'recurrence_hit_rate_measured'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

@@ -400,6 +400,7 @@ reasoning_budget_scaled
 reasoning_quality_probe
 reasoning_trace
 recovery_event
+recurrence_hit_rate_measured
 redaction_applied
 refinebench_score_emitted
 reflect_audit_verdict
