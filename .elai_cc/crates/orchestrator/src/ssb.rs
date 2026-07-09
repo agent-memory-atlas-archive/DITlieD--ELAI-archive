@@ -1519,6 +1519,16 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // CliAction::BenchGateTax. Default-ON, no kill-switch.
     // 579 -> 580. SCHEMA = -309 + 580 = 271.
     SsbActionType::GateTaxMeasured,
+    // J-28 follow-on (SCHEMA_VERSION 272): UsageTurnEvent -- the uniform
+    // per-turn token-usage row emitted by BOTH the cloud lane
+    // (grounding_client.rs, beside CloudSpend) and the local lane
+    // (runtime_orchestrator.rs, beside BackendCostAccrued). Flat variant
+    // (mirrors RecurrenceHitRateMeasured/GateTaxMeasured); the 3-arm Kind
+    // (TurnRecorded/EstimateApplied/NormalizationApplied) rides in
+    // UsageTurnEventPayload.kind, not on this enum. Default-ON, no
+    // kill-switch. Consumed by the T5 usage_ledger rollup + `elai usage`.
+    // 580 -> 581. SCHEMA = -309 + 581 = 272.
+    SsbActionType::UsageTurnEvent,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

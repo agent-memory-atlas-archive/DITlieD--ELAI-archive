@@ -4725,6 +4725,24 @@ pub enum SsbActionType {
     /// (proof-spine composed-gate-tax owner number).
     /// TOTAL_VARIANTS 579 -> 580.
     GateTaxMeasured,
+    /// J-28 follow-on: UsageTurnEvent -- the uniform per-turn token-usage
+    /// row emitted by BOTH the cloud lane (grounding_client.rs, beside the
+    /// existing CloudSpend row) and the local lane (runtime_orchestrator.rs,
+    /// beside the existing BackendCostAccrued row). Flat variant (mirrors
+    /// RecurrenceHitRateMeasured/GateTaxMeasured -- ONE sql_str, no Kind on
+    /// the action-type enum itself); the 3-arm Kind discriminator
+    /// (TurnRecorded / EstimateApplied / NormalizationApplied) rides
+    /// inside [`crate::ssb::UsageTurnEventPayload::kind`] as a payload
+    /// field, same convention as `loop_kind` on
+    /// `SecurityClassRegressionBlockedPayload`.
+    ///
+    /// Neither CloudSpend nor BackendCostAccrued is removed or touched --
+    /// this is the uniform (model,task,session,lane)-keyed join they could
+    /// not provide (BackendCostAccruedPayload carries no model/task/
+    /// session key). Default-ON, no kill-switch. See
+    /// workflow/reasoning/J-28-decisions.md.
+    /// TOTAL_VARIANTS 580 -> 581.
+    UsageTurnEvent,
 }
 
 impl SsbActionType {
@@ -5646,6 +5664,8 @@ impl SsbActionType {
             Self::RecurrenceHitRateMeasured => "recurrence_hit_rate_measured",
             // K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured flat beacon.
             Self::GateTaxMeasured => "gate_tax_measured",
+            // J-28 follow-on: UsageTurnEvent flat variant, Kind rides in the payload.
+            Self::UsageTurnEvent => "usage_turn_event",
         }
     }
 }
@@ -6485,6 +6505,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "recurrence_hit_rate_measured" => Ok(SsbActionType::RecurrenceHitRateMeasured),
         // K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured flat beacon.
         "gate_tax_measured" => Ok(SsbActionType::GateTaxMeasured),
+        // J-28 follow-on: UsageTurnEvent flat variant.
+        "usage_turn_event" => Ok(SsbActionType::UsageTurnEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

@@ -3728,6 +3728,11 @@ pub enum SsbPayload {
     /// `CliAction::BenchGateTax` dispatch. PS-2 (proof-spine owner number).
     /// TOTAL_VARIANTS 579 -> 580.
     GateTaxMeasured(GateTaxMeasuredPayload),
+    /// J-28 follow-on: uniform per-turn token-usage row, both lanes. See
+    /// [`UsageTurnEventPayload`]. Flat variant (no Kind on the action-type
+    /// enum); the 3-arm [`UsageTurnEventKind`] rides inside the payload.
+    /// TOTAL_VARIANTS 580 -> 581.
+    UsageTurnEvent(UsageTurnEventPayload),
 }
 
 impl SsbPayload {
@@ -4541,6 +4546,7 @@ impl SsbPayload {
             Self::PerceptionScaffoldEvent(ref p) => SsbActionType::PerceptionScaffoldEvent(p.kind),
             Self::RecurrenceHitRateMeasured(_) => SsbActionType::RecurrenceHitRateMeasured,
             Self::GateTaxMeasured(_) => SsbActionType::GateTaxMeasured,
+            Self::UsageTurnEvent(_) => SsbActionType::UsageTurnEvent,
         }
     }
 }
@@ -19931,5 +19937,108 @@ pub struct GateTaxMeasuredPayload {
     /// Total fire count summed across all composed contributors.
     pub n_fires: u64,
     /// Wall-clock milliseconds since UNIX epoch at the moment of emission.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-28 follow-on: UsageTurnEvent substrate (token ledger / usage unification)
+// ---------------------------------------------------------------------------
+
+/// J-28 -- which side of the cloud/local boundary produced a
+/// [`UsageTurnEventPayload`] row. The rollup key (T5, `usage_ledger.rs`)
+/// includes this tag so a cloud row and a local row are NEVER folded
+/// together unlabeled (R10 threaded contract; the SSB row itself is the
+/// shared contract, not an in-memory assumption).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageLane {
+    /// `grounding_client.rs::CloudGroundingClient::send_message`.
+    Cloud,
+    /// `runtime_orchestrator.rs::RuntimeOrchestrator::try_complete`.
+    Local,
+}
+
+/// J-28 T2 -- the intentional cloud/local input-token semantics divergence.
+/// Cloud (Anthropic spec) `input_tokens` excludes cache-covered prefix
+/// (uncached suffix only); the local sidecar reports the FULL prompt.
+/// Carried alongside every row so no aggregate silently treats the two as
+/// the same unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSemanticsTag {
+    /// Local lane: `input_tokens` is the full prompt sent to the sidecar.
+    FullPrompt,
+    /// Cloud lane: `input_tokens` is the uncached suffix only (Anthropic
+    /// spec; `cache_read_input_tokens` + `cache_creation_input_tokens`
+    /// cover the rest).
+    SuffixOnly,
+}
+
+/// J-28 T3/T6 -- 3-arm fire-point discriminator carried by
+/// [`UsageTurnEventPayload::kind`] (Pattern-2 payload-field convention,
+/// mirrors `loop_kind` on `SecurityClassRegressionBlockedPayload` -- NOT a
+/// Kind on the `SsbActionType` enum itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageTurnEventKind {
+    /// A real usage figure was read off the provider/sidecar response.
+    TurnRecorded,
+    /// The backend reported no/partial usage; a client-side per-lane
+    /// tokenizer estimate was substituted (T6, R2: never a silent
+    /// `TurnRecorded` with all-zero counters).
+    EstimateApplied,
+    /// Reserved for a future row whose counters were derived by explicit
+    /// lane-normalization (T2 candidate (a), sidecar-side spec-compliant
+    /// re-emission) rather than captured or estimated. No producer emits
+    /// this arm yet under ROUTE B (client-side normalization, FORK-1);
+    /// kept so the discriminator does not need a schema bump when ROUTE A
+    /// ships. Not a WIRE-DARK pub fn -- an unused enum arm on an already-
+    /// wired payload type is not producer machinery.
+    NormalizationApplied,
+}
+
+/// J-28 -- payload for [`SsbActionType::UsageTurnEvent`]. The uniform
+/// per-turn join that `CloudSpendPayload` (no task/session key) and
+/// `BackendCostAccruedPayload` (no model/task/session key) cannot provide
+/// on their own; both are KEPT and this row is emitted BESIDE them at both
+/// lane seams. No free-text field (G-9: nothing here can carry secret
+/// material; `backend`/`model`/`task_id`/`session_id` are identifiers, not
+/// content).
+///
+/// `identity` defaults to `"local"` (S-50: a field, never multi-user
+/// infrastructure -- ELAI has no multi-tenant identity concept today).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageTurnEventPayload {
+    /// S-50: a field, never infrastructure. `"local"` unless/until ELAI
+    /// grows a real multi-identity concept.
+    pub identity: String,
+    /// Cloud vs local (R10 rollup key component).
+    pub lane: UsageLane,
+    /// Backend label (e.g. `"anthropic"`, a local runtime id). Free-text
+    /// per G-9 is banned elsewhere in this struct, but `backend` is a
+    /// closed-ish identifier string mirroring `CloudSpendPayload.provider`.
+    pub backend: String,
+    pub model: String,
+    /// Not always in scope at the local seam (GAP RISK-3); `None` is a
+    /// legitimate value, never a stand-in for a real id.
+    pub task_id: Option<String>,
+    pub session_id: Option<String>,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_creation_tokens: u32,
+    pub cache_read_tokens: u32,
+    /// Micro-dollars (u64) so the rollup never re-introduces float-sum
+    /// drift; `0` when the accumulator backing this row is unpriced
+    /// (`SpendAccumulator::is_priced() == false`, J-28 T4) or when the
+    /// local backend has no cost model.
+    pub est_cost_micros: u64,
+    /// Measured with a seam-local `Instant`/`OsClock` (RECON_NEEDED-4);
+    /// neither `MessageResponse` nor `CompletionResponse` carries
+    /// `elapsed_ms` in Rust today.
+    pub elapsed_ms: u64,
+    pub semantics_tag: UsageSemanticsTag,
+    /// Fire-point discriminator. See [`UsageTurnEventKind`].
+    pub kind: UsageTurnEventKind,
+    /// Wall-clock milliseconds since UNIX epoch at emit time.
     pub ts_ms: i64,
 }

@@ -325,14 +325,28 @@ pub(crate) fn format_permissions_switch_report(previous: &str, next: &str) -> St
     )
 }
 
-pub(crate) fn format_cost_report(usage: TokenUsage) -> String {
+/// J-28 T8 -- `model` drives a real per-model dollar estimate via
+/// `pricing.rs::summary_lines_for_model` (GD-1: reuses the existing
+/// pricing surface, never re-implements the rate table). `None` (or an
+/// unrecognized model id) falls back to the sonnet-tier default estimate,
+/// labeled `pricing=estimated-default` by `summary_lines_for_model` itself
+/// so the report never claims a real per-model rate it does not have.
+/// This is the SINGLE active session's cumulative usage (one lane); the
+/// cross-lane cloud-vs-local rollup lives in the separate `elai usage`
+/// verb (`usage_cmd::run_usage`), not here.
+pub(crate) fn format_cost_report(usage: TokenUsage, model: Option<&str>) -> String {
+    let cost_lines = elai_orchestrator::usage::summary_lines_for_model(usage, "Cost", model);
+    let cost_line = cost_lines.first().map(String::as_str).unwrap_or_default();
+    let breakdown_line = cost_lines.get(1).map(String::as_str).unwrap_or_default();
     format!(
         "Cost
   Input tokens     {}
   Output tokens    {}
   Cache create     {}
   Cache read       {}
-  Total tokens     {}",
+  Total tokens     {}
+  {cost_line}
+  {breakdown_line}",
         usage.input_tokens,
         usage.output_tokens,
         usage.cache_creation_input_tokens,
@@ -590,7 +604,10 @@ pub(crate) fn run_resume_command(
             }.cumulative_usage();
             Ok(ResumeCommandOutcome {
                 session: session.clone(),
-                message: Some(format_cost_report(usage)),
+                // Session/ConversationMessage carry no model id (session.rs)
+                // -- honest default-tier estimate, labeled
+                // `pricing=estimated-default` by summary_lines_for_model.
+                message: Some(format_cost_report(usage, None)),
             })
         }
         SlashCommand::Config { section } => Ok(ResumeCommandOutcome {

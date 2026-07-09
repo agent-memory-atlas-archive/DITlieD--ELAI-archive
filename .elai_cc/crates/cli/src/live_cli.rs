@@ -2741,7 +2741,7 @@ impl LiveCli {
 
     fn print_cost(&self) {
         let cumulative = self.runtime.usage().cumulative_usage();
-        println!("{}", format_cost_report(cumulative));
+        println!("{}", format_cost_report(cumulative, Some(self.model.as_str())));
     }
 
     fn resume_session(

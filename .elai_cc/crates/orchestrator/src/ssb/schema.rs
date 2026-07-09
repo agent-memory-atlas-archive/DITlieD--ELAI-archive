@@ -5480,7 +5480,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- Emitted by bench_gate_tax::run from CliAction::BenchGateTax.
         -- Default-ON (fixture-or-journal CLI measurement instrument).
         -- TOTAL_VARIANTS 579 -> 580.
-        'gate_tax_measured'
+        'gate_tax_measured',
+        -- J-28 follow-on: UsageTurnEvent -- uniform per-turn token-usage row,
+        -- both lanes. Flat sql_str; the 3-arm Kind rides in the payload.
+        -- TOTAL_VARIANTS 580 -> 581.
+        'usage_turn_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

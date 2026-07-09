@@ -16,7 +16,7 @@ use super::{preflight_message_request, Provider, ProviderFuture};
 use crate::sse::SseParser;
 use crate::types::{
     CacheControl, InputContentBlock, MessageDeltaEvent, MessageRequest, MessageResponse,
-    StreamEvent, SystemBlock, Usage,
+    MessageStartEvent, StreamEvent, SystemBlock, Usage,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -1310,11 +1310,42 @@ impl MessageStream {
         }
     }
 
-    fn observe_event(&mut self, event: &StreamEvent) {
+    /// T1 (J-28, the L-1 fix): the Anthropic streaming spec splits usage
+    /// across two events -- `message_start` carries `input_tokens` +
+    /// cache fields (`output_tokens` is 0 there), `message_delta` carries
+    /// `output_tokens` (`input_tokens` is 0 there, `#[serde(default)]`).
+    /// Before this fix `observe_event` matched ONLY `MessageDelta` and
+    /// clobbered `latest_usage` with an input_tokens=0 struct on every
+    /// chunk, so a streaming-local turn always recorded zero input
+    /// tokens. Fix: `MessageStart` seeds the input/cache side;
+    /// `MessageDelta` MERGES its output_tokens onto the existing usage
+    /// (never overwrites wholesale), so neither event clobbers the
+    /// other's half. Extracted as a free associated fn (not inlined in
+    /// `observe_event`) so it is unit-testable without constructing a
+    /// live `MessageStream` (which needs a real `reqwest::Response`).
+    fn merge_usage_event(latest_usage: &mut Option<Usage>, event: &StreamEvent) {
         match event {
-            StreamEvent::MessageDelta(MessageDeltaEvent { usage, .. }) => {
-                self.latest_usage = Some(usage.clone());
+            StreamEvent::MessageStart(MessageStartEvent { message }) => {
+                let mut usage = message.usage.clone();
+                if let Some(existing) = latest_usage {
+                    // Defensive: if a MessageDelta somehow arrived first
+                    // (out-of-spec ordering), keep its output_tokens
+                    // instead of resetting to 0.
+                    usage.output_tokens = existing.output_tokens.max(usage.output_tokens);
+                }
+                *latest_usage = Some(usage);
             }
+            StreamEvent::MessageDelta(MessageDeltaEvent { usage, .. }) => match latest_usage {
+                Some(existing) => existing.output_tokens = usage.output_tokens,
+                None => *latest_usage = Some(usage.clone()),
+            },
+            _ => {}
+        }
+    }
+
+    fn observe_event(&mut self, event: &StreamEvent) {
+        Self::merge_usage_event(&mut self.latest_usage, event);
+        match event {
             StreamEvent::MessageStop(_) => {
                 if !self.usage_recorded {
                     if let (Some(prompt_cache), Some(usage)) =
@@ -1452,6 +1483,69 @@ use elai_core::config::OAuthConfig;
                 .expect("write response");
         });
         format!("http://{address}/oauth/token")
+    }
+
+    // J-28 T1 -- the L-1 fix: MessageStart seeds input/cache tokens,
+    // MessageDelta merges output_tokens without clobbering the input
+    // side. Fixture drives `MessageStream::merge_usage_event` directly
+    // (no live `reqwest::Response` needed) per the RISK-2 proof path:
+    // this is INDEPENDENT of the T3 emit seams, which already read
+    // non-streaming responses with correct input_tokens.
+    #[test]
+    fn observe_event_merges_message_start_input_with_message_delta_output() {
+        use super::MessageStream;
+        use crate::types::{
+            MessageDelta, MessageDeltaEvent, MessageResponse, MessageStartEvent,
+            OutputContentBlock, StreamEvent, Usage,
+        };
+
+        let mut latest_usage: Option<Usage> = None;
+
+        let start_usage = Usage {
+            input_tokens: 120,
+            cache_creation_input_tokens: 5,
+            cache_read_input_tokens: 3,
+            output_tokens: 0,
+        };
+        let start_event = StreamEvent::MessageStart(MessageStartEvent {
+            message: MessageResponse {
+                id: "msg_test".to_string(),
+                kind: "message".to_string(),
+                role: "assistant".to_string(),
+                content: Vec::<OutputContentBlock>::new(),
+                model: "claude-sonnet-4-6".to_string(),
+                stop_reason: None,
+                stop_sequence: None,
+                usage: start_usage,
+                request_id: None,
+                provider_name: None,
+            },
+        });
+        MessageStream::merge_usage_event(&mut latest_usage, &start_event);
+
+        let delta_event = StreamEvent::MessageDelta(MessageDeltaEvent {
+            delta: MessageDelta {
+                stop_reason: Some("end_turn".to_string()),
+                stop_sequence: None,
+            },
+            usage: Usage {
+                input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                output_tokens: 42,
+            },
+        });
+        MessageStream::merge_usage_event(&mut latest_usage, &delta_event);
+
+        let merged = latest_usage.expect("usage recorded after MessageStart+MessageDelta");
+        assert_ne!(
+            merged.input_tokens, 0,
+            "L-1 fix: input_tokens must survive from MessageStart, not be clobbered by MessageDelta"
+        );
+        assert_eq!(merged.input_tokens, 120);
+        assert_eq!(merged.output_tokens, 42, "MessageDelta output must merge onto the existing usage");
+        assert_eq!(merged.cache_creation_input_tokens, 5);
+        assert_eq!(merged.cache_read_input_tokens, 3);
     }
 
     #[test]

@@ -1548,6 +1548,10 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured flat beacon
         // (no Kind discriminator). Emitted by bench_gate_tax::run_inner.
         SsbActionType::GateTaxMeasured => (),
+        // J-28 follow-on (SCHEMA_VERSION 272): UsageTurnEvent flat variant
+        // (no Kind discriminator on the enum; Kind rides in the payload).
+        // Emitted by grounding_client.rs (cloud) + runtime_orchestrator.rs (local).
+        SsbActionType::UsageTurnEvent => (),
     }
 }
 

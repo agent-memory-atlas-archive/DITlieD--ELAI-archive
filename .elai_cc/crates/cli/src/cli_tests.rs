@@ -449,6 +449,17 @@ mod tests {
                 output_format: CliOutputFormat::Text,
             }
         );
+        // J-28 regression: bare `elai usage` (the documented form) must reach the CLI verb, not the
+        // pre-existing `/usage` slash-command guidance (the name collision that dead-routed it).
+        assert_eq!(
+            parse_args(&["usage".to_string()]).expect("bare usage should parse to the CLI verb"),
+            CliAction::Usage { json: false }
+        );
+        assert_eq!(
+            parse_args(&["usage".to_string(), "--json".to_string()])
+                .expect("usage --json should parse"),
+            CliAction::Usage { json: true }
+        );
         assert_eq!(
             parse_args(&["agents".to_string(), "--help".to_string()])
                 .expect("agents help should parse"),
@@ -905,18 +916,50 @@ mod tests {
 
     #[test]
     fn cost_report_uses_sectioned_layout() {
-        let report = format_cost_report(elai_orchestrator::TokenUsage {
-            input_tokens: 20,
-            output_tokens: 8,
-            cache_creation_input_tokens: 3,
-            cache_read_input_tokens: 1,
-        });
+        let report = format_cost_report(
+            elai_orchestrator::TokenUsage {
+                input_tokens: 20,
+                output_tokens: 8,
+                cache_creation_input_tokens: 3,
+                cache_read_input_tokens: 1,
+            },
+            None,
+        );
         assert!(report.contains("Cost"));
         assert!(report.contains("Input tokens     20"));
         assert!(report.contains("Output tokens    8"));
         assert!(report.contains("Cache create     3"));
         assert!(report.contains("Cache read       1"));
         assert!(report.contains("Total tokens     32"));
+    }
+
+    // J-28 T8 -- the dollar line + per-model routing (GD-1: reuses
+    // pricing.rs::summary_lines_for_model, never re-implements a rate
+    // table). Negative-adjacent: an unrecognized model id falls back to
+    // the labeled default-tier estimate, never a silent wrong number.
+    #[test]
+    fn cost_report_adds_dollar_line_for_known_model() {
+        let usage = elai_orchestrator::TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        };
+        let report = format_cost_report(usage, Some("claude-haiku-4-5"));
+        assert!(report.contains("estimated_cost=$1.0000"), "haiku input rate is $1/M: {report}");
+        assert!(!report.contains("pricing=estimated-default"));
+    }
+
+    #[test]
+    fn cost_report_labels_unknown_model_as_estimated_default() {
+        let usage = elai_orchestrator::TokenUsage {
+            input_tokens: 100,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        };
+        let report = format_cost_report(usage, Some("some-unrecognized-model"));
+        assert!(report.contains("pricing=estimated-default"));
     }
 
     #[test]

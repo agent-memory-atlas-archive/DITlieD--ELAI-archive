@@ -732,6 +732,14 @@ pub struct SpendAccumulator {
     accumulated_cache_read_tokens: u64,
     accumulated_cache_write_tokens: u64,
     model: String,
+    /// J-28 T4: `true` iff the rates above came from a real catalog match
+    /// (`pricing_for_model` returned `Some`). `false` means the model id
+    /// matched no known family (haiku/opus/sonnet) and every rate is
+    /// `0.0` -- an EXPLICIT no-rate state, never a silent sonnet clone
+    /// (the pre-T4 C-1 bug). Surfaced to callers via [`Self::snapshot`]'s
+    /// [`SpendSnapshot::priced`] (no separate direct accessor -- the
+    /// production T3 emit seam always goes through a snapshot anyway).
+    priced: bool,
 }
 
 impl SpendAccumulator {
@@ -750,23 +758,50 @@ impl SpendAccumulator {
             accumulated_cache_read_tokens: 0,
             accumulated_cache_write_tokens: 0,
             model: DEFAULT_CLOUD_MODEL_ID.to_string(),
+            priced: true,
         }
     }
 
-    /// Lookup an accumulator for the given model id; falls back to the
-    /// claude-sonnet-4-6 rate when the model id is not in the table.
-    /// The fallback emits accurate token counts so cost discrepancies
-    /// surface in the dashboard rather than silently zero out.
+    /// Lookup an accumulator for the given model id via the I-51 model
+    /// catalog (J-28 T4, the C-1 fix). `pricing_for_model` family-matches
+    /// haiku/opus/sonnet substrings and returns per-million rates; those
+    /// are converted to per-token here (the accumulator's internal unit).
+    /// A model id that matches no known family gets an EXPLICIT no-rate
+    /// accumulator (`priced: false`, every rate `0.0`) instead of the
+    /// pre-T4 behaviour of silently cloning the sonnet rate table --
+    /// `accumulate()` still tallies token counts correctly, only the
+    /// dollar total stays honestly `0.0` until a real rate is known.
     #[must_use]
     pub fn for_model(model_id: &str) -> Self {
-        match model_id {
-            "claude-sonnet-4-6" => Self::for_claude_sonnet_4_6(),
-            _ => {
-                let mut a = Self::for_claude_sonnet_4_6();
-                a.model = model_id.to_string();
-                a
-            }
-        }
+        crate::pricing_for_model(model_id).map_or_else(
+            || Self {
+                input_price_per_token: 0.0,
+                output_price_per_token: 0.0,
+                cache_read_price_per_token: 0.0,
+                cache_write_price_per_token: 0.0,
+                accumulated_usd: 0.0,
+                accumulated_input_tokens: 0,
+                accumulated_output_tokens: 0,
+                accumulated_cache_read_tokens: 0,
+                accumulated_cache_write_tokens: 0,
+                model: model_id.to_string(),
+                priced: false,
+            },
+            |pricing| Self {
+                input_price_per_token: pricing.input_cost_per_million / 1_000_000.0,
+                output_price_per_token: pricing.output_cost_per_million / 1_000_000.0,
+                cache_read_price_per_token: pricing.cache_read_cost_per_million / 1_000_000.0,
+                cache_write_price_per_token: pricing.cache_creation_cost_per_million
+                    / 1_000_000.0,
+                accumulated_usd: 0.0,
+                accumulated_input_tokens: 0,
+                accumulated_output_tokens: 0,
+                accumulated_cache_read_tokens: 0,
+                accumulated_cache_write_tokens: 0,
+                model: model_id.to_string(),
+                priced: true,
+            },
+        )
     }
 
     /// Add the cost of one cloud round-trip. Inputs are u32 because
@@ -813,6 +848,7 @@ impl SpendAccumulator {
             cache_creation_tokens: self.accumulated_cache_write_tokens,
             cache_read_tokens: self.accumulated_cache_read_tokens,
             cost_usd: self.accumulated_usd,
+            priced: self.priced,
         }
     }
 }
@@ -828,6 +864,10 @@ pub struct SpendSnapshot {
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     pub cost_usd: f64,
+    /// J-28 T4: `true` iff `cost_usd` was derived from a real catalog
+    /// rate; `false` means the model was unknown and `cost_usd` is an
+    /// honest `0.0` (no-rate), never a silent sonnet-priced number.
+    pub priced: bool,
 }
 
 /// Outer-wraps-inner [`BabyStepExecutor`] that scrubs PII out of
@@ -1062,6 +1102,45 @@ mod tests {
         assert!(
             ((cost / plain_input_cost) - 0.1).abs() < 1e-6,
             "cache_read should cost 10% of input"
+        );
+    }
+
+    // J-28 T4 -- the C-1 fix: for_model must NOT silently price every
+    // non-sonnet id at the sonnet rate. The negative arm is the
+    // load-bearing proof (haiku != sonnet; unknown = explicit no-rate).
+    #[test]
+    fn for_model_haiku_uses_haiku_rates_not_sonnet() {
+        let haiku = SpendAccumulator::for_model("claude-haiku-4-5");
+        assert!(haiku.snapshot().priced, "haiku is a known family, must be priced");
+        let sonnet = SpendAccumulator::for_claude_sonnet_4_6();
+
+        let mut haiku_acc = haiku;
+        let mut sonnet_acc = sonnet.clone();
+        haiku_acc.accumulate(1_000_000, 500_000);
+        sonnet_acc.accumulate(1_000_000, 500_000);
+
+        assert!(
+            (haiku_acc.finalize() - sonnet_acc.finalize()).abs() > 1e-6,
+            "haiku-priced cost must differ from sonnet-priced cost for identical usage \
+             (pre-fix C-1 bug: for_model('claude-haiku-4-5') silently returned sonnet rates)"
+        );
+        // Haiku is the cheapest tier (pricing.rs precedent) so it must
+        // cost LESS than the identical-usage sonnet accumulation.
+        assert!(haiku_acc.finalize() < sonnet_acc.finalize());
+    }
+
+    #[test]
+    fn for_model_unknown_model_is_explicit_no_rate_never_sonnet() {
+        let acc = SpendAccumulator::for_model("totally-unknown-model-id");
+        assert!(
+            !acc.snapshot().priced,
+            "an unknown model family must surface an explicit no-rate accumulator"
+        );
+        let mut acc = acc;
+        acc.accumulate(1_000_000, 500_000);
+        assert!(
+            (acc.finalize() - 0.0).abs() < f64::EPSILON,
+            "an unpriced accumulator must total exactly $0.0, never a silent sonnet rate"
         );
     }
 

@@ -444,6 +444,10 @@ mod model_drift_cmd;
 // H-41: `elai checker-gaps` — ranked checker-gap backlog read surface.
 // Reads CheckerGapDetected SSB rows; aggregates by claim_type + taxon.
 mod checker_gaps_cmd;
+// J-28 T8: `elai usage [--json]` — cloud/local token-usage rollup read
+// surface. Reads UsageTurnEvent SSB rows; folds via
+// elai_orchestrator::usage_ledger::rollup_usage_turns.
+mod usage_cmd;
 // D-28: `elai farm-adv-rm <run|verdict>` — adversarial example farming
 // runner CLI surface. See workflow/reasoning/D-28-decisions.md.
 mod farm_adv_rm;
@@ -1463,6 +1467,12 @@ fn run() -> Result<(), anyhow::Error> {
         // Factual/Computational claim-classes that fell to non-Constructive.
         CliAction::CheckerGaps { limit, json } => {
             checker_gaps_cmd::run(limit, json)?;
+        }
+        // J-28 T8: `elai usage [--json]` — cloud/local token-usage rollup,
+        // grouped by (model, task, session, lane), cloud and local
+        // SEPARATELY LABELED (stub_ban: no naive cross-lane sum).
+        CliAction::Usage { json } => {
+            usage_cmd::run_usage(json)?;
         }
         // D-28: `elai farm-adv-rm <run|verdict>` — adversarial example
         // farming runner. Drives AdvRmFarmer (orchestrator-side) and

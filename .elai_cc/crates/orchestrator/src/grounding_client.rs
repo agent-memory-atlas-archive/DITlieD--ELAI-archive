@@ -7,7 +7,7 @@
 // per the workspace anti-stale-training rule.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,17 @@ fn e35_blake3_u64_prefix(domain: &[u8], label: &str) -> u64 {
         bytes[0], bytes[1], bytes[2], bytes[3],
         bytes[4], bytes[5], bytes[6], bytes[7],
     ])
+}
+
+/// J-28 T3 -- converts a dollar-denominated cost estimate into
+/// micro-dollars (1 micro = 1e-6 USD) for
+/// [`crate::ssb::UsageTurnEventPayload::est_cost_micros`]. `f64 as u64`
+/// is a saturating, well-defined conversion in Rust since 1.45 (NaN or
+/// negative -> 0, overflow -> `u64::MAX`); `.max(0.0)` handles NaN
+/// explicitly first (`f64::max` ignores NaN and returns the other
+/// operand) so the intent reads clearly without relying on cast trivia.
+fn usd_to_micros(usd: f64) -> u64 {
+    (usd.max(0.0) * 1_000_000.0) as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -906,12 +917,16 @@ impl CloudGroundingClient {
             }
         }
 
-        // Live HTTP send.
+        // Live HTTP send. J-28 RECON_NEEDED-4: neither MessageResponse nor
+        // CompletionResponse carries elapsed_ms in Rust; measure it with a
+        // seam-local wall-clock instead of expecting it on the response.
+        let send_started = Instant::now();
         let response = self.client.send_message(request).await.map_err(|e| {
             GroundingError::RequestFailed {
                 reason: format!("anthropic: {e}"),
             }
         })?;
+        let elapsed_ms = u64::try_from(send_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         // Accumulate per-call usage + emit CloudSpend row when wired.
         if let Some(ssb) = self.ssb_writer.as_ref() {
@@ -967,6 +982,50 @@ impl CloudGroundingClient {
                 tracing::warn!(
                     error = %e,
                     "cloud_grounding: CloudSpend SSB write failed (non-fatal)"
+                );
+            }
+
+            // J-28 T3: the uniform per-turn UsageTurnEvent row, emitted
+            // BESIDE the CloudSpend row above (never replacing it --
+            // CloudSpendPayload carries no task/session key, this row is
+            // the (model,task,session,lane)-keyed join the T5 rollup
+            // needs). snapshot.priced (T4) gates est_cost_micros: an
+            // unpriced (unknown-model) accumulator gets an honest 0,
+            // never a silently-wrong sonnet-derived cost.
+            let usage_est_cost_micros = if snapshot.priced {
+                usd_to_micros(usage.estimated_cost_usd(&snapshot.model).total_cost_usd())
+            } else {
+                0
+            };
+            // T2: assemble the normalized sample (lane + semantics tag)
+            // BEFORE the row is written, per ROUTE B (client-side
+            // normalization keyed by the lane tag).
+            let normalized = crate::usage_ledger::NormalizedUsage::cloud(usage.token_usage());
+            let usage_turn_payload =
+                crate::ssb::SsbPayload::UsageTurnEvent(crate::ssb::UsageTurnEventPayload {
+                    identity: "local".to_string(),
+                    lane: normalized.lane,
+                    backend: crate::cloud_mode::DEFAULT_CLOUD_PROVIDER.to_string(),
+                    model: snapshot.model.clone(),
+                    task_id: Some(self.task_id.clone()),
+                    session_id: None,
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_creation_tokens: usage.cache_creation_input_tokens,
+                    cache_read_tokens: usage.cache_read_input_tokens,
+                    est_cost_micros: usage_est_cost_micros,
+                    elapsed_ms,
+                    semantics_tag: normalized.semantics_tag,
+                    kind: crate::ssb::UsageTurnEventKind::TurnRecorded,
+                    ts_ms: now_ms,
+                });
+            if let Err(e) = ssb
+                .write_payload("cloud_grounding_client", 0, usage_turn_payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "cloud_grounding: UsageTurnEvent SSB write failed (non-fatal)"
                 );
             }
 

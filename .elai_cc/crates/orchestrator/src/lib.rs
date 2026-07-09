@@ -576,6 +576,12 @@ pub mod skill_telemetry;
 // is enforced from day one. See workflow/reasoning/E-47-decisions.md.
 pub mod lora_ship_gate;
 pub mod ssb;
+// J-28: token ledger -- usage unification. Rollup + estimator + T7
+// compaction-growth rule over `ssb::UsageTurnEventPayload` rows written at
+// the cloud (grounding_client.rs) + local (runtime_orchestrator.rs) emit
+// seams. Sole production reader: `crates/cli/src/usage_cmd.rs::run_usage`
+// (the `elai usage` verb).
+pub mod usage_ledger;
 // C-45: CANTANTE contrastive credit attribution. Paper-grounded against
 // arXiv:2605.13295 (Zehle 2026, Section 3.2 — K rollouts NOT K^N, scalar
 // c in [-1,+1], g=3 partition default). Wires per-role credit scores

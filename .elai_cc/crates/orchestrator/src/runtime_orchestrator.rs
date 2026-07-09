@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_ipc_types::AgentRole;
@@ -47,7 +48,7 @@ use crate::role_prompt::{
 use crate::runtime_config::RuntimeConfig;
 use crate::ssb::{
     BackendCostAccruedPayload, RuntimeHandoffEventKind, RuntimeHandoffEventPayload, Ssb, SsbPayload,
-    ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV,
+    UsageTurnEventKind, UsageTurnEventPayload, ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV,
 };
 
 /// Errors surfaced by the runtime orchestrator. CLI subprocess errors are
@@ -276,6 +277,14 @@ impl RuntimeOrchestrator {
         let mut events: Vec<RuntimeOrchestratorEvent> = Vec::new();
         let mut tried: Vec<RuntimeBackend> = Vec::new();
         let mut last_reason = String::new();
+        // J-28 T6: joined input text for the client-side estimator seam
+        // (fires only when a backend reports (0, 0) usage). Computed once
+        // -- `messages` is not mutated across fallback-chain iterations.
+        let estimator_input_text: String = messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         for backend in chain {
             tried.push(backend);
@@ -293,8 +302,13 @@ impl RuntimeOrchestrator {
                 }
             };
 
+            // J-28 RECON_NEEDED-4: CompletionResponse carries no elapsed_ms;
+            // measure it with a seam-local wall-clock instead.
+            let call_started = Instant::now();
             match adapter.complete(messages.clone(), config.clone()).await {
                 Ok(response) => {
+                    let call_elapsed_ms =
+                        u64::try_from(call_started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     let reason = if backend == primary {
                         "primary backend succeeded".to_string()
                     } else {
@@ -367,6 +381,73 @@ impl RuntimeOrchestrator {
                                 "ssb write_payload failed for backend_cost_accrued"
                             );
                         }
+
+                        // J-28 T3/T6: the uniform UsageTurnEvent row, beside
+                        // BackendCostAccrued (never replacing it --
+                        // BackendCostAccruedPayload carries no model/task/
+                        // session key). RISK-1: unlike the local-arm's
+                        // parse-error suppression below, this row is NEVER
+                        // suppressed on (0,0) -- the estimator seam fires
+                        // instead (Kind=EstimateApplied), so a zero-usage
+                        // turn never vanishes silently.
+                        let (usage_tokens_in, usage_tokens_out, usage_kind) =
+                            crate::usage_ledger::resolve_turn_usage(
+                                tokens_in,
+                                tokens_out,
+                                &estimator_input_text,
+                                &response.text,
+                            );
+                        let usage_est_cost_micros = match usage_kind {
+                            UsageTurnEventKind::TurnRecorded => est_cost_micros,
+                            // Estimated tokens never carry a priced dollar
+                            // figure (an estimate-derived cost would look
+                            // measured but is not); the rollup layer also
+                            // treats EstimateApplied cost as Option::None.
+                            UsageTurnEventKind::EstimateApplied
+                            | UsageTurnEventKind::NormalizationApplied => 0,
+                        };
+                        // T2: assemble the normalized sample AFTER T6's
+                        // estimator resolution (ROUTE B, client-side,
+                        // keyed by the lane tag).
+                        let normalized = crate::usage_ledger::NormalizedUsage::local(
+                            elai_core::TokenUsage {
+                                input_tokens: usage_tokens_in,
+                                output_tokens: usage_tokens_out,
+                                cache_creation_input_tokens: 0,
+                                cache_read_input_tokens: 0,
+                            },
+                        );
+                        let usage_payload =
+                            SsbPayload::UsageTurnEvent(UsageTurnEventPayload {
+                                identity: "local".to_string(),
+                                lane: normalized.lane,
+                                backend: backend.canonical_name().to_string(),
+                                model: response.model.clone(),
+                                // GAP RISK-3: task_id is not threaded into
+                                // try_complete's signature; None is honest,
+                                // never a stand-in for a real id.
+                                task_id: None,
+                                session_id: Some(ssb.session_id().to_owned()),
+                                input_tokens: usage_tokens_in,
+                                output_tokens: usage_tokens_out,
+                                cache_creation_tokens: 0,
+                                cache_read_tokens: 0,
+                                est_cost_micros: usage_est_cost_micros,
+                                elapsed_ms: call_elapsed_ms,
+                                semantics_tag: normalized.semantics_tag,
+                                kind: usage_kind,
+                                ts_ms: now_ms(),
+                            });
+                        if let Err(e) = ssb
+                            .write_payload("runtime_orchestrator", 0, usage_payload, Vec::new())
+                            .await
+                        {
+                            warn!(
+                                target = "runtime_orchestrator",
+                                error = %e,
+                                "ssb write_payload failed for usage_turn_event (paid)"
+                            );
+                        }
                     } else if let Some(ssb) = self.ssb.as_ref() {
                         // P0-3 — local backends have zero marginal API cost.
                         // Emit BackendCostAccrued with est_cost_micros=0 so
@@ -400,6 +481,61 @@ impl RuntimeOrchestrator {
                                     "ssb write_payload failed for local backend_cost_accrued"
                                 );
                             }
+                        }
+
+                        // J-28 T3/T6 -- RISK-1: the UsageTurnEvent row is
+                        // deliberately NOT gated on tokens_in>0||tokens_out>0
+                        // (that gate above exists ONLY to suppress
+                        // BackendCostAccrued parse-error noise). A (0,0)
+                        // local turn here fires the estimator seam
+                        // (Kind=EstimateApplied) instead of vanishing.
+                        let (usage_tokens_in, usage_tokens_out, usage_kind) =
+                            crate::usage_ledger::resolve_turn_usage(
+                                tokens_in,
+                                tokens_out,
+                                &estimator_input_text,
+                                &response.text,
+                            );
+                        let normalized = crate::usage_ledger::NormalizedUsage::local(
+                            elai_core::TokenUsage {
+                                input_tokens: usage_tokens_in,
+                                output_tokens: usage_tokens_out,
+                                cache_creation_input_tokens: 0,
+                                cache_read_input_tokens: 0,
+                            },
+                        );
+                        let usage_payload =
+                            SsbPayload::UsageTurnEvent(UsageTurnEventPayload {
+                                identity: "local".to_string(),
+                                lane: normalized.lane,
+                                backend: backend.canonical_name().to_string(),
+                                model: response.model.clone(),
+                                task_id: None,
+                                session_id: Some(ssb.session_id().to_owned()),
+                                input_tokens: usage_tokens_in,
+                                output_tokens: usage_tokens_out,
+                                cache_creation_tokens: 0,
+                                cache_read_tokens: 0,
+                                // Free/local backends have zero marginal API
+                                // cost regardless of Kind (mirrors the
+                                // BackendCostAccrued est_cost_micros: 0 arm
+                                // directly above) -- a real Some(0), not an
+                                // unknown, at the T5 rollup layer.
+                                est_cost_micros: 0,
+                                elapsed_ms: call_elapsed_ms,
+                                semantics_tag: normalized.semantics_tag,
+                                kind: usage_kind,
+                                ts_ms: now_ms(),
+                            });
+                        if let Err(e) = ssb
+                            .write_payload("runtime_orchestrator", 0, usage_payload, Vec::new())
+                            .await
+                        {
+                            warn!(
+                                target = "runtime_orchestrator",
+                                error = %e,
+                                "ssb write_payload failed for usage_turn_event (local)"
+                            );
                         }
                     }
                     // I-34: run the CRANE grammar gate on successful completion.

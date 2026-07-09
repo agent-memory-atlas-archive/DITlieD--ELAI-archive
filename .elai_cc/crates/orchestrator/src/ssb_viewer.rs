@@ -22,7 +22,7 @@ use crate::ssb::{
     DagRepairRoundPayload, FeasibilityReportPayload, InterventionOption,
     InterventionRequestPayload, InterventionType, NovelStepDetectedPayload,
     ReflectAuditVerdictPayload, ReflectRefinedPayload, ReflectTriagedPayload, SsbActionType,
-    SsbPayload, StubRunPayload, TaskSplitPayload, TaskSubmittedPayload,
+    SsbPayload, StubRunPayload, TaskSplitPayload, TaskSubmittedPayload, UsageTurnEventPayload,
 };
 
 /// Maximum length of `phase_id` accepted by [`SsbViewer::step_progress`].
@@ -1736,6 +1736,34 @@ impl SsbViewer {
                 payload_json,
                 files: Vec::new(),
             });
+        }
+        Ok(out)
+    }
+
+    /// J-28 T5/T8 -- read back `UsageTurnEvent` rows for `elai usage`'s
+    /// grouped rollup (`crate::usage_ledger::rollup_usage_turns`). Reuses
+    /// [`Self::recent_rows_of_type`] (GD-1: no duplicate SQL query) and
+    /// re-types each row's JSON payload back into
+    /// [`UsageTurnEventPayload`]; a row that fails to re-type is skipped
+    /// and warn-logged (the underlying decode failure is already
+    /// warn-logged by `recent_rows_of_type`).
+    pub fn usage_turn_events(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<UsageTurnEventPayload>, SsbViewerError> {
+        let rows = self.recent_rows_of_type(SsbActionType::UsageTurnEvent.as_sql_str(), limit)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            match serde_json::from_value::<UsageTurnEventPayload>(row.payload_json) {
+                Ok(payload) => out.push(payload),
+                Err(e) => {
+                    tracing::warn!(
+                        seq = row.seq,
+                        error = %e,
+                        "ssb_viewer::usage_turn_events: payload re-type failed; skipping"
+                    );
+                }
+            }
         }
         Ok(out)
     }

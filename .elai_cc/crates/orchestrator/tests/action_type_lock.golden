@@ -563,6 +563,7 @@ tripwire_fired_concurrent
 trust_dialog_env_deferred
 trust_dialog_hook_deferred
 untrusted_memory_write_blocked
+usage_turn_event
 user_decision_superseded
 ux_pacing_vote_recorded
 validation_tier

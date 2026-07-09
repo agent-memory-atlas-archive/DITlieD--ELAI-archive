@@ -1038,6 +1038,15 @@ pub(crate) enum CliAction {
         /// Print as JSON instead of a human-readable table.
         json: bool,
     },
+    /// J-28 T8: `elai usage [--json]` — grouped cloud/local token-usage
+    /// rollup (per model/task/session/lane), cloud and local SEPARATELY
+    /// LABELED. Production read surface over `UsageTurnEvent` SSB rows
+    /// emitted at `grounding_client.rs` (cloud) + `runtime_orchestrator.rs`
+    /// (local). Handler at `crates/cli/src/usage_cmd.rs`.
+    Usage {
+        /// Print as JSON instead of a human-readable table.
+        json: bool,
+    },
     /// E-17 SP6: `elai bench rag --tier <STANDARD|DEEP> --top-k <N>
     /// [--project-root PATH] [--json] -- <QUERY...>`. Runs the local
     /// knowledge pipeline at the requested tier and emits the final-stage
@@ -2960,6 +2969,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // Ranked backlog of claim-class x complexity-taxon gaps (Xu Table-3).
         // Read surface over CheckerGapDetected SSB rows. See H-41 plan.
         "checker-gaps" | "checker_gaps" => parse_checker_gaps_args(&rest[1..]),
+        // J-28 T8 — `elai usage [--json]`. Grouped cloud/local token-usage
+        // rollup read surface over UsageTurnEvent SSB rows. Handler at
+        // crates/cli/src/usage_cmd.rs.
+        "usage" => parse_usage_subcommand_args(&rest[1..]),
         // G-2 — `elai rra show <path>`. Reproducible-Run Artifact viewer;
         // handler at crates/cli/src/rra_cmd.rs.
         "rra" => parse_rra_subcommand_args(&rest[1..], output_format),
@@ -7625,6 +7638,7 @@ pub(crate) fn bare_slash_command_guidance(command_name: &str) -> Option<String> 
             | "logout"
             | "init"
             | "prompt"
+            | "usage"
     ) {
         return None;
     }
@@ -8958,6 +8972,24 @@ fn parse_rewind_scope(raw: &str) -> Result<RewindScope, String> {
 // ---------------------------------------------------------------------------
 // H-41 — `elai checker-gaps` parser
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// J-28 T8 — `elai usage` parser
+// ---------------------------------------------------------------------------
+
+/// J-28 T8: parse `elai usage [--json]`.
+pub(crate) fn parse_usage_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--json" => json = true,
+            other => return Err(format!("usage: unknown flag `{other}`")),
+        }
+        i += 1;
+    }
+    Ok(CliAction::Usage { json })
+}
 
 /// H-41: parse `elai checker-gaps [--limit N] [--json]`.
 pub(crate) fn parse_checker_gaps_args(rest: &[String]) -> Result<CliAction, String> {
