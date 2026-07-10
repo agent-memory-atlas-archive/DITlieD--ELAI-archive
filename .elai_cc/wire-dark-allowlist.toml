@@ -125,6 +125,16 @@ expiry_date       = "2026-09-01"
 promotion_plan_id = "F-11"
 smoke_test        = "crates/cli/tests/darwin_loop_observable_smoke.rs::darwin_loop_one_generation_emits_admit_rows"
 
+# H-28-WIRE-1: reward-tampering gate in darwin admit loop (default-OFF kill-switch).
+# When enabled, intercepts candidates with implausible reward jumps before insert_variant.
+[[flag]]
+name              = "ELAI_H28_REWARD_GATE_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-10-01"
+promotion_plan_id = "H-28-WIRE-1"
+smoke_test        = "crates/orchestrator/src/reward_tamper_admit_observable_smoke.rs::reward_tamper_gate_rejects_implausible_when_flag_on"
+
 # ---- H-PLAN (session s-66424) ----
 # H-3: focus-tunnel EXECUTE gate — gates the StreamingValidator early-abort AND the
 # DIFF/FIM emission branch. PRE-EXISTING unregistered default-OFF flag that H-3 relies

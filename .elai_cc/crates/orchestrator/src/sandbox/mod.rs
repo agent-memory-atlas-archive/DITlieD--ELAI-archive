@@ -1656,7 +1656,7 @@ impl AgentSandbox for LinuxSandbox {
             // clone3 provides better namespace isolation and is the modern Linux API
             match Self::clone3_wrapper(
                 clone_cb,
-                stack_top,
+                stack_top as *mut libc::c_void,
                 clone_flags,
                 &child_data as *const ChildData as *mut libc::c_void,
             ) {

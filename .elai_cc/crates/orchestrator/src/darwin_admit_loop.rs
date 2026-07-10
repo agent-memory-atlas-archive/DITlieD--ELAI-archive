@@ -91,6 +91,7 @@ use crate::trap_behavioral::{
     detect_trap_behavior, detected_kind_to_ssb, measure_recall, DetectedKind,
 };
 use crate::trap_tasks::{score_candidate_for_traps, TrapPattern};
+use crate::reward_tampering;
 
 // ---------------------------------------------------------------------------
 // Named constants
@@ -116,6 +117,13 @@ pub const ADMIT_LOOP_AGENT_ID: &str = "cli:darwin-loop";
 /// autonomous self-mod loop is opt-in by ELAI policy; E-7 DECISION-13). Mirrors
 /// the gate the E-7 substrate already documents.
 pub const ELAI_DARWINIAN_LOOP_ENABLE_ENV: &str = "ELAI_DARWINIAN_LOOP_ENABLE";
+
+/// H-28-WIRE-1: env var (kill-switch) that gates the reward-tampering
+/// interception in the darwin admit loop. When truthy, a candidate whose
+/// reward jumps implausibly (outside DEFAULT_PLAUSIBLE_REWARD_BAND) is
+/// rejected with a RejectedByGuard beacon and a RewardTampering SSB row.
+/// Default OFF (unset/0) so the loop behaves exactly as today.
+pub const ELAI_H28_REWARD_GATE_ENABLE_ENV: &str = "ELAI_H28_REWARD_GATE_ENABLE";
 
 // ---------------------------------------------------------------------------
 // H-47: EvalFirewallContext — optional dependency bundle for run_one_generation
@@ -185,6 +193,9 @@ pub enum AdmitLoopError {
     /// The candidate JSON could not be re-serialized for the security filter.
     #[error("candidate serialize: {0}")]
     CandidateSerialize(String),
+    /// H-28-WIRE-1: reward-tampering gate error.
+    #[error("reward tampering: {0}")]
+    RewardTampering(#[from] crate::reward_tampering::RewardTamperingError),
 }
 
 // ---------------------------------------------------------------------------
@@ -1338,6 +1349,54 @@ pub async fn run_one_generation<E: EntropySource + ?Sized>(
                 .await?;
             }
             GuardOutcome::Admitted => {
+                // H-28-WIRE-1: reward-tampering gate (default-OFF). When enabled,
+                // intercept candidates with implausible reward jumps before insert_variant.
+                if h28_reward_gate_enabled() {
+                    if let (Some(fw), Some(ef), Some(corpus)) = (firewall_ctx, h43_fitness.as_ref(), h43_corpus.as_ref()) {
+                        let prior_reward = last_admitted_fitness.unwrap_or(0.0);
+                        let new_reward = ef.fitness;
+                        let corpus_blake3_hex: String = corpus.corpus_blake3
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect();
+                        let run_id = &format!("gen-{}", fw.generation_id);
+                        let dummy_db_path = std::path::Path::new("/dev/null");
+
+                        let tampering_outcome = reward_tampering::check_reward_tampering(
+                            fw.ssb_arc,
+                            dummy_db_path,
+                            &corpus_blake3_hex,
+                            &corpus_blake3_hex,
+                            prior_reward,
+                            new_reward,
+                            reward_tampering::DEFAULT_PLAUSIBLE_REWARD_BAND,
+                            run_id,
+                            seed,
+                        )
+                        .await;
+
+                        if let Ok(outcome) = tampering_outcome {
+                            if !outcome.is_pass() {
+                                rejected += 1;
+                                emit_admit_row(
+                                    ssb,
+                                    DarwinianAdmitPayload {
+                                        kind: DarwinianAdmitKind::RejectedByGuard,
+                                        variant_id: candidate.variant_label.clone(),
+                                        parent_id: None,
+                                        alpha,
+                                        guard_rejected_by: Some("reward-tampering".to_string()),
+                                        candidate_blake3,
+                                        seed,
+                                    },
+                                )
+                                .await?;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 // H-46: Resolve a parent BEFORE insert using CMP-weighted selection.
                 // select_parent_with_cmp is the FIRST (and only) production caller
                 // of that path (R6/R7 fix). Returns (selected_id, clade_scores).
@@ -1639,6 +1698,21 @@ pub fn loop_enabled_via_env() -> bool {
     }
 }
 
+/// H-28-WIRE-1: `true` iff the `ELAI_H28_REWARD_GATE_ENABLE` env var is set to a
+/// truthy value (`1` / `true` / `yes` / `on`, case-insensitive). When OFF (default),
+/// the loop behaves exactly as today; when ON, the reward-tampering gate intercepts
+/// candidates with implausible reward jumps.
+#[must_use]
+fn h28_reward_gate_enabled() -> bool {
+    match std::env::var(ELAI_H28_REWARD_GATE_ENABLE_ENV) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        }
+        Err(_) => false,
+    }
+}
+
 /// H-47: emit the EvalFirewallEvent SSB row (off-agent artifact, R4).
 /// Emitted ONCE per generation after the per-item firewall loop closes.
 /// The kind is determined by the dominant event: if any item was rejected by
@@ -1734,6 +1808,16 @@ mod tests {
         let c = clean_candidate();
         let out = score_candidate(&c, c.derived_alpha(), 0, &cfg).expect("guard chain");
         assert_eq!(out, GuardOutcome::Admitted);
+    }
+
+    #[test]
+    fn h28_reward_gate_flag_read() {
+        std::env::set_var(ELAI_H28_REWARD_GATE_ENABLE_ENV, "1");
+        assert!(h28_reward_gate_enabled());
+        std::env::set_var(ELAI_H28_REWARD_GATE_ENABLE_ENV, "0");
+        assert!(!h28_reward_gate_enabled());
+        std::env::remove_var(ELAI_H28_REWARD_GATE_ENABLE_ENV);
+        assert!(!h28_reward_gate_enabled());
     }
 
     #[test]

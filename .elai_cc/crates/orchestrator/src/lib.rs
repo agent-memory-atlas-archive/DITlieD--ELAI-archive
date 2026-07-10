@@ -1330,6 +1330,9 @@ pub mod gate_self_validation;
 // always-compiled `elai reward-check` CLI; the live darwin_admit_loop hook is feature-gated
 // (Tier-2/deferred). See workflow/reasoning/H-28-decisions.md.
 pub mod reward_tampering;
+// H-28-WIRE-1: integration smoke for reward-tampering gate in darwin admit loop.
+#[cfg(test)]
+mod reward_tamper_admit_observable_smoke;
 // H-19 — reusable-holdout query budget (the Thresholdout DP gate; Dwork et al.
 // arXiv:1506.02629). HoldoutBudgetLedger is an append-only budget counter (queries_spent =
 // COUNT of QuerySpent rows; NO agent-facing reset/delete/update/provision method, mirrors the
