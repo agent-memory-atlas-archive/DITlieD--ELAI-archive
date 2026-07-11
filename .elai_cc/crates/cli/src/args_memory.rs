@@ -37,6 +37,7 @@ pub(crate) fn parse_memory_subcommand_args(rest: &[String]) -> Result<CliAction,
     let mut value_json: Option<String> = None;
     let mut limit: Option<usize> = None;
     let mut json = false;
+    let mut count_only = false;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -139,6 +140,10 @@ pub(crate) fn parse_memory_subcommand_args(rest: &[String]) -> Result<CliAction,
                 json = true;
                 i += 1;
             }
+            "--count-only" => {
+                count_only = true;
+                i += 1;
+            }
             other => return Err(format!("unknown `memory {sub_raw}` argument: {other}")),
         }
     }
@@ -159,6 +164,7 @@ pub(crate) fn parse_memory_subcommand_args(rest: &[String]) -> Result<CliAction,
         value_json,
         limit,
         json,
+        count_only,
     })
 }
 

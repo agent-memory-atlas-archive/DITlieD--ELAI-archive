@@ -1579,6 +1579,7 @@ fn run() -> Result<(), anyhow::Error> {
             value_json,
             limit,
             json,
+            count_only,
         } => {
             memory_cmd::run_memory_subcommand(
                 sub,
@@ -1591,6 +1592,7 @@ fn run() -> Result<(), anyhow::Error> {
                 value_json.as_deref(),
                 limit,
                 json,
+                count_only,
             )?;
         }
         // C-40: `elai pr <open|list|status|close> [args...]` — GitHub

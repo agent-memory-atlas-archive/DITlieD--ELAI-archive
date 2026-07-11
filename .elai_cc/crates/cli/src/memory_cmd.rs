@@ -109,6 +109,7 @@ pub fn run_memory_subcommand(
     value_json: Option<&str>,
     limit: usize,
     json: bool,
+    count_only: bool,
 ) -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -117,7 +118,17 @@ pub fn run_memory_subcommand(
 
     rt.block_on(async move {
         run_inner(
-            sub, project_root, user_id, scope, fact_type, fact_id, key, value_json, limit, json,
+            sub,
+            project_root,
+            user_id,
+            scope,
+            fact_type,
+            fact_id,
+            key,
+            value_json,
+            limit,
+            json,
+            count_only,
         )
         .await
     })
@@ -134,6 +145,7 @@ async fn run_inner(
     value_json: Option<&str>,
     limit: usize,
     json: bool,
+    count_only: bool,
 ) -> Result<()> {
     let now_ms = {
         let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
@@ -156,20 +168,27 @@ async fn run_inner(
                 all_rows
             };
             if json {
-                let facts: Vec<serde_json::Value> = rows
-                    .iter()
-                    .map(|f| {
-                        let mut v = fact_to_json(f);
-                        let status = if f.valid_to_ms.is_some() { "superseded" } else { "active" };
-                        v["status"] = serde_json::Value::String(status.to_owned());
-                        v
-                    })
-                    .collect();
+                let facts: Vec<serde_json::Value> = if count_only {
+                    Vec::new()
+                } else {
+                    rows.iter()
+                        .map(|f| {
+                            let mut v = fact_to_json(f);
+                            let status = if f.valid_to_ms.is_some() {
+                                "superseded"
+                            } else {
+                                "active"
+                            };
+                            v["status"] = serde_json::Value::String(status.to_owned());
+                            v
+                        })
+                        .collect()
+                };
                 println!(
                     "{}",
                     json!({
                         "store_path": store_path.to_string_lossy(),
-                        "count": facts.len(),
+                        "count": rows.len(),
                         "facts": facts,
                     })
                 );
@@ -178,8 +197,10 @@ async fn run_inner(
                 let closed_count = rows.len() - active_count;
                 println!("store: {}", store_path.display());
                 println!("{} row(s) ({} active, {} superseded/closed)", rows.len(), active_count, closed_count);
-                for f in &rows {
-                    print_fact_summary(f);
+                if !count_only {
+                    for f in &rows {
+                        print_fact_summary(f);
+                    }
                 }
             }
         }

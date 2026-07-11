@@ -1165,6 +1165,7 @@ pub(crate) enum CliAction {
         value_json: Option<String>,
         limit: usize,
         json: bool,
+        count_only: bool,
     },
     /// C-40: `elai pr <open|list|status|close> [args...]` — GitHub PR
     /// adapter CLI surface. Shells out to the `gh` CLI via the
