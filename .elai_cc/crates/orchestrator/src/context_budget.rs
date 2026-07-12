@@ -18,7 +18,8 @@ use crate::ssb::{
 // H-53 (SCHEMA_VERSION 229): bumped 9 -> 10 for the new ContextSlot::Evidence slot.
 // The Evidence slot holds the pre-bound EvidenceAnchorSet serialized block and
 // MUST land AFTER the last cache breakpoint (after_slot = CodeContext) per HD-2.
-pub const SLOT_COUNT: usize = 10;
+// I-6: bumped 10 -> 11 for the append-only ContextSlot::AnchorPane slot.
+pub const SLOT_COUNT: usize = 11;
 pub const CACHE_BREAKPOINT_COUNT: usize = 2;
 
 // Floor constants — minimum token allocations for critical slots.
@@ -56,6 +57,8 @@ pub const LARGE_SLOT_MEMORY: usize = 500;
 // sources: Micro keeps it small (3-5 excerpts x ~80 tokens each), Large allows more (up to 10).
 pub const MICRO_SLOT_EVIDENCE: usize = 400;
 pub const LARGE_SLOT_EVIDENCE: usize = 1000;
+pub const MICRO_SLOT_ANCHOR_PANE: usize = 300;
+pub const LARGE_SLOT_ANCHOR_PANE: usize = 500;
 
 /// Fixed Slot 3 (PhaseSpec/Telescope) target across all model tiers.
 /// Updated in A-46 to accommodate telescope content (~550-1050 tokens).
@@ -1107,6 +1110,10 @@ pub enum ContextSlot {
     /// H-50 (regime-aware context) will budget this slot per backend (smaller on the local lane);
     /// until H-50 ships the slot is allocated 0 tokens (no-op on local, cloud absorbs it).
     Evidence = 9,
+    /// I-6: reserved budget slot for a later TaskSpec/claims/constraints anchor-pane feed.
+    /// APPENDED (= 10) after the last cache breakpoint, preserving all existing ordinals and
+    /// cache prefixes. Allocated 0 tokens by default; content wiring ships with the supervisor.
+    AnchorPane = 10,
 }
 
 #[repr(u8)]
@@ -1236,6 +1243,13 @@ impl ContextBudget {
                 // land after the last cache breakpoint (CodeContext = 4).
                 SlotAllocation {
                     slot: ContextSlot::Evidence,
+                    allocated_tokens: 0,
+                    floor_tokens: 0,
+                    actual_tokens: 0,
+                    source_truncated: false,
+                },
+                SlotAllocation {
+                    slot: ContextSlot::AnchorPane,
                     allocated_tokens: 0,
                     floor_tokens: 0,
                     actual_tokens: 0,
@@ -2054,6 +2068,12 @@ impl ContextBudget {
                     entry_limit: Some(5),
                     conclusion_only: false,
                 },
+                ContextSlot::AnchorPane => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_ANCHOR_PANE,
+                    skip_content: false,
+                    entry_limit: Some(3),
+                    conclusion_only: false,
+                },
             },
             // Small, Medium, Large, Cloud all use LARGE_SLOT_* assembly targets.
             // Spec section 9 defines only MICRO and LARGE tiers for assembly.
@@ -2121,6 +2141,12 @@ impl ContextBudget {
                         max_tokens: LARGE_SLOT_EVIDENCE,
                         skip_content: false,
                         entry_limit: Some(10),
+                        conclusion_only: false,
+                    },
+                    ContextSlot::AnchorPane => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_ANCHOR_PANE,
+                        skip_content: false,
+                        entry_limit: Some(3),
                         conclusion_only: false,
                     },
                 }
@@ -2569,6 +2595,8 @@ mod tests {
         assert_eq!(ContextSlot::OutputReserve as u8, 7);
         // H-31: the user-memory slot is APPENDED last; OutputReserve's ordinal is unchanged.
         assert_eq!(ContextSlot::Memory as u8, 8);
+        assert_eq!(ContextSlot::Evidence as u8, 9);
+        assert_eq!(ContextSlot::AnchorPane as u8, 10);
     }
 
     #[test]

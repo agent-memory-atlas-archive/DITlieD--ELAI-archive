@@ -83,7 +83,7 @@ impl PristinePathFilter {
     /// (same parent, different `branch_id`). These are the payloads excluded
     /// under the ID-1 doctrine.
     ///
-    /// `slot_contents`: a mutable 10-entry array (one entry per `ContextSlot`)
+    /// `slot_contents`: a mutable 11-entry array (one entry per `ContextSlot`)
     /// representing the current per-slot byte content for the branch. The
     /// caller populates this BEFORE calling `build_branch_context`. This
     /// function may REPLACE the `SsbEntries` slot (index 5) with a filtered
@@ -193,8 +193,9 @@ impl PristinePathFilter {
             empty, // ContextSlot::OutputReserve= 7
             empty, // ContextSlot::Memory       = 8
             empty, // ContextSlot::Evidence     = 9
+            empty, // ContextSlot::AnchorPane   = 10
         ];
-        debug_assert_eq!(slot_contents.len(), ContextSlot::Evidence as usize + 1);
+        debug_assert_eq!(slot_contents.len(), ContextSlot::AnchorPane as usize + 1);
         budget.update_breakpoints(&slot_contents);
 
         Ok(BuildBranchContextOutcome {
