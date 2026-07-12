@@ -920,7 +920,7 @@ impl CloudGroundingClient {
         // Live HTTP send. J-28 RECON_NEEDED-4: neither MessageResponse nor
         // CompletionResponse carries elapsed_ms in Rust; measure it with a
         // seam-local wall-clock instead of expecting it on the response.
-        let send_started = Instant::now();
+        let send_started = Instant::now(); // entropy-allow: monotonic start-marker for live provider request latency telemetry only; a seeded clock would not measure real network duration
         let response = self.client.send_message(request).await.map_err(|e| {
             GroundingError::RequestFailed {
                 reason: format!("anthropic: {e}"),

@@ -304,7 +304,7 @@ impl RuntimeOrchestrator {
 
             // J-28 RECON_NEEDED-4: CompletionResponse carries no elapsed_ms;
             // measure it with a seam-local wall-clock instead.
-            let call_started = Instant::now();
+            let call_started = Instant::now(); // entropy-allow: monotonic start-marker for live backend-call latency telemetry only; a seeded clock would not measure real provider duration
             match adapter.complete(messages.clone(), config.clone()).await {
                 Ok(response) => {
                     let call_elapsed_ms =

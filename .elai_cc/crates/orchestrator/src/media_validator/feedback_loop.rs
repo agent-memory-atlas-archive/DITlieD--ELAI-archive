@@ -360,7 +360,7 @@ impl VisualFeedbackLoop {
 
         for iter_idx in 0..self.max_iterations {
             // 2.1. Render.
-            let render_start = std::time::Instant::now();
+            let render_start = std::time::Instant::now(); // entropy-allow: monotonic start-marker for live render latency telemetry only; a seeded clock would not measure real adapter duration
             let frames = adapter.render(artifact, config).await?;
             let render_latency_ms = u64::try_from(render_start.elapsed().as_millis())
                 .unwrap_or(u64::MAX);

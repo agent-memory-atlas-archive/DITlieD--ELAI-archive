@@ -161,7 +161,7 @@ fn time_audit_checker(script_abs: &Path, args: &[String]) -> Option<f64> {
     }
     let mut samples = Vec::with_capacity(AUDIT_CHECKER_REPS);
     for _ in 0..AUDIT_CHECKER_REPS {
-        let start = Instant::now();
+        let start = Instant::now(); // entropy-allow: monotonic start-marker for audit-checker subprocess latency telemetry only; a seeded clock would not measure real execution cost
         if let Err(e) = run_checker_once(script_abs, args) {
             warn!(script = %script_abs.display(), error = %e, "gate-tax: audit checker rep failed; marking unavailable");
             return None;

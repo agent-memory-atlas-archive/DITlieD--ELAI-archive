@@ -379,7 +379,7 @@ pub(crate) fn median_ms(mut samples: Vec<f64>) -> f64 {
 fn route_b_unit_cost_ms(gate: &dyn EvidenceGate, ctx: &TransitionContext) -> f64 {
     let mut samples = Vec::with_capacity(ROUTE_B_MICROBENCH_REPS);
     for _ in 0..ROUTE_B_MICROBENCH_REPS {
-        let start = Instant::now();
+        let start = Instant::now(); // entropy-allow: monotonic start-marker for measured-path gate latency telemetry only; a seeded clock would not measure real execution cost
         let _ = gate.check(ctx);
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
     }

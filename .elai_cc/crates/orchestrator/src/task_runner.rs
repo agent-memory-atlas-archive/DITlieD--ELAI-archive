@@ -15690,7 +15690,7 @@ async fn emit_reasoning(
     // constant 0 is retained only for the grc=None synthetic branch, which
     // intentionally reports zero overhead). The Instant is cheap and does
     // not block.
-    let emit_start = std::time::Instant::now();
+    let emit_start = std::time::Instant::now(); // entropy-allow: monotonic start-marker for reasoning-emission elapsed telemetry only; it does not influence deterministic decisions
 
     // Extract real PipelineGrc-derived fields when a handle is plumbed.
     // B-5 GAP-2: on the grc=Some branch, pull grounding_level from the
