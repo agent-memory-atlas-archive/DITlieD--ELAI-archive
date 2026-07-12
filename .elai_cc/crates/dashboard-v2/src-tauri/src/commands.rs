@@ -2421,14 +2421,9 @@ pub fn get_dkg_stats(state: State<'_, AppState>) -> CmdResult<Value> {
                 .unwrap_or(0),
             "vector_status": "READY",
             "freshness_decay_pct": 0,
-            // B-4 (SSB-FIDELITY): the DkgReady SSB row that backs
-            // `dkg_stats()` currently carries node_count + edge_count +
-            // languages only — it does NOT persist a parse-failure count
-            // (DkgEngine::failed_files() exists but is never plumbed into
-            // IndexingSummary -> DkgReadyPayload). Read the field
-            // defensively so this command picks the count up automatically
-            // once the producer-side payload field lands; until then it
-            // reports 0 rather than fabricating a number.
+            // B-4 (SSB-FIDELITY): `DkgReadyPayload.failed_files` is surfaced
+            // through `DkgStatsSnapshot`, so this reports the latest DKG
+            // row's real parse-failure count (0 only with no row or query error).
             "failed_files": v.get("failed_files").and_then(|x| x.as_u64()).unwrap_or(0),
         }))
     } else {

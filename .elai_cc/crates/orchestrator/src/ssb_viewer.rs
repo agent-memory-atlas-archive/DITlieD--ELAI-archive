@@ -628,6 +628,7 @@ pub struct DkgStatsSnapshot {
     pub project_id: String,
     pub node_count: u32,
     pub edge_count: u32,
+    pub failed_files: u64,
     pub languages: Vec<String>,
     pub ts_ms: i64,
     pub known: bool,
@@ -2834,6 +2835,7 @@ impl SsbViewer {
                 project_id: d.project_id,
                 node_count: d.node_count,
                 edge_count: d.edge_count,
+                failed_files: d.failed_files,
                 languages: d.languages,
                 ts_ms,
                 known: true,
@@ -2842,6 +2844,7 @@ impl SsbViewer {
                 project_id: String::new(),
                 node_count: 0,
                 edge_count: 0,
+                failed_files: 0,
                 languages: Vec::new(),
                 ts_ms: 0,
                 known: false,
@@ -6064,7 +6067,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::ssb::{AntiSpiralHitPayload, InterventionKeyword, Ssb, SsbConfig};
+    use crate::ssb::{
+        AntiSpiralHitPayload, DkgReadyPayload, InterventionKeyword, Ssb, SsbConfig,
+    };
 
     fn test_config(dir: &TempDir) -> SsbConfig {
         SsbConfig {
@@ -6215,6 +6220,31 @@ mod tests {
         let viewer = SsbViewer::open(&db_path).expect("viewer open");
         let hit = viewer.latest_anti_spiral_hit().expect("viewer query");
         assert!(hit.is_none(), "no anti_spiral_hit rows yet -> None");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dkg_stats_surfaces_failed_files() {
+        let dir = TempDir::new().expect("tempdir");
+        let config = test_config(&dir);
+        let db_path = config.db_path.clone();
+        let ssb = Ssb::new(config, test_clock()).expect("ssb init");
+
+        let payload = SsbPayload::DkgReady(DkgReadyPayload {
+            project_id: "proj-test".into(),
+            node_count: 12,
+            edge_count: 19,
+            languages: vec!["rust".into()],
+            failed_files: 3,
+        });
+        ssb.write_payload("agent-0", 0, payload, vec![])
+            .await
+            .expect("write dkg_ready");
+        drop(ssb);
+
+        let viewer = SsbViewer::open(&db_path).expect("viewer open");
+        let stats = viewer.dkg_stats().expect("dkg stats");
+        assert_eq!(stats.failed_files, 3);
+        assert!(stats.known);
     }
 
     #[test]
