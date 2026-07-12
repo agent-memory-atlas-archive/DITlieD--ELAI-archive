@@ -89,7 +89,7 @@ pub async fn get_conformal_recent(
     };
 
     let tau_rows: Vec<ConformalTauRowDto> =
-        elai_orchestrator::conformal_calibration::recent_tau_rows(&viewer, cap)
+        elai_orchestrator::calibration::recent_tau_rows(&viewer, cap)
             .into_iter()
             .map(|r| ConformalTauRowDto {
                 tau: r.tau,
@@ -101,7 +101,7 @@ pub async fn get_conformal_recent(
             .collect();
 
     let refusal_rows: Vec<ConformalRefusalRowDto> =
-        elai_orchestrator::conformal_calibration::recent_refusal_rows(&viewer, cap)
+        elai_orchestrator::calibration::recent_refusal_rows(&viewer, cap)
             .into_iter()
             .map(|r| ConformalRefusalRowDto {
                 claim_id: r.claim_id,
@@ -195,11 +195,11 @@ pub async fn get_calibration_corpus_state(
     use std::time::UNIX_EPOCH;
 
     let corpus_path = PathBuf::from(DASHBOARD_DEFAULT_CORPUS_PATH);
-    let tau_path = elai_orchestrator::conformal_calibration::tau_path_default();
-    let updater = elai_orchestrator::conformal_calibration::TauUpdater::new(
+    let tau_path = elai_orchestrator::calibration::tau_path_default();
+    let updater = elai_orchestrator::calibration::TauUpdater::new(
         corpus_path,
         tau_path.clone(),
-        elai_orchestrator::conformal_calibration::DEFAULT_EPSILON,
+        elai_orchestrator::calibration::DEFAULT_EPSILON,
     );
     let corpus_size_usize = updater.read_corpus_size();
     let corpus_size = u32::try_from(corpus_size_usize).unwrap_or(u32::MAX);
@@ -215,11 +215,11 @@ pub async fn get_calibration_corpus_state(
     // to the synthetic-seed label so the panel doesn't render a
     // misleading "auto" for a yet-empty grower.
     let source = if corpus_size_usize == 0 {
-        elai_orchestrator::conformal_calibration::CorpusSource::Synthetic
+        elai_orchestrator::calibration::CorpusSource::Synthetic
             .as_str()
             .to_string()
     } else {
-        elai_orchestrator::conformal_calibration::CorpusSource::Auto
+        elai_orchestrator::calibration::CorpusSource::Auto
             .as_str()
             .to_string()
     };
@@ -228,7 +228,7 @@ pub async fn get_calibration_corpus_state(
         source,
         size: corpus_size,
         frozen: false,
-        epsilon: elai_orchestrator::conformal_calibration::DEFAULT_EPSILON,
+        epsilon: elai_orchestrator::calibration::DEFAULT_EPSILON,
         corpus_size,
         current_tau,
         last_updated_ts,
