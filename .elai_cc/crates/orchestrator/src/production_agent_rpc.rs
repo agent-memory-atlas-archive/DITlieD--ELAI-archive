@@ -83,7 +83,7 @@ use crate::media_validator::types::{
 // decide_and_emit_with_reason is NOT called — that path requires an SSB
 // emitter + injected clock not available at this seam, and the router's
 // TypedRefusal is deterministic, not score-based).
-use crate::conformal_calibration::RefusalDecision;
+use crate::calibration::RefusalDecision;
 
 use elai_safety::provenance::{Provenance, Provenanced, TextSource};
 use elai_safety::taint_flow::tainted_context;

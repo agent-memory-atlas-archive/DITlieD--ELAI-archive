@@ -289,9 +289,9 @@ fn bootstrap_payload_carries_calibration_id() {
 //    directly (facade bypass = test failure, not just audit catch)
 // ---------------------------------------------------------------------------
 
-/// Source-scan assertion: read the task_runner.rs source and assert that
-/// no production code path uses `crate::conformal_calibration::` outside
-/// the facade, calibration_bootstrap, and conformal_calibration itself.
+/// Source-scan assertion: read every .rs file under orchestrator/src and
+/// assert that no production code path uses `crate::conformal_calibration::`
+/// outside the facade, calibration_bootstrap, and conformal_calibration itself.
 ///
 /// Doc-comment references (`///` or `//!`) are excluded — only code-level
 /// `crate::conformal_calibration::` tokens (outside `//` lines) are flagged.
@@ -305,40 +305,72 @@ fn bootstrap_payload_carries_calibration_id() {
 /// Any other file with a non-comment `crate::conformal_calibration::` token
 /// is a facade bypass and FAILS this test.
 #[test]
-fn no_facade_bypass_in_task_runner() {
+fn facade_import_convention_holds_in_orchestrator() {
     // CARGO_MANIFEST_DIR for elai_cc_contracts points at
-    // .elai_cc/crates/contracts; task_runner.rs is at
-    // .elai_cc/crates/orchestrator/src/task_runner.rs.
+    // .elai_cc/crates/contracts; orchestrator sources are at
+    // .elai_cc/crates/orchestrator/src/.
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let task_runner = manifest
-        .join("../orchestrator/src/task_runner.rs");
+    let src_dir = manifest.join("../orchestrator/src");
 
-    let source = std::fs::read_to_string(&task_runner).unwrap_or_else(|e| {
-        panic!("could not read task_runner.rs at {}: {e}", task_runner.display())
-    });
+    let allowed_suffixes: &[&str] = &[
+        "conformal_calibration.rs",
+        "calibration_bootstrap.rs",
+        "calibration/mod.rs",
+    ];
 
-    let bypass_lines: Vec<(usize, &str)> = source
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| {
-            // Skip doc comments and regular comments.
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") {
-                return false;
+    let mut violations: Vec<(String, usize, String)> = Vec::new();
+    let mut dirs = vec![src_dir.clone()];
+
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("could not read directory {}: {e}", dir.display())
+        }) {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("could not read entry in {}: {e}", dir.display())
+            });
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
             }
-            line.contains("crate::conformal_calibration::")
-        })
-        .map(|(i, line)| (i + 1, line))
-        .collect();
+            let path_str = path.to_string_lossy();
+            if !path_str.ends_with(".rs") {
+                continue;
+            }
+            if allowed_suffixes.iter().any(|suff| path_str.ends_with(suff)) {
+                continue;
+            }
+
+            let source = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("could not read {}: {e}", path.display())
+            });
+            for (i, line) in source.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                if line.contains("crate::conformal_calibration::") {
+                    violations.push((
+                        path.strip_prefix(&src_dir)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned(),
+                        i + 1,
+                        line.to_string(),
+                    ));
+                }
+            }
+        }
+    }
 
     assert!(
-        bypass_lines.is_empty(),
-        "facade bypass detected in task_runner.rs (I-23 NO-BYPASS guard). \
+        violations.is_empty(),
+        "facade bypass detected in orchestrator/src (I-23 NO-BYPASS guard). \
          All production callers must go through crate::calibration::. \
          Violating lines:\n{}",
-        bypass_lines
+        violations
             .iter()
-            .map(|(n, l)| format!("  L{n}: {l}"))
+            .map(|(p, n, l)| format!("  {p}:{n}: {l}"))
             .collect::<Vec<_>>()
             .join("\n")
     );
