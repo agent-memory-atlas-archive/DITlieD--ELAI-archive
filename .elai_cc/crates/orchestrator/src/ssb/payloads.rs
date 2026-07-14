@@ -3739,6 +3739,10 @@ pub enum SsbPayload {
     /// emits `CatalogBuilt` after the one-shot startup SystemProbe row.
     /// TOTAL_VARIANTS 581 -> 582.
     HardwareModelCatalogEvent(HardwareModelCatalogEventPayload),
+    /// K-2 (SCHEMA_VERSION 274): routing economics benchmark flat beacon.
+    /// Emitted by the real `elai bench routing-economics` production path.
+    /// TOTAL_VARIANTS 582 -> 583.
+    RoutingEconomicsMeasured(RoutingEconomicsMeasuredPayload),
 }
 
 impl SsbPayload {
@@ -4554,6 +4558,7 @@ impl SsbPayload {
             Self::GateTaxMeasured(_) => SsbActionType::GateTaxMeasured,
             Self::UsageTurnEvent(_) => SsbActionType::UsageTurnEvent,
             Self::HardwareModelCatalogEvent(_) => SsbActionType::HardwareModelCatalogEvent,
+            Self::RoutingEconomicsMeasured(_) => SsbActionType::RoutingEconomicsMeasured,
         }
     }
 }
@@ -20102,4 +20107,36 @@ pub struct HardwareModelCatalogEventPayload {
     pub eligible_count: u32,
     pub lanes: Vec<HardwareCatalogLanePayload>,
     pub residue_notes: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// K-2 (SCHEMA_VERSION 274): RoutingEconomicsMeasured substrate
+// ---------------------------------------------------------------------------
+
+/// Flat beacon for one `elai bench routing-economics` run. The payload mirrors
+/// the deterministic report fields required to recompute the benchmark result
+/// from the journal row and seed without trusting CLI stdout.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoutingEconomicsMeasuredPayload {
+    pub seed: u64,
+    pub runner_status: String,
+    pub fixture_status: String,
+    pub selected_arm: String,
+    pub suite: String,
+    pub fixture_blake3: String,
+    pub report_blake3: String,
+    pub hybrid_n_tasks: u32,
+    pub hybrid_n_offloaded: u32,
+    pub hybrid_percent_offloaded: f64,
+    pub hybrid_n_verified: u32,
+    pub hybrid_total_cost_micros: u64,
+    pub hybrid_cost_per_verified_task_micros: Option<u64>,
+    pub force_cloud_n_tasks: u32,
+    pub force_cloud_n_offloaded: u32,
+    pub force_cloud_percent_offloaded: f64,
+    pub force_cloud_n_verified: u32,
+    pub force_cloud_total_cost_micros: u64,
+    pub force_cloud_cost_per_verified_task_micros: Option<u64>,
+    pub live_cost: String,
+    pub live_lane_funded: bool,
 }

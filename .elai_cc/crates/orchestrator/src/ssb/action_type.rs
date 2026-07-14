@@ -4748,6 +4748,10 @@ pub enum SsbActionType {
     /// rides in HardwareModelCatalogEventPayload.kind. Tier-1 emits CatalogBuilt
     /// from the one-shot startup SystemProbe seam. TOTAL_VARIANTS 581 -> 582.
     HardwareModelCatalogEvent,
+    /// K-2 (SCHEMA_VERSION 274): hybrid-vs-force-cloud routing economics
+    /// benchmark beacon. Flat payload carrying the deterministic fixture
+    /// comparison and honest unfunded-live-lane status. TOTAL_VARIANTS 582 -> 583.
+    RoutingEconomicsMeasured,
 }
 
 impl SsbActionType {
@@ -5673,6 +5677,8 @@ impl SsbActionType {
             Self::UsageTurnEvent => "usage_turn_event",
             // J-9: hardware/model catalog flat variant; Kind rides in the payload.
             Self::HardwareModelCatalogEvent => "hardware_model_catalog_event",
+            // K-2 (SCHEMA_VERSION 274): routing economics benchmark flat beacon.
+            Self::RoutingEconomicsMeasured => "routing_economics_measured",
         }
     }
 }
@@ -6516,6 +6522,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "usage_turn_event" => Ok(SsbActionType::UsageTurnEvent),
         // J-9: hardware/model catalog flat variant.
         "hardware_model_catalog_event" => Ok(SsbActionType::HardwareModelCatalogEvent),
+        // K-2 (SCHEMA_VERSION 274): routing economics benchmark flat beacon.
+        "routing_economics_measured" => Ok(SsbActionType::RoutingEconomicsMeasured),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

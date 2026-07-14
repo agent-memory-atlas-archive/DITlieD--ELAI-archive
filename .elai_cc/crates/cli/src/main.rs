@@ -411,6 +411,9 @@ mod bench_case_reuse;
 // benchmarks/gate_tax/, emits 1 GateTaxMeasured SSB flat beacon + a signed
 // .rra manifest per clean run (SCHEMA_VERSION 271). `--enforce-ceiling`
 // (MOVE 3/6, SP2) is the actual "release gate" exit-code contract.
+// K-2: `elai bench routing-economics` hybrid-vs-force-cloud cost per
+// verified task benchmark. Emits RoutingEconomicsMeasured + signed RRA.
+mod bench_routing_economics;
 mod bench_gate_tax;
 // I-38 (SCHEMA_VERSION 235): `elai bench qdelta --config <PATH>` — QDELTA
 // defective-diff rate fixture harness. Statistical floor mechanically enforced
@@ -1406,6 +1409,11 @@ fn run() -> Result<(), anyhow::Error> {
         // Exits 0/1.
         CliAction::BenchCaseReuse { suite, seed, json } => {
             bench_cmd::run_bench_case_reuse(suite, seed, json)?;
+        }
+        // K-2: hybrid-vs-force-cloud routing economics over deterministic
+        // UsageTurnEvent fixture rows. Emits RoutingEconomicsMeasured + RRA.
+        CliAction::BenchRoutingEconomics { seed, json, force_cloud_everything } => {
+            bench_cmd::run_bench_routing_economics(seed, json, force_cloud_everything)?;
         }
         // K-4 (PS-2 owner, KEYSTONE of K-T3): composed gate-tax budget.
         // Drives gate_tax_runner over the real session journal or a labeled

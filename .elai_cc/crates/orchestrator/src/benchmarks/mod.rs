@@ -127,6 +127,10 @@ pub mod case_reuse_runner;
 // closed). The SSB beacon (GateTaxMeasured) + CLI wiring are emitted by
 // `crates/cli/src/bench_gate_tax.rs::run`.
 pub mod gate_tax_runner;
+// K-2: production hybrid-vs-force-cloud routing economics benchmark. Drives
+// RuntimeRoutingPolicy + CloudModeRouter over deterministic UsageTurnEvent
+// fixture rows; the CLI owns the SSB beacon + RRA seal.
+pub mod routing_economics_runner;
 // K-4 SP2: the per-audit checker-timing leg (MOVE 4b), split into its own
 // sibling module so gate_tax_runner.rs stays under the MR-1 1000-line
 // boundary (maintainability-review.md). Internal to gate_tax_runner's

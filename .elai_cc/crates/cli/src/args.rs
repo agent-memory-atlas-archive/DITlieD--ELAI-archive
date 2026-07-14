@@ -998,6 +998,16 @@ pub(crate) enum CliAction {
         /// Print the full report JSON to stdout.
         json: bool,
     },
+    /// K-2: `elai bench routing-economics [--seed <u64>] [--json]
+    /// [--force-cloud-everything]`. Compares the shipped hybrid routing policy
+    /// with a force-cloud control over deterministic UsageTurnEvent fixture rows,
+    /// emits RoutingEconomicsMeasured, and seals an RRA. The live lane remains
+    /// RunnerPresent with an explicit unavailable-cost label until funded.
+    BenchRoutingEconomics {
+        seed: u64,
+        json: bool,
+        force_cloud_everything: bool,
+    },
     /// K-4 (PS-2 owner, KEYSTONE of K-T3): `elai bench gate-tax
     /// [--seed <u64>] [--json] [--enforce-ceiling]`. Composed gate-tax budget:
     /// the in-band CODING trust-spine gate friction (11 FSM EvidenceGate

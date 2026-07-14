@@ -430,6 +430,7 @@ role_contract_applied
 role_shown_model_hidden
 route_blocked
 route_decision_event
+routing_economics_measured
 row_chain_sealed
 rrf_component_weights
 rrf_quality_gate_fired

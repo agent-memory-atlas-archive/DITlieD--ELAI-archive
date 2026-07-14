@@ -5488,7 +5488,10 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- J-9 (SCHEMA_VERSION 273): HardwareModelCatalogEvent. Flat sql_str;
         -- CatalogBuilt/TierAssigned/EligibilityChecked/LaneSeeded rides in payload.kind.
         -- Default-ON from the one-shot startup SystemProbe path. 581 -> 582.
-        'hardware_model_catalog_event'
+        'hardware_model_catalog_event',
+        -- K-2 (SCHEMA_VERSION 274): deterministic routing economics benchmark.
+        -- Default-ON from the real `elai bench routing-economics` CLI path.
+        'routing_economics_measured'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

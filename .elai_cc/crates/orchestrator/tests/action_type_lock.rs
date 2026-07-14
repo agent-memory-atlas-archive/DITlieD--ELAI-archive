@@ -1554,6 +1554,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::UsageTurnEvent => (),
         // J-9 (SCHEMA_VERSION 273): hardware/model catalog flat variant.
         SsbActionType::HardwareModelCatalogEvent => (),
+        // K-2 (SCHEMA_VERSION 274): routing economics benchmark flat beacon.
+        SsbActionType::RoutingEconomicsMeasured => (),
     }
 }
 

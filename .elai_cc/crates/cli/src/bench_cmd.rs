@@ -209,6 +209,17 @@ pub(crate) fn run_bench_case_reuse(
     crate::bench_case_reuse::run(suite, seed, json)
 }
 
+pub(crate) fn run_bench_routing_economics(
+    seed: u64,
+    json: bool,
+    force_cloud_everything: bool,
+) -> anyhow::Result<()> {
+    // K-2: production routing-economics vertical slice. Drives the shipped
+    // RuntimeRoutingPolicy + CloudModeRouter fixture comparison, writes the
+    // report, emits RoutingEconomicsMeasured, and seals a signed RRA.
+    crate::bench_routing_economics::run(seed, json, force_cloud_everything)
+}
+
 pub(crate) fn run_bench_gate_tax(seed: u64, json: bool, enforce_ceiling: bool) -> anyhow::Result<()> {
     // K-4 (PS-2 owner, KEYSTONE of K-T3): composed gate-tax budget.
     // Drives gate_tax_runner over the real session journal (best-effort) or

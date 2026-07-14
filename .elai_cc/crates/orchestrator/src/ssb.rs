@@ -1534,6 +1534,9 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // rides inside the payload. CatalogBuilt is emitted from the one-shot
     // startup SystemProbe seam. 581 -> 582. SCHEMA = -309 + 582 = 273.
     SsbActionType::HardwareModelCatalogEvent,
+    // K-2 (SCHEMA_VERSION 274): deterministic routing economics benchmark.
+    // Emitted by `elai bench routing-economics`; 582 -> 583.
+    SsbActionType::RoutingEconomicsMeasured,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

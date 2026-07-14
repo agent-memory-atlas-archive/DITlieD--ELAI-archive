@@ -1,0 +1,53 @@
+{
+  "suite": "routing_economics_fixture_v1",
+  "tasks": [
+    {
+      "task_id": "easy-edit-1",
+      "context": {"difficulty":"easy","criticality":"low","vram_detected_gb":24.0,"prior_audit_failures":0,"budget_remaining_usd":25.0,"ops_override":null},
+      "local_usage": {"identity":"local","lane":"local","backend":"sidecar","model":"qwen2.5-coder-7b","task_id":"easy-edit-1","session_id":"routing-economics-fixture","input_tokens":900,"output_tokens":220,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":0,"elapsed_ms":180,"semantics_tag":"full_prompt","kind":"turn_recorded","ts_ms":0},
+      "cloud_usage": {"identity":"local","lane":"cloud","backend":"anthropic","model":"claude-sonnet-4-6","task_id":"easy-edit-1","session_id":"routing-economics-fixture","input_tokens":900,"output_tokens":220,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":6000,"elapsed_ms":900,"semantics_tag":"suffix_only","kind":"turn_recorded","ts_ms":0},
+      "local_verified": true,
+      "cloud_verified": true
+    },
+    {
+      "task_id": "easy-edit-2",
+      "context": {"difficulty":"easy","criticality":"high","vram_detected_gb":24.0,"prior_audit_failures":0,"budget_remaining_usd":25.0,"ops_override":null},
+      "local_usage": {"identity":"local","lane":"local","backend":"sidecar","model":"qwen2.5-coder-7b","task_id":"easy-edit-2","session_id":"routing-economics-fixture","input_tokens":1100,"output_tokens":260,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":0,"elapsed_ms":220,"semantics_tag":"full_prompt","kind":"turn_recorded","ts_ms":0},
+      "cloud_usage": {"identity":"local","lane":"cloud","backend":"anthropic","model":"claude-sonnet-4-6","task_id":"easy-edit-2","session_id":"routing-economics-fixture","input_tokens":1100,"output_tokens":260,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":7200,"elapsed_ms":980,"semantics_tag":"suffix_only","kind":"turn_recorded","ts_ms":0},
+      "local_verified": true,
+      "cloud_verified": true
+    },
+    {
+      "task_id": "easy-edit-3",
+      "context": {"difficulty":"easy","criticality":"low","vram_detected_gb":12.0,"prior_audit_failures":0,"budget_remaining_usd":12.0,"ops_override":null},
+      "local_usage": {"identity":"local","lane":"local","backend":"sidecar","model":"qwen2.5-coder-7b","task_id":"easy-edit-3","session_id":"routing-economics-fixture","input_tokens":800,"output_tokens":180,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":0,"elapsed_ms":160,"semantics_tag":"full_prompt","kind":"turn_recorded","ts_ms":0},
+      "cloud_usage": {"identity":"local","lane":"cloud","backend":"anthropic","model":"claude-sonnet-4-6","task_id":"easy-edit-3","session_id":"routing-economics-fixture","input_tokens":800,"output_tokens":180,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":5100,"elapsed_ms":840,"semantics_tag":"suffix_only","kind":"turn_recorded","ts_ms":0},
+      "local_verified": true,
+      "cloud_verified": true
+    },
+    {
+      "task_id": "hard-refactor-1",
+      "context": {"difficulty":"hard","criticality":"high","vram_detected_gb":24.0,"prior_audit_failures":0,"budget_remaining_usd":25.0,"ops_override":null},
+      "local_usage": {"identity":"local","lane":"local","backend":"sidecar","model":"qwen2.5-coder-7b","task_id":"hard-refactor-1","session_id":"routing-economics-fixture","input_tokens":3200,"output_tokens":900,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":0,"elapsed_ms":1200,"semantics_tag":"full_prompt","kind":"turn_recorded","ts_ms":0},
+      "cloud_usage": {"identity":"local","lane":"cloud","backend":"anthropic","model":"claude-sonnet-4-6","task_id":"hard-refactor-1","session_id":"routing-economics-fixture","input_tokens":3200,"output_tokens":900,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":23100,"elapsed_ms":1900,"semantics_tag":"suffix_only","kind":"turn_recorded","ts_ms":0},
+      "local_verified": false,
+      "cloud_verified": true
+    },
+    {
+      "task_id": "hard-refactor-2",
+      "context": {"difficulty":"hard","criticality":"low","vram_detected_gb":24.0,"prior_audit_failures":0,"budget_remaining_usd":25.0,"ops_override":null},
+      "local_usage": {"identity":"local","lane":"local","backend":"sidecar","model":"qwen2.5-coder-7b","task_id":"hard-refactor-2","session_id":"routing-economics-fixture","input_tokens":2800,"output_tokens":760,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":0,"elapsed_ms":1050,"semantics_tag":"full_prompt","kind":"turn_recorded","ts_ms":0},
+      "cloud_usage": {"identity":"local","lane":"cloud","backend":"anthropic","model":"claude-sonnet-4-6","task_id":"hard-refactor-2","session_id":"routing-economics-fixture","input_tokens":2800,"output_tokens":760,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":19800,"elapsed_ms":1720,"semantics_tag":"suffix_only","kind":"turn_recorded","ts_ms":0},
+      "local_verified": false,
+      "cloud_verified": true
+    },
+    {
+      "task_id": "hard-refactor-3",
+      "context": {"difficulty":"hard","criticality":"high","vram_detected_gb":16.0,"prior_audit_failures":0,"budget_remaining_usd":18.0,"ops_override":null},
+      "local_usage": {"identity":"local","lane":"local","backend":"sidecar","model":"qwen2.5-coder-7b","task_id":"hard-refactor-3","session_id":"routing-economics-fixture","input_tokens":3600,"output_tokens":980,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":0,"elapsed_ms":1380,"semantics_tag":"full_prompt","kind":"turn_recorded","ts_ms":0},
+      "cloud_usage": {"identity":"local","lane":"cloud","backend":"anthropic","model":"claude-sonnet-4-6","task_id":"hard-refactor-3","session_id":"routing-economics-fixture","input_tokens":3600,"output_tokens":980,"cache_creation_tokens":0,"cache_read_tokens":0,"est_cost_micros":25500,"elapsed_ms":2100,"semantics_tag":"suffix_only","kind":"turn_recorded","ts_ms":0},
+      "local_verified": false,
+      "cloud_verified": true
+    }
+  ]
+}
