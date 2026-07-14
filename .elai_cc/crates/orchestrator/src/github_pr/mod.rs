@@ -44,6 +44,7 @@ pub mod body_composer;
 pub(crate) mod clock;
 pub mod codeowners_gen;
 pub mod comment_watcher;
+pub mod evidence_emitter;
 pub mod error;
 pub mod gh_cli;
 pub mod git_assist;

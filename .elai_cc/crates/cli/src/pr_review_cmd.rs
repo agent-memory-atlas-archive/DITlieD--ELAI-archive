@@ -19,9 +19,12 @@ use elai_core::clock::OsClock;
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::github_pr::{
     apply_branch_protection, assess_merge_safety, compose_pr_body, detect_force_push,
-    generate_codeowners, post_review_comment, run_semgrep_gate, suggest_squash_message,
-    verify_pr_deps_no_slopsquat, watch_comments, MergePolicy, MergeVerdict, PrContext, PrShape,
+    evidence_emitter::render_pr_evidence, generate_codeowners, post_review_comment, run_semgrep_gate,
+    suggest_squash_message, verify_pr_deps_no_slopsquat, watch_comments, MergePolicy, MergeVerdict,
+    PrContext, PrShape,
 };
+use elai_orchestrator::review_surface::ReviewSurfaceScore;
+use elai_orchestrator::rra::RunArtifact;
 use elai_orchestrator::{Ssb, SsbConfig};
 use serde_json::json;
 
@@ -33,6 +36,13 @@ pub enum PrReviewAction {
         pr: u32,
         template: String,
         kv_pairs: Vec<(String, String)>,
+    },
+    /// Render hash-bound RRA gates plus the closed review-surface hunk set.
+    EmitEvidence {
+        pr: u32,
+        run_artifact: RunArtifact,
+        review_surface: ReviewSurfaceScore,
+        post_unvouched_as_clean: bool,
     },
     /// Post a review comment to a PR.
     Comment {
@@ -86,6 +96,27 @@ pub fn run_pr_review_subcommand(action: PrReviewAction, json: bool) -> Result<()
             let body = compose_pr_body(&template, &ctx).map_err(anyhow::Error::from)?;
             if json {
                 println!("{}", json!({ "pr": pr, "body": body }));
+            } else {
+                println!("{body}");
+            }
+            Ok(())
+        }
+        PrReviewAction::EmitEvidence {
+            pr,
+            run_artifact,
+            review_surface,
+            post_unvouched_as_clean,
+        } => {
+            if post_unvouched_as_clean {
+                return Err(anyhow!(
+                    "--post-unvouched-as-clean is forbidden: missing evidence must remain UNVOUCHED"
+                ));
+            }
+            let evidence = render_pr_evidence(&run_artifact, &review_surface);
+            let ctx = PrContext::new().with("evidence", evidence);
+            let body = compose_pr_body("{{evidence}}", &ctx).map_err(anyhow::Error::from)?;
+            if json {
+                println!("{}", json!({ "pr": pr, "body": body, "posted": false }));
             } else {
                 println!("{body}");
             }
@@ -265,6 +296,7 @@ async fn run_async(action: PrReviewAction, json: bool) -> Result<()> {
         }
         // Pure branches dispatched above; should not appear here.
         PrReviewAction::ComposeBody { .. }
+        | PrReviewAction::EmitEvidence { .. }
         | PrReviewAction::SuggestSquash { .. }
         | PrReviewAction::GenCodeowners { .. } => {
             Err(anyhow!("internal dispatch error: pure action reached async path"))
@@ -290,4 +322,44 @@ async fn build_ssb() -> Result<Arc<Ssb>> {
     let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
     let ssb = Ssb::new(cfg, clock).context("opening SSB writer")?;
     Ok(Arc::new(ssb))
+}
+
+#[cfg(test)]
+mod k3_tests {
+    use super::*;
+    use elai_orchestrator::determinism::{DeterminismConfig, HardwareClass};
+    use elai_orchestrator::rra::build_rra;
+
+    #[test]
+    fn emit_evidence_rejects_unvouched_as_clean_before_dispatch() {
+        let pins = DeterminismConfig {
+            hardware_class: HardwareClass::Cpu,
+            seed: 73,
+            blake3_cache_prefix: [0x4b; 8],
+            system_fingerprint_pin: Some("k3-cli-test".to_string()),
+        };
+        let run_artifact = build_rra("k3-cli-test", &[], &pins);
+        let review_surface = ReviewSurfaceScore {
+            hunks: Vec::new(),
+            findings: Vec::new(),
+            dsr: 0.0,
+            total_changed_lines: 0,
+            attention_lines: 0,
+            vouched_hunks: 0,
+            unvouched_hunks: 0,
+        };
+
+        let result = run_pr_review_subcommand(
+            PrReviewAction::EmitEvidence {
+                pr: 7,
+                run_artifact,
+                review_surface,
+                post_unvouched_as_clean: true,
+            },
+            true,
+        );
+
+        let error = result.expect_err("unsafe clean override must return a nonzero CLI result");
+        assert!(error.to_string().contains("must remain UNVOUCHED"));
+    }
 }
