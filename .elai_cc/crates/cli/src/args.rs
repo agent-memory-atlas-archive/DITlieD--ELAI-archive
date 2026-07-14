@@ -87,6 +87,10 @@ pub(crate) enum CliAction {
         args: Option<String>,
         output_format: CliOutputFormat,
     },
+    /// J-2: local Tier-1 read-only MCP control-plane server over stdio.
+    McpServe {
+        output_format: CliOutputFormat,
+    },
     /// B-37D Phase 4M: direct (non-REPL) invocation of `/runtime`.
     /// Carries the three parser-string fields verbatim — validation
     /// lives in the runtime_cmd handler so the args layer stays free of
@@ -2977,6 +2981,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // G-2 — `elai rra show <path>`. Reproducible-Run Artifact viewer;
         // handler at crates/cli/src/rra_cmd.rs.
         "rra" => parse_rra_subcommand_args(&rest[1..], output_format),
+        // J-2 — local Tier-1 read-only MCP control plane (stdio only).
+        "mcp-serve" => parse_mcp_serve_subcommand_args(&rest[1..], output_format),
         // G-2 — `elai replay --verify <path>`. Offline .rra verifier;
         // handler at crates/cli/src/rra_cmd.rs. Top-level `replay` is new and
         // distinct from the replay-spill / fixture-replay sub-actions.
@@ -5258,6 +5264,16 @@ pub(crate) fn parse_rra_subcommand_args(
             "unknown `rra` sub-action `{other}`; expected: show <path> | verify <path>"
         )),
     }
+}
+
+fn parse_mcp_serve_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    if let Some(argument) = rest.first() {
+        return Err(format!("unexpected `mcp-serve` argument: {argument}"));
+    }
+    Ok(CliAction::McpServe { output_format })
 }
 
 /// G-2 — parse `elai replay <sub>`. Grammar:

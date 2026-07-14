@@ -491,6 +491,7 @@ mod runtime_cmd;
 mod ppm_health;
 mod mucoco_cmd;
 mod mcp_client;
+mod mcp_server;
 // C-42 (session 2): `elai mcp authz [status|list-rejections|fuzz-report]`
 // — Semantic Gateway L2 RBAC dashboard surface. Reads the workspace-root
 // `authz-policy.toml` and prints status / recent denies / a bounded fuzz
@@ -718,6 +719,10 @@ fn run() -> Result<(), anyhow::Error> {
         // G-2 — `elai rra show <path>`. Reproducible-Run Artifact viewer.
         CliAction::Rra { action, output_format } => {
             rra_cmd::run_rra(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // J-2 — local Tier-1 read-only MCP control-plane server over stdio.
+        CliAction::McpServe { output_format } => {
+            mcp_server::run_mcp_serve(output_format).map_err(|e| anyhow::anyhow!(e))?
         }
         // G-2 — `elai replay --verify <path>`. Offline .rra verifier; exits
         // non-zero on Divergence / Tampered so CI can gate on it.

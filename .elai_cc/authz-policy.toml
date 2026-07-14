@@ -36,6 +36,9 @@ tools = [
     "fs.read",
     "fs.grep",
     "git.diff",
+    "fsm_get_state",
+    "plan_status",
+    "rra_show",
 ]
 # No ownership constraint — the planner reads any registered document.
 doc_owners = []
