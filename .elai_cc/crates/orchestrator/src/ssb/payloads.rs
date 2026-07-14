@@ -3733,6 +3733,12 @@ pub enum SsbPayload {
     /// enum); the 3-arm [`UsageTurnEventKind`] rides inside the payload.
     /// TOTAL_VARIANTS 580 -> 581.
     UsageTurnEvent(UsageTurnEventPayload),
+    /// J-9 (SCHEMA_VERSION 273): data-driven hardware/model eligibility catalog.
+    /// Pattern-2 single-variant event; the four-arm discriminator rides in
+    /// [`HardwareModelCatalogEventPayload::kind`]. The Tier-1 production seam
+    /// emits `CatalogBuilt` after the one-shot startup SystemProbe row.
+    /// TOTAL_VARIANTS 581 -> 582.
+    HardwareModelCatalogEvent(HardwareModelCatalogEventPayload),
 }
 
 impl SsbPayload {
@@ -4547,6 +4553,7 @@ impl SsbPayload {
             Self::RecurrenceHitRateMeasured(_) => SsbActionType::RecurrenceHitRateMeasured,
             Self::GateTaxMeasured(_) => SsbActionType::GateTaxMeasured,
             Self::UsageTurnEvent(_) => SsbActionType::UsageTurnEvent,
+            Self::HardwareModelCatalogEvent(_) => SsbActionType::HardwareModelCatalogEvent,
         }
     }
 }
@@ -20041,4 +20048,58 @@ pub struct UsageTurnEventPayload {
     pub kind: UsageTurnEventKind,
     /// Wall-clock milliseconds since UNIX epoch at emit time.
     pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-9: hardware/model catalog substrate
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HardwareModelCatalogEventKind {
+    CatalogBuilt,
+    TierAssigned,
+    EligibilityChecked,
+    LaneSeeded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareCatalogQuantizationFitPayload {
+    pub quantization: String,
+    pub min_vram_mb: u32,
+    pub eligible: bool,
+    pub reason: Option<String>,
+    pub fit_score: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareCatalogEntryPayload {
+    pub model_id: String,
+    pub backend: String,
+    pub platform_tags: Vec<String>,
+    pub source_tag: String,
+    pub residue_note: Option<String>,
+    pub eligible: bool,
+    pub reason: Option<String>,
+    pub fit_score: u16,
+    pub fits: Vec<HardwareCatalogQuantizationFitPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareCatalogLanePayload {
+    pub lane: String,
+    pub eligible_count: u32,
+    pub entries: Vec<HardwareCatalogEntryPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareModelCatalogEventPayload {
+    pub kind: HardwareModelCatalogEventKind,
+    pub detected_tier: String,
+    pub vram_total_mb: u32,
+    pub seed_blake3: String,
+    pub lanes_unavailable: Option<String>,
+    pub eligible_count: u32,
+    pub lanes: Vec<HardwareCatalogLanePayload>,
+    pub residue_notes: Vec<String>,
 }

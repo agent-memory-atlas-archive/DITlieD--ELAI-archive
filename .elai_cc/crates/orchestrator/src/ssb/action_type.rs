@@ -4743,6 +4743,11 @@ pub enum SsbActionType {
     /// workflow/reasoning/J-28-decisions.md.
     /// TOTAL_VARIANTS 580 -> 581.
     UsageTurnEvent,
+    /// J-9 (SCHEMA_VERSION 273): hardware/model eligibility catalog event.
+    /// Flat action type; CatalogBuilt/TierAssigned/EligibilityChecked/LaneSeeded
+    /// rides in HardwareModelCatalogEventPayload.kind. Tier-1 emits CatalogBuilt
+    /// from the one-shot startup SystemProbe seam. TOTAL_VARIANTS 581 -> 582.
+    HardwareModelCatalogEvent,
 }
 
 impl SsbActionType {
@@ -5666,6 +5671,8 @@ impl SsbActionType {
             Self::GateTaxMeasured => "gate_tax_measured",
             // J-28 follow-on: UsageTurnEvent flat variant, Kind rides in the payload.
             Self::UsageTurnEvent => "usage_turn_event",
+            // J-9: hardware/model catalog flat variant; Kind rides in the payload.
+            Self::HardwareModelCatalogEvent => "hardware_model_catalog_event",
         }
     }
 }
@@ -6507,6 +6514,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "gate_tax_measured" => Ok(SsbActionType::GateTaxMeasured),
         // J-28 follow-on: UsageTurnEvent flat variant.
         "usage_turn_event" => Ok(SsbActionType::UsageTurnEvent),
+        // J-9: hardware/model catalog flat variant.
+        "hardware_model_catalog_event" => Ok(SsbActionType::HardwareModelCatalogEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

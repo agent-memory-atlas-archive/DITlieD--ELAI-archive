@@ -1529,6 +1529,11 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // kill-switch. Consumed by the T5 usage_ledger rollup + `elai usage`.
     // 580 -> 581. SCHEMA = -309 + 581 = 272.
     SsbActionType::UsageTurnEvent,
+    // J-9 (SCHEMA_VERSION 273): HardwareModelCatalogEvent -- data-driven
+    // hardware/model eligibility catalog. Flat action type; the 4-arm Kind
+    // rides inside the payload. CatalogBuilt is emitted from the one-shot
+    // startup SystemProbe seam. 581 -> 582. SCHEMA = -309 + 582 = 273.
+    SsbActionType::HardwareModelCatalogEvent,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

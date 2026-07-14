@@ -1,4 +1,5 @@
 pub mod agent_pool;
+pub mod hardware_catalog;
 pub mod agent_role;
 pub mod agent_role_dispatcher;
 // H-31 (SCHEMA_VERSION 240): the Personalization-Trap firewall -- the compile-time role allowlist

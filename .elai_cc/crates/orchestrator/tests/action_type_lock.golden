@@ -237,6 +237,7 @@ grc_step_emitted
 grounding_cache_event
 grounding_sweep_result
 handoff_lifecycle_event
+hardware_model_catalog_event
 head_dim_invariant_verified
 held_out_promotion_gate
 held_out_refresh

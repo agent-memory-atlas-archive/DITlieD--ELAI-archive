@@ -18179,6 +18179,86 @@ async fn emit_system_probe_once(
     {
         error!(error = %e, "task_runner: write SystemProbe failed");
     }
+
+    let catalog = crate::hardware_catalog::HardwareModelCatalog::build(&report);
+    let catalog_payload = SsbPayload::HardwareModelCatalogEvent(
+        hardware_model_catalog_event_payload(&catalog),
+    );
+    if let Err(e) = writer
+        .write_payload(
+            RUNNER_AGENT_ID,
+            RUNNER_SUPERSTEP,
+            catalog_payload,
+            Vec::new(),
+        )
+        .await
+    {
+        error!(error = %e, "task_runner: write HardwareModelCatalogEvent failed");
+    }
+}
+
+fn hardware_model_catalog_event_payload(
+    catalog: &crate::hardware_catalog::HardwareModelCatalog,
+) -> crate::ssb::HardwareModelCatalogEventPayload {
+    let lanes: Vec<crate::ssb::HardwareCatalogLanePayload> = catalog
+        .lanes
+        .iter()
+        .map(|lane| {
+            let eligible_count = u32::try_from(
+                lane.entries.iter().filter(|entry| entry.eligible).count(),
+            )
+            .unwrap_or(u32::MAX);
+            let entries = lane
+                .entries
+                .iter()
+                .map(|entry| crate::ssb::HardwareCatalogEntryPayload {
+                    model_id: entry.model_id.clone(),
+                    backend: entry.backend.to_string(),
+                    platform_tags: entry.platform_tags.clone(),
+                    source_tag: entry.source_tag.clone(),
+                    residue_note: entry.residue_note.clone(),
+                    eligible: entry.eligible,
+                    reason: entry.reason.clone(),
+                    fit_score: entry.fit_score,
+                    fits: entry
+                        .fits
+                        .iter()
+                        .map(|fit| crate::ssb::HardwareCatalogQuantizationFitPayload {
+                            quantization: fit.quantization.clone(),
+                            min_vram_mb: fit.min_vram_mb,
+                            eligible: fit.eligible,
+                            reason: fit.reason.clone(),
+                            fit_score: fit.fit_score,
+                        })
+                        .collect(),
+                })
+                .collect();
+            crate::ssb::HardwareCatalogLanePayload {
+                lane: lane.lane.as_str().to_owned(),
+                eligible_count,
+                entries,
+            }
+        })
+        .collect();
+    let eligible_count = lanes
+        .iter()
+        .fold(0_u32, |total, lane| total.saturating_add(lane.eligible_count));
+
+    crate::ssb::HardwareModelCatalogEventPayload {
+        kind: crate::ssb::HardwareModelCatalogEventKind::CatalogBuilt,
+        detected_tier: vram_tier_label(catalog.tier),
+        vram_total_mb: catalog
+            .probe
+            .gpu
+            .as_ref()
+            .map(|gpu| gpu.vram_total_mb)
+            .unwrap_or(0),
+        seed_blake3: catalog.seed_blake3.clone(),
+        lanes_unavailable: catalog.lanes_unavailable.clone(),
+        eligible_count,
+        lanes,
+        residue_notes: catalog.residue_notes.clone(),
+    }
 }
 
 /// D-30 prod-wire: env override for the published calibration corpus fixture

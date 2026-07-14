@@ -1552,6 +1552,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // (no Kind discriminator on the enum; Kind rides in the payload).
         // Emitted by grounding_client.rs (cloud) + runtime_orchestrator.rs (local).
         SsbActionType::UsageTurnEvent => (),
+        // J-9 (SCHEMA_VERSION 273): hardware/model catalog flat variant.
+        SsbActionType::HardwareModelCatalogEvent => (),
     }
 }
 

@@ -1,0 +1,207 @@
+schema_version = 1
+
+[[models]]
+lane = "coding"
+model_id = "Qwen2.5-Coder-3B-Instruct"
+backend = "local"
+source_tag = "[MEASURED] E-31 coding ladder"
+capability_profile = "micro_3b_12gb"
+fit_priority = 68
+footprints = [
+  { quantization = "nf4", min_vram_mb = 2400 },
+  { quantization = "q8", min_vram_mb = 4000 },
+]
+
+[[models]]
+lane = "coding"
+model_id = "Qwen2.5-Coder-7B-Instruct"
+backend = "local"
+source_tag = "[MEASURED] E-31 coding ladder"
+capability_profile = "micro_7b_12gb"
+fit_priority = 78
+footprints = [
+  { quantization = "nf4", min_vram_mb = 5200 },
+  { quantization = "q8", min_vram_mb = 9000 },
+]
+
+[[models]]
+lane = "coding"
+model_id = "Qwen2.5-Coder-32B-Instruct"
+backend = "local"
+source_tag = "[DESIGN] E-31 32B tier"
+capability_profile = "large_32b_48gb"
+fit_priority = 94
+footprints = [
+  { quantization = "awq", min_vram_mb = 22000 },
+  { quantization = "q8", min_vram_mb = 38000 },
+]
+
+[[models]]
+lane = "coding"
+model_id = "Qwen3-32B"
+backend = "local"
+source_tag = "[DESIGN] HW-14 tier-conditional seed"
+capability_profile = "large_32b_48gb"
+fit_priority = 96
+residue_note = "HW-14: prior rejection was user-hardware-specific, not universal; this model is catalogued tier-conditionally and remains informational only."
+footprints = [
+  { quantization = "awq", min_vram_mb = 23000 },
+  { quantization = "q8", min_vram_mb = 40000 },
+]
+
+[[models]]
+lane = "coding"
+model_id = "cloud-coding-api"
+backend = "api"
+source_tag = "[DESIGN] remote fallback"
+capability_profile = "cloud_200k"
+fit_priority = 100
+footprints = [{ quantization = "remote", min_vram_mb = 0 }]
+
+[[models]]
+lane = "vision"
+model_id = "Phi-4-MM"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] VR-13 sub-6B rung"
+fit_priority = 62
+footprints = [{ quantization = "int4", min_vram_mb = 5500 }]
+
+[[models]]
+lane = "vision"
+model_id = "Qwen2.5-VL-7B"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] VR-13 canonical 7B rung"
+fit_priority = 72
+footprints = [{ quantization = "awq", min_vram_mb = 7500 }]
+
+[[models]]
+lane = "vision"
+model_id = "InternVL3-14B"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] VR-13 mid-tier rung"
+fit_priority = 80
+footprints = [{ quantization = "awq", min_vram_mb = 12000 }]
+
+[[models]]
+lane = "vision"
+model_id = "Gemma-3-27B"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] VR-13 27B rung"
+fit_priority = 88
+footprints = [{ quantization = "int4", min_vram_mb = 19000 }]
+
+[[models]]
+lane = "vision"
+model_id = "Qwen2.5-VL-32B"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] VR-13 32B rung"
+fit_priority = 92
+footprints = [{ quantization = "awq", min_vram_mb = 24000 }]
+
+[[models]]
+lane = "vision"
+model_id = "Gemma-4"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] HW-14 tier-conditional seed"
+fit_priority = 95
+residue_note = "HW-14: prior rejection was user-hardware-specific, not universal; this model is catalogued tier-conditionally and remains informational only."
+footprints = [{ quantization = "int4", min_vram_mb = 28000 }]
+
+[[models]]
+lane = "vision"
+model_id = "Qwen2.5-VL-72B"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] VR-13 high-tier rung"
+fit_priority = 98
+footprints = [{ quantization = "awq", min_vram_mb = 46000 }]
+
+[[models]]
+lane = "vision"
+model_id = "InternVL3-78B"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] VR-13 high-tier rung"
+fit_priority = 99
+footprints = [{ quantization = "awq", min_vram_mb = 48000 }]
+
+[[models]]
+lane = "vision"
+model_id = "FastVLM"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] JC-9 Apple-silicon rung"
+fit_priority = 66
+platform_tags = ["apple_silicon"]
+footprints = [{ quantization = "mlx-int4", min_vram_mb = 4000 }]
+
+[[models]]
+lane = "vision"
+model_id = "cloud-vision-api"
+backend = "api"
+source_tag = "[DESIGN; J-8 eval pending] remote fallback"
+fit_priority = 100
+footprints = [{ quantization = "remote", min_vram_mb = 0 }]
+
+[[models]]
+lane = "ocr"
+model_id = "PaddleOCR-VL"
+backend = "local"
+source_tag = "[DESIGN; J-8 eval pending] HW-13 canonical OCR rung"
+fit_priority = 82
+footprints = [{ quantization = "int4", min_vram_mb = 4500 }]
+
+[[models]]
+lane = "ocr"
+model_id = "dots.ocr"
+backend = "local"
+backend_available = false
+source_tag = "[DESIGN; J-8 eval pending] JC-7 backend-gated OCR rung"
+fit_priority = 78
+footprints = [{ quantization = "int4", min_vram_mb = 6000 }]
+
+[[models]]
+lane = "ocr"
+model_id = "cloud-ocr-api"
+backend = "api"
+source_tag = "[DESIGN; J-8 eval pending] remote fallback"
+fit_priority = 100
+footprints = [{ quantization = "remote", min_vram_mb = 0 }]
+
+[[models]]
+lane = "embedding_reranker"
+model_id = "GraphCodeBERT"
+backend = "local"
+source_tag = "[MEASURED] shipped embedding lane"
+fit_priority = 72
+footprints = [{ quantization = "fp16", min_vram_mb = 2000 }]
+
+[[models]]
+lane = "embedding_reranker"
+model_id = "Granite-Embedding"
+backend = "local"
+source_tag = "[MEASURED] shipped embedding lane"
+fit_priority = 76
+footprints = [{ quantization = "fp16", min_vram_mb = 3000 }]
+
+[[models]]
+lane = "embedding_reranker"
+model_id = "BGE-Reranker"
+backend = "local"
+source_tag = "[DESIGN] reranker seed"
+fit_priority = 80
+footprints = [{ quantization = "fp16", min_vram_mb = 2500 }]
+
+[[models]]
+lane = "embedding_reranker"
+model_id = "Qwen3-VL-Embedding"
+backend = "local"
+backend_available = false
+source_tag = "[DESIGN] JC-8 backend-gated embedding rung"
+fit_priority = 88
+footprints = [{ quantization = "int4", min_vram_mb = 5000 }]
+
+[[models]]
+lane = "embedding_reranker"
+model_id = "cloud-embedding-api"
+backend = "api"
+source_tag = "[DESIGN] remote fallback"
+fit_priority = 100
+footprints = [{ quantization = "remote", min_vram_mb = 0 }]

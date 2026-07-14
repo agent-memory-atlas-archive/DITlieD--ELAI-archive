@@ -5484,7 +5484,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- J-28 follow-on: UsageTurnEvent -- uniform per-turn token-usage row,
         -- both lanes. Flat sql_str; the 3-arm Kind rides in the payload.
         -- TOTAL_VARIANTS 580 -> 581.
-        'usage_turn_event'
+        'usage_turn_event',
+        -- J-9 (SCHEMA_VERSION 273): HardwareModelCatalogEvent. Flat sql_str;
+        -- CatalogBuilt/TierAssigned/EligibilityChecked/LaneSeeded rides in payload.kind.
+        -- Default-ON from the one-shot startup SystemProbe path. 581 -> 582.
+        'hardware_model_catalog_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
