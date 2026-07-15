@@ -96,6 +96,9 @@ mod rra_verify_cmd;
 // new top-level CliAction::Wrap with its own Arc<Ssb>. Kill-switch:
 // ELAI_WRAP_RRA_DISABLE=1 (default-ON emit).
 mod wrap_cmd;
+// K-6: `elai export compliance` — redacted RRA + attestation + audit trail
+// + retention statement bundle. Composition only (GD-1).
+mod compliance_export_cmd;
 // H-35: `elai rewind <target>` — session-state restore to a prior SSB seq.
 // Composes compact_session + recover_stubs + ssb_resume_from into a user-facing
 // restore affordance; emits one session_rewound SSB beacon per successful rewind.
@@ -739,6 +742,22 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Wrap { agent_cmd, output_path, output_format } => {
             wrap_cmd::run(agent_cmd, output_path, output_format)
                 .map_err(|e| anyhow::anyhow!(e))?
+        }
+        // K-6 — `elai export compliance [--session <id>] [--out <path>] [--zero-retention]`.
+        // Redacted RRA + attestation + audit trail + retention statement bundle.
+        CliAction::Compliance {
+            session_id,
+            output_path,
+            zero_retention,
+            output_format,
+        } => {
+            compliance_export_cmd::run(
+                session_id,
+                output_path,
+                elai_orchestrator::retention::ExportRetentionMode::from_cli_flag(zero_retention),
+                output_format,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?
         }
         // H-35 — `elai rewind <target>`. Session-state restore to a prior SSB seq.
         // Emits one session_rewound beacon; idempotent on target==head (zero rows).

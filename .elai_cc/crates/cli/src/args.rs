@@ -1728,6 +1728,17 @@ pub(crate) enum CliAction {
         output_path: Option<PathBuf>,
         output_format: CliOutputFormat,
     },
+    /// K-6: `elai export compliance` — redacted RRA + attestation + audit trail
+    /// + retention statement bundle. Composition only (GD-1). Handler:
+    /// `crate::compliance_export_cmd::run`.
+    Compliance {
+        session_id: String,
+        /// Output directory (or path) for the compliance bundle.
+        output_path: PathBuf,
+        /// I-44 style flag (same bool as CliAction::Run.zero_retention).
+        zero_retention: bool,
+        output_format: CliOutputFormat,
+    },
 }
 
 /// I-41 — parameters for `elai critique`.
@@ -3402,6 +3413,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // NEW top-level CliAction::Wrap with its own Arc<Ssb>; it does NOT extend
         // run_subcommand. Kill-switch: ELAI_WRAP_RRA_DISABLE=1.
         "wrap" => parse_wrap_subcommand_args(&rest[1..], output_format),
+        // K-6 — `elai export compliance [--session <id>] [--out <path>] [--zero-retention]`
+        "export" => parse_export_subcommand_args(&rest[1..], output_format),
         other if other.starts_with('/') => parse_direct_slash_cli_action(&rest, output_format),
         _other => Ok(CliAction::Prompt {
             prompt: rest.join(" "),
@@ -9554,6 +9567,86 @@ pub(crate) fn parse_wrap_subcommand_args(
     Ok(CliAction::Wrap {
         agent_cmd,
         output_path,
+        output_format,
+    })
+}
+
+/// K-6 — parse `elai export <sub-action> ...`.
+///
+/// Currently the only sub-action is `compliance`.
+pub(crate) fn parse_export_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).ok_or_else(|| {
+        "missing `export` sub-action; expected: compliance".to_string()
+    })?;
+    match sub {
+        "compliance" => parse_export_compliance_args(&rest[1..], output_format),
+        other => Err(format!(
+            "unknown `export` sub-action `{other}`; expected: compliance"
+        )),
+    }
+}
+
+/// K-6 — parse `elai export compliance [--session <id>] [--out|--output <path>] [--zero-retention]`.
+fn parse_export_compliance_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut session_id: Option<String> = None;
+    let mut output_path: Option<PathBuf> = None;
+    let mut zero_retention = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--session" => {
+                let val = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value after --session".to_string())?;
+                session_id = Some(val.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--session=") => {
+                session_id = Some(flag[10..].to_string());
+                i += 1;
+            }
+            "--out" | "--output" => {
+                let val = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing path after --out/--output".to_string())?;
+                output_path = Some(PathBuf::from(val));
+                i += 2;
+            }
+            flag if flag.starts_with("--out=") => {
+                output_path = Some(PathBuf::from(&flag[6..]));
+                i += 1;
+            }
+            flag if flag.starts_with("--output=") => {
+                output_path = Some(PathBuf::from(&flag[9..]));
+                i += 1;
+            }
+            "--zero-retention" => {
+                zero_retention = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `export compliance` flag `{other}`; expected --session, --out, --zero-retention"
+                ));
+            }
+        }
+    }
+    let session_id = session_id.ok_or_else(|| {
+        "`elai export compliance` requires `--session <id>`".to_string()
+    })?;
+    let output_path = output_path.ok_or_else(|| {
+        "`elai export compliance` requires `--out <path>` (or `--output <path>`)".to_string()
+    })?;
+    Ok(CliAction::Compliance {
+        session_id,
+        output_path,
+        zero_retention,
         output_format,
     })
 }
