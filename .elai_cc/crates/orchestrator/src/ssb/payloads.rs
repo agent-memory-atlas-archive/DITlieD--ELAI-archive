@@ -3743,6 +3743,10 @@ pub enum SsbPayload {
     /// Emitted by the real `elai bench routing-economics` production path.
     /// TOTAL_VARIANTS 582 -> 583.
     RoutingEconomicsMeasured(RoutingEconomicsMeasuredPayload),
+    /// K-5 (SCHEMA_VERSION 275): deterministic risk-signal driven GateIntensity
+    /// selection beacon. Observe-only; emitted from the deterministic audit gate.
+    /// TOTAL_VARIANTS 583 -> 584.
+    GateIntensitySelected(GateIntensitySelectedPayload),
 }
 
 impl SsbPayload {
@@ -4559,6 +4563,7 @@ impl SsbPayload {
             Self::UsageTurnEvent(_) => SsbActionType::UsageTurnEvent,
             Self::HardwareModelCatalogEvent(_) => SsbActionType::HardwareModelCatalogEvent,
             Self::RoutingEconomicsMeasured(_) => SsbActionType::RoutingEconomicsMeasured,
+            Self::GateIntensitySelected(_) => SsbActionType::GateIntensitySelected,
         }
     }
 }
@@ -20139,4 +20144,22 @@ pub struct RoutingEconomicsMeasuredPayload {
     pub force_cloud_cost_per_verified_task_micros: Option<u64>,
     pub live_cost: String,
     pub live_lane_funded: bool,
+}
+
+// ---------------------------------------------------------------------------
+// K-5 (SCHEMA_VERSION 275): GateIntensity selection payload
+// ---------------------------------------------------------------------------
+
+/// Observe-only risk-signal driven audit-leg tier selection. Emitted by the
+/// deterministic audit gate; the selector does not suppress checks, only
+/// records what the policy would have chosen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GateIntensitySelectedPayload {
+    pub tier: String,
+    pub always_on: Vec<String>,
+    pub risk_triggered: Vec<String>,
+    pub selected: Vec<String>,
+    pub policy_version: String,
+    pub source_state: String,
+    pub target_state: String,
 }

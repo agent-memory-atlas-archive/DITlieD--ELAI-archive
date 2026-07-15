@@ -38,11 +38,16 @@ use crate::deterministic_auditor::{
     CheckKind, DeterministicAuditResult, DeterministicAuditor, DeterministicAuditorConfig,
     DeterministicFinding, DeterministicSeverity,
 };
+use crate::gate_intensity::{
+    select as select_gate_intensity, BlastRadiusCone, CentralitySignal, ComplexityClass, CweClass,
+    NoveltySignal, RiskLevelSignal, RiskSignalVector,
+};
 use crate::mutation_budget::{BudgetVerdict, MutationBudgetSummary};
 use crate::mutation_testing::{MutantOutcome, MutationConfig};
 use crate::ssb::{
-    env_gate_truthy, FindingPayload, MutationBudgetedRunKind, MutationBudgetedRunPayload,
-    MutationSurvivedPayload, Ssb, SsbPayload, ELAI_MUTATION_BUDGET_DISABLE_ENV,
+    env_gate_truthy, FindingPayload, GateIntensitySelectedPayload, MutationBudgetedRunKind,
+    MutationBudgetedRunPayload, MutationSurvivedPayload, Ssb, SsbPayload,
+    ELAI_MUTATION_BUDGET_DISABLE_ENV,
 };
 
 /// Agent id used on Finding rows emitted by the deterministic audit gate.
@@ -161,12 +166,21 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
         let auditor = DeterministicAuditor::new(config);
         let result = auditor.run_all(&changed);
 
+        // K-5: compute a deterministic risk-signal vector from the changed
+        // files + project profile, select the observe-only GateIntensity tier,
+        // and emit it as an SSB row. The tier does NOT filter the legs run
+        // above; it is telemetry for dashboard post-analysis.
+        let signals = compute_risk_signals(&profile, &changed);
+        let intensity = select_gate_intensity(&signals);
+
         tracing::info!(
             %source,
             %target,
             checks_run = result.checks_run,
             block_count = result.block_count(),
             warn_count = result.warn_count(),
+            gate_intensity_tier = %intensity.tier.tier_name(),
+            policy_version = %intensity.policy_version,
             passed = result.passed,
             "deterministic_audit_gate: evaluated"
         );
@@ -180,6 +194,7 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
         let tool_missing_language = tool_missing_for_language(&primary_lang);
 
         let writer = Arc::clone(&self.writer);
+        let intensity = intensity.clone();
         let findings = result.findings.clone();
         // C-28: one SsbActionType::MutationSurvived row per surviving mutant.
         let survivors: Vec<MutationSurvivedPayload> = result
@@ -203,6 +218,13 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
         let budget_summary = result.mutation_budget.clone();
         tokio::spawn(async move {
             emit_findings(writer.as_ref(), &findings).await;
+            emit_gate_intensity_selected(
+                writer.as_ref(),
+                &intensity,
+                &source.to_string(),
+                &target.to_string(),
+            )
+            .await;
             if let Some(lang) = tool_missing_language {
                 emit_audit_skipped(writer.as_ref(), &lang).await;
             }
@@ -213,6 +235,100 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
         });
         result
     }
+}
+
+/// K-5: derive an observe-only risk-signal vector from the profile + changed
+/// files. The heuristics are intentionally conservative: missing/ambiguous data
+/// maps to `Unknown`, which the selector degrades to `Core`.
+fn compute_risk_signals(
+    profile: &ProjectProfile,
+    changed_files: &[PathBuf],
+) -> RiskSignalVector {
+    use elai_core::project_profile::{ArchitecturePattern, ProjectDomain};
+
+    let mut signals = RiskSignalVector::default();
+
+    // Risk level: High when any security-sensitive domain or framework is present.
+    let security_domains = [
+        ProjectDomain::WebBackend,
+        ProjectDomain::Fullstack,
+        ProjectDomain::Mobile,
+        ProjectDomain::Desktop,
+        ProjectDomain::Embedded,
+        ProjectDomain::DevOps,
+    ];
+    let has_security_domain = profile.domains.iter().any(|d| security_domains.contains(&d.domain));
+    let has_security_framework = profile.frameworks.iter().any(|f| {
+        matches!(
+            f.category,
+            elai_core::project_profile::FrameworkCategory::Web
+                | elai_core::project_profile::FrameworkCategory::Server
+        )
+    });
+    if has_security_domain || has_security_framework {
+        signals.risk_level = RiskLevelSignal::High;
+    }
+
+    // Complexity class: driven by the number of changed files.
+    signals.complexity_class = match changed_files.len() {
+        0..=3 => ComplexityClass::Small,
+        4..=10 => ComplexityClass::Medium,
+        _ => ComplexityClass::Large,
+    };
+
+    // Blast radius: single crate vs cross-cutting. We approximate cross-cutting
+    // by a broad language distribution or multiple entry points.
+    let distinct_langs = profile.languages.distribution.len();
+    if distinct_langs > 1 || profile.entry_points.len() > 1 {
+        signals.blast_radius = BlastRadiusCone::CrossCutting;
+    } else if changed_files.len() > 5 {
+        signals.blast_radius = BlastRadiusCone::MultiCrate;
+    } else {
+        signals.blast_radius = BlastRadiusCone::SingleCrate;
+    }
+
+    // CWE class: default Unknown; auth/crypto hints when the profile mentions
+    // relevant architecture or constraints.
+    if profile
+        .constraints
+        .iter()
+        .any(|c| c.to_lowercase().contains("crypto") || c.to_lowercase().contains("auth"))
+        || profile.architecture == Some(ArchitecturePattern::Layered)
+            && has_security_domain
+    {
+        signals.cwe_class = CweClass::Auth;
+    }
+
+    // Novelty: Recent when the project declares few/no established conventions.
+    if matches!(profile.naming.functions, elai_core::project_profile::Convention::Unknown)
+        || matches!(profile.naming.types, elai_core::project_profile::Convention::Unknown)
+    {
+        signals.novelty = NoveltySignal::Recent;
+    } else {
+        signals.novelty = NoveltySignal::Established;
+    }
+
+    // Centrality: Core when entry points exist and changed files touch them.
+    let entry_paths: std::collections::HashSet<_> = profile
+        .entry_points
+        .iter()
+        .filter_map(|e| e.file.file_name().and_then(|n| n.to_str()).map(String::from))
+        .collect();
+    let touches_entry = changed_files.iter().any(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| entry_paths.contains(n))
+            .unwrap_or(false)
+    });
+    if !entry_paths.is_empty() && touches_entry {
+        signals.centrality = CentralitySignal::Core;
+    } else if distinct_langs > 1 {
+        signals.centrality = CentralitySignal::Internal;
+    } else {
+        signals.centrality = CentralitySignal::Leaf;
+    }
+
+    signals
 }
 
 /// Probe whether the primary-language toolchain binary is present on the host.
@@ -330,6 +446,32 @@ pub async fn emit_mutation_survivors(writer: &Ssb, survivors: &[MutationSurvived
                 "deterministic_audit_gate: write MutationSurvived failed"
             );
         }
+    }
+}
+
+/// K-5: emit a `GateIntensitySelected` SSB row. The selection is observe-only
+/// and carries the source/target FSM state so downstream analysis can correlate
+/// intensity with transition context.
+async fn emit_gate_intensity_selected(
+    writer: &Ssb,
+    intensity: &crate::gate_intensity::GateIntensitySelection,
+    source_state: &str,
+    target_state: &str,
+) {
+    let payload = SsbPayload::GateIntensitySelected(GateIntensitySelectedPayload {
+        tier: intensity.tier.tier_name().to_owned(),
+        always_on: intensity.always_on.iter().map(|k| format!("{k:?}")).collect(),
+        risk_triggered: intensity.risk_triggered.iter().map(|k| format!("{k:?}")).collect(),
+        selected: intensity.selected.iter().map(|k| format!("{k:?}")).collect(),
+        policy_version: intensity.policy_version.to_owned(),
+        source_state: source_state.to_owned(),
+        target_state: target_state.to_owned(),
+    });
+    if let Err(e) = writer
+        .write_payload(GATE_AGENT_ID, GATE_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        tracing::error!(error = %e, "deterministic_audit_gate: write GateIntensitySelected failed");
     }
 }
 

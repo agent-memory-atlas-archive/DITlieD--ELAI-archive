@@ -1556,6 +1556,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::HardwareModelCatalogEvent => (),
         // K-2 (SCHEMA_VERSION 274): routing economics benchmark flat beacon.
         SsbActionType::RoutingEconomicsMeasured => (),
+        // K-5 (SCHEMA_VERSION 275): gate intensity selector benchmark flat beacon.
+        SsbActionType::GateIntensitySelected => (),
     }
 }
 

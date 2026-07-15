@@ -4752,6 +4752,10 @@ pub enum SsbActionType {
     /// benchmark beacon. Flat payload carrying the deterministic fixture
     /// comparison and honest unfunded-live-lane status. TOTAL_VARIANTS 582 -> 583.
     RoutingEconomicsMeasured,
+    /// K-5 (SCHEMA_VERSION 275): deterministic risk-signal driven GateIntensity
+    /// selection beacon. Emitted observe-only from the deterministic audit gate.
+    /// TOTAL_VARIANTS 583 -> 584.
+    GateIntensitySelected,
 }
 
 impl SsbActionType {
@@ -5679,6 +5683,8 @@ impl SsbActionType {
             Self::HardwareModelCatalogEvent => "hardware_model_catalog_event",
             // K-2 (SCHEMA_VERSION 274): routing economics benchmark flat beacon.
             Self::RoutingEconomicsMeasured => "routing_economics_measured",
+            // K-5 (SCHEMA_VERSION 275): GateIntensity selection beacon.
+            Self::GateIntensitySelected => "gate_intensity_selected",
         }
     }
 }
@@ -6524,6 +6530,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "hardware_model_catalog_event" => Ok(SsbActionType::HardwareModelCatalogEvent),
         // K-2 (SCHEMA_VERSION 274): routing economics benchmark flat beacon.
         "routing_economics_measured" => Ok(SsbActionType::RoutingEconomicsMeasured),
+        // K-5 (SCHEMA_VERSION 275): GateIntensity selection beacon.
+        "gate_intensity_selected" => Ok(SsbActionType::GateIntensitySelected),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

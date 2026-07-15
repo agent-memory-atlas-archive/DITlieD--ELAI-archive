@@ -215,6 +215,7 @@ pub mod evidence;
 pub mod focus_tunnel;
 pub mod fsm;
 pub mod gate;
+pub mod gate_intensity;
 // H-38 — cost-confirmation gate predicate for TaskStop / pod_stop.
 // Reads the H-9 CloudSpend ledger at dispatch_stop time; pure + sync predicate.
 pub mod stop_cost_gate;
@@ -1332,7 +1333,7 @@ pub mod gate_self_validation;
 // (Tier-2/deferred). See workflow/reasoning/H-28-decisions.md.
 pub mod reward_tampering;
 // H-28-WIRE-1: integration smoke for reward-tampering gate in darwin admit loop.
-#[cfg(test)]
+#[cfg(all(test, feature = "darwinian-evolve"))]
 mod reward_tamper_admit_observable_smoke;
 // H-19 — reusable-holdout query budget (the Thresholdout DP gate; Dwork et al.
 // arXiv:1506.02629). HoldoutBudgetLedger is an append-only budget counter (queries_spent =

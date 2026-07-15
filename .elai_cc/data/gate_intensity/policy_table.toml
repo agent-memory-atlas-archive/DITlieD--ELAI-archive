@@ -1,0 +1,13 @@
+policy_version = "K-5.0"
+
+[tier.light]
+always_on = ["Build", "LazyCode"]
+risk_triggered = ["FileSizeCensus"]
+
+[tier.standard]
+always_on = ["Build", "FileSizeCensus", "LazyCode", "Completeness"]
+risk_triggered = ["VersionGate", "ImportCrossRef", "ModuleCoherence"]
+
+[tier.core]
+always_on = ["Build", "VersionGate", "FileSizeCensus", "ImportCrossRef", "LazyCode", "Completeness", "ModuleCoherence", "Mutation", "Metamorphic"]
+risk_triggered = []

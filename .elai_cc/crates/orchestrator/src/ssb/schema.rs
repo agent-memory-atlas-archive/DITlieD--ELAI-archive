@@ -5491,7 +5491,10 @@ CREATE TABLE IF NOT EXISTS ssb (
         'hardware_model_catalog_event',
         -- K-2 (SCHEMA_VERSION 274): deterministic routing economics benchmark.
         -- Default-ON from the real `elai bench routing-economics` CLI path.
-        'routing_economics_measured'
+        'routing_economics_measured',
+        -- K-5 (SCHEMA_VERSION 275): deterministic risk-signal driven GateIntensity
+        -- selection. Emitted observe-only from the deterministic audit gate.
+        'gate_intensity_selected'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

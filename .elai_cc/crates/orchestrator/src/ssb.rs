@@ -1537,6 +1537,9 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // K-2 (SCHEMA_VERSION 274): deterministic routing economics benchmark.
     // Emitted by `elai bench routing-economics`; 582 -> 583.
     SsbActionType::RoutingEconomicsMeasured,
+    // K-5 (SCHEMA_VERSION 275): deterministic risk-signal driven GateIntensity
+    // selection. Emitted observe-only from the deterministic audit gate; 583 -> 584.
+    SsbActionType::GateIntensitySelected,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

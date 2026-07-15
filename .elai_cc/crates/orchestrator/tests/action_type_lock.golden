@@ -213,6 +213,7 @@ fsm_transition
 futility_detected
 futility_output_stagnation
 gate_decision
+gate_intensity_selected
 gate_self_validation
 gate_tax_measured
 gateway_hitl_pending
