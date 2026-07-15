@@ -220,6 +220,16 @@ pub(crate) fn run_bench_routing_economics(
     crate::bench_routing_economics::run(seed, json, force_cloud_everything)
 }
 
+pub(crate) fn run_bench_model_refresh(
+    lane: Option<String>,
+    seed: u64,
+    json: bool,
+) -> anyhow::Result<()> {
+    // K-9: production model-refresh vertical slice. Drives the catalog cadence
+    // runner, emits one ModelRefreshCadence row per decision, seals a signed RRA.
+    crate::bench_model_refresh::run(lane, seed, json)
+}
+
 pub(crate) fn run_bench_gate_tax(seed: u64, json: bool, enforce_ceiling: bool) -> anyhow::Result<()> {
     // K-4 (PS-2 owner, KEYSTONE of K-T3): composed gate-tax budget.
     // Drives gate_tax_runner over the real session journal (best-effort) or

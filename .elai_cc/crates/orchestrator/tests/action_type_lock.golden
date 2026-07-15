@@ -332,6 +332,7 @@ mlx_subprocess_spawned
 mode_changed
 mode_routing_bench_run_completed
 model_drift_suspected
+model_refresh_cadence
 model_swap
 mr_violated
 msi_update

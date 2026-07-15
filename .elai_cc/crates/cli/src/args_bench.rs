@@ -64,6 +64,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "routing-economics" {
         return parse_bench_routing_economics_args(&rest[1..]);
     }
+    if sub == "model-refresh" {
+        return parse_bench_model_refresh_args(&rest[1..]);
+    }
     if sub == "gate-tax" {
         return parse_bench_gate_tax_args(&rest[1..]);
     }
@@ -93,7 +96,7 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -1050,6 +1053,54 @@ fn parse_bench_routing_economics_args(rest: &[String]) -> Result<CliAction, Stri
         json,
         force_cloud_everything,
     })
+}
+
+/// K-9 -- parse `elai bench model-refresh [--lane <coding|vision|ocr|embedding_reranker>]
+/// [--seed <u64>] [--json]`.
+fn parse_bench_model_refresh_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut lane: Option<String> = None;
+    let mut seed = 0_u64;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--lane" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --lane".to_string())?;
+                lane = Some(v.clone());
+                i += 2;
+            }
+            f if f.starts_with("--lane=") => {
+                lane = Some(f["--lane=".len()..].to_string());
+                i += 1;
+            }
+            "--seed" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = v
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{v}': {e}"))?;
+                i += 2;
+            }
+            f if f.starts_with("--seed=") => {
+                let raw = &f["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench model-refresh` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchModelRefresh { lane, seed, json })
 }
 
 /// K-4 -- parse `elai bench gate-tax [--seed <u64>] [--json] [--enforce-ceiling]`.

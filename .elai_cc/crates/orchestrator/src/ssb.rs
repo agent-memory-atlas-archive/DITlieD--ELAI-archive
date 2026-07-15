@@ -1540,6 +1540,10 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // K-5 (SCHEMA_VERSION 275): deterministic risk-signal driven GateIntensity
     // selection. Emitted observe-only from the deterministic audit gate; 583 -> 584.
     SsbActionType::GateIntensitySelected,
+    // K-9 (SCHEMA_VERSION 276): model refresh cadence decision row. Flat action
+    // type; CandidateEvaluated/DecisionRecorded/IncumbentKept rides in
+    // ModelRefreshCadencePayload.kind. 584 -> 585.
+    SsbActionType::ModelRefreshCadence,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

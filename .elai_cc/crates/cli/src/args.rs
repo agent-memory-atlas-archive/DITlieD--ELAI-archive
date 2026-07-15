@@ -1008,6 +1008,12 @@ pub(crate) enum CliAction {
         json: bool,
         force_cloud_everything: bool,
     },
+    /// K-9: `elai bench model-refresh [--lane <coding|vision|ocr|embedding_reranker>] [--seed <u64>] [--json]`.
+    BenchModelRefresh {
+        lane: Option<String>,
+        seed: u64,
+        json: bool,
+    },
     /// K-4 (PS-2 owner, KEYSTONE of K-T3): `elai bench gate-tax
     /// [--seed <u64>] [--json] [--enforce-ceiling]`. Composed gate-tax budget:
     /// the in-band CODING trust-spine gate friction (11 FSM EvidenceGate

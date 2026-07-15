@@ -3747,6 +3747,10 @@ pub enum SsbPayload {
     /// selection beacon. Observe-only; emitted from the deterministic audit gate.
     /// TOTAL_VARIANTS 583 -> 584.
     GateIntensitySelected(GateIntensitySelectedPayload),
+    /// K-9 (SCHEMA_VERSION 276): model refresh cadence decision row. Flat action
+    /// type; CandidateEvaluated/DecisionRecorded/IncumbentKept rides in
+    /// ModelRefreshCadencePayload.kind. TOTAL_VARIANTS 584 -> 585.
+    ModelRefreshCadence(ModelRefreshCadencePayload),
 }
 
 impl SsbPayload {
@@ -4564,6 +4568,7 @@ impl SsbPayload {
             Self::HardwareModelCatalogEvent(_) => SsbActionType::HardwareModelCatalogEvent,
             Self::RoutingEconomicsMeasured(_) => SsbActionType::RoutingEconomicsMeasured,
             Self::GateIntensitySelected(_) => SsbActionType::GateIntensitySelected,
+            Self::ModelRefreshCadence(_) => SsbActionType::ModelRefreshCadence,
         }
     }
 }
@@ -20162,4 +20167,31 @@ pub struct GateIntensitySelectedPayload {
     pub policy_version: String,
     pub source_state: String,
     pub target_state: String,
+}
+
+// ---------------------------------------------------------------------------
+// K-9 (SCHEMA_VERSION 276): model refresh cadence decision row
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRefreshCadenceKind {
+    CandidateEvaluated,
+    DecisionRecorded,
+    IncumbentKept,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelRefreshCadencePayload {
+    pub kind: ModelRefreshCadenceKind,
+    pub lane: String,
+    pub candidate_model: String,
+    pub incumbent_model: String,
+    pub verdict: String,
+    pub pass_rate: Option<f64>,
+    pub vram_mb: Option<u32>,
+    pub tok_per_s: Option<f64>,
+    pub dollars_per_verified_task: Option<f64>,
+    pub fixture_run: bool,
+    pub notes: String,
 }

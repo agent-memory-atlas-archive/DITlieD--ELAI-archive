@@ -4756,6 +4756,10 @@ pub enum SsbActionType {
     /// selection beacon. Emitted observe-only from the deterministic audit gate.
     /// TOTAL_VARIANTS 583 -> 584.
     GateIntensitySelected,
+    /// K-9 (SCHEMA_VERSION 276): model refresh cadence decision row. Flat action
+    /// type; CandidateEvaluated/DecisionRecorded/IncumbentKept rides in
+    /// ModelRefreshCadencePayload.kind. TOTAL_VARIANTS 584 -> 585.
+    ModelRefreshCadence,
 }
 
 impl SsbActionType {
@@ -5685,6 +5689,8 @@ impl SsbActionType {
             Self::RoutingEconomicsMeasured => "routing_economics_measured",
             // K-5 (SCHEMA_VERSION 275): GateIntensity selection beacon.
             Self::GateIntensitySelected => "gate_intensity_selected",
+            // K-9 (SCHEMA_VERSION 276): model refresh cadence decision row.
+            Self::ModelRefreshCadence => "model_refresh_cadence",
         }
     }
 }
@@ -6532,6 +6538,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "routing_economics_measured" => Ok(SsbActionType::RoutingEconomicsMeasured),
         // K-5 (SCHEMA_VERSION 275): GateIntensity selection beacon.
         "gate_intensity_selected" => Ok(SsbActionType::GateIntensitySelected),
+        // K-9 (SCHEMA_VERSION 276): model refresh cadence decision row.
+        "model_refresh_cadence" => Ok(SsbActionType::ModelRefreshCadence),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

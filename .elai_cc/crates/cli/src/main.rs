@@ -417,6 +417,9 @@ mod bench_case_reuse;
 // K-2: `elai bench routing-economics` hybrid-vs-force-cloud cost per
 // verified task benchmark. Emits RoutingEconomicsMeasured + signed RRA.
 mod bench_routing_economics;
+// K-9: `elai bench model-refresh` cadence decisions. Emits ModelRefreshCadence
+// rows (one per decision) + signed RRA.
+mod bench_model_refresh;
 mod bench_gate_tax;
 // I-38 (SCHEMA_VERSION 235): `elai bench qdelta --config <PATH>` — QDELTA
 // defective-diff rate fixture harness. Statistical floor mechanically enforced
@@ -1433,6 +1436,11 @@ fn run() -> Result<(), anyhow::Error> {
         // UsageTurnEvent fixture rows. Emits RoutingEconomicsMeasured + RRA.
         CliAction::BenchRoutingEconomics { seed, json, force_cloud_everything } => {
             bench_cmd::run_bench_routing_economics(seed, json, force_cloud_everything)?;
+        }
+        // K-9: model-refresh cadence over the hardware catalog. Emits one
+        // ModelRefreshCadence SSB row per decision + sealed RRA.
+        CliAction::BenchModelRefresh { lane, seed, json } => {
+            bench_cmd::run_bench_model_refresh(lane, seed, json)?;
         }
         // K-4 (PS-2 owner, KEYSTONE of K-T3): composed gate-tax budget.
         // Drives gate_tax_runner over the real session journal or a labeled

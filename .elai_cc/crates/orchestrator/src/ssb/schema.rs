@@ -5494,7 +5494,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         'routing_economics_measured',
         -- K-5 (SCHEMA_VERSION 275): deterministic risk-signal driven GateIntensity
         -- selection. Emitted observe-only from the deterministic audit gate.
-        'gate_intensity_selected'
+        'gate_intensity_selected',
+        -- K-9 (SCHEMA_VERSION 276): model refresh cadence decision row. Flat
+        -- sql_str; CandidateEvaluated/DecisionRecorded/IncumbentKept rides in
+        -- payload.kind. 584 -> 585.
+        'model_refresh_cadence'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

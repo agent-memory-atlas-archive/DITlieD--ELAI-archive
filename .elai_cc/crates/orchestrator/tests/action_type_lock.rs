@@ -1558,6 +1558,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::RoutingEconomicsMeasured => (),
         // K-5 (SCHEMA_VERSION 275): gate intensity selector benchmark flat beacon.
         SsbActionType::GateIntensitySelected => (),
+        // K-9 (SCHEMA_VERSION 276): model refresh cadence decision row.
+        SsbActionType::ModelRefreshCadence => (),
     }
 }
 
