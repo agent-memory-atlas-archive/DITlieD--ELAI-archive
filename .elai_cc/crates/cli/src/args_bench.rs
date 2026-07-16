@@ -85,6 +85,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "qdelta" {
         return parse_bench_qdelta_args(&rest[1..]);
     }
+    if sub == "snowballing" {
+        return parse_bench_snowballing_args(&rest[1..]);
+    }
     if sub == "claim-scope" {
         return parse_bench_claim_scope_args(&rest[1..]);
     }
@@ -96,7 +99,7 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -1344,6 +1347,145 @@ fn parse_bench_qdelta_args(rest: &[String]) -> Result<crate::args::CliAction, St
         .map(std::path::PathBuf::from)
         .ok_or_else(|| "`bench qdelta` requires --config <PATH>".to_string())?;
     Ok(crate::args::CliAction::BenchQdelta { config, seed, json })
+}
+
+// ---------------------------------------------------------------------------
+// C-37: `elai bench snowballing --pool A|B --output <PATH> [...]`
+// ---------------------------------------------------------------------------
+
+fn parse_bench_snowballing_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut pool: Option<String> = None;
+    let mut n_samples: Option<i64> = None;
+    let mut model: Option<String> = None;
+    let mut max_trials: Option<i64> = None;
+    let mut reflector_mode: Option<String> = None;
+    let mut sidecar_url: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut python_bin: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--pool" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --pool".to_string())?;
+                pool = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--pool=") => {
+                pool = Some(flag["--pool=".len()..].to_string());
+                i += 1;
+            }
+            "--n-samples" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --n-samples".to_string())?;
+                n_samples = Some(
+                    value
+                        .parse::<i64>()
+                        .map_err(|e| format!("invalid --n-samples value '{value}': {e}"))?,
+                );
+                i += 2;
+            }
+            flag if flag.starts_with("--n-samples=") => {
+                let raw = &flag["--n-samples=".len()..];
+                n_samples = Some(
+                    raw.parse::<i64>()
+                        .map_err(|e| format!("invalid --n-samples value '{raw}': {e}"))?,
+                );
+                i += 1;
+            }
+            "--model" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --model".to_string())?;
+                model = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--model=") => {
+                model = Some(flag["--model=".len()..].to_string());
+                i += 1;
+            }
+            "--max-trials" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --max-trials".to_string())?;
+                max_trials = Some(
+                    value
+                        .parse::<i64>()
+                        .map_err(|e| format!("invalid --max-trials value '{value}': {e}"))?,
+                );
+                i += 2;
+            }
+            flag if flag.starts_with("--max-trials=") => {
+                let raw = &flag["--max-trials=".len()..];
+                max_trials = Some(
+                    raw.parse::<i64>()
+                        .map_err(|e| format!("invalid --max-trials value '{raw}': {e}"))?,
+                );
+                i += 1;
+            }
+            "--reflector-mode" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --reflector-mode".to_string())?;
+                reflector_mode = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--reflector-mode=") => {
+                reflector_mode = Some(flag["--reflector-mode=".len()..].to_string());
+                i += 1;
+            }
+            "--sidecar-url" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --sidecar-url".to_string())?;
+                sidecar_url = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--sidecar-url=") => {
+                sidecar_url = Some(flag["--sidecar-url=".len()..].to_string());
+                i += 1;
+            }
+            "--output" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output = Some(flag["--output=".len()..].to_string());
+                i += 1;
+            }
+            "--python-bin" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --python-bin".to_string())?;
+                python_bin = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--python-bin=") => {
+                python_bin = Some(flag["--python-bin=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench snowballing` argument: {other}"));
+            }
+        }
+    }
+    let pool = pool.ok_or_else(|| "`bench snowballing` requires --pool A|B".to_string())?;
+    let output = output.ok_or_else(|| "`bench snowballing` requires --output <PATH>".to_string())?;
+    Ok(crate::args::CliAction::BenchSnowballing {
+        pool,
+        n_samples,
+        model,
+        max_trials,
+        reflector_mode,
+        sidecar_url,
+        output,
+        python_bin,
+    })
 }
 
 // ---------------------------------------------------------------------------

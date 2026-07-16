@@ -1124,6 +1124,18 @@ pub(crate) enum CliAction {
         seed: u64,
         json: bool,
     },
+    // C-37: `elai bench snowballing --pool A|B --output <PATH>` — Structure
+    // Snowballing harness. Constrained-decoding 5-class Reflector replication.
+    BenchSnowballing {
+        pool: String,
+        n_samples: Option<i64>,
+        model: Option<String>,
+        max_trials: Option<i64>,
+        reflector_mode: Option<String>,
+        sidecar_url: Option<String>,
+        output: String,
+        python_bin: Option<String>,
+    },
     // I-43: `elai bench claim-scope [--suite <fixture>] [--seed <u64>] [--json]`
     // Reproducibility-claim scoper + cheap pre-falsification kill-gate.
     // Runs pilot (gate-ON vs gate-OFF, reviewer-reaching trap detector) and

@@ -426,6 +426,8 @@ mod bench_gate_tax;
 // (seed_count>=5, paired=true). Emits 1 QdeltaMeasured SSB flat beacon per
 // clean run. Live-model leg deferred (D-026).
 mod bench_qdelta;
+// C-37: `elai bench snowballing` — Structure Snowballing harness CLI driver.
+mod bench_snowballing;
 // I-43 (SCHEMA_VERSION 236): `elai bench claim-scope [--suite <SUITE>] [--seed <u64>]`
 // Reproducibility-claim scoper + cheap pre-falsification kill-gate. Runs pilot
 // (reduced-N gate-ON vs gate-OFF + reviewer-reaching trap detector) + divergence
@@ -1470,6 +1472,29 @@ fn run() -> Result<(), anyhow::Error> {
         // Emits 1 QdeltaMeasured SSB flat beacon. Live-model leg deferred (D-026).
         CliAction::BenchQdelta { config, seed, json } => {
             bench_qdelta::run(config, seed, json)?;
+        }
+        // C-37: Structure Snowballing harness. Constrained-decoding 5-class
+        // Reflector replication. Exits 0/1.
+        CliAction::BenchSnowballing {
+            pool,
+            n_samples,
+            model,
+            max_trials,
+            reflector_mode,
+            sidecar_url,
+            output,
+            python_bin,
+        } => {
+            bench_snowballing::run(
+                pool,
+                n_samples,
+                model,
+                max_trials,
+                reflector_mode,
+                sidecar_url,
+                output,
+                python_bin,
+            )?;
         }
         // I-43 (SCHEMA_VERSION 236): `elai bench claim-scope` — claim scoper kill-gate.
         // Fixture leg only; live-model leg deferred (D-026). Emits 3 ClaimScopeMeasured

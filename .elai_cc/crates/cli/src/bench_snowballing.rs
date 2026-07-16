@@ -54,13 +54,13 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum BenchSnowballingError {
     /// `--pool` value was not "A" or "B".
-    #[error("snowballing --pool must be 'A' or 'B'; got {value!r}")]
+    #[error("snowballing --pool must be 'A' or 'B'; got {value:?}")]
     InvalidPool { value: String },
     /// `--max-trials` outside [1, 10].
     #[error("snowballing --max-trials {value} outside [1, 10]")]
     InvalidMaxTrials { value: i64 },
     /// `--reflector-mode` value was not "schema_hint" or "outlines".
-    #[error("snowballing --reflector-mode must be 'schema_hint' or 'outlines'; got {value!r}")]
+    #[error("snowballing --reflector-mode must be 'schema_hint' or 'outlines'; got {value:?}")]
     InvalidReflectorMode { value: String },
     /// The Python interpreter could not be invoked (PATH miss / permissions).
     #[error("snowballing could not invoke Python ({bin}): {source_msg}")]
