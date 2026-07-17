@@ -49,6 +49,7 @@ use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::benchmarks::safedelta_runner::{
     SafeDeltaError, SafeDeltaReport, SafeDeltaTier2Error, run_safedelta,
 };
+use elai_orchestrator::benchmarks::seccodeplt_runner::SecCodePltRunner;
 use elai_providers::runtime::{
     CompletionConfig, Message, MessageRole, RuntimeAdapter as _,
     RuntimeBackend, RuntimeFactoryConfig, RuntimeHealth, SidecarRuntime,
@@ -68,6 +69,13 @@ const BENCH_SESSION_ID: &str = "cli-bench-safedelta";
 
 /// Agent id label for SSB rows (mirrors bench_seccodeplt pattern).
 const BENCH_AGENT_ID: &str = "cli:bench-safedelta";
+
+/// P1.b: cap on live completions per `elai bench safedelta --endpoint` run.
+/// The embedded seccodeplt corpus has 48 samples; firing 48 sequential live
+/// completions would make the smoke impractical. The point of P1.b is proving
+/// REAL corpus task_descriptions flow through the wire, not exhausting the
+/// corpus. The full-corpus generation loop is a later scorer slice.
+const LIVE_PROBE_MAX_TASKS: usize = 8;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -121,8 +129,8 @@ pub enum BenchSafedeltaError {
     #[error("safedelta live completion failed: {source_msg}")]
     LiveCompletion { source_msg: String },
     /// P1.a Tier-2 skeleton: the live completion returned empty text.
-    #[error("safedelta live completion returned empty text")]
-    LiveCompletionEmpty,
+    #[error("safedelta live completion returned empty text for task {task_id}")]
+    LiveCompletionEmpty { task_id: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +185,7 @@ pub fn run_inner(
     //    issue ONE sample completion, then fall through to the static
     //    ablation unchanged. Absent = byte-for-byte the Tier-1 static path.
     if let Some(url) = endpoint.as_deref() {
-        run_live_probe(url, model.as_deref())?;
+        run_live_probe(url, model.as_deref(), seed)?;
     }
 
     // 1. Run the gate-ON-vs-gate-OFF SAFEDELTA ablation (DERIVES from F-2,
@@ -232,18 +240,24 @@ pub fn run_inner(
 // P1.a Tier-2 skeleton — live-model probe
 // ---------------------------------------------------------------------------
 
-/// P1.a Tier-2 skeleton: build a `SidecarRuntime` against `endpoint`, run a
-/// fail-loud health check, issue ONE sample completion, and return Ok only if
-/// a non-empty completion string came back. This is the walking skeleton for
-/// the SAFEDELTA Tier-2 model-in-loop harness; later slices add the generation
-/// loop + scorer. GENERATION ONLY — no model-authored patch text is executed
-/// or applied here (that is a later, owner-gated, sandboxed slice).
+/// P1.b Tier-2: build a `SidecarRuntime` against `endpoint`, run a fail-loud
+/// health check, then iterate the REAL embedded seccodeplt corpus
+/// `task_description` prompts issuing ONE generation-only completion per task
+/// (capped at [`LIVE_PROBE_MAX_TASKS`] samples for smoke practicality), and
+/// return Ok only if every completion came back non-empty. This is the
+/// model-in-loop leg of the SAFEDELTA Tier-2 harness; a later scorer slice
+/// consumes the generated text. GENERATION ONLY — no model-authored patch text
+/// is executed, written to disk, or applied here (that is a later, owner-gated,
+/// sandboxed slice).
 ///
 /// `endpoint` is the --endpoint value (e.g. `http://127.0.0.1:8181`).
 /// `model` is the optional --model value; None = sidecar default.
+/// `seed` pins the corpus construction (provenance; the corpus order itself is
+/// not RNG-shuffled).
 fn run_live_probe(
     endpoint: &str,
     model: Option<&str>,
+    seed: u64,
 ) -> Result<(), BenchSafedeltaError> {
     let cfg = RuntimeFactoryConfig {
         backend: RuntimeBackend::Sidecar,
@@ -280,29 +294,43 @@ fn run_live_probe(
             }
         }
 
-        // P1.a: literal probe prompt; P1.b threads real corpus task prompts.
-        let messages = vec![Message {
-            role: MessageRole::User,
-            content: "return a one-line unified diff that adds a bounds check"
-                .to_string(),
-        }];
+        // P1.b: thread REAL seccodeplt corpus task_description prompts through
+        // the live leg. GENERATION ONLY — the returned text is measured (char
+        // count) and discarded, never written to disk, applied, or executed.
+        let runner = SecCodePltRunner::from_embedded_with_seed(seed)
+            .map_err(|e| BenchSafedeltaError::LiveCompletion {
+                source_msg: format!("corpus build failed: {e}"),
+            })?;
+        let samples = runner.samples();
         let config = CompletionConfig {
             max_tokens: 4096,
             temperature: 0.0,
             ..CompletionConfig::default()
         };
-        let response = runtime
-            .complete(messages, config)
-            .await
-            .map_err(|e| BenchSafedeltaError::LiveCompletion {
-                source_msg: e.to_string(),
-            })?;
-        if response.text.trim().is_empty() {
-            return Err(BenchSafedeltaError::LiveCompletionEmpty);
+        let mut total_chars: usize = 0;
+        let mut tasks_run: usize = 0;
+        for sample in samples.iter().take(LIVE_PROBE_MAX_TASKS) {
+            let messages = vec![Message {
+                role: MessageRole::User,
+                content: sample.task_description.clone(),
+            }];
+            let response = runtime
+                .complete(messages, config.clone())
+                .await
+                .map_err(|e| BenchSafedeltaError::LiveCompletion {
+                    source_msg: format!("task {}: {e}", sample.id),
+                })?;
+            if response.text.trim().is_empty() {
+                return Err(BenchSafedeltaError::LiveCompletionEmpty {
+                    task_id: sample.id.clone(),
+                });
+            }
+            total_chars += response.text.chars().count();
+            tasks_run += 1;
         }
         eprintln!(
-            "live endpoint OK: {} chars",
-            response.text.chars().count()
+            "live corpus OK: {} tasks, {} chars",
+            tasks_run, total_chars
         );
         Ok(())
     })
@@ -470,8 +498,14 @@ mod tests {
     #[test]
     fn run_inner_fails_on_nonexistent_suite() {
         // A Tier-2 non-seccodeplt suite must be rejected with RunpodPending.
-        let err = run_inner(vec!["susvibes".to_string()], 42, false)
-            .unwrap_err();
+        let err = run_inner(
+            vec!["susvibes".to_string()],
+            42,
+            false,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, BenchSafedeltaError::RunpodPending(_)),
             "non-seccodeplt Tier-1 suite must return RunpodPending, got {err}"
