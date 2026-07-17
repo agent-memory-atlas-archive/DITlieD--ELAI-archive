@@ -2,7 +2,9 @@
 //!
 //! Drives the orchestrator runner, writes the deterministic fixture report,
 //! emits one `RoutingEconomicsMeasured` SSB row, and seals the session stream
-//! into an RRA. The live lane remains honestly `RunnerPresent` until funded.
+//! into an RRA. The live lane reads real `UsageTurnEvent` rows from the
+//! session `ssb.db` when `ELAI_BENCH_ROUTING_LIVE_ROWS=1` is set; otherwise
+//! the deterministic fixture runs and `live_cost` stays unavailable.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use elai_core::paths::sessions_dir_path;
 use elai_core::OsClock;
 use elai_orchestrator::benchmarks::routing_economics_runner::{
-    run_routing_economics, RoutingEconomicsError, RoutingEconomicsReport, RunnerStatus,
+    run_routing_economics, RowSource, RoutingEconomicsError, RoutingEconomicsReport, RunnerStatus,
 };
 use elai_orchestrator::determinism::DeterminismConfig;
 use elai_orchestrator::rra::{build_rra, write_rra};
@@ -22,6 +24,15 @@ use thiserror::Error;
 
 const BENCH_SESSION_ID: &str = "cli-bench-routing-economics";
 const BENCH_AGENT_ID: &str = "cli:bench-routing-economics";
+
+/// Env-var selector for the live-rows row source. When set to `1`, the runner
+/// reads real `UsageTurnEvent` rows from the session `ssb.db` instead of the
+/// baked fixture. Default-OFF (fixture path). A CLI flag on the
+/// `routing-economics` sub-verb is the preferred selector, but the
+/// `CliAction::BenchRoutingEconomics` variant is destructured in `main.rs`,
+/// which is outside this slice's allowed-write set; the env var keeps the live
+/// path reachable from the same CLI entrypoint without an out-of-scope edit.
+const LIVE_ROWS_ENV: &str = "ELAI_BENCH_ROUTING_LIVE_ROWS";
 
 #[derive(Debug, Error)]
 enum BenchRoutingEconomicsError {
@@ -62,10 +73,15 @@ fn run_inner(
     json: bool,
     force_cloud_everything: bool,
 ) -> Result<(), BenchRoutingEconomicsError> {
-    let report = run_routing_economics(seed, force_cloud_everything)?;
     let project_root = std::env::current_dir().map_err(|e| BenchRoutingEconomicsError::Cwd {
         source_msg: e.to_string(),
     })?;
+    let live_db_path = resolve_live_db_path(&project_root)?;
+    let row_source = match &live_db_path {
+        Some(path) => RowSource::Live { db_path: path.as_path() },
+        None => RowSource::Fixture,
+    };
+    let report = run_routing_economics(seed, force_cloud_everything, row_source)?;
     let report_path = write_json_report(&project_root, &report)?;
     let rra_path = report_path.with_extension("rra");
     emit_beacon_and_rra(&project_root, &rra_path, &report)?;
@@ -94,6 +110,21 @@ fn run_inner(
         println!("{body}");
     }
     Ok(())
+}
+
+/// Resolve the live-rows `ssb.db` path from the `ELAI_BENCH_ROUTING_LIVE_ROWS`
+/// env var. When set to `1` (or `true`, case-insensitive), returns the path to
+/// `sessions/ssb.db` (mirroring `usage_cmd.rs:48-53`); otherwise returns
+/// `None` (the deterministic fixture path runs).
+fn resolve_live_db_path(project_root: &Path) -> Result<Option<PathBuf>, BenchRoutingEconomicsError> {
+    let live = std::env::var(LIVE_ROWS_ENV)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !live {
+        return Ok(None);
+    }
+    Ok(Some(sessions_dir_path(project_root).join("ssb.db")))
 }
 
 fn write_json_report(
