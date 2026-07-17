@@ -67,6 +67,20 @@ pub enum RuntimeEvent {
         exit_code: Option<i32>,
         reason: String,
     },
+    /// E-26 — SGLang runtime constructed with a resolved base_url and
+    /// structured-output backend selector. Emitted once per
+    /// `SglangRuntime::new` / `with_runtime_config`.
+    SglangBackendRegistered {
+        base_url: String,
+        structured_output_backend: String,
+    },
+    /// E-26 — first transition of a runtime's `health_check` to
+    /// `RuntimeHealth::Ready`. `elapsed_ms` is the wall-clock latency
+    /// of that first ready probe.
+    RuntimeColdStartObserved {
+        backend: RuntimeBackend,
+        elapsed_ms: u64,
+    },
 }
 
 /// Object-safe sink consumed by the runtime layer. The orchestrator

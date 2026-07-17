@@ -30,12 +30,16 @@
 //! health-probed cloud throughput adapter). Plan body explicitly says
 //! DO NOT collapse — different lifecycle.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures_util::stream::{self, BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::event_sink::RuntimeEvent;
+use super::runtime_event_sink;
 use super::types::{
     unavailable, CompletionConfig, CompletionResponse, Message, MessageRole, RuntimeAdapter,
     RuntimeAdapterError, RuntimeBackend, RuntimeCapabilities, RuntimeFactoryConfig, RuntimeFuture,
@@ -109,6 +113,7 @@ pub struct SglangRuntime {
     http: reqwest::Client,
     health_http: reqwest::Client,
     structured_output_backend: StructuredOutputBackend,
+    cold_start_seen: Arc<AtomicBool>,
 }
 
 impl SglangRuntime {
@@ -131,12 +136,18 @@ impl SglangRuntime {
             .timeout(Duration::from_secs(HEALTH_TIMEOUT_SECS))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
+        let structured_output_backend = StructuredOutputBackend::default();
+        runtime_event_sink().record(Self::registered_event(
+            &base_url,
+            structured_output_backend,
+        ));
         Self {
             base_url,
             model,
             http,
             health_http,
-            structured_output_backend: StructuredOutputBackend::default(),
+            structured_output_backend,
+            cold_start_seen: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -153,12 +164,35 @@ impl SglangRuntime {
             .timeout(Duration::from_secs(HEALTH_TIMEOUT_SECS))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
+        let structured_output_backend = cfg.structured_output_backend;
+        runtime_event_sink().record(Self::registered_event(
+            &cfg.base_url,
+            structured_output_backend,
+        ));
         Self {
             base_url: cfg.base_url,
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             http,
             health_http,
-            structured_output_backend: cfg.structured_output_backend,
+            structured_output_backend,
+            cold_start_seen: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn registered_event(base_url: &str, backend: StructuredOutputBackend) -> RuntimeEvent {
+        RuntimeEvent::SglangBackendRegistered {
+            base_url: base_url.to_string(),
+            structured_output_backend: backend.as_str().to_string(),
+        }
+    }
+
+    fn observe_cold_start(seen: &AtomicBool, elapsed_ms: u64) -> Option<RuntimeEvent> {
+        match seen.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => Some(RuntimeEvent::RuntimeColdStartObserved {
+                backend: RuntimeBackend::Sglang,
+                elapsed_ms,
+            }),
+            Err(_) => None,
         }
     }
 
@@ -230,8 +264,10 @@ impl RuntimeAdapter for SglangRuntime {
         // 200 with a non-empty data array == Ready.
         let models_url = self.endpoint("/v1/models");
         let client = self.health_http.clone();
+        let cold_start_seen = Arc::clone(&self.cold_start_seen);
         Box::pin(async move {
-            match client.get(&models_url).send().await {
+            let started = Instant::now();
+            let health = match client.get(&models_url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     match resp.json::<ModelsResponse>().await {
                         Ok(m) if !m.data.is_empty() => RuntimeHealth::Ready,
@@ -244,7 +280,14 @@ impl RuntimeAdapter for SglangRuntime {
                     resp.status().as_u16()
                 )),
                 Err(err) => unavailable(format!("sglang unreachable: {err}")),
+            };
+            if matches!(health, RuntimeHealth::Ready) {
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                if let Some(event) = Self::observe_cold_start(&cold_start_seen, elapsed_ms) {
+                    runtime_event_sink().record(event);
+                }
             }
+            health
         })
     }
 
@@ -647,5 +690,39 @@ mod tests {
             Some(StreamChunk::TextDelta { text }) => assert_eq!(text, "hi"),
             other => panic!("expected TextDelta, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn registered_event_carries_base_url_and_backend() {
+        let event = SglangRuntime::registered_event(
+            "http://localhost:30000",
+            StructuredOutputBackend::XGrammar,
+        );
+        match event {
+            RuntimeEvent::SglangBackendRegistered {
+                base_url,
+                structured_output_backend,
+            } => {
+                assert_eq!(base_url, "http://localhost:30000");
+                assert_eq!(structured_output_backend, "xgrammar");
+            }
+            other => panic!("expected SglangBackendRegistered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn observe_cold_start_emits_once_then_never() {
+        let seen = AtomicBool::new(false);
+        let first = SglangRuntime::observe_cold_start(&seen, 42);
+        assert!(first.is_some(), "first call should emit");
+        match first {
+            Some(RuntimeEvent::RuntimeColdStartObserved { backend, elapsed_ms }) => {
+                assert_eq!(backend, RuntimeBackend::Sglang);
+                assert_eq!(elapsed_ms, 42);
+            }
+            other => panic!("wrong event: {other:?}"),
+        }
+        let second = SglangRuntime::observe_cold_start(&seen, 99);
+        assert!(second.is_none(), "second call should not emit");
     }
 }

@@ -19,8 +19,9 @@ use elai_providers::runtime::{
 use tracing::warn;
 
 use crate::ssb::{
-    CliSubprocessKilledPayload, CliSubprocessSpawnedPayload, RuntimeFallbackPayload,
-    RuntimeHealthChangedPayload, Ssb, SsbPayload,
+    CliSubprocessKilledPayload, CliSubprocessSpawnedPayload, RuntimeColdStartObservedPayload,
+    RuntimeFallbackPayload, RuntimeHealthChangedPayload, SglangBackendRegisteredPayload, Ssb,
+    SsbPayload,
 };
 
 /// SSB-backed `RuntimeEventSink`. Holds an `Arc<Ssb>` and pushes each
@@ -62,71 +63,11 @@ impl RuntimeEventSink for SsbRuntimeEventSink {
     fn record(&self, event: RuntimeEvent) {
         let ssb = Arc::clone(&self.ssb);
         let agent_id = self.agent_id.clone();
-        // Convert provider-side `RuntimeEvent` to orchestrator
-        // `SsbPayload`. `Fallback.role` arrives as a snake_case string;
-        // we re-parse via serde so any future role addition does not
-        // need a hand-written match here.
-        let payload = match event {
-            RuntimeEvent::Fallback {
-                role,
-                primary,
-                attempted,
-                succeeded,
-                reason,
-            } => match serde_json::from_value::<elai_ipc_types::AgentRole>(
-                serde_json::Value::String(role.clone()),
-            ) {
-                Ok(parsed_role) => SsbPayload::RuntimeFallback(RuntimeFallbackPayload {
-                    role: parsed_role,
-                    primary,
-                    attempted,
-                    succeeded,
-                    reason,
-                }),
-                Err(e) => {
-                    warn!(
-                        target = "runtime_event_sink_ssb",
-                        error = %e,
-                        role,
-                        "RuntimeFallback emit dropped: unknown agent role"
-                    );
-                    return;
-                }
-            },
-            RuntimeEvent::HealthChanged {
-                backend,
-                prev,
-                next,
-            } => SsbPayload::RuntimeHealthChanged(RuntimeHealthChangedPayload {
-                backend,
-                prev,
-                next,
-            }),
-            RuntimeEvent::CliSubprocessSpawned {
-                backend,
-                pid,
-                argv_redacted,
-            } => SsbPayload::CliSubprocessSpawned(CliSubprocessSpawnedPayload {
-                backend,
-                pid,
-                argv_redacted,
-            }),
-            RuntimeEvent::CliSubprocessKilled {
-                backend,
-                pid,
-                exit_code,
-                reason,
-            } => SsbPayload::CliSubprocessKilled(CliSubprocessKilledPayload {
-                backend,
-                pid,
-                exit_code,
-                reason,
-            }),
+        let payload = match runtime_event_to_payload(event) {
+            Some(p) => p,
+            None => return,
         };
 
-        // Spawn the actual write. We DO NOT block the caller — the
-        // write queue is a bounded mpsc inside Ssb, and any errors are
-        // logged via tracing rather than bubbled.
         tokio::spawn(async move {
             if let Err(e) = ssb.write_payload(&agent_id, 0, payload, Vec::new()).await {
                 warn!(
@@ -139,6 +80,86 @@ impl RuntimeEventSink for SsbRuntimeEventSink {
     }
 }
 
+fn runtime_event_to_payload(event: RuntimeEvent) -> Option<SsbPayload> {
+    let payload = match event {
+        RuntimeEvent::Fallback {
+            role,
+            primary,
+            attempted,
+            succeeded,
+            reason,
+        } => match serde_json::from_value::<elai_ipc_types::AgentRole>(
+            serde_json::Value::String(role.clone()),
+        ) {
+            Ok(parsed_role) => SsbPayload::RuntimeFallback(RuntimeFallbackPayload {
+                role: parsed_role,
+                primary,
+                attempted,
+                succeeded,
+                reason,
+            }),
+            Err(e) => {
+                warn!(
+                    target = "runtime_event_sink_ssb",
+                    error = %e,
+                    role,
+                    "RuntimeFallback emit dropped: unknown agent role"
+                );
+                return None;
+            }
+        },
+        RuntimeEvent::HealthChanged {
+            backend,
+            prev,
+            next,
+        } => SsbPayload::RuntimeHealthChanged(RuntimeHealthChangedPayload {
+            backend,
+            prev,
+            next,
+        }),
+        RuntimeEvent::CliSubprocessSpawned {
+            backend,
+            pid,
+            argv_redacted,
+        } => SsbPayload::CliSubprocessSpawned(CliSubprocessSpawnedPayload {
+            backend,
+            pid,
+            argv_redacted,
+        }),
+        RuntimeEvent::CliSubprocessKilled {
+            backend,
+            pid,
+            exit_code,
+            reason,
+        } => SsbPayload::CliSubprocessKilled(CliSubprocessKilledPayload {
+            backend,
+            pid,
+            exit_code,
+            reason,
+        }),
+        RuntimeEvent::SglangBackendRegistered {
+            base_url,
+            structured_output_backend,
+        } => SsbPayload::SglangBackendRegistered(SglangBackendRegisteredPayload {
+            base_url_blake3: blake3::hash(base_url.as_bytes()).to_hex().to_string(),
+            structured_output_backend,
+            ts_ms: now_ms_i64(),
+        }),
+        RuntimeEvent::RuntimeColdStartObserved { backend, elapsed_ms } => {
+            let backend_name_hash = {
+                let h = blake3::hash(backend.canonical_name().as_bytes());
+                u64::from_le_bytes(h.as_bytes()[..8].try_into().unwrap_or([0u8; 8]))
+            };
+            SsbPayload::RuntimeColdStartObserved(RuntimeColdStartObservedPayload {
+                backend_name_hash,
+                elapsed_ms,
+                ts_ms: now_ms_i64(),
+            })
+        }
+    };
+    Some(payload)
+}
+
 /// Install the SSB-backed sink as the process-global runtime event
 /// sink. Returns `Ok(())` on first install; `Err(_)` if a sink is
 /// already installed (test setups, orchestrator double-boot). The
@@ -149,6 +170,11 @@ pub fn install_runtime_event_sink_ssb(
 ) -> Result<(), Arc<dyn RuntimeEventSink>> {
     let sink: Arc<dyn RuntimeEventSink> = Arc::new(SsbRuntimeEventSink::new(ssb, agent_id));
     install_runtime_event_sink(sink)
+}
+
+fn now_ms_i64() -> i64 {
+    use elai_core::clock::{ClockProvider, OsClock};
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 // --- Quiet the unused-import linter for `RuntimeBackend` / `RuntimeHealth`
@@ -255,5 +281,44 @@ mod tests {
             next: RuntimeHealth::Ready,
         });
         assert_eq!(sink.events.lock().expect("lock").len(), 1);
+    }
+
+    #[test]
+    fn sglang_backend_registered_converts_to_ssbpayload() {
+        let event = RuntimeEvent::SglangBackendRegistered {
+            base_url: "http://localhost:30000".into(),
+            structured_output_backend: "xgrammar".into(),
+        };
+        let payload = runtime_event_to_payload(event).expect("payload");
+        match payload {
+            SsbPayload::SglangBackendRegistered(p) => {
+                assert_eq!(
+                    p.base_url_blake3,
+                    blake3::hash(b"http://localhost:30000").to_hex().to_string()
+                );
+                assert_eq!(p.structured_output_backend, "xgrammar");
+            }
+            other => panic!("expected SglangBackendRegistered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_cold_start_observed_converts_to_ssbpayload() {
+        let event = RuntimeEvent::RuntimeColdStartObserved {
+            backend: RuntimeBackend::Sglang,
+            elapsed_ms: 1500,
+        };
+        let payload = runtime_event_to_payload(event).expect("payload");
+        match payload {
+            SsbPayload::RuntimeColdStartObserved(p) => {
+                let expected = {
+                    let h = blake3::hash(RuntimeBackend::Sglang.canonical_name().as_bytes());
+                    u64::from_le_bytes(h.as_bytes()[..8].try_into().unwrap_or([0u8; 8]))
+                };
+                assert_eq!(p.backend_name_hash, expected);
+                assert_eq!(p.elapsed_ms, 1500);
+            }
+            other => panic!("expected RuntimeColdStartObserved, got {other:?}"),
+        }
     }
 }
