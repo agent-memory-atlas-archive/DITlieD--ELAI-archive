@@ -42,7 +42,7 @@ class TransferReport:
 def validate_transfer(
     val_lift_pct: float,
     target_reeval_lift_pct: float,
-    target_model_url: str = "http://localhost:8100/v1/messages",
+    target_model_url: str = "http://localhost:8181/v1/messages",
     canary_results: Optional[list[tuple[str, float]]] = None,
     epsilon_pct: float = _DEFAULT_EPSILON_PCT,
 ) -> TransferReport:

@@ -216,7 +216,7 @@ def optimize_template(
     train_set_path: str,
     val_set_path: str,
     reflection_model: str = "claude-4.6-sonnet",
-    target_model_url: str = "http://localhost:8100/v1/messages",
+    target_model_url: str = "http://localhost:8181/v1/messages",
     budget_tokens: int = 200_000,
     include_cross_domain: bool = False,
 ) -> OptimizedTemplate:
