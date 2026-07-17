@@ -16,6 +16,7 @@ mod dep_audit;
 mod dep_check_cmd;
 mod doctor;
 mod handoff;
+mod production_checklist_cmd;
 mod indexing;
 mod index_cmd;
 mod init;
@@ -704,6 +705,12 @@ fn run() -> Result<(), anyhow::Error> {
             project_root,
             output_format,
         } => doctor::run_knowledge_models_probe(&project_root, output_format)?,
+        // E-12 — `elai production-checklist [--project-root PATH]
+        // [--output-format text|json|toml]`.
+        CliAction::ProductionChecklist {
+            project_root,
+            output_format,
+        } => production_checklist_cmd::run_production_checklist_cli(&project_root, output_format)?,
         // B-43 Phase 7 — `elai install [--skip-models] [--reset-config]`.
         // Re-entry from the already-installed CLI; spawns scripts/install/install.{sh,ps1}
         // with forwarded flags and reads per-step state files for the report.
