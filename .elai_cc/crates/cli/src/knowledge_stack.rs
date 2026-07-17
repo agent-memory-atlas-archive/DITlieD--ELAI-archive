@@ -594,6 +594,46 @@ fn run_startup_and_emit(
     cascade
 }
 
+/// Dispatch arms like `elai prompt --backend=local` reach this module with no
+/// ambient tokio runtime, where a bare `tokio::spawn` panics: one-shot SSB
+/// emits fall back to a throwaway current-thread `block_on` so the row still
+/// lands.
+fn spawn_or_block_emit<F>(fut: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(fut);
+        }
+        Err(_) => match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt.block_on(fut),
+            Err(e) => {
+                tracing::warn!(error = %e, "knowledge_stack: no runtime for one-shot SSB emit");
+            }
+        },
+    }
+}
+
+/// Long-lived background loops have no reactor to drive them on a one-shot
+/// dispatch arm; skip with a warn instead of panicking.
+fn spawn_if_runtime<F>(task: &'static str, fut: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(fut);
+        }
+        Err(_) => {
+            tracing::warn!(task, "knowledge_stack: no ambient tokio runtime; background loop skipped");
+        }
+    }
+}
+
 /// Emit the SearchModeChanged and CanaryDrift SSB rows and spawn the cascade
 /// evaluator loop after startup. C-8 Task #7, B-4 task #14, 1I-R1.
 fn emit_startup_ssb_events(
@@ -612,7 +652,7 @@ fn emit_startup_ssb_events(
             },
         );
         let ssb_for_emit = ssb_arc.clone();
-        tokio::spawn(async move {
+        spawn_or_block_emit(async move {
             if let Err(e) = ssb_for_emit
                 .write_payload("live_cli", 0, payload, Vec::new())
                 .await
@@ -647,7 +687,7 @@ fn emit_startup_ssb_events(
             },
         );
         let ssb_for_drift = ssb_arc.clone();
-        tokio::spawn(async move {
+        spawn_or_block_emit(async move {
             if let Err(e) = ssb_for_drift
                 .write_payload(
                     elai_orchestrator::task_runner::RUNNER_AGENT_ID,
@@ -671,7 +711,7 @@ fn emit_startup_ssb_events(
             *m = initial_mode;
         }
         let _mode_handle = search_mode_shared.clone();
-        tokio::spawn(async move {
+        spawn_if_runtime("cascade_evaluator", async move {
             spawn_cascade_evaluator_loop(ssb_for_loop, initial_mode).await;
         });
     }
@@ -711,7 +751,7 @@ fn attach_cosmos(
     if let Some(ref ssb_arc) = ssb {
         let ssb_for_tick = ssb_arc.clone();
         let worker_for_tick = worker_arc.clone();
-        tokio::spawn(async move {
+        spawn_if_runtime("cosmos_tick_scheduler", async move {
             let interval_secs = elai_knowledge::DEFAULT_TICK_INTERVAL_SECS;
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(interval_secs));
@@ -810,7 +850,7 @@ fn spawn_playbook_curator(
     let ssb_for_playbook = ssb_arc;
     let rules_db_for_tick = rules_db;
     let clock_for_tick = Arc::clone(clock);
-    tokio::spawn(async move {
+    spawn_if_runtime("playbook_curator_tick", async move {
         let curator = elai_orchestrator::rule_curator::PlaybookCurator::new(
             &rules_db_for_tick,
             clock_for_tick,

@@ -463,6 +463,9 @@ impl ApiClient for RuntimeClient {
                             &empty,                // SsbEntries
                             &empty,                // GrcHistory
                             &empty,                // OutputReserve
+                            &empty,                // Memory
+                            &empty,                // Evidence
+                            &empty,                // AnchorPane
                         ]);
 
                         let output_slot = ContextSlot::OutputReserve as usize;
@@ -566,6 +569,9 @@ impl ApiClient for RuntimeClient {
                         &empty,
                         &empty,
                         &code_bytes,
+                        &empty,
+                        &empty,
+                        &empty,
                         &empty,
                         &empty,
                         &empty,
