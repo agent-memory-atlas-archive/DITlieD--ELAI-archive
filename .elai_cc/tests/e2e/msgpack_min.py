@@ -7,6 +7,7 @@ Sufficient for CitationAnchorsBoundPayload and other simple SSB payloads.
 """
 
 from __future__ import annotations
+import struct
 from typing import Any
 
 _NIL = 0xC0
@@ -26,6 +27,8 @@ _INT64 = 0xD3
 _STR8 = 0xD9
 _STR16 = 0xDA
 _STR32 = 0xDB
+_FLOAT32 = 0xCA
+_FLOAT64 = 0xCB
 
 
 def _read_str(data: bytes, off: int, n: int) -> tuple[str, int]:
@@ -72,6 +75,13 @@ def _decode_one(data: bytes, off: int) -> tuple[Any, int]:
         return True, off
     if b == _FALSE:
         return False, off
+
+    if b == _FLOAT32:
+        v = struct.unpack_from(">f", data, off)[0]
+        return v, off + 4
+    if b == _FLOAT64:
+        v = struct.unpack_from(">d", data, off)[0]
+        return v, off + 8
 
     if b == _BIN8:
         n = data[off]; off += 1
