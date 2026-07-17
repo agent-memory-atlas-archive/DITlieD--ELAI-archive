@@ -899,7 +899,8 @@ fn parse_bench_staleness_args(rest: &[String]) -> Result<CliAction, String> {
     })
 }
 
-/// G-6: parse `elai bench safedelta [--suites <csv>] [--seed <u64>] [--json]`.
+/// G-6: parse `elai bench safedelta [--suites <csv>] [--seed <u64>] [--json]
+/// [--endpoint <url>] [--model <id>]`.
 ///
 /// `--suites` accepts a comma-separated list of suite labels. Tier-1 only
 /// processes `seccodeplt`; other suites require a live RunPod endpoint and
@@ -908,10 +909,18 @@ fn parse_bench_staleness_args(rest: &[String]) -> Result<CliAction, String> {
 ///
 /// `--seed` accepts a `u64`. If omitted, defaults to 0 (the default ELAI_SEED
 /// path, same as `from_embedded`).
+///
+/// `--endpoint`/`--model` (P1.a Tier-2 skeleton) opt in to the live-model leg:
+/// when `--endpoint` is present, `run_inner` builds a `SidecarRuntime` against
+/// that URL (model defaults to the sidecar default when `--model` is absent),
+/// runs a fail-loud health check, and issues ONE sample `complete()` call
+/// before the static ablation. Absent = byte-for-byte the Tier-1 static path.
 fn parse_bench_safedelta_args(rest: &[String]) -> Result<CliAction, String> {
     let mut suites: Vec<String> = Vec::new();
     let mut seed: u64 = 0;
     let mut json = false;
+    let mut endpoint: Option<String> = None;
+    let mut model: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -947,6 +956,28 @@ fn parse_bench_safedelta_args(rest: &[String]) -> Result<CliAction, String> {
                 json = true;
                 i += 1;
             }
+            "--endpoint" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --endpoint".to_string())?;
+                endpoint = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--endpoint=") => {
+                endpoint = Some(flag["--endpoint=".len()..].to_string());
+                i += 1;
+            }
+            "--model" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --model".to_string())?;
+                model = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--model=") => {
+                model = Some(flag["--model=".len()..].to_string());
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `bench safedelta` argument: {other}"));
             }
@@ -956,7 +987,13 @@ fn parse_bench_safedelta_args(rest: &[String]) -> Result<CliAction, String> {
     if suites.is_empty() {
         suites.push("seccodeplt".to_string());
     }
-    Ok(CliAction::BenchSafedelta { suites, seed, json })
+    Ok(CliAction::BenchSafedelta {
+        suites,
+        seed,
+        json,
+        endpoint,
+        model,
+    })
 }
 
 /// K-18a — parse `elai bench case-reuse [--suite fixture] [--seed <u64>] [--json]`.

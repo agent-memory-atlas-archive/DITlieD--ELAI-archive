@@ -49,6 +49,10 @@ use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::benchmarks::safedelta_runner::{
     SafeDeltaError, SafeDeltaReport, SafeDeltaTier2Error, run_safedelta,
 };
+use elai_providers::runtime::{
+    CompletionConfig, Message, MessageRole, RuntimeAdapter as _,
+    RuntimeBackend, RuntimeFactoryConfig, RuntimeHealth, SidecarRuntime,
+};
 use elai_orchestrator::determinism::DeterminismConfig;
 use elai_orchestrator::rra::{build_rra, write_rra};
 use elai_orchestrator::ssb::{SafetyDeltaMeasuredPayload, SsbReader as _};
@@ -107,6 +111,18 @@ pub enum BenchSafedeltaError {
     /// Writing the .rra manifest failed.
     #[error("safedelta could not write .rra manifest to {path}: {source_msg}")]
     RraWrite { path: String, source_msg: String },
+    /// P1.a Tier-2 skeleton: the live SidecarRuntime could not be constructed.
+    #[error("safedelta live leg could not build SidecarRuntime: {source_msg}")]
+    LiveRuntimeBuild { source_msg: String },
+    /// P1.a Tier-2 skeleton: the live endpoint health check did not report Ready.
+    #[error("safedelta live endpoint not ready: {reason}")]
+    LiveEndpointNotReady { reason: String },
+    /// P1.a Tier-2 skeleton: the live completion call failed.
+    #[error("safedelta live completion failed: {source_msg}")]
+    LiveCompletion { source_msg: String },
+    /// P1.a Tier-2 skeleton: the live completion returned empty text.
+    #[error("safedelta live completion returned empty text")]
+    LiveCompletionEmpty,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,8 +137,14 @@ pub enum BenchSafedeltaError {
 /// `SAFEDELTA ABORT:` line to stderr and calls `std::process::exit(1)`.
 /// `Err(anyhow::Error)` is reserved for failures the top-level dispatcher
 /// renders.
-pub(crate) fn run(suites: Vec<String>, seed: u64, json: bool) -> anyhow::Result<()> {
-    match run_inner(suites, seed, json) {
+pub(crate) fn run(
+    suites: Vec<String>,
+    seed: u64,
+    json: bool,
+    endpoint: Option<String>,
+    model: Option<String>,
+) -> anyhow::Result<()> {
+    match run_inner(suites, seed, json, endpoint, model) {
         Ok(()) => Ok(()),
         Err(e) => {
             eprintln!("SAFEDELTA ABORT: {e}");
@@ -138,6 +160,8 @@ pub fn run_inner(
     suites: Vec<String>,
     seed: u64,
     json: bool,
+    endpoint: Option<String>,
+    model: Option<String>,
 ) -> Result<(), BenchSafedeltaError> {
     // Tier-2 gate: reject non-seccodeplt suites at Tier-1.
     for suite in &suites {
@@ -146,6 +170,14 @@ pub fn run_inner(
                 SafeDeltaTier2Error::RunpodPending,
             ));
         }
+    }
+
+    // 0. P1.a Tier-2 skeleton: live-model leg. When --endpoint is present,
+    //    build a SidecarRuntime against that URL, fail-loud health check,
+    //    issue ONE sample completion, then fall through to the static
+    //    ablation unchanged. Absent = byte-for-byte the Tier-1 static path.
+    if let Some(url) = endpoint.as_deref() {
+        run_live_probe(url, model.as_deref())?;
     }
 
     // 1. Run the gate-ON-vs-gate-OFF SAFEDELTA ablation (DERIVES from F-2,
@@ -194,6 +226,86 @@ pub fn run_inner(
         println!("{body}");
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// P1.a Tier-2 skeleton — live-model probe
+// ---------------------------------------------------------------------------
+
+/// P1.a Tier-2 skeleton: build a `SidecarRuntime` against `endpoint`, run a
+/// fail-loud health check, issue ONE sample completion, and return Ok only if
+/// a non-empty completion string came back. This is the walking skeleton for
+/// the SAFEDELTA Tier-2 model-in-loop harness; later slices add the generation
+/// loop + scorer. GENERATION ONLY — no model-authored patch text is executed
+/// or applied here (that is a later, owner-gated, sandboxed slice).
+///
+/// `endpoint` is the --endpoint value (e.g. `http://127.0.0.1:8181`).
+/// `model` is the optional --model value; None = sidecar default.
+fn run_live_probe(
+    endpoint: &str,
+    model: Option<&str>,
+) -> Result<(), BenchSafedeltaError> {
+    let cfg = RuntimeFactoryConfig {
+        backend: RuntimeBackend::Sidecar,
+        base_url: Some(endpoint.to_string()),
+        model: model.map(|m| m.to_string()),
+        sidecar: Some(elai_providers::runtime::SidecarRuntimeConfig {
+            request_timeout_secs: Some(600),
+            max_tokens: Some(4096),
+            ..elai_providers::runtime::SidecarRuntimeConfig::default()
+        }),
+        ..RuntimeFactoryConfig::for_backend(RuntimeBackend::Sidecar)
+    };
+    let runtime = SidecarRuntime::from_factory_config(&cfg)
+        .map_err(|e| BenchSafedeltaError::LiveRuntimeBuild {
+            source_msg: e.to_string(),
+        })?;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| BenchSafedeltaError::Runtime {
+            source_msg: e.to_string(),
+        })?;
+
+    rt.block_on(async move {
+        let health = runtime.health_check().await;
+        match health {
+            RuntimeHealth::Ready => {}
+            RuntimeHealth::Degraded { reason } => {
+                return Err(BenchSafedeltaError::LiveEndpointNotReady { reason });
+            }
+            RuntimeHealth::Unavailable { reason } => {
+                return Err(BenchSafedeltaError::LiveEndpointNotReady { reason });
+            }
+        }
+
+        // P1.a: literal probe prompt; P1.b threads real corpus task prompts.
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "return a one-line unified diff that adds a bounds check"
+                .to_string(),
+        }];
+        let config = CompletionConfig {
+            max_tokens: 4096,
+            temperature: 0.0,
+            ..CompletionConfig::default()
+        };
+        let response = runtime
+            .complete(messages, config)
+            .await
+            .map_err(|e| BenchSafedeltaError::LiveCompletion {
+                source_msg: e.to_string(),
+            })?;
+        if response.text.trim().is_empty() {
+            return Err(BenchSafedeltaError::LiveCompletionEmpty);
+        }
+        eprintln!(
+            "live endpoint OK: {} chars",
+            response.text.chars().count()
+        );
+        Ok(())
+    })
 }
 
 // ---------------------------------------------------------------------------

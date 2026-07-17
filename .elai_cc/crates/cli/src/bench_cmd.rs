@@ -187,13 +187,16 @@ pub(crate) fn run_bench_safedelta(
     suites: Vec<String>,
     seed: u64,
     json: bool,
+    endpoint: Option<String>,
+    model: Option<String>,
 ) -> anyhow::Result<()> {
     // G-6 (SCHEMA_VERSION 217): gate-ON-vs-gate-OFF SAFEDELTA ablation.
     // DERIVES delta from SHIPPED SecCodePltRunner (GD-1); re-implements no F-2.
     // Writes benchmarks/safedelta/<ts>.json + a signed .rra manifest.
     // Emits exactly one SsbActionType::SafetyDeltaMeasured row.
     // Tier-1 = embedded seccodeplt corpus; Tier-2 = RunPod-gated.
-    crate::bench_safedelta::run(suites, seed, json)
+    // P1.a Tier-2 skeleton: endpoint/model drive the live SidecarRuntime leg.
+    crate::bench_safedelta::run(suites, seed, json, endpoint, model)
 }
 
 pub(crate) fn run_bench_case_reuse(

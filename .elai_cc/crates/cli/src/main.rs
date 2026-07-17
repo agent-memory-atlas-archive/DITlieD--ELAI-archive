@@ -1430,8 +1430,14 @@ fn run() -> Result<(), anyhow::Error> {
         // Derives the delta from the SHIPPED SecCodePltRunner (GD-1, no F-2
         // re-implement). Writes timestamped JSON + signed .rra manifest.
         // Emits ONE SafetyDeltaMeasured SSB beacon. Exits 0/1.
-        CliAction::BenchSafedelta { suites, seed, json } => {
-            bench_cmd::run_bench_safedelta(suites, seed, json)?;
+        CliAction::BenchSafedelta {
+            suites,
+            seed,
+            json,
+            endpoint,
+            model,
+        } => {
+            bench_cmd::run_bench_safedelta(suites, seed, json, endpoint, model)?;
         }
         // K-18a (PS-5 observe arm): recurrence-hit-rate over the shipped BM25
         // retrieval stack. Drives case_reuse_runner over the embedded fixture

@@ -986,6 +986,12 @@ pub(crate) enum CliAction {
         seed: u64,
         /// Print the full report JSON to stdout.
         json: bool,
+        /// P1.a Tier-2 skeleton: when present, drive one live SidecarRuntime
+        /// completion against this endpoint before the static ablation.
+        endpoint: Option<String>,
+        /// P1.a Tier-2 skeleton: model id for the live leg. None = sidecar
+        /// default.
+        model: Option<String>,
     },
     /// K-18a (PS-5 observe arm): `elai bench case-reuse [--suite fixture]
     /// [--seed <u64>] [--json]`. Recurrence-hit-rate over the SHIPPED BM25
