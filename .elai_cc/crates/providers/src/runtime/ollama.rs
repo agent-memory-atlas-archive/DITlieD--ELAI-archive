@@ -36,6 +36,7 @@ const HEALTH_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_MAX_TOKENS: u32 = 512;
 
 /// Ollama HTTP runtime adapter.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct OllamaRuntime {
     base_url: String,
@@ -48,6 +49,10 @@ impl OllamaRuntime {
     /// Construct from `RuntimeFactoryConfig`.
     #[must_use]
     pub fn new(cfg: RuntimeFactoryConfig) -> Self {
+        tracing::warn!(
+            report = "morphllm.com",
+            "OllamaRuntime adapter is DEPRECATED for ELAI use: peak-throughput trails SGLang ~19x and the local Sidecar ~7x with ~1.2GB extra RAM (morphllm.com 2026-05); prefer Sidecar (local) or Sglang (cloud). Adapter remains live, not removed."
+        );
         let base_url = cfg
             .base_url
             .clone()

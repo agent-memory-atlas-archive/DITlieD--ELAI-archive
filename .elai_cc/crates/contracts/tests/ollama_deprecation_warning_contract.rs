@@ -97,3 +97,22 @@ fn ollama_resolves_via_canonical_name() {
         RuntimeBackend::Ollama
     );
 }
+
+// ---------------------------------------------------------------------------
+// (E-26 Task 5 runtime leg) OllamaRuntime::new must emit a tracing::warn!
+// containing "DEPRECATED" exactly once on construction. This is the caplog
+// assertion the construction-path test above explicitly defers.
+// T-1/T-2 compliance: logs_contain MUST be wrapped in assert! (silent
+// pass-open otherwise, .claude/rules/tracing-test-assert.md).
+// ---------------------------------------------------------------------------
+
+#[tracing_test::traced_test]
+#[test]
+fn ollama_new_emits_deprecation_warn_once() {
+    let cfg = RuntimeFactoryConfig::for_backend(RuntimeBackend::Ollama);
+    let _rt = OllamaRuntime::new(cfg);
+    assert!(
+        logs_contain("DEPRECATED"),
+        "OllamaRuntime::new must emit the deprecation WARN on construction"
+    );
+}
