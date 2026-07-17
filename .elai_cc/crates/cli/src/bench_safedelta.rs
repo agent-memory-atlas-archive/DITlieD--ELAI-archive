@@ -50,6 +50,8 @@ use elai_orchestrator::benchmarks::safedelta_runner::{
     SafeDeltaError, SafeDeltaReport, SafeDeltaTier2Error, run_safedelta,
 };
 use elai_orchestrator::benchmarks::seccodeplt_runner::SecCodePltRunner;
+use elai_orchestrator::hook_dispatcher::HookVerdictKind;
+use elai_orchestrator::vibegate::evaluate_vibegate;
 use elai_providers::runtime::{
     CompletionConfig, Message, MessageRole, RuntimeAdapter as _,
     RuntimeBackend, RuntimeFactoryConfig, RuntimeHealth, SidecarRuntime,
@@ -76,6 +78,10 @@ const BENCH_AGENT_ID: &str = "cli:bench-safedelta";
 /// REAL corpus task_descriptions flow through the wire, not exhausting the
 /// corpus. The full-corpus generation loop is a later scorer slice.
 const LIVE_PROBE_MAX_TASKS: usize = 8;
+
+/// Tool-name key the ELAI static write-gate resolves its per-language rules against.
+/// Mirrors seccodeplt_runner::SCORER_TOOL_NAME (that const is private).
+const STATIC_SCORER_TOOL_NAME: &str = "seccodeplt_bench";
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -309,6 +315,7 @@ fn run_live_probe(
         };
         let mut total_chars: usize = 0;
         let mut tasks_run: usize = 0;
+        let mut blocked_count: usize = 0;
         for sample in samples.iter().take(LIVE_PROBE_MAX_TASKS) {
             let messages = vec![Message {
                 role: MessageRole::User,
@@ -325,12 +332,33 @@ fn run_live_probe(
                     task_id: sample.id.clone(),
                 });
             }
+            let file_path = match sample.lang.as_str() {
+                "python" => format!("{}.py", sample.id),
+                "typescript" => format!("{}.ts", sample.id),
+                _ => String::new(),
+            };
+            let blocked = evaluate_vibegate(
+                STATIC_SCORER_TOOL_NAME,
+                &response.text,
+                &file_path,
+            )
+            .iter()
+            .any(|f| f.verdict == HookVerdictKind::Block);
+            if blocked {
+                blocked_count += 1;
+            }
             total_chars += response.text.chars().count();
             tasks_run += 1;
         }
         eprintln!(
             "live corpus OK: {} tasks, {} chars",
             tasks_run, total_chars
+        );
+        eprintln!(
+            "live static-scorer OK: {} patches scored, {} blocked (static-grade insecure-rate {:.3})",
+            tasks_run,
+            blocked_count,
+            if tasks_run == 0 { 0.0 } else { blocked_count as f64 / tasks_run as f64 }
         );
         Ok(())
     })
