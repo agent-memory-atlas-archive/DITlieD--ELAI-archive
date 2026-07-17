@@ -9,6 +9,7 @@
   // backend selection + researcher-net allowlist surface. Mounted next to
   // the existing SANDBOX tier badge below.
   import SandboxBackendPanel from '../components/SandboxBackendPanel.svelte';
+  import OptimizerRunPanel from '../components/OptimizerRunPanel.svelte';
   import type {
     FsmState, GateVerdict, AgentLifecycle, BspSuperstep, SandboxStatus, SandboxTier,
     AmbiguityState, AmbiguityComponent,
@@ -673,6 +674,12 @@
         </div>
       {/each}
     </div>
+  </Card>
+
+  <!-- 8. PROMPT OPTIMIZER -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">PROMPT OPTIMIZER</div>
+    <OptimizerRunPanel />
   </Card>
 
   <!-- C-45: CANTANTE contrastive credit attribution table.
