@@ -47,13 +47,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use elai_core::OsClock;
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::benchmarks::safedelta_runner::{
-    SafeDeltaError, SafeDeltaReport, SafeDeltaTier2Error, run_safedelta,
+    LiveBeforeAfter, SafeDeltaError, SafeDeltaReport, SafeDeltaTier2Error, run_safedelta,
+    run_safedelta_live,
 };
 use elai_orchestrator::benchmarks::seccodeplt_runner::SecCodePltRunner;
 use elai_orchestrator::hook_dispatcher::HookVerdictKind;
 use elai_orchestrator::vibegate::evaluate_vibegate;
 use elai_providers::runtime::{
-    CompletionConfig, Message, MessageRole, RuntimeAdapter as _,
+    CompletionConfig, LlamaCppAdapter, Message, MessageRole, RuntimeAdapter as _,
     RuntimeBackend, RuntimeFactoryConfig, RuntimeHealth, SidecarRuntime,
 };
 use elai_orchestrator::determinism::DeterminismConfig;
@@ -165,6 +166,92 @@ pub(crate) fn run(
             std::process::exit(1);
         }
     }
+}
+
+/// PS-1 live arm entry — `elai bench safedelta --live [--protocol <name>]`.
+///
+/// Constructs a `LlamaCppAdapter` against the local lane (:8181 default),
+/// drives `run_safedelta_live` over the 48-sample embedded SeCodePLT corpus
+/// under the `SafetyPreambleOffOn` before/after protocol, then emits the
+/// `SafetyDeltaMeasured` SSB beacon with `live=true` + lane provenance fields.
+/// On any error (lane unreachable, protocol parse, SSB write) it prints
+/// `SAFEDELTA ABORT:` to stderr and exits non-zero (fail-closed, no SKIP).
+pub(crate) fn run_live(
+    suites: Vec<String>,
+    seed: u64,
+    json: bool,
+    live: bool,
+    protocol: Option<String>,
+    endpoint: Option<String>,
+    model: Option<String>,
+) -> anyhow::Result<()> {
+    if !live {
+        return run(suites, seed, json, endpoint, model);
+    }
+    let proto = match protocol.as_deref().map(LiveBeforeAfter::from_cli_str) {
+        Some(Ok(p)) => Some(p),
+        Some(Err(e)) => {
+            eprintln!("SAFEDELTA ABORT: {e}");
+            std::process::exit(1);
+        }
+        None => Some(LiveBeforeAfter::SafetyPreambleOffOn),
+    };
+    match run_live_inner(seed, json, proto) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            eprintln!("SAFEDELTA ABORT: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_live_inner(
+    seed: u64,
+    json: bool,
+    protocol: Option<LiveBeforeAfter>,
+) -> Result<(), BenchSafedeltaError> {
+    let adapter = LlamaCppAdapter::new(
+        RuntimeFactoryConfig::for_backend(RuntimeBackend::LlamaCpp),
+    );
+    let report = run_safedelta_live(seed, &adapter, protocol.unwrap_or(LiveBeforeAfter::SafetyPreambleOffOn))?;
+
+    let project_root = std::env::current_dir().map_err(|e| BenchSafedeltaError::Cwd {
+        source_msg: e.to_string(),
+    })?;
+    let report_path = write_json_report(&project_root, &report)?;
+    let rra_path = rra_path(&project_root, report_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("safedelta-unknown"));
+    emit_beacon_and_rra(&project_root, &rra_path, &report)?;
+
+    println!(
+        "SAFEDELTA-LIVE suite={} n_tasks={} before={:.4} after={:.4} safety_delta={:.4} \
+         ci_low={:.4} ci_high={:.4} gate_recall={:.4} seed={} corpus_blake3={} \
+         model_id={} live={} protocol={} report={}",
+        report.suite,
+        report.n_samples,
+        report.insecure_rate_before,
+        report.insecure_rate_after,
+        report.safety_delta,
+        report.ci_low,
+        report.ci_high,
+        report.gate_recall,
+        report.seed,
+        report.corpus_blake3,
+        report.model_id,
+        report.live,
+        report.protocol.as_deref().unwrap_or("none"),
+        report_path.display(),
+    );
+    if json {
+        let body = serde_json::to_string_pretty(&report).map_err(|e| {
+            BenchSafedeltaError::Serialise {
+                source_msg: e.to_string(),
+            }
+        })?;
+        println!("{body}");
+    }
+    Ok(())
 }
 
 /// Core — constructs the ablation report, writes the JSON + .rra, emits the
@@ -461,6 +548,11 @@ fn emit_beacon_and_rra(
         // Tier-1 has no externally-captured stdout to hash.
         stdout_hash: None,
         runpod_pending: report.runpod_pending,
+        live: report.live,
+        lane_model_tag: report.lane.model_tag.clone(),
+        lane_quant: report.lane.quant.clone(),
+        lane_host: report.lane.host.clone(),
+        protocol: report.protocol.clone(),
     };
 
     // Resolve determinism pins outside the runtime (sync call).
@@ -586,6 +678,11 @@ mod tests {
             gate_recall: report.gate_recall,
             stdout_hash: None,
             runpod_pending: report.runpod_pending,
+            live: report.live,
+            lane_model_tag: report.lane.model_tag.clone(),
+            lane_quant: report.lane.quant.clone(),
+            lane_host: report.lane.host.clone(),
+            protocol: report.protocol.clone(),
         };
         assert_eq!(payload.safety_delta, report.safety_delta);
         assert_eq!(payload.seed, report.seed);

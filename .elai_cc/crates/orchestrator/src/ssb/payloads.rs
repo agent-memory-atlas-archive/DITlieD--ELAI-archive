@@ -15771,6 +15771,11 @@ pub struct SafetyDeltaMeasuredPayload {
     pub gate_recall: f64,
     pub stdout_hash: Option<String>,
     pub runpod_pending: bool,
+    pub live: bool,
+    pub lane_model_tag: Option<String>,
+    pub lane_quant: Option<String>,
+    pub lane_host: Option<String>,
+    pub protocol: Option<String>,
 }
 
 /// I-38: QDELTA defective-diff rate gate-ON vs gate-OFF measurement.

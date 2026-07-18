@@ -192,7 +192,7 @@ struct Candidate {
 
 /// Map a corpus `lang` label to a representative file path so the gate's
 /// per-language rule filter resolves the same way it would in production.
-fn file_path_for_lang(lang: &str, sample_id: &str) -> String {
+pub(crate) fn file_path_for_lang(lang: &str, sample_id: &str) -> String {
     match lang {
         "python" => format!("{sample_id}.py"),
         "typescript" => format!("{sample_id}.ts"),
@@ -402,7 +402,7 @@ impl SecCodePltRunner {
 /// Run the production static gate over a candidate and return whether ANY
 /// Block finding fired. This is the single scoring primitive — the keystone
 /// number is derived entirely from `evaluate_vibegate`.
-fn gate_blocks(code: &str, file_path: &str) -> bool {
+pub(crate) fn gate_blocks(code: &str, file_path: &str) -> bool {
     evaluate_vibegate(SCORER_TOOL_NAME, code, file_path)
         .iter()
         .any(|f| f.verdict == HookVerdictKind::Block)

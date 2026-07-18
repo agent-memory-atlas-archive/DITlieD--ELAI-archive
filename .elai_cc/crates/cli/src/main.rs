@@ -1448,8 +1448,10 @@ fn run() -> Result<(), anyhow::Error> {
             json,
             endpoint,
             model,
+            live,
+            protocol,
         } => {
-            bench_cmd::run_bench_safedelta(suites, seed, json, endpoint, model)?;
+            bench_safedelta::run_live(suites, seed, json, live, protocol, endpoint, model)?;
         }
         // PS-3 (SCHEMA_VERSION 277): gate-ON-vs-gate-OFF hallucination-delta
         // ablation. FAITHFUL MIRROR of G-6 safedelta. Tier-1 = fixture corpus

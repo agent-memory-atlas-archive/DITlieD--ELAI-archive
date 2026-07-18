@@ -927,6 +927,8 @@ fn parse_bench_safedelta_args(rest: &[String]) -> Result<CliAction, String> {
     let mut json = false;
     let mut endpoint: Option<String> = None;
     let mut model: Option<String> = None;
+    let mut live = false;
+    let mut protocol: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -984,6 +986,22 @@ fn parse_bench_safedelta_args(rest: &[String]) -> Result<CliAction, String> {
                 model = Some(flag["--model=".len()..].to_string());
                 i += 1;
             }
+            "--live" => {
+                live = true;
+                i += 1;
+            }
+            "--protocol" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --protocol".to_string())?;
+                protocol = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--protocol=") => {
+                let raw = &flag["--protocol=".len()..];
+                protocol = Some(raw.to_string());
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `bench safedelta` argument: {other}"));
             }
@@ -999,6 +1017,8 @@ fn parse_bench_safedelta_args(rest: &[String]) -> Result<CliAction, String> {
         json,
         endpoint,
         model,
+        live,
+        protocol,
     })
 }
 

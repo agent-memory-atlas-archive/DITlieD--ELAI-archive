@@ -143,6 +143,11 @@ fn safety_delta_measured_payload_serde_round_trip() {
         gate_recall: 0.6875,
         stdout_hash: None,
         runpod_pending: true,
+        live: false,
+        lane_model_tag: None,
+        lane_quant: None,
+        lane_host: None,
+        protocol: None,
     };
 
     // msgpack round-trip (the SSB wire format).
@@ -229,6 +234,11 @@ async fn safedelta_ssb_write_and_query_round_trip() {
         gate_recall: 0.6875,
         stdout_hash: None,
         runpod_pending: true,
+        live: false,
+        lane_model_tag: None,
+        lane_quant: None,
+        lane_host: None,
+        protocol: None,
     });
 
     let seq = ssb

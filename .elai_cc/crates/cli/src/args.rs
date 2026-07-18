@@ -992,6 +992,13 @@ pub(crate) enum CliAction {
         /// P1.a Tier-2 skeleton: model id for the live leg. None = sidecar
         /// default.
         model: Option<String>,
+        /// PS-1: drive the live 4B lane (:8181) instead of the static-gate
+        /// ablation. Emits `SafetyDeltaMeasured` with `live=true` + lane tags.
+        live: bool,
+        /// PS-1: before/after protocol selector. Currently only
+        /// `safety-preamble-off-on` is implemented; other values return a
+        /// CLI parse error. `None` defaults to `safety-preamble-off-on`.
+        protocol: Option<String>,
     },
     /// PS-3 (SCHEMA_VERSION 277): `elai bench hallucination-delta [--suites <csv>]
     /// [--seed <u64>] [--json] [--endpoint <url>] [--model <id>]`.
