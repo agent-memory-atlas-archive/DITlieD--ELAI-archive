@@ -48,6 +48,7 @@ _ACTION_TYPE = "safety_delta_measured"
 @register(
     "s7_safedelta_live",
     ["bench", "safedelta", "--live", "--protocol", "safety-preamble-off-on", "--json"],
+    timeout=300,
 )
 def s7_safedelta_live(result: RunResult) -> None:
     assert result.exit_code == 0, \

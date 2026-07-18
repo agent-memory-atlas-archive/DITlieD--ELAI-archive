@@ -9,6 +9,8 @@ Invocation:
     python .elai_cc/tests/e2e/runner.py --scenario s1_prebind
     python .elai_cc/tests/e2e/runner.py --binary /path/to/elai
 
+Per-scenario timeout: @register(..., timeout=<seconds>) overrides the 60s default.
+
 Exit code: 0 if all scenarios PASS, 1 if any FAIL.
 """
 
@@ -123,12 +125,13 @@ class Scenario:
     fn: Callable[[RunResult], None]
     argv: list[str]
     env_extra: dict[str, str] = field(default_factory=dict)
+    timeout: int = 60
 
 
 _REGISTRY: list[Scenario] = []
 
 
-def register(name: str, argv: list[str], env_extra: Optional[dict] = None) -> Callable:
+def register(name: str, argv: list[str], env_extra: Optional[dict] = None, timeout: int = 60) -> Callable:
     """Decorator: register a scenario fn the runner will call with a RunResult."""
     def deco(fn: Callable[[RunResult], None]) -> Callable[[RunResult], None]:
         _REGISTRY.append(Scenario(
@@ -136,6 +139,7 @@ def register(name: str, argv: list[str], env_extra: Optional[dict] = None) -> Ca
             fn=fn,
             argv=list(argv),
             env_extra=dict(env_extra or {}),
+            timeout=timeout,
         ))
         return fn
     return deco
@@ -170,7 +174,7 @@ def _run_scenario(sc: Scenario, binary: Path) -> ScenarioResult:
             cwd=str(home),
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=sc.timeout,
             env=env,
         )
         result = RunResult(
@@ -205,7 +209,7 @@ def _run_scenario(sc: Scenario, binary: Path) -> ScenarioResult:
                 evidence=f"exit={proc.returncode}, stderr={proc.stderr[:300]}",
             )
     except subprocess.TimeoutExpired:
-        return ScenarioResult(name=sc.name, passed=False, detail="TIMEOUT (60s)", evidence="")
+        return ScenarioResult(name=sc.name, passed=False, detail=f"TIMEOUT ({sc.timeout}s)", evidence="")
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
