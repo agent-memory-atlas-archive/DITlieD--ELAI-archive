@@ -1,0 +1,25 @@
+{
+  "ts_ms": 1784359448924,
+  "total": 24,
+  "mode_distribution": {
+    "conformal_refusal": 0,
+    "conservative_fallback": 13,
+    "constructive": 0,
+    "falsifiability_cross_family": 0,
+    "operational_deferred": 11
+  },
+  "novelty_distribution": {
+    "discovery_candidate": 10,
+    "distant_search": 8,
+    "search": 6
+  },
+  "honestly_evaluated_count": 7,
+  "memorization_game_count": 0,
+  "fixture_blake3": "f9bc74fec7ba1f5ae244fa5f65bf1e119d21eb705b5595035e6d5e29eadedcd9",
+  "gating_verdict": {
+    "kind": "honestly_evaluated",
+    "details": "29.2% of rows hit (DiscoveryCandidate class, non-Constructive mode); mem-gaming 0.0%, refused 54.2%"
+  },
+  "dominant_mode": "conservative_fallback",
+  "dominant_novelty_class": "discovery_candidate"
+}

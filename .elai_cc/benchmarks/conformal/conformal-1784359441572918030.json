@@ -1,0 +1,83 @@
+{
+  "ts_ms": 1784359441580,
+  "tau": 0.8,
+  "epsilon": 0.1,
+  "empirical_refusal_rate": 0.08333333333333333,
+  "target_band": [
+    0.0,
+    0.2
+  ],
+  "total": 36,
+  "per_bucket": {
+    "far_ood": 0.08333333333333333,
+    "in_domain": 0.08333333333333333,
+    "near_ood": 0.08333333333333333
+  },
+  "per_domain": [
+    {
+      "domain": "code",
+      "bucket": "in_domain",
+      "n_tested": 5,
+      "refusal_rate": 0.2,
+      "in_band": true
+    },
+    {
+      "domain": "math",
+      "bucket": "in_domain",
+      "n_tested": 4,
+      "refusal_rate": 0.0,
+      "in_band": true
+    },
+    {
+      "domain": "math",
+      "bucket": "near_ood",
+      "n_tested": 4,
+      "refusal_rate": 0.0,
+      "in_band": true
+    },
+    {
+      "domain": "mixed",
+      "bucket": "in_domain",
+      "n_tested": 3,
+      "refusal_rate": 0.0,
+      "in_band": true
+    },
+    {
+      "domain": "planning",
+      "bucket": "far_ood",
+      "n_tested": 4,
+      "refusal_rate": 0.0,
+      "in_band": true
+    },
+    {
+      "domain": "planning",
+      "bucket": "near_ood",
+      "n_tested": 3,
+      "refusal_rate": 0.0,
+      "in_band": true
+    },
+    {
+      "domain": "prose",
+      "bucket": "far_ood",
+      "n_tested": 4,
+      "refusal_rate": 0.0,
+      "in_band": true
+    },
+    {
+      "domain": "prose",
+      "bucket": "near_ood",
+      "n_tested": 5,
+      "refusal_rate": 0.2,
+      "in_band": true
+    },
+    {
+      "domain": "tool_use",
+      "bucket": "far_ood",
+      "n_tested": 4,
+      "refusal_rate": 0.25,
+      "in_band": false
+    }
+  ],
+  "gating_verdict": "pass",
+  "fixture_blake3": "802db81f833f7ced907c861645606c159f7027d930a2170d4dca665790934bed"
+}
