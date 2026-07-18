@@ -356,7 +356,7 @@ where
         &mut self,
         tool_name: &str,
         input: &str,
-        output: &str,
+        output: &mut String,
         is_error: bool,
     ) -> HookRunResult {
         // E-37 U1: sanitize tool output for non-allowlisted markdown images
@@ -368,7 +368,7 @@ where
         // Pure stdlib-only fns; no LLM classifier, no regex crate.
         let allowlist: Vec<String> = Vec::new();
         let sanitized =
-            elai_safety::output_sanitizer::strip_markdown_images(output, &allowlist);
+            elai_safety::output_sanitizer::strip_markdown_images(output.as_str(), &allowlist);
         let verdict =
             elai_safety::output_sanitizer::classify_output(&sanitized.cleaned);
         let flagged = !matches!(
@@ -408,11 +408,12 @@ where
             }
         }
         let cleaned = sanitized.cleaned;
+        *output = cleaned;
         if let Some(reporter) = self.hook_progress_reporter.as_mut() {
             self.hook_runner.run_post_tool_use_with_context(
                 tool_name,
                 input,
-                &cleaned,
+                output.as_str(),
                 is_error,
                 Some(&self.hook_abort_signal),
                 Some(reporter.as_mut()),
@@ -421,7 +422,7 @@ where
             self.hook_runner.run_post_tool_use_with_context(
                 tool_name,
                 input,
-                &cleaned,
+                output.as_str(),
                 is_error,
                 Some(&self.hook_abort_signal),
                 None,
@@ -712,7 +713,7 @@ where
                             self.run_post_tool_use_hook(
                                 &tool_name,
                                 &effective_input,
-                                &output,
+                                &mut output,
                                 false,
                             )
                         };
