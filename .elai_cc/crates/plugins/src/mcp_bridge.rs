@@ -158,6 +158,29 @@ impl RugPullSsbEmitter for NoopRugPullSsbEmitter {
     }
 }
 
+/// E-37 U3: MCP-scan classifier blocked SSB (crate-boundary DI; mirrors RugPullSsbEmitter).
+pub trait McpScanSsbEmitter: Send + Sync {
+    fn emit(
+        &self,
+        server_url: &str,
+        tool_count: u32,
+        patterns: &[String],
+    ) -> Result<(), String>;
+}
+
+pub struct NoopMcpScanSsbEmitter;
+impl McpScanSsbEmitter for NoopMcpScanSsbEmitter {
+    fn emit(&self, _server_url: &str, _tool_count: u32, _patterns: &[String]) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpScanVerdict {
+    Allow,
+    Block { patterns: Vec<String> },
+}
+
 /// G-4: kill-switch env var. The live re-pin gate is DEFAULT-ON; the only
 /// way to disable it is to set this to `1` / `true` (case-insensitive).
 /// There is intentionally NO enable flag -- a security gate that ships
@@ -529,6 +552,12 @@ pub struct DefaultMcpBridge {
     /// bridge calls it from inside `http_list_tools` when a reconnect
     /// re-fetch trips a rug-pull on a previously-pinned server.
     rug_pull_ssb_emitter: Arc<dyn RugPullSsbEmitter>,
+    /// E-37 U3: SSB emitter for the `mcp_scan_classifier_blocked` row. Default is
+    /// `NoopMcpScanSsbEmitter`; the orchestrator + dashboard-v2 bootstrap wire a real
+    /// implementor via [`DefaultMcpBridge::with_mcp_scan_ssb_emitter`]. The bridge
+    /// calls it from inside `http_list_tools` when the heuristic scan classifier
+    /// flags malicious tool descriptions.
+    mcp_scan_ssb_emitter: Arc<dyn McpScanSsbEmitter>,
 }
 
 impl Default for DefaultMcpBridge {
@@ -560,6 +589,7 @@ impl Default for DefaultMcpBridge {
             pin_workspace_root: None,
             repin_disabled_by_env: mcp_repin_disabled(),
             rug_pull_ssb_emitter: Arc::new(NoopRugPullSsbEmitter),
+            mcp_scan_ssb_emitter: Arc::new(NoopMcpScanSsbEmitter),
         }
     }
 }
@@ -605,6 +635,7 @@ impl DefaultMcpBridge {
             pin_workspace_root: None,
             repin_disabled_by_env: mcp_repin_disabled(),
             rug_pull_ssb_emitter: Arc::new(NoopRugPullSsbEmitter),
+            mcp_scan_ssb_emitter: Arc::new(NoopMcpScanSsbEmitter),
         }
     }
 
@@ -661,6 +692,14 @@ impl DefaultMcpBridge {
     /// a rug-pull. Returns `self` for builder chaining.
     pub fn with_rug_pull_ssb_emitter(mut self, emitter: Arc<dyn RugPullSsbEmitter>) -> Self {
         self.rug_pull_ssb_emitter = emitter;
+        self
+    }
+
+    /// E-37 U3: install the SSB emitter for the `mcp_scan_classifier_blocked` row.
+    /// Default is `NoopMcpScanSsbEmitter`. Emission fires when
+    /// `run_mcp_scan_classifier` returns `McpScanVerdict::Block`.
+    pub fn with_mcp_scan_ssb_emitter(mut self, emitter: Arc<dyn McpScanSsbEmitter>) -> Self {
+        self.mcp_scan_ssb_emitter = emitter;
         self
     }
 
@@ -1667,6 +1706,13 @@ impl DefaultMcpBridge {
                 self.run_schema_pin_gate(root, url, &full_tools)?;
             }
         }
+        // E-37 Task 8: MCP-scan classifier over the full tool list.
+        let mcp_verdict = self.run_mcp_scan_classifier(url, &full_tools).await;
+        if let McpScanVerdict::Block { patterns } = mcp_verdict {
+            return Err(McpError::SanitizationFailed(format!(
+                "mcp_scan_classifier blocked: {patterns:?}"
+            )));
+        }
         // E-22: emit savings row when env gate set.
         if self.lazy_schema_enabled_by_env {
             let mut post_bytes: u64 = 0;
@@ -1687,6 +1733,42 @@ impl DefaultMcpBridge {
             }
         }
         Ok(out)
+    }
+
+    /// E-37 U3 — MCP-scan classifier over full tool list.
+    /// GROUNDED[ToolDef]: crates/plugins/src/mcp_schema_pin.rs:87 -> name, description, input_schema
+    /// RECON[sidecar]: GPU-PAUSED-BY-OWNER — HeuristicClassifier / classify_with_regex only; no :8181.
+    pub async fn run_mcp_scan_classifier(
+        &self,
+        url: &str,
+        full_tools: &[crate::mcp_schema_pin::ToolDef],
+    ) -> McpScanVerdict {
+        use elai_safety::prompt_armor::{classify_with_regex, ClassifierVerdict};
+        let mut blob = String::new();
+        for t in full_tools {
+            blob.push_str(&t.name);
+            blob.push('\n');
+            blob.push_str(&t.description);
+            blob.push('\n');
+            blob.push_str(&t.input_schema.to_string());
+            blob.push('\n');
+        }
+        tracing::warn!(
+            target: "mcp_scan_classifier",
+            attribution = "heuristic-fallback",
+            "GPU-PAUSED-BY-OWNER; mcp_list_audit via HeuristicClassifier (no :8181)"
+        );
+        let verdict = classify_with_regex(&blob);
+        match verdict {
+            ClassifierVerdict::Malicious { patterns_matched, .. } => {
+                let tool_count = u32::try_from(full_tools.len()).unwrap_or(u32::MAX);
+                if let Err(e) = self.mcp_scan_ssb_emitter.emit(url, tool_count, &patterns_matched) {
+                    tracing::warn!(server_url = %url, error = %e, "E-37: mcp_scan SSB emit failed (continuing to block)");
+                }
+                McpScanVerdict::Block { patterns: patterns_matched }
+            }
+            _ => McpScanVerdict::Allow,
+        }
     }
 
     /// G-4: run the live MCP schema-pin / re-pin gate against a freshly

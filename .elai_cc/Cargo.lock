@@ -1588,6 +1588,7 @@ dependencies = [
  "blake3",
  "elai-core",
  "elai-rules",
+ "elai-safety",
  "lru 0.18.0",
  "proptest",
  "proptest-state-machine",

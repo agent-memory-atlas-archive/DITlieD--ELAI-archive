@@ -305,6 +305,10 @@ impl Dispatch for McpClientDispatch {
             use elai_plugins::mcp_bridge::DefaultMcpBridge;
             use elai_plugins::ToolGate;
             use elai_plugins::LazySchemaCache;
+            let mcp_scan_ssb_emitter: Option<StdArc<dyn elai_plugins::mcp_bridge::McpScanSsbEmitter>> = self.ssb.as_ref().map(|ssb| {
+                let emitter: StdArc<dyn elai_plugins::mcp_bridge::McpScanSsbEmitter> = StdArc::new(crate::mcp_scan_ssb_adapter::OrchestratorMcpScanSsbEmitter::new(ssb.clone()));
+                emitter
+            });
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -342,6 +346,9 @@ impl Dispatch for McpClientDispatch {
                     let mut bridge = DefaultMcpBridge::default()
                         .with_tool_gate(gate, cache)
                         .with_calibration_registry(registry.clone());
+                    if let Some(emitter) = mcp_scan_ssb_emitter.clone() {
+                        bridge = bridge.with_mcp_scan_ssb_emitter(emitter);
+                    }
                     if let Some(emitter) = ssb_emitter_opt {
                         bridge = bridge.with_calibration_ssb_emitter(emitter);
                     }
@@ -358,6 +365,9 @@ impl Dispatch for McpClientDispatch {
                     );
                     let cache = StdArc::new(LazySchemaCache::new(1));
                     let mut bridge = DefaultMcpBridge::default().with_tool_gate(gate, cache);
+                    if let Some(emitter) = mcp_scan_ssb_emitter.clone() {
+                        bridge = bridge.with_mcp_scan_ssb_emitter(emitter);
+                    }
                     if let Some(emitter) = ssb_emitter_opt {
                         bridge = bridge.with_calibration_ssb_emitter(emitter);
                     }
@@ -371,6 +381,9 @@ impl Dispatch for McpClientDispatch {
                     // Legacy C-47b path (no capability adapter).
                     let mut bridge =
                         DefaultMcpBridge::default().with_calibration_registry(registry.clone());
+                    if let Some(emitter) = mcp_scan_ssb_emitter.clone() {
+                        bridge = bridge.with_mcp_scan_ssb_emitter(emitter);
+                    }
                     if let Some(emitter) = ssb_emitter_opt {
                         bridge = bridge.with_calibration_ssb_emitter(emitter);
                     }
@@ -382,6 +395,9 @@ impl Dispatch for McpClientDispatch {
                 }
                 (None, None) => {
                     let mut bridge = DefaultMcpBridge::default();
+                    if let Some(emitter) = mcp_scan_ssb_emitter.clone() {
+                        bridge = bridge.with_mcp_scan_ssb_emitter(emitter);
+                    }
                     if let Some(emitter) = ssb_emitter_opt {
                         bridge = bridge.with_calibration_ssb_emitter(emitter);
                     }

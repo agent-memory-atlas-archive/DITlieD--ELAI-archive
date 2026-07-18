@@ -5032,7 +5032,7 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- in ssb.rs alongside the payload structs.
         'discovery_ratified', 'discovery_rejected',
         -- G-plan (SCHEMA_VERSION 208-224): security + verifiability substrate.
-        'mcp_rug_pull_blocked', 'taint_flow', 'blast_radius_blocked', 'trifecta_quarantined',
+        'mcp_rug_pull_blocked', 'mcp_scan_classifier_blocked', 'taint_flow', 'blast_radius_blocked', 'trifecta_quarantined',
         'run_artifact_emitted', 'review_surface_scored', 'provenance_attestation_emitted',
         'safety_delta_measured', 'model_drift_suspected', 'secret_redacted',
         'claim_confidence_scored', 'steering_vector_refresh_triggered',

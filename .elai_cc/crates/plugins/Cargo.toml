@@ -40,6 +40,9 @@ uuid = { version = "1", features = ["v4"] }
 # client lives in `mcp_bridge::jsonrpc`. Workspace already pins reqwest 0.12
 # rustls-tls in other crates; we reuse the same pin (no new dep).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+# E-37 U3: heuristic MCP-scan classifier (elai-safety::prompt_armor) lives in
+# the `mcp` feature path; no new external dep (safety is a workspace crate).
+elai-safety = { path = "../safety" }
 
 [features]
 default = []

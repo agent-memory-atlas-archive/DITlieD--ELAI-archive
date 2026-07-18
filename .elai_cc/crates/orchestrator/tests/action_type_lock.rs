@@ -1563,6 +1563,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // K-9 (SCHEMA_VERSION 276): model refresh cadence decision row.
         SsbActionType::ModelRefreshCadence => (),
         SsbActionType::LocalLaneE2eMeasured => (),
+        SsbActionType::McpScanClassifierBlocked => (),
     }
 }
 

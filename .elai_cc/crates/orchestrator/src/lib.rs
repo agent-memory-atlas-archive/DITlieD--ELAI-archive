@@ -1112,6 +1112,11 @@ pub mod mcp_authz_ssb_adapter;
 // (kill-switch ELAI_MCP_REPIN_DISABLE only). See workflow/reasoning/G-4-decisions.md.
 #[cfg(feature = "mcp")]
 pub mod mcp_rugpull_ssb_adapter;
+// E-37 U3: MCP-scan classifier SSB emitter. Mirrors mcp_rugpull_ssb_adapter;
+// writes an `mcp_scan_classifier_blocked` row when the heuristic scan classifier
+// flags malicious tool descriptions at `http_list_tools`.
+#[cfg(feature = "mcp")]
+pub mod mcp_scan_ssb_adapter;
 // G-1: data-plane taint propagation SSB emitter. Writes a taint_flow row when
 // an untrusted ingest flows into a destructive sink and the capability gate
 // rejects it. No mcp dependency -- unconditional. See G-1-decisions.md.
@@ -2227,6 +2232,8 @@ pub use tool_calibration_ssb_adapter::OrchestratorCaseBaseSsbEmitter;
 pub use mcp_authz_ssb_adapter::OrchestratorMcpAuthzSsbEmitter;
 #[cfg(feature = "mcp")]
 pub use mcp_rugpull_ssb_adapter::OrchestratorRugPullSsbEmitter;
+#[cfg(feature = "mcp")]
+pub use mcp_scan_ssb_adapter::OrchestratorMcpScanSsbEmitter;
 
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{

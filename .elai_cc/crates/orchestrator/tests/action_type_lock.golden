@@ -301,6 +301,7 @@ mcp_llm_guard_blocked
 mcp_pin_version_refused
 mcp_rug_pull_blocked
 mcp_sanitization_rule_applied
+mcp_scan_classifier_blocked
 mcp_schema_budget_measured
 mcp_schema_pin_violation
 mcp_server_connected

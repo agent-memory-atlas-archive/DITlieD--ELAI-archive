@@ -3426,6 +3426,7 @@ pub enum SsbPayload {
     DarwinianAdmit(DarwinianAdmitPayload),
     // G-plan (SCHEMA_VERSION 208-224): security + verifiability substrate.
     McpRugPullBlocked(McpRugPullBlockedPayload),
+    McpScanClassifierBlocked(McpScanClassifierBlockedPayload),
     TaintFlow(TaintFlowPayload),
     BlastRadiusBlocked(BlastRadiusBlockedPayload),
     TrifectaQuarantined(TrifectaQuarantinedPayload),
@@ -4451,6 +4452,7 @@ impl SsbPayload {
             Self::DarwinianAdmit(_) => SsbActionType::DarwinianAdmit,
             // G-plan variants.
             Self::McpRugPullBlocked(_) => SsbActionType::McpRugPullBlocked,
+            Self::McpScanClassifierBlocked(_) => SsbActionType::McpScanClassifierBlocked,
             Self::TaintFlow(_) => SsbActionType::TaintFlow,
             Self::BlastRadiusBlocked(_) => SsbActionType::BlastRadiusBlocked,
             Self::TrifectaQuarantined(_) => SsbActionType::TrifectaQuarantined,
@@ -15657,6 +15659,14 @@ pub struct McpRugPullBlockedPayload {
     pub changed_tools: Vec<String>,
     pub description_diff_count: u32,
     pub ingest_origin: String,
+}
+
+/// E-37 U3 — MCP-scan classifier blocked at http_list_tools.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpScanClassifierBlockedPayload {
+    pub server_url: String,
+    pub tool_count: u32,
+    pub patterns: Vec<String>,
 }
 
 /// G-1: taint propagation kind.

@@ -78,6 +78,8 @@ pub use mcp_bridge::{
     // orchestrator wires a real implementor via `with_rug_pull_ssb_emitter`.
     RugPullSsbEmitter, NoopRugPullSsbEmitter, ELAI_MCP_REPIN_DISABLE_ENV,
     mcp_repin_disabled,
+    // E-37 U3: MCP-scan classifier SSB emitter + verdict (crate-boundary DI).
+    McpScanSsbEmitter, NoopMcpScanSsbEmitter, McpScanVerdict,
 };
 #[cfg(feature = "mcp")]
 pub use mcp_lifecycle::{HeartbeatMonitor, McpConnectionManager, RetryPolicy};

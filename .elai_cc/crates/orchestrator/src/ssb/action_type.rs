@@ -3814,6 +3814,8 @@ pub enum SsbActionType {
     // G-plan (SCHEMA_VERSION 208-224): security + verifiability substrate.
     /// G-4: MCP schema rug-pull blocked at http_list_tools gate.
     McpRugPullBlocked,
+    /// E-37 U3: MCP-scan classifier blocked at http_list_tools.
+    McpScanClassifierBlocked,
     /// G-1: data-plane taint flow blocked at destructive sink.
     TaintFlow,
     /// G-3: blast-radius gate block (FS escape or egress denied).
@@ -5556,6 +5558,7 @@ impl SsbActionType {
             Self::DarwinianAdmit => "darwinian_admit",
             // G-plan variants.
             Self::McpRugPullBlocked => "mcp_rug_pull_blocked",
+            Self::McpScanClassifierBlocked => "mcp_scan_classifier_blocked",
             Self::TaintFlow => "taint_flow",
             Self::BlastRadiusBlocked => "blast_radius_blocked",
             Self::TrifectaQuarantined => "trifecta_quarantined",
@@ -6398,6 +6401,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "darwinian_admit" => Ok(SsbActionType::DarwinianAdmit),
         // G-plan variants.
         "mcp_rug_pull_blocked" => Ok(SsbActionType::McpRugPullBlocked),
+        "mcp_scan_classifier_blocked" => Ok(SsbActionType::McpScanClassifierBlocked),
         "taint_flow" => Ok(SsbActionType::TaintFlow),
         "blast_radius_blocked" => Ok(SsbActionType::BlastRadiusBlocked),
         "trifecta_quarantined" => Ok(SsbActionType::TrifectaQuarantined),
