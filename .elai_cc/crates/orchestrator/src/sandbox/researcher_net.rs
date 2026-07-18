@@ -17,7 +17,13 @@ pub struct ResearcherNetConfig {
 impl Default for ResearcherNetConfig {
     fn default() -> Self {
         Self {
-            allowed_hosts: vec!["arxiv.org".to_string(), "huggingface.co".to_string()],
+            allowed_hosts: vec![
+                "arxiv.org".to_string(),
+                "huggingface.co".to_string(),
+                "github.com".to_string(),
+                "r.jina.ai".to_string(),
+                "doi.org".to_string(),
+            ],
             trusted_resolvers: vec!["1.1.1.1".parse().expect("valid IP"), "8.8.8.8".parse().expect("valid IP")],
             reject_not_drop: true,
         }
