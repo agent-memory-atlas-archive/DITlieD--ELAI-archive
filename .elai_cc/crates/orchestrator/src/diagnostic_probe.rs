@@ -30,6 +30,7 @@
 //!     caller exists; codebase_mapper.py owns the SCIP path).
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,6 +46,10 @@ use crate::ssb::{
     DiagnosticProbeBlockPayload, DiagnosticProbeCompletedPayload,
     DiagnosticProbeDispatchedPayload, Ssb, SsbPayload,
 };
+
+#[path = "diagnostic_probe_parsers.rs"]
+pub mod diagnostic_probe_parsers;
+use diagnostic_probe_parsers::parser_for_language;
 
 // ---------------------------------------------------------------------------
 // Constants — env gate name, timeout floor, SSB agent identity.
@@ -219,23 +224,73 @@ pub async fn dispatch_diagnostic_probe(req: DiagnosticProbeRequest) -> Diagnosti
     if !present {
         return tool_missing_outcome(kind, elapsed_ms);
     }
-    warn!(
-        language = %req.language,
-        file = %req.file_path.display(),
-        binary = bin,
-        "diagnostic_probe: real subprocess invocation deferred (E-52 Tranche B-3 LOCAL-ONLY); \
-         emitting Completed with zero diagnostics"
-    );
-    DiagnosticProbeOutcome {
-        kind,
-        error_count: 0,
-        warning_count: 0,
-        info_count: 0,
-        hint_count: 0,
-        duration_ms: elapsed_ms,
-        diagnostics: Vec::new(),
-        run_status: DiagnosticProbeRunStatus::Completed,
+    // E-52 T2 U1: real subprocess invocation for the rust arm. The parser is
+    // selected by language; only RustAnalyzerParser spawns a subprocess in
+    // this slice (Pyright/Tsc/SvelteCheck land in U2-U4). For languages with
+    // a canonical binary but no implemented parser yet, fall back to
+    // GenericLspFallback without spawning (avoids a wrong `pyright
+    // diagnostics` command shape).
+    let parser = parser_for_language(&req.language);
+    if parser.kind() != ProbeKind::RustAnalyzer {
+        warn!(
+            language = %req.language,
+            file = %req.file_path.display(),
+            binary = bin,
+            "diagnostic_probe: parser not yet implemented for language; emitting zero-diagnostic Completed (E-52 T2 U2-U4 pending)"
+        );
+        let mut outcome = parser.parse("", "", &req);
+        outcome.duration_ms = elapsed_ms;
+        return outcome;
     }
+    let crate_root = req
+        .file_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.args(["diagnostics"])
+        .arg(&crate_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let spawn_result = cmd.spawn();
+    let child = match spawn_result {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                error = %e,
+                language = %req.language,
+                binary = bin,
+                "diagnostic_probe: subprocess spawn failed"
+            );
+            return tool_missing_outcome(kind, elapsed_ms);
+        }
+    };
+    let output = match timeout(budget, child.wait_with_output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            warn!(
+                error = %e,
+                language = %req.language,
+                binary = bin,
+                "diagnostic_probe: subprocess wait failed"
+            );
+            return tool_missing_outcome(kind, elapsed_ms);
+        }
+        Err(_) => {
+            let elapsed_ms = clamp_elapsed_ms(started.elapsed());
+            return timed_out_outcome(kind, elapsed_ms);
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut outcome = parser.parse(&stdout, &stderr, &req);
+    // Stamp the real wall-clock duration onto the parser-produced outcome
+    // (the parser is a pure function of stdout/stderr and does not measure
+    // time).
+    let elapsed_ms = clamp_elapsed_ms(started.elapsed());
+    outcome.duration_ms = elapsed_ms;
+    outcome
 }
 
 fn wire_dark_outcome(kind: ProbeKind) -> DiagnosticProbeOutcome {
