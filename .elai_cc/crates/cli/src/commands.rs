@@ -2075,10 +2075,18 @@ fn parse_mcp_command(args: &[&str]) -> Result<SlashCommand, SlashCommandParseErr
             action: Some("help".to_string()),
             target: None,
         }),
+        ["pin", rest @ ..] => Ok(SlashCommand::Mcp {
+            action: Some("pin".to_string()),
+            target: if rest.is_empty() {
+                None
+            } else {
+                Some(rest.join(" "))
+            },
+        }),
         [action, ..] => Err(command_error(
-            &format!("Unknown /mcp action '{action}'. Use list, show <server>, or help."),
+            &format!("Unknown /mcp action '{action}'. Use list, show <server>, pin, or help."),
             "mcp",
-            "/mcp [list|show <server>|help]",
+            "/mcp [list|show <server>|pin|help]",
         )),
     }
 }
@@ -5019,6 +5027,20 @@ mod tests {
             }))
         );
         assert_eq!(
+            SlashCommand::parse("/mcp pin"),
+            Ok(Some(SlashCommand::Mcp {
+                action: Some("pin".to_string()),
+                target: None
+            }))
+        );
+        assert_eq!(
+            SlashCommand::parse("/mcp pin show alpha"),
+            Ok(Some(SlashCommand::Mcp {
+                action: Some("pin".to_string()),
+                target: Some("show alpha".to_string())
+            }))
+        );
+        assert_eq!(
             SlashCommand::parse("/memory"),
             Ok(Some(SlashCommand::Memory))
         );
@@ -5194,8 +5216,8 @@ mod tests {
 
         let action_error = parse_error_message("/mcp inspect alpha");
         assert!(action_error
-            .contains("Unknown /mcp action 'inspect'. Use list, show <server>, or help."));
-        assert!(action_error.contains("  Usage            /mcp [list|show <server>|help]"));
+            .contains("Unknown /mcp action 'inspect'. Use list, show <server>, pin, or help."));
+        assert!(action_error.contains("  Usage            /mcp [list|show <server>|pin|help]"));
     }
 
     #[test]
