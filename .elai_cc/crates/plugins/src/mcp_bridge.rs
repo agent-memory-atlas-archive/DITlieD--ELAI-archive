@@ -1650,17 +1650,18 @@ impl DefaultMcpBridge {
             }
         }
         let mut out = Vec::with_capacity(arr.len());
-        // G-4: capture the FULL ToolDef (incl. input_schema) BEFORE the
-        // input_schema field is dropped from the summary projection, so the
-        // schema-pin gate hashes the complete tool shape (a rug-pull that
-        // only mutates input_schema -- not the description -- is still
-        // caught). Built unconditionally only when the pin gate is armed.
+        // G-4 + E-37 smoke2: capture the FULL ToolDef (incl. input_schema)
+        // BEFORE the input_schema field is dropped from the summary
+        // projection, so the schema-pin gate hashes the complete tool shape
+        // (a rug-pull that only mutates input_schema -- not the description
+        // -- is still caught). Built UNCONDITIONALLY so the E-37
+        // mcp_scan_classifier always sees the real tool list even when the
+        // pin gate is disarmed (pin gate stays arm-gated below). Without
+        // this, a disarmed pin yields an empty `full_tools` and the
+        // classifier always returns Allow, so the Block path never fires
+        // through the real http_list_tools entrypoint.
         let arm_pin = self.schema_pin_armed();
-        let mut full_tools: Vec<crate::mcp_schema_pin::ToolDef> = if arm_pin {
-            Vec::with_capacity(arr.len())
-        } else {
-            Vec::new()
-        };
+        let mut full_tools: Vec<crate::mcp_schema_pin::ToolDef> = Vec::with_capacity(arr.len());
         for t in arr {
             let name = t
                 .get("name")
@@ -1675,20 +1676,18 @@ impl DefaultMcpBridge {
             if name.is_empty() {
                 continue;
             }
-            if arm_pin {
-                // The MCP 2024-11-05 wire field is `inputSchema`; fall back to
-                // a null schema when absent so the hash is still well-defined.
-                let input_schema = t
-                    .get("inputSchema")
-                    .or_else(|| t.get("input_schema"))
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                full_tools.push(crate::mcp_schema_pin::ToolDef {
-                    name: name.clone(),
-                    description: description.clone(),
-                    input_schema,
-                });
-            }
+            // The MCP 2024-11-05 wire field is `inputSchema`; fall back to
+            // a null schema when absent so the hash is still well-defined.
+            let input_schema = t
+                .get("inputSchema")
+                .or_else(|| t.get("input_schema"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            full_tools.push(crate::mcp_schema_pin::ToolDef {
+                name: name.clone(),
+                description: description.clone(),
+                input_schema,
+            });
             out.push(McpToolSummary { name, description });
         }
         // G-4: live MCP rug-pull / line-jump re-pin gate. Runs ONLY when
