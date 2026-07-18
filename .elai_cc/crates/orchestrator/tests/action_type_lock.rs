@@ -1376,6 +1376,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::InsecureRateMeasured => (),
         // I-9 (SCHEMA_VERSION 263): ErrorAmplificationMeasured flat beacon.
         SsbActionType::ErrorAmplificationMeasured => (),
+        SsbActionType::HallucinationDeltaMeasured => (),
         // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
         SsbActionType::SkillLibraryEvent(_) => (),
         // F-5 / Slice A1 (SCHEMA_VERSION 203): staleness-quarantine broadcast.

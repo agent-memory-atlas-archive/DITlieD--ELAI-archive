@@ -199,6 +199,22 @@ pub(crate) fn run_bench_safedelta(
     crate::bench_safedelta::run(suites, seed, json, endpoint, model)
 }
 
+pub(crate) fn run_bench_hallucination_delta(
+    suites: Vec<String>,
+    seed: u64,
+    json: bool,
+    endpoint: Option<String>,
+    model: Option<String>,
+) -> anyhow::Result<()> {
+    // PS-3 (SCHEMA_VERSION 277): gate-ON-vs-gate-OFF hallucination-delta
+    // ablation. FAITHFUL MIRROR of G-6 safedelta. Tier-1 = fixture corpus
+    // (pure computation, no live model). Writes
+    // benchmarks/hallucination_delta/<ts>.json + a signed .rra manifest.
+    // Emits exactly one SsbActionType::HallucinationDeltaMeasured row.
+    // Tier-2 live CGG = RunPod-gated (deferred; --endpoint rejected here).
+    crate::bench_hallucination_delta::run(suites, seed, json, endpoint, model)
+}
+
 pub(crate) fn run_bench_case_reuse(
     suite: String,
     seed: u64,

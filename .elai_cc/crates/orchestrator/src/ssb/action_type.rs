@@ -4760,6 +4760,10 @@ pub enum SsbActionType {
     /// type; CandidateEvaluated/DecisionRecorded/IncumbentKept rides in
     /// ModelRefreshCadencePayload.kind. TOTAL_VARIANTS 584 -> 585.
     ModelRefreshCadence,
+    /// PS-3 (SCHEMA_VERSION 277): hallucination-delta gate-ON vs gate-OFF
+    /// measured. Flat beacon (no Kind discriminator). Mirrors
+    /// SafetyDeltaMeasured shape. TOTAL_VARIANTS 585 -> 586.
+    HallucinationDeltaMeasured,
 }
 
 impl SsbActionType {
@@ -5691,6 +5695,8 @@ impl SsbActionType {
             Self::GateIntensitySelected => "gate_intensity_selected",
             // K-9 (SCHEMA_VERSION 276): model refresh cadence decision row.
             Self::ModelRefreshCadence => "model_refresh_cadence",
+            // PS-3 (SCHEMA_VERSION 277): hallucination-delta flat beacon.
+            Self::HallucinationDeltaMeasured => "hallucination_delta_measured",
         }
     }
 }
@@ -6540,6 +6546,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "gate_intensity_selected" => Ok(SsbActionType::GateIntensitySelected),
         // K-9 (SCHEMA_VERSION 276): model refresh cadence decision row.
         "model_refresh_cadence" => Ok(SsbActionType::ModelRefreshCadence),
+        // P3-L10RUNNER (SCHEMA_VERSION auto): hallucination-delta flat beacon.
+        "hallucination_delta_measured" => Ok(SsbActionType::HallucinationDeltaMeasured),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

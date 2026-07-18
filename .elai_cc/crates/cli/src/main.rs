@@ -383,6 +383,12 @@ mod bench_staleness;
 // Writes benchmarks/safedelta/<ts>.json + a signed .rra manifest (G-2 reuse).
 // Emits one SafetyDeltaMeasured SSB beacon. Tier-2 = RUNPOD-PENDING.
 mod bench_safedelta;
+// PS-3 (SCHEMA_VERSION 277): `elai bench hallucination-delta` — gate-ON-vs-
+// gate-OFF hallucination-delta ablation. FAITHFUL MIRROR of G-6 safedelta.
+// Writes benchmarks/hallucination_delta/<ts>.json + a signed .rra manifest
+// (G-2 reuse). Emits one HallucinationDeltaMeasured SSB beacon.
+// Tier-1 = fixture corpus; Tier-2 live CGG = RUNPOD-PENDING.
+mod bench_hallucination_delta;
 // H-34 (SCHEMA_VERSION 213): `elai bench mcp-schema-budget [--json]` — MCP-schema
 // token-budget MEASURE-FIRST benchmark. Drives the embedded multi-server MCP tool
 // catalog (20 tools: local-rag / pod-lifecycle / notion) OFFLINE, writes a
@@ -1438,6 +1444,20 @@ fn run() -> Result<(), anyhow::Error> {
             model,
         } => {
             bench_cmd::run_bench_safedelta(suites, seed, json, endpoint, model)?;
+        }
+        // PS-3 (SCHEMA_VERSION 277): gate-ON-vs-gate-OFF hallucination-delta
+        // ablation. FAITHFUL MIRROR of G-6 safedelta. Tier-1 = fixture corpus
+        // (pure computation, no live model). Writes timestamped JSON + signed
+        // .rra manifest. Emits ONE HallucinationDeltaMeasured SSB beacon.
+        // Tier-2 live CGG = RUNPOD-PENDING. Exits 0/1.
+        CliAction::BenchHallucinationDelta {
+            suites,
+            seed,
+            json,
+            endpoint,
+            model,
+        } => {
+            bench_cmd::run_bench_hallucination_delta(suites, seed, json, endpoint, model)?;
         }
         // K-18a (PS-5 observe arm): recurrence-hit-rate over the shipped BM25
         // retrieval stack. Drives case_reuse_runner over the embedded fixture

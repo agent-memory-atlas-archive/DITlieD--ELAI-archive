@@ -3751,6 +3751,10 @@ pub enum SsbPayload {
     /// type; CandidateEvaluated/DecisionRecorded/IncumbentKept rides in
     /// ModelRefreshCadencePayload.kind. TOTAL_VARIANTS 584 -> 585.
     ModelRefreshCadence(ModelRefreshCadencePayload),
+    /// PS-3 (SCHEMA_VERSION 277): hallucination-delta gate-ON vs gate-OFF
+    /// measurement. Flat beacon (no Kind discriminator). Mirrors
+    /// [`SafetyDeltaMeasuredPayload`] shape. TOTAL_VARIANTS 585 -> 586.
+    HallucinationDeltaMeasured(HallucinationDeltaMeasuredPayload),
 }
 
 impl SsbPayload {
@@ -4569,6 +4573,7 @@ impl SsbPayload {
             Self::RoutingEconomicsMeasured(_) => SsbActionType::RoutingEconomicsMeasured,
             Self::GateIntensitySelected(_) => SsbActionType::GateIntensitySelected,
             Self::ModelRefreshCadence(_) => SsbActionType::ModelRefreshCadence,
+            Self::HallucinationDeltaMeasured(_) => SsbActionType::HallucinationDeltaMeasured,
         }
     }
 }
@@ -20194,4 +20199,25 @@ pub struct ModelRefreshCadencePayload {
     pub dollars_per_verified_task: Option<f64>,
     pub fixture_run: bool,
     pub notes: String,
+}
+
+/// PS-3: hallucination-delta gate-ON vs gate-OFF measurement.
+///
+/// Flat beacon (no Kind discriminator). Mirrors [`SafetyDeltaMeasuredPayload`]
+/// shape. `hallucination_delta` = `hallucination_rate_gate_off` -
+/// `hallucination_rate_gate_on` (positive = gate reduces hallucination).
+/// `runpod_pending = true` for Tier-1 fixture runs (no live inference).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HallucinationDeltaMeasuredPayload {
+    pub suite: String,
+    pub model_id: String,
+    pub hallucination_delta: f64,
+    pub ci_low: f64,
+    pub ci_high: f64,
+    pub n_tasks: u32,
+    pub seed: u64,
+    pub corpus_blake3: String,
+    pub gate_recall: f64,
+    pub stdout_hash: Option<String>,
+    pub runpod_pending: bool,
 }

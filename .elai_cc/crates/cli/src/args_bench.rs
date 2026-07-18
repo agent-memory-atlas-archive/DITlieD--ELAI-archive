@@ -97,9 +97,12 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "sequence-probe" {
         return parse_bench_sequence_probe_args(&rest[1..]);
     }
+    if sub == "hallucination-delta" {
+        return parse_bench_hallucination_delta_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -988,6 +991,94 @@ fn parse_bench_safedelta_args(rest: &[String]) -> Result<CliAction, String> {
         suites.push("seccodeplt".to_string());
     }
     Ok(CliAction::BenchSafedelta {
+        suites,
+        seed,
+        json,
+        endpoint,
+        model,
+    })
+}
+
+/// PS-3: parse `elai bench hallucination-delta [--suites <csv>] [--seed <u64>]
+/// [--json] [--endpoint <url>] [--model <id>]`.
+///
+/// Mirrors `parse_bench_safedelta_args`. Tier-1 only processes `cgg`; other
+/// suites require a live RunPod endpoint and will return a `RunpodPending`
+/// error at runtime. `--endpoint` is rejected at runtime in this fixture-tier
+/// slice (live CGG ablation is RunPod-gated). If omitted, defaults to
+/// `["cgg"]` (the embedded fixture corpus).
+fn parse_bench_hallucination_delta_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut suites: Vec<String> = Vec::new();
+    let mut seed: u64 = 0;
+    let mut json = false;
+    let mut endpoint: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--suites" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --suites".to_string())?;
+                suites = value.split(',').map(|s| s.trim().to_string()).collect();
+                i += 2;
+            }
+            flag if flag.starts_with("--suites=") => {
+                let raw = &flag["--suites=".len()..];
+                suites = raw.split(',').map(|s| s.trim().to_string()).collect();
+                i += 1;
+            }
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--endpoint" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --endpoint".to_string())?;
+                endpoint = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--endpoint=") => {
+                endpoint = Some(flag["--endpoint=".len()..].to_string());
+                i += 1;
+            }
+            "--model" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --model".to_string())?;
+                model = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--model=") => {
+                model = Some(flag["--model=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench hallucination-delta` argument: {other}"));
+            }
+        }
+    }
+    if suites.is_empty() {
+        suites.push("cgg".to_string());
+    }
+    Ok(CliAction::BenchHallucinationDelta {
         suites,
         seed,
         json,

@@ -5498,7 +5498,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- K-9 (SCHEMA_VERSION 276): model refresh cadence decision row. Flat
         -- sql_str; CandidateEvaluated/DecisionRecorded/IncumbentKept rides in
         -- payload.kind. 584 -> 585.
-        'model_refresh_cadence'
+        'model_refresh_cadence',
+        -- PS-3 (SCHEMA_VERSION 277): hallucination-delta flat beacon. Emitted
+        -- by bench_hallucination_delta::run from CliAction::BenchHallucinationDelta.
+        -- Default-ON fixture-tier CLI measurement instrument. 585 -> 586.
+        'hallucination_delta_measured'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

@@ -66,6 +66,12 @@ pub mod seccodeplt_runner;
 // Tier-2 = live multi-suite (SUSVIBES-200 arXiv:2512.03262, BaxBench-392
 // arXiv:2502.11844, dynamic exploit-exec floor) = RUNPOD-PENDING.
 pub mod safedelta_runner;
+// PS-3 (SCHEMA_VERSION 277): hallucination-delta gate-ON-vs-gate-OFF runner.
+// FAITHFUL MIRROR of G-6 safedelta_runner: measures the hallucination-rate
+// delta between a grounding gate ON vs OFF over an embedded deterministic
+// fixture corpus. Tier-1 = pure-computation over the embedded corpus (NO live
+// model call); Tier-2 live CGG ablation is RUNPOD-PENDING.
+pub mod hallucination_delta_runner;
 // H-30: staleness / intent-drift INSTRUMENT. Drives the SHIPPED bi-temporal
 // memory substrate (FactStore + audit_conflicts + get_relevant_facts) over a
 // labeled supersession fixture in an ISOLATED in-memory store and computes two

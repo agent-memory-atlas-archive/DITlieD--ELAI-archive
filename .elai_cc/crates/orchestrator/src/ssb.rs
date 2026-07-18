@@ -1544,6 +1544,9 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // type; CandidateEvaluated/DecisionRecorded/IncumbentKept rides in
     // ModelRefreshCadencePayload.kind. 584 -> 585.
     SsbActionType::ModelRefreshCadence,
+    // PS-3 (SCHEMA_VERSION 277): hallucination-delta flat beacon. Emitted by
+    // `elai bench hallucination-delta`; 585 -> 586.
+    SsbActionType::HallucinationDeltaMeasured,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

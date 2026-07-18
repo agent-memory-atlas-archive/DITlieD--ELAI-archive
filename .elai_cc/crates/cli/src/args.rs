@@ -993,6 +993,28 @@ pub(crate) enum CliAction {
         /// default.
         model: Option<String>,
     },
+    /// PS-3 (SCHEMA_VERSION 277): `elai bench hallucination-delta [--suites <csv>]
+    /// [--seed <u64>] [--json] [--endpoint <url>] [--model <id>]`.
+    /// FAITHFUL MIRROR of G-6 safedelta: gate-ON-vs-gate-OFF hallucination-delta
+    /// ablation over the embedded fixture corpus. Emits ONE
+    /// HallucinationDeltaMeasured SSB beacon + writes a timestamped JSON
+    /// manifest under benchmarks/hallucination_delta/ + a signed replayable
+    /// .rra manifest via G-2 rra.rs (blake3-only root). Tier-1 = fixture only;
+    /// Tier-2 live CGG ablation is RUNPOD-PENDING.
+    BenchHallucinationDelta {
+        /// Comma-separated suite list (e.g. `cgg`). Tier-1 only supports `cgg`;
+        /// additional suites require a live RunPod endpoint.
+        suites: Vec<String>,
+        /// Deterministic RNG seed (mirrors ELAI_SEED; default 0).
+        seed: u64,
+        /// Print the full report JSON to stdout.
+        json: bool,
+        /// Tier-2 skeleton: when present, rejected in this fixture-tier slice
+        /// (live CGG ablation is RunPod-gated).
+        endpoint: Option<String>,
+        /// Tier-2 skeleton: model id for the live leg. None = sidecar default.
+        model: Option<String>,
+    },
     /// K-18a (PS-5 observe arm): `elai bench case-reuse [--suite fixture]
     /// [--seed <u64>] [--json]`. Recurrence-hit-rate over the SHIPPED BM25
     /// retrieval stack: for each fixture recurrence, does the shipped retrieval
