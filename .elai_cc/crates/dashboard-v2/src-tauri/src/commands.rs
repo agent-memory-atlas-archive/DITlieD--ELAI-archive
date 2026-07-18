@@ -9647,6 +9647,68 @@ pub async fn get_context_state(state: State<'_, AppState>) -> CmdResult<ContextS
         }
     }
 
+    // E-23 WIRING_CONTRACT observable_effect: emit DeveloperDiscourseEvent
+    // SSB rows from this real entrypoint (dashboard-v2 get_context_state
+    // Tauri command) so build_badge_payload + build_context_warning_payload
+    // are no longer wire-dark. Best-effort: a write failure is logged via
+    // tracing but never surfaces as a command error, mirroring the
+    // get_trust_telemetry emit idiom at commands.rs:9796..9813. The gate
+    // is the same ELAI_DEVELOPER_DISCOURSE_ENABLE env var so nothing
+    // emits when the discourse plane is wire-dark.
+    if let Some(writer) = state.writer.as_ref() {
+        use elai_orchestrator::trust_telemetry::{
+            build_badge_payload, build_context_warning_payload, discourse_enabled,
+        };
+
+        if discourse_enabled() {
+            let session_id = Some(writer.session_id().to_owned());
+            let ts_ms = now_ms(&state);
+
+            // Runtime-choice badge emit -- only when the classified badge
+            // is non-empty (local / cloud_billed). An empty label means
+            // classify_runtime_badge did not recognise the backend, so
+            // there is no meaningful transition to record.
+            if !dto.runtime_choice_badge.is_empty() {
+                let payload = SsbPayload::DeveloperDiscourseEvent(build_badge_payload(
+                    "",
+                    &dto.runtime_choice_badge,
+                    session_id.clone(),
+                    ts_ms,
+                ));
+                if let Err(e) = writer
+                    .write_payload("dashboard-v2", 0, payload, vec![])
+                    .await
+                {
+                    tracing::warn!(
+                        target: "elai_dashboard",
+                        error = %e,
+                        "get_context_state: badge SSB emit failed (best-effort, DTO still returned)"
+                    );
+                }
+            }
+
+            // Context-state warning emit -- only when token_budget_pct
+            // crosses the YELLOW (70.0) or RED (85.0) thresholds. The
+            // threshold_label is derived inside build_context_warning_payload
+            // from the same constants this command already imports.
+            if dto.token_budget_pct >= CONTEXT_BUDGET_YELLOW_PCT {
+                let payload = SsbPayload::DeveloperDiscourseEvent(
+                    build_context_warning_payload(dto.token_budget_pct, session_id, ts_ms),
+                );
+                if let Err(e) = writer
+                    .write_payload("dashboard-v2", 0, payload, vec![])
+                    .await
+                {
+                    tracing::warn!(
+                        target: "elai_dashboard",
+                        error = %e,
+                        "get_context_state: context warning SSB emit failed (best-effort, DTO still returned)"
+                    );
+                }
+            }
+        }
+    }
+
     Ok(dto)
 }
 
