@@ -28,11 +28,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use elai_safety::{
-    classify_injection, wrap_spotlight, HeuristicClassifier, Provenance,
-};
+use elai_safety::Provenance;
 use elai_core::paths::sessions_dir_path;
-use elai_core::{OsClock, OsEntropy};
+use elai_core::OsClock;
 use elai_orchestrator::{
     check_against_commitment, commit_minimal_set, taint_text,
     CapabilityFlowDenial, Ssb, SsbConfig, SsbPayload, ToolFilterEventKind,
@@ -270,24 +268,17 @@ fn run_fixture_replay(fixture: &str, output_format: CliOutputFormat) -> Result<(
         }
     };
 
-    let provenance = Provenance::from_web("https://fixture.local/replay");
-    let mut entropy = OsEntropy;
-    let span = wrap_spotlight(payload, &provenance, &mut entropy)
-        .map_err(|e| format!("safety fixture-replay: spotlight wrap failed: {e}"))?;
-
-    let classifier = HeuristicClassifier;
     let verdict = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("safety fixture-replay: tokio runtime init failed: {e}"))?
-        .block_on(classify_injection(&span, &classifier))
-        .map_err(|e| format!("safety fixture-replay: classify failed: {e}"))?;
+        .block_on(elai_orchestrator::capability_flow::classify_with_llm_escalation(payload));
 
     let row = FixtureRow {
         fixture: canonical,
         classifier_verdict: verdict.verdict_label().to_owned(),
         spotlight_wrapped: true,
-        note: "live model integration RUNPOD-PENDING; heuristic classifier path verified".into(),
+        note: "api-free/heuristic-fallback under GPU-PAUSED-BY-OWNER; tier-1 regex + Suspect escalation".into(),
     };
     render(&[row], output_format)
 }

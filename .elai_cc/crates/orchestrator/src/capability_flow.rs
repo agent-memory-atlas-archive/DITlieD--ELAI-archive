@@ -236,6 +236,11 @@ pub fn taint_text(text: &str) -> Option<UntrustedTaint> {
     taint_from_verdict(&verdict)
 }
 
+/// E-37 U2 — tier-1 regex + Suspect escalation (GPU-PAUSED fail-open).
+pub async fn classify_with_llm_escalation(text: &str) -> elai_safety::prompt_armor::ClassifierVerdict {
+    crate::llm_injection_classifier::classify_with_llm_escalation(text).await
+}
+
 // ---------------------------------------------------------------------------
 // F-3 Slice C2: CapabilityFlowAdapter
 // ---------------------------------------------------------------------------

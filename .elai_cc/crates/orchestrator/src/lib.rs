@@ -345,6 +345,8 @@ pub mod ipc_types;
 pub mod tool_filter;
 // F-3p1: capability commitment + untrusted-taint bridge (cap-flow core).
 pub mod capability_flow;
+// E-37 U2: LLM-injection classifier with GPU-PAUSED-BY-OWNER fail-open.
+pub mod llm_injection_classifier;
 mod lane_events;
 mod mcp;
 mod mcp_client;
