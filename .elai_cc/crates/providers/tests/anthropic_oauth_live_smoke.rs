@@ -121,6 +121,7 @@ async fn anthropic_oauth_live_smoke_after_patch_r1() {
         stream: false,
         seed: None,
         effort: None,
+        chat_template_kwargs: None,
     };
     let response_result = client.send_message(&request).await;
     match response_result {

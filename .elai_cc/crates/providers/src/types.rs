@@ -42,6 +42,8 @@ pub struct MessageRequest {
     /// asserts budget_tokens count == 0 in the request builder for Opus 4.7+ branches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_template_kwargs: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl MessageRequest {

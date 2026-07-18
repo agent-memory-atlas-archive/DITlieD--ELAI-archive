@@ -100,9 +100,12 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "hallucination-delta" {
         return parse_bench_hallucination_delta_args(&rest[1..]);
     }
+    if sub == "local-lane-e2e" {
+        return parse_bench_local_lane_e2e_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -1085,6 +1088,54 @@ fn parse_bench_hallucination_delta_args(rest: &[String]) -> Result<CliAction, St
         endpoint,
         model,
     })
+}
+
+/// PS-READINESS-E2ERUNNER Slice B — parse `elai bench local-lane-e2e
+/// [--endpoint <url>] [--model <id>] [--json]`.
+///
+/// The ONLY live consumer of the 4B sidecar at http://127.0.0.1:8181. No
+/// fixture fallback (R1): a missing/unreachable sidecar is a hard FAIL at
+/// runtime, never a synthesized pass. `--endpoint` defaults to
+/// http://127.0.0.1:8181; `--model` defaults to qwen3.5-4b-q4_k_m.
+fn parse_bench_local_lane_e2e_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut json = false;
+    let mut endpoint: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--endpoint" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --endpoint".to_string())?;
+                endpoint = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--endpoint=") => {
+                endpoint = Some(flag["--endpoint=".len()..].to_string());
+                i += 1;
+            }
+            "--model" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --model".to_string())?;
+                model = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--model=") => {
+                model = Some(flag["--model=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench local-lane-e2e` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchLocalLaneE2e { json, endpoint, model })
 }
 
 /// K-18a — parse `elai bench case-reuse [--suite fixture] [--seed <u64>] [--json]`.

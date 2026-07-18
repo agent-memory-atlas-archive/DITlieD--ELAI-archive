@@ -72,6 +72,13 @@ pub mod safedelta_runner;
 // fixture corpus. Tier-1 = pure-computation over the embedded corpus (NO live
 // model call); Tier-2 live CGG ablation is RUNPOD-PENDING.
 pub mod hallucination_delta_runner;
+// PS-READINESS-E2ERUNNER Slice B: the ONLY live consumer of the 4B sidecar
+// at http://127.0.0.1:8181. Health-checks the sidecar, asks the 4B to
+// generate a small Rust function, splices it into a fixed test harness,
+// compiles + runs it, and emits ONE signed off-agent artifact carrying the
+// REAL compile + test exit codes + a lane tag. NOT a fixture runner; a
+// missing sidecar is a hard FAIL (R1), never a synthesized pass.
+pub mod local_lane_e2e_runner;
 // H-30: staleness / intent-drift INSTRUMENT. Drives the SHIPPED bi-temporal
 // memory substrate (FactStore + audit_conflicts + get_relevant_facts) over a
 // labeled supersession fixture in an ISOLATED in-memory store and computes two

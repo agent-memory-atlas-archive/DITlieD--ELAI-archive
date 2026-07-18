@@ -101,4 +101,6 @@ memory/*.sqlite
 benchmarks/case_reuse/
 # K-4: generated gate-tax bench run reports (JSON + .rra) are runtime output, not source.
 benchmarks/gate_tax/
+# PS-READINESS E2ERUNNER: generated local-lane-e2e bench run reports (.rra) are runtime output, not source.
+benchmarks/local_lane_e2e/
 crates/*/benchmarks/

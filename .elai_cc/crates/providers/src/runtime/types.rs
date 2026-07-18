@@ -551,6 +551,8 @@ pub struct CompletionConfig {
     /// Backwards-compatible: all existing callers need no change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grammar_gate_schema_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_template_kwargs: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Default for CompletionConfig {
@@ -566,6 +568,7 @@ impl Default for CompletionConfig {
             effort: None,
             compiled_system_override: None,
             grammar_gate_schema_json: None,
+            chat_template_kwargs: None,
         }
     }
 }

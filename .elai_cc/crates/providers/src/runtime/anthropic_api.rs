@@ -170,6 +170,7 @@ impl AnthropicApiRuntime {
             stream: false,
             seed: config.seed,
             effort,
+            chat_template_kwargs: config.chat_template_kwargs.clone(),
         }
     }
 
@@ -191,6 +192,7 @@ impl AnthropicApiRuntime {
             stream: false,
             seed: None,
             effort: None,
+            chat_template_kwargs: None,
         }
     }
 }

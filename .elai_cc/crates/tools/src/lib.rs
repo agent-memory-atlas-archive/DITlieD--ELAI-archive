@@ -4435,6 +4435,7 @@ impl ApiClient for ProviderRuntimeClient {
             // I-26: effort is not set at the tools layer; cloud reasoning roles
             // set this via CompletionConfig before reaching the request builder.
             effort: None,
+            chat_template_kwargs: None,
         };
 
         self.runtime.block_on(async {

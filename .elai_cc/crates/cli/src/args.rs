@@ -1015,6 +1015,23 @@ pub(crate) enum CliAction {
         /// Tier-2 skeleton: model id for the live leg. None = sidecar default.
         model: Option<String>,
     },
+    /// PS-READINESS-E2ERUNNER Slice B: `elai bench local-lane-e2e
+    /// [--endpoint <url>] [--model <id>] [--json]`. The ONLY live consumer of
+    /// the 4B sidecar at http://127.0.0.1:8181. Health-checks the sidecar,
+    /// asks the 4B to generate a small Rust function, splices it into a fixed
+    /// test harness, compiles + runs it, and emits ONE signed off-agent
+    /// artifact (.rra) carrying the REAL compile + test exit codes + a lane
+    /// tag (model + host). Emits one LocalLaneE2eMeasured SSB beacon. A
+    /// missing/unreachable sidecar is a hard FAIL (R1), never a synthesized
+    /// pass.
+    BenchLocalLaneE2e {
+        /// Print the full payload JSON to stdout.
+        json: bool,
+        /// Sidecar endpoint. Defaults to http://127.0.0.1:8181 (the 4B lane).
+        endpoint: Option<String>,
+        /// Model id for the 4B sidecar lane. Defaults to qwen3.5-4b-q4_k_m.
+        model: Option<String>,
+    },
     /// K-18a (PS-5 observe arm): `elai bench case-reuse [--suite fixture]
     /// [--seed <u64>] [--json]`. Recurrence-hit-rate over the SHIPPED BM25
     /// retrieval stack: for each fixture recurrence, does the shipped retrieval

@@ -709,6 +709,7 @@ mod tests {
             stream: false,
             seed: None,
             effort: None,
+            chat_template_kwargs: None,
         }
     }
 

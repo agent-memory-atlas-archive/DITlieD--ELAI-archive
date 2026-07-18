@@ -2030,6 +2030,7 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                 // roles is banned; tool-calling and reasoning are mutually exclusive
                 // on current Anthropic API).
                 effort: None,
+                chat_template_kwargs: None,
             };
 
             match self.client.send_message(&request).await {

@@ -261,6 +261,7 @@ impl LlmProvider for AnthropicLlmProviderAdapter {
                 stream: false,
                 seed: None,
                 effort: None,
+                chat_template_kwargs: None,
             };
             let response = self.client.send_message(&request).await?;
             match Self::extract_text(&response.content) {

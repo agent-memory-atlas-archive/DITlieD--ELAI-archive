@@ -164,6 +164,7 @@ impl MlxAdapter {
             seed: config.seed,
             // I-26: effort is a cloud-only field; MLX backend never uses it.
             effort: None,
+            chat_template_kwargs: config.chat_template_kwargs.clone(),
         }
     }
 }

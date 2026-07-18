@@ -1313,6 +1313,7 @@ mod tests {
                 stream: false,
                 seed: None,
                 effort: None,
+                chat_template_kwargs: None,
             },
             OpenAiCompatConfig::xai(),
         );
@@ -1337,6 +1338,7 @@ mod tests {
                 stream: true,
                 seed: None,
                 effort: None,
+                chat_template_kwargs: None,
             },
             OpenAiCompatConfig::openai(),
         );
@@ -1357,6 +1359,7 @@ mod tests {
                 stream: true,
                 seed: None,
                 effort: None,
+                chat_template_kwargs: None,
             },
             OpenAiCompatConfig::xai(),
         );

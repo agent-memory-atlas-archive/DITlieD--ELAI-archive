@@ -4764,6 +4764,10 @@ pub enum SsbActionType {
     /// measured. Flat beacon (no Kind discriminator). Mirrors
     /// SafetyDeltaMeasured shape. TOTAL_VARIANTS 585 -> 586.
     HallucinationDeltaMeasured,
+    /// PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): local-lane e2e
+    /// functional pass over the 4B sidecar. Flat beacon. TOTAL_VARIANTS 586
+    /// -> 587.
+    LocalLaneE2eMeasured,
 }
 
 impl SsbActionType {
@@ -5697,6 +5701,9 @@ impl SsbActionType {
             Self::ModelRefreshCadence => "model_refresh_cadence",
             // PS-3 (SCHEMA_VERSION 277): hallucination-delta flat beacon.
             Self::HallucinationDeltaMeasured => "hallucination_delta_measured",
+            // PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): local-lane
+            // e2e functional pass flat beacon.
+            Self::LocalLaneE2eMeasured => "local_lane_e2e_measured",
         }
     }
 }
@@ -6548,6 +6555,9 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "model_refresh_cadence" => Ok(SsbActionType::ModelRefreshCadence),
         // P3-L10RUNNER (SCHEMA_VERSION auto): hallucination-delta flat beacon.
         "hallucination_delta_measured" => Ok(SsbActionType::HallucinationDeltaMeasured),
+        // PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): local-lane e2e
+        // functional pass flat beacon.
+        "local_lane_e2e_measured" => Ok(SsbActionType::LocalLaneE2eMeasured),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

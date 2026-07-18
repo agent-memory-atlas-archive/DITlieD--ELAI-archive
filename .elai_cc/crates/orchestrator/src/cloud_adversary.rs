@@ -96,6 +96,7 @@ impl Adversary for CloudAdversary {
             seed: None,
             // I-26: effort is not set for adversarial cloud calls.
             effort: None,
+            chat_template_kwargs: None,
         };
 
         let response = match self.client.send_message(&request).await {

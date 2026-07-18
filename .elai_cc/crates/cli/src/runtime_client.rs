@@ -633,6 +633,7 @@ impl ApiClient for RuntimeClient {
             // I-26: effort is not set at the CLI layer; cloud reasoning roles
             // set this via CompletionConfig at the runtime adapter boundary.
             effort: None,
+            chat_template_kwargs: None,
         };
 
         let use_prompt_cache = matches!(self.backend, BackendMode::Api);

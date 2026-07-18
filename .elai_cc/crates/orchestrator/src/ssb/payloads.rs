@@ -3755,6 +3755,11 @@ pub enum SsbPayload {
     /// measurement. Flat beacon (no Kind discriminator). Mirrors
     /// [`SafetyDeltaMeasuredPayload`] shape. TOTAL_VARIANTS 585 -> 586.
     HallucinationDeltaMeasured(HallucinationDeltaMeasuredPayload),
+    /// PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): local-lane e2e
+    /// functional pass over the 4B sidecar. Flat beacon (no Kind
+    /// discriminator). Carries the REAL compile + test exit codes + a lane
+    /// tag (model + host). TOTAL_VARIANTS 586 -> 587.
+    LocalLaneE2eMeasured(LocalLaneE2eMeasuredPayload),
 }
 
 impl SsbPayload {
@@ -4574,6 +4579,7 @@ impl SsbPayload {
             Self::GateIntensitySelected(_) => SsbActionType::GateIntensitySelected,
             Self::ModelRefreshCadence(_) => SsbActionType::ModelRefreshCadence,
             Self::HallucinationDeltaMeasured(_) => SsbActionType::HallucinationDeltaMeasured,
+            Self::LocalLaneE2eMeasured(_) => SsbActionType::LocalLaneE2eMeasured,
         }
     }
 }
@@ -20220,4 +20226,23 @@ pub struct HallucinationDeltaMeasuredPayload {
     pub gate_recall: f64,
     pub stdout_hash: Option<String>,
     pub runpod_pending: bool,
+}
+
+/// PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): payload for
+/// [`SsbActionType::LocalLaneE2eMeasured`]. Flat beacon (no Kind
+/// discriminator) carrying the REAL compile + test exit codes from the
+/// local-lane e2e runner + a lane tag (model + host).
+/// `functional_pass = compile_exit_code == 0 && test_exit_code == 0`.
+/// `schema_version` pins the SSB schema version at emit time.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalLaneE2eMeasuredPayload {
+    pub model: String,
+    pub host: String,
+    pub health_check_passed: bool,
+    pub complete_latency_ms: u64,
+    pub generated_chars: u64,
+    pub compile_exit_code: i32,
+    pub test_exit_code: i32,
+    pub functional_pass: bool,
+    pub schema_version: u32,
 }

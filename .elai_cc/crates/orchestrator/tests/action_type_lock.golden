@@ -285,6 +285,7 @@ llamacpp_ep_detected
 llamacpp_subprocess_killed
 llamacpp_subprocess_spawned
 local_cloud_routing_event
+local_lane_e2e_measured
 lock_acquired
 lock_contested
 locked_keys_audit_run

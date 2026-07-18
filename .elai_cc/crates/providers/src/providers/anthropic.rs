@@ -1804,6 +1804,7 @@ use elai_core::config::OAuthConfig;
             stream: false,
             seed: None,
             effort: None,
+            chat_template_kwargs: None,
         };
 
         assert!(request.with_streaming().stream);
@@ -1908,6 +1909,7 @@ use elai_core::config::OAuthConfig;
             stream: false,
             seed: None,
             effort: None,
+            chat_template_kwargs: None,
         }
     }
 

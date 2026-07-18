@@ -416,6 +416,7 @@ mod tests {
             stream: true,
             seed: None,
             effort: None,
+            chat_template_kwargs: None,
         };
 
         let error = preflight_message_request(&request)
@@ -457,6 +458,7 @@ mod tests {
             stream: false,
             seed: None,
             effort: None,
+            chat_template_kwargs: None,
         };
 
         preflight_message_request(&request)

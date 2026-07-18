@@ -215,6 +215,19 @@ pub(crate) fn run_bench_hallucination_delta(
     crate::bench_hallucination_delta::run(suites, seed, json, endpoint, model)
 }
 
+pub(crate) fn run_bench_local_lane_e2e(
+    json: bool,
+    endpoint: Option<String>,
+    model: Option<String>,
+) -> anyhow::Result<()> {
+    // PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): local-lane e2e
+    // functional pass over the 4B sidecar at http://127.0.0.1:8181. Drives a
+    // REAL model; no fixture fallback (R1). Writes
+    // benchmarks/local_lane_e2e/<ts>.rra + emits one
+    // SsbActionType::LocalLaneE2eMeasured row.
+    crate::bench_local_lane_e2e::run(json, endpoint, model)
+}
+
 pub(crate) fn run_bench_case_reuse(
     suite: String,
     seed: u64,

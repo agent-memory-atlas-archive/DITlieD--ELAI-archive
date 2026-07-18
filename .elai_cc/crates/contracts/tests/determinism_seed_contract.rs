@@ -36,6 +36,7 @@ fn fixture(seed: Option<u64>) -> MessageRequest {
         stream: false,
         seed,
         effort: None,
+        chat_template_kwargs: None,
     }
 }
 

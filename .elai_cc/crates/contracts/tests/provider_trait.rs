@@ -23,6 +23,7 @@ fn provider_has_llm_provider_contract() {
         stream: false,
         seed: None,
         effort: None,
+        chat_template_kwargs: None,
     };
     let streamed = req.with_streaming();
     assert!(streamed.stream, "with_streaming must set stream=true");

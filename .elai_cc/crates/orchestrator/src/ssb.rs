@@ -1547,6 +1547,7 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // PS-3 (SCHEMA_VERSION 277): hallucination-delta flat beacon. Emitted by
     // `elai bench hallucination-delta`; 585 -> 586.
     SsbActionType::HallucinationDeltaMeasured,
+    SsbActionType::LocalLaneE2eMeasured,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

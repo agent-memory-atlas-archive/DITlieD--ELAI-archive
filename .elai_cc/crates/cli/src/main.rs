@@ -389,6 +389,12 @@ mod bench_safedelta;
 // (G-2 reuse). Emits one HallucinationDeltaMeasured SSB beacon.
 // Tier-1 = fixture corpus; Tier-2 live CGG = RUNPOD-PENDING.
 mod bench_hallucination_delta;
+// PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): `elai bench
+// local-lane-e2e [--endpoint <url>] [--model <id>] [--json]` — the ONLY live
+// consumer of the 4B sidecar at http://127.0.0.1:8181. Drives a REAL model,
+// emits one LocalLaneE2eMeasured SSB beacon + a signed .rra manifest. A
+// missing sidecar is a hard FAIL (R1), never a synthesized pass.
+mod bench_local_lane_e2e;
 // H-34 (SCHEMA_VERSION 213): `elai bench mcp-schema-budget [--json]` — MCP-schema
 // token-budget MEASURE-FIRST benchmark. Drives the embedded multi-server MCP tool
 // catalog (20 tools: local-rag / pod-lifecycle / notion) OFFLINE, writes a
@@ -1458,6 +1464,18 @@ fn run() -> Result<(), anyhow::Error> {
             model,
         } => {
             bench_cmd::run_bench_hallucination_delta(suites, seed, json, endpoint, model)?;
+        }
+        // PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): the ONLY live
+        // consumer of the 4B sidecar at http://127.0.0.1:8181. Drives a REAL
+        // model (health-check, generate Rust fn, splice, compile, run), emits
+        // ONE LocalLaneE2eMeasured SSB beacon + a signed .rra manifest. A
+        // missing sidecar is a hard FAIL (R1), never a synthesized pass.
+        CliAction::BenchLocalLaneE2e {
+            json,
+            endpoint,
+            model,
+        } => {
+            bench_cmd::run_bench_local_lane_e2e(json, endpoint, model)?;
         }
         // K-18a (PS-5 observe arm): recurrence-hit-rate over the shipped BM25
         // retrieval stack. Drives case_reuse_runner over the embedded fixture

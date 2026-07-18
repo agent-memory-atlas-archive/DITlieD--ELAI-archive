@@ -147,6 +147,7 @@ impl LlamaCppAdapter {
             seed: config.seed,
             // I-26: effort is a cloud-only field; llama.cpp backend never uses it.
             effort: None,
+            chat_template_kwargs: config.chat_template_kwargs.clone(),
         }
     }
 }

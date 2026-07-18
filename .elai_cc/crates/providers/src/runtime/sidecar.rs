@@ -144,6 +144,7 @@ impl SidecarRuntime {
             seed: config.seed,
             // I-26: effort is a cloud-only field; sidecar never uses it.
             effort: None,
+            chat_template_kwargs: config.chat_template_kwargs.clone(),
         }
     }
 

@@ -244,6 +244,7 @@ pub async fn prompt_decision(
         compiled_system_override: None,
         // I-34: hook_prompt does not use CRANE grammar pinning.
         grammar_gate_schema_json: None,
+        chat_template_kwargs: None,
     };
     let completion_fut = runtime.complete(messages, config);
     let response =

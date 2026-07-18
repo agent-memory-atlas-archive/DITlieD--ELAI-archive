@@ -774,6 +774,7 @@ impl CloudGroundingClient {
             seed: None,
             // I-26: effort is not set at the grounding layer.
             effort: None,
+            chat_template_kwargs: None,
         };
 
         if let Some(cfg) = decoding {

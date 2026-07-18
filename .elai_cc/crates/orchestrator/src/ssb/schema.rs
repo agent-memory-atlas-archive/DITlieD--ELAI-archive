@@ -5502,7 +5502,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- PS-3 (SCHEMA_VERSION 277): hallucination-delta flat beacon. Emitted
         -- by bench_hallucination_delta::run from CliAction::BenchHallucinationDelta.
         -- Default-ON fixture-tier CLI measurement instrument. 585 -> 586.
-        'hallucination_delta_measured'
+        'hallucination_delta_measured',
+        -- PS-READINESS E2ERUNNER (SCHEMA_VERSION 278): local-lane-e2e functional
+        -- beacon. Emitted by bench_local_lane_e2e::emit_beacon_and_rra from
+        -- CliAction::BenchLocalLaneE2e. Drives the 4B :8181 lane end to end.
+        'local_lane_e2e_measured'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

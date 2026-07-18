@@ -226,6 +226,7 @@ pub fn build_quarantine_request(model: &str, untrusted_span: &str) -> MessageReq
         seed: None,
         // I-26: quarantine requests are never reasoning roles; no effort field.
         effort: None,
+        chat_template_kwargs: None,
     }
     .with_system_text(QUARANTINE_SYSTEM)
 }

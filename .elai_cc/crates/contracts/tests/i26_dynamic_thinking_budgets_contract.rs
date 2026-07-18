@@ -84,6 +84,7 @@ fn i26_a_budget_tokens_absent_on_opus_builder() {
         stream: false,
         seed: None,
         effort: Some("auto".to_string()),
+        chat_template_kwargs: None,
     };
     let wire = serde_json::to_value(&req).expect("serde to_value");
     assert!(
@@ -113,6 +114,7 @@ fn i26_b_effort_field_in_message_request_present_and_skip_on_none() {
         stream: false,
         seed: None,
         effort: Some("expert".to_string()),
+        chat_template_kwargs: None,
     };
     let wire = serde_json::to_value(&req_with).expect("serde");
     assert_eq!(
@@ -132,6 +134,7 @@ fn i26_b_effort_field_in_message_request_present_and_skip_on_none() {
         stream: false,
         seed: None,
         effort: None,
+        chat_template_kwargs: None,
     };
     let wire_none = serde_json::to_value(&req_none).expect("serde");
     assert!(
