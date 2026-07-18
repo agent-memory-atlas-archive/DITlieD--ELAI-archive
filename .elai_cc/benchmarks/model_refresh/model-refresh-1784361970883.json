@@ -1,0 +1,54 @@
+{
+  "runner_status": "runner_present",
+  "seed": 0,
+  "decisions": [
+    {
+      "lane": "coding",
+      "candidate_model": "cloud-coding-api",
+      "incumbent_model": "Qwen2.5-Coder-7B-Instruct",
+      "verdict": "re_evaluate",
+      "pass_rate": null,
+      "vram_mb": 0,
+      "tok_per_s": null,
+      "dollars_per_verified_task": null,
+      "fixture_run": false,
+      "notes": "deterministic catalog score; candidate_fit=970 baseline=850"
+    },
+    {
+      "lane": "vision",
+      "candidate_model": "cloud-vision-api",
+      "incumbent_model": "Qwen2.5-VL-7B",
+      "verdict": "re_evaluate",
+      "pass_rate": null,
+      "vram_mb": 0,
+      "tok_per_s": null,
+      "dollars_per_verified_task": null,
+      "fixture_run": false,
+      "notes": "deterministic catalog score; candidate_fit=970 baseline=800"
+    },
+    {
+      "lane": "ocr",
+      "candidate_model": "cloud-ocr-api",
+      "incumbent_model": "PaddleOCR-VL",
+      "verdict": "re_evaluate",
+      "pass_rate": null,
+      "vram_mb": 0,
+      "tok_per_s": null,
+      "dollars_per_verified_task": null,
+      "fixture_run": false,
+      "notes": "deterministic catalog score; candidate_fit=970 baseline=750"
+    },
+    {
+      "lane": "embedding_reranker",
+      "candidate_model": "cloud-embedding-api",
+      "incumbent_model": "BGE-Reranker",
+      "verdict": "re_evaluate",
+      "pass_rate": null,
+      "vram_mb": 0,
+      "tok_per_s": null,
+      "dollars_per_verified_task": null,
+      "fixture_run": false,
+      "notes": "deterministic catalog score; candidate_fit=970 baseline=780"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "suite": "error_amplification_pipeline_v1",
+  "model_id": "error_amplification_frozen_fixture",
+  "n_steps": 6,
+  "injected_step": 1,
+  "divergence_step": 1,
+  "recovered_fraction": 0.75,
+  "alpha_t": 0.25,
+  "repaired": true,
+  "annealed_temperature": null,
+  "seed": 0,
+  "fixture_blake3": "915f3037b45f3e6280f5682dc23c0e32277049a0d23cd96c6a251d56d80da580"
+}

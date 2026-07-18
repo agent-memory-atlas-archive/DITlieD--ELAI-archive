@@ -1,0 +1,36 @@
+suite = "convergence_fixture_v1"
+seed_count = 5
+paired = true
+
+[[levels]]
+label = "1x"
+dollar_per_task = 0.01
+outcomes = [
+  [true, false, true, false],
+  [true, false, true, false],
+  [true, false, true, false],
+  [true, false, true, false],
+  [true, false, true, false]
+]
+
+[[levels]]
+label = "2x"
+dollar_per_task = 0.02
+outcomes = [
+  [true, true, true, false],
+  [true, true, true, false],
+  [true, true, true, false],
+  [true, true, true, false],
+  [true, true, true, false]
+]
+
+[[levels]]
+label = "4x"
+dollar_per_task = 0.04
+outcomes = [
+  [true, true, true, true],
+  [true, true, true, true],
+  [true, true, true, true],
+  [true, true, true, true],
+  [true, true, true, true]
+]

@@ -1,0 +1,11 @@
+{
+  "suite": "mcp_schema_budget",
+  "baseline_schema_tokens_per_turn": 2790,
+  "injected_schema_tokens_per_turn": 420,
+  "reduction_tokens": 2370,
+  "deferred_resolves": 16,
+  "total_tools": 20,
+  "floor_tools": 4,
+  "seed": 0,
+  "corpus_blake3": "81a1cb852766e840610dc8859468db2edce99353f7837d7d5e71fcf4b3652b1f"
+}

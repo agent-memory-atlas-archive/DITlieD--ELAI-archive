@@ -1,0 +1,45 @@
+{
+  "tp": 67,
+  "fp": 0,
+  "tn": 30,
+  "fn_": 0,
+  "inconclusive": 3,
+  "detection_rate": 1.0,
+  "fp_rate": 0.0,
+  "verdict": "pass",
+  "per_probe_kind": {
+    "answer": {
+      "tp": 13,
+      "fp": 0,
+      "tn": 6,
+      "fn_": 0,
+      "inconclusive": 1
+    },
+    "are_you_sure": {
+      "tp": 28,
+      "fp": 0,
+      "tn": 11,
+      "fn_": 0,
+      "inconclusive": 1
+    },
+    "feedback": {
+      "tp": 14,
+      "fp": 0,
+      "tn": 6,
+      "fn_": 0,
+      "inconclusive": 0
+    },
+    "mimicry": {
+      "tp": 12,
+      "fp": 0,
+      "tn": 7,
+      "fn_": 0,
+      "inconclusive": 1
+    }
+  },
+  "fixture_blake3": "a892467f19d3ce9c30f4a540fff5a629c4e11f9ec0b5305214e5b37d42c8f444",
+  "provenance_counts": {
+    "elai_synthetic": 80,
+    "sharma_public_set": 20
+  }
+}

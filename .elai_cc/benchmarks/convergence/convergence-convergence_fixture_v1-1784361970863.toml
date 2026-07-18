@@ -1,0 +1,31 @@
+# I-27 convergence curve report
+suite = "convergence_fixture_v1"
+seed_count = 5
+task_count = 4
+knee_compute_level = "4x"
+fixture_blake3 = "b7f0aab5efaabe288ecba62bf80ba581cf55886c2614c111a7b85390606c40ea"
+runpod_pending = true
+ts_ms = 1784361970863
+
+non_monotonic_at = []
+
+[[curve_points]]
+compute_level = "1x"
+mean_rate = 0.500000
+ci_low = 0.300000
+ci_high = 0.750000
+cost_per_verified_task = 0.020000
+
+[[curve_points]]
+compute_level = "2x"
+mean_rate = 0.750000
+ci_low = 0.550000
+ci_high = 0.900000
+cost_per_verified_task = 0.026667
+
+[[curve_points]]
+compute_level = "4x"
+mean_rate = 1.000000
+ci_low = 1.000000
+ci_high = 1.000000
+cost_per_verified_task = 0.040000

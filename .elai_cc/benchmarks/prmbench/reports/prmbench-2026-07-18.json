@@ -1,0 +1,36 @@
+{
+  "total": 20,
+  "accuracy": 0.5,
+  "precision": 0.5,
+  "recall": 1.0,
+  "gating_verdict": "pass",
+  "per_category": [
+    {
+      "category": "circular_logic",
+      "total": 10,
+      "correct_predictions": 5,
+      "false_positives": 5,
+      "false_negatives": 0,
+      "insufficient": 0,
+      "accuracy": 0.5,
+      "precision": 0.5,
+      "recall": 1.0,
+      "baseline": 0.3,
+      "verdict": "pass"
+    },
+    {
+      "category": "deception_resistance",
+      "total": 10,
+      "correct_predictions": 5,
+      "false_positives": 5,
+      "false_negatives": 0,
+      "insufficient": 0,
+      "accuracy": 0.5,
+      "precision": 0.5,
+      "recall": 1.0,
+      "baseline": 0.3,
+      "verdict": "pass"
+    }
+  ],
+  "fixture_blake3": "0a1ac517eee556807a2350dc9b33f049e567d60429eca3bde28b06bf0cf4c7f2"
+}
