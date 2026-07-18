@@ -1,0 +1,37 @@
+{
+  "suite": "cgg_fixture",
+  "model_id": "fixture-grade",
+  "n_samples": 8,
+  "hallucination_rate_gate_off": 1.0,
+  "hallucination_rate_gate_on": 0.0,
+  "hallucination_delta": 1.0,
+  "gate_recall": 1.0,
+  "ci_low": 1.0,
+  "ci_high": 1.0,
+  "seed": 0,
+  "corpus_blake3": "334a8677eaee48e5c46acfd9601faed8de77bc7f6cec7ed746da59f29bf41ac3",
+  "per_category": [
+    {
+      "category": "api",
+      "candidates": 3,
+      "category_hallucination_delta": 0.375,
+      "hallucinations_blocked": 3,
+      "hallucinations_residual": 0
+    },
+    {
+      "category": "citation",
+      "candidates": 2,
+      "category_hallucination_delta": 0.25,
+      "hallucinations_blocked": 2,
+      "hallucinations_residual": 0
+    },
+    {
+      "category": "factual",
+      "candidates": 3,
+      "category_hallucination_delta": 0.375,
+      "hallucinations_blocked": 3,
+      "hallucinations_residual": 0
+    }
+  ],
+  "runpod_pending": true
+}
