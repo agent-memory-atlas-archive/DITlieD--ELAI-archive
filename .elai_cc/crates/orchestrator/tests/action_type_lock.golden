@@ -350,6 +350,7 @@ observable_effect_dispatched
 observable_effect_verified
 oracle_cache_hit
 oracle_cache_miss
+output_classifier_flagged
 package_ref_verified
 pagerank_run
 peer_systems_event

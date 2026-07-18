@@ -1224,6 +1224,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::ProvenanceTagged => (),
         SsbActionType::PromptArmorVerdict => (),
         SsbActionType::InjectionFixtureReplayed => (),
+        SsbActionType::OutputClassifierFlagged => (),
         // E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacons.
         SsbActionType::SymbolGraphQueried => (),
         SsbActionType::SymbolGraphCacheLoaded => (),

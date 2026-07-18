@@ -4420,6 +4420,7 @@ CREATE TABLE IF NOT EXISTS ssb (
         'provenance_tagged',
         'prompt_armor_verdict',
         'injection_fixture_replayed',
+        'output_classifier_flagged',
         -- E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacon family.
         -- 3 atomic variants. Paper grounding deferred per
         -- workflow/sessions/s-25120/mistakes.md cluster #6 (Stack Graphs +

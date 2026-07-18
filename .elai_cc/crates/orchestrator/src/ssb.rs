@@ -646,6 +646,12 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::ProvenanceTagged,
     SsbActionType::PromptArmorVerdict,
     SsbActionType::InjectionFixtureReplayed,
+    // E-37 U1: output sanitizer / classifier flagged beacon. Emitted by
+    // conversation::run_post_tool_use_hook when strip_markdown_images
+    // removed a non-allowlisted host OR classify_output flagged a
+    // script / role-tag impersonation pattern. See
+    // workflow/reasoning/E-37-decisions.md (U1).
+    SsbActionType::OutputClassifierFlagged,
     // E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacon family.
     // 3 atomic variants. Paper grounding deferred per
     // workflow/sessions/s-25120/mistakes.md cluster #6 (Stack Graphs +

@@ -3104,6 +3104,8 @@ pub enum SsbPayload {
     ProvenanceTagged(ProvenanceTaggedPayload),
     PromptArmorVerdict(PromptArmorVerdictPayload),
     InjectionFixtureReplayed(InjectionFixtureReplayedPayload),
+    // E-37 U1: output sanitizer / classifier flagged beacon.
+    OutputClassifierFlagged(OutputClassifierFlaggedPayload),
     // E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacons.
     // 3 atomic variants. See `SymbolGraphQueriedPayload`,
     // `SymbolGraphCacheLoadedPayload`, `LspOracleConsultedPayload`.
@@ -4280,6 +4282,7 @@ impl SsbPayload {
             Self::ProvenanceTagged(_) => SsbActionType::ProvenanceTagged,
             Self::PromptArmorVerdict(_) => SsbActionType::PromptArmorVerdict,
             Self::InjectionFixtureReplayed(_) => SsbActionType::InjectionFixtureReplayed,
+            Self::OutputClassifierFlagged(_) => SsbActionType::OutputClassifierFlagged,
             // E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacons.
             Self::SymbolGraphQueried(_) => SsbActionType::SymbolGraphQueried,
             Self::SymbolGraphCacheLoaded(_) => SsbActionType::SymbolGraphCacheLoaded,
@@ -9877,6 +9880,26 @@ pub struct InjectionFixtureReplayedPayload {
     pub fixture_name_hash: u64,
     pub defenses_passed: u32,
     pub ts_ms: i64,
+}
+
+/// E-37 U1 — payload for [`SsbActionType::OutputClassifierFlagged`].
+/// Emitted by `conversation::run_post_tool_use_hook` after
+/// `elai_safety::output_sanitizer::strip_markdown_images` +
+/// `classify_output` when either leg produced a finding (stripped image
+/// or flagged impersonation pattern). `tool_name` is the raw tool name
+/// (kept as a string, not hashed, because the post-tool-use hook already
+/// operates on the unhashed name and the SSB row is for operator triage
+/// of a specific tool's output channel; the privacy discipline that
+/// hashes other E-37 payloads does not apply to the tool-name axis here,
+/// matching the `BashComplexityBlocked` / `ContextReductionPayload`
+/// precedent in `conversation.rs`).
+/// Grounding: OWASP LLM Top 10 LLM01:2025 + LLM06:2025 + CVE-2025-32711.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputClassifierFlaggedPayload {
+    pub tool_name: String,
+    pub stripped_count: u32,
+    pub stripped_hosts: Vec<String>,
+    pub patterns: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

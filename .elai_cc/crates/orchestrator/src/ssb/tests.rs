@@ -2772,6 +2772,14 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                     ts_ms: 1_700_000_133_009,
                 },
             ),
+            SsbActionType::OutputClassifierFlagged => SsbPayload::OutputClassifierFlagged(
+                OutputClassifierFlaggedPayload {
+                    tool_name: "Bash".to_string(),
+                    stripped_count: 1,
+                    stripped_hosts: vec!["evil.example".to_string()],
+                    patterns: Vec::new(),
+                },
+            ),
             // E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacons.
             SsbActionType::SymbolGraphQueried => SsbPayload::SymbolGraphQueried(
                 SymbolGraphQueriedPayload {
@@ -6776,6 +6784,12 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 fixture_name_hash: 0xE037_0009_0000_0000,
                 defenses_passed: 3,
                 ts_ms: 1_700_000_133_009,
+            }),
+            SsbPayload::OutputClassifierFlagged(OutputClassifierFlaggedPayload {
+                tool_name: "Bash".to_string(),
+                stripped_count: 1,
+                stripped_hosts: vec!["evil.example".to_string()],
+                patterns: Vec::new(),
             }),
             // E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacons.
             // 3 atomic variants. See workflow/reasoning/E-40-decisions.md.

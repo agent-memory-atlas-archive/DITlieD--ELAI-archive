@@ -2070,6 +2070,10 @@ pub enum SsbActionType {
     /// the fixture harness can land additively later. Carries
     /// [`InjectionFixtureReplayedPayload`].
     InjectionFixtureReplayed,
+    /// E-37 U1 — emitted when the output sanitizer strips a non-allowlisted
+    /// markdown image OR the output classifier flags a script / role-tag
+    /// impersonation pattern. Carries [`OutputClassifierFlaggedPayload`].
+    OutputClassifierFlagged,
     // E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacons.
     /// E-40 — emitted once per `find_defs` / `find_refs` / `find_callers`
     /// / `find_callees` invocation from `elai symbol_graph ...` CLI
@@ -5298,6 +5302,7 @@ impl SsbActionType {
             Self::ProvenanceTagged => "provenance_tagged",
             Self::PromptArmorVerdict => "prompt_armor_verdict",
             Self::InjectionFixtureReplayed => "injection_fixture_replayed",
+            Self::OutputClassifierFlagged => "output_classifier_flagged",
             // E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacons.
             Self::SymbolGraphQueried => "symbol_graph_queried",
             Self::SymbolGraphCacheLoaded => "symbol_graph_cache_loaded",
@@ -6228,6 +6233,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "provenance_tagged"               => Ok(SsbActionType::ProvenanceTagged),
         "prompt_armor_verdict"            => Ok(SsbActionType::PromptArmorVerdict),
         "injection_fixture_replayed"      => Ok(SsbActionType::InjectionFixtureReplayed),
+        "output_classifier_flagged"       => Ok(SsbActionType::OutputClassifierFlagged),
         // E-40 (SCHEMA_VERSION 134): orchestrator-rooted symbol-graph beacons.
         "symbol_graph_queried"            => Ok(SsbActionType::SymbolGraphQueried),
         "symbol_graph_cache_loaded"       => Ok(SsbActionType::SymbolGraphCacheLoaded),

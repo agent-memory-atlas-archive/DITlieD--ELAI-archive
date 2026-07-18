@@ -40,6 +40,9 @@ pub mod taint_flow;
 // orchestrator wires at run_bash / translate_tool_request / fetch_and_extract.
 // Cross-platform Tier-1 (std::fs + std::net); no orchestrator dependency.
 pub mod blast_radius;
+// E-37 U1: output sanitizer (markdown-image host-allowlist strip +
+// script/role-tag impersonation classifier). Pure, stdlib-only.
+pub mod output_sanitizer;
 
 pub use destructive_verb_allowlist::{check_argv, AllowlistVerdict, argv_blake3};
 pub use trust_dialog::{ensure_session_trust, mint_trust_token, TrustToken, TrustDialogError};
@@ -56,3 +59,4 @@ pub use blast_radius::{
 };
 pub use tool_description_pin::{pin_or_verify_tool, pin_tool_description, update_pin_tool, verify_pin, DescPinStatus, DescPinRecord, Tool, ToolDescriptionPinError};
 pub use injection_classifier::{InjectionClassifierRole, INJECTION_CLASSIFIER_ROLE_LABEL};
+pub use output_sanitizer::{classify_output, strip_markdown_images, OutputVerdict, SanitizedOutput};

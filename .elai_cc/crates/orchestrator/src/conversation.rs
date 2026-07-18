@@ -14,7 +14,7 @@ use crate::compaction_ladder::{
     compaction_ladder_enabled, run_compaction_ladder, CompactionLadder, LadderEventEmitter,
     NullEmitter,
 };
-use crate::ssb::{ContextReductionPayload, SsbPayload};
+use crate::ssb::{ContextReductionPayload, OutputClassifierFlaggedPayload, SsbPayload};
 use crate::output_postprocessor::{self, OutputConfig};
 use crate::config::RuntimeFeatureConfig;
 use crate::hooks::{HookAbortSignal, HookProgressReporter, HookRunResult, HookRunner};
@@ -359,11 +359,60 @@ where
         output: &str,
         is_error: bool,
     ) -> HookRunResult {
+        // E-37 U1: sanitize tool output for non-allowlisted markdown images
+        // (markdown-image exfil channel, OWASP LLM06 + CVE-2025-32711
+        // CometJacking family) and classify for script / role-tag
+        // impersonation (OWASP LLM01). Empty allowlist = strip every
+        // http(s) markdown image; the orchestrator-side allowlist is a
+        // future U-thread, the strip is fail-closed on the unknown host.
+        // Pure stdlib-only fns; no LLM classifier, no regex crate.
+        let allowlist: Vec<String> = Vec::new();
+        let sanitized =
+            elai_safety::output_sanitizer::strip_markdown_images(output, &allowlist);
+        let verdict =
+            elai_safety::output_sanitizer::classify_output(&sanitized.cleaned);
+        let flagged = !matches!(
+            verdict,
+            elai_safety::output_sanitizer::OutputVerdict::Clean
+        );
+        if sanitized.stripped_count > 0 || flagged {
+            if let Some(ssb) = self.ssb_writer.clone() {
+                let patterns = match &verdict {
+                    elai_safety::output_sanitizer::OutputVerdict::Flagged { patterns } => {
+                        patterns.clone()
+                    }
+                    elai_safety::output_sanitizer::OutputVerdict::Clean => Vec::new(),
+                };
+                let payload = SsbPayload::OutputClassifierFlagged(
+                    OutputClassifierFlaggedPayload {
+                        tool_name: tool_name.to_string(),
+                        stripped_count: sanitized.stripped_count,
+                        stripped_hosts: sanitized.stripped_hosts.clone(),
+                        patterns,
+                    },
+                );
+                std::thread::spawn(move || {
+                    if let Ok(rt) =
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                    {
+                        let _ = rt.block_on(ssb.write_payload(
+                            "conversation.output_classifier",
+                            0,
+                            payload,
+                            Vec::new(),
+                        ));
+                    }
+                });
+            }
+        }
+        let cleaned = sanitized.cleaned;
         if let Some(reporter) = self.hook_progress_reporter.as_mut() {
             self.hook_runner.run_post_tool_use_with_context(
                 tool_name,
                 input,
-                output,
+                &cleaned,
                 is_error,
                 Some(&self.hook_abort_signal),
                 Some(reporter.as_mut()),
@@ -372,7 +421,7 @@ where
             self.hook_runner.run_post_tool_use_with_context(
                 tool_name,
                 input,
-                output,
+                &cleaned,
                 is_error,
                 Some(&self.hook_abort_signal),
                 None,
