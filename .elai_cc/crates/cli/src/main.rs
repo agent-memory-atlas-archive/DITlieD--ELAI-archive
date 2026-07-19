@@ -817,8 +817,9 @@ fn run() -> Result<(), anyhow::Error> {
         // blake3-Merkle root, and confirms it equals both the subject digest and
         // the trailer (F-gate hashes Merkle-bound). READ-ONLY (no Ssb); exits
         // non-zero on not-verified; trust-without-re-running (SLSA-VSA).
-        CliAction::VerifyAttestation { commit, output_format, chain } => {
-            verify_attestation_cmd::run(commit, output_format, chain).map_err(|e| anyhow::anyhow!(e))?
+        CliAction::VerifyAttestation { commit, output_format, chain, current_objective } => {
+            verify_attestation_cmd::run(commit, output_format, chain, current_objective)
+                .map_err(|e| anyhow::anyhow!(e))?
         }
         // C-45 — `elai credit attribute|table|export`. CANTANTE
         // contrastive credit-attribution surface; paper-grounded against

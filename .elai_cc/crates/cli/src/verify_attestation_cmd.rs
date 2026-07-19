@@ -55,6 +55,7 @@ pub(crate) fn run(
     commit: String,
     output_format: CliOutputFormat,
     chain: bool,
+    current_objective: Option<String>,
 ) -> Result<(), String> {
     // 1. Read the digest-only provenance trailer from the commit (git shell-out;
     //    explicit Err on git-absent / non-repo / missing trailer — R2).
@@ -69,13 +70,15 @@ pub(crate) fn run(
     // 3. Re-verify OFFLINE: recompute the blake3-Merkle root over the predicate,
     //    confirm it equals BOTH the subject digest AND the trailer digest. NO
     //    gate is re-executed (trust-without-re-run, SLSA-VSA).
-    //    I-45: pass current_objective=None; if the predicate carries an
-    //    objective_hash the caller did not supply current text, so
-    //    ObjectiveUnchecked is returned (non-fatal, exit 0, per D-016).
+    //    I-45: the CLI now threads --current-objective through here. When the
+    //    caller supplies no current text (None), a predicate carrying an
+    //    objective_hash yields ObjectiveUnchecked (non-fatal, exit 0, per
+    //    D-016); supplying text enables the staleness check (ReceiptStale on
+    //    mismatch, exit 1).
     let verdict = verify_attestation_against_trailer_with_objective(
         &statement,
         &trailer_digest,
-        None,
+        current_objective.as_deref(),
     )
     .map_err(|e| format!("verifying attestation: {e}"))?;
 

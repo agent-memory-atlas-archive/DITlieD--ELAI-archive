@@ -541,6 +541,12 @@ pub(crate) enum CliAction {
         /// Default: false (backward-compatible; existing CI invocations without
         /// `--chain` continue to work on LEGACY receipts).
         chain: bool,
+        /// I-45: `--current-objective <text>` threads the caller's current
+        /// objective text into `verify_attestation_against_trailer_with_objective`
+        /// so `AttestationVerdict::ReceiptStale` can fire on a live CLI run
+        /// (GAP-1). `None` preserves the legacy `ObjectiveUnchecked` behavior
+        /// (non-fatal, exit 0, per D-016).
+        current_objective: Option<String>,
     },
     /// C-45: `elai credit <attribute|table|export>` — contrastive
     /// credit-attribution surface driven by
@@ -2093,7 +2099,14 @@ pub(crate) enum RraAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReplayAction {
     /// `elai replay --verify <path>` — verify a `.rra` offline.
-    Verify { path: PathBuf },
+    /// I-45: `--current-objective <text>` threads the caller's current
+    /// objective text into `verify_artifact_with_objective` so
+    /// `ReplayVerdict::ObjectiveHashMismatch` can fire on a live CLI run
+    /// (GAP-1). `None` preserves the legacy `ObjectiveUnchecked` behavior.
+    Verify {
+        path: PathBuf,
+        current_objective: Option<String>,
+    },
     /// H-23 — `elai replay --verify --metric-digest <demo>` — same-seed re-run
     /// hash-equality METRIC_GATE. ADDITIVE to the offline `.rra` verifier above;
     /// it does NOT regress the `Verify { path }` arm. Drives
@@ -5454,6 +5467,12 @@ pub(crate) fn parse_replay_subcommand_args(
     let mut metric_digest: Option<String> = None;
     let mut golden: Option<String> = None;
     let mut result_manifest: Option<String> = None;
+    // I-45: optional `--current-objective <text>` for the offline `.rra`
+    // verifier path. Threads the caller's current objective text into
+    // `verify_artifact_with_objective` so `ObjectiveHashMismatch` can fire on
+    // a live CLI run. Rejected on the demo gate paths (H-23/H-24/H-25) below
+    // because mixing staleness with a demo gate is ambiguous.
+    let mut current_objective: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -5518,10 +5537,40 @@ pub(crate) fn parse_replay_subcommand_args(
                 result_manifest = Some(flag["--result-manifest=".len()..].to_string());
                 i += 1;
             }
+            // I-45: `--current-objective <text>` for the offline `.rra`
+            // verifier. Threads the caller's current objective text into
+            // `verify_artifact_with_objective` so `ObjectiveHashMismatch` can
+            // fire on a live CLI run. Rejected below when a demo gate flag
+            // (`--metric-digest` / `--golden` / `--result-manifest`) is also
+            // present, because mixing staleness with a demo gate is ambiguous.
+            "--current-objective" => {
+                let value = rest.get(i + 1).ok_or_else(|| {
+                    "missing value for `--current-objective <text>`".to_string()
+                })?;
+                current_objective = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--current-objective=") => {
+                current_objective = Some(flag["--current-objective=".len()..].to_string());
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `replay` argument: {other}"));
             }
         }
+    }
+
+    // I-45: `--current-objective` is only meaningful on the offline `.rra`
+    // verifier path (`ReplayAction::Verify`). Mixing it with any of the demo
+    // gates (`--metric-digest` / `--golden` / `--result-manifest`) is
+    // ambiguous — the demo arms do not carry the field and would silently
+    // drop it. Fail closed at the parser instead.
+    if current_objective.is_some()
+        && (metric_digest.is_some() || golden.is_some() || result_manifest.is_some())
+    {
+        return Err(
+            "`--current-objective` cannot be combined with `--metric-digest`, `--golden`, or `--result-manifest` (it only applies to `replay --verify <path>`)".to_string(),
+        );
     }
 
     // H-23: the metric-digest re-run gate path (additive). Requires `--verify`
@@ -5602,7 +5651,10 @@ pub(crate) fn parse_replay_subcommand_args(
         "`replay` requires `--verify <path>` (the .rra to verify), or `--verify --metric-digest <mode>` (H-23 re-run hash-equality), or `--verify --golden <mode>` (H-24 sim-to-real parity), or `--verify --result-manifest <mode>` (H-25 result manifest re-derivation)".to_string()
     })?;
     Ok(CliAction::Replay {
-        action: ReplayAction::Verify { path },
+        action: ReplayAction::Verify {
+            path,
+            current_objective,
+        },
         output_format,
     })
 }
@@ -5746,18 +5798,51 @@ pub(crate) fn parse_verify_attestation_subcommand_args(
     // I-18: strip any `--chain` flag from the positional argument list so it
     // doesn't break the existing single-positional-arg grammar. The flag is
     // optional and position-independent relative to <commit>.
+    //
+    // I-45: also strip `--current-objective <text>` and
+    // `--current-objective=<text>` from the positional stream. The value is
+    // threaded into `verify_attestation_against_trailer_with_objective` so
+    // `AttestationVerdict::ReceiptStale` can fire on a live CLI run. A stateful
+    // walk is required so the space-separated form's value token is also
+    // removed from `positional` (a plain `filter` would keep it and trip the
+    // "unexpected argument after <commit>" guard below).
     let mut chain = false;
-    let positional: Vec<&String> = rest
-        .iter()
-        .filter(|a| {
-            if a.as_str() == "--chain" {
-                chain = true;
-                false
-            } else {
-                true
+    let mut current_objective: Option<String> = None;
+    let mut positional: Vec<&String> = Vec::with_capacity(rest.len());
+    let mut k = 0;
+    while k < rest.len() {
+        let a = &rest[k];
+        if a.as_str() == "--chain" {
+            chain = true;
+            k += 1;
+            continue;
+        }
+        if let Some(value) = a.strip_prefix("--current-objective=") {
+            if current_objective.is_some() {
+                return Err(
+                    "`--current-objective` given more than once".to_string(),
+                );
             }
-        })
-        .collect();
+            current_objective = Some(value.to_string());
+            k += 1;
+            continue;
+        }
+        if a.as_str() == "--current-objective" {
+            let value = rest.get(k + 1).ok_or_else(|| {
+                "missing value for `--current-objective <text>`".to_string()
+            })?;
+            if current_objective.is_some() {
+                return Err(
+                    "`--current-objective` given more than once".to_string(),
+                );
+            }
+            current_objective = Some(value.clone());
+            k += 2;
+            continue;
+        }
+        positional.push(a);
+        k += 1;
+    }
 
     let commit = positional
         .first()
@@ -5775,6 +5860,7 @@ pub(crate) fn parse_verify_attestation_subcommand_args(
         commit,
         output_format,
         chain,
+        current_objective,
     })
 }
 

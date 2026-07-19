@@ -21,7 +21,7 @@ use elai_orchestrator::rerun_equality::{
     verify_rerun_digest, MetricDigest, RerunInput, RerunVerdictKind, RunDigests,
     RERUN_EQUALITY_RULE_ID,
 };
-use elai_orchestrator::rra::{read_rra, verify_rra, ReplayVerdict, RunArtifact};
+use elai_orchestrator::rra::{read_rra, verify_artifact_with_objective, ReplayVerdict, RunArtifact};
 use elai_orchestrator::result_manifest::{
     verify_result, ReDerivedInputs, ResultEntry, ResultManifest, ResultVerdictKind,
     RESULT_MANIFEST_RULE_ID,
@@ -94,7 +94,9 @@ pub(crate) fn run_replay(
     output_format: CliOutputFormat,
 ) -> Result<(), String> {
     match action {
-        ReplayAction::Verify { path } => run_verify(&path, output_format),
+        ReplayAction::Verify { path, current_objective } => {
+            run_verify(&path, current_objective.as_deref(), output_format)
+        }
         // H-23 — same-seed re-run hash-equality METRIC_GATE (additive; the
         // `Verify { path }` arm above is unchanged).
         ReplayAction::VerifyRerun { demo } => run_verify_rerun(demo, output_format),
@@ -190,9 +192,14 @@ fn render_event_stream(art: &RunArtifact) {
     }
 }
 
-fn run_verify(path: &std::path::Path, output_format: CliOutputFormat) -> Result<(), String> {
-    let verdict =
-        verify_rra(path).map_err(|e| format!("verifying .rra at {}: {e}", path.display()))?;
+fn run_verify(
+    path: &std::path::Path,
+    current_objective: Option<&str>,
+    output_format: CliOutputFormat,
+) -> Result<(), String> {
+    let art = read_rra(path).map_err(|e| format!("reading .rra at {}: {e}", path.display()))?;
+    let verdict = verify_artifact_with_objective(&art, current_objective)
+        .map_err(|e| format!("verifying .rra at {}: {e}", path.display()))?;
     match output_format {
         CliOutputFormat::Json => {
             let json = serde_json::to_string_pretty(&verdict)
