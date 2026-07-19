@@ -2170,3 +2170,14 @@ owner             = "maintainer"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "J-13"
 smoke_test        = "python/elai_inference/test_seeded_gumbel_processor.py"
+
+# J-18 leg-3: narrow post-retrieval agentic-grep CONFIRM pass. Const
+# agentic_grep.rs:23; agentic_grep_repair_enabled_from_env() :30;
+# pipeline.rs:1389 gates the post-token_fit confirm stage.
+[[flag]]
+name              = "ELAI_AGENTIC_GREP_REPAIR_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "J-18"
+smoke_test        = "crates/contracts/tests/j18_agentic_grep_repair_on_path.rs::agentic_grep_repair_gate_on_when_enabled"

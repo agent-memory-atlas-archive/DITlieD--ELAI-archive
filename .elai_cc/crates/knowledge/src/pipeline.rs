@@ -171,7 +171,7 @@ pub struct PipelineStage {
 // QueryPipeline
 // ---------------------------------------------------------------------------
 
-/// End-to-end retrieval pipeline: bm25 -> vector -> splade -> pagerank -> catrag -> arag -> rerank -> cross_encoder -> token_fit.
+/// End-to-end retrieval pipeline: bm25 -> vector -> splade -> pagerank -> catrag -> arag -> rerank -> cross_encoder -> token_fit -> agentic_grep_repair (optional, env-gated).
 pub struct QueryPipeline {
     pub bm25: Bm25Index,
     pub catrag: CatRag,
@@ -1376,6 +1376,53 @@ impl QueryPipeline {
             circuit_breaker_state: None,
             error: None,
         });
+
+        // J-18 leg-3 slice B: optional post-token_fit agentic-grep CONFIRM
+        // pass. Default-OFF via ELAI_AGENTIC_GREP_REPAIR_ENABLE_ENV; when
+        // OFF there is zero behavior change (no stage pushed, no call).
+        // When ON: inspect the top hit of the last stage; if it is
+        // low-confidence (score < self.deep_config.rrf_floor), run a
+        // narrow `rg`/`grep` confirm over the project root and push a
+        // `agentic_grep_repair` stage with the repaired hits. Degrades
+        // silently on error or empty result (no stage pushed, query never
+        // fails). Mirrors the symbol_graph_vec idiom at ~1199.
+        if crate::agentic_grep::agentic_grep_repair_enabled_from_env() {
+            let last_stage = stages.last();
+            if let Some(last) = last_stage {
+                if !last.results.is_empty() {
+                    let top_hit = &last.results[0];
+                    let low_confidence = top_hit.score < self.deep_config.rrf_floor;
+                    if low_confidence {
+                        let repair_start = self.clock.now();
+                        let project_root = std::path::Path::new(".");
+                        let repair_result = crate::agentic_grep::agentic_grep_confirm(
+                            query,
+                            top_hit,
+                            project_root,
+                        );
+                        let (repair_results, repair_error) = match repair_result {
+                            Ok(r) if !r.is_empty() => (r, None),
+                            Ok(_) => (Vec::new(), None),
+                            Err(e) => {
+                                tracing::debug!("agentic_grep_repair stage error: {e}");
+                                (Vec::new(), Some(e.to_string()))
+                            }
+                        };
+                        if !repair_results.is_empty() {
+                            stages.push(PipelineStage {
+                                stage: "agentic_grep_repair".to_string(),
+                                results: repair_results,
+                                latency_ms: self.clock
+                                    .elapsed_since(repair_start)
+                                    .as_millis() as u64,
+                                circuit_breaker_state: None,
+                                error: repair_error,
+                            });
+                        }
+                    }
+                }
+            }
+        }
 
         // Build QueryTrace from pipeline stages (Phase 1I.6).
         let stage_traces: Vec<StageTrace> = stages.iter().map(|s| StageTrace {

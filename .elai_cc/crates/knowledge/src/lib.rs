@@ -52,6 +52,10 @@ pub mod index_version;
 pub mod metadata;
 pub mod pagerank;
 pub mod pipeline;
+// J-18 leg-3: narrow post-retrieval agentic-grep CONFIRM pass (default-OFF,
+// behind ELAI_AGENTIC_GREP_REPAIR_ENABLE_ENV). Pipeline.rs wires the gate
+// post-token_fit; contracts tests import the env predicate directly.
+pub mod agentic_grep;
 // phase-3L: Project Intelligence Tier hooks (PiT1/PiT2/PiT3) + persistence
 // helper. Pi-prefixed types live here to avoid collision with the SSB-write
 // rule hook family in elai_plugins::tiered_analysis (T1Hook/T2Hook/T3Hook).
