@@ -133,25 +133,33 @@ fn d4_session_dag_has_both_recovery_methods() {
     );
 }
 
-/// D4b (R8 production-reachability gate): live_cli.rs must call recover_single_stub
-/// on the LOCAL branch, and the unconditional recover_stubs call must be guarded
-/// so it does NOT run on the LOCAL path after a trim (prevents net-zero trim).
-/// This asserts the production wiring, not just symbol existence.
+/// D4b (R8 production-reachability gate, H-50 honesty polish): on LOCAL, live_cli.rs
+/// must keep stubs UNLOADED (skip recover_stubs) and must NOT fake an R8 caller for
+/// recover_single_stub. The selective per-seq reload is WIRE-DARK[H-50-selective-recover]
+/// in session_dag.rs pending H-50-WIRE-2; CLOUD/API keeps recover_stubs.
 #[test]
 fn d4b_live_cli_local_path_uses_selective_recovery() {
-    let src = read_src("cli/src/live_cli.rs");
-    // After BLOCK-1 fix: recover_single_stub must appear in live_cli.rs
-    // (wired into the on-demand reload site for local stubs).
+    let live = read_src("cli/src/live_cli.rs");
+    let dag = read_src("orchestrator/src/session_dag.rs");
     assert!(
-        src.contains("recover_single_stub"),
-        "live_cli.rs must call recover_single_stub for H-50 LOCAL selective recovery (R8: production caller)"
+        live.contains("BackendMode::Local"),
+        "live_cli.rs must branch on BackendMode::Local for H-50 LOCAL unload"
     );
-    // The LOCAL branch must guard recover_stubs (it must be conditional on
-    // backend_mode NOT being Local, i.e. skip the whole-set re-inflate on local).
-    // We verify this by asserting the local-guard comment/pattern is present.
     assert!(
-        src.contains("BackendMode::Local") || src.contains("backend_mode") && src.contains("recover_stubs"),
-        "live_cli.rs must check backend_mode before calling recover_stubs (local path must not re-inflate all stubs)"
+        live.contains("recover_stubs"),
+        "live_cli.rs must still call recover_stubs on the CLOUD/API path"
+    );
+    assert!(
+        !live.contains("let _ = |seq"),
+        "live_cli.rs must not keep a dead let _ = |seq closure as a fake R8 caller"
+    );
+    assert!(
+        !live.contains("dag.recover_single_stub("),
+        "live_cli.rs must not claim recover_single_stub as a live production caller until H-50-WIRE-2"
+    );
+    assert!(
+        dag.contains("WIRE-DARK[H-50-selective-recover]"),
+        "session_dag.rs must register recover_single_stub as WIRE-DARK[H-50-selective-recover]"
     );
 }
 

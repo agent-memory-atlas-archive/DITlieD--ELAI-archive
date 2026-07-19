@@ -1344,22 +1344,14 @@ impl LiveCli {
                         &fsm_state,
                     ) {
                         Ok(snap) => {
-                            // H-50 BLOCK-1 fix: on LOCAL, keep stubs UNLOADED
-                            // (placeholder text only) so the net trim is not
-                            // cancelled by a whole-set re-inflate.  Stubs are
-                            // reloaded on demand via recover_single_stub when
-                            // the model explicitly requests a specific seq.
-                            // On CLOUD / API, keep the existing recover_stubs
-                            // behaviour (full recovery for cache-stable prefix).
+                            // H-50 BLOCK-1: on LOCAL, keep stubs UNLOADED (placeholder
+                            // only) so trim is not cancelled by whole-set re-inflate.
+                            // On-demand recover_single_stub is WIRE-DARK[H-50-selective-recover]
+                            // pending H-50-WIRE-2 (no fake R8 closure). CLOUD/API keeps
+                            // recover_stubs for cache-stable prefix.
                             use elai_orchestrator::SsbReader as _;
                             if matches!(backend_mode, BackendMode::Local) {
-                                // LOCAL: load the raw snapshot view; stubbed
-                                // entries stay as placeholders — do NOT call
-                                // recover_stubs (that would re-inflate all
-                                // stubs and zero out the trim gain).
-                                // On-demand reload: call recover_single_stub
-                                // per individual seq when needed (H-50 selective
-                                // recovery; the method is wired to session_dag).
+                                // LOCAL: do NOT call recover_stubs.
                                 let snap_view = dag.load_snapshot(&snap.snap_id)
                                     .map(|(_, m)| m)
                                     .unwrap_or_default();
@@ -1368,10 +1360,6 @@ impl LiveCli {
                                         break;
                                     }
                                     let text = if tm.is_stubbed {
-                                        // Stub kept unloaded — placeholder only.
-                                        // Selective reload via recover_single_stub
-                                        // is available when the model re-reads
-                                        // this seq by explicit request.
                                         "[stubbed — content archived in SSB]".to_owned()
                                     } else {
                                         String::from_utf8_lossy(&tm.content).into_owned()
@@ -1382,14 +1370,6 @@ impl LiveCli {
                                         usage: None,
                                     };
                                 }
-                                // Expose recover_single_stub for callers that
-                                // need on-demand selective reload of one stub seq.
-                                // (The fn is referenced here to satisfy R8
-                                // production-reachability: this is the production
-                                // caller site, not a test shim.)
-                                let _ = |seq: u32| {
-                                    dag.recover_single_stub(&snap.snap_id, seq, ssb_ref.as_ref())
-                                };
                             } else {
                                 // CLOUD / API: recover all stubs (cache-stable
                                 // prefix behaviour, unchanged from pre-H-50).

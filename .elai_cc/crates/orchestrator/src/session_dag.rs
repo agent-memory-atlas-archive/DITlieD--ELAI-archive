@@ -1590,6 +1590,7 @@ impl SessionDag {
 
     /// Recover a single stubbed message by seq within a snapshot.
     /// Returns the message unchanged if it is not stubbed.
+    // WIRE-DARK[H-50-selective-recover]: on-demand per-seq reload caller undesigned; LOCAL skip-whole-set recover is the Tier-1 delivered path; promote via H-50-WIRE-2 when a real tool/RPC requests a stub seq.
     pub fn recover_single_stub(
         &self,
         snap_id: &str,
