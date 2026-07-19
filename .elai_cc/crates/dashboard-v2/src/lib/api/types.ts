@@ -278,6 +278,15 @@ export type DrawerKey =
   // multi-step reasoning failures, attribution-loss, sycophantic-confirm,
   // OTel span breakages emitted via AgenticObservabilityEvent SSB rows).
   | 'failure-modes'
+  // E-29 — Cloud spend drawer (per-run + per-model token cost ledger,
+  // backed by the cost_summary + run_cost_breakdown composite reads).
+  | 'spend'
+  // E-29 — Query trace drawer (sidecar /search query log + result ranking,
+  // backed by query_trace SSB rows + search_result_event spans).
+  | 'query'
+  // E-29 — Transcript drawer (full agent message transcript for a run,
+  // backed by message_log SSB rows joined with tool_call + tool_result).
+  | 'transcript'
   // C-41 — Application Skills System (9 skills under .elai_cc/skills/,
   // pre-classify routing telemetry via skill_triggered + skill_executed
   // SSB rows). Wire-dark unless ELAI_APPLICATION_SKILLS_ENABLE=1.
