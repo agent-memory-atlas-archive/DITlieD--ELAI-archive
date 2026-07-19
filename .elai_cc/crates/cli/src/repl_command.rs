@@ -426,7 +426,7 @@ pub(super) fn dispatch(
                                         SsbPayload,
                                     };
                                     let is_disabled = elai_orchestrator::citation_prebind::prebind_disabled();
-                                    let kind = if is_disabled {
+                                    let kind = if is_disabled || prebind.has_ghost {
                                         CitationAnchorsBoundKind::Blocked
                                     } else {
                                         CitationAnchorsBoundKind::Bound
@@ -453,18 +453,21 @@ pub(super) fn dispatch(
                                     }
                                 }
                                 if prebind.has_ghost {
+                                    let _refusal = elai_orchestrator::calibration::RefusalDecision::Abstain;
                                     tracing::warn!(
                                         ghost_count = prebind.citation_checks.iter().filter(|r| r.outcome.must_block()).count(),
                                         "H-53: ghost citation detected in /research answer — D-16 refusal path (display suppressed)"
                                     );
-                                }
-                                println!("Research answer ({} sources, {} caveats):",
-                                    answer.sources_consulted.len(), answer.caveats.len());
-                                println!("{}", answer.answer_text);
-                                if !answer.sources_consulted.is_empty() {
-                                    println!("\nSources:");
-                                    for (i, s) in answer.sources_consulted.iter().enumerate() {
-                                        println!("  [{}] {}", i + 1, s.url);
+                                    println!("Research answer held: citations ungroundable (ghost anchors). Refusing per D-16 Mode E.");
+                                } else {
+                                    println!("Research answer ({} sources, {} caveats):",
+                                        answer.sources_consulted.len(), answer.caveats.len());
+                                    println!("{}", answer.answer_text);
+                                    if !answer.sources_consulted.is_empty() {
+                                        println!("\nSources:");
+                                        for (i, s) in answer.sources_consulted.iter().enumerate() {
+                                            println!("  [{}] {}", i + 1, s.url);
+                                        }
                                     }
                                 }
                                 if !answer.path.is_empty() {
