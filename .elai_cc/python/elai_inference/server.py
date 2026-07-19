@@ -1080,6 +1080,52 @@ class ETCLogitsProcessor(LogitsProcessor):
 
 
 # ---------------------------------------------------------------------------
+# SeededGumbelProcessor — SGLang det-mode multinomial_with_seed (J-13)
+# ---------------------------------------------------------------------------
+
+
+class SeededGumbelProcessor(LogitsProcessor):
+    """LogitsProcessor implementing SGLang det-mode multinomial_with_seed.
+
+    Adds Gumbel(0,1) noise derived from a per-(seed, step) torch.Generator to
+    the logits, so same (logits, seed) -> same token regardless of global
+    torch RNG state or other processors' ordering. Active only when constructed
+    with a non-None seed (the request carried `seed`).
+
+    J-13 WIRING_CONTRACT: produces_symbols server.py::SeededGumbelProcessor.
+    """
+
+    def __init__(self, seed: int):
+        self.seed = int(seed)
+        # Per-step Generator seeded from (seed, step_index); never touches the
+        # global torch RNG so other processors' draws cannot shift the stream.
+        self._step: int = -1
+
+    def _step_generator(self) -> torch.Generator:
+        self._step += 1
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed((self.seed ^ (self._step * 0x9E3779B1)) & 0xFFFFFFFF)
+        return gen
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        # SGLang det-mode pattern (plan l54): Gumbel-Max trick.
+        # Gumbel(0,1) = -log(-log(u)), u ~ Uniform(0,1) drawn from a
+        # per-(seed,step) generator. scores + gumbel_noise -> argmax gives a
+        # deterministic sample from the categorical distribution; seeding the
+        # per-step generator makes it reproducible across runs without touching
+        # the global RNG. Step index = input_ids.shape[1] - 1 (current pos).
+        step_gen = self._step_generator()
+        u = torch.rand(
+            scores.shape, dtype=scores.dtype, generator=step_gen
+        )
+        u = u.clamp_(EPSILON, 1.0 - EPSILON)
+        gumbel = -torch.log(-torch.log(u))
+        return scores + gumbel.to(scores.device)
+
+
+# ---------------------------------------------------------------------------
 # GGSignalCollector — intrinsic verification signals (A-17)
 # ---------------------------------------------------------------------------
 
@@ -2616,6 +2662,14 @@ class InferenceEngine:
         if self.dola_enabled and self._dola_processor is not None:
             self._dola_processor.register_hooks()
             logits_processors.append(self._dola_processor)
+        # J-13: SeededGumbelProcessor (SGLang det-mode). Per-request, gated on
+        # seed; constructed per call (matches FITM per-request pattern).
+        if seed is not None:
+            logits_processors.append(SeededGumbelProcessor(seed))
+        # Set logits_processor whenever the list is non-empty. Previously this
+        # was inside the dola branch and silently dropped other processors
+        # (e.g. SeededGumbel) when dola was off (J-13 gather HIGH warning).
+        if logits_processors:
             generation_kwargs["logits_processor"] = logits_processors
 
         def _run():
@@ -2878,6 +2932,10 @@ class InferenceEngine:
         if fitm_calibrator is not None and fitm_calibrator.active:
             logits_processors.append(fitm_calibrator)
             _fitm_t0 = time.time()
+        # J-13: SeededGumbelProcessor (SGLang det-mode). Per-request, gated on
+        # seed; constructed per call (matches FITM per-request pattern).
+        if seed is not None:
+            logits_processors.append(SeededGumbelProcessor(seed))
         if logits_processors:
             generation_kwargs["logits_processor"] = logits_processors
 
