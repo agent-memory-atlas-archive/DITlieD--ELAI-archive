@@ -5511,7 +5511,13 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- J-13 (SCHEMA_VERSION 279): local-lane determinism telemetry event.
         -- Pattern-2 single-variant 4-arm Kind discriminator on the payload.
         -- Emitted from the local-lane e2e runner and determinism audit probes.
-        'local_determinism_event'
+        'local_determinism_event',
+        -- J-14 (SCHEMA_VERSION 282): repro-pack + RRA verify upgrade telemetry event.
+        -- Pattern-2 single-variant 4-arm ReproPackKind: TierEvaluated /
+        -- FirstDivergenceLocated / FlowFingerprintMismatch / FixtureExtracted.
+        -- Emitted from rra::verify_rra, compiled_pipeline::TemplateCrystallizer, cli rra export-fixture.
+        -- Default-ON; no kill-switch (verify path, never masks the verdict).
+        'repro_pack_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

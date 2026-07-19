@@ -52,6 +52,13 @@ pub use crate::rra_tiers::{
     scrub_auth_headers, verify_artifact_tiered, DeterminismApplied, FirstDivergence,
     TierDowngrade, TierVerdict, TierVerdictLabel, VerifyOutcome,
 };
+// J-14: re-export the export-fixture public surface from rra_export so existing
+// CLI imports (`elai_orchestrator::rra::{export_fixture, ExportFixtureResult,
+// FixtureCassette, FixtureCassetteKey}`) continue to resolve after the split.
+pub use crate::rra_export::{
+    export_fixture, export_fixture_with_clock, ExportFixtureResult, FixtureCassette,
+    FixtureCassetteKey,
+};
 
 /// `.rra` bundle format version. Bump only on an incompatible bundle-schema
 /// change (the dependents G-3/G-5/G-8/G-9/G-10 read this format).
@@ -942,3 +949,4 @@ mod j13_sampling_seed_tests {
         assert_eq!(a.root_blake3, b.root_blake3);
     }
 }
+

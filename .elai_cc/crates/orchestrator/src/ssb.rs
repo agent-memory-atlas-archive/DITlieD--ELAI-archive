@@ -1555,6 +1555,13 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::HallucinationDeltaMeasured,
     SsbActionType::LocalLaneE2eMeasured,
     SsbActionType::LocalDeterminismEvent(LocalDeterminismKind::BatchInvariantEnabled),
+    // J-14 (SCHEMA_VERSION 282): repro-pack + RRA verify upgrade telemetry event.
+    // Pattern-2 single-variant 4-arm ReproPackKind: TierEvaluated / FirstDivergenceLocated /
+    // FlowFingerprintMismatch / FixtureExtracted. Emitted from rra::verify_rra (TierEvaluated,
+    // FirstDivergenceLocated), compiled_pipeline::TemplateCrystallizer (FlowFingerprintMismatch),
+    // and cli rra export-fixture (FixtureExtracted). Default-ON; no kill-switch (verify path).
+    // TOTAL_VARIANTS 590 -> 591.
+    SsbActionType::ReproPackEvent(ReproPackKind::TierEvaluated),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

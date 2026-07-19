@@ -22,8 +22,8 @@ use elai_orchestrator::rerun_equality::{
     RERUN_EQUALITY_RULE_ID,
 };
 use elai_orchestrator::rra::{
-    read_rra, verify_artifact_tiered, ReplayVerdict, RunArtifact, TierVerdict, TierVerdictLabel,
-    VerifyOutcome,
+    export_fixture, read_rra, verify_artifact_tiered, ReplayVerdict, RunArtifact, TierVerdict,
+    TierVerdictLabel, VerifyOutcome,
 };
 use elai_orchestrator::result_manifest::{
     verify_result, ReDerivedInputs, ResultEntry, ResultManifest, ResultVerdictKind,
@@ -89,7 +89,65 @@ pub(crate) fn run_rra(action: RraAction, output_format: CliOutputFormat) -> Resu
         RraAction::Verify { path } => {
             crate::rra_verify_cmd::run_verify_conformance(path, output_format)
         }
+        // J-14 — `elai rra export-fixture <bundle> [--adapter <name>]`: export
+        // a content-keyed cassette from an RRA bundle. Scrubs auth headers,
+        // keys the cassette by `(model, content_blake3, tool_name)`, writes the
+        // `.fixture` file, and prints the key fields + path. Exits nonzero on
+        // failure (mirrors run_verify's exit contract).
+        RraAction::ExportFixture { bundle, adapter } => {
+            run_export_fixture(&bundle, &adapter, output_format)
+        }
     }
+}
+
+/// J-14 — `elai rra export-fixture` handler. Drives
+/// [`elai_orchestrator::rra::export_fixture`], prints the key fields + the
+/// fixture path on success, and exits nonzero on failure (mirrors
+/// `run_verify`'s exit contract). The SSB-ready `ReproPackPayload` is
+/// returned by `export_fixture`; this handler logs its fields (an SSB emit
+/// helper, if wired in a later slice, would land it as a `ReproPackEvent`
+/// row — rra.rs has no `Ssb` handle and the task contract forbids touching
+/// ssb/* from this rider).
+fn run_export_fixture(
+    bundle: &std::path::Path,
+    adapter: &str,
+    output_format: CliOutputFormat,
+) -> Result<(), String> {
+    let result = export_fixture(bundle, adapter, "", None)
+        .map_err(|e| format!("exporting fixture from {}: {e}", bundle.display()))?;
+    match output_format {
+        CliOutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&result)
+                .map_err(|e| format!("serializing export-fixture result as json: {e}"))?;
+            println!("{json}");
+        }
+        CliOutputFormat::Text | CliOutputFormat::Toml => {
+            println!("elai rra export-fixture (J-14, content-keyed cassette)");
+            println!("  bundle         : {}", bundle.display());
+            println!("  fixture_path   : {}", result.fixture_path.display());
+            println!("  fixture_blake3 : {}", result.cassette.fixture_blake3);
+            println!(
+                "  key.model      : {}",
+                result.cassette.key.model
+            );
+            println!(
+                "  key.content    : {}",
+                result.cassette.key.content_blake3
+            );
+            println!(
+                "  key.tool_name  : {}",
+                result.cassette.key.tool_name
+            );
+            println!("  session_id     : {}", result.cassette.session_id);
+            println!("  adapter        : {}", result.cassette.adapter);
+            println!();
+            println!(
+                "  ReproPackEvent payload (kind=FixtureExtracted): fixture_path={:?}, fixture_blake3={:?}, session_id={}",
+                result.payload.fixture_path, result.payload.fixture_blake3, result.payload.session_id
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `elai replay <sub>` dispatcher invoked by main.rs.

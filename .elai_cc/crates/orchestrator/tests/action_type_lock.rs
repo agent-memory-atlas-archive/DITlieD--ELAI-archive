@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use elai_orchestrator::ssb::{BashRedirectedKind, BeliefStateEventKind, BranchWorkspaceEventKind, CacheEconomicsEventKind, ClaimScopeMeasuredKind, ContextPrunedKind, ContextTransformKind, CritiqueLensFindingTag, DirectiveExecutedKind, GovernancePrimitiveFiredKind, GrammarGateEventKind, MemoryGuardEventKind, MutationBudgetedRunKind, ObjectiveSealedKind, PlaybookEventKind, PromptCompiledKind, PromptHardeningAppliedKind, RoleContractAppliedKind, RowChainSealedKind, SkillLibraryEventKind, SsbActionType, TddPreflightBlockedKind, TestIntegrityEventKind, ToolFilterEventKind, ToolSequenceVerdictKind, TrajectoryAbortedKind, TriLayerVerdictKind, VibeGateBlockedKind};
+use elai_orchestrator::ssb::{BashRedirectedKind, BeliefStateEventKind, BranchWorkspaceEventKind, CacheEconomicsEventKind, ClaimScopeMeasuredKind, ContextPrunedKind, ContextTransformKind, CritiqueLensFindingTag, DirectiveExecutedKind, GovernancePrimitiveFiredKind, GrammarGateEventKind, MemoryGuardEventKind, MutationBudgetedRunKind, ObjectiveSealedKind, PlaybookEventKind, PromptCompiledKind, PromptHardeningAppliedKind, ReproPackKind, RoleContractAppliedKind, RowChainSealedKind, SkillLibraryEventKind, SsbActionType, TddPreflightBlockedKind, TestIntegrityEventKind, ToolFilterEventKind, ToolSequenceVerdictKind, TrajectoryAbortedKind, TriLayerVerdictKind, VibeGateBlockedKind};
 
 /// Total number of SsbActionType variants currently locked. Bumping this
 /// requires regenerating action_type_lock.golden in the SAME commit; the
@@ -1565,6 +1565,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::LocalLaneE2eMeasured => (),
         SsbActionType::McpScanClassifierBlocked => (),
         SsbActionType::LocalDeterminismEvent(_) => (),
+        // J-14 (SCHEMA_VERSION 282): ReproPackEvent Pattern-2 4-arm repro-pack + RRA verify upgrade beacon.
+        SsbActionType::ReproPackEvent(_) => (),
     }
 }
 

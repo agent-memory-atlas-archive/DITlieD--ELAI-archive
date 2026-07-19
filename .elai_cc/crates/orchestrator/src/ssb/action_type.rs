@@ -4779,6 +4779,19 @@ pub enum SsbActionType {
     /// carried on the payload. Emitted from the local-lane e2e runner and
     /// determinism audit probes. TOTAL_VARIANTS 587 -> 588.
     LocalDeterminismEvent(LocalDeterminismKind),
+    /// J-14 (SCHEMA_VERSION 282): repro-pack + RRA verify upgrade telemetry event.
+    ///
+    /// Pattern-2 single-variant 4-arm [`ReproPackKind`]:
+    /// - `TierEvaluated`: emitted from `rra::verify_rra` with the tier verdict
+    ///   (ActionFaithful / TokenFaithful / ScoreFaithful) + recorded downgrades.
+    /// - `FirstDivergenceLocated`: emitted on T1/T2 mismatch with the first divergent
+    ///   position + both values (consumed by G-10 drift canary).
+    /// - `FlowFingerprintMismatch`: emitted from `compiled_pipeline::TemplateCrystallizer`
+    ///   when a crystallized template's tool sequence is perturbed (de-crystallize + LLM fallback).
+    /// - `FixtureExtracted`: emitted by `elai rra export-fixture` with the per-fixture blake3.
+    ///
+    /// Default-ON; no kill-switch (verify path, never masks the verdict). TOTAL_VARIANTS 590 -> 591.
+    ReproPackEvent(ReproPackKind),
 }
 
 impl SsbActionType {
@@ -5719,6 +5732,8 @@ impl SsbActionType {
             Self::LocalLaneE2eMeasured => "local_lane_e2e_measured",
             // J-13 (SCHEMA_VERSION 279): local-lane determinism telemetry event.
             Self::LocalDeterminismEvent(_) => "local_determinism_event",
+            // J-14 (SCHEMA_VERSION 282): repro-pack + RRA verify upgrade telemetry event.
+            Self::ReproPackEvent(_) => "repro_pack_event",
         }
     }
 }
@@ -6578,6 +6593,10 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // J-13 (SCHEMA_VERSION 279): local-lane determinism telemetry event.
         "local_determinism_event" => Ok(SsbActionType::LocalDeterminismEvent(
             LocalDeterminismKind::BatchInvariantEnabled,
+        )),
+        // J-14 (SCHEMA_VERSION 282): repro-pack + RRA verify upgrade telemetry event.
+        "repro_pack_event" => Ok(SsbActionType::ReproPackEvent(
+            ReproPackKind::TierEvaluated,
         )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }

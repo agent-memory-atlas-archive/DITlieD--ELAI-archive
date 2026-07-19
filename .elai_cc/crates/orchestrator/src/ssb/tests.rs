@@ -3777,6 +3777,24 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 session_id: "s-i34-test".into(),
                 ts_ms: 1_700_000_000_000,
             }),
+            // J-14 (SCHEMA_VERSION 282): explicit arm so test_payload(ReproPackEvent)
+            // returns a real ReproPackPayload instead of falling to the wildcard.
+            SsbActionType::ReproPackEvent(_) => SsbPayload::ReproPackEvent(ReproPackPayload {
+                kind: ReproPackKind::TierEvaluated,
+                tier_effective: Some("action_faithful".into()),
+                tier_requested: Some("action_faithful".into()),
+                downgrades: Vec::new(),
+                divergence_position: None,
+                expected_value: None,
+                actual_value: None,
+                template_hash: None,
+                expected_sequence_hash: None,
+                actual_sequence_hash: None,
+                fixture_path: None,
+                fixture_blake3: None,
+                session_id: "s-j14-test".into(),
+                ts_ms: 1_700_000_000_000,
+            }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload

@@ -3768,6 +3768,11 @@ pub enum SsbPayload {
     /// carried on the payload. Emitted from the local-lane e2e runner and
     /// determinism audit probes. TOTAL_VARIANTS 587 -> 588.
     LocalDeterminismEvent(LocalDeterminismEventPayload),
+    /// J-14 (SCHEMA_VERSION 282): repro-pack + RRA verify upgrade telemetry event.
+    /// Pattern-2 single-variant 4-arm [`ReproPackKind`] discriminator on the payload.
+    /// Emitted from `rra::verify_rra`, `compiled_pipeline::TemplateCrystallizer`, and
+    /// `cli rra export-fixture`. Default-ON; no kill-switch. TOTAL_VARIANTS 590 -> 591.
+    ReproPackEvent(ReproPackPayload),
 }
 
 impl SsbPayload {
@@ -4591,6 +4596,7 @@ impl SsbPayload {
             Self::HallucinationDeltaMeasured(_) => SsbActionType::HallucinationDeltaMeasured,
             Self::LocalLaneE2eMeasured(_) => SsbActionType::LocalLaneE2eMeasured,
             Self::LocalDeterminismEvent(ref p) => SsbActionType::LocalDeterminismEvent(p.kind),
+            Self::ReproPackEvent(ref p) => SsbActionType::ReproPackEvent(p.kind),
         }
     }
 }
@@ -20319,4 +20325,89 @@ pub struct LocalDeterminismEventPayload {
     pub probe_count: u32,
     pub divergence_count: u32,
     pub notes: String,
+}
+
+/// J-14 (SCHEMA_VERSION 282): repro-pack + RRA verify upgrade event Kind.
+/// Pattern-2 single-variant discriminator carried on
+/// [`ReproPackPayload`]. Emitted from `rra::verify_rra` (TierEvaluated,
+/// FirstDivergenceLocated), `compiled_pipeline::TemplateCrystallizer`
+/// (FlowFingerprintMismatch), and `cli rra export-fixture` (FixtureExtracted).
+///
+/// J-91 EXTENDS this enum with 3 more arms: CassetteExported / ReExecuted /
+/// FidelityDowngraded. Append-only; do NOT reorder existing arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReproPackKind {
+    TierEvaluated,
+    FirstDivergenceLocated,
+    FlowFingerprintMismatch,
+    FixtureExtracted,
+}
+
+impl ReproPackKind {
+    /// Stable snake_case wire string.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::TierEvaluated => "tier_evaluated",
+            Self::FirstDivergenceLocated => "first_divergence_located",
+            Self::FlowFingerprintMismatch => "flow_fingerprint_mismatch",
+            Self::FixtureExtracted => "fixture_extracted",
+        }
+    }
+}
+
+/// J-14 payload for [`SsbActionType::ReproPackEvent`].
+///
+/// Emitted from `rra::verify_rra` (TierEvaluated / FirstDivergenceLocated),
+/// `compiled_pipeline::TemplateCrystallizer` (FlowFingerprintMismatch), and
+/// `cli rra export-fixture` (FixtureExtracted).
+///
+/// `tier_effective` / `tier_requested` / `downgrades` are set on TierEvaluated.
+/// `divergence_position` / `expected_value` / `actual_value` on FirstDivergenceLocated.
+/// `template_hash` / `expected_sequence_hash` / `actual_sequence_hash` on FlowFingerprintMismatch.
+/// `fixture_path` / `fixture_blake3` on FixtureExtracted.
+/// `session_id` is the session that generated this event. `ts_ms` is wall-clock unix-ms at emit.
+/// TOTAL_VARIANTS 590 -> 591.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReproPackPayload {
+    /// Which arm fired.
+    pub kind: ReproPackKind,
+    /// Effective tier (ActionFaithful / TokenFaithful / ScoreFaithful); None on non-tier arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_effective: Option<String>,
+    /// Requested tier; None on non-tier arms. tier_effective <= tier_requested always.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_requested: Option<String>,
+    /// Recorded downgrades {from, to, reason}; empty on non-tier arms or strict-mode aborts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub downgrades: Vec<String>,
+    /// First divergent position (T1/T2 mismatch); None on non-divergence arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divergence_position: Option<u64>,
+    /// Expected value at divergence; None on non-divergence arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_value: Option<String>,
+    /// Actual value at divergence; None on non-divergence arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_value: Option<String>,
+    /// Crystallized template blake3; None on non-fingerprint arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_hash: Option<String>,
+    /// Expected tool sequence hash; None on non-fingerprint arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_sequence_hash: Option<String>,
+    /// Actual tool sequence hash; None on non-fingerprint arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_sequence_hash: Option<String>,
+    /// Exported fixture file path; None on non-fixture arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_path: Option<String>,
+    /// Per-fixture blake3 fingerprint; None on non-fixture arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_blake3: Option<String>,
+    /// SSB session_id that generated this event.
+    pub session_id: String,
+    /// Wall-clock unix-ms at emit time.
+    pub ts_ms: i64,
 }

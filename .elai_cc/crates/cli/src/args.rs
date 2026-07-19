@@ -2091,6 +2091,13 @@ pub(crate) enum RraAction {
     /// content hashes; GD-5). Exits nonzero on any C1-C6 failure so CI can
     /// gate on it. Handler: `crate::rra_verify_cmd::run_verify_conformance`.
     Verify { path: PathBuf },
+    /// J-14 — `elai rra export-fixture <bundle> [--adapter <name>]` — export a
+    /// content-keyed cassette (`.fixture`) from an RRA bundle. Scrubs auth
+    /// headers, keys the cassette by `(model, content_blake3, tool_name)`, and
+    /// returns the fixture path + SSB-ready `ReproPackPayload` (kind =
+    /// `FixtureExtracted`). The `adapter` string is a passthrough label for
+    /// J-91 (may be the empty string today).
+    ExportFixture { bundle: PathBuf, adapter: String },
 }
 
 /// J-14 — CLI-side tier selector for `elai replay --verify --tier <t>`.
@@ -5473,8 +5480,42 @@ pub(crate) fn parse_rra_subcommand_args(
                 output_format,
             })
         }
+        // J-14 — `elai rra export-fixture <bundle> [--adapter <name>]`: export
+        // a content-keyed cassette from an RRA bundle. The `--adapter` flag is
+        // a passthrough label for J-91 (may be omitted; defaults to "").
+        "export-fixture" => {
+            let bundle = rest
+                .get(1)
+                .ok_or_else(|| "`rra export-fixture` requires a <bundle> argument".to_string())?;
+            let mut adapter = String::new();
+            let mut i = 2;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--adapter" => {
+                        i += 1;
+                        adapter = rest
+                            .get(i)
+                            .ok_or_else(|| "`rra export-fixture --adapter` requires a value".to_string())?
+                            .clone();
+                    }
+                    other => {
+                        return Err(format!(
+                            "unexpected argument after `rra export-fixture <bundle>`: {other}"
+                        ));
+                    }
+                }
+                i += 1;
+            }
+            Ok(CliAction::Rra {
+                action: RraAction::ExportFixture {
+                    bundle: PathBuf::from(bundle),
+                    adapter,
+                },
+                output_format,
+            })
+        }
         other => Err(format!(
-            "unknown `rra` sub-action `{other}`; expected: show <path> | verify <path>"
+            "unknown `rra` sub-action `{other}`; expected: show <path> | verify <path> | export-fixture <bundle> [--adapter <name>]"
         )),
     }
 }

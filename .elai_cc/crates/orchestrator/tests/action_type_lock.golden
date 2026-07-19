@@ -421,6 +421,7 @@ refusal_sla_breach
 regression_detected
 render_complete
 replan_request
+repro_pack_event
 requirement_verified_satisfied
 rerun_hash_equality
 research_decompose_level
