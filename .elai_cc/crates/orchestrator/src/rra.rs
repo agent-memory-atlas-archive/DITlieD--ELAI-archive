@@ -244,6 +244,16 @@ pub struct RunArtifact {
     /// later mutation changes the on-disk bytes so the layer no longer matches).
     #[serde(default)]
     pub stack_hash: Option<StackHash>,
+    /// J-13: per-request sampling seed threaded from the caller's request
+    /// (distinct from `seed`, which is the process-level `ELAI_SEED` pin).
+    /// `None` on LEGACY receipts (pre-J-13) and on any caller that does not
+    /// thread a per-request sampling seed yet (consumer wire lands in later
+    /// slices). Appended as the 13th element of [`canonical_bundle_bytes`]
+    /// so the bundle root covers it; a missing field on an old `.rra`
+    /// deserializes as `None` (LEGACY) and is never silently treated as a
+    /// fresh pass.
+    #[serde(default)]
+    pub sampling_seed: Option<u64>,
     /// blake3 root over the canonical bundle bytes (everything above except
     /// this field). A single-byte tamper flips it. See [`compute_root`].
     pub root_blake3: String,
@@ -389,6 +399,12 @@ fn canonical_bundle_bytes(art: &RunArtifact) -> Result<Vec<u8>, RraError> {
         // result/verify) lets verifiers detect which layer was tampered.
         // APPEND-ONLY: same ordering invariant as element 11 above.
         &art.stack_hash,
+        // J-13: sampling_seed is the 13th element. Serialized as msgpack nil
+        // for LEGACY receipts (pre-J-13) and for callers that do not thread a
+        // per-request sampling seed yet. APPEND-ONLY: same ordering invariant
+        // as elements 10-12 above; never reorder or the Merkle root breaks
+        // for every pre-existing receipt.
+        &art.sampling_seed,
     );
     rmp_serde::to_vec_named(&canonical).map_err(|e| RraError::Msgpack(e.to_string()))
 }
@@ -482,10 +498,28 @@ fn recover_model_pin(events: &[(SsbEntry, Option<SsbPayload>)]) -> (Option<Strin
 /// [`crate::ssb::Ssb::query_session_stream_asc`]). The blake3 root is computed
 /// last over the canonical bundle bytes, so it recomputes byte-identically on
 /// the same input under the pinned seed (GD-2).
+///
+/// LEGACY producer (pre-J-13): the per-request `sampling_seed` is `None`. Use
+/// [`build_rra_with_sampling_seed`] to thread a per-request sampling seed
+/// distinct from `pins.seed` (the process-level `ELAI_SEED` pin).
 pub fn build_rra(
     session_id: &str,
     stream: &[SsbEntry],
     pins: &DeterminismConfig,
+) -> RunArtifact {
+    build_rra_with_sampling_seed(session_id, stream, pins, None)
+}
+
+/// J-13: Build a [`RunArtifact`] with a per-request `sampling_seed` threaded
+/// from the caller's request (distinct from `pins.seed`, which is the
+/// process-level `ELAI_SEED` pin). `None` preserves the pre-J-13 behavior and
+/// is the LEGACY producer value; callers that do not yet thread a per-request
+/// seed pass `None` and the field deserializes as `None` on old `.rra` files.
+pub fn build_rra_with_sampling_seed(
+    session_id: &str,
+    stream: &[SsbEntry],
+    pins: &DeterminismConfig,
+    sampling_seed: Option<u64>,
 ) -> RunArtifact {
     // Decode each row once (best-effort: an undecodable row keeps None and is
     // still bundled by its raw bytes — the stream stays faithful).
@@ -558,6 +592,7 @@ pub fn build_rra(
         objective_hash,
         chain_prev_hash,
         stack_hash,
+        sampling_seed,
         // Filled in after the canonical bytes are stable (includes I-18 fields).
         root_blake3: String::new(),
     };
@@ -764,4 +799,97 @@ pub fn verify_artifact_with_objective(
     }
     // LEGACY receipt (objective_hash = None) or matching objective — verified.
     Ok(ReplayVerdict::Verified)
+}
+
+#[cfg(test)]
+mod j13_sampling_seed_tests {
+    use super::*;
+    use crate::determinism::{DeterminismConfig, HardwareClass};
+
+    fn test_pins() -> DeterminismConfig {
+        DeterminismConfig {
+            seed: 7,
+            hardware_class: HardwareClass::Cpu,
+            blake3_cache_prefix: [0u8; 8],
+            system_fingerprint_pin: None,
+        }
+    }
+
+    // J-13 slice 1 roundtrip: Some(42) survives serialize -> read -> verify.
+    #[test]
+    fn sampling_seed_some_roundtrips_and_verifies() {
+        let pins = test_pins();
+        let art = build_rra_with_sampling_seed("j13-some", &[], &pins, Some(42));
+        assert_eq!(art.sampling_seed, Some(42));
+        assert_eq!(art.seed, pins.seed, "process pin stays on seed");
+
+        let tmp = std::env::temp_dir().join(format!(
+            "j13-some-{}.rra",
+            std::process::id()
+        ));
+        write_rra(&art, &tmp).expect("write");
+        let read_back = read_rra(&tmp).expect("read");
+        assert_eq!(read_back.sampling_seed, Some(42));
+        let verdict = verify_artifact(&read_back).expect("verify");
+        assert!(
+            matches!(verdict, ReplayVerdict::Verified),
+            "expected Verified, got {:?}",
+            verdict
+        );
+        let _ = std::fs::remove_file(&tmp);
+
+        // Determinism: two independent builds under the same input produce the
+        // same root (the sampling_seed participates in canonical_bundle_bytes).
+        let art2 = build_rra_with_sampling_seed("j13-some", &[], &pins, Some(42));
+        assert_eq!(art.root_blake3, art2.root_blake3);
+
+        // And a different sampling_seed produces a different root (the field
+        // is load-bearing in the hash, not silently ignored).
+        let art_other = build_rra_with_sampling_seed("j13-some", &[], &pins, Some(99));
+        assert_ne!(
+            art.root_blake3, art_other.root_blake3,
+            "sampling_seed must participate in the root"
+        );
+    }
+
+    // LEGACY: a bundle built with sampling_seed = None deserializes as None
+    // and verifies. This is the pre-J-13 producer value and the value any
+    // caller that does not yet thread a per-request seed still sees.
+    #[test]
+    fn sampling_seed_none_legacy_roundtrips() {
+        let pins = test_pins();
+        let art = build_rra("j13-none", &[], &pins);
+        assert_eq!(art.sampling_seed, None);
+
+        let tmp = std::env::temp_dir().join(format!(
+            "j13-none-{}.rra",
+            std::process::id()
+        ));
+        write_rra(&art, &tmp).expect("write");
+        let read_back = read_rra(&tmp).expect("read");
+        assert_eq!(read_back.sampling_seed, None);
+        let verdict = verify_artifact(&read_back).expect("verify");
+        assert!(
+            matches!(verdict, ReplayVerdict::Verified),
+            "expected Verified, got {:?}",
+            verdict
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // LEGACY compat: a pre-J-13 `.rra` (serialized without the sampling_seed
+    // field) deserializes as None. We simulate this by hand-stripping the
+    // field via a post-serialize mutation is fiddly; instead we rely on
+    // #[serde(default)] and confirm a bundle built with None round-trips
+    // through the same code path a pre-J-13 reader uses. The Some(42) ->
+    // None transition is covered by the field's #[serde(default)].
+    #[test]
+    fn build_rra_delegates_with_none() {
+        let pins = test_pins();
+        let a = build_rra("j13-delegate", &[], &pins);
+        let b = build_rra_with_sampling_seed("j13-delegate", &[], &pins, None);
+        assert_eq!(a.sampling_seed, None);
+        assert_eq!(b.sampling_seed, None);
+        assert_eq!(a.root_blake3, b.root_blake3);
+    }
 }
