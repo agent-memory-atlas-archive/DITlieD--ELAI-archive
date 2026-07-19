@@ -775,7 +775,8 @@ impl LiveCli {
         permission_mode: PermissionMode,
         export_jsonl: bool,
     ) -> Result<Self, anyhow::Error> {
-        let mut system_prompt = build_system_prompt(false)?;
+        let (mut system_prompt, role_contract_outcome) =
+            crate::report_fns::build_system_prompt_with_outcome(false)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
@@ -812,6 +813,15 @@ impl LiveCli {
         // set_ssb_writer takes &self (OnceLock) — safe to call through Arc.
         if let Some(ref ssb_arc) = ssb {
             fsm.set_ssb_writer(Arc::clone(ssb_arc));
+            // I-32 S5: emit RoleContractApplied(PersonaStripped|PersonaRetained)
+            // from the production CLI construction path. The outcome was bound
+            // by build_system_prompt_with_outcome above; the SSB handle exists
+            // only after build_runtime, so emission lands here.
+            crate::report_fns::emit_role_contract_applied(
+                ssb_arc,
+                elai_orchestrator::AgentRole::Executor,
+                role_contract_outcome,
+            );
             // I-47: install the process-global SSB writer for the prompt-hardening
             // emitter in the tools crate's execute_agent_with_spawn seam.
             install_prompt_hardening_ssb(Arc::clone(ssb_arc));
@@ -914,13 +924,17 @@ impl LiveCli {
                 // ELAI_LOCAL_MIN_PROMPT=1 trims to a single short section,
                 // suitable for small-context local models (Qwen 3B/7B at
                 // 25-40K context where the full project context overflows).
+                let mut local_role_contract_outcome: Option<elai_orchestrator::ApplyOutcome> = None;
                 let mut system_prompt = if std::env::var("ELAI_LOCAL_MIN_PROMPT")
                     .ok()
                     .as_deref() == Some("1")
                 {
                     vec![LIVE_CHAT_SYSTEM_PROMPT.to_string()]
                 } else {
-                    build_system_prompt(true)?
+                    let (sections, outcome) =
+                        crate::report_fns::build_system_prompt_with_outcome(true)?;
+                    local_role_contract_outcome = Some(outcome);
+                    sections
                 };
                 let session_state = Session::new();
                 let session = create_managed_session_handle(&session_state.session_id)?;
@@ -956,6 +970,16 @@ impl LiveCli {
                 // B-2: wire SSB writer into Fsm so PhaseTransition rows are emitted.
                 if let Some(ref ssb_arc) = ssb {
                     fsm.set_ssb_writer(Arc::clone(ssb_arc));
+                    // I-32 S5: emit RoleContractApplied SSB row from the local
+                    // backend construction path (only when build_system_prompt
+                    // ran, i.e. ELAI_LOCAL_MIN_PROMPT is unset).
+                    if let Some(outcome) = local_role_contract_outcome {
+                        crate::report_fns::emit_role_contract_applied(
+                            ssb_arc,
+                            elai_orchestrator::AgentRole::Executor,
+                            outcome,
+                        );
+                    }
                     // C-28: gate install (default-OFF, ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE).
                     maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
                     // E-38: compliance provider install (soft opt-in inside verdict()).
@@ -1031,7 +1055,8 @@ impl LiveCli {
         backend_config: BackendConfig,
         permission_mode: PermissionMode,
     ) -> Result<Self, anyhow::Error> {
-        let mut system_prompt = build_system_prompt(true)?;
+        let (mut system_prompt, role_contract_outcome) =
+            crate::report_fns::build_system_prompt_with_outcome(true)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
@@ -1067,6 +1092,13 @@ impl LiveCli {
         // B-2: wire SSB writer into Fsm so PhaseTransition rows are emitted.
         if let Some(ref ssb_arc) = ssb {
             fsm.set_ssb_writer(Arc::clone(ssb_arc));
+            // I-32 S5: emit RoleContractApplied(PersonaStripped|PersonaRetained)
+            // from the new_local construction path.
+            crate::report_fns::emit_role_contract_applied(
+                ssb_arc,
+                elai_orchestrator::AgentRole::Executor,
+                role_contract_outcome,
+            );
             // C-28: gate install (default-OFF, ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE).
             maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
             // E-38: compliance provider install (soft opt-in inside verdict()).

@@ -13,11 +13,14 @@ use std::process::Command;
 use std::sync::Arc;
 
 use elai_orchestrator::{
-    apply_to_system_prompt, ConfigLoader, ConfigSource, ProjectContext, Session, ContentBlock,
-    MessageRole, RoleContractStore, RuntimeHookConfig, TokenUsage, PermissionMode,
+    apply_to_system_prompt, ApplyOutcome, ConfigLoader, ConfigSource, ProjectContext, Session,
+    ContentBlock, MessageRole, RoleContractStore, RuntimeHookConfig, TokenUsage, PermissionMode,
     load_system_prompt, resolve_sandbox_status,
     // I-36: compiled-prompt artifact store for per-(role,backend) variant substitution.
     CompiledPromptStore,
+};
+use elai_orchestrator::ssb::{
+    RoleContractAppliedKind, RoleContractAppliedPayload, Ssb, SsbPayload,
 };
 use elai_plugins::{PluginHooks, PluginManager, PluginManagerConfig};
 use elai_rules::rule_engine::{CompiledPredicate, DefaultRuleEngine, Rule, RuleEngine};
@@ -1115,16 +1118,37 @@ const MEMORY_RETRIEVAL_K: usize = 8;
 /// the section is structurally ABSENT (the Personalization-Trap firewall, fail-CLOSED).
 pub(crate) fn build_system_prompt(skip_instruction_files: bool) -> Result<Vec<String>, anyhow::Error> {
     // Default to the Executor role: the live CLI chat turn IS the executor/primary turn.
-    build_system_prompt_for_role(skip_instruction_files, elai_orchestrator::AgentRole::Executor)
+    // Discards the ApplyOutcome; callers that need to emit the RoleContractApplied SSB row
+    // use build_system_prompt_with_outcome instead.
+    let (sections, _outcome) = build_system_prompt_for_role(
+        skip_instruction_files,
+        elai_orchestrator::AgentRole::Executor,
+    )?;
+    Ok(sections)
+}
+
+/// Same as [`build_system_prompt`] but also returns the [`ApplyOutcome`] so the caller can
+/// emit the `RoleContractApplied(PersonaStripped|PersonaRetained)` SSB row. Used by the
+/// live CLI construction sites where an SSB handle is available after `build_runtime`.
+pub(crate) fn build_system_prompt_with_outcome(
+    skip_instruction_files: bool,
+) -> Result<(Vec<String>, ApplyOutcome), anyhow::Error> {
+    build_system_prompt_for_role(
+        skip_instruction_files,
+        elai_orchestrator::AgentRole::Executor,
+    )
 }
 
 /// Role-gated variant of [`build_system_prompt`]. The user-memory section is appended IFF the role
 /// is on the firewall allowlist AND the flag is on. A non-allowlisted role NEVER receives any
 /// user-memory line (the section is not merely truncated; it is never assembled).
+///
+/// Returns the assembled sections AND the [`ApplyOutcome`] from `apply_to_system_prompt` so
+/// callers can emit the matching `RoleContractApplied` SSB Kind (I-32 S5).
 pub(crate) fn build_system_prompt_for_role(
     skip_instruction_files: bool,
     role: elai_orchestrator::AgentRole,
-) -> Result<Vec<String>, anyhow::Error> {
+) -> Result<(Vec<String>, ApplyOutcome), anyhow::Error> {
     let mut sections = load_system_prompt(
         env::current_dir()?,
         DEFAULT_DATE,
@@ -1143,7 +1167,7 @@ pub(crate) fn build_system_prompt_for_role(
     // original framing (PersonaRetained). Grounded per IC-17: narrative persona harms
     // MMLU -3.6..-5.3pp and MT-Bench coding -0.65 for factual/code roles.
     let store = RoleContractStore::default();
-    apply_to_system_prompt(&mut sections, role, &store);
+    let outcome = apply_to_system_prompt(&mut sections, role, &store);
     // I-36: after role_contracts apply, look up a compiled variant for this (role, backend)
     // pair. The store is loaded from project_root/.elai/cache/compiled_prompts.msgpack.
     // In Tier-1 the backend is passed as "anthropic_api" (the primary cloud lane per the
@@ -1179,7 +1203,48 @@ pub(crate) fn build_system_prompt_for_role(
     if let Some(section) = assemble_user_memory_section(role, None) {
         sections.push(section);
     }
-    Ok(sections)
+    Ok((sections, outcome))
+}
+
+/// I-32 S5: emit a `RoleContractApplied(PersonaStripped|PersonaRetained)` SSB row from the
+/// production CLI construction path. The outcome is bound from `apply_to_system_prompt` via
+/// `build_system_prompt_with_outcome`; the SSB handle is available after `build_runtime`.
+///
+/// Fire-and-forget thread + current-thread tokio runtime, mirroring the FactValidationFailed
+/// emit pattern at report_fns.rs:~1358. The off-agent artifact is the SSB row itself.
+pub(crate) fn emit_role_contract_applied(
+    ssb: &Arc<Ssb>,
+    role: elai_orchestrator::AgentRole,
+    outcome: ApplyOutcome,
+) {
+    use elai_core::clock::{ClockProvider, OsClock};
+    let kind = match outcome {
+        ApplyOutcome::PersonaStripped => RoleContractAppliedKind::PersonaStripped,
+        ApplyOutcome::PersonaRetained => RoleContractAppliedKind::PersonaRetained,
+    };
+    let role_slug = format!("{:?}", role).to_ascii_lowercase();
+    let payload = SsbPayload::RoleContractApplied(RoleContractAppliedPayload {
+        kind,
+        role: role_slug,
+        fixture_pass_rate_old: 0.0,
+        fixture_pass_rate_new: 0.0,
+        delta: 0.0,
+        ts_ms: OsClock.now_ms() as i64,
+    });
+    let ssb_arc = Arc::clone(ssb);
+    std::thread::spawn(move || {
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            let _ = rt.block_on(ssb_arc.write_payload(
+                "report_fns.role_contract_applied",
+                0,
+                payload,
+                Vec::new(),
+            ));
+        }
+    });
 }
 
 /// Assemble the user-memory prompt section for an assembling role, or `None` when the firewall
