@@ -129,6 +129,14 @@ pub struct BackendConfig {
     /// Ollama fallback URL when sidecar is unavailable (degraded mode).
     #[serde(default)]
     pub fallback_url: Option<String>,
+    /// E-32 task 9: raw model context ceiling reported by the active runtime,
+    /// mirroring `SidecarRuntime::capabilities().max_context` (sidecar.rs:169).
+    /// `None` keeps the pre-E-32 static `LOCAL_MODEL_MAX_CONTEXT` fallback, so
+    /// every existing construction path is byte-identical; only the local-sidecar
+    /// path (runtime_setup.rs) sets it, so the budget tracks the sidecar's real
+    /// window instead of the wrong 131072 assumption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context: Option<u32>,
 }
 
 fn default_sidecar_url() -> String {
@@ -151,6 +159,7 @@ impl Default for BackendConfig {
             model: default_local_model(),
             max_tools_local: default_max_tools(),
             fallback_url: None,
+            max_context: None,
         }
     }
 }
@@ -205,6 +214,12 @@ pub struct DispatchContext {
 pub const LOCAL_MODEL_MAX_CONTEXT: usize = 131_072;
 pub const LOCAL_BUDGET_FRACTION: usize = 80;
 
+/// E-32 task 9: the local sidecar's real context window, mirroring
+/// `SidecarRuntime::capabilities().max_context` (providers/src/runtime/sidecar.rs:169).
+/// Threaded onto `BackendConfig::max_context` only on the local-sidecar path so the
+/// budget ceiling tracks the sidecar instead of the wrong 131072 assumption.
+pub const SIDECAR_MODEL_MAX_CONTEXT: u32 = 32_000;
+
 pub fn build_dispatch_context(
     fsm_state: FsmState,
     config: &BackendConfig,
@@ -232,7 +247,15 @@ pub fn build_dispatch_context(
 
     // Compute budget: use profile-aware allocation if profile is available,
     // otherwise fall back to fixed-percentage allocation.
-    let raw_max = LOCAL_MODEL_MAX_CONTEXT * LOCAL_BUDGET_FRACTION / 100;
+    // E-32 task 9: source the raw ceiling from the runtime-reported window when the
+    // config carries one (local-sidecar path sets it from SIDECAR_MODEL_MAX_CONTEXT);
+    // `None` — every pre-E-32 construction path — keeps the static fallback, so the
+    // budgeted value is byte-identical to before (131072 * 80 / 100 = 104857).
+    let ceiling = config
+        .max_context
+        .map(|c| c as usize)
+        .unwrap_or(LOCAL_MODEL_MAX_CONTEXT);
+    let raw_max = ceiling * LOCAL_BUDGET_FRACTION / 100;
     let budget = match profile {
         Some(p) => ContextBudget::compute_with_profile(raw_max, p.fixed_slot_targets, p).ok(),
         None => ContextBudget::compute(raw_max, [0, 0, 0], 4096).ok(),
@@ -418,6 +441,7 @@ mod tests {
             model: "gemma3:4b".to_string(),
             max_tools_local: 10,
             fallback_url: None,
+            max_context: None,
         };
         let json = serde_json::to_string(&config).expect("serialize");
         let parsed: BackendConfig = serde_json::from_str(&json).expect("deserialize");
@@ -425,5 +449,39 @@ mod tests {
         assert_eq!(parsed.sidecar_url, "http://localhost:9000");
         assert_eq!(parsed.model, "gemma3:4b");
         assert_eq!(parsed.max_tools_local, 10);
+    }
+
+    #[test]
+    fn raw_max_sources_from_config_max_context() {
+        // E-32 task 9: `None` (every pre-E-32 path) keeps the static ceiling, so the
+        // budgeted model_max_context is byte-identical to before: 131072 * 80/100.
+        let tools: Vec<String> = vec![];
+        let prio: BTreeMap<String, u8> = BTreeMap::new();
+
+        let cfg_none = BackendConfig {
+            max_context: None,
+            ..Default::default()
+        };
+        let ctx_none = build_dispatch_context(FsmState::Executing, &cfg_none, &tools, &prio, None, None)
+            .expect("build_dispatch_context (None) ok");
+        assert_eq!(
+            ctx_none.budget.expect("None budget present").model_max_context,
+            LOCAL_MODEL_MAX_CONTEXT * LOCAL_BUDGET_FRACTION / 100,
+            "None max_context must keep the static 104857 ceiling (no regression)"
+        );
+
+        // The local-sidecar ceiling (32000) flows through to the budgeted value:
+        // 32000 * 80/100 = 25600.
+        let cfg_sidecar = BackendConfig {
+            max_context: Some(SIDECAR_MODEL_MAX_CONTEXT),
+            ..Default::default()
+        };
+        let ctx_sidecar = build_dispatch_context(FsmState::Executing, &cfg_sidecar, &tools, &prio, None, None)
+            .expect("build_dispatch_context (Some) ok");
+        assert_eq!(
+            ctx_sidecar.budget.expect("sidecar budget present").model_max_context,
+            SIDECAR_MODEL_MAX_CONTEXT as usize * LOCAL_BUDGET_FRACTION / 100,
+            "Some(32000) must budget to 25600"
+        );
     }
 }

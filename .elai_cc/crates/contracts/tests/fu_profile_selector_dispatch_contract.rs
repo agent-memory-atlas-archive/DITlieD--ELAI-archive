@@ -35,6 +35,7 @@ fn contract_dispatch_context_records_profile_from_phase_slot() {
         model: "t".into(),
         max_tools_local: 4,
         fallback_url: None,
+        max_context: None,
     };
     let prio: BTreeMap<String, u8> = BTreeMap::new();
     let tools: Vec<String> = vec!["read_file".into()];

@@ -27,6 +27,7 @@ fn sample_config() -> BackendConfig {
         model: "test-model".into(),
         max_tools_local: 8,
         fallback_url: None,
+        max_context: None,
     }
 }
 

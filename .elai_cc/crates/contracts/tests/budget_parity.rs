@@ -30,6 +30,7 @@ fn contract_taskrunner_repl_compute_with_profile_parity() {
         model: "Qwen2.5-Coder-7B-Instruct-abliterated".to_string(),
         max_tools_local: 8,
         fallback_url: None,
+        max_context: None,
     };
     let tools: Vec<String> = vec!["edit".into(), "validate".into()];
     let mut prio = BTreeMap::new();

@@ -25,6 +25,7 @@ fn cfg() -> BackendConfig {
         model: "test".into(),
         max_tools_local: 4,
         fallback_url: None,
+        max_context: None,
     }
 }
 

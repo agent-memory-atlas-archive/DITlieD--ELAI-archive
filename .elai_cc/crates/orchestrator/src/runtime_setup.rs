@@ -996,6 +996,13 @@ pub fn apply_task_runner_wiring(
     if let Some(cloud) = &wiring.cloud_config {
         backend_config.model = cloud.default_model.clone();
     }
+    // E-32 task 9: on the local-sidecar path only, source the context ceiling from
+    // the sidecar's reported window so the dispatch budget tracks the real 32K local
+    // model window instead of the wrong 131072 assumption. Api/Hybrid stay `None` and
+    // keep the pre-E-32 static ceiling (no regression on cloud/hybrid backends).
+    if backend_mode == BackendMode::Local {
+        backend_config.max_context = Some(crate::dispatcher::SIDECAR_MODEL_MAX_CONTEXT);
+    }
     cfg.backend_config = Some(backend_config);
 
     // Cap is mirrored on TaskRunnerConfig.cloud_spend_cap_daily_usd above

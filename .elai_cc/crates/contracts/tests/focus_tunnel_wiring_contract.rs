@@ -202,6 +202,7 @@ fn backend_config_local() -> BackendConfig {
         model: "stub".into(),
         max_tools_local: 8,
         fallback_url: None,
+        max_context: None,
     }
 }
 
@@ -212,6 +213,7 @@ fn backend_config_api() -> BackendConfig {
         model: "stub".into(),
         max_tools_local: 8,
         fallback_url: None,
+        max_context: None,
     }
 }
 
