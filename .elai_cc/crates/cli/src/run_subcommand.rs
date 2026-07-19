@@ -715,7 +715,12 @@ async fn emit_model_drift_check(
         .map_err(|e| anyhow::anyhow!("G-10: resolving determinism pins: {e}"))?;
 
     // build_rra derives model_pin + system_fingerprint_pin + has_cloud from stream.
-    let artifact = elai_orchestrator::rra::build_rra(session_id, &stream, &pins);
+    let artifact = elai_orchestrator::rra::build_rra_with_sampling_seed(
+        session_id,
+        &stream,
+        &pins,
+        Some(pins.seed),
+    );
 
     let identity = ModelIdentity::from_rra_fields(
         artifact.model_pin.as_deref(),
@@ -892,7 +897,12 @@ async fn emit_run_artifact(
         .map_err(|e| anyhow::anyhow!("resolving determinism pins for RRA: {e}"))?;
 
     // 3. Build + write the artifact.
-    let artifact = elai_orchestrator::rra::build_rra(session_id, &stream, &pins);
+    let artifact = elai_orchestrator::rra::build_rra_with_sampling_seed(
+        session_id,
+        &stream,
+        &pins,
+        Some(pins.seed),
+    );
     elai_orchestrator::rra::write_rra(&artifact, rra_path)
         .map_err(|e| anyhow::anyhow!("writing .rra to {}: {e}", rra_path.display()))?;
 
@@ -1013,7 +1023,12 @@ async fn emit_attestation(
 
     // 3. Build the G-2 RunArtifact (GD-1: CONSUME the manifest, re-implement no
     //    F-gate), then re-express + sign it as an in-toto Statement.
-    let artifact = elai_orchestrator::rra::build_rra(session_id, &stream, &pins);
+    let artifact = elai_orchestrator::rra::build_rra_with_sampling_seed(
+        session_id,
+        &stream,
+        &pins,
+        Some(pins.seed),
+    );
     let statement = elai_orchestrator::attestation::build_attestation(&artifact)
         .map_err(|e| anyhow::anyhow!("building in-toto attestation: {e}"))?;
 
