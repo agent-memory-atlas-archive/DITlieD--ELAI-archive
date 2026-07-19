@@ -1,0 +1,51 @@
+# J-14 rider #7 entropy-scan allowlist -- legitimate entropy/clock sites.
+# Each reason must match the // entropy-allow: <reason> trailing comment.
+# Seeded from the existing entropy-allow: annotations in crates/orchestrator + crates/cli.
+# A reason NOT in this file + a site using it = scanner finding (observe-only, exit 0).
+#
+# [paths] entries are file-name or relative-path suffixes that are excluded
+# from the scan entirely (e.g. test fixtures that intentionally use thread_rng
+# but live outside a tests/ subdirectory).
+
+reasons = [
+    "ssb-ts-ms-cli-entrypoint",
+    "ssb-row-chain-seal-ts-ms-cli-entrypoint",
+    "ssb-aibom-emit-ts-ms-cli-entrypoint",
+    "ssb-emit-observability-ts-ms",
+    "ssb-row-ts-no-clock-field-single-call-site",
+    "ssb-row-ts-no-reachable-clock-cross-crate-caller",
+    "ssb-objective-seal-ts-ms-cli-entrypoint",
+    "tool-filter-report-ts-ms-cli-entrypoint",
+    "skill-telemetry-ts-ms-cli-entrypoint",
+    "cascade-ssb-emit-free-fn-boundary",
+    "cli-smoke-observability-ts-ms-only",
+    "cli-plan-status-ssb-ts-ms-no-clockprovider",
+    "cli-entrypoint-bootloader-init",
+    "suppression-expiry-clock-consumed-by-ssb-new",
+    "citation-prebind-ts-ms-no-ClockProvider-in-scope",
+    "test-tmpdir-collision-avoidance-nonce-not-replay-compared",
+    "test-only-tempdir-db-filename-suffix-never-byte-compared-by-replay",
+    "cfg-test-staleness-fixture-now-sec",
+    "temp-dir-disambiguation-subsec-nanos",
+    "opaque-correlation-id-not-cache-key-not-replay-compared",
+    "opaque-template-id-never-byte-compared-by-replay",
+    "per-decision-correlator-never-byte-compared-by-replay",
+    "per-audit-run-correlator-id-not-replay-compared",
+    "per-comparator-correlator",
+    "per-run-correlator",
+    "per-request-correlator-never-byte-compared-by-replay",
+    "per-socket-id-no-EntropySource-threaded",
+    "held-out-task-id-opaque-identifier-never-byte-compared-by-replay",
+    "branch-name-only-no-EntropySource-threaded",
+    "render-adapter-Clock-plumbing-scheduled",
+    "serde-default-for-absent-field-no-EntropySource-available",
+    "fresh-uuid-per-crystallization-cache-key-is-plan-skeleton-hash-not-this",
+    "test-fixture-id-compared-by-reference-not-byte-value",
+    "e41-github-pr-submodule-clock-abstraction",
+    "SSB-journal-ts-ms-no-ClockProvider-threaded-into-this-gate",
+    "fixture-annotated-smoke-allowlist-reason",
+]
+
+paths = [
+    "contains_allowlisted_path.rs",
+]
