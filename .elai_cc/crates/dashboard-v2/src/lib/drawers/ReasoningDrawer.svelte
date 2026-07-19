@@ -4,6 +4,7 @@
   import { Card, Badge, Button, UnwiredNote } from '$lib/ui';
   import { logStub } from '../api/stub';
   import FeasibilityPanel from '$lib/components/FeasibilityPanel.svelte';
+  import PlanApprovalCard from '$lib/components/PlanApprovalCard.svelte';
   import ArchiveVerifyGauge from '$lib/components/ArchiveVerifyGauge.svelte';
   import TripwireStatusStrip from '$lib/components/TripwireStatusStrip.svelte';
   // B-5: red intervention card for unguarded Critical CSQ verdicts.
@@ -622,6 +623,13 @@
         </ul>
       {/if}
     {/if}
+  </Card>
+
+  <!-- H-37: plan-approval gate decisions (PlanApprovalCard). Gate is wire-dark
+       unless ELAI_PLAN_APPROVAL_GATE_ENABLE=1; empty state is expected when dark. -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">PLAN APPROVAL GATE</div>
+    <PlanApprovalCard sessionId="" limit={5} />
   </Card>
 
   <!-- 5. MISTAKE BOOK -->
