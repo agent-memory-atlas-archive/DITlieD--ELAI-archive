@@ -411,6 +411,14 @@ mod commands_g6;
 // The bench command IS the entrypoint (no ELAI_*_ENABLE gate).
 // SearchNodeEvent compute-spend axis WIRE-DARK[I-27] (PENDING I-4).
 // cross-lang-pair: dashboard/tauri/api.
+// I-15 / SCHEMA_VERSION 263: ResearchDrawer cache-source badge
+// (get_research_cache_source command). Reads the most-recent
+// oracle_cache_hit / oracle_cache_miss row matching a query_hash_hex and
+// surfaces its `source` discriminator ("blake3_exact" | "semantic_vector"
+// | None). Rows emit from OracleAnswerCache::get / insert on every
+// /task research-pipeline call (no ELAI_*_ENABLE gate).
+// cross-lang-pair: dashboard/tauri/api.
+mod commands_i15;
 mod commands_i27;
 // I-38 / SCHEMA_VERSION 235: QdeltaPanel (get_qdelta_latest command).
 // Reads the most recent qdelta_measured flat-beacon row emitted by
@@ -1414,6 +1422,11 @@ pub fn run() {
             // cross-lang-pair: dashboard/tauri/api.
             commands_i27::get_convergence_curve_rows,
             commands_i38::get_qdelta_latest,
+            // I-15 (SCHEMA_VERSION 263): oracle cache-source discriminator.
+            // Surfaces "blake3_exact" | "semantic_vector" | null for the
+            // ResearchDrawer badge on a given query_hash_hex.
+            // cross-lang-pair: dashboard/tauri/api.
+            commands_i15::get_research_cache_source,
             // I-33 (SCHEMA_VERSION 240): governance_primitive_fired rows.
             // Aggregates CDL / DIU / FSR governance metrics for GovernanceMetricsChip.
             // cross-lang-pair: dashboard/tauri/api.
