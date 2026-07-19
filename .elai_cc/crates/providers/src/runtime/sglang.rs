@@ -84,6 +84,86 @@ impl StructuredOutputBackend {
     }
 }
 
+/// Allowed attention/attention-adjacent backends for SGLang det-mode.
+/// Per docs.sglang.ai advanced_features (det-repos-S1, fetched 2026-06-11):
+/// det-mode requires FlashInfer, FlashAttention 3, or Triton — other
+/// backends (raw CUDA, ROCm) do not support the kernel swaps det-mode
+/// relies on. Peer pattern: `StructuredOutputBackend` at line 61.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SglangDetModeBackend {
+    FlashInfer,
+    Fa3,
+    Triton,
+}
+
+impl SglangDetModeBackend {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FlashInfer => "flashinfer",
+            Self::Fa3 => "fa3",
+            Self::Triton => "triton",
+        }
+    }
+
+    /// True if a raw backend name string is an allowed det-mode backend.
+    /// Case-sensitive, matches `as_str()` output.
+    #[must_use]
+    pub fn is_allowed_str(name: &str) -> bool {
+        matches!(name, "flashinfer" | "fa3" | "triton")
+    }
+}
+
+/// SGLang det-mode capability check request. Maps the three requirements
+/// from J-13 plan item 4 / E-26 contract note:
+/// - `enable_deterministic_inference`: the `--enable-deterministic-inference`
+///   server flag was set.
+/// - `sampling_seed`: the per-request seed (distinct from the process
+///   ELAI_SEED pin; this is the request-level sampling seed J-13 threads
+///   through `MessageRequest.seed`).
+/// - `backend`: the raw backend name string the SGLang server reports
+///   using for this request. Validated against `SglangDetModeBackend::is_allowed_str`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SglangDetModeRequest {
+    pub enable_deterministic_inference: bool,
+    pub sampling_seed: Option<u64>,
+    pub backend: String,
+}
+
+/// Det-mode capability check verdict. Pure, no HTTP, no server probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SglangDetModeError {
+    /// `--enable-deterministic-inference` was not set.
+    MissingFlag,
+    /// per-request sampling_seed was not provided.
+    MissingSamplingSeed,
+    /// backend is not in the FlashInfer/FA3/Triton allowed set.
+    DisallowedBackend { backend: String },
+}
+
+/// Validate a SGLang det-mode request against the three requirements.
+/// Returns `Ok(())` when all three are present and the backend is allowed;
+/// returns the first failing `SglangDetModeError` otherwise. Order:
+/// flag > seed > backend (flag is the cheapest gate; a request without
+/// the flag does not need seed/backend validation).
+// WIRE-DARK[J-13-S5-#8]
+#[must_use]
+pub fn validate_sglang_det_mode(req: &SglangDetModeRequest) -> Result<(), SglangDetModeError> {
+    if !req.enable_deterministic_inference {
+        return Err(SglangDetModeError::MissingFlag);
+    }
+    if req.sampling_seed.is_none() {
+        return Err(SglangDetModeError::MissingSamplingSeed);
+    }
+    if !SglangDetModeBackend::is_allowed_str(&req.backend) {
+        return Err(SglangDetModeError::DisallowedBackend {
+            backend: req.backend.clone(),
+        });
+    }
+    Ok(())
+}
+
 /// Long-lived SGLang HTTP runtime adapter config. Separate struct from
 /// the media-validator `SglangConfig` (different lifecycle).
 #[derive(Debug, Clone, PartialEq)]
@@ -724,5 +804,79 @@ mod tests {
         }
         let second = SglangRuntime::observe_cold_start(&seen, 99);
         assert!(second.is_none(), "second call should not emit");
+    }
+
+    #[test]
+    fn det_mode_missing_flag_fails() {
+        let req = SglangDetModeRequest {
+            enable_deterministic_inference: false,
+            sampling_seed: Some(42),
+            backend: "flashinfer".to_string(),
+        };
+        assert_eq!(
+            validate_sglang_det_mode(&req),
+            Err(SglangDetModeError::MissingFlag)
+        );
+    }
+
+    #[test]
+    fn det_mode_missing_sampling_seed_fails() {
+        let req = SglangDetModeRequest {
+            enable_deterministic_inference: true,
+            sampling_seed: None,
+            backend: "flashinfer".to_string(),
+        };
+        assert_eq!(
+            validate_sglang_det_mode(&req),
+            Err(SglangDetModeError::MissingSamplingSeed)
+        );
+    }
+
+    #[test]
+    fn det_mode_disallowed_backend_fails() {
+        let req = SglangDetModeRequest {
+            enable_deterministic_inference: true,
+            sampling_seed: Some(42),
+            backend: "cuda".to_string(),
+        };
+        assert_eq!(
+            validate_sglang_det_mode(&req),
+            Err(SglangDetModeError::DisallowedBackend {
+                backend: "cuda".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn det_mode_all_three_present_passes() {
+        for backend in ["flashinfer", "fa3", "triton"] {
+            let req = SglangDetModeRequest {
+                enable_deterministic_inference: true,
+                sampling_seed: Some(42),
+                backend: backend.to_string(),
+            };
+            assert_eq!(
+                validate_sglang_det_mode(&req),
+                Ok(()),
+                "backend {backend} should pass"
+            );
+        }
+    }
+
+    #[test]
+    fn det_mode_backend_as_str_matches_wire_tags() {
+        assert_eq!(SglangDetModeBackend::FlashInfer.as_str(), "flashinfer");
+        assert_eq!(SglangDetModeBackend::Fa3.as_str(), "fa3");
+        assert_eq!(SglangDetModeBackend::Triton.as_str(), "triton");
+    }
+
+    #[test]
+    fn det_mode_is_allowed_str_rejects_unknown() {
+        assert!(SglangDetModeBackend::is_allowed_str("flashinfer"));
+        assert!(SglangDetModeBackend::is_allowed_str("fa3"));
+        assert!(SglangDetModeBackend::is_allowed_str("triton"));
+        assert!(!SglangDetModeBackend::is_allowed_str("cuda"));
+        assert!(!SglangDetModeBackend::is_allowed_str("rocm"));
+        assert!(!SglangDetModeBackend::is_allowed_str(""));
     }
 }
