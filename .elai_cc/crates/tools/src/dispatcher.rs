@@ -39,6 +39,7 @@ use elai_core::tool_dispatcher::{
 // optional so callers that have not yet adopted the policy layer remain
 // unaffected (the field defaults to `None`).
 use elai_orchestrator::{SandboxAdapter, SandboxOp};
+use crate::search_replace::{ELAI_SEARCH_FENCE, SearchReplaceMatcher};
 use crate::string_similarity::best_line_match;
 // `ValidationTier` is only used inside the test module; exposed here so
 // the `#[cfg(test)]` block below keeps compiling without a separate
@@ -290,6 +291,26 @@ fn try_edit_tiers(
     old_text: &str,
     new_text: &str,
 ) -> (EditMatchTier, Option<String>) {
+    // Tier 0 — ELAI_SEARCH-fenced patch. When `old_text` carries the
+    // `<<< ELAI_SEARCH` fence, hand the whole patch to
+    // `SearchReplaceMatcher::parse_and_apply` which performs collision
+    // detection + unique-match replacement. On success we return the
+    // matcher's updated content under the `Exact` tier (the matcher
+    // produces a byte-identical replacement, so no new tier variant is
+    // needed). On any error (malformed patch, ambiguous match, delimiter
+    // collision in source) we fall through to the existing 3 tiers so the
+    // caller still has a chance to match without the fence.
+    if old_text.contains(ELAI_SEARCH_FENCE) {
+        match SearchReplaceMatcher::new().parse_and_apply("dispatcher", old_text, content) {
+            Ok((_patch, updated)) => return (EditMatchTier::Exact, Some(updated)),
+            Err(_) => {
+                tracing::debug!(
+                    "try_edit_tiers: SearchReplaceMatcher declined fenced patch, falling through to Exact/WS/Ellipsis tiers"
+                );
+            }
+        }
+    }
+
     // Tier 1 — exact substring match (fast-path, cheapest).
     if let Some(idx) = content.find(old_text) {
         let mut updated = String::with_capacity(content.len() + new_text.len());
@@ -1216,6 +1237,26 @@ mod tests {
         );
         assert!((classified.confidence - 1.0).abs() < f32::EPSILON);
         assert_eq!(classified.source, "validator");
+    }
+
+    #[test]
+    fn try_edit_tiers_fenced_old_text_applies_via_matcher() {
+        let source = "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+        let patch = "<<< ELAI_SEARCH\nfn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n=== ELAI_REPLACE\nfn add(a: i32, b: i32) -> i32 {\n    let sum = a + b;\n    sum\n}\n>>> ELAI_END\n";
+        let (tier, updated) = try_edit_tiers(source, patch, "unused-new-text");
+        assert_eq!(tier, EditMatchTier::Exact);
+        let updated = updated.expect("matcher should produce updated content");
+        assert!(updated.contains("let sum = a + b"));
+        assert!(updated.contains("sum\n}"));
+        assert!(!updated.contains("a + b\n}"));
+    }
+
+    #[test]
+    fn try_edit_tiers_non_fenced_old_text_still_exact_matches() {
+        let source = "hello world";
+        let (tier, updated) = try_edit_tiers(source, "world", "Rust");
+        assert_eq!(tier, EditMatchTier::Exact);
+        assert_eq!(updated.as_deref(), Some("hello Rust"));
     }
 
     #[test]
