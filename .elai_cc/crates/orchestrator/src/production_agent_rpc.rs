@@ -597,6 +597,13 @@ pub struct ProductionAgentRpcServer {
     /// (`live_cli::build_local_knowledge_stack`).
     symbol_graph_adapter:
         Option<Arc<dyn elai_knowledge::symbol_graph_adapter::SymbolGraphAdapter>>,
+    /// J-13 — process-level `ELAI_SEED` pin threaded from
+    /// `DeterminismConfig::from_env()` at server construction
+    /// (`runtime_builder.rs`). When `Some`, `handle_infer_request` forwards
+    /// it on every `MessageRequest.seed` so same-seed `elai run --local`
+    /// invocations reproduce token streams against a seeded sidecar. `None`
+    /// preserves the pre-J-13 wire shape (`seed: None` on the wire).
+    seed: Option<u64>,
 }
 
 impl ProductionAgentRpcServer {
@@ -618,6 +625,7 @@ impl ProductionAgentRpcServer {
             pending_tool_args: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             clock: Arc::new(OsClock),
             symbol_graph_adapter: None,
+            seed: None,
         }
     }
 
@@ -672,6 +680,19 @@ impl ProductionAgentRpcServer {
         adapter: Arc<dyn elai_knowledge::symbol_graph_adapter::SymbolGraphAdapter>,
     ) -> Self {
         self.symbol_graph_adapter = Some(adapter);
+        self
+    }
+
+    /// J-13 — builder-style setter for the process `ELAI_SEED` pin forwarded
+    /// on every `MessageRequest.seed`. Production reads
+    /// `DeterminismConfig::from_env()` at server construction
+    /// (`runtime_builder.rs`) and chains `.with_seed(pins.seed)`. Tests pass
+    /// whatever u64 they want to assert on. Existing 4-arg `new()` call sites
+    /// that don't chain `.with_seed(...)` keep shipping `seed: None`,
+    /// preserving the pre-J-13 wire behaviour.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
         self
     }
 
@@ -2024,7 +2045,7 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                 tools: Some(self.build_tool_catalog()),
                 tool_choice: Some(ToolChoice::Auto),
                 stream: false,
-                seed: None,
+                seed: self.seed,
                 // I-26: production agent RPC uses tool-calling mode, not reasoning;
                 // effort is not applicable (HD-3: force-JSON wrapping of reasoning
                 // roles is banned; tool-calling and reasoning are mutually exclusive
@@ -5200,3 +5221,71 @@ pub async fn translate_tool_request_for_test(
     translate_tool_request(tool_id, arguments, dispatcher, ssb, artifact_vm, clock, None).await
 }
 
+
+#[cfg(test)]
+mod j13_seed_tests {
+    use super::*;
+    use elai_core::tool_dispatcher::ToolDispatcher;
+    use elai_providers::AnthropicClient;
+    use std::future::Future;
+    use std::path::PathBuf;
+    use std::pin::Pin;
+
+    struct NoOpDispatcher;
+    impl ToolDispatcher for NoOpDispatcher {
+        fn dispatch_edit(
+            &self,
+            _req: elai_core::tool_dispatcher::EditRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<elai_core::tool_dispatcher::EditOutcome, elai_core::tool_dispatcher::ToolDispatchError>> + Send + '_>> {
+            Box::pin(async { Err(elai_core::tool_dispatcher::ToolDispatchError::NotImplemented("noop".into())) })
+        }
+        fn dispatch_validate(
+            &self,
+            _req: elai_core::tool_dispatcher::ValidateRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<elai_core::tool_dispatcher::ValidationTierResult>, elai_core::tool_dispatcher::ToolDispatchError>> + Send + '_>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn dispatch_classify_failure(
+            &self,
+            _input: elai_core::tool_dispatcher::FailureInput,
+        ) -> Pin<Box<dyn Future<Output = Option<elai_core::tool_dispatcher::ClassifiedFailure>> + Send + '_>> {
+            Box::pin(async { None })
+        }
+        fn dispatch_git_commit(
+            &self,
+            _req: elai_core::tool_dispatcher::GitCommitRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<elai_core::tool_dispatcher::CommitOutcome, elai_core::tool_dispatcher::ToolDispatchError>> + Send + '_>> {
+            Box::pin(async { Err(elai_core::tool_dispatcher::ToolDispatchError::NotImplemented("noop".into())) })
+        }
+        fn dispatch_file_read_outline(
+            &self,
+            _path: PathBuf,
+            _line_threshold: usize,
+        ) -> Pin<Box<dyn Future<Output = Result<elai_core::tool_dispatcher::FileView, elai_core::tool_dispatcher::ToolDispatchError>> + Send + '_>> {
+            Box::pin(async { Err(elai_core::tool_dispatcher::ToolDispatchError::NotImplemented("noop".into())) })
+        }
+        fn dispatch_incremental_compile(
+            &self,
+            _req: elai_core::tool_dispatcher::IncrementalRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<elai_core::tool_dispatcher::IncrementalOutcome, elai_core::tool_dispatcher::ToolDispatchError>> + Send + '_>> {
+            Box::pin(async { Err(elai_core::tool_dispatcher::ToolDispatchError::NotImplemented("noop".into())) })
+        }
+    }
+
+    #[test]
+    fn with_seed_populates_field() {
+        let client = AnthropicClient::new("test-key");
+        let dispatcher: Arc<dyn ToolDispatcher> = Arc::new(NoOpDispatcher);
+        let server = ProductionAgentRpcServer::new(client, dispatcher, "test-model".into(), 100)
+            .with_seed(42);
+        assert_eq!(server.seed, Some(42));
+    }
+
+    #[test]
+    fn new_defaults_seed_none() {
+        let client = AnthropicClient::new("test-key");
+        let dispatcher: Arc<dyn ToolDispatcher> = Arc::new(NoOpDispatcher);
+        let server = ProductionAgentRpcServer::new(client, dispatcher, "test-model".into(), 100);
+        assert_eq!(server.seed, None);
+    }
+}

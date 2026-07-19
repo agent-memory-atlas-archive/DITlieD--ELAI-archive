@@ -890,6 +890,13 @@ fn build_agent_pool_rpc_server(
     // G-1 (s-56068 fix B1): wire the live SSB so the taint-flow gate can emit
     // its off-agent SsbPayload::TaintFlow row on a blocked untrusted->sink flow.
     .with_ssb(ssb_for_server);
+    // J-13: thread the process `ELAI_SEED` pin into every MessageRequest.seed
+    // so same-seed `elai run --local` invocations reproduce token streams
+    // against a seeded sidecar. Mirrors the RRA pin-resolution pattern in
+    // run_subcommand.rs (DeterminismConfig::from_env -> pins.seed).
+    if let Ok(pins) = elai_orchestrator::determinism::DeterminismConfig::from_env() {
+        server = server.with_seed(pins.seed);
+    }
     if let Some(adapter) = symbol_graph_adapter {
         server = server.with_symbol_graph_adapter(adapter);
     }
