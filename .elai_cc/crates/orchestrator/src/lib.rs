@@ -365,6 +365,7 @@ pub mod recovery_recipes;
 // F-gate evidence manifest + blake3 root into a portable .rra; verify_rra
 // re-checks it offline. CONSUMES F-1/F-4/F-9/F-10 verdict hashes (GD-1).
 pub mod rra;
+pub mod rra_tiers;
 // G-8 (SCHEMA_VERSION 213): signed in-toto v1 provenance attestation. Re-expresses
 // the G-2 RunArtifact manifest as a custom in-toto Statement + predicate, signs it
 // with a LOCAL blake3-Merkle proof (no new dep), and verifies it OFFLINE

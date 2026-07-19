@@ -2093,6 +2093,35 @@ pub(crate) enum RraAction {
     Verify { path: PathBuf },
 }
 
+/// J-14 — CLI-side tier selector for `elai replay --verify --tier <t>`.
+/// Maps 1:1 to [`elai_orchestrator::rra::TierVerdictLabel`]. Kept as a
+/// distinct CLI-layer enum so the parser does not depend on the
+/// orchestrator crate's wire types (the args module is parsed before any
+/// orchestrator symbol is resolved).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplayVerifyTier {
+    /// `--tier t0` — action-stream replay (the G-2 binary verdict).
+    T0,
+    /// `--tier t1` — token-stream blake3 equality.
+    T1,
+    /// `--tier t2` — score/logprob equality.
+    T2,
+}
+
+impl ReplayVerifyTier {
+    /// Parse the `--tier` value string (`t0` | `t1` | `t2`,
+    /// case-insensitive). Returns `None` on an unknown label so the caller
+    /// can format the error with the accepted set.
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
+        match raw.to_ascii_lowercase().as_str() {
+            "t0" | "actionfaithful" | "action-faithful" => Some(Self::T0),
+            "t1" | "tokenfaithful" | "token-faithful" => Some(Self::T1),
+            "t2" | "scorefaithful" | "score-faithful" => Some(Self::T2),
+            _ => None,
+        }
+    }
+}
+
 /// G-2 — `elai replay <sub>` sub-verb. The top-level `replay` verb is new; it
 /// does NOT collide with the existing `replay-spill` / `fixture-replay`
 /// sub-actions (those are distinct subcommand words).
@@ -2103,9 +2132,13 @@ pub(crate) enum ReplayAction {
     /// objective text into `verify_artifact_with_objective` so
     /// `ReplayVerdict::ObjectiveHashMismatch` can fire on a live CLI run
     /// (GAP-1). `None` preserves the legacy `ObjectiveUnchecked` behavior.
+    /// J-14: `--tier t0|t1|t2` selects the graded verify tier
+    /// (`ActionFaithful` / `TokenFaithful` / `ScoreFaithful`); `None`
+    /// defaults to `ActionFaithful` (T0, the G-2 binary verdict).
     Verify {
         path: PathBuf,
         current_objective: Option<String>,
+        tier: Option<ReplayVerifyTier>,
     },
     /// H-23 — `elai replay --verify --metric-digest <demo>` — same-seed re-run
     /// hash-equality METRIC_GATE. ADDITIVE to the offline `.rra` verifier above;
@@ -5467,6 +5500,7 @@ pub(crate) fn parse_replay_subcommand_args(
     let mut metric_digest: Option<String> = None;
     let mut golden: Option<String> = None;
     let mut result_manifest: Option<String> = None;
+    let mut tier: Option<ReplayVerifyTier> = None;
     // I-45: optional `--current-objective <text>` for the offline `.rra`
     // verifier path. Threads the caller's current objective text into
     // `verify_artifact_with_objective` so `ObjectiveHashMismatch` can fire on
@@ -5554,6 +5588,30 @@ pub(crate) fn parse_replay_subcommand_args(
                 current_objective = Some(flag["--current-objective=".len()..].to_string());
                 i += 1;
             }
+            // J-14: `--tier t0|t1|t2` for the offline `.rra` verifier. Selects
+            // the graded verify tier (`ActionFaithful` / `TokenFaithful` /
+            // `ScoreFaithful`). Defaults to T0 when absent. Rejected on the
+            // demo gate paths below for the same reason as `--current-objective`.
+            "--tier" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for `--tier <t0|t1|t2>`".to_string())?;
+                tier = Some(ReplayVerifyTier::parse(value).ok_or_else(|| {
+                    format!(
+                        "unknown `--tier` value `{value}` (expected `t0`, `t1`, or `t2`)"
+                    )
+                })?);
+                i += 2;
+            }
+            flag if flag.starts_with("--tier=") => {
+                let value = &flag["--tier=".len()..];
+                tier = Some(ReplayVerifyTier::parse(value).ok_or_else(|| {
+                    format!(
+                        "unknown `--tier` value `{value}` (expected `t0`, `t1`, or `t2`)"
+                    )
+                })?);
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `replay` argument: {other}"));
             }
@@ -5570,6 +5628,16 @@ pub(crate) fn parse_replay_subcommand_args(
     {
         return Err(
             "`--current-objective` cannot be combined with `--metric-digest`, `--golden`, or `--result-manifest` (it only applies to `replay --verify <path>`)".to_string(),
+        );
+    }
+
+    // J-14: `--tier` is only meaningful on the offline `.rra` verifier path
+    // (`ReplayAction::Verify`). The demo gate paths do not carry a tier.
+    if tier.is_some()
+        && (metric_digest.is_some() || golden.is_some() || result_manifest.is_some())
+    {
+        return Err(
+            "`--tier` cannot be combined with `--metric-digest`, `--golden`, or `--result-manifest` (it only applies to `replay --verify <path>`)".to_string(),
         );
     }
 
@@ -5654,6 +5722,7 @@ pub(crate) fn parse_replay_subcommand_args(
         action: ReplayAction::Verify {
             path,
             current_objective,
+            tier,
         },
         output_format,
     })

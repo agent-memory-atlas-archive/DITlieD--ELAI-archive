@@ -39,8 +39,18 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::determinism::DeterminismConfig;
+use crate::rra_tiers::seal_determinism_applied;
 use crate::ssb::{
     decode_ssb_payload, SsbEntry, SsbPayload,
+};
+
+// J-14: re-export the tiered-verify public surface from rra_tiers so existing
+// CLI imports (`elai_orchestrator::rra::{verify_artifact_tiered, TierVerdict,
+// TierVerdictLabel, VerifyOutcome, ...}`) continue to resolve after the
+// split.
+pub use crate::rra_tiers::{
+    scrub_auth_headers, verify_artifact_tiered, DeterminismApplied, FirstDivergence,
+    TierDowngrade, TierVerdict, TierVerdictLabel, VerifyOutcome,
 };
 
 /// `.rra` bundle format version. Bump only on an incompatible bundle-schema
@@ -254,6 +264,17 @@ pub struct RunArtifact {
     /// fresh pass.
     #[serde(default)]
     pub sampling_seed: Option<u64>,
+    /// J-14: self-describing record of which determinism controls were
+    /// ACTUALLY active at run time (ELAI_SEED, sampling_seed, env controls
+    /// read). `None` on LEGACY receipts (pre-J-14) and on any producer that
+    /// does not yet populate it (later slices thread it from the live run
+    /// env). Appended as the 14th element of [`canonical_bundle_bytes`]
+    /// so the bundle root covers it; a missing field on an old `.rra`
+    /// deserializes as `None` (LEGACY) and is never silently treated as a
+    /// fresh pass. NEGATIVE (R2): a bundle that claims tier>T0 without
+    /// `determinism_applied` FAILS verify (missing evidence = FAIL).
+    #[serde(default)]
+    pub determinism_applied: Option<DeterminismApplied>,
     /// blake3 root over the canonical bundle bytes (everything above except
     /// this field). A single-byte tamper flips it. See [`compute_root`].
     pub root_blake3: String,
@@ -309,6 +330,13 @@ pub enum ReplayVerdict {
         expected_blake3: String,
         /// The content hash recomputed now.
         got_blake3: String,
+        /// J-14: first-divergence locator for T1/T2 mismatch (token-stream
+        /// position + expected/got token bytes). `None` on T0 action-stream
+        /// divergence (the `first_mismatch_event` already locates it) and on
+        /// LEGACY receipts (pre-J-14). `#[serde(default)]` preserves
+        /// backward compat with existing serialized `.rra` verdicts.
+        #[serde(default)]
+        first_divergence: Option<FirstDivergence>,
     },
     /// The bundle's own root_blake3 does not recompute — the bundle bytes were
     /// edited after sealing (a single-byte tamper).
@@ -347,7 +375,7 @@ pub enum RraError {
 }
 
 /// Truncate a full blake3 hex to the workspace 16-hex prefix convention.
-fn truncate_hex(full_hex: &str) -> String {
+pub(crate) fn truncate_hex(full_hex: &str) -> String {
     full_hex.chars().take(RRA_HEX_PREFIX_LEN).collect()
 }
 
@@ -405,6 +433,13 @@ fn canonical_bundle_bytes(art: &RunArtifact) -> Result<Vec<u8>, RraError> {
         // as elements 10-12 above; never reorder or the Merkle root breaks
         // for every pre-existing receipt.
         &art.sampling_seed,
+        // J-14: determinism_applied is the 14th element. Serialized as msgpack
+        // nil for LEGACY receipts (pre-J-14) and for producers that do not yet
+        // populate it. APPEND-ONLY: same ordering invariant as elements 10-13
+        // above; never reorder or the Merkle root breaks for every pre-existing
+        // receipt. NEGATIVE (R2): a bundle that claims tier>T0 without
+        // determinism_applied FAILS verify (missing evidence = FAIL).
+        &art.determinism_applied,
     );
     rmp_serde::to_vec_named(&canonical).map_err(|e| RraError::Msgpack(e.to_string()))
 }
@@ -528,13 +563,15 @@ pub fn build_rra_with_sampling_seed(
         .map(|e| (e.clone(), decode_ssb_payload(&e.payload).ok()))
         .collect();
 
+    let scrub_seed = pins.seed;
     let events: Vec<RraEvent> = decoded
         .iter()
         .map(|(e, _)| {
+            let payload = scrub_auth_headers(&e.payload, scrub_seed);
             RraEvent::sealed(
                 e.seq,
                 e.action_type.as_sql_str().to_owned(),
-                e.payload.to_vec(),
+                payload,
             )
         })
         .collect();
@@ -579,6 +616,16 @@ pub fn build_rra_with_sampling_seed(
     // single-layer tamper changes the combiner.
     let stack_hash: Option<StackHash> = Some(seal_stack_hash(&decoded, pins, &objective_hash));
 
+    // J-14: determinism_applied block. The bundle states its own guarantee
+    // basis so a verifier can check that a tier>T0 claim has a real basis
+    // (R2: missing evidence = FAIL). The fingerprint hash excludes its own
+    // serialized form (detllm gotcha: self-inclusion is a fixed point that
+    // hides tamper).
+    let determinism_applied: Option<DeterminismApplied> = Some(seal_determinism_applied(
+        pins,
+        sampling_seed,
+    ));
+
     let mut art = RunArtifact {
         format_version: RRA_FORMAT_VERSION,
         session_id: session_id.to_owned(),
@@ -593,6 +640,7 @@ pub fn build_rra_with_sampling_seed(
         chain_prev_hash,
         stack_hash,
         sampling_seed,
+        determinism_applied,
         // Filled in after the canonical bytes are stable (includes I-18 fields).
         root_blake3: String::new(),
     };
@@ -673,7 +721,7 @@ fn seal_stack_hash(
 
 /// Snake-case label for a [`crate::determinism::HardwareClass`] (mirrors the
 /// `ELAI_HARDWARE_CLASS` encoding).
-fn hardware_class_label(hc: &crate::determinism::HardwareClass) -> String {
+pub(crate) fn hardware_class_label(hc: &crate::determinism::HardwareClass) -> String {
     match hc {
         crate::determinism::HardwareClass::Cpu => "cpu".to_owned(),
         crate::determinism::HardwareClass::Gpu(sku) => format!("gpu:{}", sku.as_str()),
@@ -772,6 +820,7 @@ pub fn verify_artifact_with_objective(
                 first_mismatch_event: ev.seq,
                 expected_blake3: ev.event_blake3.clone(),
                 got_blake3: recomputed,
+                first_divergence: None,
             });
         }
     }

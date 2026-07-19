@@ -21,7 +21,10 @@ use elai_orchestrator::rerun_equality::{
     verify_rerun_digest, MetricDigest, RerunInput, RerunVerdictKind, RunDigests,
     RERUN_EQUALITY_RULE_ID,
 };
-use elai_orchestrator::rra::{read_rra, verify_artifact_with_objective, ReplayVerdict, RunArtifact};
+use elai_orchestrator::rra::{
+    read_rra, verify_artifact_tiered, ReplayVerdict, RunArtifact, TierVerdict, TierVerdictLabel,
+    VerifyOutcome,
+};
 use elai_orchestrator::result_manifest::{
     verify_result, ReDerivedInputs, ResultEntry, ResultManifest, ResultVerdictKind,
     RESULT_MANIFEST_RULE_ID,
@@ -33,7 +36,8 @@ use elai_orchestrator::sim_real_parity::{
 use elai_orchestrator::ssb::{Ssb, SsbConfig};
 
 use crate::args::{
-    CliOutputFormat, GoldenDemoMode, RerunDemoMode, ReplayAction, ResultManifestDemoMode, RraAction,
+    CliOutputFormat, GoldenDemoMode, RerunDemoMode, ReplayAction, ReplayVerifyTier,
+    ResultManifestDemoMode, RraAction,
 };
 
 /// H-23 — session id for the re-run hash-equality fixture session.
@@ -94,8 +98,8 @@ pub(crate) fn run_replay(
     output_format: CliOutputFormat,
 ) -> Result<(), String> {
     match action {
-        ReplayAction::Verify { path, current_objective } => {
-            run_verify(&path, current_objective.as_deref(), output_format)
+        ReplayAction::Verify { path, current_objective, tier } => {
+            run_verify(&path, current_objective.as_deref(), tier, output_format)
         }
         // H-23 — same-seed re-run hash-equality METRIC_GATE (additive; the
         // `Verify { path }` arm above is unchanged).
@@ -195,34 +199,128 @@ fn render_event_stream(art: &RunArtifact) {
 fn run_verify(
     path: &std::path::Path,
     current_objective: Option<&str>,
+    tier: Option<ReplayVerifyTier>,
     output_format: CliOutputFormat,
 ) -> Result<(), String> {
     let art = read_rra(path).map_err(|e| format!("reading .rra at {}: {e}", path.display()))?;
-    let verdict = verify_artifact_with_objective(&art, current_objective)
+    // J-14: default tier is T0 (ActionFaithful) — the G-2 binary verdict.
+    // A `--tier t1|t2` request upgrades to the graded path; the effective tier
+    // is always <= requested (never a silent upgrade, enforced by
+    // `grade_tier` in rra.rs).
+    let tier_requested = match tier {
+        None | Some(ReplayVerifyTier::T0) => TierVerdictLabel::ActionFaithful,
+        Some(ReplayVerifyTier::T1) => TierVerdictLabel::TokenFaithful,
+        Some(ReplayVerifyTier::T2) => TierVerdictLabel::ScoreFaithful,
+    };
+    let outcome = verify_artifact_tiered(&art, current_objective, tier_requested)
         .map_err(|e| format!("verifying .rra at {}: {e}", path.display()))?;
     match output_format {
         CliOutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&verdict)
-                .map_err(|e| format!("serializing verdict as json: {e}"))?;
+            let json = serde_json::to_string_pretty(&outcome)
+                .map_err(|e| format!("serializing verify outcome as json: {e}"))?;
             println!("{json}");
         }
         CliOutputFormat::Text | CliOutputFormat::Toml => {
-            render_verdict_text(path, &verdict);
+            render_outcome_text(path, &art, &outcome, tier_requested);
         }
     }
-    // Exit non-zero on any non-Verified verdict so CI can gate on it. The
-    // verdict has already been printed, so a hard exit here is the documented
-    // contract (mirrors `elai freeze verify`).
+    // Exit non-zero on any non-Verified binary verdict so CI can gate on it.
     // D-016: ObjectiveUnchecked is NON-fatal (exit 0) — the artifact is
     // cryptographically intact; only the objective-staleness check is skipped
     // because no current_objective was supplied. ObjectiveHashMismatch remains
     // exit 1 (objective was redefined after sealing).
-    match verdict {
-        ReplayVerdict::Verified | ReplayVerdict::ObjectiveUnchecked { .. } => Ok(()),
-        ReplayVerdict::Divergence { .. }
-        | ReplayVerdict::Tampered { .. }
-        | ReplayVerdict::ObjectiveHashMismatch { .. } => {
-            std::process::exit(1);
+    // J-14: a `MissingDeterminismBasis` tier verdict (tier>T0 requested but
+    // the bundle carries no `determinism_applied` block) is NON-fatal at T0
+    // (T0 needs no basis) and FATAL at T1/T2 (R2: missing evidence = FAIL).
+    let binary_ok = matches!(
+        outcome.verdict,
+        ReplayVerdict::Verified | ReplayVerdict::ObjectiveUnchecked { .. }
+    );
+    let tier_ok = match outcome.tier {
+        None => true,
+        Some(TierVerdict::MissingDeterminismBasis) => tier_requested == TierVerdictLabel::ActionFaithful,
+        _ => true,
+    };
+    if binary_ok && tier_ok {
+        Ok(())
+    } else {
+        std::process::exit(1);
+    }
+}
+
+fn render_outcome_text(
+    path: &std::path::Path,
+    art: &RunArtifact,
+    outcome: &VerifyOutcome,
+    tier_requested: TierVerdictLabel,
+) {
+    render_verdict_text(path, &outcome.verdict);
+    // J-14: tier block. Printed on every Verified-path outcome (the tier is
+    // `None` only when the binary verdict short-circuited, which is already
+    // fatal above). The tier line is the human-readable summary; the
+    // determinism_applied + downgrade lines follow when present.
+    if let Some(tier) = &outcome.tier {
+        render_tier_text(tier, tier_requested);
+    }
+    render_determinism_applied_text(art);
+}
+
+fn render_tier_text(tier: &TierVerdict, tier_requested: TierVerdictLabel) {
+    let requested_label = tier_label_str(tier_requested);
+    match tier {
+        TierVerdict::ActionFaithful => {
+            println!("  tier           : action_faithful (T0, requested {requested_label})");
+        }
+        TierVerdict::TokenFaithful => {
+            println!("  tier           : token_faithful (T1, requested {requested_label})");
+        }
+        TierVerdict::ScoreFaithful => {
+            println!("  tier           : score_faithful (T2, requested {requested_label})");
+        }
+        TierVerdict::Downgraded { downgrade } => {
+            println!(
+                "  tier           : DOWNGRADED {} -> {} (requested {}): {}",
+                tier_label_str(downgrade.from),
+                tier_label_str(downgrade.to),
+                requested_label,
+                downgrade.reason
+            );
+        }
+        TierVerdict::MissingDeterminismBasis => {
+            println!(
+                "  tier           : MISSING-DETERMINISM-BASIS (requested {requested_label} but the bundle carries no determinism_applied block; R2: missing evidence = FAIL)"
+            );
+        }
+    }
+}
+
+fn tier_label_str(label: TierVerdictLabel) -> &'static str {
+    match label {
+        TierVerdictLabel::ActionFaithful => "t0/action_faithful",
+        TierVerdictLabel::TokenFaithful => "t1/token_faithful",
+        TierVerdictLabel::ScoreFaithful => "t2/score_faithful",
+    }
+}
+
+fn render_determinism_applied_text(art: &RunArtifact) {
+    match &art.determinism_applied {
+        None => {
+            println!("  determinism    : (none — legacy pre-J-14 or producer did not populate)");
+        }
+        Some(da) => {
+            println!("  determinism    :");
+            println!("    seed               : {}", da.seed);
+            if let Some(ss) = da.sampling_seed {
+                println!("    sampling_seed      : {ss}");
+            }
+            println!("    hardware_class     : {}", da.hardware_class);
+            if let Some(pin) = &da.system_fingerprint_pin {
+                println!("    fingerprint_pin    : {pin}");
+            }
+            if !da.env_controls.is_empty() {
+                println!("    env_controls       : {}", da.env_controls.join(", "));
+            }
+            println!("    fingerprint_blake3 : {}", da.fingerprint_blake3);
         }
     }
 }
@@ -239,6 +337,7 @@ fn render_verdict_text(path: &std::path::Path, verdict: &ReplayVerdict) {
             first_mismatch_event,
             expected_blake3,
             got_blake3,
+            first_divergence,
         } => {
             println!(
                 "DIVERGENCE {} — first mismatching event seq {} (expected {}, got {})",
@@ -247,6 +346,19 @@ fn render_verdict_text(path: &std::path::Path, verdict: &ReplayVerdict) {
                 expected_blake3,
                 got_blake3
             );
+            // J-14: first-divergence locator for T1/T2 mismatch (token-stream
+            // position + expected/got token bytes). `None` on T0 action-stream
+            // divergence (the `first_mismatch_event` already locates it) and on
+            // LEGACY receipts (pre-J-14).
+            if let Some(fd) = first_divergence {
+                println!(
+                    "  first_divergence: position {} (tier {}), expected {}, got {}",
+                    fd.position,
+                    tier_label_str(fd.tier),
+                    hex_encode(&fd.expected),
+                    hex_encode(&fd.got)
+                );
+            }
         }
         ReplayVerdict::Tampered {
             expected_root,
@@ -278,6 +390,18 @@ fn render_verdict_text(path: &std::path::Path, verdict: &ReplayVerdict) {
             );
         }
     }
+}
+
+/// J-14: hex-encode a byte slice for the first-divergence locator line. Kept
+/// inline (rather than pulling a `hex` crate dep) because the divergence
+/// payload is short (a token / score fingerprint) and the CLI already avoids
+/// a `hex` dependency.
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
