@@ -21,14 +21,26 @@
 //! file. The handler returns `Result<(), String>` for the dispatcher.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use elai_core::clock::OsClock;
+use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::cross_lang_drift::{
-    DriftDetector, DriftDetectorError, DriftItem, DriftKind, PairRegistry, PairRegistryError,
-    Severity,
+    detector::PairScanResult, DriftDetector, DriftDetectorError, DriftItem, DriftKind, PairRegistry,
+    PairRegistryError, Severity,
+};
+use elai_orchestrator::ssb::{
+    CrossLangDriftDetectedPayload, CrossLangPairScannedPayload, SchemaVersionMismatchPayload,
+    Ssb, SsbConfig, SsbPayload,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::args::{CliOutputFormat, DriftAction};
+
+/// Session id used for SSB beacon writes in this CLI path.
+const CLI_SESSION_ID: &str = "cli:drift";
+/// Project id stamped on the SSB rows emitted by `elai drift`.
+const CLI_PROJECT_ID: &str = "elai-drift";
 
 /// Top-level dispatcher invoked by `main.rs`.
 pub(crate) fn run(action: DriftAction, output_format: CliOutputFormat) -> Result<(), String> {
@@ -83,7 +95,9 @@ fn resolve_repo_root() -> PathBuf {
     cwd
 }
 
-fn build_report(repo_root: &Path) -> Result<DetectReport, DriftCliError> {
+fn build_report(
+    repo_root: &Path,
+) -> Result<(DetectReport, Vec<PairScanResult>), DriftCliError> {
     let registry = PairRegistry::load(repo_root)?;
     let detector = DriftDetector::new(&registry)?;
     let scan = detector.detect_pairs(repo_root)?;
@@ -94,7 +108,7 @@ fn build_report(repo_root: &Path) -> Result<DetectReport, DriftCliError> {
     let mut total = 0u32;
     let mut rows = Vec::with_capacity(scan.len());
 
-    for result in scan {
+    for result in scan.iter() {
         let drift_count = result.drift_items.len() as u32;
         total = total.saturating_add(drift_count);
         let mut sev_max: u8 = 0;
@@ -126,14 +140,17 @@ fn build_report(repo_root: &Path) -> Result<DetectReport, DriftCliError> {
         });
     }
 
-    Ok(DetectReport {
-        pair_count: rows.len() as u32,
-        drift_total: total,
-        critical_count: critical,
-        warning_count: warning,
-        info_count: info,
-        pairs: rows,
-    })
+    Ok((
+        DetectReport {
+            pair_count: rows.len() as u32,
+            drift_total: total,
+            critical_count: critical,
+            warning_count: warning,
+            info_count: info,
+            pairs: rows,
+        },
+        scan,
+    ))
 }
 
 fn drift_kind_label(kind: &DriftKind) -> &'static str {
@@ -166,13 +183,143 @@ fn drift_kind_detail(kind: &DriftKind) -> String {
     }
 }
 
+/// blake3 8-byte LE u64 prefix of arbitrary bytes (matches the
+/// `workspace_root_hash` pattern in `dkg_lifecycle.rs:214-218`).
+fn blake3_prefix(bytes: &[u8]) -> u64 {
+    let digest = blake3::hash(bytes);
+    let h = digest.as_bytes();
+    u64::from_le_bytes([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]])
+}
+
+/// Stable hash of the repo root path string. Used as `repo_root_hash`
+/// on `CrossLangPairScannedPayload` so dashboards can group scans by
+/// workspace without leaking absolute paths into SSB.
+fn repo_root_hash(repo_root: &Path) -> u64 {
+    blake3_prefix(repo_root.to_string_lossy().as_bytes())
+}
+
+/// Stable hash of a pair name (e.g. "sidecar_orchestrator_schemas").
+/// Used as `pair_kind_hash` on `CrossLangDriftDetectedPayload`.
+fn pair_kind_hash(pair_name: &str) -> u64 {
+    blake3_prefix(pair_name.as_bytes())
+}
+
+/// Open an SSB writer for the project root. Returns `None` (not an error)
+/// when the sessions directory cannot be created or SSB fails to open —
+/// callers that emit beacons warn and continue; drift detection itself
+/// must succeed even without SSB. Mirrors `memory_cmd.rs:open_ssb_optional`.
+fn open_ssb_optional(project_root: &Path) -> Option<Arc<Ssb>> {
+    let sessions_dir = sessions_dir_path(project_root);
+    let parent = sessions_dir.parent()?;
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        tracing::warn!(error = %e, "drift_cmd: cannot create sessions dir");
+        return None;
+    }
+    let db_path = sessions_dir.join("ssb.db");
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: CLI_PROJECT_ID.to_string(),
+        session_id: CLI_SESSION_ID.to_string(),
+    };
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+    match Ssb::new(cfg, clock) {
+        Ok(ssb) => Some(Arc::new(ssb)),
+        Err(e) => {
+            tracing::warn!(error = %e, "drift_cmd: cannot open SSB writer");
+            None
+        }
+    }
+}
+
+/// Emit the three E-45 SSB beacon types for a completed scan. Non-fatal:
+/// warns on any SSB failure so drift detection never rolls back due to
+/// beacon loss. Called once per `run_detect` / `run_baseline` walk.
+async fn emit_drift_beacons(
+    ssb: &Option<Arc<Ssb>>,
+    repo_root: &Path,
+    report: &DetectReport,
+    scan: &[PairScanResult],
+) {
+    let Some(ssb) = ssb else {
+        tracing::warn!("drift_cmd: SSB unavailable; drift beacons not emitted");
+        return;
+    };
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+    let now_ms = Ssb::now_ms_via_clock(&clock) as u64;
+    let root_hash = repo_root_hash(repo_root);
+
+    // (1) CrossLangPairScanned — once per walk.
+    let scanned = SsbPayload::CrossLangPairScanned(CrossLangPairScannedPayload {
+        repo_root_hash: root_hash,
+        pair_count: report.pair_count,
+        ts_ms: now_ms,
+    });
+    if let Err(e) = ssb.write_payload("cli.drift", 0, scanned, vec![]).await {
+        tracing::warn!(error = %e, "drift_cmd: CrossLangPairScanned beacon failed");
+    }
+
+    // (2) CrossLangDriftDetected — once per pair with drift_count >= 1.
+    // (3) SchemaVersionMismatch — once per drift item of that kind.
+    for result in scan.iter() {
+        let drift_count = result.drift_items.len() as u32;
+        if drift_count == 0 {
+            continue;
+        }
+        let pair_name = result.pair.kind.wire_tag();
+        let mut sev_max: u8 = 0;
+        for item in &result.drift_items {
+            let s = item.severity.as_u8();
+            if s > sev_max {
+                sev_max = s;
+            }
+        }
+        let detected = SsbPayload::CrossLangDriftDetected(CrossLangDriftDetectedPayload {
+            pair_kind_hash: pair_kind_hash(pair_name),
+            drift_count,
+            severity_max: sev_max,
+            ts_ms: now_ms,
+        });
+        if let Err(e) = ssb.write_payload("cli.drift", 0, detected, vec![]).await {
+            tracing::warn!(error = %e, pair = pair_name, "drift_cmd: CrossLangDriftDetected beacon failed");
+        }
+        for item in &result.drift_items {
+            if let DriftKind::SchemaVersionMismatch {
+                rust_version,
+                mirror_version,
+            } = &item.kind
+            {
+                let mismatch = SsbPayload::SchemaVersionMismatch(SchemaVersionMismatchPayload {
+                    rust_schema: *rust_version,
+                    python_schema: *mirror_version,
+                    ts_ms: now_ms,
+                });
+                if let Err(e) = ssb.write_payload("cli.drift", 0, mismatch, vec![]).await {
+                    tracing::warn!(error = %e, pair = pair_name, "drift_cmd: SchemaVersionMismatch beacon failed");
+                }
+            }
+        }
+    }
+}
+
 fn run_detect(json: bool, output_format: CliOutputFormat) -> Result<(), String> {
     let repo_root = resolve_repo_root();
-    let report = build_report(&repo_root).map_err(|e| format!("drift detect failed: {e}"))?;
+    let (report, scan) =
+        build_report(&repo_root).map_err(|e| format!("drift detect failed: {e}"))?;
 
     // E-45: DriftDetector::detect_pairs is the load-bearing call surface;
     // the assignment above is the canonical caller that anchors the
     // module out of WIRE-DARK status per E-41 precedent.
+
+    // SSB beacons: non-fatal. Ssb::new spawns a single-writer task and
+    // MUST be constructed inside a tokio runtime (see memory_cmd /
+    // safety_cmd comments).
+    let ssb = open_ssb_optional(&repo_root);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("drift detect: tokio runtime build failed: {e}"))?;
+    rt.block_on(emit_drift_beacons(&ssb, &repo_root, &report, &scan));
 
     if json {
         let txt = serde_json::to_string_pretty(&report)
@@ -260,8 +407,16 @@ struct BaselineReport {
 
 fn run_baseline(commit: &str, output_format: CliOutputFormat) -> Result<(), String> {
     let repo_root = resolve_repo_root();
-    let report =
+    let (report, scan) =
         build_report(&repo_root).map_err(|e| format!("drift baseline failed: {e}"))?;
+
+    // SSB beacons share the same emit path as `run_detect`.
+    let ssb = open_ssb_optional(&repo_root);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("drift baseline: tokio runtime build failed: {e}"))?;
+    rt.block_on(emit_drift_beacons(&ssb, &repo_root, &report, &scan));
 
     let baseline_path = repo_root
         .join("workflow")
@@ -282,8 +437,20 @@ fn run_baseline(commit: &str, output_format: CliOutputFormat) -> Result<(), Stri
         })?;
         parsed.drift_total
     } else {
-        // First run for this commit: treat current as the baseline.
-        0
+        // First run for this commit: seed the baseline file with the
+        // current report so the first run is not a regression against 0.
+        if let Some(parent) = baseline_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(error = %e, "drift_cmd: cannot create baseline parent dir");
+            } else {
+                let pretty = serde_json::to_string_pretty(&report)
+                    .map_err(|e| format!("baseline seed serialize failed: {e}"))?;
+                if let Err(e) = std::fs::write(&baseline_path, pretty) {
+                    tracing::warn!(error = %e, "drift_cmd: cannot write baseline seed file");
+                }
+            }
+        }
+        report.drift_total
     };
 
     let baseline_report = BaselineReport {
