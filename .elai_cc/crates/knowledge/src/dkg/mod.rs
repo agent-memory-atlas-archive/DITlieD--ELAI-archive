@@ -302,7 +302,8 @@ impl DkgEngine {
         // Tier-B (scala/swift/php/bash) is registered flat for backwards
         // compatibility with the pre-tier split; the experimental_grammars
         // feature gate inside the helper keeps it a no-op unless opted in.
-        let _ = crate::tree_sitter_health::registration::register_tier_b_languages(&mut registry);
+        let tier_b_outcome =
+            crate::tree_sitter_health::registration::register_tier_b_languages(&mut registry);
 
         let status = registry.status();
         tracing::info!(
@@ -312,6 +313,17 @@ impl DkgEngine {
             status.loaded.len(),
             status.loaded.len() + status.failed.len()
         );
+
+        if crate::tree_sitter_health::is_enabled() {
+            use crate::knowledge_ssb_sink::{TreeSitterGrammarEvent, TreeSitterGrammarEventKind};
+            for lang_id in &tier_b_outcome.registered {
+                sink.emit_tree_sitter_grammar_event(TreeSitterGrammarEvent {
+                    kind: TreeSitterGrammarEventKind::TierBGrammarLoaded,
+                    language_id: Some(lang_id.clone()),
+                    detail: Some("may emit ERROR nodes".to_owned()),
+                });
+            }
+        }
 
         Ok(Self {
             conn,
