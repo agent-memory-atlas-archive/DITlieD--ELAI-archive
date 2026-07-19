@@ -44,7 +44,7 @@ use elai_core::paths::cache_dir_path;
 
 use crate::ssb::{
     CompiledPipelineFiredPayload, DecompileTriggeredPayload, DecompileTriggerReason,
-    Ssb, SsbPayload, TemplateCrystallizedPayload,
+    ReproPackKind, ReproPackPayload, Ssb, SsbPayload, TemplateCrystallizedPayload,
 };
 use crate::template_utility::laplace_utility_from_fields;
 
@@ -209,6 +209,15 @@ pub struct CompiledPipeline {
     pub use_count: u32,
     pub first_try_success_rate: f32,
     pub compilation_eligible: bool,
+    /// J-14 RIDER: blake3 16-hex fingerprint over the ordered tool sequence
+    /// (step_index + template_prompt + l1_tool_only) sealed at
+    /// crystallization time. `None` on pipelines serialized before J-14
+    /// (serde default) and on test fixtures that don't exercise the
+    /// mismatch path. The executor recomputes this from `steps` on every
+    /// HIT and emits `ReproPackKind::FlowFingerprintMismatch` + falls
+    /// through to `Decompile` on a mismatch.
+    #[serde(default)]
+    pub flow_fingerprint: Option<String>,
 }
 
 impl CompiledPipeline {
@@ -268,6 +277,28 @@ pub fn stable_plan_skeleton_hash(concept_class: &str, step_prompts: &[&str]) -> 
         Err(_) => [0; 8],
     };
     u64::from_le_bytes(id_bytes)
+}
+
+/// J-14 RIDER: blake3 16-hex flow fingerprint over the ordered tool
+/// sequence carried by `steps`. The canonical sequence bytes are
+/// `step_index || template_prompt || l1_tool_only` per step, framed by a
+/// length prefix so step reordering is detected. The fingerprint is
+/// stable across rustc versions (blake3, not DefaultHasher) and matches
+/// the RRA `truncate_hex` 16-char convention used elsewhere in the tree.
+#[must_use]
+pub fn flow_fingerprint_of(steps: &[CompiledStep]) -> String {
+    let mut h = Hasher::new();
+    h.update(b"\x00flow_fingerprint\x00");
+    for (i, s) in steps.iter().enumerate() {
+        h.update(&u32::try_from(i).unwrap_or(u32::MAX).to_le_bytes());
+        h.update(&[s.step_index]);
+        h.update(&s.template_prompt.as_bytes());
+        h.update(b"\x00");
+        h.update(&[u8::from(s.l1_tool_only)]);
+        h.update(b"\x00");
+    }
+    let hex = h.finalize().to_hex();
+    hex.as_str().chars().take(16).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +403,7 @@ impl TemplateCrystallizer {
         if !compilation_eligible {
             return None;
         }
+        let fingerprint = flow_fingerprint_of(&steps);
         let pipeline = CompiledPipeline {
             pipeline_id: Uuid::new_v4(), // entropy-allow: fresh-uuid-per-crystallization-cache-key-is-plan-skeleton-hash-not-this
             concept_class: concept_class.to_string(),
@@ -382,6 +414,7 @@ impl TemplateCrystallizer {
             use_count,
             first_try_success_rate,
             compilation_eligible,
+            flow_fingerprint: Some(fingerprint),
         };
         // Emit the SSB row (best-effort — log + continue on failure).
         if let Some(ssb) = self.ssb_tx.as_ref() {
@@ -536,6 +569,26 @@ impl CompiledExecutor {
             return Err(CompiledExecutorError::Decompile(key.0, key.1));
         }
         let mut pipeline_clone = pipeline.clone();
+        // J-14 RIDER: recompute the flow fingerprint from the live step
+        // sequence and compare against the sealed value. A mismatch means
+        // the crystallized template's tool flow has drifted (step list
+        // perturbed after sealing); emit a ReproPackEvent and fall through
+        // to Decompile so the caller re-enters the LLM path.
+        let actual_fp = flow_fingerprint_of(&pipeline_clone.steps);
+        if let Some(expected_fp) = pipeline_clone.flow_fingerprint.as_ref() {
+            if expected_fp.as_str() != actual_fp.as_str() {
+                let template_hash = format!("{:016x}", pipeline_clone.plan_skeleton_hash);
+                drop(cache);
+                self.emit_flow_fingerprint_mismatch(
+                    &key,
+                    &template_hash,
+                    expected_fp,
+                    &actual_fp,
+                )
+                .await;
+                return Err(CompiledExecutorError::Decompile(key.0, key.1));
+            }
+        }
         // Bump use_count + last_used_at on every successful HIT.
         pipeline_clone.use_count = pipeline_clone.use_count.saturating_add(1);
         // Emit compiled_pipeline_fired SSB row. Best-effort.
@@ -630,6 +683,59 @@ impl CompiledExecutor {
                 tracing::warn!(
                     error = %e,
                     "compiled_executor: decompile SSB write failed (non-fatal)"
+                );
+            }
+        }
+    }
+
+    /// J-14 RIDER: emit a `ReproPackEvent(FlowFingerprintMismatch)` SSB
+    /// row when a cached pipeline's sealed `flow_fingerprint` no longer
+    /// matches the live step sequence. Best-effort (warn + continue on
+    /// SSB write failure). `session_id` is empty because the executor
+    /// does not carry a session handle; downstream consumers correlate
+    /// via `template_hash` + `expected_sequence_hash`.
+    async fn emit_flow_fingerprint_mismatch(
+        &self,
+        key: &(String, u64),
+        template_hash: &str,
+        expected_sequence_hash: &str,
+        actual_sequence_hash: &str,
+    ) {
+        if let Some(ssb) = self.ssb_tx.as_ref() {
+            let ts_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+                .unwrap_or(0);
+            let payload = SsbPayload::ReproPackEvent(ReproPackPayload {
+                kind: ReproPackKind::FlowFingerprintMismatch,
+                tier_effective: None,
+                tier_requested: None,
+                downgrades: Vec::new(),
+                divergence_position: None,
+                expected_value: None,
+                actual_value: None,
+                template_hash: Some(template_hash.to_string()),
+                expected_sequence_hash: Some(expected_sequence_hash.to_string()),
+                actual_sequence_hash: Some(actual_sequence_hash.to_string()),
+                fixture_path: None,
+                fixture_blake3: None,
+                session_id: String::new(),
+                ts_ms,
+            });
+            if let Err(e) = ssb
+                .write_payload(
+                    "compiled_executor",
+                    0,
+                    payload,
+                    Vec::new(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    concept_class = %key.0,
+                    plan_skeleton_hash = key.1,
+                    "compiled_executor: flow_fingerprint_mismatch SSB write failed (non-fatal)"
                 );
             }
         }
@@ -932,6 +1038,7 @@ mod tests {
             use_count: 3,
             first_try_success_rate: 0.9,
             compilation_eligible: true,
+            flow_fingerprint: None,
         };
         {
             let mut cache = exec.pipeline_cache.write().await;
@@ -958,6 +1065,7 @@ mod tests {
             use_count: 3,
             first_try_success_rate: 0.5, // < 0.7 threshold
             compilation_eligible: true,
+            flow_fingerprint: None,
         };
         {
             let mut cache = exec.pipeline_cache.write().await;
@@ -980,6 +1088,7 @@ mod tests {
             use_count: 3,
             first_try_success_rate: 0.95, // high enough
             compilation_eligible: true,
+            flow_fingerprint: None,
         };
         {
             let mut cache = exec.pipeline_cache.write().await;
@@ -1031,6 +1140,7 @@ mod tests {
             use_count: 3,
             first_try_success_rate: 0.95,
             compilation_eligible: true,
+            flow_fingerprint: None,
         };
         store.upsert(pipeline.clone(), 100);
         store.persist_to_disk().expect("persist");
@@ -1061,6 +1171,7 @@ mod tests {
             use_count: 3,
             first_try_success_rate: 0.95,
             compilation_eligible: true,
+            flow_fingerprint: None,
         };
         store.upsert(old_pipeline, 0);
         let new_pipeline = CompiledPipeline {
@@ -1073,10 +1184,99 @@ mod tests {
             use_count: 3,
             first_try_success_rate: 0.95,
             compilation_eligible: true,
+            flow_fingerprint: None,
         };
         // 100 - 10 = 90 cutoff -> old (last_used_at=0) evicted.
         store.upsert(new_pipeline, 100);
         assert_eq!(store.entries().len(), 1);
         assert!(store.entries().contains_key(&("New".to_string(), 2)));
+    }
+
+    #[tokio::test]
+    async fn compiled_executor_flow_fingerprint_mismatch_emits_and_decompiles() {
+        // J-14 RIDER: a cached pipeline with a sealed flow_fingerprint that
+        // no longer matches the live step sequence must return Decompile
+        // (not the pipeline). The SSB emit is best-effort and unwired here
+        // (ssb_tx = None); the Decompile return is the load-bearing assert.
+        let exec = CompiledExecutor::new(None);
+        let steps = vec![step(0, "probe", 0, true)];
+        let sealed = flow_fingerprint_of(&steps);
+        // Mutate the stored steps AFTER sealing so the re-derived
+        // fingerprint differs. A single-char prompt change is enough.
+        let mut perturbed = steps.clone();
+        perturbed[0].template_prompt = "probe_X".to_string();
+        let perturbed_fp = flow_fingerprint_of(&perturbed);
+        assert_ne!(
+            sealed, perturbed_fp,
+            "test precondition: perturbed steps must yield a different fingerprint"
+        );
+        let pipeline = CompiledPipeline {
+            pipeline_id: Uuid::new_v4(), // entropy-allow: test-fixture-id-compared-by-reference-not-byte-value
+            concept_class: "K".into(),
+            plan_skeleton_hash: 1,
+            steps: perturbed,
+            created_at: 0,
+            last_used_at: 0,
+            use_count: 3,
+            first_try_success_rate: 0.95,
+            compilation_eligible: true,
+            flow_fingerprint: Some(sealed),
+        };
+        {
+            let mut cache = exec.pipeline_cache.write().await;
+            cache.insert(("K".into(), 1), pipeline);
+        }
+        let r = exec.try_execute("K", 1).await;
+        assert!(
+            matches!(r, Err(CompiledExecutorError::Decompile(..))),
+            "fingerprint mismatch must decompile, got {r:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compiled_executor_flow_fingerprint_match_returns_hit() {
+        // J-14 RIDER: when the sealed fingerprint matches the live steps,
+        // the executor must still return Ok (regression guard against the
+        // mismatch path firing on matching fingerprints).
+        let exec = CompiledExecutor::new(None);
+        let steps = vec![step(0, "probe", 0, true)];
+        let sealed = flow_fingerprint_of(&steps);
+        let pipeline = CompiledPipeline {
+            pipeline_id: Uuid::new_v4(), // entropy-allow: test-fixture-id-compared-by-reference-not-byte-value
+            concept_class: "K".into(),
+            plan_skeleton_hash: 1,
+            steps,
+            created_at: 0,
+            last_used_at: 0,
+            use_count: 3,
+            first_try_success_rate: 0.95,
+            compilation_eligible: true,
+            flow_fingerprint: Some(sealed),
+        };
+        {
+            let mut cache = exec.pipeline_cache.write().await;
+            cache.insert(("K".into(), 1), pipeline);
+        }
+        let r = exec.try_execute("K", 1).await;
+        assert!(r.is_ok(), "matching fingerprint must hit, got {r:?}");
+    }
+
+    #[test]
+    fn flow_fingerprint_is_deterministic_and_order_sensitive() {
+        let s_a = step(0, "alpha", 0, true);
+        let s_b = step(1, "beta", 0, true);
+        let fp1 = flow_fingerprint_of(&[s_a.clone(), s_b.clone()]);
+        let fp2 = flow_fingerprint_of(&[s_a.clone(), s_b.clone()]);
+        assert_eq!(fp1, fp2, "same steps must yield same fingerprint");
+        assert_eq!(fp1.len(), 16, "fingerprint must be 16 hex chars");
+        // Reordering changes the fingerprint (step_index is part of the
+        // canonical bytes AND the enumerate frame).
+        let fp_rev = flow_fingerprint_of(&[s_b, s_a.clone()]);
+        assert_ne!(fp1, fp_rev, "reordered steps must yield different fingerprint");
+        // Prompt change changes the fingerprint.
+        let mut s_a_mut = s_a.clone();
+        s_a_mut.template_prompt = "alpha_X".to_string();
+        let fp_prompt = flow_fingerprint_of(&[s_a_mut, step(1, "beta", 0, true)]);
+        assert_ne!(fp1, fp_prompt, "prompt change must yield different fingerprint");
     }
 }
