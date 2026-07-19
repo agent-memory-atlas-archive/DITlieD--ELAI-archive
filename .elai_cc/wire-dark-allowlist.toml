@@ -2157,3 +2157,16 @@ owner             = maintainer
 expiry_date       = 2027-06-01
 promotion_plan_id = J-1-promotion
 smoke_test        = crates/contracts/tests/j1_perception_gateway_contract.rs::target_model_sweet_spot_edges_pinned
+# J-13: ELAI_LOCAL_TOKEN_DETERMINISM gates local-lane token-determinism
+# (batch_invariant_ops + SeededGumbelProcessor). Default-OFF until GD-4
+# overhead bound is measured (item 5 / R-f in J-13 plan). Promotion via J-13
+# follow-up or J-14 verify upgrade. The smoke_test is an OFFLINE fixture that
+# exercises the seeded Gumbel / batch-invariant request shapes without a live
+# GPU (live DeterminismProbeRun remains GPU-PAUSED-BY-OWNER per W-10).
+[[flag]]
+name              = "ELAI_LOCAL_TOKEN_DETERMINISM"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "J-13"
+smoke_test        = "python/elai_inference/test_seeded_gumbel_processor.py"

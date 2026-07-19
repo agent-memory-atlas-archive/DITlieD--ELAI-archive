@@ -129,3 +129,12 @@ plan        = "SP-3B"
 entrypoint  = "cargo test -p elai-tools --test gpt55_proxy_live_smoke -- --ignored (ELAI_PROVIDER_LIVE_SMOKE=1; drives elai_tools::execute_tool(\"Agent\", ..))"
 expect_ssb  = "prompt_hardening_applied"
 flag_default = "on"
+# J-13: local-lane token determinism — batch-invariant ops + seeded sampling.
+# OFFLINE fixture runs the ON-path without live GPU. Live
+# DeterminismProbeRun (two consecutive elai run --local --emit-rra against the
+# remote sidecar) is GPU-PAUSED-BY-OWNER per W-10.
+[[feature]]
+plan        = "J-13"
+entrypoint  = "pytest python/elai_inference/test_seeded_gumbel_processor.py (ELAI_LOCAL_TOKEN_DETERMINISM=1)"
+expect_ssb  = "local_determinism_event"
+flag_default = "off"
