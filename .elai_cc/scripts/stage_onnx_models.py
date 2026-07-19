@@ -2,10 +2,16 @@
 
 Usage: python stage_onnx_models.py [--force] [--only MODEL,...] [--models-root PATH]
                                     [--skip-graphcodebert-export]
+                                    [--skip-coderankembed-export]
                                     [--skip-models] [--vram-tier {8,12,16,24,48,cloud}]
                                     [--manifest-out PATH]
-Models: graphcodebert, granite, cross-encoder-l12, cross-encoder-l6, splade,
-        bge-reranker-v2-m3, sidecar-3b, sidecar-7b
+Models: graphcodebert, coderankembed, granite, cross-encoder-l12, cross-encoder-l6,
+        splade, bge-reranker-v2-m3, sidecar-3b, sidecar-7b
+
+coderankembed is exported from nomic-ai/CodeRankEmbed via optimum on CPU, then
+INT8-quantized via onnxruntime.quantization (QDQ, per-channel, CPU-only). The
+final staged file is the INT8 model at models/onnx/coderankembed.onnx. The
+unofficial community quant mrsladoje/CodeRankEmbed-onnx-int8 is NOT used.
 """
 import argparse
 import os
@@ -32,6 +38,19 @@ MODELS: dict = {
         method="export", hf_repo="microsoft/graphcodebert-base",
         onnx_file=None, tok_file=None, task="feature-extraction",
         expected_last_dim=768, optional=False),
+    # J-18 S5: CodeRankEmbed — exported from official nomic-ai source on CPU
+    # via optimum, then INT8-quantized via onnxruntime.quantization (QDQ,
+    # per-channel). Final staged file is the INT8 model. The unofficial
+    # community quant mrsladoje/CodeRankEmbed-onnx-int8 is NOT used
+    # (anti-slopsquatting: plan J-18_p1). Dim=768 matches the existing
+    # HNSW slot (CODE_VEC_DIM=768); no usearch geometry change.
+    "coderankembed": dict(
+        onnx=lambda r: r/"onnx"/"coderankembed.onnx",
+        tok=lambda r:  r/"onnx"/"coderankembed-tokenizer.json",
+        method="export", hf_repo="nomic-ai/CodeRankEmbed",
+        onnx_file=None, tok_file=None, task="feature-extraction",
+        expected_last_dim=768, optional=False,
+        int8=True),
     "granite": dict(
         onnx=lambda r: r/"onnx"/"granite-embed.onnx",
         tok=lambda r:  r/"onnx"/"granite-embed-tokenizer.json",
@@ -121,6 +140,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--only", default="")
     p.add_argument("--models-root", default="")
     p.add_argument("--skip-graphcodebert-export", action="store_true")
+    p.add_argument("--skip-coderankembed-export", action="store_true")
     p.add_argument("--skip-models", action="store_true",
                    help="bypass all recipe execution + manifest authoring "
                         "(CI / corp-firewall / docker-build mode)")
@@ -250,8 +270,10 @@ def download_tokenizer(repo_id: str, target_path: Path,
 
 
 def export_onnx_with_optimum(repo_id: str, task: str,
-                              target_dir: Path, target_filename: str) -> None:
+                              target_dir: Path, target_filename: str,
+                              int8: bool = False) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
+    tok_name = (Path(target_filename).stem + "-tokenizer.json")
     with tempfile.TemporaryDirectory() as tmp:
         cmd = [sys.executable, "-m", "optimum.exporters.onnx",
                "--model", repo_id, "--task", task, "--device", "cpu", tmp]
@@ -265,10 +287,22 @@ def export_onnx_with_optimum(repo_id: str, task: str,
             if not cands:
                 raise RuntimeError(f"no .onnx found in {tmp}")
             src = cands[0]
+        if int8:
+            int8_path = Path(tmp) / "model_int8.onnx"
+            qcmd = [sys.executable, "-m", "onnxruntime.quantization.quantize",
+                    "--input", str(src), "--output", str(int8_path),
+                    "--quant_format", "QDQ", "--per_channel"]
+            print(f"  [quantize] {' '.join(qcmd)}")
+            q = subprocess.run(qcmd, capture_output=False, text=True, timeout=900)
+            if q.returncode != 0:
+                raise RuntimeError(f"onnxruntime quantize rc={q.returncode}")
+            if not int8_path.exists():
+                raise RuntimeError(f"INT8 quantize produced no file at {int8_path}")
+            src = int8_path
         shutil.copy2(src, target_dir / target_filename)
         tok_src = Path(tmp) / "tokenizer.json"
         if tok_src.exists():
-            shutil.copy2(tok_src, target_dir / "graphcodebert-tokenizer.json")
+            shutil.copy2(tok_src, target_dir / tok_name)
 
 
 def verify_onnx_loadable(onnx_path: Path,
@@ -333,7 +367,8 @@ def stage_sidecar(name: str, models_root: Path, force: bool,
 
 
 def stage_model(name: str, models_root: Path, force: bool,
-                hf_token: str | None, skip_gcb_export: bool) -> StageResult:
+                hf_token: str | None, skip_gcb_export: bool,
+                skip_cre_export: bool = False) -> StageResult:
     cfg = MODELS[name]
     if cfg.get("method") == "hf_snapshot":
         return stage_sidecar(name, models_root, force, hf_token)
@@ -363,9 +398,12 @@ def stage_model(name: str, models_root: Path, force: bool,
 
     try:
         if cfg["method"] == "export":
-            if skip_gcb_export:
+            if name == "graphcodebert" and skip_gcb_export:
                 return StageResult(name, "SKIP", reason="--skip-graphcodebert-export")
-            export_onnx_with_optimum(cfg["hf_repo"], cfg["task"], onnx_p.parent, onnx_p.name)
+            if name == "coderankembed" and skip_cre_export:
+                return StageResult(name, "SKIP", reason="--skip-coderankembed-export")
+            export_onnx_with_optimum(cfg["hf_repo"], cfg["task"], onnx_p.parent, onnx_p.name,
+                                     int8=cfg.get("int8", False))
         else:
             if needs_onnx(onnx_p):
                 print(f"  [dl] {name} onnx {cfg['hf_repo']}/{cfg['onnx_file']}")
@@ -466,7 +504,8 @@ def main() -> int:
     results: list[StageResult] = []
     for name in selected:
         print(f"\n--- {name} ---")
-        r = stage_model(name, models_root, args.force, hf_token, args.skip_graphcodebert_export)
+        r = stage_model(name, models_root, args.force, hf_token,
+                        args.skip_graphcodebert_export, args.skip_coderankembed_export)
         results.append(r)
         print(f"  {r.status}: {name}"
               + (f" | size={r.onnx_size_mb:.1f} MB" if r.onnx_size_mb else "")
