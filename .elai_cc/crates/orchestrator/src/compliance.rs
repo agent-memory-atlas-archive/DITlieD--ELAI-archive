@@ -46,11 +46,219 @@
 //!
 //! See `workflow/reasoning/E-38-decisions.md`.
 
+use std::sync::Arc;
+
 use crate::ssb::{
     AiRoadmapSignalEventPayload, COMPLIANCE_BIT_AUDIT_TRAIL_LIVE,
     COMPLIANCE_BIT_CLOCK_PROVIDER, COMPLIANCE_BIT_DETERMINISTIC_SEED,
-    COMPLIANCE_BIT_TEMPLATE_HASH_CHAIN, RoadmapSignalKind,
+    COMPLIANCE_BIT_TEMPLATE_HASH_CHAIN, RoadmapSignalKind, Ssb, SsbActionType,
 };
+use crate::ssb_viewer::SsbViewer;
+
+/// Env-gate flag controlling whether the EU AI Act compliance pre-gate
+/// (installed via [`crate::fsm::Fsm::set_compliance_provider`] +
+/// [`DefaultComplianceProvider`]) actually runs its 4 assertions. When
+/// unset (default), [`DefaultComplianceProvider::verdict`] short-circuits
+/// to `Pass { assertions_checked: 0 }` so the CLI is not bricked. When
+/// set to `"1"`, the provider builds a [`PlanContext`] from live
+/// orchestrator state + the SSB row count + the
+/// `ELAI_DETERMINISTIC_SEED` env probe, then calls
+/// [`pre_gate_planning_to_testing_first`]. This mirrors the C-28
+/// `ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE` default-OFF pattern
+/// (wire-dark-allowlist.toml). The SSB emission leg is independently
+/// gated by `ELAI_AI_ROADMAP_SIGNALS_ENABLE` (see
+/// [`crate::roadmap_signals::roadmap_signals_enabled`]).
+pub const ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE_ENV: &str =
+    "ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE";
+
+/// Env var probed by [`DefaultComplianceProvider`] for the
+/// [`PlanContext::has_deterministic_seed`] field. Until C-27 T-1 ships
+/// seed-propagation infrastructure, this is the sole source. When unset,
+/// `has_deterministic_seed = false` and the gate blocks on
+/// [`ComplianceAssertion::DeterministicSeed`] (when the gate is opted in).
+pub const ELAI_DETERMINISTIC_SEED_ENV: &str = "ELAI_DETERMINISTIC_SEED";
+
+/// E-38 -- production [`crate::fsm::ComplianceProvider`] installed by
+/// `maybe_install_compliance_provider` in the CLI at all three `Fsm::new`
+/// construction sites. Builds a [`PlanContext`] from process state + the
+/// SSB row count at verdict time, then delegates to
+/// [`pre_gate_planning_to_testing_first`].
+///
+/// Soft opt-in: when
+/// `ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE` is not `"1"`, `verdict()`
+/// returns `Pass { assertions_checked: 0 }` immediately so the CLI is
+/// not bricked by default (mirrors the C-28 default-OFF pattern). When
+/// opted in, the gate runs unconditionally on every
+/// `PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST` transition; the SSB
+/// emission leg is separately gated by
+/// `ELAI_AI_ROADMAP_SIGNALS_ENABLE`.
+///
+/// Fields populated per plan Open Question 1 + the controller-pinned
+/// decisions for E-38 Task-2 residual:
+///   * `plan_session_id` -- captured at install time from the CLI's
+///     session id (the FSM `phase_label` is empty at boot; the SSB
+///     payload's `plan_session_id` is reconstructed by the fsm.rs
+///     emission path from `guard.phase_label` at transition time, so
+///     this field is a best-effort label for the provider's own
+///     PlanContext).
+///   * `has_clock_provider` -- always `true` (C-15 ClockProvider shipped;
+///     the orchestrator always injects `OsClock` at
+///     `live_cli.rs:789`). Liveness check, not a failure path in
+///     production.
+///   * `has_deterministic_seed` -- probed from `ELAI_DETERMINISTIC_SEED`
+///     env at verdict time. `false` until C-27 T-1 ships.
+///   * `template_hash_chain_verified` -- `false` (D-1 not shipped).
+///   * `template_archive_present` -- `false` (D-1 not shipped) ->
+///     TemplateHashChain degrades to `Skipped` per plan Open Question 1.
+///   * `ssb_row_count_in_planning_phase` -- best-effort count of
+///     `PhaseTransition` rows in the SSB at verdict time; falls back to
+///     `0` (which blocks on `AuditTrailLive` when the gate is opted in)
+///     on any viewer / decode error. The FSM emits a PhaseTransition row
+///     on every successful transition, so this is `>= 1` after the
+///     IDLE -> PLANNING transition.
+pub struct DefaultComplianceProvider {
+    plan_session_id: String,
+    ssb: Arc<Ssb>,
+    /// When `Some(enabled)`, bypass the
+    /// `ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE` env probe and use the
+    /// explicit flag. Used by on-path tests that cannot tolerate the
+    /// process-wide env probe racing across parallel `#[tokio::test]`
+    /// cases in the same binary. Production callers use `new()` which
+    /// leaves this `None` so the env probe stays the source of truth.
+    force_enabled: Option<bool>,
+}
+
+impl std::fmt::Debug for DefaultComplianceProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultComplianceProvider")
+            .field("plan_session_id", &self.plan_session_id)
+            .field("ssb", &"<Ssb>")
+            .field("force_enabled", &self.force_enabled)
+            .finish()
+    }
+}
+
+impl DefaultComplianceProvider {
+    /// Construct a new provider. `plan_session_id` is the CLI session id
+    /// at boot (the FSM `phase_label` is empty at install time; the SSB
+    /// payload uses the live `guard.phase_label` at transition time, so
+    /// this is a best-effort label for the provider's own PlanContext).
+    /// `ssb` is the Ssb writer handle (the provider opens a read-only
+    /// [`SsbViewer`] on `ssb.db_path()` at verdict time to count
+    /// PhaseTransition rows). The gate opt-in is read from
+    /// `ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE` at verdict time (the
+    /// production path).
+    #[must_use]
+    pub fn new(plan_session_id: impl Into<String>, ssb: Arc<Ssb>) -> Self {
+        Self {
+            plan_session_id: plan_session_id.into(),
+            ssb,
+            force_enabled: None,
+        }
+    }
+
+    /// Construct a provider with an explicit `enabled` flag that bypasses
+    /// the `ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE` env probe at verdict
+    /// time. Used by on-path tests that run in parallel in the same test
+    /// binary and cannot tolerate the process-wide env probe racing
+    /// between `set_var("1")` in one test and `remove_var` in another.
+    /// Production callers MUST use [`Self::new`] so the env probe stays
+    /// the source of truth.
+    // WIRE-DARK[E-38]: test-only seam (race-free parallel #[tokio::test]); no production caller by design.
+    #[must_use]
+    pub fn with_gate_enabled(
+        plan_session_id: impl Into<String>,
+        ssb: Arc<Ssb>,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            plan_session_id: plan_session_id.into(),
+            ssb,
+            force_enabled: Some(enabled),
+        }
+    }
+
+    /// Best-effort count of `PhaseTransition` rows in the SSB. Returns
+    /// `0` on any viewer / decode error (fail-closed: the gate blocks on
+    /// `AuditTrailLive` when the count is below
+    /// [`AUDIT_TRAIL_MIN_SSB_ROWS`]). The viewer is opened read-only on
+    /// each call; the Ssb writer is NOT blocked (read-only connection
+    /// with `SQLITE_OPEN_READ_ONLY`).
+    fn ssb_row_count_in_planning_phase(&self) -> u64 {
+        let db_path = self.ssb.db_path();
+        let viewer = match SsbViewer::open(db_path) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "E-38: SsbViewer::open failed in DefaultComplianceProvider; \
+                     ssb_row_count_in_planning_phase = 0 (fail-closed)"
+                );
+                return 0;
+            }
+        };
+        match viewer.recent_rows_of_type(SsbActionType::PhaseTransition.as_sql_str(), 1024) {
+            Ok(rows) => u64::try_from(rows.len()).unwrap_or(u64::MAX),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "E-38: recent_rows_of_type(PhaseTransition) failed; \
+                     ssb_row_count_in_planning_phase = 0 (fail-closed)"
+                );
+                0
+            }
+        }
+    }
+
+    /// Build the [`PlanContext`] from live process state. Called only
+    /// when the gate is opted in
+    /// (`ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE=1`).
+    fn build_plan_context(&self) -> PlanContext {
+        PlanContext {
+            plan_session_id: self.plan_session_id.clone(),
+            has_clock_provider: true,
+            has_deterministic_seed: std::env::var(ELAI_DETERMINISTIC_SEED_ENV).is_ok(),
+            template_hash_chain_verified: false,
+            template_archive_present: false,
+            ssb_row_count_in_planning_phase: self.ssb_row_count_in_planning_phase(),
+        }
+    }
+}
+
+impl crate::fsm::ComplianceProvider for DefaultComplianceProvider {
+    fn verdict(
+        &self,
+        source: crate::fsm::FsmState,
+        target: crate::fsm::FsmState,
+    ) -> ComplianceVerdict {
+        // Soft opt-in: when the gate is not enabled, short-circuit to
+        // Pass so the CLI is not bricked. Mirrors the C-28 default-OFF
+        // pattern (ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE). The
+        // `force_enabled` field is `Some(bool)` only for on-path tests
+        // that bypass the process-wide env probe to avoid racing with
+        // parallel `#[tokio::test]` cases in the same binary; production
+        // callers leave it `None` so the env probe is the source of
+        // truth.
+        let gate_enabled = match self.force_enabled {
+            Some(flag) => flag,
+            None => std::env::var(ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE_ENV).as_deref() == Ok("1"),
+        };
+        if !gate_enabled {
+            return ComplianceVerdict::Pass { assertions_checked: 0 };
+        }
+        // Only the PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST edge is
+        // in scope. Other edges pass through (the fsm.rs guard already
+        // filters to this edge, but the provider is defensive).
+        let in_scope = target == crate::fsm::FsmState::TestingFirst
+            && (source == crate::fsm::FsmState::Planning
+                || source == crate::fsm::FsmState::FeasibilityProbe);
+        if !in_scope {
+            return ComplianceVerdict::Pass { assertions_checked: 0 };
+        }
+        let ctx = self.build_plan_context();
+        pre_gate_planning_to_testing_first(&ctx)
+    }
+}
 
 /// Minimum SSB row count emitted during the PLANNING phase before the
 /// `audit_trail_live` assertion accepts the transition. 1 is sufficient

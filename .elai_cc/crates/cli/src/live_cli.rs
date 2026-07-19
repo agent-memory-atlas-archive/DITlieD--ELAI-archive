@@ -820,6 +820,14 @@ impl LiveCli {
             // With the flag unset (default), this block is skipped and behavior is
             // identical to before (gate not installed, last_audit_result stays None).
             maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
+            // E-38: install DefaultComplianceProvider so the
+            // PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST EU AI Act
+            // compliance pre-gate can fire when opted in via
+            // ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE=1. Always installed
+            // (the provider itself soft-opts-in inside verdict()); the
+            // SSB emission leg is separately gated by
+            // ELAI_AI_ROADMAP_SIGNALS_ENABLE.
+            maybe_install_compliance_provider(&fsm, Arc::clone(ssb_arc), &session.id);
         } else {
             // I-47 F-1: SSB init failed (SQLite error, disk full, permissions).
             // The prompt-hardening security mechanisms (XML tagging, rule injection)
@@ -947,6 +955,8 @@ impl LiveCli {
                     fsm.set_ssb_writer(Arc::clone(ssb_arc));
                     // C-28: gate install (default-OFF, ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE).
                     maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
+                    // E-38: compliance provider install (soft opt-in inside verdict()).
+                    maybe_install_compliance_provider(&fsm, Arc::clone(ssb_arc), &session.id);
                 }
                 let dag_path = session.path.parent()
                     .map(|p| p.join("dag.db"))
@@ -1054,6 +1064,8 @@ impl LiveCli {
             fsm.set_ssb_writer(Arc::clone(ssb_arc));
             // C-28: gate install (default-OFF, ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE).
             maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
+            // E-38: compliance provider install (soft opt-in inside verdict()).
+            maybe_install_compliance_provider(&fsm, Arc::clone(ssb_arc), &session.id);
         }
         let dag_path = session.path.parent()
             .map(|p| p.join("dag.db"))
@@ -3470,6 +3482,47 @@ fn maybe_install_deterministic_audit_gate(
     ));
     fsm.set_deterministic_audit_gate(gate);
     tracing::info!("C-28: DefaultDeterministicAuditGate installed on production FSM (ELAI_DETERMINISTIC_AUDIT_GATE_ENABLE=1)");
+}
+
+/// E-38 (SCHEMA_VERSION 175): install
+/// [`elai_orchestrator::compliance::DefaultComplianceProvider`] on the
+/// production FSM so the EU AI Act compliance pre-gate
+/// (`PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST`) can fire. Mirrors the
+/// C-28 [`maybe_install_deterministic_audit_gate`] install pattern.
+///
+/// ALWAYS installs the provider (no env check at install time). The
+/// provider itself soft-opts-in inside `verdict()`: when
+/// `ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE` is not `"1"`, it returns
+/// `Pass { assertions_checked: 0 }` immediately so the CLI is not
+/// bricked by default. When opted in, the provider builds a
+/// [`elai_orchestrator::compliance::PlanContext`] from the SSB row
+/// count + the `ELAI_DETERMINISTIC_SEED` env probe + the ClockProvider
+/// liveness flag, then calls
+/// [`elai_orchestrator::compliance::pre_gate_planning_to_testing_first`].
+/// The SSB emission leg (`AiRoadmapSignalEvent`) is separately gated by
+/// `ELAI_AI_ROADMAP_SIGNALS_ENABLE`.
+///
+/// `set_compliance_provider` uses `OnceLock` (matching
+/// `set_deterministic_audit_gate` + `set_ssb_writer`) -- the first
+/// install wins; subsequent calls across the three ctor sites are
+/// silently ignored.
+fn maybe_install_compliance_provider(
+    fsm: &Arc<elai_orchestrator::Fsm>,
+    ssb_arc: Arc<elai_orchestrator::Ssb>,
+    plan_session_id: &str,
+) {
+    let provider = std::sync::Arc::new(
+        elai_orchestrator::compliance::DefaultComplianceProvider::new(
+            plan_session_id.to_string(),
+            ssb_arc,
+        ),
+    );
+    fsm.set_compliance_provider(provider);
+    tracing::info!(
+        "E-38: DefaultComplianceProvider installed on production FSM \
+         (gate opted in via ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE=1; \
+         SSB emit via ELAI_AI_ROADMAP_SIGNALS_ENABLE=1)"
+    );
 }
 
 ///

@@ -583,16 +583,24 @@ pub struct Fsm {
     /// emitted but the FSM transition always completes.
     ssb_writer: OnceLock<Arc<crate::ssb::Ssb>>,
     /// E-38 (SCHEMA_VERSION 175): optional EU AI Act compliance pre-gate
-    /// provider. When `Some`, the closure is consulted at every
+    /// provider. When set, the closure is consulted at every
     /// `PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST` transition to produce a
     /// [`crate::compliance::ComplianceVerdict`]. A `Block` verdict refuses
     /// the transition with [`FsmError::ComplianceBlocked`] and emits an
     /// `AiRoadmapSignalEvent::ComplianceBlocked` SSB row (when the
     /// `ELAI_AI_ROADMAP_SIGNALS_ENABLE` env-gate is on); a `Pass` verdict
-    /// emits a `ComplianceVerified` row and proceeds. `None` means the
+    /// emits a `ComplianceVerified` row and proceeds. Unset means the
     /// pre-gate is disabled (legacy callers + tests that don't ship a
     /// PlanContext yet).
-    compliance_provider: Option<Arc<dyn ComplianceProvider>>,
+    ///
+    /// Uses `OnceLock` (matching `ssb_writer` + `deterministic_audit_gate`)
+    /// so the provider can be installed through `Arc<Fsm>` after
+    /// `build_runtime` returns the Ssb writer (the provider reads SSB row
+    /// counts at verdict time, so it needs the Ssb handle, which is not
+    /// available at `Fsm::new` time). The first call to
+    /// `set_compliance_provider` wins; subsequent calls are silently
+    /// ignored.
+    compliance_provider: OnceLock<Arc<dyn ComplianceProvider>>,
     /// E-25 Tranche B-4 (D3): opusplan FsmState overlay marker. Wire-dark
     /// metadata flag that signals an active "opus-plan" tier engagement
     /// (planner-tier vs executor-tier runtime routing). Stored at Fsm level
@@ -708,7 +716,7 @@ impl Fsm {
             model_pool: None,
             deterministic_audit_gate: OnceLock::new(),
             ssb_writer: OnceLock::new(),
-            compliance_provider: None,
+            compliance_provider: OnceLock::new(),
             opus_plan_active: AtomicBool::new(false),
             committed_tool_set: None,
         }
@@ -749,16 +757,27 @@ impl Fsm {
     /// unless `ELAI_AI_ROADMAP_SIGNALS_ENABLE=1`); a `Pass` verdict
     /// emits a `ComplianceVerified` row and proceeds.
     pub fn with_compliance_provider(
-        mut self,
+        self,
         provider: Arc<dyn ComplianceProvider>,
     ) -> Self {
-        self.compliance_provider = Some(provider);
+        // OnceLock: first write wins; ignore error on double-set (safe in
+        // builder chains — the initial value is preserved).
+        let _ = self.compliance_provider.set(provider);
         self
     }
 
-    /// Mutable setter companion to [`Self::with_compliance_provider`].
-    pub fn set_compliance_provider(&mut self, provider: Arc<dyn ComplianceProvider>) {
-        self.compliance_provider = Some(provider);
+    /// Shared-reference setter companion to
+    /// [`Self::with_compliance_provider`]. Uses `OnceLock::set` so this
+    /// can be called through `Arc<Fsm>` after `build_runtime` returns the
+    /// Ssb writer (the provider reads SSB row counts at verdict time, so
+    /// it needs the Ssb handle, which is not available at `Fsm::new`
+    /// time). The first caller wins; subsequent calls are silently
+    /// ignored (process-lifetime configuration, not per-call).
+    pub fn set_compliance_provider(
+        &self,
+        provider: Arc<dyn ComplianceProvider>,
+    ) {
+        let _ = self.compliance_provider.set(provider);
     }
 
     /// F-3p1 / Slice C3 (ENFORCE A): share the committed-tool-set slot with
@@ -867,7 +886,7 @@ impl Fsm {
             model_pool: None,
             deterministic_audit_gate: OnceLock::new(),
             ssb_writer: OnceLock::new(),
-            compliance_provider: None,
+            compliance_provider: OnceLock::new(),
             opus_plan_active: AtomicBool::new(false),
             committed_tool_set: None,
         })
@@ -1015,7 +1034,7 @@ impl Fsm {
         if target == FsmState::TestingFirst
             && (source == FsmState::Planning || source == FsmState::FeasibilityProbe)
         {
-            if let Some(ref provider) = self.compliance_provider {
+            if let Some(provider) = self.compliance_provider.get() {
                 let verdict = provider.verdict(source, target);
                 match &verdict {
                     crate::compliance::ComplianceVerdict::Block { assertion, hint } => {
