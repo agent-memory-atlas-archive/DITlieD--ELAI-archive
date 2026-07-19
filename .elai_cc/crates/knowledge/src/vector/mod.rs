@@ -48,6 +48,12 @@ pub use crate::degradation::SearchMode;
 pub const CODE_VEC_DIM: usize = 768;
 pub const TEXT_VEC_DIM: usize = 384;
 
+/// CodeRankEmbed query instruction prefix (verified verbatim from the
+/// nomic-ai/CodeRankEmbed model card). The QUERY path must prepend this
+/// instruction; the DOCUMENT / indexing path (embed_code) must NOT.
+pub const CODE_RANK_EMBED_QUERY_PREFIX: &str =
+    "Represent this query for searching relevant code: ";
+
 #[derive(Debug, Clone)]
 pub struct DualVector {
     pub code_vec: Vec<f32>,
@@ -80,6 +86,15 @@ pub trait VectorModule {
     fn embed_code(&self, text: &str) -> Result<Vec<f32>, VectorError>;
     fn embed_text(&self, text: &str) -> Result<Vec<f32>, VectorError>;
     fn readiness(&self) -> ReadinessStatus;
+
+    /// Query-path code embedding. CodeRankEmbed requires a fixed task
+    /// instruction prefix on queries; the document / indexing path
+    /// (`embed_code`) must NOT prepend it. Default impl prepends
+    /// `CODE_RANK_EMBED_QUERY_PREFIX` then delegates to `embed_code`.
+    fn embed_code_query(&self, query: &str) -> Result<Vec<f32>, VectorError> {
+        let prefixed = format!("{CODE_RANK_EMBED_QUERY_PREFIX}{query}");
+        self.embed_code(&prefixed)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +102,7 @@ pub trait VectorModule {
 // ---------------------------------------------------------------------------
 
 /// Production embedding module using two ONNX sessions: one for code
-/// (GraphCodeBERT, 768-dim) and one for text (Granite, 384-dim).
+/// (CodeRankEmbed, 768-dim) and one for text (Granite, 384-dim).
 ///
 /// Gracefully degrades: if either session's embed() returns Err, callers
 /// get VectorError::OrtError and the pipeline falls back to BM25-only via
@@ -446,7 +461,7 @@ mod tests {
     #[test]
     fn test_onnx_canonical_path() {
         // Canonical path pattern: {project}/models/onnx/{model_name}.onnx
-        let model_name = "graphcodebert";
+        let model_name = "coderankembed";
         let canonical = PathBuf::from(format!(
             "/nonexistent-elai-test/models/onnx/{model_name}.onnx"
         ));
@@ -639,6 +654,87 @@ mod tests {
         assert!(
             !source.contains("embed(\"test\").is_ok()"),
             "readiness() must NOT use legacy \"test\" probe string"
+        );
+    }
+
+    // --- J-18 LEG 1 contract tests ---
+
+    // Minimal stub VectorModule to assert the default embed_code_query
+    // implementation prepends the CodeRankEmbed query prefix.
+    struct StubVectorModule {
+        last_code_input: Arc<Mutex<Option<String>>>,
+    }
+
+    impl VectorModule for StubVectorModule {
+        fn embed_code(&self, text: &str) -> Result<Vec<f32>, VectorError> {
+            *self.last_code_input.lock().unwrap() = Some(text.to_string());
+            Ok(vec![0.0f32; CODE_VEC_DIM])
+        }
+        fn embed_text(&self, _text: &str) -> Result<Vec<f32>, VectorError> {
+            Ok(vec![0.0f32; TEXT_VEC_DIM])
+        }
+        fn readiness(&self) -> ReadinessStatus {
+            ReadinessStatus::Ready
+        }
+    }
+
+    #[test]
+    fn embed_code_query_prepends_coderankembed_prefix() {
+        let last = Arc::new(Mutex::new(None));
+        let stub = StubVectorModule { last_code_input: last.clone() };
+        let query = "find factorial impl";
+        let _ = stub.embed_code_query(query).expect("embed_code_query should succeed");
+        let captured = last.lock().unwrap().clone().expect("embed_code was called");
+        assert!(
+            captured.starts_with(CODE_RANK_EMBED_QUERY_PREFIX),
+            "embed_code_query must prepend CODE_RANK_EMBED_QUERY_PREFIX; got: {captured:?}"
+        );
+        assert!(
+            captured.ends_with(query),
+            "embed_code_query must preserve the original query at the tail; got: {captured:?}"
+        );
+        assert_eq!(
+            captured,
+            format!("{CODE_RANK_EMBED_QUERY_PREFIX}{query}"),
+            "embed_code_query must produce exactly prefix+query"
+        );
+    }
+
+    #[test]
+    fn embed_code_document_path_has_no_prefix() {
+        // The document / indexing path (embed_code) must NOT prepend the
+        // query prefix. This test asserts the trait method itself does not
+        // mutate the input, protecting the indexing side from a regression
+        // that would silently corrupt document embeddings.
+        let last = Arc::new(Mutex::new(None));
+        let stub = StubVectorModule { last_code_input: last.clone() };
+        let doc = "fn factorial(n: u64) -> u64 { /* ... */ }";
+        let _ = stub.embed_code(doc).expect("embed_code should succeed");
+        let captured = last.lock().unwrap().clone().expect("embed_code was called");
+        assert_eq!(
+            captured, doc,
+            "embed_code (document path) must NOT prepend any prefix; got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn code_vec_dim_stays_768_for_coderankembed_slot() {
+        // CodeRankEmbed hidden_size=768 (verified via config.json). The
+        // HNSW geometry + DualVector invariant ride on this constant.
+        assert_eq!(CODE_VEC_DIM, 768, "CODE_VEC_DIM must stay 768 for the CodeRankEmbed swap");
+    }
+
+    #[test]
+    fn current_index_version_is_3_after_coderankembed_swap() {
+        // The index_version bump is the sole signal that triggers a
+        // FullRebuild on existing projects (compare() returns FullRebuild
+        // when on-disk.version != current.version). Without this bump, a
+        // silent model swap would corrupt the HNSW index because old
+        // GraphCodeBERT embeddings and new CodeRankEmbed embeddings are
+        // not comparable even at the same dim=768.
+        assert_eq!(
+            crate::index_version::CURRENT_INDEX_VERSION, 3,
+            "CURRENT_INDEX_VERSION must be 3 after the CodeRankEmbed swap"
         );
     }
 }

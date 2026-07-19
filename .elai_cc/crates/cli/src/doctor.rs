@@ -793,7 +793,7 @@ pub(crate) fn check_system_health(cwd: &Path, config: Option<&RuntimeConfig>) ->
 // E-17 SP1 task 1 — `elai doctor knowledge-models` probe.
 //
 // Reports on-disk staging of the ONNX models + tokenizers wired by
-// live_cli.rs (cross-encoder primary/fallback + tokenizer, GraphCodeBERT
+// live_cli.rs (cross-encoder primary/fallback + tokenizer, CodeRankEmbed
 // + tokenizer, Granite + tokenizer, SPLADE + tokenizer). Composes paths
 // via `core::paths::models_dir_path(project_root)` so the probe never
 // silently checks the wrong directory.
@@ -832,11 +832,26 @@ const KNOWLEDGE_MODEL_MANIFEST: &[(&str, &str, &str)] = &[
         "onnx/cross-encoder-l6.onnx",
         "fallback reranker",
     ),
-    ("graphcodebert", "onnx/graphcodebert.onnx", "code embedder"),
+    ("coderankembed", "onnx/coderankembed.onnx", "code embedder"),
+    (
+        "coderankembed-tok",
+        "onnx/coderankembed-tokenizer.json",
+        "code tokenizer",
+    ),
+    // S6b: legacy GraphCodeBERT fallback for the code-embedder slot.
+    // coderankembed.onnx is staged out-of-band (models/ gitignored); a
+    // machine that still only has graphcodebert.onnx must NOT fail doctor.
+    // The reconciliation below downgrades the coderankembed pair to OK when
+    // the legacy pair is present, so doctor passes if EITHER pair is staged.
+    (
+        "graphcodebert",
+        "onnx/graphcodebert.onnx",
+        "legacy code embedder (fallback when coderankembed absent)",
+    ),
     (
         "graphcodebert-tok",
         "onnx/graphcodebert-tokenizer.json",
-        "code tokenizer",
+        "legacy code tokenizer (fallback when coderankembed-tok absent)",
     ),
     ("granite-embed", "onnx/granite-embed.onnx", "text embedder"),
     (
@@ -1032,7 +1047,30 @@ pub(crate) fn run_knowledge_models_probe(
         })
         .collect();
 
-    let has_failures = entries.iter().any(|entry| !entry.present || entry.error.is_some());
+    // S6b: code-embedder slot is satisfied by EITHER the coderankembed pair
+    // OR the legacy graphcodebert pair. When the coderankembed pair is absent
+    // but the legacy pair is present, downgrade the coderankembed pair's
+    // failure so doctor does not false-fail a machine that still only has
+    // GraphCodeBERT staged. Other failures (granite, splade, etc.) still bind.
+    let legacy_pair_present = entries
+        .iter()
+        .filter(|e| e.label == "graphcodebert" || e.label == "graphcodebert-tok")
+        .all(|e| e.present && e.error.is_none());
+    let failing_labels: Vec<&str> = entries
+        .iter()
+        .filter(|e| !e.present || e.error.is_some())
+        .map(|e| e.label)
+        .collect();
+    let only_coderank_pair_failing = !failing_labels.is_empty()
+        && failing_labels
+            .iter()
+            .all(|l| *l == "coderankembed" || *l == "coderankembed-tok");
+    let downgrade_coderank_fail = legacy_pair_present && only_coderank_pair_failing;
+    let has_failures = if downgrade_coderank_fail {
+        false
+    } else {
+        entries.iter().any(|entry| !entry.present || entry.error.is_some())
+    };
 
     // E-17 SP3: probe optional rerankers — never affects exit code.
     let optional_entries: Vec<KnowledgeModelEntry> = OPTIONAL_RERANKER_MANIFEST
@@ -1048,6 +1086,12 @@ pub(crate) fn run_knowledge_models_probe(
                 "{}",
                 render_knowledge_models_text(&models_dir, &entries, &optional_entries)
             );
+            if downgrade_coderank_fail {
+                println!(
+                    "  note: coderankembed pair absent but legacy graphcodebert pair present; \
+                     code-embedder slot satisfied via fallback (S6b)"
+                );
+            }
         }
         CliOutputFormat::Json => {
             let mandatory = entries
@@ -1081,6 +1125,7 @@ pub(crate) fn run_knowledge_models_probe(
                 "project_root": project_root.display().to_string(),
                 "models_dir": models_dir.display().to_string(),
                 "has_failures": has_failures,
+                "code_embedder_fallback": downgrade_coderank_fail,
                 "entries": mandatory,
                 "optional_rerankers": optional,
             });

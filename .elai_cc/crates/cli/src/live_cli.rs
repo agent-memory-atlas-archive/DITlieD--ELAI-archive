@@ -168,8 +168,11 @@ fn cascade_mode_to_breaker_states(
         SearchMode::Bm25Only   => ("OPEN",   "OPEN",   "OPEN"),
     };
     let reranker = if code == "OPEN" && text == "OPEN" { "OPEN" } else { "CLOSED" };
+    // S6b: label neutrally as "code_embed" so the dashboard / SSB row does
+    // not claim CodeRankEmbed is live when the GraphCodeBERT legacy fallback
+    // is actually in use (coderankembed.onnx is staged out-of-band).
     [
-        ("graphcodebert",   code),
+        ("code_embed",      code),
         ("granite-embed",   text),
         ("splade-v3",       splade),
         ("cross-encoder-l6", reranker),

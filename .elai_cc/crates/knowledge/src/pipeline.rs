@@ -826,7 +826,10 @@ impl QueryPipeline {
                     let mut code_results: Vec<RetrievalResult> = Vec::new();
                     let mut code_error: Option<String> = None;
                     // Use original query only for code search (HyDE hypothesis is text-domain).
-                    match vm.embed_code(query) {
+                    // J-18: query path uses embed_code_query so the CodeRankEmbed
+                    // task-instruction prefix is prepended; the indexing path
+                    // (indexer.rs) keeps embed_code (no prefix on documents).
+                    match vm.embed_code_query(query) {
                         Ok(code_vec) => {
                             match indexer.search_code(&code_vec, 10) {
                                 Ok(hits) => {

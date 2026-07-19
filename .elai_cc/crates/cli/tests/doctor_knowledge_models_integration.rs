@@ -6,7 +6,7 @@
 //! 1. Happy path: all 9 expected files staged at non-zero size -> exit 0,
 //!    table output mentions every entry, blake3 tokenizer hashes are
 //!    64-char hex.
-//! 2. Missing file: drop `graphcodebert.onnx` -> exit non-zero, output
+//! 2. Missing file: drop `coderankembed.onnx` -> exit non-zero, output
 //!    surfaces the missing entry.
 //! 3. JSON output contract: `--output-format json` emits a well-formed
 //!    object with `kind`, `models_dir`, `entries[]`, `has_failures`.
@@ -21,10 +21,14 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-/// 9-entry manifest mirrors the production probe in `doctor::run_knowledge_models`.
+/// 11-entry manifest mirrors the production probe in `doctor::run_knowledge_models`.
+/// S6b: graphcodebert + graphcodebert-tok added as legacy-acceptable fallback
+/// for the code-embedder slot.
 const MANIFEST: &[(&str, &str)] = &[
     ("cross-encoder-l12", "onnx/cross-encoder-l12.onnx"),
     ("cross-encoder-l6", "onnx/cross-encoder-l6.onnx"),
+    ("coderankembed", "onnx/coderankembed.onnx"),
+    ("coderankembed-tok", "onnx/coderankembed-tokenizer.json"),
     ("graphcodebert", "onnx/graphcodebert.onnx"),
     ("graphcodebert-tok", "onnx/graphcodebert-tokenizer.json"),
     ("granite-embed", "onnx/granite-embed.onnx"),
@@ -91,10 +95,12 @@ fn happy_path_all_present_exits_zero() {
 fn missing_file_returns_err() {
     let tmp = TempDir::new().expect("tempdir");
     stage_fixture(tmp.path(), b"tokenizer-fixture-bytes\n", b"onnx-fixture-bytes\n");
-    // Remove one required file.
+    // Remove a non-code-embedder required file so the S6b legacy fallback
+    // does not downgrade the failure (the code-embedder slot is still
+    // satisfied by the graphcodebert pair).
     let target = tmp
         .path()
-        .join(".elai_cc/models/onnx/graphcodebert.onnx");
+        .join(".elai_cc/models/onnx/granite-embed.onnx");
     fs::remove_file(&target).expect("remove fixture");
 
     let out = Command::new(elai_binary())
@@ -114,8 +120,69 @@ fn missing_file_returns_err() {
         String::from_utf8_lossy(&out.stderr),
     );
     assert!(
-        combined.contains("graphcodebert"),
+        combined.contains("granite-embed"),
         "expected missing entry surfaced in output, got:\n{combined}",
+    );
+}
+
+/// S6b: when coderankembed pair is absent but the legacy graphcodebert pair
+/// is present, doctor must exit 0 (code-embedder slot satisfied via fallback).
+#[test]
+fn coderank_absent_legacy_present_exits_zero() {
+    let tmp = TempDir::new().expect("tempdir");
+    stage_fixture(tmp.path(), b"tokenizer-fixture-bytes\n", b"onnx-fixture-bytes\n");
+    // Remove BOTH coderankembed files — legacy graphcodebert pair remains.
+    fs::remove_file(tmp.path().join(".elai_cc/models/onnx/coderankembed.onnx"))
+        .expect("remove coderankembed.onnx");
+    fs::remove_file(tmp.path().join(".elai_cc/models/onnx/coderankembed-tokenizer.json"))
+        .expect("remove coderankembed-tokenizer.json");
+
+    let out = Command::new(elai_binary())
+        .args(["doctor", "knowledge-models", "--project-root"])
+        .arg(tmp.path())
+        .output()
+        .expect("spawn elai doctor knowledge-models");
+
+    assert!(
+        out.status.success(),
+        "expected exit 0 when legacy fallback satisfies code-embedder slot; \
+         stdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("graphcodebert"),
+        "expected legacy fallback note in stdout, got:\n{stdout}",
+    );
+}
+
+/// S6b: when neither coderankembed nor graphcodebert is present, doctor must
+/// fail (no code-embedder at all).
+#[test]
+fn no_code_embedder_pair_returns_err() {
+    let tmp = TempDir::new().expect("tempdir");
+    stage_fixture(tmp.path(), b"tokenizer-fixture-bytes\n", b"onnx-fixture-bytes\n");
+    // Remove all four code-embedder files.
+    fs::remove_file(tmp.path().join(".elai_cc/models/onnx/coderankembed.onnx"))
+        .expect("remove coderankembed.onnx");
+    fs::remove_file(tmp.path().join(".elai_cc/models/onnx/coderankembed-tokenizer.json"))
+        .expect("remove coderankembed-tokenizer.json");
+    fs::remove_file(tmp.path().join(".elai_cc/models/onnx/graphcodebert.onnx"))
+        .expect("remove graphcodebert.onnx");
+    fs::remove_file(tmp.path().join(".elai_cc/models/onnx/graphcodebert-tokenizer.json"))
+        .expect("remove graphcodebert-tokenizer.json");
+
+    let out = Command::new(elai_binary())
+        .args(["doctor", "knowledge-models", "--project-root"])
+        .arg(tmp.path())
+        .output()
+        .expect("spawn elai doctor knowledge-models");
+
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit when no code-embedder pair is present; stdout=\n{}",
+        String::from_utf8_lossy(&out.stdout),
     );
 }
 

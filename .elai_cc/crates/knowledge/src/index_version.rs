@@ -17,7 +17,8 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 /// Current index format version. Tracks the overall index layout; a change
 /// here triggers at minimum a BM25-only rebuild.
 /// v2: AST-aware chunking replaces 50-line fixed windows (3K.1).
-pub const CURRENT_INDEX_VERSION: u32 = 2;
+/// v3: CodeRankEmbed code-slot swap (re-embed required; dim unchanged at 768).
+pub const CURRENT_INDEX_VERSION: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // IndexVersion

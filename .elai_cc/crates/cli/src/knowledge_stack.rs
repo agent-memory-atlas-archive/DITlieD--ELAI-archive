@@ -176,7 +176,7 @@ fn build_base_pipeline(
     let catrag = CatRag::new(CatRagConfig::default());
 
     // retrieval-mem-fixes FIX #3: the A-RAG semantic_search embedder is
-    // GraphCodeBERT (~496MB). It is ONLY consulted when the A-RAG corpus is
+    // CodeRankEmbed (~137M). It is ONLY consulted when the A-RAG corpus is
     // populated, which is itself opt-in via ELAI_ARAG_POPULATE_FROM_DKG. So
     // compute that gate FIRST and load the embedder only when the corpus will
     // actually be populated — on the default path the model is never loaded.
@@ -189,11 +189,28 @@ fn build_base_pipeline(
 
     let mut arag = AragOrchestrator::new(AragConfig::default());
     if arag_populate_enabled {
-        // C-8 Task #8: standalone graphcodebert ONNX session for the A-RAG
+        // C-8 Task #8: standalone CodeRankEmbed ONNX session for the A-RAG
         // semantic_search dot-product path (loaded only behind the gate above).
-        let code_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
-        let code_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
-        match OrtSession::new(&code_model_path, &code_tok_path, 512, 768) {
+        // J-18: swapped graphcodebert -> coderankembed (768d unchanged).
+        // S6b: coderankembed.onnx is staged out-of-band (models/ gitignored);
+        // when absent, fall back to the legacy graphcodebert.onnx so the live
+        // code-vec lane does not regress to TextOnly. output_dim stays 768.
+        let code_model_path = models_dir.join("onnx").join("coderankembed.onnx");
+        let code_tok_path = models_dir.join("onnx").join("coderankembed-tokenizer.json");
+        let legacy_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
+        let legacy_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
+        let (model_path, tok_path, using_legacy) = if code_model_path.exists() && code_tok_path.exists() {
+            (code_model_path, code_tok_path, false)
+        } else if legacy_model_path.exists() && legacy_tok_path.exists() {
+            eprintln!(
+                "warn: coderankembed.onnx absent; falling back to legacy graphcodebert.onnx for arag.semantic_search"
+            );
+            (legacy_model_path, legacy_tok_path, true)
+        } else {
+            (code_model_path, code_tok_path, false)
+        };
+        let _ = using_legacy;
+        match OrtSession::new(&model_path, &tok_path, 512, 768) {
             Ok(sess) => {
                 arag = arag.with_embedder(Arc::new(sess));
             }
@@ -244,10 +261,10 @@ fn attach_vector_module(
     let text_tok_path = models_dir.join("onnx").join("granite-embed-tokenizer.json");
 
     // retrieval-mem-fixes FIX #3: the primary vector index stores GRANITE
-    // (text, 384-dim) embeddings; GraphCodeBERT (code, 768-dim, ~496MB) is
+    // (text, 384-dim) embeddings; CodeRankEmbed (code, 768-dim, ~137M) is
     // only needed to populate the SECONDARY code-vec index, which is itself
     // opt-in via ELAI_CODE_VEC (has_code_index()==false on the default path).
-    // So load GraphCodeBERT only when code-vec is on; otherwise install a
+    // So load CodeRankEmbed only when code-vec is on; otherwise install a
     // text-only module so the default path searches text vectors WITHOUT
     // loading the code model.
     let code_vec_enabled = std::env::var("ELAI_CODE_VEC")
@@ -264,11 +281,27 @@ fn attach_vector_module(
 
     if let Some(text_sess) = text_sess {
         if code_vec_enabled {
-            // Code-vec opt-in: load GraphCodeBERT and install the dual-model
+            // Code-vec opt-in: load CodeRankEmbed and install the dual-model
             // module so the secondary code index can be populated.
-            let code_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
-            let code_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
-            match OrtSession::new(&code_model_path, &code_tok_path, 512, 768) {
+            // J-18: swapped graphcodebert -> coderankembed (768d unchanged).
+            // S6b: coderankembed.onnx is staged out-of-band (models/ gitignored);
+            // when absent, fall back to legacy graphcodebert.onnx so the live
+            // code-vec lane does not regress to TextOnly. output_dim stays 768.
+            let code_model_path = models_dir.join("onnx").join("coderankembed.onnx");
+            let code_tok_path = models_dir.join("onnx").join("coderankembed-tokenizer.json");
+            let legacy_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
+            let legacy_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
+            let (model_path, tok_path) = if code_model_path.exists() && code_tok_path.exists() {
+                (code_model_path, code_tok_path)
+            } else if legacy_model_path.exists() && legacy_tok_path.exists() {
+                eprintln!(
+                    "warn: coderankembed.onnx absent; falling back to legacy graphcodebert.onnx for vector code-vec lane"
+                );
+                (legacy_model_path, legacy_tok_path)
+            } else {
+                (code_model_path, code_tok_path)
+            };
+            match OrtSession::new(&model_path, &tok_path, 512, 768) {
                 Ok(code_sess) => {
                     let vm = OrtVectorModule::new(code_sess, text_sess);
                     pipeline.vector_module = Some(Box::new(vm));
@@ -283,7 +316,7 @@ fn attach_vector_module(
                 }
             }
         } else {
-            // Default path: text-only — GraphCodeBERT is NOT loaded.
+            // Default path: text-only — CodeRankEmbed is NOT loaded.
             pipeline.vector_module =
                 Some(Box::new(TextOnlyVectorModule { text_session: text_sess }));
         }
@@ -299,7 +332,7 @@ fn attach_vector_module(
 /// retrieval-mem-fixes FIX #3: a text-only
 /// [`elai_knowledge::vector::VectorModule`] backed by a single granite-embed
 /// ONNX session. Installed on the default (no `ELAI_CODE_VEC`) path so the
-/// primary text-vector index works WITHOUT loading the ~496MB GraphCodeBERT
+/// primary text-vector index works WITHOUT loading the CodeRankEmbed
 /// code model. `embed_code` returns `Err` (the code-vec secondary index is
 /// disabled on this path anyway); `VectorIndexer::index_file` tolerates it.
 struct TextOnlyVectorModule {
