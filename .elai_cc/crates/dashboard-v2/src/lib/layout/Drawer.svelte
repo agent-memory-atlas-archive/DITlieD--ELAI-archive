@@ -73,6 +73,7 @@
     'redaction':            'SECRET REDACTIONS (G-9)',
     'confidence':           'CONFIDENCE + QUARANTINE (G-7)',
     'safe-delta':           'SAFETY DELTA (G-6)',
+    'convergence':          'CONVERGENCE CURVE (I-27)',
     'model-drift':          'MODEL DRIFT (G-10)',
     'decomposition-entropy': 'DECOMPOSITION ENTROPY (E-46)',
     'pagerank':             'PAGERANK TOP',

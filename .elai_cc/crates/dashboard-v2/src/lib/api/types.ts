@@ -370,6 +370,8 @@ export type DrawerKey =
   // + per-CWE delta + corpus_blake3 + pinned seed + gate_recall + runpod_pending.
   // Tier-1 = static-gate only; Tier-2 dynamic exploit-exec arm is RunPod-gated.
   | 'safe-delta'
+  // I-27 / SCHEMA_VERSION 265: ConvergencePanel (get_convergence_curve_rows).
+  | 'convergence'
   // G-10 / SCHEMA_VERSION 218: ModelDriftPanel (get_model_drift_status).
   // model_drift_suspected rows emitted at `elai run` exit or `elai model-drift check`.
   // Surfaces identity_key + drift kind + signals + per_family_delta +
