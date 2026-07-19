@@ -147,7 +147,6 @@ pub enum SglangDetModeError {
 /// returns the first failing `SglangDetModeError` otherwise. Order:
 /// flag > seed > backend (flag is the cheapest gate; a request without
 /// the flag does not need seed/backend validation).
-// WIRE-DARK[J-13-S5-#8]
 #[must_use]
 pub fn validate_sglang_det_mode(req: &SglangDetModeRequest) -> Result<(), SglangDetModeError> {
     if !req.enable_deterministic_inference {
@@ -164,6 +163,40 @@ pub fn validate_sglang_det_mode(req: &SglangDetModeRequest) -> Result<(), Sglang
     Ok(())
 }
 
+/// Production preflight gate for SGLang det-mode on the request path.
+/// When det-mode is disabled, returns `Ok(())` without touching the
+/// validator. When enabled, threads the per-request `sampling_seed` and
+/// the configured attention backend through `validate_sglang_det_mode`,
+/// mapping the pure validation errors into `RuntimeAdapterError::Other`
+/// variants that the complete/stream call sites surface to callers.
+/// This is the production caller for the J-13 S5 det-mode validator.
+#[must_use]
+fn preflight_det_mode(
+    enable: bool,
+    backend: &str,
+    sampling_seed: Option<u64>,
+) -> Result<(), RuntimeAdapterError> {
+    if !enable {
+        return Ok(());
+    }
+    validate_sglang_det_mode(&SglangDetModeRequest {
+        enable_deterministic_inference: true,
+        sampling_seed,
+        backend: backend.to_string(),
+    })
+    .map_err(|e| match e {
+        SglangDetModeError::MissingFlag => {
+            RuntimeAdapterError::Other("sglang det-mode: missing --enable-deterministic-inference".into())
+        }
+        SglangDetModeError::MissingSamplingSeed => {
+            RuntimeAdapterError::Other("sglang det-mode: missing per-request sampling_seed".into())
+        }
+        SglangDetModeError::DisallowedBackend { backend } => RuntimeAdapterError::Other(format!(
+            "sglang det-mode: disallowed attention backend '{backend}' (need flashinfer|fa3|triton)"
+        )),
+    })
+}
+
 /// Long-lived SGLang HTTP runtime adapter config. Separate struct from
 /// the media-validator `SglangConfig` (different lifecycle).
 #[derive(Debug, Clone, PartialEq)]
@@ -172,6 +205,8 @@ pub struct SglangRuntimeConfig {
     pub api_key: Option<String>,
     pub request_timeout: Duration,
     pub structured_output_backend: StructuredOutputBackend,
+    pub enable_deterministic_inference: bool,
+    pub det_mode_attention_backend: String,
 }
 
 impl Default for SglangRuntimeConfig {
@@ -181,6 +216,8 @@ impl Default for SglangRuntimeConfig {
             api_key: None,
             request_timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),
             structured_output_backend: StructuredOutputBackend::default(),
+            enable_deterministic_inference: false,
+            det_mode_attention_backend: "flashinfer".to_string(),
         }
     }
 }
@@ -193,6 +230,8 @@ pub struct SglangRuntime {
     http: reqwest::Client,
     health_http: reqwest::Client,
     structured_output_backend: StructuredOutputBackend,
+    enable_deterministic_inference: bool,
+    det_mode_attention_backend: String,
     cold_start_seen: Arc<AtomicBool>,
 }
 
@@ -217,6 +256,14 @@ impl SglangRuntime {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         let structured_output_backend = StructuredOutputBackend::default();
+        let enable_deterministic_inference = std::env::var("ELAI_SGLANG_ENABLE_DETERMINISTIC_INFERENCE")
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        let det_mode_attention_backend = std::env::var("ELAI_SGLANG_DET_MODE_BACKEND")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "flashinfer".to_string());
         runtime_event_sink().record(Self::registered_event(
             &base_url,
             structured_output_backend,
@@ -227,6 +274,8 @@ impl SglangRuntime {
             http,
             health_http,
             structured_output_backend,
+            enable_deterministic_inference,
+            det_mode_attention_backend,
             cold_start_seen: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -245,6 +294,8 @@ impl SglangRuntime {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         let structured_output_backend = cfg.structured_output_backend;
+        let enable_deterministic_inference = cfg.enable_deterministic_inference;
+        let det_mode_attention_backend = cfg.det_mode_attention_backend;
         runtime_event_sink().record(Self::registered_event(
             &cfg.base_url,
             structured_output_backend,
@@ -255,6 +306,8 @@ impl SglangRuntime {
             http,
             health_http,
             structured_output_backend,
+            enable_deterministic_inference,
+            det_mode_attention_backend,
             cold_start_seen: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -380,7 +433,10 @@ impl RuntimeAdapter for SglangRuntime {
         let client = self.http.clone();
         let default_model = self.model.clone();
         let backend_tag = self.structured_output_backend.as_str();
+        let det_mode_enabled = self.enable_deterministic_inference;
+        let det_mode_backend = self.det_mode_attention_backend.clone();
         Box::pin(async move {
+            preflight_det_mode(det_mode_enabled, &det_mode_backend, config.seed)?;
             let model = config.model.clone().unwrap_or(default_model);
             let max_tokens = if config.max_tokens == 0 {
                 DEFAULT_MAX_TOKENS
@@ -452,6 +508,15 @@ impl RuntimeAdapter for SglangRuntime {
         let client = self.http.clone();
         let default_model = self.model.clone();
         let backend_tag = self.structured_output_backend.as_str();
+        let det_mode_enabled = self.enable_deterministic_inference;
+        let det_mode_backend = self.det_mode_attention_backend.clone();
+        let seed = config.seed;
+        if let Err(e) = preflight_det_mode(det_mode_enabled, &det_mode_backend, seed) {
+            return Box::pin(stream::unfold(
+                SglangStreamState::PreflightFailed(e),
+                sglang_stream_step,
+            ));
+        }
         let model = config.model.clone().unwrap_or(default_model);
         let max_tokens = if config.max_tokens == 0 {
             DEFAULT_MAX_TOKENS
@@ -496,6 +561,7 @@ enum SglangStreamState {
         buffer: String,
         response: reqwest::Response,
     },
+    PreflightFailed(RuntimeAdapterError),
     Done,
 }
 
@@ -503,6 +569,7 @@ async fn sglang_stream_step(
     state: SglangStreamState,
 ) -> Option<(Result<StreamChunk, RuntimeAdapterError>, SglangStreamState)> {
     match state {
+        SglangStreamState::PreflightFailed(err) => Some((Err(err), SglangStreamState::Done)),
         SglangStreamState::Connecting { client, url, body } => {
             let response = match client.post(&url).json(&*body).send().await {
                 Ok(r) => r,
@@ -745,6 +812,8 @@ mod tests {
             api_key: None,
             request_timeout: Duration::from_secs(45),
             structured_output_backend: StructuredOutputBackend::Outlines,
+            enable_deterministic_inference: false,
+            det_mode_attention_backend: "flashinfer".to_string(),
         };
         let rt = SglangRuntime::with_runtime_config(cfg, Some("test-model".into()));
         assert_eq!(rt.base_url(), "http://sglang.test:30000");
@@ -878,5 +947,38 @@ mod tests {
         assert!(!SglangDetModeBackend::is_allowed_str("cuda"));
         assert!(!SglangDetModeBackend::is_allowed_str("rocm"));
         assert!(!SglangDetModeBackend::is_allowed_str(""));
+    }
+
+    #[test]
+    fn det_mode_preflight_skipped_when_flag_off() {
+        assert!(preflight_det_mode(false, "cuda", None).is_ok());
+    }
+
+    #[test]
+    fn det_mode_preflight_missing_seed_when_flag_on() {
+        let err = preflight_det_mode(true, "flashinfer", None).unwrap_err();
+        match err {
+            RuntimeAdapterError::Other(msg) => {
+                assert!(msg.contains("missing per-request sampling_seed"), "got: {msg}");
+            }
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn det_mode_preflight_disallowed_backend_when_flag_on() {
+        let err = preflight_det_mode(true, "cuda", Some(1)).unwrap_err();
+        match err {
+            RuntimeAdapterError::Other(msg) => {
+                assert!(msg.contains("disallowed attention backend"), "got: {msg}");
+                assert!(msg.contains("cuda"), "got: {msg}");
+            }
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn det_mode_preflight_ok_when_all_present() {
+        assert!(preflight_det_mode(true, "fa3", Some(1)).is_ok());
     }
 }
