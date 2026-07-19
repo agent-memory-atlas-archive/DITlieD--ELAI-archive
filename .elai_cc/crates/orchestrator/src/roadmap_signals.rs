@@ -34,14 +34,22 @@
 //! See `workflow/reasoning/E-38-decisions.md`.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
 use elai_core::clock::{ClockProvider, OsClock};
 
 use crate::ssb::{
     AiRoadmapSignalEventPayload, ELAI_AI_ROADMAP_SIGNALS_ENABLE_ENV,
-    MRCR_UNVERIFIED_CONTEXT_THRESHOLD, POSTURE_DOC_STALE_DAYS, RoadmapSignalKind,
+    MRCR_UNVERIFIED_CONTEXT_THRESHOLD, POSTURE_DOC_STALE_DAYS, RoadmapSignalKind, Ssb, SsbPayload,
 };
+
+/// E-38 (SCHEMA_VERSION 175): idempotency latch for the
+/// `PostureDocStale` SSB row. The row is emitted exactly once per
+/// process boot regardless of how many CLI entrypoints are constructed
+/// (three `Fsm::new` sites in `live_cli.rs` today). Mirrors
+/// `dispatch::mcp::MCP_TRANSPORT_VERSION_LOGGED`.
+static POSTURE_DOC_STALE_EMITTED: AtomicBool = AtomicBool::new(false);
 
 /// Returns true when the E-38 emission env-gate is set to `"1"` or
 /// `"true"` (case-insensitive). Mirrors the C-35 `ELAI_TOOL_GATE_OFF`
@@ -147,6 +155,67 @@ pub fn check_posture_doc_age(
         }),
         ts_ms: now,
     })
+}
+
+/// E-38 -- emit a `PostureDocStale` SSB row once per process boot when
+/// [`check_posture_doc_age`] reports the posture doc is older than
+/// [`POSTURE_DOC_STALE_DAYS`]. Mirrors
+/// `dispatch::mcp::McpClientDispatch::emit_transport_version_once`:
+///   - gated by [`roadmap_signals_enabled`];
+///   - idempotent via [`POSTURE_DOC_STALE_EMITTED`] `compare_exchange`;
+///   - fire-and-forget on a current-thread tokio runtime; SSB write
+///     errors are logged at `warn` and never propagated (a missing row
+///     is a telemetry gap, not a CLI failure).
+///
+/// Returns `true` iff an emit was attempted on this call (the
+/// `compare_exchange` succeeded and a `write_payload` was issued);
+/// returns `false` when the gate is off, the doc is fresh/missing, or
+/// the row was already emitted on a prior call. The bool is for
+/// observability/test assertions only -- callers MUST NOT branch on it
+/// for correctness.
+pub fn emit_posture_doc_stale_if_stale(ssb: &Ssb, posture_doc_path: &Path) -> bool {
+    if !roadmap_signals_enabled() {
+        return false;
+    }
+    if POSTURE_DOC_STALE_EMITTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
+    let Some(payload) = check_posture_doc_age(posture_doc_path) else {
+        // The latch was flipped but there is nothing to emit; reset so
+        // a later call (e.g. the doc goes stale mid-process) can still
+        // fire. Matches the mcp twin's "compare-exchange then probe"
+        // shape except the mcp twin always has a payload.
+        POSTURE_DOC_STALE_EMITTED.store(false, Ordering::Release);
+        return false;
+    };
+    let row = SsbPayload::AiRoadmapSignalEvent(payload);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build();
+    let rt = match rt {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "posture_doc_stale: ssb runtime build failed; skipping emit"
+            );
+            return false;
+        }
+    };
+    let result = rt.block_on(async move {
+        ssb.write_payload("roadmap-signals", 0, row, Vec::new()).await
+    });
+    if let Err(e) = result {
+        tracing::warn!(
+            error = %e,
+            "posture_doc_stale: ssb emit failed (non-fatal)"
+        );
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]

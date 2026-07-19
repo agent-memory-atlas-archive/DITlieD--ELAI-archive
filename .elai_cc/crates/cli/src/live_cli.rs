@@ -828,6 +828,9 @@ impl LiveCli {
             // SSB emission leg is separately gated by
             // ELAI_AI_ROADMAP_SIGNALS_ENABLE.
             maybe_install_compliance_provider(&fsm, Arc::clone(ssb_arc), &session.id);
+            // E-38: posture-doc-stale SSB beacon (one-shot per process
+            // boot, idempotent across the three Fsm::new sites).
+            maybe_emit_posture_doc_stale(ssb_arc);
         } else {
             // I-47 F-1: SSB init failed (SQLite error, disk full, permissions).
             // The prompt-hardening security mechanisms (XML tagging, rule injection)
@@ -957,6 +960,8 @@ impl LiveCli {
                     maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
                     // E-38: compliance provider install (soft opt-in inside verdict()).
                     maybe_install_compliance_provider(&fsm, Arc::clone(ssb_arc), &session.id);
+                    // E-38: posture-doc-stale SSB beacon (one-shot per process boot).
+                    maybe_emit_posture_doc_stale(ssb_arc);
                 }
                 let dag_path = session.path.parent()
                     .map(|p| p.join("dag.db"))
@@ -1066,6 +1071,8 @@ impl LiveCli {
             maybe_install_deterministic_audit_gate(&fsm, Arc::clone(ssb_arc));
             // E-38: compliance provider install (soft opt-in inside verdict()).
             maybe_install_compliance_provider(&fsm, Arc::clone(ssb_arc), &session.id);
+            // E-38: posture-doc-stale SSB beacon (one-shot per process boot).
+            maybe_emit_posture_doc_stale(ssb_arc);
         }
         let dag_path = session.path.parent()
             .map(|p| p.join("dag.db"))
@@ -3523,6 +3530,24 @@ fn maybe_install_compliance_provider(
          (gate opted in via ELAI_EU_AI_ACT_COMPLIANCE_GATE_ENABLE=1; \
          SSB emit via ELAI_AI_ROADMAP_SIGNALS_ENABLE=1)"
     );
+}
+
+/// E-38 -- emit a `PostureDocStale` SSB row once per process boot when
+/// `docs/strategy/ELAI-2026-POSTURE.md` is older than 90 days (per
+/// `POSTURE_DOC_STALE_DAYS`). Mirrors `maybe_install_compliance_provider`:
+/// called at the three `Fsm::new` construction sites immediately after
+/// the compliance provider install. The emission leg is gated by
+/// `ELAI_AI_ROADMAP_SIGNALS_ENABLE`; when the flag is off (default) this
+/// is a no-op. Idempotent across the three call sites via
+/// `POSTURE_DOC_STALE_EMITTED`. The posture doc path is resolved from
+/// the process CWD (same anchor `main.rs::run` uses for
+/// `prompt_project_root`); a missing doc yields no row
+/// (`check_posture_doc_age` returns `None`).
+fn maybe_emit_posture_doc_stale(ssb_arc: &Arc<elai_orchestrator::Ssb>) {
+    let path = std::env::current_dir()
+        .map(|c| c.join("docs/strategy/ELAI-2026-POSTURE.md"))
+        .unwrap_or_else(|_| PathBuf::from("docs/strategy/ELAI-2026-POSTURE.md"));
+    elai_orchestrator::roadmap_signals::emit_posture_doc_stale_if_stale(ssb_arc, &path);
 }
 
 ///
