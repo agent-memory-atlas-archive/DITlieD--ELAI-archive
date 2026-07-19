@@ -3948,6 +3948,39 @@ export interface RunArtifact {
    * null / undefined on LEGACY receipts (pre-I-45 runs without IdeaFramingStarted).
    */
   objective_hash?: string | null;
+  /**
+   * J-14: effective tier verdict (snake_case TierVerdictLabel) joined from the
+   * latest `TierEvaluated` ReproPackEvent row for this session_id.
+   * null / undefined when no tier verdict row exists (LEGACY receipts or verify
+   * path SSB emit still DARK).
+   */
+  tier_effective?: string | null;
+  /**
+   * J-14: requested tier (snake_case); null / undefined when no tier row exists.
+   */
+  tier_requested?: string | null;
+  /**
+   * J-14: recorded downgrades as already-formatted "from->to:reason" strings
+   * from the latest `TierEvaluated` row. Empty when no tier row or no
+   * downgrades were recorded.
+   */
+  downgrades?: string[];
+  /**
+   * J-14: first divergent position (0-based) from the latest
+   * `FirstDivergenceLocated` row for this session_id. null / undefined when no
+   * divergence row exists (T0 action-faithful or LEGACY).
+   */
+  divergence_position?: number | null;
+  /**
+   * J-14: expected value (hex) at the divergence position. null / undefined
+   * when no divergence row exists.
+   */
+  divergence_expected?: string | null;
+  /**
+   * J-14: actual value (hex) at the divergence position. null / undefined
+   * when no divergence row exists.
+   */
+  divergence_actual?: string | null;
 }
 
 /**

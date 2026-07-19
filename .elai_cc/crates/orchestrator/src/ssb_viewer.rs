@@ -21,8 +21,9 @@ use crate::ssb::{
     ConceptDecompositionNodePayload, ContextBudgetComputedPayload, DagRepairEscalatedPayload,
     DagRepairRoundPayload, FeasibilityReportPayload, InterventionOption,
     InterventionRequestPayload, InterventionType, NovelStepDetectedPayload,
-    ReflectAuditVerdictPayload, ReflectRefinedPayload, ReflectTriagedPayload, SsbActionType,
-    SsbPayload, StubRunPayload, TaskSplitPayload, TaskSubmittedPayload, UsageTurnEventPayload,
+    ReflectAuditVerdictPayload, ReflectRefinedPayload, ReflectTriagedPayload, ReproPackKind,
+    ReproPackPayload, SsbActionType, SsbPayload, StubRunPayload, TaskSplitPayload,
+    TaskSubmittedPayload, UsageTurnEventPayload,
 };
 
 /// Maximum length of `phase_id` accepted by [`SsbViewer::step_progress`].
@@ -4702,10 +4703,107 @@ impl SsbViewer {
                     // I-45: carry objective hash to the dashboard feed; None on
                     // LEGACY receipts that predate this field.
                     objective_hash: p.objective_hash,
+                    // J-14: filled from the ReproPackEvent join below; default
+                    // None / empty until the join runs.
+                    tier_effective: None,
+                    tier_requested: None,
+                    downgrades: Vec::new(),
+                    divergence_position: None,
+                    divergence_expected: None,
+                    divergence_actual: None,
                 });
             }
         }
+        // J-14: join latest ReproPackEvent rows by session_id. The SSB emits
+        // TierEvaluated + FirstDivergenceLocated as separate rows keyed by
+        // session_id; we scan the same row budget and keep the newest row per
+        // session per kind. The verify-path emit is currently DARK (see S1 §2
+        // caveat), so for most installs this leaves the Options None — the
+        // honest empty state, not a failure.
+        Self::join_repro_pack_events(&conn, &mut out)?;
         Ok(out)
+    }
+
+    // J-14 helper: no new pub symbol — private free fn called only from
+    // `run_artifacts` above. Scans recent repro_pack_event rows (same hard cap
+    // as the caller) and merges the latest TierEvaluated + FirstDivergenceLocated
+    // per session_id into the matching RunArtifactRow entries. Rows with no
+    // matching ReproPackEvent keep the default None / empty state.
+    fn join_repro_pack_events(
+        conn: &Connection,
+        rows: &mut [RunArtifactRow],
+    ) -> Result<(), SsbViewerError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        // Pull the newest TierEvaluated + FirstDivergenceLocated per session.
+        // We scan the same hard cap of recent repro_pack_event rows the caller
+        // used; the SSB is append-only and ordered by seq DESC, so the first
+        // match per (session_id, kind) is the latest.
+        let effective = DRAWER_QUERY_HARD_CAP;
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let payload_bytes: Vec<Vec<u8>> = stmt
+            .query_map(
+                params![SsbActionType::ReproPackEvent(ReproPackKind::TierEvaluated).as_sql_str(), limit_i64],
+                |row| row.get::<_, Vec<u8>>(0),
+            )?
+            .filter_map(Result::ok)
+            .collect();
+        // First pass: latest TierEvaluated per session_id.
+        let mut latest_tier: std::collections::HashMap<String, ReproPackPayload> =
+            std::collections::HashMap::new();
+        for bytes in &payload_bytes {
+            let payload: SsbPayload = match rmp_serde::from_slice(bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::ReproPackEvent(p) = payload {
+                if p.kind == ReproPackKind::TierEvaluated
+                    && !latest_tier.contains_key(&p.session_id)
+                {
+                    latest_tier.insert(p.session_id.clone(), p);
+                }
+            }
+        }
+        // Second pass: latest FirstDivergenceLocated per session_id (separate
+        // query because the action_type discriminator is the same string for
+        // all ReproPackEvent arms — we filter by payload kind after decode).
+        let mut latest_div: std::collections::HashMap<String, ReproPackPayload> =
+            std::collections::HashMap::new();
+        // Re-scan the same window; the action_type filter returns all arms
+        // interleaved, so we walk the same bytes and pick the first
+        // FirstDivergenceLocated per session.
+        for bytes in &payload_bytes {
+            let payload: SsbPayload = match rmp_serde::from_slice(bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::ReproPackEvent(p) = payload {
+                if p.kind == ReproPackKind::FirstDivergenceLocated
+                    && !latest_div.contains_key(&p.session_id)
+                {
+                    latest_div.insert(p.session_id.clone(), p);
+                }
+            }
+        }
+        // Merge into the caller's rows.
+        for row in rows.iter_mut() {
+            if let Some(t) = latest_tier.get(&row.session_id) {
+                row.tier_effective = t.tier_effective.clone();
+                row.tier_requested = t.tier_requested.clone();
+                row.downgrades = t.downgrades.clone();
+            }
+            if let Some(d) = latest_div.get(&row.session_id) {
+                row.divergence_position = d.divergence_position;
+                row.divergence_expected = d.expected_value.clone();
+                row.divergence_actual = d.actual_value.clone();
+            }
+        }
+        Ok(())
     }
 
     /// G-8 — list `provenance_attestation_emitted` rows newest-first. Each row
@@ -5671,6 +5769,33 @@ pub struct RunArtifactRow {
     /// receipts (pre-I-45).
     #[serde(default)]
     pub objective_hash: Option<String>,
+    /// J-14: effective tier verdict (snake_case TierVerdictLabel) joined from
+    /// the latest `TierEvaluated` ReproPackEvent row for this session_id.
+    /// `None` when no tier verdict row exists (LEGACY receipts or verify path
+    /// SSB emit still DARK — see S1 §2 caveat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_effective: Option<String>,
+    /// J-14: requested tier (snake_case); `None` when no tier row exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_requested: Option<String>,
+    /// J-14: recorded downgrades as already-formatted "from->to:reason" strings
+    /// from the latest `TierEvaluated` row. Empty when no tier row or no
+    /// downgrades were recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub downgrades: Vec<String>,
+    /// J-14: first divergent position (0-based) from the latest
+    /// `FirstDivergenceLocated` row for this session_id. `None` when no
+    /// divergence row exists (T0 action-faithful or LEGACY).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divergence_position: Option<u64>,
+    /// J-14: expected value (hex) at the divergence position. `None` when no
+    /// divergence row exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divergence_expected: Option<String>,
+    /// J-14: actual value (hex) at the divergence position. `None` when no
+    /// divergence row exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divergence_actual: Option<String>,
 }
 
 /// G-8 — DTO for [`SsbViewer::attestations`]. One row per signed in-toto v1
@@ -6253,5 +6378,105 @@ mod tests {
         assert!(validate_request_id(i64::MAX as u64).is_ok());
         assert!(validate_request_id((i64::MAX as u64) + 1).is_err());
         assert!(validate_request_id(u64::MAX).is_err());
+    }
+
+    // J-14: run_artifacts joins latest ReproPackEvent rows by session_id. This
+    // test proves (a) a row with a matching TierEvaluated gets tier_effective
+    // populated, and (b) a row with no matching event leaves tier_effective
+    // None (the honest empty state, not a fabricated tier).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_artifacts_joins_repro_pack_tier_evaluated() {
+        use crate::ssb::{ReproPackKind, ReproPackPayload, RunArtifactEmittedPayload};
+
+        let dir = TempDir::new().expect("tempdir");
+        let config = test_config(&dir);
+        let db_path = config.db_path.clone();
+        let ssb = Ssb::new(config, test_clock()).expect("ssb init");
+
+        // Session with a tier verdict row.
+        let run_with_tier = SsbPayload::RunArtifactEmitted(RunArtifactEmittedPayload {
+            root_blake3: "abc".into(),
+            guarantee_level: "verify_divergence".into(),
+            gate_count: 1,
+            seed: 7,
+            session_id: "sess-tier".into(),
+            objective_hash: None,
+        });
+        ssb.write_payload("agent-0", 0, run_with_tier, vec![])
+            .await
+            .expect("write run_artifact");
+        let tier_evt = SsbPayload::ReproPackEvent(ReproPackPayload {
+            kind: ReproPackKind::TierEvaluated,
+            tier_effective: Some("action_faithful".into()),
+            tier_requested: Some("token_faithful".into()),
+            downgrades: vec!["token_faithful->action_faithful:no_sampling_seed".into()],
+            divergence_position: None,
+            expected_value: None,
+            actual_value: None,
+            template_hash: None,
+            expected_sequence_hash: None,
+            actual_sequence_hash: None,
+            fixture_path: None,
+            fixture_blake3: None,
+            session_id: "sess-tier".into(),
+            ts_ms: 1,
+        });
+        ssb.write_payload("agent-0", 0, tier_evt, vec![])
+            .await
+            .expect("write tier_evaluated");
+
+        // Session with NO ReproPackEvent row.
+        let run_no_tier = SsbPayload::RunArtifactEmitted(RunArtifactEmittedPayload {
+            root_blake3: "def".into(),
+            guarantee_level: "reproducible_action_stream".into(),
+            gate_count: 2,
+            seed: 9,
+            session_id: "sess-legacy".into(),
+            objective_hash: None,
+        });
+        ssb.write_payload("agent-0", 0, run_no_tier, vec![])
+            .await
+            .expect("write run_artifact no-tier");
+        drop(ssb);
+
+        let viewer = SsbViewer::open(&db_path).expect("viewer open");
+        let rows = viewer.run_artifacts(100).expect("run_artifacts");
+        // Ordering is seq DESC, so the no-tier row is newest (written last).
+        let no_tier = rows
+            .iter()
+            .find(|r| r.session_id == "sess-legacy")
+            .expect("sess-legacy row present");
+        assert!(
+            no_tier.tier_effective.is_none(),
+            "no ReproPackEvent row -> tier_effective stays None (honest empty)"
+        );
+        assert!(
+            no_tier.downgrades.is_empty(),
+            "no ReproPackEvent row -> downgrades stays empty"
+        );
+
+        let with_tier = rows
+            .iter()
+            .find(|r| r.session_id == "sess-tier")
+            .expect("sess-tier row present");
+        assert_eq!(
+            with_tier.tier_effective.as_deref(),
+            Some("action_faithful"),
+            "matching TierEvaluated row populates tier_effective"
+        );
+        assert_eq!(
+            with_tier.tier_requested.as_deref(),
+            Some("token_faithful"),
+            "matching TierEvaluated row populates tier_requested"
+        );
+        assert_eq!(
+            with_tier.downgrades.len(),
+            1,
+            "matching TierEvaluated row populates downgrades"
+        );
+        assert!(
+            with_tier.divergence_position.is_none(),
+            "no FirstDivergenceLocated row -> divergence_position stays None"
+        );
     }
 }

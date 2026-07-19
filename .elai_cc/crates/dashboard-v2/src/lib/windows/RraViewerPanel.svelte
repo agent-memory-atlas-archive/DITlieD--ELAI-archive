@@ -98,6 +98,81 @@
     }
   }
 
+  // J-14: tier verdict badge (mirrors CLI render_tier_text at rra_cmd.rs:326).
+  // tier_effective is a snake_case TierVerdictLabel joined from the latest
+  // TierEvaluated ReproPackEvent row for this session. Honest "—" when absent
+  // (LEGACY receipts or verify path SSB emit still DARK).
+  function tierLabel(
+    t: string | null | undefined,
+    downgrades: string[] | null | undefined
+  ): string {
+    if (t === 'downgraded' && downgrades && downgrades.length > 0) {
+      return 'DOWNGRADED';
+    }
+    switch (t) {
+      case 'action_faithful':
+        return 'T0 action-faithful';
+      case 'token_faithful':
+        return 'T1 token-faithful';
+      case 'score_faithful':
+        return 'T2 score-faithful';
+      case 'missing_determinism_basis':
+        return 'MISSING-DETERMINISM-BASIS';
+      case null:
+      case undefined:
+        return '—';
+      default:
+        return t;
+    }
+  }
+
+  function tierClass(
+    t: string | null | undefined,
+    downgrades: string[] | null | undefined
+  ): string {
+    if (t === 'downgraded' && downgrades && downgrades.length > 0) {
+      return 'tier tier-downgraded';
+    }
+    switch (t) {
+      case 'action_faithful':
+        return 'tier tier-t0';
+      case 'token_faithful':
+        return 'tier tier-t1';
+      case 'score_faithful':
+        return 'tier tier-t2';
+      case 'missing_determinism_basis':
+        return 'tier tier-missing';
+      case null:
+      case undefined:
+        return 'tier tier-none';
+      default:
+        return 'tier';
+    }
+  }
+
+  function tierTitle(
+    t: string | null | undefined,
+    downgrades: string[] | null | undefined
+  ): string {
+    if (t == null) {
+      return 'no tier verdict row (LEGACY or verify not run)';
+    }
+    const dg = downgrades && downgrades.length > 0 ? downgrades.join('; ') : '';
+    if (t === 'downgraded') {
+      return dg ? `downgrades: ${dg}` : 'downgraded (no downgrade detail)';
+    }
+    return dg ? `downgrades: ${dg}` : t;
+  }
+
+  // J-14: first-divergence line (mirrors CLI rra_cmd.rs:411-419). Honest "—"
+  // when divergence_position is absent (T0 action-faithful or LEGACY).
+  function divergenceText(row: RunArtifact): string {
+    if (row.divergence_position == null) return '—';
+    const exp = row.divergence_expected ?? '';
+    const got = row.divergence_actual ?? '';
+    return `div @ pos ${row.divergence_position}: expected ${exp}, got ${got}`;
+  }
+
   let total = $derived(rows ? rows.length : 0);
 
   onMount(() => {
@@ -153,10 +228,12 @@
             <th>Time</th>
             <th>Session</th>
             <th>Guarantee</th>
+            <th>Tier</th>
             <th class="num">Gates</th>
             <th class="num">Seed</th>
             <th>Root (blake3)</th>
             <th>Objective</th>
+            <th>Divergence</th>
           </tr>
         </thead>
         <tbody>
@@ -170,6 +247,12 @@
                   title={row.guarantee_level}>{guaranteeLabel(row.guarantee_level)}</span
                 >
               </td>
+              <td class="tier-cell">
+                <span
+                  class={tierClass(row.tier_effective, row.downgrades)}
+                  title={tierTitle(row.tier_effective, row.downgrades)}>{tierLabel(row.tier_effective, row.downgrades)}</span
+                >
+              </td>
               <td class="num">{row.gate_count}</td>
               <td class="num">{row.seed}</td>
               <td class="root-cell" title={row.root_blake3}>{shortHash(row.root_blake3)}</td>
@@ -179,6 +262,9 @@
                 {:else}
                   <span class="badge badge-sealed" title={row.objective_hash}>{row.objective_hash.slice(0, 8)}</span>
                 {/if}
+              </td>
+              <td class="divergence-cell" title={divergenceText(row)}>
+                {divergenceText(row)}
               </td>
             </tr>
           {/each}
@@ -355,6 +441,66 @@
     background: var(--pass-ghost);
     color: var(--pass);
     border: 1px solid var(--pass-soft);
+  }
+
+  /* J-14: tier verdict badge + divergence cell */
+  .tier-cell,
+  .divergence-cell {
+    white-space: nowrap;
+  }
+
+  .divergence-cell {
+    color: var(--text-secondary);
+    font-size: 10px;
+  }
+
+  .tier {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .tier-t0 {
+    background: rgba(110, 180, 140, 0.15);
+    border-color: rgba(110, 180, 140, 0.4);
+    color: rgb(110, 180, 140);
+  }
+
+  .tier-t1 {
+    background: rgba(110, 160, 220, 0.15);
+    border-color: rgba(110, 160, 220, 0.4);
+    color: rgb(110, 160, 220);
+  }
+
+  .tier-t2 {
+    background: rgba(170, 130, 220, 0.15);
+    border-color: rgba(170, 130, 220, 0.4);
+    color: rgb(170, 130, 220);
+  }
+
+  .tier-missing {
+    background: rgba(220, 80, 80, 0.15);
+    border-color: rgba(220, 80, 80, 0.5);
+    color: rgb(220, 80, 80);
+  }
+
+  .tier-downgraded {
+    background: rgba(220, 160, 80, 0.15);
+    border-color: rgba(220, 160, 80, 0.5);
+    color: rgb(220, 160, 80);
+  }
+
+  .tier-none {
+    color: var(--text-secondary);
+    font-weight: 400;
+    border-color: transparent;
+    background: transparent;
   }
 
   .error-banner {
