@@ -365,6 +365,7 @@ pub mod recovery_recipes;
 // F-gate evidence manifest + blake3 root into a portable .rra; verify_rra
 // re-checks it offline. CONSUMES F-1/F-4/F-9/F-10 verdict hashes (GD-1).
 pub mod rra;
+pub mod rra_emit;
 pub mod rra_export;
 pub mod rra_tiers;
 // G-8 (SCHEMA_VERSION 213): signed in-toto v1 provenance attestation. Re-expresses
@@ -2072,6 +2073,15 @@ pub use rra::{
     verify_artifact_with_objective, verify_rra, write_rra,
     GateVerdictHash, GuaranteeLevel, ReplayVerdict, RraError, RraEvent, RunArtifact,
     RRA_COMPRESSION_DEFERRED, RRA_FORMAT_VERSION, RRA_HEX_PREFIX_LEN,
+};
+// J-14 S5: pure ReproPackEvent payload builders (TierEvaluated +
+// FirstDivergenceLocated). No Ssb handle, no async write; the CLI / orchestrator
+// layer owns the ssb.write_payload call. Re-exported so rra_cmd.rs and contract
+// tests can build payloads without reaching into `orchestrator::rra_emit`
+// internals.
+pub use rra_emit::{
+    build_first_divergence_payload, build_tier_evaluated_payload, downgrades_wire,
+    tier_effective_wire, tier_label_wire,
 };
 // G-8: signed in-toto v1 provenance attestation public surface. Re-exported so
 // the cli verify_attestation_cmd + run_subcommand emit + dashboard-v2 commands_g8.rs

@@ -33,7 +33,7 @@ use elai_orchestrator::sim_real_parity::{
     verify_replay_golden, EventDigest, EventLog, SimRealInput, SimRealVerdictKind,
     SIM_REAL_PARITY_RULE_ID,
 };
-use elai_orchestrator::ssb::{Ssb, SsbConfig};
+use elai_orchestrator::ssb::{Ssb, SsbConfig, SsbPayload, system_time_ms_i64};
 
 use crate::args::{
     CliOutputFormat, GoldenDemoMode, RerunDemoMode, ReplayAction, ReplayVerifyTier,
@@ -282,6 +282,13 @@ fn run_verify(
             render_outcome_text(path, &art, &outcome, tier_requested);
         }
     }
+    // J-14 S5: emit ReproPackEvent SSB rows (TierEvaluated +, on divergence,
+    // FirstDivergenceLocated) for downstream observability. Best-effort: a
+    // write failure is warned, never fatal (the verify exit contract below is
+    // the load-bearing signal). Mirrors the H-23 run_verify_rerun Ssb open +
+    // tokio block_on pattern; session_id is the artifact's own session, not a
+    // demo constant.
+    crate::rra_verify_emit::emit_j14_verify_repro_pack_events(&art, &outcome, tier_requested);
     // Exit non-zero on any non-Verified binary verdict so CI can gate on it.
     // D-016: ObjectiveUnchecked is NON-fatal (exit 0) — the artifact is
     // cryptographically intact; only the objective-staleness check is skipped
