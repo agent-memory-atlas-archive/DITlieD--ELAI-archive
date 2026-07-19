@@ -285,6 +285,7 @@ llamacpp_ep_detected
 llamacpp_subprocess_killed
 llamacpp_subprocess_spawned
 local_cloud_routing_event
+local_determinism_event
 local_lane_e2e_measured
 lock_acquired
 lock_contested
@@ -301,7 +302,6 @@ mcp_llm_guard_blocked
 mcp_pin_version_refused
 mcp_rug_pull_blocked
 mcp_sanitization_rule_applied
-mcp_scan_classifier_blocked
 mcp_schema_budget_measured
 mcp_schema_pin_violation
 mcp_server_connected

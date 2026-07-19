@@ -1554,6 +1554,7 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // `elai bench hallucination-delta`; 585 -> 586.
     SsbActionType::HallucinationDeltaMeasured,
     SsbActionType::LocalLaneE2eMeasured,
+    SsbActionType::LocalDeterminismEvent(LocalDeterminismKind::BatchInvariantEnabled),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

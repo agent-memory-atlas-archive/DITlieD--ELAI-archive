@@ -1564,6 +1564,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::ModelRefreshCadence => (),
         SsbActionType::LocalLaneE2eMeasured => (),
         SsbActionType::McpScanClassifierBlocked => (),
+        SsbActionType::LocalDeterminismEvent(_) => (),
     }
 }
 

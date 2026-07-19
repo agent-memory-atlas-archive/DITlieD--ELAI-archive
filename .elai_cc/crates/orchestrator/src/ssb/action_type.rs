@@ -4774,6 +4774,11 @@ pub enum SsbActionType {
     /// functional pass over the 4B sidecar. Flat beacon. TOTAL_VARIANTS 586
     /// -> 587.
     LocalLaneE2eMeasured,
+    /// J-13 (SCHEMA_VERSION 279): local-lane determinism telemetry event.
+    /// Pattern-2 single-variant 4-arm [`LocalDeterminismKind`] discriminator
+    /// carried on the payload. Emitted from the local-lane e2e runner and
+    /// determinism audit probes. TOTAL_VARIANTS 587 -> 588.
+    LocalDeterminismEvent(LocalDeterminismKind),
 }
 
 impl SsbActionType {
@@ -5712,6 +5717,8 @@ impl SsbActionType {
             // PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): local-lane
             // e2e functional pass flat beacon.
             Self::LocalLaneE2eMeasured => "local_lane_e2e_measured",
+            // J-13 (SCHEMA_VERSION 279): local-lane determinism telemetry event.
+            Self::LocalDeterminismEvent(_) => "local_determinism_event",
         }
     }
 }
@@ -6568,6 +6575,10 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // PS-READINESS-E2ERUNNER Slice B (SCHEMA_VERSION 278): local-lane e2e
         // functional pass flat beacon.
         "local_lane_e2e_measured" => Ok(SsbActionType::LocalLaneE2eMeasured),
+        // J-13 (SCHEMA_VERSION 279): local-lane determinism telemetry event.
+        "local_determinism_event" => Ok(SsbActionType::LocalDeterminismEvent(
+            LocalDeterminismKind::BatchInvariantEnabled,
+        )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

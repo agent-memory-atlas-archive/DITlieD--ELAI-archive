@@ -5507,7 +5507,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- PS-READINESS E2ERUNNER (SCHEMA_VERSION 278): local-lane-e2e functional
         -- beacon. Emitted by bench_local_lane_e2e::emit_beacon_and_rra from
         -- CliAction::BenchLocalLaneE2e. Drives the 4B :8181 lane end to end.
-        'local_lane_e2e_measured'
+        'local_lane_e2e_measured',
+        -- J-13 (SCHEMA_VERSION 279): local-lane determinism telemetry event.
+        -- Pattern-2 single-variant 4-arm Kind discriminator on the payload.
+        -- Emitted from the local-lane e2e runner and determinism audit probes.
+        'local_determinism_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

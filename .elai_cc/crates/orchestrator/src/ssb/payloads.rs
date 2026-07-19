@@ -3763,6 +3763,11 @@ pub enum SsbPayload {
     /// discriminator). Carries the REAL compile + test exit codes + a lane
     /// tag (model + host). TOTAL_VARIANTS 586 -> 587.
     LocalLaneE2eMeasured(LocalLaneE2eMeasuredPayload),
+    /// J-13 (SCHEMA_VERSION 279): local-lane determinism telemetry event.
+    /// Pattern-2 single-variant 4-arm [`LocalDeterminismKind`] discriminator
+    /// carried on the payload. Emitted from the local-lane e2e runner and
+    /// determinism audit probes. TOTAL_VARIANTS 587 -> 588.
+    LocalDeterminismEvent(LocalDeterminismEventPayload),
 }
 
 impl SsbPayload {
@@ -4585,6 +4590,7 @@ impl SsbPayload {
             Self::ModelRefreshCadence(_) => SsbActionType::ModelRefreshCadence,
             Self::HallucinationDeltaMeasured(_) => SsbActionType::HallucinationDeltaMeasured,
             Self::LocalLaneE2eMeasured(_) => SsbActionType::LocalLaneE2eMeasured,
+            Self::LocalDeterminismEvent(ref p) => SsbActionType::LocalDeterminismEvent(p.kind),
         }
     }
 }
@@ -20283,4 +20289,34 @@ pub struct LocalLaneE2eMeasuredPayload {
     pub test_exit_code: i32,
     pub functional_pass: bool,
     pub schema_version: u32,
+}
+
+/// J-13 (SCHEMA_VERSION 279): local-lane determinism telemetry event Kind.
+/// Pattern-2 single-variant discriminator carried on
+/// [`LocalDeterminismEventPayload`]. Emitted from the local-lane e2e runner
+/// and determinism audit probes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalDeterminismKind {
+    BatchInvariantEnabled,
+    SeededSamplingApplied,
+    DeterminismProbeRun,
+    DeterminismDivergence,
+}
+
+/// J-13 (SCHEMA_VERSION 279): payload for
+/// [`SsbActionType::LocalDeterminismEvent`]. Pattern-2 single-variant
+/// 4-arm [`LocalDeterminismKind`] discriminator on the payload. Carries
+/// the model + host lane tag, the suite + seed under test, probe +
+/// divergence counts, and freeform notes.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LocalDeterminismEventPayload {
+    pub kind: LocalDeterminismKind,
+    pub model: String,
+    pub host: String,
+    pub suite: String,
+    pub seed: u64,
+    pub probe_count: u32,
+    pub divergence_count: u32,
+    pub notes: String,
 }
