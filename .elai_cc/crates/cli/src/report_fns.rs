@@ -1253,7 +1253,7 @@ pub(crate) fn emit_role_contract_applied(
         ApplyOutcome::PersonaStripped => RoleContractAppliedKind::PersonaStripped,
         ApplyOutcome::PersonaRetained => RoleContractAppliedKind::PersonaRetained,
     };
-    let role_slug = format!("{:?}", role).to_ascii_lowercase();
+    let role_slug = agent_role_snake_str(role).to_string();
     let payload = SsbPayload::RoleContractApplied(RoleContractAppliedPayload {
         kind,
         role: role_slug,
