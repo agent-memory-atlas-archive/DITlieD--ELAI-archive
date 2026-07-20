@@ -369,6 +369,9 @@ pub fn decode_eventstream_frame(frame: &[u8]) -> Result<EventStreamMessage, Bedr
 
     let headers_end = HEADER_BLOCK_OFFSET + headers_len;
     let payload_end = total_len - MSG_CRC_LEN;
+    if headers_end > payload_end {
+        return Err(BedrockError::HeaderBlockOverrun(headers_end));
+    }
     let headers_bytes = &frame[HEADER_BLOCK_OFFSET..headers_end];
     let payload = frame[headers_end..payload_end].to_vec();
 
