@@ -5902,12 +5902,127 @@ pub struct LiveUsageDto {
 /// loop in this file (extract_text_delta arm) and the CLI TextDelta arm in
 /// `runtime_client.rs`. Reset on `message_stop` so each turn starts at zero.
 #[tauri::command]
-pub fn get_live_usage() -> CmdResult<LiveUsageDto> {
+pub fn get_live_usage(
+    state: State<'_, AppState>,
+) -> CmdResult<LiveUsageDto> {
     let s = elai_orchestrator::live_usage_gauge::snapshot();
+    // J-29 SLICE-4: emit a usage_badge canvas op on get_live_usage poll if
+    // the rate-limit floor has elapsed. The frontend CanvasWindow polls
+    // get_live_usage at ~2s as the badge live-refresh fallback; this emit
+    // pushes the same numbers through the canvas op stream so badges
+    // rendered off canvasDispatcher.pendingOps stay in sync. session_total
+    // is left to the frontend fold of get_usage_rollup (the rollup fold is
+    // not cheap to run on every poll); we pass 0 here and the frontend
+    // prefers its client-side fold for the session_total display.
+    maybe_emit_usage_badge(&state, 0, s.output_tokens, s.active_streams);
     Ok(LiveUsageDto {
         output_tokens: s.output_tokens,
         active_streams: s.active_streams,
     })
+}
+
+// J-29 SLICE-4: process-global rate-limit state for usage_badge emits.
+// Last emit timestamp (ms since UNIX_EPOCH). AtomicI64 so the rate-limit
+// check is lock-free and safe from the get_live_usage + stream_chat paths.
+static USAGE_BADGE_LAST_EMIT_MS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+
+/// J-29 SLICE-4: rate-limited usage_badge emit. Emits at most once per
+/// `USAGE_BADGE_EMIT_MIN_GAP_MS` (2s). Reads the live gauge for live_value
+/// when the caller passes `live_value = 0` (the get_live_usage path passes
+/// the snapshot it already read; stream_chat passes 0 so this fn reads the
+/// gauge fresh). Best-effort: no SSB writer => silent no-op (the badge
+/// falls back to the get_live_usage poll numbers on the frontend).
+fn maybe_emit_usage_badge(
+    state: &AppState,
+    session_total: u64,
+    live_value: u64,
+    active_streams: u64,
+) {
+    let Some(writer) = state.writer.as_ref() else { return };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let last = USAGE_BADGE_LAST_EMIT_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if now - last < elai_orchestrator::canvas_dispatcher::USAGE_BADGE_EMIT_MIN_GAP_MS {
+        return;
+    }
+    // CAS to claim this emit slot; a concurrent caller that loses the race
+    // simply skips (the next poll will pick it up).
+    let _ = USAGE_BADGE_LAST_EMIT_MS.compare_exchange(
+        last,
+        now,
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let live = if live_value == 0 {
+        elai_orchestrator::live_usage_gauge::snapshot().output_tokens
+    } else {
+        live_value
+    };
+    let streams = if active_streams == 0 {
+        elai_orchestrator::live_usage_gauge::snapshot().active_streams
+    } else {
+        active_streams
+    };
+    let session_id = state
+        .project_id
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|_| "default".to_string());
+    elai_orchestrator::canvas_dispatcher::emit_usage_badge(
+        writer,
+        session_total,
+        live,
+        streams,
+        &session_id,
+    );
+}
+
+/// J-29 SLICE-4: rate-limited usage_badge emit from inside the spawned
+/// stream_chat task (where `State<'_>` is not available but the cloned
+/// `writer: Option<Arc<Ssb>>` + project_id are). Same rate-limit floor as
+/// `maybe_emit_usage_badge`. No-op when `writer` is None.
+fn maybe_emit_usage_badge_with_writer(
+    writer: Option<&std::sync::Arc<elai_orchestrator::Ssb>>,
+    session_id: &str,
+    session_total: u64,
+    live_value: u64,
+    active_streams: u64,
+) {
+    let Some(w) = writer else { return };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let last = USAGE_BADGE_LAST_EMIT_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if now - last < elai_orchestrator::canvas_dispatcher::USAGE_BADGE_EMIT_MIN_GAP_MS {
+        return;
+    }
+    let _ = USAGE_BADGE_LAST_EMIT_MS.compare_exchange(
+        last,
+        now,
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let live = if live_value == 0 {
+        elai_orchestrator::live_usage_gauge::snapshot().output_tokens
+    } else {
+        live_value
+    };
+    let streams = if active_streams == 0 {
+        elai_orchestrator::live_usage_gauge::snapshot().active_streams
+    } else {
+        active_streams
+    };
+    elai_orchestrator::canvas_dispatcher::emit_usage_badge(
+        w,
+        session_total,
+        live,
+        streams,
+        session_id,
+    );
 }
 
 /// C-5 follow-on: latest cloud routing status surfaced to CloudPanel.
@@ -6264,10 +6379,29 @@ pub async fn stream_chat(
     // remove its own entry on natural completion (cancel_stream handles the
     // abort path). Without this, a completed stream leaks its AbortHandle.
     let active_streams_clone = state.active_streams.clone();
+    // J-29 SLICE-4: clone the SSB writer + project_id for usage_badge emits
+    // from inside the spawned stream task (State<'_> cannot cross the await
+    // boundary). Both are Option/Arc clones, cheap.
+    let writer_for_badge = state.writer.clone();
+    let project_id_for_badge = state
+        .project_id
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|_| "default".to_string());
 
     let handle = tokio::task::spawn(async move {
         // J-29 SLICE-3: mark stream active in the live usage gauge.
         elai_orchestrator::live_usage_gauge::begin_stream();
+        // J-29 SLICE-4: emit a usage_badge at stream start so the badge
+        // reflects the new active stream immediately (not waiting for the
+        // next get_live_usage poll). Rate-limited inside the helper.
+        maybe_emit_usage_badge_with_writer(
+            writer_for_badge.as_ref(),
+            &project_id_for_badge,
+            0,
+            0,
+            1,
+        );
         // B-14 wiring-close: forward thinking/effort into the sidecar
         // request body via the extracted helper (unit-tested).
         let request_body = build_stream_request_body(
@@ -6342,6 +6476,18 @@ pub async fn stream_chat(
                                     "stream_id": stream_id_clone,
                                     "event_type": "response_complete"
                                 }),
+                            );
+                            // J-29 SLICE-4: emit a final usage_badge at
+                            // message_stop so the badge captures the
+                            // just-finished turn's live_value before
+                            // reset_turn zeroes the gauge. Rate-limited.
+                            let snap = elai_orchestrator::live_usage_gauge::snapshot();
+                            maybe_emit_usage_badge_with_writer(
+                                writer_for_badge.as_ref(),
+                                &project_id_for_badge,
+                                0,
+                                snap.output_tokens,
+                                snap.active_streams,
                             );
                             elai_orchestrator::live_usage_gauge::end_stream();
                             elai_orchestrator::live_usage_gauge::reset_turn();

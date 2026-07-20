@@ -386,6 +386,75 @@ fn sanitize_node_id(tool_id: &str, node_id: &str) -> Result<(), CanvasOpError> {
 }
 
 // ---------------------------------------------------------------------------
+// J-29 SLICE-4: usage_badge emit helper (reuses AnnotationAdded, no new variant)
+// ---------------------------------------------------------------------------
+//
+// Emits a CanvasOpApplied SSB row with kind=AnnotationAdded and
+// op_data={kind:"usage_badge", session_total, live_value, active_streams}.
+// The frontend's arch_canvas_ops.ts 'annotation_added' case branches on
+// op_data['kind'] === 'usage_badge' BEFORE the annotation fallback, so this
+// payload is rendered as a free-floating badge overlay (not a node annotation)
+// and does NOT require node_id to resolve in the graph.
+//
+// session_total may be 0 at emit time when the rollup fold is expensive; the
+// frontend folds get_usage_rollup client-side for the session_total display.
+// live_value comes from live_usage_gauge::snapshot().output_tokens.
+// Numbers are advisory char/token counts from the live gauge, not sealed
+// provider tokens.
+
+/// Rate-limit floor: minimum gap between two usage_badge emits (milliseconds).
+pub const USAGE_BADGE_EMIT_MIN_GAP_MS: i64 = 2_000;
+
+/// Construct and write a usage_badge CanvasOpApplied SSB row. Best-effort:
+/// SSB write failure is logged, not propagated. Mirrors the SSB write block
+/// in `InProcessCanvasDispatcher::dispatch_canvas_op` (lines 140-177) but
+/// builds the payload directly, bypassing decode_and_validate (no
+/// CanvasAnnotateRequest decode, no mode-namespace gate — the badge is a
+/// dashboard-internal telemetry op, not a model-emitted canvas mutation).
+pub fn emit_usage_badge(
+    ssb: &Arc<Ssb>,
+    session_total: u64,
+    live_value: u64,
+    active_streams: u64,
+    session_id: &str,
+) {
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let op_data = serde_json::json!({
+        "kind": "usage_badge",
+        "session_total": session_total,
+        "live_value": live_value,
+        "active_streams": active_streams,
+    });
+    let payload = SsbPayload::CanvasOpApplied(CanvasOpPayload {
+        kind: CanvasOpKind::AnnotationAdded,
+        node_id: String::new(),
+        op_data: op_data.clone(),
+        mode: ARCH_NAMESPACE.to_owned(),
+        task_id: "usage_badge".to_owned(),
+        session_id: session_id.to_owned(),
+    });
+    let writer = ssb.clone();
+    let _ = tokio::runtime::Handle::try_current().map(|h| {
+        h.spawn(async move {
+            if let Err(e) = writer
+                .write_payload(
+                    "canvas_dispatcher",
+                    ts_ms.try_into().unwrap_or(i64::MAX),
+                    payload,
+                    vec![],
+                )
+                .await
+            {
+                warn!(error = %e, "emit_usage_badge: SSB write failed (best-effort)");
+            }
+        })
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
 
@@ -551,5 +620,12 @@ mod tests {
         let id = blake3_op_id("canvas_create_node", "arch", "svc-api", 1234567890);
         assert!(id.starts_with("cop-"), "op_id prefix: {id}");
         assert_eq!(id.len(), "cop-".len() + 16);
+    }
+
+    #[test]
+    fn usage_badge_min_gap_is_2s() {
+        // Guards the rate-limit floor against an accidental drift that would
+        // either flood the SSB or starve the badge.
+        assert_eq!(USAGE_BADGE_EMIT_MIN_GAP_MS, 2_000);
     }
 }

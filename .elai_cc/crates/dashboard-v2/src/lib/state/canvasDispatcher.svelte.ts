@@ -22,6 +22,7 @@
 
 import { get_canvas_ops } from '../api/stub';
 import type { CanvasOpDto } from '../api/stub';
+import { registerUsageBadgeSetter, type UsageBadgeState } from '../canvas/arch_canvas_ops';
 
 // ---------------------------------------------------------------------------
 // Named constants (no magic numbers — CLAUDE.md HARD RULE)
@@ -45,6 +46,20 @@ function createCanvasDispatcherStore() {
   let pendingOps = $state<CanvasOpDto[]>([]);
   let lastSeenTs = $state<number>(0);
   let pollerHandle: ReturnType<typeof setInterval> | null = null;
+
+  // J-29 SLICE-4: usage badge state. Updated by applyOpToGraph (via the
+  // registered setter) when a usage_badge AnnotationAdded op is drained,
+  // and by CanvasWindow's get_live_usage poll fallback. CanvasWindow reads
+  // usageBadge reactively to render the chrome badge.
+  let usageBadge = $state<UsageBadgeState>({ session_total: 0, live_value: 0 });
+
+  function setUsageBadge(state: UsageBadgeState): void {
+    usageBadge = { ...state };
+  }
+
+  // Register the setter so arch_canvas_ops (a pure module without Svelte
+  // runtime access) can update this store without importing it directly.
+  registerUsageBadgeSetter(setUsageBadge);
 
   // ---------------------------------------------------------------------------
   // sanitizeCanvasOp
@@ -143,6 +158,10 @@ function createCanvasDispatcherStore() {
     get pendingOps() {
       return pendingOps;
     },
+    get usageBadge() {
+      return usageBadge;
+    },
+    setUsageBadge,
     startPolling,
     stopPolling,
     drainPendingOps,

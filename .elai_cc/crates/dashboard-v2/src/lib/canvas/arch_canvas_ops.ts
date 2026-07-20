@@ -17,6 +17,30 @@
 import type { CanvasOpDto } from '../api/stub';
 
 // ---------------------------------------------------------------------------
+// Usage badge state (J-29 SLICE-4)
+//
+// arch_canvas_ops.ts is a pure module tested via node:test without a Svelte
+// runtime (see file header). It cannot import from canvasDispatcher.svelte.ts
+// (which uses $state runes). Instead, the badge setter is injected via
+// registerUsageBadgeSetter at store init time. This keeps the pure-module
+// test boundary intact while letting applyOpToGraph update the badge store.
+// ---------------------------------------------------------------------------
+
+export interface UsageBadgeState {
+  session_total: number;
+  live_value: number;
+  active_streams?: number;
+}
+
+type UsageBadgeSetter = (state: UsageBadgeState) => void;
+
+let _usageBadgeSetter: UsageBadgeSetter | null = null;
+
+export function registerUsageBadgeSetter(setter: UsageBadgeSetter | null): void {
+  _usageBadgeSetter = setter;
+}
+
+// ---------------------------------------------------------------------------
 // Minimal structural interface for a graphology DirectedGraph
 // (allows injecting a mock in unit tests without importing graphology)
 // ---------------------------------------------------------------------------
@@ -120,6 +144,28 @@ export function applyOpToGraph(
     }
 
     case 'annotation_added': {
+      // J-29 SLICE-4: usage_badge reuses AnnotationAdded without a new
+      // CanvasOpKind. The badge is free-floating chrome, NOT node-anchored,
+      // so it must NOT hit the dangling-id guard below. Branch on op_data.kind
+      // BEFORE the node_id-in-graph check. Do NOT fix the pre-existing
+      // text/annotation key mismatch (separate bug, out of scope).
+      if (op.op_data['kind'] === 'usage_badge') {
+        const state: UsageBadgeState = {
+          session_total: typeof op.op_data['session_total'] === 'number'
+            ? Number(op.op_data['session_total'])
+            : 0,
+          live_value: typeof op.op_data['live_value'] === 'number'
+            ? Number(op.op_data['live_value'])
+            : 0,
+        };
+        if (typeof op.op_data['active_streams'] === 'number') {
+          state.active_streams = Number(op.op_data['active_streams']);
+        }
+        if (_usageBadgeSetter !== null) {
+          _usageBadgeSetter(state);
+        }
+        return { ok: true };
+      }
       if (!graph.hasNode(op.node_id)) {
         return {
           ok: false,

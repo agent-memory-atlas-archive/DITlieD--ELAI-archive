@@ -45,6 +45,10 @@
   // canvasViewState.svelte.ts says "CanvasWindow.svelte reads and drains
   // pendingViewEvents" — this $effect + drain below is that consumer.
   import { canvasViewState } from '$lib/state/canvasViewState.svelte';
+  // J-29 SLICE-4: usage badge state (drained from usage_badge AnnotationAdded
+  // ops) + get_live_usage poll fallback for the code-mode header chrome.
+  import { canvasDispatcher } from '$lib/state/canvasDispatcher.svelte';
+  import { get_live_usage } from '$lib/api/stub';
   // H-15: renderer registry (resolves view_type -> Svelte component constructor).
   import { resolveRenderer, registerRenderer } from '$lib/canvas/renderer_registry';
   // H-15: ComparisonBoard — registered renderer for view_type='comparison_board'.
@@ -169,6 +173,15 @@
   let sigmaInstance: InstanceType<typeof import('sigma').Sigma> | null = null;
   let fpsInterval: ReturnType<typeof setInterval> | null = null;
   let frameCount = 0;
+
+  // J-29 SLICE-4: usage badge poll fallback. The primary source is the
+  // usage_badge AnnotationAdded op drained via canvasDispatcher.usageBadge
+  // (updated by applyOpToGraph). When no badge op has fired recently, poll
+  // get_live_usage every USAGE_POLL_MS to keep live_value fresh. The badge
+  // prefers the SSB-driven numbers when present (they carry session_total,
+  // which get_live_usage does not).
+  const USAGE_POLL_MS = 2_000;
+  let usagePollHandle: ReturnType<typeof setInterval> | null = null;
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -364,6 +377,27 @@
     // H-15: start polling get_canvas_views for ViewSpawned events.
     // The $effect drain above processes events as they arrive.
     canvasViewState.startPolling();
+    // J-29 SLICE-4: start the get_live_usage poll fallback for the usage badge.
+    // The SSB-driven usage_badge op (via canvasDispatcher.usageBadge) is the
+    // primary source; this poller keeps live_value fresh between badge ops.
+    const pollUsage = async () => {
+      try {
+        const live = await get_live_usage();
+        // Only update live_value from the poll fallback; session_total is not
+        // available from get_live_usage (it lacks a session_total field).
+        // Preserve the SSB-driven session_total when present.
+        const current = canvasDispatcher.usageBadge;
+        canvasDispatcher.setUsageBadge({
+          session_total: current.session_total,
+          live_value: live.output_tokens,
+          active_streams: live.active_streams,
+        });
+      } catch {
+        // Polling failure is non-fatal.
+      }
+    };
+    pollUsage();
+    usagePollHandle = setInterval(pollUsage, USAGE_POLL_MS);
   });
 
   onDestroy(() => {
@@ -375,6 +409,10 @@
     if (fpsInterval !== null) {
       clearInterval(fpsInterval);
       fpsInterval = null;
+    }
+    if (usagePollHandle !== null) {
+      clearInterval(usagePollHandle);
+      usagePollHandle = null;
     }
     if (sigmaInstance !== null) {
       sigmaInstance.kill();
@@ -436,6 +474,12 @@
       {#if fps > 0}
         <span class="canvas-fps" title="Rendered frames per second (sigma WebGL)">{fps} fps</span>
       {/if}
+      <!-- J-29 SLICE-4: usage badge chrome. session_total + live_value from
+           the usage_badge AnnotationAdded op (primary) or get_live_usage poll
+           fallback. SSB-driven numbers win when present. -->
+      <span class="canvas-usage-badge" title="Session output tokens / live output tokens">
+        {canvasDispatcher.usageBadge.session_total.toLocaleString()} sess · {canvasDispatcher.usageBadge.live_value.toLocaleString()} live
+      </span>
       {#if !pageRankKnown}
         <span class="canvas-hint" title="Run 'elai symbol_graph build' to materialise the PageRank table">
           PageRank not yet materialised — run <code>elai symbol_graph build</code>
@@ -561,6 +605,18 @@
   .canvas-error { color: var(--text); }
 
   .canvas-fps {
+    background: var(--d-teal-ghost);
+    color: var(--d-teal-bright);
+    border: 1px solid var(--d-teal-soft);
+    border-radius: var(--r-xs);
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  /* J-29 SLICE-4: usage badge chrome (same family as canvas-fps). */
+  .canvas-usage-badge {
     background: var(--d-teal-ghost);
     color: var(--d-teal-bright);
     border: 1px solid var(--d-teal-soft);
