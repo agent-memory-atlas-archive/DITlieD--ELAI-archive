@@ -267,6 +267,10 @@ fn compute_risk_signals(
     });
     if has_security_domain || has_security_framework {
         signals.risk_level = RiskLevelSignal::High;
+    } else if !profile.domains.is_empty() {
+        signals.risk_level = RiskLevelSignal::Medium;
+    } else {
+        signals.risk_level = RiskLevelSignal::Low;
     }
 
     // Complexity class: driven by the number of changed files.
