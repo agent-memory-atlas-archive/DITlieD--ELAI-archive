@@ -736,6 +736,12 @@ pub mod darwin_admit_loop;
 // and darwin_admit_loop wiring are feature-gated via darwinian-evolve).
 // See workflow/reasoning/H-43-decisions.md.
 pub mod execution_fitness;
+// J-26: sia evaluator ABI + task-pack format. Subprocess evaluator contract:
+// --gen-dir <dir>, writes results.json, missing = hard FAIL (R1/R2).
+// Always compiled (the ABI types + subprocess runner are feature-agnostic; the
+// darwin_admit_loop sibling-channel wiring is feature-gated via
+// darwinian-evolve). See workflow/reasoning/J-26-decisions.md.
+pub mod evaluator_abi;
 // H-45: worst-case / variance-penalized promotion scoring over lineage-diverse
 // verdicts (Coste 2310.02743 WCO/UWO + Eisenstein 2312.09244 + Co-rewarding
 // 2508.00410 + PRMBench 2501.03124 tau calibration). Replaces the candidate's

@@ -196,6 +196,10 @@ pub enum AdmitLoopError {
     /// H-28-WIRE-1: reward-tampering gate error.
     #[error("reward tampering: {0}")]
     RewardTampering(#[from] crate::reward_tampering::RewardTamperingError),
+    /// J-26: evaluator ABI hard FAIL (R1/R2: missing results.json, non-zero
+    /// exit, or no scalar score). Surfaced when ELAI_EVALUATOR_ABI_ENABLE=1.
+    #[error("evaluator abi: {0}")]
+    EvaluatorAbi(#[from] crate::evaluator_abi::AbiError),
 }
 
 // ---------------------------------------------------------------------------
@@ -1145,12 +1149,91 @@ pub async fn run_one_generation<E: EntropySource + ?Sized>(
     // Deterministic RNG for bandit arm selection (seeded from generation seed).
     let mut bandit_rng = SeededRng::new(seed);
 
+    // J-26: evaluator ABI sibling channel. When ELAI_EVALUATOR_ABI_ENABLE=1
+    // AND ELAI_EVALUATOR_ABI_PACK points to a valid task-pack on disk, the
+    // fitness evaluator is invoked as a SUBPROCESS (--gen-dir <dir>) instead
+    // of the in-process scorer. The in-process path stays as fallback when
+    // no pack is supplied (RISK-3). On ABI Err when env is ON: hard FAIL
+    // (R2), never .ok()-away into skip.
+    let abi_pack: Option<crate::evaluator_abi::TaskPack> = {
+        let enabled = std::env::var("ELAI_EVALUATOR_ABI_ENABLE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if !enabled {
+            None
+        } else {
+            let pack_path = std::env::var("ELAI_EVALUATOR_ABI_PACK").ok();
+            match pack_path {
+                Some(p) if !p.is_empty() && std::path::Path::new(&p).is_dir() => {
+                    match crate::evaluator_abi::TaskPack::read_from(std::path::Path::new(&p)) {
+                        Ok(pack) => Some(pack),
+                        Err(e) => {
+                            tracing::error!(
+                                pack = %p,
+                                error = %e,
+                                "J-26 ABI: pack read failed (hard FAIL, R2)"
+                            );
+                            return Err(AdmitLoopError::EvaluatorAbi(e));
+                        }
+                    }
+                }
+                _ => None,
+            }
+        }
+    };
+
     for candidate in candidates {
         // H-43: compute execution-grounded fitness before alpha to get the
         // FitnessEvaluated SSB row (off-agent artifact, R4). The row is emitted
         // regardless of guard outcome (execution fitness is a property of the
         // candidate, not of the guard chain).
-        let h43_fitness = if let Some(ref corpus) = h43_corpus {
+        //
+        // J-26 sibling channel: when the ABI pack is available, invoke the
+        // subprocess evaluator instead of the in-process scorer. The
+        // emit_fitness_row path is REUSED (not re-authored). On ABI Err when
+        // env is ON: hard FAIL (R2), never .ok()-away.
+        let h43_fitness = if let Some(ref pack) = abi_pack {
+            // Per-candidate gen-dir under the system temp dir.
+            let gen_dir = std::env::temp_dir().join(format!(
+                "elai-j26-eval-{}-{}",
+                seed,
+                candidate.variant_label.replace('/', "_")
+            ));
+            std::fs::create_dir_all(&gen_dir).ok();
+            // Write the candidate's eval_log as the gen output for the evaluator.
+            let candidate_out = gen_dir.join("candidate_output.txt");
+            std::fs::write(&candidate_out, &candidate.eval_log).ok();
+            let invocation = crate::evaluator_abi::EvaluatorInvocation::for_gen_dir(pack, &gen_dir);
+            match crate::evaluator_abi::run_evaluator(&invocation) {
+                Ok(results) => {
+                    let test_set_hash = h43_corpus
+                        .as_ref()
+                        .map(|c| c.corpus_blake3)
+                        .unwrap_or([0u8; 32]);
+                    match crate::evaluator_abi::results_to_execution_fitness(
+                        &results, seed, test_set_hash,
+                    ) {
+                        Ok(ef) => Some(ef),
+                        Err(e) => {
+                            tracing::error!(
+                                candidate = %candidate.variant_label,
+                                error = %e,
+                                "J-26 ABI: results_to_execution_fitness failed (hard FAIL, R2)"
+                            );
+                            return Err(AdmitLoopError::EvaluatorAbi(e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        candidate = %candidate.variant_label,
+                        error = %e,
+                        "J-26 ABI: evaluator failed (hard FAIL, R2)"
+                    );
+                    return Err(AdmitLoopError::EvaluatorAbi(e));
+                }
+            }
+        } else if let Some(ref corpus) = h43_corpus {
             candidate.execution_grounded_fitness_for_candidate(corpus, seed).ok()
         } else {
             None
