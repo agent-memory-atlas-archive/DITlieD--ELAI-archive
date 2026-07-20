@@ -98,6 +98,8 @@ import type {
   // J-29 SLICE-2: backend cost + pricing rollups.
   BackendCostRollupResponse,
   PricingRollupResponse,
+  // J-29 SLICE-3: live in-flight token gauge.
+  LiveUsage,
   // C-5 follow-on — Cloud routing status (RouteBlocked / WarnLimitReached / CostEstimate).
   CloudRouteStatus,
   MutationGaugeInfo,
@@ -2155,6 +2157,18 @@ export async function get_pricing_rollup(limit = 500): Promise<PricingRollupResp
     by_agent: [],
     by_tool: [],
   };
+}
+
+// ------------------------------------------------------------------
+// LIVE USAGE GAUGE (J-29 SLICE-3: in-flight token counters, no SSB)
+// ------------------------------------------------------------------
+
+export async function get_live_usage(): Promise<LiveUsage> {
+  logStub('get_live_usage');
+  const live = await tryInvoke<LiveUsage>('get_live_usage');
+  if (live) return live;
+  await delay();
+  return { output_tokens: 0, active_streams: 0 };
 }
 
 // ------------------------------------------------------------------

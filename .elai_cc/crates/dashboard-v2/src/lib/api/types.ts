@@ -2307,6 +2307,14 @@ export interface BackendCostRollupResponse {
   rows: BackendCostRollupRow[];
 }
 
+// J-29 SLICE-3: live in-flight token gauge. Mirrors the Rust
+// `get_live_usage` Tauri command (LiveUsageDto). Advisory snapshot of
+// the process-global AtomicU64 counters; never journaled to the SSB.
+export interface LiveUsage {
+  output_tokens: number;
+  active_streams: number;
+}
+
 // J-29 SLICE-2: per-phase / per-agent / per-tool USD cost rollup. Wire
 // shape mirrors the Rust `get_pricing_rollup` Tauri command
 // (PricingRollupResponseDto). `observability_gate_off` is true when

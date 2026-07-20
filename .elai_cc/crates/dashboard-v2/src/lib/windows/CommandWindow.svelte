@@ -10,9 +10,9 @@
   const EFFORT_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, max: 4 };
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
   import { Pulse } from '../ui/index';
-  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks, load_handoff, get_context_state, rewind_session, timetravel_undo, timetravel_redo, timetravel_restore_files_only, resume_offer, tiered_load_confirm } from '../api/stub';
+  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks, load_handoff, get_context_state, rewind_session, timetravel_undo, timetravel_redo, timetravel_restore_files_only, resume_offer, tiered_load_confirm, get_live_usage } from '../api/stub';
   import type { TopicHandleDto } from '../api/stub';
-  import type { RecentTask, ContextState } from '../api/types';
+  import type { RecentTask, ContextState, LiveUsage } from '../api/types';
   // E-4 chat UX critique surfaces. PinnedRulesPanel mounts as a sidebar
   // strip above the stream; ClaimConfidenceChip / HonestCorrectionBlock /
   // SycophancyGuardBadge are bubble-level inline components rendered
@@ -48,6 +48,10 @@
   // H-51: open handoff topic detected at startup.
   let handoffOffer = $state<TopicHandleDto | null>(null);
   let handoffDismissed = $state(false);
+  // J-29 SLICE-3: live in-flight token gauge. Polled every 1s while a
+  // stream is active; the gauge resets on turn end so zeros render
+  // between turns.
+  let liveUsage = $state<LiveUsage>({ output_tokens: 0, active_streams: 0 });
   // Live recent-tasks list (was a mock import). Polled every 10s.
   let recentTasks = $state<RecentTask[]>([]);
   // E-23 — context-state snapshot drives the runtime_choice_badge +
@@ -101,7 +105,14 @@
     resume_offer().then((h) => { if (alive && h) handoffOffer = h; }).catch(() => {});
     const t = setInterval(refresh, 10_000);
     const tCtx = setInterval(refreshContext, 5_000);
-    return () => { alive = false; clearInterval(t); clearInterval(tCtx); };
+    // J-29 SLICE-3: 1s live-usage tick while a stream is active. The
+    // gauge is process-global in the orchestrator; the interval stays
+    // dormant between turns so idle sessions dont poll.
+    const tLive = setInterval(() => {
+      if (!commands.isStreaming) { return; }
+      void get_live_usage().then((u) => { if (alive) liveUsage = u; }).catch(() => {});
+    }, 1_000);
+    return () => { alive = false; clearInterval(t); clearInterval(tCtx); clearInterval(tLive); };
   });
 
   // E-23 — derived labels for the pricing-transparency + injection rows.
@@ -1239,6 +1250,9 @@
         <!-- C-6: Stop and Send are mutually exclusive. Stop wires to existing
              commands.cancelStream() at commands.svelte.ts:395; no new IPC. -->
         {#if commands.isStreaming}
+          <span class="live-usage-chip mono" data-testid="live-usage-chip">
+            <Pulse size={10} /> out {liveUsage.output_tokens}
+          </span>
           <button
             class="stop-btn"
             aria-label="Stop streaming"
@@ -2022,6 +2036,16 @@
     color: var(--d-teal-bright);
   }
   .send-btn:focus-visible { box-shadow: var(--ring); }
+
+  /* J-29 SLICE-3: live token gauge chip. Sits next to Stop while streaming. */
+  .live-usage-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    padding: 0 6px;
+  }
 
   /* Stop button — mutually exclusive with send; tinted teal wash, never red. */
   .stop-btn {

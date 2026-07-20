@@ -5884,6 +5884,32 @@ pub fn get_pricing_rollup(
     })
 }
 
+// ---------------------------------------------------------------------------
+// LIVE USAGE GAUGE (J-29 SLICE-3: in-flight token counters, no SSB)
+// ---------------------------------------------------------------------------
+
+/// Wire shape mirrors `LiveUsage` in `dashboard-v2/src/lib/api/types.ts`.
+/// Reads the process-global AtomicU64 gauge in `elai_orchestrator` directly;
+/// no SSB viewer is required because this is an advisory live snapshot, not
+/// a persisted rollup.
+#[derive(Debug, serde::Serialize)]
+pub struct LiveUsageDto {
+    pub output_tokens: u64,
+    pub active_streams: u64,
+}
+
+/// J-29 SLICE-3: dashboard-facing live usage read. Bumped by the cloud SSE
+/// loop in this file (extract_text_delta arm) and the CLI TextDelta arm in
+/// `runtime_client.rs`. Reset on `message_stop` so each turn starts at zero.
+#[tauri::command]
+pub fn get_live_usage() -> CmdResult<LiveUsageDto> {
+    let s = elai_orchestrator::live_usage_gauge::snapshot();
+    Ok(LiveUsageDto {
+        output_tokens: s.output_tokens,
+        active_streams: s.active_streams,
+    })
+}
+
 /// C-5 follow-on: latest cloud routing status surfaced to CloudPanel.
 ///
 /// Returns a `CloudRouteStatus` JSON object aggregating the most-recent
@@ -6240,6 +6266,8 @@ pub async fn stream_chat(
     let active_streams_clone = state.active_streams.clone();
 
     let handle = tokio::task::spawn(async move {
+        // J-29 SLICE-3: mark stream active in the live usage gauge.
+        elai_orchestrator::live_usage_gauge::begin_stream();
         // B-14 wiring-close: forward thinking/effort into the sidecar
         // request body via the extracted helper (unit-tested).
         let request_body = build_stream_request_body(
@@ -6264,6 +6292,8 @@ pub async fn stream_chat(
                         "error": format!("sidecar connect failed: {e}")
                     }),
                 );
+                elai_orchestrator::live_usage_gauge::end_stream();
+                elai_orchestrator::live_usage_gauge::reset_turn();
                 cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
                 return;
             }
@@ -6279,6 +6309,8 @@ pub async fn stream_chat(
                     "error": format!("sidecar returned {}", status)
                 }),
             );
+            elai_orchestrator::live_usage_gauge::end_stream();
+            elai_orchestrator::live_usage_gauge::reset_turn();
             cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
             return;
         }
@@ -6293,6 +6325,7 @@ pub async fn stream_chat(
                         let frame = sse_buf[..pos].to_owned();
                         sse_buf = sse_buf[pos + 2..].to_owned();
                         if let Some(text) = extract_text_delta(&frame) {
+                            elai_orchestrator::live_usage_gauge::bump_output(text.len() as u64);
                             let _ = app_clone.emit(
                                 "chat_event",
                                 json!({
@@ -6310,6 +6343,8 @@ pub async fn stream_chat(
                                     "event_type": "response_complete"
                                 }),
                             );
+                            elai_orchestrator::live_usage_gauge::end_stream();
+                            elai_orchestrator::live_usage_gauge::reset_turn();
                             cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
                             return;
                         }
@@ -6323,6 +6358,8 @@ pub async fn stream_chat(
                             "event_type": "response_complete"
                         }),
                     );
+                    elai_orchestrator::live_usage_gauge::end_stream();
+                    elai_orchestrator::live_usage_gauge::reset_turn();
                     cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
                     return;
                 }
@@ -6335,6 +6372,8 @@ pub async fn stream_chat(
                             "error": format!("stream error: {e}")
                         }),
                     );
+                    elai_orchestrator::live_usage_gauge::end_stream();
+                    elai_orchestrator::live_usage_gauge::reset_turn();
                     cleanup_stream_entry(&active_streams_clone, &stream_id_clone);
                     return;
                 }

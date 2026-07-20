@@ -831,6 +831,8 @@ pub fn run() {
             // J-29 SLICE-2: backend cost + pricing rollups over J-28 ledger.
             commands::get_backend_cost_rollup,
             commands::get_pricing_rollup,
+            // J-29 SLICE-3: live in-flight token gauge (no SSB).
+            commands::get_live_usage,
             // CLOUD ROUTE STATUS (C-5 follow-on: route_blocked + warn_limit_reached + cost_estimate)
             commands::get_cloud_route_status,
             // MUTATION GAUGE (C-28)

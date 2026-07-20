@@ -23,7 +23,7 @@ use elai_providers::{
     StreamEvent as ApiStreamEvent, SystemBlock, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 use elai_plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
-use crossterm::{cursor::MoveToColumn, execute, terminal::{Clear, ClearType}};
+use crossterm::{cursor::{MoveToColumn, RestorePosition, SavePosition}, execute, terminal::{Clear, ClearType}};
 use elai_orchestrator::{
     clear_oauth_credentials, format_usd, generate_pkce_pair, generate_state,
     load_oauth_credentials, load_system_prompt, parse_oauth_callback_request_target,
@@ -680,6 +680,30 @@ impl ApiClient for RuntimeClient {
                     ApiStreamEvent::ContentBlockDelta(delta) => match delta.delta {
                         ContentBlockDelta::TextDelta { text } => {
                             if !text.is_empty() {
+                                elai_orchestrator::live_usage_gauge::bump_output(text.len() as u64);
+                                // J-29 SLICE-3: rewrite a single stderr status
+                                // line with the live gauge snapshot. Stderr
+                                // avoids interleaving with the stdout markdown
+                                // stream; SavePosition/RestorePosition keeps
+                                // the rewrite in-place without scrolling.
+                                {
+                                    let snap = elai_orchestrator::live_usage_gauge::snapshot();
+                                    let _ = execute!(
+                                        io::stderr(),
+                                        SavePosition,
+                                        MoveToColumn(0),
+                                        Clear(ClearType::CurrentLine),
+                                        crossterm::style::SetForegroundColor(
+                                            crossterm::style::Color::DarkGrey
+                                        ),
+                                        crossterm::style::Print(format!(
+                                            "out {} · streams {}",
+                                            snap.output_tokens, snap.active_streams
+                                        )),
+                                        crossterm::style::ResetColor,
+                                        RestorePosition,
+                                    );
+                                }
                                 if let Some(progress_reporter) = &self.progress_reporter {
                                     progress_reporter.mark_text_phase(&text);
                                 }
@@ -772,6 +796,7 @@ impl ApiClient for RuntimeClient {
                     }
                     ApiStreamEvent::MessageStop(_) => {
                         saw_stop = true;
+                        elai_orchestrator::live_usage_gauge::reset_turn();
                         if let Some(rendered) = markdown_stream.flush(&renderer) {
                             write!(out, "{rendered}")
                                 .and_then(|()| out.flush())

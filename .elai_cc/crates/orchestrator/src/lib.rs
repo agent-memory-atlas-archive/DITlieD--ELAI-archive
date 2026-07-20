@@ -598,6 +598,10 @@ pub mod ssb;
 // seams. Sole production reader: `crates/cli/src/usage_cmd.rs::run_usage`
 // (the `elai usage` verb).
 pub mod usage_ledger;
+// J-29 SLICE-3: process-global AtomicU64 live usage gauge. Producers:
+// dashboard SSE loop + CLI TextDelta arm. Consumer: get_live_usage
+// Tauri command. Never journals; reset on turn end.
+pub mod live_usage_gauge;
 // C-45: CANTANTE contrastive credit attribution. Paper-grounded against
 // arXiv:2605.13295 (Zehle 2026, Section 3.2 — K rollouts NOT K^N, scalar
 // c in [-1,+1], g=3 partition default). Wires per-role credit scores
