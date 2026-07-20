@@ -33,7 +33,7 @@
 //! Spec references: docs/thefinalglance/I-plan/I-19_tdd_enforcer_preflight.md
 //! Reads (mandatory): wiring-enforcement.md R1/R4/R7/R8; CLAUDE.md GRC + GD-4.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use elai_orchestrator::hook_dispatcher::{HookDispatcher, HookInvocation, InProcessHookDispatcher};
 use elai_orchestrator::ssb::{
@@ -42,6 +42,11 @@ use elai_orchestrator::ssb::{
     SSB_ACTION_TYPES,
 };
 use elai_orchestrator::tdd_preflight::{TddPreflight, tdd_preflight_enabled};
+
+// Cargo runs the tests in one binary in parallel; `i19_gate_is_off_by_default`
+// and `i19_production_dispatch_ssb_row_lands` both touch the SAME process-global
+// env var `ELAI_TDD_PREFLIGHT_ENABLE`. Serialize them so the suite is not flaky.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 // ---------------------------------------------------------------------------
 // (a) MissingTestDelta BLOCKED
@@ -251,6 +256,7 @@ async fn i19_ssb_round_trip_missing_test_delta() {
 /// flip gated on FP rate bounded on >=3 real orchestrate runs).
 #[test]
 fn i19_gate_is_off_by_default() {
+    let _g = ENV_LOCK.lock().expect("env lock");
     // Derive the expected value from the real env var so the test passes
     // whether the CI explicitly sets it or not, and also when a developer
     // runs with ELAI_TDD_PREFLIGHT_ENABLE=1 locally.
@@ -373,6 +379,11 @@ async fn i19_production_dispatch_ssb_row_lands() {
     use elai_core::clock::OsClock;
     use elai_orchestrator::ssb::SsbReader;
     use tempfile::TempDir;
+
+    // Serialize against `i19_gate_is_off_by_default`: both touch the
+    // process-global `ELAI_TDD_PREFLIGHT_ENABLE` env var. Hold the lock for
+    // the full test body so the EnvRestore drop still runs under the lock.
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
 
     let dir = TempDir::new().expect("tempdir");
     let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
