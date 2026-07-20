@@ -180,7 +180,7 @@ impl EscalationWaterfall {
 
         // Step 2: a promoted survivor -> the task solved locally. No cloud call.
         if ladder_outcome.winner.is_some() {
-            self.emit(EscalationCascadeKind::LocalWin, 0).await?;
+            self.emit_best_effort(EscalationCascadeKind::LocalWin, 0).await;
             return Ok(WaterfallOutcome {
                 local_win: true,
                 pruned_count: ladder_outcome.pruned_count,
@@ -200,8 +200,8 @@ impl EscalationWaterfall {
         belief
             .emit_condensed_receipt(&self.ssb, session_seq, now_ms())
             .await?;
-        self.emit(EscalationCascadeKind::Condensed, condensed_bytes)
-            .await?;
+        self.emit_best_effort(EscalationCascadeKind::Condensed, condensed_bytes)
+            .await;
 
         // Synchronous cloud escalation DECISION (H-7 seam). The router returns the
         // lane choice; the billed inference that consumes the condensate is D-026
@@ -264,6 +264,26 @@ impl EscalationWaterfall {
             .write_payload(ESCALATION_WATERFALL_AGENT_ID, 0, payload, Vec::new())
             .await?;
         Ok(())
+    }
+
+    /// Best-effort variant of [`emit`](Self::emit) for the non-load-bearing
+    /// `LocalWin` / `Condensed` lifecycle beacons: a transient SSB write failure
+    /// is logged and swallowed so a solved-local task is not discarded by a
+    /// receipt write error. Mirrors the I-4 ladder's `write` helper idiom.
+    async fn emit_best_effort(
+        &self,
+        kind: EscalationCascadeKind,
+        condensed_bytes: usize,
+    ) {
+        if let Err(e) = self
+            .emit(kind, condensed_bytes)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "escalation_waterfall: EscalationCascade({kind:?}) SSB emit failed (routing unaffected)"
+            );
+        }
     }
 }
 
