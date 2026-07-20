@@ -66,6 +66,13 @@ pub enum StructuralEditError {
     /// guard). Refused rather than risk editing the wrong site.
     #[error("structural edit refused: match text is ambiguous (non-unique) in '{0}'")]
     AmbiguousMatch(String),
+    /// The query binds sibling captures alongside `whole_node_capture` and
+    /// matched 2+ groups. The evaluator flattens captures without a match-group
+    /// id, so sibling captures cannot be grouped per-match — every match after
+    /// the first would silently render with the first match's sibling values.
+    /// Refused rather than risk a byte-exact but semantically wrong rewrite.
+    #[error("structural edit refused: multi-capture query with multiple matches cannot group sibling captures per match ({0})")]
+    UnsupportedMultiCaptureMultiMatch(String),
     /// Underlying evaluation failure (parser produced no tree, utf8, etc).
     #[error("structural evaluation failed: {0}")]
     EvaluationFailed(String),
@@ -251,12 +258,38 @@ pub fn structural_preview(
     let evaluator = TreeSitterAstEvaluator::new();
     let raw = evaluator.evaluate_query(language, source, query)?;
 
+    // The evaluator flattens captures into a single per-capture list with no
+    // match-group id (see ast_adapter.rs / AstMatch). For a single-capture
+    // query this is fine: each `whole_node_capture` occurrence is its own
+    // rewrite and the template has no sibling `@name` to mis-substitute. For a
+    // multi-capture query with 2+ `whole_node_capture` matches, sibling
+    // captures cannot be grouped per-match from the flattened list, so every
+    // match after the first would render with the first match's sibling
+    // values -- a byte-exact but semantically wrong rewrite. Refuse it rather
+    // than ship a silent mis-substitution on an agent-driven byte-exact edit.
+    let whole_count = raw
+        .iter()
+        .filter(|m| m.capture_name == whole_node_capture)
+        .count();
+    let has_sibling_capture = raw
+        .iter()
+        .any(|m| m.capture_name != whole_node_capture);
+    if whole_count > 1 && has_sibling_capture {
+        return Err(StructuralEditError::UnsupportedMultiCaptureMultiMatch(
+            whole_node_capture.to_string(),
+        ));
+    }
+
     // Group flattened captures by their (byte_start of the whole_node) so the
     // template can read sibling captures. The evaluator flattens captures in
     // match order; we treat each `whole_node_capture` occurrence as one rewrite
     // and gather every capture sharing its enclosing span as substitutions.
     // For the SHIP-NOW slice we build a single shared capture map per source
     // (capture-name -> first node text) plus the per-node replacement target.
+    // With the multi-capture-multi-match guard above, this shared map is only
+    // used when there is at most one whole_node match (so sibling captures are
+    // unambiguously from that one match) or when the query has no sibling
+    // captures (so the shared map is never read for substitution).
     let mut shared: BTreeMap<String, String> = BTreeMap::new();
     for m in &raw {
         shared
@@ -464,5 +497,40 @@ mod tests {
         // At least one rewrite whose old_text ("x") occurs twice.
         let err = verify_apply_safe("f.py", src, &prev.rewrites).unwrap_err();
         assert!(matches!(err, StructuralEditError::AmbiguousMatch(_)));
+    }
+
+    #[test]
+    fn multi_capture_multi_match_is_refused() {
+        // Two functions, query binds both the function node and its name.
+        // Sibling captures cannot be grouped per-match from the flattened
+        // evaluator output, so refuse rather than silently mis-substitute.
+        let src = "fn alpha() { 1 }\nfn beta() { 2 }";
+        let q = "(function_item name: (identifier) @name) @fn";
+        let err = structural_preview("rust", src, q, "renamed", "fn").unwrap_err();
+        assert!(matches!(
+            err,
+            StructuralEditError::UnsupportedMultiCaptureMultiMatch(_)
+        ));
+    }
+
+    #[test]
+    fn single_capture_multi_match_is_allowed() {
+        // No sibling captures: each whole_node match is its own rewrite, the
+        // template has no @sibling to mis-substitute. The common rename case.
+        let src = "fn alpha() {}\nfn beta() {}";
+        let q = "(function_item name: (identifier) @name)";
+        let prev = structural_preview("rust", src, q, "renamed", "name").unwrap();
+        assert_eq!(prev.rewrites.len(), 2);
+    }
+
+    #[test]
+    fn multi_capture_single_match_is_allowed() {
+        // One whole_node match: sibling captures are unambiguously from that
+        // one match, so the shared map is correct.
+        let src = "fn alpha() { 1 }";
+        let q = "(function_item name: (identifier) @name) @fn";
+        let prev = structural_preview("rust", src, q, "renamed", "fn").unwrap();
+        assert_eq!(prev.rewrites.len(), 1);
+        assert_eq!(prev.rewrites[0].old_text, "fn alpha() { 1 }");
     }
 }
