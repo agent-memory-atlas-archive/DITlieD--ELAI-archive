@@ -210,8 +210,7 @@ fn pair_kind_hash(pair_name: &str) -> u64 {
 /// must succeed even without SSB. Mirrors `memory_cmd.rs:open_ssb_optional`.
 fn open_ssb_optional(project_root: &Path) -> Option<Arc<Ssb>> {
     let sessions_dir = sessions_dir_path(project_root);
-    let parent = sessions_dir.parent()?;
-    if let Err(e) = std::fs::create_dir_all(parent) {
+    if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
         tracing::warn!(error = %e, "drift_cmd: cannot create sessions dir");
         return None;
     }
@@ -443,10 +442,15 @@ fn run_baseline(commit: &str, output_format: CliOutputFormat) -> Result<(), Stri
             if let Err(e) = std::fs::create_dir_all(parent) {
                 tracing::warn!(error = %e, "drift_cmd: cannot create baseline parent dir");
             } else {
-                let pretty = serde_json::to_string_pretty(&report)
-                    .map_err(|e| format!("baseline seed serialize failed: {e}"))?;
-                if let Err(e) = std::fs::write(&baseline_path, pretty) {
-                    tracing::warn!(error = %e, "drift_cmd: cannot write baseline seed file");
+                match serde_json::to_string_pretty(&report) {
+                    Ok(pretty) => {
+                        if let Err(e) = std::fs::write(&baseline_path, pretty) {
+                            tracing::warn!(error = %e, "drift_cmd: cannot write baseline seed file");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "drift_cmd: cannot serialize baseline seed");
+                    }
                 }
             }
         }
