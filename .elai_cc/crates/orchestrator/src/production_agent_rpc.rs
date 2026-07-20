@@ -4363,7 +4363,11 @@ pub(crate) async fn translate_tool_request(
             }
             // Gate + write each rewrite through the SHIPPED edit path. The gates
             // run BEFORE any byte lands (fail-closed), exactly as TOOL_EDIT does.
-            let mut total_bytes: u64 = 0;
+            // Fail-closed pre-pass: run every gate for all rewrites BEFORE any
+            // byte lands, so a later gate rejection cannot leave a partial edit
+            // (rewrites 0..k already written via dispatch_edit then `?` propagates
+            // Err mid-loop). The dispatch loop below is gate-free; a gate failure
+            // here refuses the whole apply with zero bytes written.
             for r in &prev.rewrites {
                 enforce_taint_sink_gate(
                     "fs_write",
@@ -4378,6 +4382,9 @@ pub(crate) async fn translate_tool_request(
                     ssb,
                     i64::try_from(clock.now_ms()).unwrap_or(i64::MAX),
                 )?;
+            }
+            let mut total_bytes: u64 = 0;
+            for r in &prev.rewrites {
                 let req = EditRequest {
                     file_path: PathBuf::from(&file),
                     old_text: r.old_text.clone(),
