@@ -42,6 +42,9 @@
     { type: 'activity', label: 'Activity', shortcut: 'Ctrl+3', Icon: Play },
     { type: 'review',   label: 'Review',   shortcut: 'Ctrl+4', Icon: GitBranch },
     { type: 'monitor',  label: 'Monitor',  shortcut: 'Ctrl+5', Icon: Activity },
+    // J-29 SLICE-1: usage rollup window (first dashboard consumer of J-28
+    // usage_ledger). Reuses Activity icon to avoid adding a new lucide import.
+    { type: 'usage',    label: 'Usage',    shortcut: '',       Icon: Activity },
     { type: 'settings', label: 'Settings', shortcut: 'Ctrl+6', Icon: Settings },
     { type: 'graph',    label: 'Graph',    shortcut: 'Ctrl+7', Icon: Network },
     // C-7: Q&A oracle / codebase-explorer surface.

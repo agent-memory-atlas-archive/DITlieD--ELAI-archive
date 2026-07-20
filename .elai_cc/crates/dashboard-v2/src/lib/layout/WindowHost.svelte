@@ -24,6 +24,8 @@
   // H-10: sigma/WebGL codebase canvas — code graph + dead-code islands +
   // PageRank hub overlay + semantic zoom + LOD.
   import CanvasWindow from '../windows/CanvasWindow.svelte';
+  // J-29 SLICE-1: usage rollup window (J-28 usage_ledger consumer).
+  import UsageWindow from '../windows/UsageWindow.svelte';
   import FallbackWindow from './FallbackWindow.svelte';
   // E-33: persistent activity ribbon + per-window mode footer.
   import ActivityRibbon from '../components/ActivityRibbon.svelte';
@@ -73,6 +75,7 @@
     symbol_graph: 'symbol-graph',
     cockpit: 'cockpit',
     canvas: 'canvas',
+    usage: 'usage',
   };
   let scope = $derived(SCOPE_LABEL[type] ?? String(type));
 </script>
@@ -110,6 +113,8 @@
       <CockpitWindow />
     {:else if type === 'canvas'}
       <CanvasWindow />
+    {:else if type === 'usage'}
+      <UsageWindow />
     {:else}
       <FallbackWindow {type} />
     {/if}

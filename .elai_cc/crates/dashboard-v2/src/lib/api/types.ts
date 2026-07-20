@@ -91,7 +91,9 @@ export type WindowType =
   // H-10: sigma/WebGL canvas — full codebase graph with semantic zoom + LOD,
   // dead-code island overlay (topology-suspected vs coverage-confirmed), and
   // PageRank hub overlay. Reuses get_graph_view_data mode='symbol' feed.
-  | 'canvas';
+  | 'canvas'
+  // J-29: usage rollup window (first dashboard consumer of J-28 usage_ledger).
+  | 'usage';
 
 // ------------------------------------------------------------------
 // B-33 — Graph viewer (mirror of Rust visualization::types)
@@ -2265,6 +2267,27 @@ export interface CloudSpendInfo {
   ttl_tier?: string;
   breakeven_reads?: number;
   guard_trips_today?: number;
+}
+
+// J-29 SLICE-1: first dashboard consumer of J-28 usage_ledger rollup.
+// Wire shape mirrors the Rust `get_usage_rollup` Tauri command (UsageRollupRowDto).
+// `cost_micros` is null when no rate could be derived for the lane (e.g. local
+// inference) — the UI MUST surface "no rate" rather than silent $0.00.
+export interface UsageRollupRow {
+  identity: string;
+  model: string;
+  task_id: string | null;
+  session_id: string | null;
+  lane: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  cost_micros: number | null;
+  row_count: number;
+}
+export interface UsageRollupResponse {
+  rows: UsageRollupRow[];
 }
 
 // C-5 follow-on (SCHEMA_VERSION 103): latest cloud routing status surfaced

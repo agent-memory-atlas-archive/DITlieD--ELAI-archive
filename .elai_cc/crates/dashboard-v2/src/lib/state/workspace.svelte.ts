@@ -23,7 +23,7 @@ const EXPLORER_WIDTH_DEFAULT = 250;
 const EXPLORER_WIDTH_MIN = 120;
 /** H-11: maximum explorer rail width in pixels. */
 const EXPLORER_WIDTH_MAX = 400;
-const VALID_WINDOW_TYPES = new Set<string>(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore', 'cockpit', 'canvas']);
+const VALID_WINDOW_TYPES = new Set<string>(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore', 'cockpit', 'canvas', 'usage']);
 
 /** C-7: closed-tab recovery stack max length. FIFO ring-buffer eviction. */
 const CLOSED_TABS_MAX = 10;

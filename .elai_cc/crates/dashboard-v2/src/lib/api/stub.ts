@@ -93,6 +93,8 @@ import type {
   OAuthLoginInfo,
   CloudModelInfo,
   CloudSpendInfo,
+  // J-29 SLICE-1: usage rollup surfaces for the UsageWindow.
+  UsageRollupResponse,
   // C-5 follow-on — Cloud routing status (RouteBlocked / WarnLimitReached / CostEstimate).
   CloudRouteStatus,
   MutationGaugeInfo,
@@ -2107,6 +2109,18 @@ export async function get_cloud_spend(): Promise<CloudSpendInfo> {
     breakeven_reads: undefined,
     guard_trips_today: undefined,
   };
+}
+
+// ------------------------------------------------------------------
+// USAGE ROLLUP (J-29 SLICE-1)
+// ------------------------------------------------------------------
+
+export async function get_usage_rollup(limit = 500): Promise<UsageRollupResponse> {
+  logStub('get_usage_rollup');
+  const live = await tryInvoke<UsageRollupResponse>('get_usage_rollup', { limit });
+  if (live) return live;
+  await delay();
+  return { rows: [] };
 }
 
 // ------------------------------------------------------------------

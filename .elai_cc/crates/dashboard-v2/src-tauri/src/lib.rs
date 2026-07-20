@@ -826,6 +826,8 @@ pub fn run() {
             commands::set_cloud_model,
             // CLOUD SPEND (B-27)
             commands::get_cloud_spend,
+            // USAGE ROLLUP (J-29 SLICE-1: J-28 usage_ledger consumer)
+            commands::get_usage_rollup,
             // CLOUD ROUTE STATUS (C-5 follow-on: route_blocked + warn_limit_reached + cost_estimate)
             commands::get_cloud_route_status,
             // MUTATION GAUGE (C-28)

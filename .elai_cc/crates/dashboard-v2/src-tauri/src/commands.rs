@@ -5633,6 +5633,73 @@ pub fn get_cloud_spend(state: State<'_, AppState>) -> CmdResult<Value> {
     serde_json::to_value(&summary).map_err(map_err)
 }
 
+// ---------------------------------------------------------------------------
+// USAGE ROLLUP (J-29 SLICE-1: first dashboard consumer of J-28 usage_ledger)
+// ---------------------------------------------------------------------------
+
+/// Wire shape mirrors `UsageRollupRow` / `UsageRollupResponse` in
+/// `dashboard-v2/src/lib/api/types.ts`. `cost_micros` is `None` when no rate
+/// could be derived for the lane (e.g. local inference) — the UI MUST surface
+/// "no rate" rather than a silent `$0.00`.
+#[derive(Debug, serde::Serialize)]
+pub struct UsageRollupRowDto {
+    pub identity: String,
+    pub model: String,
+    pub task_id: Option<String>,
+    pub session_id: Option<String>,
+    pub lane: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost_micros: Option<u64>,
+    pub row_count: u32,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct UsageRollupResponseDto {
+    pub rows: Vec<UsageRollupRowDto>,
+}
+
+/// J-29 SLICE-1: dashboard-facing rollup of `UsageTurnEvent` SSB rows. Calls
+/// `SsbViewer::usage_turn_events` (J-28 T3) then folds via
+/// `usage_ledger::rollup_usage_turns` (J-28 T5). Returns an empty row list
+/// when no SSB viewer is attached (e.g. browser-only dev mode) so the
+/// UsageWindow's empty-state branch renders.
+#[tauri::command]
+pub fn get_usage_rollup(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> CmdResult<UsageRollupResponseDto> {
+    let limit = limit.unwrap_or(500).clamp(1, 5000);
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(UsageRollupResponseDto { rows: vec![] });
+    };
+    let rows = viewer.usage_turn_events(limit).map_err(map_err)?;
+    let rolled = elai_orchestrator::usage_ledger::rollup_usage_turns(&rows);
+    let mut out = Vec::with_capacity(rolled.len());
+    for (key, entry) in rolled {
+        let lane = match key.lane {
+            elai_orchestrator::ssb::UsageLane::Cloud => "cloud",
+            elai_orchestrator::ssb::UsageLane::Local => "local",
+        };
+        out.push(UsageRollupRowDto {
+            identity: key.identity,
+            model: key.model,
+            task_id: key.task_id,
+            session_id: key.session_id,
+            lane: lane.to_owned(),
+            input_tokens: entry.input_tokens,
+            output_tokens: entry.output_tokens,
+            cache_creation_tokens: entry.cache_creation_tokens,
+            cache_read_tokens: entry.cache_read_tokens,
+            cost_micros: entry.cost_micros,
+            row_count: entry.row_count,
+        });
+    }
+    Ok(UsageRollupResponseDto { rows: out })
+}
+
 /// C-5 follow-on: latest cloud routing status surfaced to CloudPanel.
 ///
 /// Returns a `CloudRouteStatus` JSON object aggregating the most-recent

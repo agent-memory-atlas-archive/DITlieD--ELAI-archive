@@ -26,7 +26,7 @@
 
   let { panelId, tabs, activeTabId, onTabSelect, onTabClose, onNewTab }: Props = $props();
 
-  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore', 'github', 'symbol_graph', 'cockpit', 'canvas'];
+  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore', 'github', 'symbol_graph', 'cockpit', 'canvas', 'usage'];
   const WINDOW_LABELS: Record<WindowType, string> = {
     command:  'Command',
     plan:     'Plan',
@@ -51,6 +51,8 @@
     // H-10: sigma/WebGL codebase canvas — code graph + dead-code islands +
     // PageRank hub overlay + semantic zoom + LOD.
     canvas: 'Canvas (Code Graph)',
+    // J-29 SLICE-1: usage rollup window (J-28 usage_ledger consumer).
+    usage: 'Usage',
   };
 
   let dragOverTabId = $state<string | null>(null);
