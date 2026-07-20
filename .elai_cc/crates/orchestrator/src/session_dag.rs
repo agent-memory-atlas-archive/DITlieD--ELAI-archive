@@ -975,6 +975,11 @@ impl SessionDag {
             }
         }
 
+        // J-25 T3: un-orphan tool_use/tool_result pairs at the candidate
+        // boundary before Pass 2 mutates `result`. Pure fn, zero I/O.
+        let candidate_indices =
+            crate::context_boundary::adjust_boundary_for_invariants(messages, &candidate_indices);
+
         // Pass 2: stub candidates
         let mut result: Vec<TrimmedMessage> = messages.to_vec();
 
