@@ -189,6 +189,12 @@ pub fn save(
     let mut entries = Vec::with_capacity(paths.len());
     let mut captured = Vec::with_capacity(paths.len());
     for rel in paths {
+        if crate::sandbox_policy::path_escapes_root(Path::new(rel), project_root) {
+            return Err(CheckpointToolError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("checkpoint save path escapes project scope: {rel}"),
+            )));
+        }
         let abs = project_root.join(rel);
         let content = std::fs::read(&abs)?;
         // capture_file puts the blob in the CAS (dedup-aware) and hashes it.
