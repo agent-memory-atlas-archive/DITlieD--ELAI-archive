@@ -94,11 +94,14 @@ fn d1b_j25_digest_section_reexported_from_lib() {
 /// site inside `build_digest_body` plus the live_cli.rs caller line.
 #[test]
 fn d2_production_path_constructs_digest_section() {
-    // 1. live_cli.rs calls author_topic_digest (the production entrypoint).
+    // 1. live_cli.rs reaches the H-51 author path (production entrypoint).
+    // T5 wrapped the direct call: `author_from_pending` delegates to
+    // `author_topic_digest` (ABORT-1). Either symbol in the Drop path proves
+    // the production author entrypoint is wired from live_cli.
     let cli_src = read_src("cli/src/live_cli.rs");
     assert!(
-        cli_src.contains("author_topic_digest"),
-        "live_cli.rs must call author_topic_digest (production entrypoint)"
+        cli_src.contains("author_topic_digest") || cli_src.contains("author_from_pending"),
+        "live_cli.rs must call author_topic_digest or its T5 wrapper author_from_pending (production entrypoint)"
     );
 
     // 2. handoff_digest.rs: author_topic_digest calls build_digest_body.

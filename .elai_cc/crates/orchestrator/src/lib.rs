@@ -196,7 +196,8 @@ pub mod pristine_path_filter;
 // write always runs). Registered in wire-dark-allowlist.toml (R9).
 pub mod handoff_digest;
 pub use handoff_digest::{
-    BudgetedReadResult, BudgetedSection, DedupVerdict, DigestSection, TopicHandle,
+    BudgetedReadResult, BudgetedSection, DedupVerdict, DigestSection, DigestWriterQueue,
+    DigestWriterSnapshot, PendingDigestRequest, TopicHandle, author_from_pending,
     extract_discovery_titles, read_budgeted_section_aware, render_digest_sections,
     validate_discoveries_dedup,
 };

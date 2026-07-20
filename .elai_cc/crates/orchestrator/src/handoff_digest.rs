@@ -791,6 +791,78 @@ fn days_to_ymd(mut days: u64) -> (u32, u32, u32) {
 }
 
 // ---------------------------------------------------------------------------
+// Writer coalescing + fork snapshot (J-25 MOVE T5)
+// ---------------------------------------------------------------------------
+
+/// Frozen snapshot of the prompt-materialized state captured at writer-spawn
+/// time so the background writer never recomputes the prompt (HD-2 prefix-cache
+/// alignment). Carried by [`PendingDigestRequest`] for the type-system / test
+/// contract; the current author path does not yet consume the fields (a future
+/// slice wires them into the body builder without a second format).
+#[derive(Debug, Clone)]
+pub struct DigestWriterSnapshot {
+    pub system_parts: Vec<String>,
+    pub tool_defs: Vec<String>,
+    pub watermark_msg_id: Option<String>,
+}
+
+/// A pending digest-author request queued for the background writer.  The
+/// snapshot is frozen at `request()` time (HD-2); a later newer request
+/// REPLACES the pending slot entirely and never mutates the kept snapshot.
+#[derive(Debug, Clone)]
+pub struct PendingDigestRequest {
+    pub snapshot: DigestWriterSnapshot,
+    pub session_id: String,
+    pub cwd: PathBuf,
+}
+
+/// 1-slot newest-wins pending queue for digest-author requests.  A newer
+/// `request()` evicts an older pending request in-place; `take()` drains the
+/// single slot.  Sync-mutex; no new deps.
+#[derive(Debug, Default)]
+pub struct DigestWriterQueue {
+    pending: std::sync::Mutex<Option<PendingDigestRequest>>,
+}
+
+impl DigestWriterQueue {
+    pub fn new() -> Self {
+        Self {
+            pending: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Enqueue `req`, evicting any older pending request.  The frozen snapshot
+    /// on `req` is never mutated after insert (HD-2).
+    pub fn request(&self, req: PendingDigestRequest) {
+        if let Ok(mut slot) = self.pending.lock() {
+            *slot = Some(req);
+        }
+    }
+
+    /// Drain the single pending slot, returning the newest request if any.
+    pub fn take(&self) -> Option<PendingDigestRequest> {
+        self.pending.lock().ok().and_then(|mut slot| slot.take())
+    }
+}
+
+/// Author a digest for a pending request by delegating body authorship to the
+/// existing [`author_topic_digest`] (ABORT-1: no second digest body builder).
+/// The frozen snapshot is logged here so the HD-2 freeze is load-bearing for
+/// diagnostics without introducing a second digest format.
+pub fn author_from_pending(
+    ssb: &crate::ssb::Ssb,
+    req: &PendingDigestRequest,
+) -> anyhow::Result<TopicHandle> {
+    tracing::debug!(
+        watermark_msg_id = ?req.snapshot.watermark_msg_id,
+        system_parts = req.snapshot.system_parts.len(),
+        tool_defs = req.snapshot.tool_defs.len(),
+        "J-25 T5 frozen digest-writer snapshot"
+    );
+    author_topic_digest(ssb, &req.session_id, &req.cwd)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

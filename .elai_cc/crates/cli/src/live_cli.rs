@@ -3158,9 +3158,27 @@ impl Drop for LiveCli {
         if let Some(ssb) = self.ssb.as_ref() {
             let session_id = self.session.id.clone();
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            match elai_orchestrator::handoff_digest::author_topic_digest(ssb, &session_id, &cwd) {
-                Ok(handle) => {
-                    // Emit DigestWritten SSB row.
+            let snapshot = elai_orchestrator::DigestWriterSnapshot {
+                system_parts: self.system_prompt.clone(),
+                tool_defs: self
+                    .allowed_tools
+                    .as_ref()
+                    .map(|set| set.iter().cloned().collect())
+                    .unwrap_or_default(),
+                watermark_msg_id: self.last_snap_id.clone(),
+            };
+            let pending = elai_orchestrator::PendingDigestRequest {
+                snapshot,
+                session_id: session_id.clone(),
+                cwd: cwd.clone(),
+            };
+            let queue = elai_orchestrator::DigestWriterQueue::new();
+            queue.request(pending);
+            let result = queue
+                .take()
+                .map(|req| elai_orchestrator::author_from_pending(ssb, &req));
+            match result {
+                Some(Ok(handle)) => {
                     let payload = elai_orchestrator::ssb::SsbPayload::HandoffLifecycleEvent(
                         elai_orchestrator::ssb::HandoffLifecyclePayload {
                             kind: elai_orchestrator::ssb::HandoffLifecycleEventKind::DigestWritten,
@@ -3184,13 +3202,14 @@ impl Drop for LiveCli {
                         ));
                     }
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     tracing::warn!(
                         session_id = %session_id,
                         error = %e,
                         "H-51: handoff digest authoring failed (non-fatal)"
                     );
                 }
+                None => {}
             }
         }
 
