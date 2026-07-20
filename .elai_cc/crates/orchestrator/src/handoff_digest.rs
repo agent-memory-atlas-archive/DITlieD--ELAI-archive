@@ -96,7 +96,15 @@ pub fn author_topic_digest(
     fs::create_dir_all(&handoffs_dir).context("create workflow/handoffs")?;
     let digest_path = handoffs_dir.join(format!("{slug}.md"));
 
-    let digest_body = build_digest_body(session_id, &slug, &decisions, &files_touched);
+    let prior_discovery_titles = collect_prior_discovery_titles(&digest_path);
+
+    let digest_body = build_digest_body(
+        session_id,
+        &slug,
+        &decisions,
+        &files_touched,
+        &prior_discovery_titles,
+    );
     let estimated_tokens = (digest_body.len() / CHARS_PER_TOKEN).min(MAX_DIGEST_TOKENS) as u32;
 
     append_or_create_handoff(&digest_path, &slug, session_id, &digest_body)?;
@@ -180,8 +188,8 @@ pub fn detect_open_topic(cwd: &Path) -> Option<TopicHandle> {
 
 /// One section sliced from a handoff digest by the budgeted loader.
 ///
-/// T2 minimal shape: header + body. The typed `DigestSection` enum with
-/// per-section byte budgets + dedup validator is T1 (Tier-2 DEFERRED).
+/// T2 minimal shape: header + body. The typed [`DigestSection`] enum with
+/// per-section token budgets + dedup validator is T1 (shipped).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetedSection {
     /// The header line that introduced this section (e.g. `SUMMARY`,
@@ -206,6 +214,54 @@ pub struct BudgetedReadResult {
     /// after the last emitted line, when `truncated`. `None` otherwise.
     /// The caller can prefix the file path if it wants a `file:line` form.
     pub resume_hint: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Typed digest section template (J-25 MOVE T1)
+// ---------------------------------------------------------------------------
+//
+// The `pub enum DigestSection` definition stays in THIS file so the J-25
+// WIRING_CONTRACT D1a source-grep (`pub enum DigestSection` in
+// `handoff_digest.rs`) keeps passing. The impl block + the free functions
+// `render_digest_sections` / `extract_discovery_titles` /
+// `validate_discoveries_dedup` + the `DedupVerdict` struct + the T1 unit
+// tests live in the `digest_section` submodule (MR-1 split: this file was
+// over the 1000-line cap). The `pub use` below keeps the existing
+// `crate::DigestSection` / `handoff_digest::DigestSection` paths working.
+
+mod digest_section;
+pub use digest_section::{
+    DedupVerdict, extract_discovery_titles, render_digest_sections,
+    validate_discoveries_dedup,
+};
+
+/// One typed section of a handoff digest, carrying its ALL-CAPS header, its
+/// per-section token-budget CAP, and its body text.  The render path emits
+/// these as markdown text that [`read_budgeted_section_aware`] (T2) consumes
+/// unchanged — there is no second on-disk format (ABORT-1).
+///
+/// Variants match the J-25 T1 plan / MiMo checkpoint template: Intent,
+/// NextAction, Directives, TaskTree, CurrentWork, Files, Discoveries, Errors,
+/// LiveResources, Decisions, Notes.  Per-section token CAPS follow the plan:
+/// 500 / 1000 / 800 / 1000 / 2000 / 1500 / 2000 / 1500 / 1000 / 3000 / 800.
+/// These are CAPS, not a mandate to emit ~11K total; the render path truncates
+/// each section to its cap and the total stays under [`MAX_DIGEST_TOKENS`].
+///
+/// The impl block (`header` / `budget_tokens` / `budget_chars` / `render`)
+/// lives in [`digest_section`] — see MR-1 note above.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DigestSection {
+    Intent,
+    NextAction,
+    Directives,
+    TaskTree,
+    CurrentWork,
+    Files,
+    Discoveries,
+    Errors,
+    LiveResources,
+    Decisions,
+    Notes,
 }
 
 /// Read `digest_text` into a skeleton + budgeted bodies, preserving every
@@ -363,6 +419,50 @@ fn is_section_header(line: &str) -> bool {
     alpha_count > 0
 }
 
+/// Truncate `body` to at most `char_budget` chars on a line boundary.  Whole
+/// lines are kept while their cumulative length (including the trailing
+/// newline) fits; the final line may be cut mid-line to land exactly on the
+/// budget.  Returns the truncated body without a trailing newline.
+fn truncate_lines_to_char_budget(body: &str, char_budget: usize) -> String {
+    if body.len() <= char_budget {
+        return body.to_string();
+    }
+
+    let mut kept: Vec<String> = Vec::new();
+    let mut used: usize = 0;
+    for line in body.lines() {
+        let line_chars = line.len() + 1;
+        if used.saturating_add(line_chars) > char_budget {
+            let remaining = char_budget.saturating_sub(used);
+            if remaining == 0 {
+                break;
+            }
+            let mut partial = String::from(line);
+            truncate_to_char_boundary(&mut partial, remaining);
+            kept.push(partial);
+            break;
+        }
+        used = used.saturating_add(line_chars);
+        kept.push(line.to_owned());
+    }
+
+    kept.join("\n")
+}
+
+/// Truncate `s` in place to at most `max_chars` chars, landing on a UTF-8
+/// char boundary.  Never panics on non-UTF-8 or short strings.
+fn truncate_to_char_boundary(s: &mut String, max_chars: usize) {
+    if s.chars().count() <= max_chars {
+        return;
+    }
+    let end = s
+        .char_indices()
+        .nth(max_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    s.truncate(end);
+}
+
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
@@ -461,56 +561,118 @@ fn derive_slug(session_id: &str, decisions: &[String]) -> String {
     }
 }
 
-/// Build the body text for a new digest entry.
+/// Scan `digest_path` (if it exists) for prior `DISCOVERIES` sections and
+/// collect their titles via [`extract_discovery_titles`].  Returns an empty
+/// set when the file does not yet exist or has no discoveries.  Used by
+/// [`author_topic_digest`] to feed [`build_digest_body`]'s dedup call site.
+fn collect_prior_discovery_titles(digest_path: &Path) -> std::collections::HashSet<String> {
+    let mut titles = std::collections::HashSet::new();
+    let Ok(text) = fs::read_to_string(digest_path) else {
+        return titles;
+    };
+    let mut in_discoveries = false;
+    for line in text.lines() {
+        if is_section_header(line) {
+            in_discoveries = line.trim().eq_ignore_ascii_case("DISCOVERIES");
+            continue;
+        }
+        if in_discoveries {
+            for t in extract_discovery_titles(line) {
+                titles.insert(t);
+            }
+        }
+    }
+    titles
+}
+
+/// Build the body text for a new digest entry using the typed
+/// [`DigestSection`] template (J-25 MOVE T1).  Each section is truncated to
+/// its per-section token cap; the total stays under [`MAX_DIGEST_TOKENS`].
 ///
-/// Token-budgeted: if the body would exceed MAX_DIGEST_TOKENS, files list is
-/// truncated first, then decisions list.
+/// The rendered text is plain markdown with ALL-CAPS headers, compatible with
+/// [`read_budgeted_section_aware`] (T2).  No second on-disk format (ABORT-1).
+///
+/// `prior_discovery_titles` carries discovery titles already present in the
+/// digest file (collected by [`author_topic_digest`]) so [`build_digest_body`]
+/// can dedup the current discoveries body against them via
+/// [`validate_discoveries_dedup`] at the real call site (J-25 S6b wire2).
 fn build_digest_body(
     session_id: &str,
     slug: &str,
     decisions: &[String],
     files: &[String],
+    prior_discovery_titles: &std::collections::HashSet<String>,
 ) -> String {
     let date = chrono_date_utc();
 
-    let mut body = format!(
-        "\n---\n## {date} session {session_id}\n\nSUMMARY\nSession `{session_id}` for topic `{slug}`.\n\nDECISIONS\n"
+    let intent_body = format!("Session `{session_id}` for topic `{slug}`.");
+    let next_action_body = format!(
+        "Run `elai /continue` or set topic slug `{slug}` to resume with tiered load."
     );
 
-    for (i, d) in decisions.iter().enumerate() {
-        body.push_str(&format!("- {d}\n"));
-        // Early exit if we exceed the token budget.
-        if body.len() / CHARS_PER_TOKEN >= MAX_DIGEST_TOKENS.saturating_sub(200) {
-            body.push_str(&format!("... ({} more decisions truncated)\n", decisions.len() - i - 1));
-            break;
-        }
-    }
-
+    let mut decisions_body = String::new();
     if decisions.is_empty() {
-        body.push_str("(no InterventionRequest rows found in SSB stream for this session)\n");
-    }
-
-    body.push_str("\nFILES TOUCHED\n");
-    let files_budget = MAX_DIGEST_TOKENS.saturating_sub(body.len() / CHARS_PER_TOKEN + 100);
-    for (i, f) in files.iter().enumerate() {
-        body.push_str(&format!("- {f}\n"));
-        if body.len() / CHARS_PER_TOKEN >= MAX_DIGEST_TOKENS.saturating_sub(50) {
-            body.push_str(&format!("... ({} more files truncated)\n", files.len() - i - 1));
-            break;
+        decisions_body.push_str("(no InterventionRequest rows found in SSB stream for this session)\n");
+    } else {
+        for d in decisions {
+            decisions_body.push_str(&format!("- {d}\n"));
         }
-        let _ = files_budget;
     }
 
+    let mut files_body = String::new();
     if files.is_empty() {
-        body.push_str("(no FileWrite rows found in SSB stream for this session)\n");
+        files_body.push_str("(no FileWrite rows found in SSB stream for this session)\n");
+    } else {
+        for f in files {
+            files_body.push_str(&format!("- {f}\n"));
+        }
     }
 
-    body.push_str("\nHOW TO PICK UP\n");
-    body.push_str(&format!(
-        "Run `elai /continue` or set topic slug `{slug}` to resume with tiered load.\n"
-    ));
+    let raw_discoveries_body = "(none)\n".to_string();
+    let current_titles = extract_discovery_titles(&raw_discoveries_body);
+    let verdict = validate_discoveries_dedup(&current_titles, prior_discovery_titles);
+    let discoveries_body = if verdict.has_duplicates {
+        let mut filtered = String::new();
+        for line in raw_discoveries_body.lines() {
+            let trimmed = line.trim_start();
+            let rest = match trimmed.strip_prefix("- ") {
+                Some(r) => r,
+                None => {
+                    filtered.push_str(line);
+                    filtered.push('\n');
+                    continue;
+                }
+            };
+            let title = match rest.split_once(':') {
+                Some((t, _)) => t.trim(),
+                None => rest.trim(),
+            };
+            if !verdict.duplicates.iter().any(|d| d == title) {
+                filtered.push_str(line);
+                filtered.push('\n');
+            }
+        }
+        filtered
+    } else {
+        raw_discoveries_body
+    };
 
-    body
+    let mut sections: Vec<(DigestSection, String)> = vec![
+        (DigestSection::Intent, intent_body),
+        (DigestSection::NextAction, next_action_body),
+        (DigestSection::Decisions, decisions_body),
+        (DigestSection::Files, files_body),
+        (DigestSection::Discoveries, discoveries_body),
+    ];
+
+    if verdict.has_duplicates && !verdict.duplicates.is_empty() {
+        let dropped = verdict.duplicates.len();
+        sections.push((DigestSection::Notes, format!("dedup dropped {dropped} prior titles\n")));
+    }
+
+    let rendered = render_digest_sections(&sections);
+
+    format!("\n---\n## {date} session {session_id}\n\n{rendered}\n")
 }
 
 /// Append a new session entry to an existing handoff file, or create from
@@ -700,7 +862,8 @@ mod tests {
 
     #[test]
     fn test_build_digest_body_no_data() {
-        let body = build_digest_body("test-session", "test-slug", &[], &[]);
+        let prior = std::collections::HashSet::new();
+        let body = build_digest_body("test-session", "test-slug", &[], &[], &prior);
         assert!(body.contains("no InterventionRequest rows"));
         assert!(body.contains("no FileWrite rows"));
         assert!(body.len() / CHARS_PER_TOKEN <= MAX_DIGEST_TOKENS);
@@ -711,5 +874,31 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let result = detect_open_topic(dir.path());
         assert!(result.is_none(), "empty dir should return None");
+    }
+
+    #[test]
+    fn test_build_digest_body_uses_typed_sections() {
+        let prior = std::collections::HashSet::new();
+        let body = build_digest_body("s1", "slug1", &["decide A".to_string()], &["f.rs".to_string()], &prior);
+        assert!(body.contains("INTENT\n"));
+        assert!(body.contains("NEXT ACTION\n"));
+        assert!(body.contains("DECISIONS\n- decide A"));
+        assert!(body.contains("FILES TOUCHED\n- f.rs"));
+        assert!(body.len() / CHARS_PER_TOKEN <= MAX_DIGEST_TOKENS);
+    }
+
+    #[test]
+    fn test_rendered_text_is_section_header_compatible() {
+        let sections = vec![
+            (DigestSection::Intent, "body".to_string()),
+            (DigestSection::Decisions, "- d".to_string()),
+        ];
+        let out = render_digest_sections(&sections);
+        assert!(is_section_header("INTENT"));
+        assert!(is_section_header("DECISIONS"));
+        let result = read_budgeted_section_aware(&out, 5000);
+        assert!(!result.sections.is_empty());
+        assert!(result.sections.iter().any(|s| s.header == "INTENT"));
+        assert!(result.sections.iter().any(|s| s.header == "DECISIONS"));
     }
 }

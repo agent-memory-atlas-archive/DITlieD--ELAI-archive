@@ -195,7 +195,11 @@ pub mod pristine_path_filter;
 // Kill-switch: ELAI_HANDOFF_AUTORESUME_DISABLE=1 (detect only; digest
 // write always runs). Registered in wire-dark-allowlist.toml (R9).
 pub mod handoff_digest;
-pub use handoff_digest::{BudgetedReadResult, BudgetedSection, TopicHandle, read_budgeted_section_aware};
+pub use handoff_digest::{
+    BudgetedReadResult, BudgetedSection, DedupVerdict, DigestSection, TopicHandle,
+    extract_discovery_titles, read_budgeted_section_aware, render_digest_sections,
+    validate_discoveries_dedup,
+};
 // G-7: per-change confidence PRODUCER (fuses log-prob + self-consistency +
 // oracle-free test execution-agreement into the real claim_score feeding the
 // SHIPPED D-16 conformal abstention layer).
