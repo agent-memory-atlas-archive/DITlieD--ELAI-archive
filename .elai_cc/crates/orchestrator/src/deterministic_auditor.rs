@@ -840,17 +840,27 @@ impl DeterministicAuditor {
         // first run never blocks on a not-yet-measured baseline). NEVER
         // substitute a hard-coded paper constant for the gate.
         let measured_rate = aggregate_result.mutation_score_pct / 100.0;
+        let baseline_path = project_root
+            .join(crate::mutation_budget::MUTATION_BASELINE_REL_PATH);
         let threshold = match MutationBudget::load_threshold_pct(&project_root) {
             Ok(t) => t,
-            Err(_) => {
-                // First deploy: record the measured baseline (best-effort; a
-                // write failure is logged, not fatal to the audit).
+            // Genuinely first deploy: bootstrap from the measured rate.
+            Err(_) if !baseline_path.exists() => {
                 if let Err(e) =
                     MutationBudget::write_baseline_if_absent(&project_root, measured_rate)
                 {
                     tracing::warn!(error = %e, "I-20: mutation baseline write failed");
                 }
                 measured_rate
+            }
+            // Present but unparseable: surface loudly instead of silently
+            // bypassing the gate (ID-5).
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "I-20: mutation baseline present but unreadable; refusing silent bypass"
+                );
+                return Err(e);
             }
         };
 
