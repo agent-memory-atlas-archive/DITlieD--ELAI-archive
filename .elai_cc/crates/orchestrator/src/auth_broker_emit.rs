@@ -110,11 +110,11 @@ pub fn broker_resolve_anthropic_auth_with_ssb(
             Ok(auth_source)
         }
         Err(err) => {
-            let error_kind = classify_error(&err);
+            let error_kind = classify_error(&err.source);
             if let Some(ref ssb) = writer {
                 emit_auth_broker_event(ssb, AuthBrokerEventKind::RefreshFailed, &error_kind);
             }
-            Err(err)
+            Err(err.source)
         }
     }
 }
