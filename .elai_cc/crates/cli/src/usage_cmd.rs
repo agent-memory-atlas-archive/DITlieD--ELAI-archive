@@ -67,13 +67,18 @@ fn lane_label(lane: UsageLane) -> &'static str {
     }
 }
 
-/// Renders `cost_micros` as a dollar string, or an explicit `n/a` marker
-/// when the group's cost is `None` (S-02 Option-semantics: every folded
-/// row was an `EstimateApplied` token-only estimate, so no dollar figure
-/// is trustworthy for this group -- tokens-only display, S-12 rule).
-fn cost_display(cost_micros: Option<u64>) -> String {
-    cost_micros.map_or_else(
-        || "n/a (tokens only)".to_string(),
+/// Renders the cost column for a rollup row. Local lanes have no dollar
+/// figure (S-02: every folded row was an `EstimateApplied` token-only
+/// estimate), so the column shows the raw token split `in {N} / out {M}`
+/// instead of fabricating a USD value. Cloud lanes keep `format_usd` when
+/// `cost_micros` is present, or an explicit `n/a (no rate for {model})`
+/// when the provider returned no rate for that model.
+fn cost_display(lane: UsageLane, model: &str, entry: &UsageRollupEntry) -> String {
+    if lane == UsageLane::Local {
+        return format!("in {} / out {}", entry.input_tokens, entry.output_tokens);
+    }
+    entry.cost_micros.map_or_else(
+        || format!("n/a (no rate for {model})"),
         // u64 -> f64 is a widening conversion (no truncation risk for any
         // realistic dollar-micros value; f64's 52-bit mantissa covers up
         // to ~9e15 exactly, far past any plausible cost).
@@ -101,7 +106,7 @@ fn print_table(rollup: &std::collections::BTreeMap<UsageRollupKey, UsageRollupEn
             key.session_id.as_deref().unwrap_or("-"),
             entry.input_tokens,
             entry.output_tokens,
-            cost_display(entry.cost_micros),
+            cost_display(key.lane, &key.model, entry),
         );
     }
 

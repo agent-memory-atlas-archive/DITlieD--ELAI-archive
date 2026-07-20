@@ -21,24 +21,28 @@
     BackendCostRollupRow,
     BackendCostRollupResponse,
     PricingRollupResponse,
+    AutoAdvanceStats,
   } from '$lib/api/types';
 
   let rows = $state<UsageRollupRow[]>([]);
   let backendRows = $state<BackendCostRollupRow[]>([]);
   let pricing = $state<PricingRollupResponse | null>(null);
+  let autoAdvance = $state<AutoAdvanceStats | null>(null);
   let loading = $state<boolean>(true);
   let error = $state<string | null>(null);
 
   async function poll(): Promise<void> {
     try {
-      const [usageResp, backendResp, pricingResp] = await Promise.all([
+      const [usageResp, backendResp, pricingResp, autoResp] = await Promise.all([
         stub.get_usage_rollup(500),
         stub.get_backend_cost_rollup(2000),
         stub.get_pricing_rollup(500),
+        stub.get_auto_advance_stats(),
       ]);
       rows = usageResp.rows;
       backendRows = backendResp.rows;
       pricing = pricingResp;
+      autoAdvance = autoResp;
       error = null;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -61,9 +65,11 @@
   });
 
   // cost_micros is null when no rate could be derived for the lane (e.g. local
-  // inference). The UI MUST surface "no rate" rather than a silent $0.00.
+  // inference). Cloud rows surface the USD cost or `no rate for <model>` when
+  // the lane has no rate card; local rows render raw token counts inline
+  // (`in N / out M`) in the cost cell instead of a fake USD value.
   function formatCost(row: UsageRollupRow): string {
-    if (row.cost_micros == null) return 'no rate';
+    if (row.cost_micros == null) return `no rate for ${row.model}`;
     const usd = row.cost_micros / 1_000_000;
     return `$${usd.toFixed(4)}`;
   }
@@ -101,6 +107,12 @@
         {rows.length} row{rows.length === 1 ? '' : 's'}
       {/if}
     </span>
+    {#if autoAdvance}
+      <span
+        class="autonomy-chip"
+        title={`DERIVED: auto_executed_steps / total_steps = ${autoAdvance.auto_advanced}/${autoAdvance.total_steps}`}
+      >autonomy {autoAdvance.auto_advanced}/{autoAdvance.total_steps}</span>
+    {/if}
   </header>
 
   {#if !loading && rows.length === 0 && !error}
@@ -141,7 +153,7 @@
               <td class="num">{formatTokens(row.cache_read_tokens)}</td>
               <td class="num">{formatTokens(row.cache_creation_tokens)}</td>
               <td class="num" class:cost-no-rate={row.cost_micros == null}>
-                {formatCost(row)}
+                {#if row.lane !== 'cloud'}in {row.input_tokens} / out {row.output_tokens}{:else}{formatCost(row)}{/if}
               </td>
               <td class="num">{row.row_count}</td>
             </tr>
@@ -243,7 +255,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each pricing.by_phase as row (\`phase:${row.key}\`)}
+            {#each pricing.by_phase as row (`phase:${row.key}`)}
               <tr>
                 <td class="mono">phase</td>
                 <td class="mono">{row.key}</td>
@@ -252,7 +264,7 @@
                 <td class="num">{formatTokens(row.input_tokens + row.output_tokens + row.cache_creation_input_tokens + row.cache_read_input_tokens)}</td>
               </tr>
             {/each}
-            {#each pricing.by_agent as row (\`agent:${row.key}\`)}
+            {#each pricing.by_agent as row (`agent:${row.key}`)}
               <tr>
                 <td class="mono">agent</td>
                 <td class="mono">{row.key}</td>
@@ -261,7 +273,7 @@
                 <td class="num">{formatTokens(row.input_tokens + row.output_tokens + row.cache_creation_input_tokens + row.cache_read_input_tokens)}</td>
               </tr>
             {/each}
-            {#each pricing.by_tool as row (\`tool:${row.key}\`)}
+            {#each pricing.by_tool as row (`tool:${row.key}`)}
               <tr>
                 <td class="mono">tool</td>
                 <td class="mono">{row.key}</td>
@@ -309,6 +321,16 @@
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-secondary);
+  }
+
+  .autonomy-chip {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    padding: 1px 6px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    white-space: nowrap;
   }
 
   .usage-error {
