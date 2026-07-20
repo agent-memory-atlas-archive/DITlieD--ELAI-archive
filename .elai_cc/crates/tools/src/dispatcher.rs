@@ -301,8 +301,26 @@ fn try_edit_tiers(
     // collision in source) we fall through to the existing 3 tiers so the
     // caller still has a chance to match without the fence.
     if old_text.contains(ELAI_SEARCH_FENCE) {
-        match SearchReplaceMatcher::new().parse_and_apply("dispatcher", old_text, content) {
-            Ok((_patch, updated)) => return (EditMatchTier::Exact, Some(updated)),
+        // SearchReplaceMatcher::parse joins body lines with '\n', so a
+        // CRLF source would miss the LF-joined search body. Normalise the
+        // source to LF for the matcher, then restore CRLF on the result.
+        let content_is_crlf = content.contains("\r\n");
+        let normalized;
+        let matcher_source: &str = if content_is_crlf {
+            normalized = content.replace("\r\n", "\n");
+            &normalized
+        } else {
+            content
+        };
+        match SearchReplaceMatcher::new().parse_and_apply("dispatcher", old_text, matcher_source) {
+            Ok((_patch, updated)) => {
+                let restored = if content_is_crlf {
+                    updated.replace('\n', "\r\n")
+                } else {
+                    updated
+                };
+                return (EditMatchTier::Exact, Some(restored));
+            }
             Err(_) => {
                 tracing::debug!(
                     "try_edit_tiers: SearchReplaceMatcher declined fenced patch, falling through to Exact/WS/Ellipsis tiers"
@@ -1257,6 +1275,19 @@ mod tests {
         let (tier, updated) = try_edit_tiers(source, "world", "Rust");
         assert_eq!(tier, EditMatchTier::Exact);
         assert_eq!(updated.as_deref(), Some("hello Rust"));
+    }
+
+    #[test]
+    fn try_edit_tiers_fenced_patch_matches_crlf_source() {
+        let source = "fn add(a: i32, b: i32) -> i32 {\r\n    a + b\r\n}\r\n";
+        let patch = "<<< ELAI_SEARCH\nfn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n=== ELAI_REPLACE\nfn add(a: i32, b: i32) -> i32 {\n    let sum = a + b;\n    sum\n}\n>>> ELAI_END\n";
+        let (tier, updated) = try_edit_tiers(source, patch, "unused-new-text");
+        assert_eq!(tier, EditMatchTier::Exact);
+        let updated = updated.expect("matcher should produce updated content for CRLF source");
+        assert!(updated.contains("let sum = a + b"));
+        assert!(updated.contains("sum\r\n}"));
+        assert!(!updated.contains("a + b\r\n}"));
+        assert!(updated.contains("\r\n"), "CRLF line endings should be preserved");
     }
 
     #[test]
