@@ -33,13 +33,19 @@
 //! broker_resolve_anthropic_auth_with_ssb, proving the emit branch is code-reachable
 //! without relying on the dark production path.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use elai_orchestrator::auth_broker_emit::broker_resolve_anthropic_auth_with_ssb;
 use elai_orchestrator::ssb::{
     decode_ssb_payload, ssb_action_type_from_str_public, Ssb, SsbActionType, SsbConfig, SsbPayload,
     AuthBrokerEventKind, SCHEMA_VERSION_PUBLIC, SSB_ACTION_TYPES,
 };
+
+// Serialize the env-mutating tests (a)/(b): ANTHROPIC_API_KEY and
+// ANTHROPIC_AUTH_TOKEN are process-globals, so concurrent set/remove across
+// tests would race under the default parallel runner. Plain std::sync::Mutex
+// (mirrors i52_checkpoint_tool_contract.rs ENV_MUTEX idiom; no external dep).
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -79,6 +85,7 @@ async fn make_test_ssb(session_id: &str) -> (Arc<Ssb>, tempfile::TempDir) {
 async fn i50_token_acquired_row_emitted_with_real_ssb() {
     use elai_orchestrator::ssb::SsbReader;
 
+    let _env = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let (ssb, _dir) = make_test_ssb("i50-a").await;
 
     // Set a dummy API key so the env-key branch fires.
@@ -187,6 +194,7 @@ async fn i50_token_acquired_row_emitted_with_real_ssb() {
 async fn i50_refresh_failed_row_emitted_when_no_credentials() {
     use elai_orchestrator::ssb::SsbReader;
 
+    let _env = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let (ssb, _dir) = make_test_ssb("i50-b").await;
 
     // Ensure no credentials are set.
