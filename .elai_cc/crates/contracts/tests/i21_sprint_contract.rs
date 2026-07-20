@@ -34,7 +34,7 @@
 //! Spec references: docs/thefinalglance/I-plan/I-21_sprint_contracts_ralph_loop.md
 //! Reads (mandatory): wiring-enforcement.md R1/R4/R6/R7/R8; production-caller-gate.md.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use elai_orchestrator::adversary::{
     AdversaryConfig, CounterEvidenceSchema, DynAdversary, AdversaryErased, ModelFamily,
@@ -83,6 +83,50 @@ fn open_ssb(dir: &tempfile::TempDir, session: &str) -> Arc<Ssb> {
         )
         .expect("ssb open"),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Env-var safety (CodeRabbit I-50): env vars are process-global and the
+// default test harness runs tests in parallel. A static mutex serializes
+// every test in this binary that reads or mutates
+// ELAI_SPRINT_CONTRACT_ENABLE, and the RAII guard restores the prior value
+// on drop (panic-safe). Mirrors the h42_serial_depth_budget_contract pattern.
+// ---------------------------------------------------------------------------
+
+fn sprint_contract_env_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct SprintContractEnvGuard {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl SprintContractEnvGuard {
+    fn set(key: &'static str, val: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        // SAFETY: the caller holds sprint_contract_env_mutex() for the
+        // duration of the mutation window, serializing all readers/writers
+        // of this env var in this binary.
+        unsafe {
+            std::env::set_var(key, val);
+        }
+        Self { key, prev }
+    }
+}
+
+impl Drop for SprintContractEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: same mutex scope; drop runs as the test unwinds, still
+        // holding the lock via the `_mutex` binding in the caller.
+        unsafe {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -368,16 +412,18 @@ fn i21_action_type_round_trips_all_five() {
 async fn i21_production_dispatch_ssb_row_lands() {
     use elai_orchestrator::ssb::SsbReader;
 
+    // Serialize against any other test in this binary that reads or mutates
+    // ELAI_SPRINT_CONTRACT_ENABLE (e.g. i21_gate_off_by_default). The mutex
+    // is held for the whole test body; the RAII env guard restores the
+    // previous value on drop, including on panic.
+    let _mutex = sprint_contract_env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
     let dir = tempfile::TempDir::new().expect("tempdir");
     let ssb = open_ssb(&dir, "i21-g");
 
-    // Set the gate env var for the duration of this test.
-    // SAFETY: restored on every exit path; this test runs on a dedicated async
-    // runtime and no concurrent test in this binary mutates this var.
-    let prev = std::env::var("ELAI_SPRINT_CONTRACT_ENABLE").ok();
-    unsafe {
-        std::env::set_var("ELAI_SPRINT_CONTRACT_ENABLE", "1");
-    }
+    let _env_guard = SprintContractEnvGuard::set("ELAI_SPRINT_CONTRACT_ENABLE", "1");
     assert!(
         sprint_contract_enabled(),
         "gate must read enabled after set_var"
@@ -387,13 +433,7 @@ async fn i21_production_dispatch_ssb_row_lands() {
     elai_orchestrator::task_runner::dispatch_sprint_contract_for_test(&ssb, 7, "i21-contract", true)
         .await;
 
-    // Restore env.
-    unsafe {
-        match prev {
-            Some(v) => std::env::set_var("ELAI_SPRINT_CONTRACT_ENABLE", v),
-            None => std::env::remove_var("ELAI_SPRINT_CONTRACT_ENABLE"),
-        }
-    }
+    // _env_guard drops here, restoring the env var; _mutex releases after.
 
     // Off-author artifact (R4): the Proposed row must have landed.
     let proposed = ssb
@@ -439,6 +479,11 @@ async fn i21_production_dispatch_ssb_row_lands() {
 
 #[test]
 fn i21_gate_off_by_default() {
+    // Hold the env mutex so i21_production_dispatch_ssb_row_lands cannot
+    // mutate ELAI_SPRINT_CONTRACT_ENABLE while this test reads it.
+    let _mutex = sprint_contract_env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let expected = std::env::var("ELAI_SPRINT_CONTRACT_ENABLE")
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false);
