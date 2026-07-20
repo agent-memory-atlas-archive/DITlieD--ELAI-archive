@@ -1180,8 +1180,12 @@ pub(crate) fn build_system_prompt_for_role(
     // D-030 / R-8: this call is the production caller for CompiledPromptStore::lookup.
     if let Ok(project_root) = env::current_dir() {
         let compiled_store = CompiledPromptStore::load_standard(&project_root);
-        // Use a normalized snake_case role string as the key (consistent with AgentRole::as_str).
-        let role_key = format!("{:?}", role).to_ascii_lowercase();
+        // Use the canonical snake_case role label as the lookup key, mirroring
+        // `bsp::engine::agent_role_str` (the SSB-payload convention). The Debug
+        // representation lowercased multi-word variants to a concatenated blob
+        // (e.g. `ContextCompiler` -> `contextcompiler`) which never matched the
+        // snake_case keys the store is populated with (`context_compiler`).
+        let role_key = agent_role_snake_str(role);
         if let Some(variant) = compiled_store.lookup(&role_key, "anthropic_api") {
             tracing::debug!(
                 target = "compiled_prompt_store",
@@ -1204,6 +1208,33 @@ pub(crate) fn build_system_prompt_for_role(
         sections.push(section);
     }
     Ok((sections, outcome))
+}
+
+/// Canonical snake_case label for an `AgentRole`, mirroring the private
+/// `bsp::engine::agent_role_str` used for SSB payloads. Used here as the
+/// compiled-prompt-store lookup key so multi-word variants
+/// (`ContextCompiler` -> `context_compiler`) match the keys the store is
+/// populated with.
+fn agent_role_snake_str(role: elai_orchestrator::AgentRole) -> &'static str {
+    match role {
+        elai_orchestrator::AgentRole::Executor => "executor",
+        elai_orchestrator::AgentRole::Auditor => "auditor",
+        elai_orchestrator::AgentRole::Researcher => "researcher",
+        elai_orchestrator::AgentRole::Designer => "designer",
+        elai_orchestrator::AgentRole::PromptEngineer => "prompt_engineer",
+        elai_orchestrator::AgentRole::ContextCompiler => "context_compiler",
+        elai_orchestrator::AgentRole::MemoryWriter => "memory_writer",
+        elai_orchestrator::AgentRole::MediaValidator => "media_validator",
+        elai_orchestrator::AgentRole::IdeaFramer => "idea_framer",
+        elai_orchestrator::AgentRole::IdeaCritic => "idea_critic",
+        elai_orchestrator::AgentRole::AuditorConcepts => "auditor_concepts",
+        elai_orchestrator::AgentRole::AuditorPhases => "auditor_phases",
+        elai_orchestrator::AgentRole::AuditorSteps => "auditor_steps",
+        elai_orchestrator::AgentRole::AuditorBabySteps => "auditor_babysteps",
+        elai_orchestrator::AgentRole::AuditorBabyStepDetail => "auditor_babystep_detail",
+        elai_orchestrator::AgentRole::AuditorProductionGrade => "auditor_production_grade",
+        elai_orchestrator::AgentRole::InjectionClassifier => "injection_classifier",
+    }
 }
 
 /// I-32 S5: emit a `RoleContractApplied(PersonaStripped|PersonaRetained)` SSB row from the
