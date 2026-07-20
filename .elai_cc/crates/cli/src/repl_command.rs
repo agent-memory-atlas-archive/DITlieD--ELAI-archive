@@ -495,23 +495,30 @@ pub(super) fn dispatch(
                                     }
                                 }
 
-                                // C-30: cache the answer using the
-                                // confidence -> tier mapping. T4 / Unknown
-                                // are dropped by `OracleAnswerCache::insert`
-                                // itself. Emit `oracle_cache_miss` regardless
-                                // so the dashboard sees one row per pipeline
-                                // run that bypassed the cache.
-                                let tier = elai_orchestrator::oracle_cache::source_tier_for_confidence(answer.confidence);
-                                let cached_entry = elai_orchestrator::oracle_cache::CachedAnswer {
-                                    answer: answer.clone(),
-                                    cached_at: now_secs,
-                                    source_tier: tier,
-                                };
-                                let inserted = oracle_cache.insert(oracle_key, cached_entry);
-                                tracing::debug!(
-                                    inserted = inserted,
-                                    "C-30 oracle cache: insert"
-                                );
+                                // Skip oracle cache insertion when ghost citations are present;
+                                // otherwise the cached answer would bypass the D-16 refusal on
+                                // subsequent /research calls.
+                                if prebind.has_ghost {
+                                    tracing::info!("C-30 oracle cache: skipping insert (ghost citations detected)");
+                                } else {
+                                    // C-30: cache the answer using the
+                                    // confidence -> tier mapping. T4 / Unknown
+                                    // are dropped by `OracleAnswerCache::insert`
+                                    // itself. Emit `oracle_cache_miss` regardless
+                                    // so the dashboard sees one row per pipeline
+                                    // run that bypassed the cache.
+                                    let tier = elai_orchestrator::oracle_cache::source_tier_for_confidence(answer.confidence);
+                                    let cached_entry = elai_orchestrator::oracle_cache::CachedAnswer {
+                                        answer: answer.clone(),
+                                        cached_at: now_secs,
+                                        source_tier: tier,
+                                    };
+                                    let inserted = oracle_cache.insert(oracle_key, cached_entry);
+                                    tracing::debug!(
+                                        inserted = inserted,
+                                        "C-30 oracle cache: insert"
+                                    );
+                                }
                                 if let Some(ssb) = &cli.ssb {
                                     let payload = elai_orchestrator::ssb::SsbPayload::OracleCacheMiss(
                                         elai_orchestrator::ssb::OracleCacheMissPayload {
