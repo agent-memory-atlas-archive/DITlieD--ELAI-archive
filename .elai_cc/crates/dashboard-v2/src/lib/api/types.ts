@@ -2290,6 +2290,44 @@ export interface UsageRollupResponse {
   rows: UsageRollupRow[];
 }
 
+// J-29 SLICE-2: backend cost rollup over BackendCostAccrued SSB rows.
+// Wire shape mirrors the Rust `get_backend_cost_rollup` Tauri command
+// (BackendCostRollupRowDto). `unknown_backend` is true when the hash does
+// not resolve to any RuntimeBackend::canonical_name.
+export interface BackendCostRollupRow {
+  backend_name: string;
+  backend_name_hash: number;
+  tokens_in: number;
+  tokens_out: number;
+  est_cost_micros: number;
+  invocations: number;
+  unknown_backend: boolean;
+}
+export interface BackendCostRollupResponse {
+  rows: BackendCostRollupRow[];
+}
+
+// J-29 SLICE-2: per-phase / per-agent / per-tool USD cost rollup. Wire
+// shape mirrors the Rust `get_pricing_rollup` Tauri command
+// (PricingRollupResponseDto). `observability_gate_off` is true when
+// ELAI_AGENTIC_OBSERVABILITY_ENABLE != 1 — the UI surfaces the disabled
+// hint rather than fabricating zero-cost rows.
+export interface PricingRollupRow {
+  key: string;
+  category: string;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+}
+export interface PricingRollupResponse {
+  observability_gate_off: boolean;
+  by_phase: PricingRollupRow[];
+  by_agent: PricingRollupRow[];
+  by_tool: PricingRollupRow[];
+}
+
 // C-5 follow-on (SCHEMA_VERSION 103): latest cloud routing status surfaced
 // to CloudPanel. Each field maps to the most-recent SSB row of its type
 // and is `null` when no such row has been written yet.
@@ -3536,6 +3574,10 @@ export interface ContextState {
   current_role: string | null;
   /** E-3 4B — underlying backend name; hidden by default in the chat UI. */
   current_runtime: string | null;
+  /** J-29 SLICE-2 — absolute tokens used (sum of allocations). */
+  absolute_tokens?: number;
+  /** J-29 SLICE-2 — token limit (raw_max). */
+  token_limit?: number;
 }
 
 export interface TrustReport {

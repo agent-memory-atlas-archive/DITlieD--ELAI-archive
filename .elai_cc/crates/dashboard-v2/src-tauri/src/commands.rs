@@ -5700,6 +5700,190 @@ pub fn get_usage_rollup(
     Ok(UsageRollupResponseDto { rows: out })
 }
 
+// ---------------------------------------------------------------------------
+// BACKEND COST ROLLUP (J-29 SLICE-2: aggregate BackendCostAccrued SSB rows)
+// ---------------------------------------------------------------------------
+
+/// Wire shape mirrors `BackendCostRollupRow` / `BackendCostRollupResponse`
+/// in `dashboard-v2/src/lib/api/types.ts`. `unknown_backend` is true when
+/// the SSB row's `backend_name_hash` does not match any
+/// `RuntimeBackend::canonical_name()` hash (e.g. a backend removed between
+/// producer and dashboard builds); the UI surfaces those under an
+/// "unknown" bucket rather than dropping the cost.
+#[derive(Debug, serde::Serialize)]
+pub struct BackendCostRollupRowDto {
+    pub backend_name: String,
+    pub backend_name_hash: u64,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub est_cost_micros: u64,
+    pub invocations: u32,
+    pub unknown_backend: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct BackendCostRollupResponseDto {
+    pub rows: Vec<BackendCostRollupRowDto>,
+}
+
+/// J-29 SLICE-2: dashboard-facing rollup of `BackendCostAccrued` SSB rows.
+/// Reads via `SsbViewer::recent_rows_of_type("backend_cost_accrued", limit)`
+/// then folds by `backend_name_hash`, joining hash -> canonical name via
+/// `RuntimeBackend::all()` + `elai_providers::runtime::cost::backend_name_hash`.
+/// Returns an empty row list when no SSB viewer is attached so the UI's
+/// empty-state branch renders.
+#[tauri::command]
+pub fn get_backend_cost_rollup(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> CmdResult<BackendCostRollupResponseDto> {
+    use elai_providers::runtime::cost::backend_name_hash;
+    use elai_providers::runtime::RuntimeBackend;
+    use std::collections::HashMap;
+
+    let limit = limit.unwrap_or(2000).clamp(1, 10_000);
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(BackendCostRollupResponseDto { rows: vec![] });
+    };
+    let rows = viewer
+        .recent_rows_of_type("backend_cost_accrued", limit)
+        .map_err(map_err)?;
+
+    let mut name_by_hash: HashMap<u64, &'static str> = HashMap::new();
+    for b in RuntimeBackend::all() {
+        name_by_hash.insert(backend_name_hash(*b), b.canonical_name());
+    }
+
+    #[derive(Default)]
+    struct Acc {
+        tokens_in: u64,
+        tokens_out: u64,
+        est_cost_micros: u64,
+        invocations: u32,
+    }
+    let mut by_hash: HashMap<u64, Acc> = HashMap::new();
+    for row in rows {
+        let hash = row
+            .payload_json
+            .get("backend_name_hash")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let tokens_in = row
+            .payload_json
+            .get("tokens_in")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let tokens_out = row
+            .payload_json
+            .get("tokens_out")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let est = row
+            .payload_json
+            .get("est_cost_micros")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let e = by_hash.entry(hash).or_default();
+        e.tokens_in = e.tokens_in.saturating_add(tokens_in);
+        e.tokens_out = e.tokens_out.saturating_add(tokens_out);
+        e.est_cost_micros = e.est_cost_micros.saturating_add(est);
+        e.invocations = e.invocations.saturating_add(1);
+    }
+
+    let mut out = Vec::with_capacity(by_hash.len());
+    for (hash, acc) in by_hash {
+        let (backend_name, unknown) = match name_by_hash.get(&hash) {
+            Some(n) => ((*n).to_owned(), false),
+            None => (format!("unknown-backend-{hash}"), true),
+        };
+        out.push(BackendCostRollupRowDto {
+            backend_name,
+            backend_name_hash: hash,
+            tokens_in: acc.tokens_in,
+            tokens_out: acc.tokens_out,
+            est_cost_micros: acc.est_cost_micros,
+            invocations: acc.invocations,
+            unknown_backend: unknown,
+        });
+    }
+    out.sort_by(|a, b| a.backend_name.cmp(&b.backend_name));
+    Ok(BackendCostRollupResponseDto { rows: out })
+}
+
+// ---------------------------------------------------------------------------
+// PRICING ROLLUP (J-29 SLICE-2: per-phase / per-agent / per-tool cost rollup)
+// ---------------------------------------------------------------------------
+
+/// Wire shape mirrors `PricingRollupResponse` in
+/// `dashboard-v2/src/lib/api/types.ts`. `observability_gate_off` is true
+/// when `ssb_emission_enabled()` returns false -- the UI renders the
+/// empty rows plus a "observability disabled" hint instead of fabricating
+/// zero-cost data.
+#[derive(Debug, serde::Serialize)]
+pub struct PricingRollupResponseDto {
+    pub observability_gate_off: bool,
+    pub by_phase: Vec<elai_orchestrator::observability::PricingRollupRow>,
+    pub by_agent: Vec<elai_orchestrator::observability::pricing_rollup::PricingRollupRow>,
+    pub by_tool: Vec<elai_orchestrator::observability::pricing_rollup::PricingRollupRow>,
+}
+
+/// J-29 SLICE-2: per-phase / per-agent / per-tool USD cost rollup over
+/// `UsageTurnEvent` SSB rows. Reuses `pricing_rollup::rollup_cost_by_*`
+/// (E-29 Tier-B) so no new pricing table is introduced. Returns empty
+/// buckets when the observability gate is off (default-off per E-29) so
+/// the UI surfaces "observability disabled" rather than silent zeros.
+#[tauri::command]
+pub fn get_pricing_rollup(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> CmdResult<PricingRollupResponseDto> {
+    use elai_orchestrator::observability::{
+        pricing_rollup::{
+            rollup_cost_by_agent, rollup_cost_by_phase, rollup_cost_by_tool, UsageInput,
+        },
+        ssb_emission_enabled,
+    };
+
+    if !ssb_emission_enabled() {
+        return Ok(PricingRollupResponseDto {
+            observability_gate_off: true,
+            by_phase: vec![],
+            by_agent: vec![],
+            by_tool: vec![],
+        });
+    }
+
+    let limit = limit.unwrap_or(500).clamp(1, 5000);
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(PricingRollupResponseDto {
+            observability_gate_off: false,
+            by_phase: vec![],
+            by_agent: vec![],
+            by_tool: vec![],
+        });
+    };
+    let turns = viewer.usage_turn_events(limit).map_err(map_err)?;
+    let inputs: Vec<UsageInput> = turns
+        .into_iter()
+        .map(|t| UsageInput {
+            model: t.model,
+            phase: format!("{:?}", t.kind),
+            agent: t.backend,
+            tool: t.task_id.clone().unwrap_or_default(),
+            input_tokens: t.input_tokens as u64,
+            output_tokens: t.output_tokens as u64,
+            cache_creation_input_tokens: t.cache_creation_tokens as u64,
+            cache_read_input_tokens: t.cache_read_tokens as u64,
+        })
+        .collect();
+    Ok(PricingRollupResponseDto {
+        observability_gate_off: false,
+        by_phase: rollup_cost_by_phase(&inputs),
+        by_agent: rollup_cost_by_agent(&inputs),
+        by_tool: rollup_cost_by_tool(&inputs),
+    })
+}
+
 /// C-5 follow-on: latest cloud routing status surfaced to CloudPanel.
 ///
 /// Returns a `CloudRouteStatus` JSON object aggregating the most-recent
@@ -9583,6 +9767,13 @@ pub struct ContextStateDto {
     /// anthropic_api / etc.) for the role badge drawer. Hidden by
     /// default in the chat UI; revealed on drawer expansion.
     pub current_runtime: Option<String>,
+    /// J-29 SLICE-2 -- absolute tokens used = sum(allocations) from the
+    /// most recent `context_budget_computed` row (read-side computation;
+    /// the payload has no `usage_pct` field).
+    pub absolute_tokens: u64,
+    /// J-29 SLICE-2 -- token limit = `raw_max` from the most recent
+    /// `context_budget_computed` row.
+    pub token_limit: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -9629,6 +9820,8 @@ pub async fn get_context_state(state: State<'_, AppState>) -> CmdResult<ContextS
         runtime_choice_badge: String::new(),
         current_role: None,
         current_runtime: None,
+        absolute_tokens: 0,
+        token_limit: 0,
     };
 
     let Some(viewer) = state.viewer.as_ref() else {
@@ -9655,13 +9848,28 @@ pub async fn get_context_state(state: State<'_, AppState>) -> CmdResult<ContextS
         }
     }
 
-    // Token-budget % -- read the most recent context_budget_computed row
-    // (B-31.5 / B-7). Payload field name: `usage_pct` (per existing
-    // ContextBudgetComputedPayload shape). Fall back to 0.0 if absent.
+    // Token-budget % + absolute counts (J-29 SLICE-2). The producer
+    // payload `ContextBudgetComputedPayload` exposes `raw_max` +
+    // `allocations` but NOT `usage_pct`; compute the percentage on the
+    // READ side so the panel shows a real figure instead of a stale 0%.
     if let Ok(rows) = viewer.recent_rows_of_type("context_budget_computed", 1) {
         if let Some(row) = rows.first() {
-            if let Some(pct) = row.payload_json.get("usage_pct").and_then(|v| v.as_f64()) {
-                dto.token_budget_pct = pct as f32;
+            let raw_max = row
+                .payload_json
+                .get("raw_max")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let allocations_sum: u64 = row
+                .payload_json
+                .get("allocations")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|x| x.as_u64()).sum())
+                .unwrap_or(0);
+            dto.token_limit = raw_max;
+            dto.absolute_tokens = allocations_sum;
+            if raw_max > 0 {
+                dto.token_budget_pct =
+                    ((allocations_sum as f64) * 100.0 / (raw_max as f64)) as f32;
             }
         }
     }

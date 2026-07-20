@@ -95,6 +95,9 @@ import type {
   CloudSpendInfo,
   // J-29 SLICE-1: usage rollup surfaces for the UsageWindow.
   UsageRollupResponse,
+  // J-29 SLICE-2: backend cost + pricing rollups.
+  BackendCostRollupResponse,
+  PricingRollupResponse,
   // C-5 follow-on — Cloud routing status (RouteBlocked / WarnLimitReached / CostEstimate).
   CloudRouteStatus,
   MutationGaugeInfo,
@@ -2124,6 +2127,37 @@ export async function get_usage_rollup(limit = 500): Promise<UsageRollupResponse
 }
 
 // ------------------------------------------------------------------
+// BACKEND COST ROLLUP (J-29 SLICE-2)
+// ------------------------------------------------------------------
+
+export async function get_backend_cost_rollup(
+  limit = 2000,
+): Promise<BackendCostRollupResponse> {
+  logStub('get_backend_cost_rollup');
+  const live = await tryInvoke<BackendCostRollupResponse>('get_backend_cost_rollup', { limit });
+  if (live) return live;
+  await delay();
+  return { rows: [] };
+}
+
+// ------------------------------------------------------------------
+// PRICING ROLLUP (J-29 SLICE-2)
+// ------------------------------------------------------------------
+
+export async function get_pricing_rollup(limit = 500): Promise<PricingRollupResponse> {
+  logStub('get_pricing_rollup');
+  const live = await tryInvoke<PricingRollupResponse>('get_pricing_rollup', { limit });
+  if (live) return live;
+  await delay();
+  return {
+    observability_gate_off: true,
+    by_phase: [],
+    by_agent: [],
+    by_tool: [],
+  };
+}
+
+// ------------------------------------------------------------------
 // CLOUD ROUTE STATUS (C-5 follow-on — SCHEMA_VERSION 103)
 // ------------------------------------------------------------------
 
@@ -4049,6 +4083,8 @@ export async function get_context_state(): Promise<import('./types').ContextStat
     runtime_choice_badge: '',
     current_role: null,
     current_runtime: null,
+    absolute_tokens: 0,
+    token_limit: 0,
   };
 }
 

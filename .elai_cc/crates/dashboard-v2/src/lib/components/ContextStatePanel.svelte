@@ -46,6 +46,8 @@
     runtime_choice_badge: '',
     current_role: null,
     current_runtime: null,
+    absolute_tokens: 0,
+    token_limit: 0,
   });
   let loadError = $state<string | null>(null);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -94,6 +96,11 @@
     <span class="label-ghost">context state</span>
     <span class="badge badge--{badgeKind}">
       {panelState.token_budget_pct.toFixed(0)}%
+      {#if (panelState.token_limit ?? 0) > 0}
+        · {panelState.absolute_tokens ?? 0} / {panelState.token_limit}
+      {:else if (panelState.absolute_tokens ?? 0) === 0 && (panelState.token_limit ?? 0) === 0}
+        · —
+      {/if}
     </span>
   </header>
 

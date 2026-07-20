@@ -5,19 +5,40 @@
   // MonitorWindow / CloudPanel polling cadence. Local lane rows surface token
   // counts with `no rate` in place of cost_micros (no rate card for local
   // inference); cloud rows surface cost_micros as USD. Never fakes $0.00.
+  //
+  // J-29 SLICE-2: also polls `get_backend_cost_rollup` (BackendCostAccrued
+  // rollup) and `get_pricing_rollup` (per-phase / per-agent / per-tool USD)
+  // on the same cadence and renders them as extra sections below the usage
+  // table. `unknown_backend` rows are labelled explicitly; an
+  // `observability_gate_off` pricing response surfaces the disabled-gate
+  // notice rather than a silent empty table.
 
   import { Empty } from '$lib/ui';
   import * as stub from '$lib/api/stub';
-  import type { UsageRollupRow, UsageRollupResponse } from '$lib/api/types';
+  import type {
+    UsageRollupRow,
+    UsageRollupResponse,
+    BackendCostRollupRow,
+    BackendCostRollupResponse,
+    PricingRollupResponse,
+  } from '$lib/api/types';
 
   let rows = $state<UsageRollupRow[]>([]);
+  let backendRows = $state<BackendCostRollupRow[]>([]);
+  let pricing = $state<PricingRollupResponse | null>(null);
   let loading = $state<boolean>(true);
   let error = $state<string | null>(null);
 
   async function poll(): Promise<void> {
     try {
-      const resp: UsageRollupResponse = await stub.get_usage_rollup(500);
-      rows = resp.rows;
+      const [usageResp, backendResp, pricingResp] = await Promise.all([
+        stub.get_usage_rollup(500),
+        stub.get_backend_cost_rollup(2000),
+        stub.get_pricing_rollup(500),
+      ]);
+      rows = usageResp.rows;
+      backendRows = backendResp.rows;
+      pricing = pricingResp;
       error = null;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -47,11 +68,24 @@
     return `$${usd.toFixed(4)}`;
   }
 
+  function formatMicros(micros: number): string {
+    const usd = micros / 1_000_000;
+    return `$${usd.toFixed(4)}`;
+  }
+
+  function formatUsd(usd: number): string {
+    return `$${usd.toFixed(4)}`;
+  }
+
   function formatTokens(n: number): string {
     if (n === 0) return '—';
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
     return String(n);
+  }
+
+  function backendLabel(row: BackendCostRollupRow): string {
+    return row.unknown_backend ? `unknown (${row.backend_name})` : row.backend_name;
   }
 </script>
 
@@ -116,6 +150,131 @@
       </table>
     </div>
   {/if}
+
+  <section class="rollup-section" aria-label="Backend cost rollup">
+    <header class="rollup-header">
+      <h3>Backend cost</h3>
+      <span class="rollup-subtitle">
+        {#if loading}
+          loading…
+        {:else}
+          {backendRows.length} row{backendRows.length === 1 ? '' : 's'}
+        {/if}
+      </span>
+    </header>
+    {#if !loading && backendRows.length === 0 && !error}
+      <div class="rollup-empty">
+        <Empty
+          title="no BackendCostAccrued rows yet"
+          subtitle="no backend cost ledger rows to roll up"
+        />
+      </div>
+    {:else if backendRows.length > 0}
+      <div class="usage-table-wrap">
+        <table class="usage-table">
+          <thead>
+            <tr>
+              <th>backend</th>
+              <th class="num">in</th>
+              <th class="num">out</th>
+              <th class="num">cost</th>
+              <th class="num">invocations</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each backendRows as row (row.backend_name_hash)}
+              <tr>
+                <td class="mono" class:backend-unknown={row.unknown_backend}>
+                  {backendLabel(row)}
+                </td>
+                <td class="num">{formatTokens(row.tokens_in)}</td>
+                <td class="num">{formatTokens(row.tokens_out)}</td>
+                <td class="num">{formatMicros(row.est_cost_micros)}</td>
+                <td class="num">{row.invocations}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </section>
+
+  <section class="rollup-section" aria-label="Pricing rollup">
+    <header class="rollup-header">
+      <h3>Pricing rollup</h3>
+      <span class="rollup-subtitle">
+        {#if loading}
+          loading…
+        {:else if pricing?.observability_gate_off}
+          <span class="rollup-notice" role="status">
+            observability gate off (ELAI_AGENTIC_OBSERVABILITY_ENABLE)
+          </span>
+        {:else}
+          {#if pricing}
+            {pricing.by_phase.length + pricing.by_agent.length + pricing.by_tool.length} row{pricing.by_phase.length + pricing.by_agent.length + pricing.by_tool.length === 1 ? '' : 's'}
+          {/if}
+        {/if}
+      </span>
+    </header>
+    {#if !loading && pricing?.observability_gate_off}
+      <div class="rollup-empty">
+        <Empty
+          title="observability gate off (ELAI_AGENTIC_OBSERVABILITY_ENABLE)"
+          subtitle="pricing rollup is not collected; enable the gate to populate"
+        />
+      </div>
+    {:else if !loading && pricing && pricing.by_phase.length === 0 && pricing.by_agent.length === 0 && pricing.by_tool.length === 0}
+      <div class="rollup-empty">
+        <Empty
+          title="no pricing rollup rows yet"
+          subtitle="observability gate is on but no priced events have landed"
+        />
+      </div>
+    {:else if pricing && !pricing.observability_gate_off}
+      <div class="usage-table-wrap">
+        <table class="usage-table">
+          <thead>
+            <tr>
+              <th>bucket</th>
+              <th>key</th>
+              <th>category</th>
+              <th class="num">cost</th>
+              <th class="num">tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each pricing.by_phase as row (\`phase:${row.key}\`)}
+              <tr>
+                <td class="mono">phase</td>
+                <td class="mono">{row.key}</td>
+                <td class="mono">{row.category}</td>
+                <td class="num">{formatUsd(row.cost_usd)}</td>
+                <td class="num">{formatTokens(row.input_tokens + row.output_tokens + row.cache_creation_input_tokens + row.cache_read_input_tokens)}</td>
+              </tr>
+            {/each}
+            {#each pricing.by_agent as row (\`agent:${row.key}\`)}
+              <tr>
+                <td class="mono">agent</td>
+                <td class="mono">{row.key}</td>
+                <td class="mono">{row.category}</td>
+                <td class="num">{formatUsd(row.cost_usd)}</td>
+                <td class="num">{formatTokens(row.input_tokens + row.output_tokens + row.cache_creation_input_tokens + row.cache_read_input_tokens)}</td>
+              </tr>
+            {/each}
+            {#each pricing.by_tool as row (\`tool:${row.key}\`)}
+              <tr>
+                <td class="mono">tool</td>
+                <td class="mono">{row.key}</td>
+                <td class="mono">{row.category}</td>
+                <td class="num">{formatUsd(row.cost_usd)}</td>
+                <td class="num">{formatTokens(row.input_tokens + row.output_tokens + row.cache_creation_input_tokens + row.cache_read_input_tokens)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </section>
 </section>
 
 <style>
@@ -212,6 +371,54 @@
   }
 
   .usage-table tbody td.cost-no-rate {
+    color: var(--text-secondary);
+    font-style: italic;
+  }
+
+  .rollup-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 10px;
+  }
+
+  .rollup-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .rollup-header h3 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-weight: 300;
+    font-size: 14px;
+    color: var(--text-primary);
+    letter-spacing: 0.04em;
+  }
+
+  .rollup-subtitle {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .rollup-notice {
+    color: var(--text-secondary);
+    font-style: italic;
+  }
+
+  .rollup-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 0;
+  }
+
+  .usage-table tbody td.backend-unknown {
     color: var(--text-secondary);
     font-style: italic;
   }
