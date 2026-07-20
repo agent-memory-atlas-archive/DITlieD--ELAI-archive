@@ -1,0 +1,3 @@
+# J-26 golden-pack private (held-out) directory.
+# Maps to D-6 held-out rows. Empty by design for the golden pack; the
+# contract test does not exercise the held-out ingest path.

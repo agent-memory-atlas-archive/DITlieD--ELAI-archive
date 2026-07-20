@@ -1,0 +1,3 @@
+# J-26 golden-pack fixtures directory.
+# Holds deterministic test inputs for the evaluator. Empty by design for the
+# golden pack; the evaluator is self-contained and writes a known scalar.

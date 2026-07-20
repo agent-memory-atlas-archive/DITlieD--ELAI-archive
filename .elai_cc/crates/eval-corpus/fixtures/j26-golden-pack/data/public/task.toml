@@ -1,0 +1,29 @@
+id = "j26-golden-pack"
+family = "code_fix"
+created_at = "2026-07-21T00:00:00Z"
+problem = "J-26 golden pack: write a function that adds two integers."
+reference_solution = "fn add(a:i32,b:i32)->i32{a+b}"
+embedding_hash = "deadbeefcafe1234"
+ngram_hash = "1234deadbeefcafe"
+
+[cutoffs]
+"qwen2.5-coder-3b" = "2024-10"
+
+[[tests]]
+input = "add(1,2)"
+expected_output = "3"
+kind = "unit_test"
+
+[[tests]]
+input = "add(0,0)"
+expected_output = "0"
+kind = "unit_test"
+
+[[tests]]
+input = "add(-1,1)"
+expected_output = "0"
+kind = "unit_test"
+
+[provenance]
+generator = "human_curated"
+date = "2026-07-21T00:00:00Z"
