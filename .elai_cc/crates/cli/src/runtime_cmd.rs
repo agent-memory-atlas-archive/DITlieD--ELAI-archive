@@ -19,10 +19,13 @@
 //! commits.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use elai_core::clock::{ClockProvider, OsClock};
-use elai_orchestrator::{RuntimeBackendConfig, RuntimeOrchestrator};
+use elai_orchestrator::{
+    default_ssb_path_for_base, RuntimeBackendConfig, RuntimeOrchestrator, Ssb, SsbConfig,
+};
 use elai_providers::runtime::{
     create_runtime, resolve_backend, AuthSource as RuntimeAuthSource, RuntimeBackend,
     RuntimeFactoryConfig, RuntimeHealth, SecretString,
@@ -31,6 +34,7 @@ use elai_orchestrator::auth_broker_emit::broker_resolve_anthropic_auth_with_ssb;
 use elai_providers::AuthSource as ProviderAuthSource;
 use thiserror::Error;
 use tokio::time::timeout;
+use tracing::warn;
 
 /// Hard cap on the rendered HEALTH cell width in `/runtime list`. When a
 /// backend reports an `Unavailable` reason that inlines the full system
@@ -119,7 +123,7 @@ pub async fn handle_runtime_slash_command(
         None | Some("list") | Some("show") => render_runtime_list(project_root).await,
         Some("test") => {
             let backend_name = target.ok_or(RuntimeCmdError::MissingArg("<backend>"))?;
-            handle_runtime_test(backend_name).await
+            handle_runtime_test(backend_name, project_root).await
         }
         Some("set") => {
             let role_name = role.ok_or(RuntimeCmdError::MissingArg("--role <name>"))?;
@@ -339,7 +343,10 @@ async fn render_runtime_list(project_root: &Path) -> Result<String, RuntimeCmdEr
 /// probe always reports `[FAIL]` — even when the cloud path is fully
 /// operational at the `AnthropicClient` level. See B-37 WARN-3 audit
 /// finding.
-async fn handle_runtime_test(candidate: &str) -> Result<String, RuntimeCmdError> {
+async fn handle_runtime_test(
+    candidate: &str,
+    project_root: &Path,
+) -> Result<String, RuntimeCmdError> {
     let backend = resolve_backend(candidate).map_err(|e| RuntimeCmdError::UnknownBackend {
         candidate: e.candidate,
         supported: e.supported.join(", "),
@@ -349,7 +356,8 @@ async fn handle_runtime_test(candidate: &str) -> Result<String, RuntimeCmdError>
     let canonical = backend.canonical_name();
     let mut cfg = RuntimeFactoryConfig::for_backend(backend);
     if backend == RuntimeBackend::AnthropicApi {
-        match resolve_anthropic_auth_for_factory() {
+        let ssb = open_runtime_ssb_writer(project_root);
+        match resolve_anthropic_auth_for_factory(ssb) {
             Ok(auth) => cfg.auth_source = Some(auth),
             Err(reason) => {
                 // Short-circuit: no creds available, no point hitting the
@@ -384,20 +392,56 @@ async fn handle_runtime_test(candidate: &str) -> Result<String, RuntimeCmdError>
 ///      (auto-refreshed if expired)
 /// On total absence, returns a user-facing reason string so the caller
 /// can surface a `[FAIL]` row pointing at `elai login anthropic`.
-fn resolve_anthropic_auth_for_factory() -> Result<RuntimeAuthSource, String> {
+///
+/// `writer` threads the SSB writer into
+/// `broker_resolve_anthropic_auth_with_ssb` so the I-50
+/// `AuthBrokerEvent` audit row (token-acquired / refresh-failed) is
+/// emitted in production. `None` (SSB unavailable on this machine)
+/// preserves the prior behavior: auth still resolves, the audit row
+/// is simply skipped.
+fn resolve_anthropic_auth_for_factory(
+    writer: Option<Arc<Ssb>>,
+) -> Result<RuntimeAuthSource, String> {
     // I-50 (SCHEMA_VERSION 268): credential resolution goes through the auth broker.
     // The broker calls resolve_startup_auth_source (byte-compat with the prior direct call)
     // and emits an AuthBrokerEvent SSB row when a writer is present.
-    //
-    // WIRE-DARK[I-50]: writer=None because this function has no Arc<Ssb> in scope.
-    // Threading Arc<Ssb> through the CLI dispatch path is deferred per I-50 fork A183.
-    // The emit path is proven reachable by the i50_auth_broker_contract test.
-    let provider_auth = broker_resolve_anthropic_auth_with_ssb(None).map_err(|e| {
+    let provider_auth = broker_resolve_anthropic_auth_with_ssb(writer).map_err(|e| {
         format!(
             "no ANTHROPIC_API_KEY env var and no usable OAuth fixture ({e}). Run `elai login anthropic`."
         )
     })?;
     Ok(provider_auth_to_runtime_auth(provider_auth))
+}
+
+/// Open the SSB writer used by `/runtime test` to emit `AuthBrokerEvent`
+/// rows. Mirrors the `critique_cmd.rs` / `scip_cmd.rs` pattern:
+/// `default_ssb_path_for_base(project_root)`, create parents, open
+/// `Ssb::new`, downgrade any open failure to `None` (best-effort; a
+/// missing SSB row is never a correctness failure for auth resolution).
+fn open_runtime_ssb_writer(project_root: &Path) -> Option<Arc<Ssb>> {
+    let db_path = default_ssb_path_for_base(project_root);
+    let Some(parent) = db_path.parent() else {
+        warn!("runtime: ssb.db has no parent directory; AuthBrokerEvent row will be skipped");
+        return None;
+    };
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        warn!(err = %e, "runtime: creating ssb sessions dir failed; AuthBrokerEvent row will be skipped");
+        return None;
+    }
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: "cli-runtime-test".to_string(),
+    };
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    match Ssb::new(cfg, clock) {
+        Ok(s) => Some(Arc::new(s)),
+        Err(e) => {
+            warn!(err = %e, "runtime: SSB open failed; AuthBrokerEvent row will be skipped");
+            None
+        }
+    }
 }
 
 /// Bridge between the providers crate's `AuthSource` (raw String inner)
