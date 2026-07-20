@@ -267,11 +267,10 @@ fn compute_risk_signals(
     });
     if has_security_domain || has_security_framework {
         signals.risk_level = RiskLevelSignal::High;
-    } else if !profile.domains.is_empty() {
-        signals.risk_level = RiskLevelSignal::Medium;
-    } else {
-        signals.risk_level = RiskLevelSignal::Low;
     }
+    // Otherwise leave the conservative `Unknown` default: an ambiguous or
+    // empty-domain profile is missing information, and the selector maps
+    // `Unknown` to `Core` so missing information never reduces the leg intensity.
 
     // Complexity class: driven by the number of changed files.
     signals.complexity_class = match changed_files.len() {
