@@ -49,12 +49,51 @@ pub enum ResolveOutcome {
     Refreshed,
     /// Resolution failed; error surfaced as `ApiError`.
     ///
-    /// Reserved: emitted by the I-50-ssb-threading promotion path (writer not
-    /// yet threaded). Currently unconstructed in the providers layer — the
-    /// emit wrapper maps the `Err` branch to `RefreshFailed` directly, so this
-    /// variant exists for forward-compatibility when the broker itself gains
-    /// a `Failed` return path.
+    /// Carried inside [`AuthBrokerError`] so the SSB wrapper can label a
+    /// `RefreshFailed` row without re-running the waterfall.
     Failed,
+}
+
+// ---------------------------------------------------------------------------
+// AuthBrokerError: broker result that preserves ResolveOutcome classification
+// ---------------------------------------------------------------------------
+
+/// Provider-side error carrying the [`ResolveOutcome`] that the orchestrator's
+/// SSB-emit wrapper should report.
+///
+/// This type intentionally does not depend on SSB types (those live in
+/// `elai-orchestrator::auth_broker_emit`). It lets `AuthBroker` preserve the
+/// failure classification that `?` would otherwise discard.
+#[derive(Debug)]
+pub struct AuthBrokerError {
+    /// The auth-resolution outcome that failed.
+    pub outcome: ResolveOutcome,
+    /// Underlying provider error.
+    pub source: ApiError,
+}
+
+impl AuthBrokerError {
+    /// Convenience constructor for [`ResolveOutcome::Failed`].
+    pub fn failed(source: ApiError) -> Self {
+        Self {
+            outcome: ResolveOutcome::Failed,
+            source,
+        }
+    }
+}
+
+impl std::fmt::Display for AuthBrokerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(f)
+    }
+}
+
+impl std::error::Error for AuthBrokerError {}
+
+impl From<ApiError> for AuthBrokerError {
+    fn from(source: ApiError) -> Self {
+        Self::failed(source)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +119,7 @@ pub trait AuthProvider {
     ///
     /// Returns `(AuthSource, ResolveOutcome)` on success so callers can emit a
     /// correctly-labelled SSB row without re-running the waterfall.
-    fn resolve(&self) -> Result<(PubAuthSource, ResolveOutcome), ApiError>;
+    fn resolve(&self) -> Result<(PubAuthSource, ResolveOutcome), AuthBrokerError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,12 +140,13 @@ impl AuthProvider for AnthropicAuthProvider {
         ANTHROPIC_PROVIDER_ID
     }
 
-    fn resolve(&self) -> Result<(PubAuthSource, ResolveOutcome), ApiError> {
+    fn resolve(&self) -> Result<(PubAuthSource, ResolveOutcome), AuthBrokerError> {
         // Classify the anticipated outcome before calling the waterfall (cheapest
         // guards only; avoids instrumenting the private `resolve_startup_auth_source`).
         let anticipated_outcome = anticipate_outcome();
         let auth_source =
-            resolve_startup_auth_source(|| Ok(Some(default_claude_code_oauth_config())))?;
+            resolve_startup_auth_source(|| Ok(Some(default_claude_code_oauth_config())))
+                .map_err(AuthBrokerError::failed)?;
         Ok((auth_source, anticipated_outcome))
     }
 }
@@ -117,9 +157,8 @@ impl AuthProvider for AnthropicAuthProvider {
 /// Fails-safe to `TokenAcquired` when uncertain.  This is safe because:
 ///   - If the waterfall succeeds, `TokenAcquired` is the correct label (a
 ///     surprise credential was found).
-///   - If the waterfall fails, `resolve()` propagates `Err` via `?` and the
-///     outcome is never returned — the emit wrapper emits `RefreshFailed` from
-///     its own `Err` branch.  So a misclassified `TokenAcquired` can never
+///   - If the waterfall fails, `resolve()` returns `Err(AuthBrokerError)` with
+///     [`ResolveOutcome::Failed`], so a misclassified `TokenAcquired` can never
 ///     reach an SSB row on the failure path.
 fn anticipate_outcome() -> ResolveOutcome {
     // Guard 1: env-key branches → TokenAcquired.
@@ -174,12 +213,13 @@ impl AuthBroker {
     /// Returns `(AuthSource, ResolveOutcome)` on success.  The outcome is used by
     /// the orchestrator wrapper to emit the correctly-labelled SSB row.
     ///
-    /// On error, the `ApiError` is propagated directly — the SSB `RefreshFailed`
-    /// row is emitted by the orchestrator wrapper's `Err` branch, not here
-    /// (this layer has no SSB dependency by design).
+    /// On error, the [`AuthBrokerError`] carries the classified
+    /// [`ResolveOutcome::Failed`] so the SSB wrapper can emit `RefreshFailed`
+    /// without re-running the waterfall.  This layer has no SSB dependency by
+    /// design.
     pub fn resolve<P: AuthProvider>(
         provider: &P,
-    ) -> Result<(PubAuthSource, ResolveOutcome), ApiError> {
+    ) -> Result<(PubAuthSource, ResolveOutcome), AuthBrokerError> {
         provider.resolve()
     }
 }
@@ -195,6 +235,7 @@ impl AuthBroker {
 ///
 /// WIRE-DARK[I-50]: production callers go through the orchestrator wrapper, not
 /// this fn directly, so SSB emit is not bypassed.
-pub fn broker_resolve_anthropic_auth() -> Result<(PubAuthSource, ResolveOutcome), ApiError> {
+pub fn broker_resolve_anthropic_auth(
+) -> Result<(PubAuthSource, ResolveOutcome), AuthBrokerError> {
     AuthBroker::resolve(&AnthropicAuthProvider)
 }
