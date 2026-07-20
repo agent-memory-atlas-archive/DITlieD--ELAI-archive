@@ -147,6 +147,13 @@ pub enum BenchConvergenceError {
         "compute level '{label}': expected {expected} seeds, got {actual}"
     )]
     SeedMismatch { label: String, expected: u32, actual: usize },
+    /// Per-seed task counts disagree within a level (would index out of bounds
+    /// in `bootstrap_ci`). `expected` is `outcomes[0].len()`, `actual` is the
+    /// first offending seed row's length.
+    #[error(
+        "compute level '{label}': ragged outcomes, expected {expected} tasks per seed, got {actual}"
+    )]
+    RaggedOutcomes { label: String, expected: usize, actual: usize },
     /// Config file could not be read.
     #[error("convergence could not read config at {path}: {source_msg}")]
     ConfigRead { path: String, source_msg: String },
@@ -217,6 +224,16 @@ pub fn validate_fixture(config: &ConvergenceConfig) -> Result<(), BenchConvergen
             return Err(BenchConvergenceError::EmptyLevel {
                 label: level.label.clone(),
             });
+        }
+        let n_tasks = level.outcomes[0].len();
+        for seed in &level.outcomes {
+            if seed.len() != n_tasks {
+                return Err(BenchConvergenceError::RaggedOutcomes {
+                    label: level.label.clone(),
+                    expected: n_tasks,
+                    actual: seed.len(),
+                });
+            }
         }
     }
     Ok(())
