@@ -175,6 +175,195 @@ pub fn detect_open_topic(cwd: &Path) -> Option<TopicHandle> {
 }
 
 // ---------------------------------------------------------------------------
+// Section-aware budgeted read (J-25 MOVE T2)
+// ---------------------------------------------------------------------------
+
+/// One section sliced from a handoff digest by the budgeted loader.
+///
+/// T2 minimal shape: header + body. The typed `DigestSection` enum with
+/// per-section byte budgets + dedup validator is T1 (Tier-2 DEFERRED).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetedSection {
+    /// The header line that introduced this section (e.g. `SUMMARY`,
+    /// `## DECISIONS`, `CURRENT STATUS:`). Always present in the result,
+    /// even when the body was truncated to zero by the budget.
+    pub header: String,
+    /// The body lines under the header. May be truncated to fit the budget.
+    pub body: String,
+}
+
+/// Result of [`read_budgeted_section_aware`].
+#[derive(Debug, Clone)]
+pub struct BudgetedReadResult {
+    /// Skeleton headers + filled bodies, in section order.
+    pub sections: Vec<BudgetedSection>,
+    /// Estimated tokens of the assembled skeleton + bodies text
+    /// (`len / CHARS_PER_TOKEN`, capped at `u32::MAX`).
+    pub loaded_tokens: u32,
+    /// `true` iff any body was cut by the budget.
+    pub truncated: bool,
+    /// `Some("line N")` 1-based hint into `digest_text` naming the line
+    /// after the last emitted line, when `truncated`. `None` otherwise.
+    /// The caller can prefix the file path if it wants a `file:line` form.
+    pub resume_hint: Option<String>,
+}
+
+/// Read `digest_text` into a skeleton + budgeted bodies, preserving every
+/// section header unconditionally.
+///
+/// A "section header" is any line starting with `#` (markdown heading) or
+/// an ALL-CAPS label line (e.g. `SUMMARY`, `DECISIONS`, `FILES TOUCHED`,
+/// `HOW TO PICK UP`, `CURRENT STATUS:`, `INDEX`). A section is its header
+/// line plus every following line until the next header line or EOF.
+///
+/// Behavior:
+///  - The skeleton (every header line, plus every line under an `INDEX`
+///    header) ALWAYS survives, even when `budget_tokens == 0`.
+///  - Bodies are filled in section order using
+///    `floor(budget_tokens * 0.95)` body-token budget; each body line
+///    consumes `len / CHARS_PER_TOKEN` estimated tokens
+///    (`CHARS_PER_TOKEN` is 4, consistent with the rest of the module).
+///  - On overflow: `truncated = true` and `resume_hint = Some("line N")`
+///    naming the 1-based line in `digest_text` after the last emitted line.
+///  - Deterministic; NO LLM, NO I/O, NO network.
+pub fn read_budgeted_section_aware(
+    digest_text: &str,
+    budget_tokens: u32,
+) -> BudgetedReadResult {
+    // 1. Parse into raw sections (header line + body lines).
+    let mut raw: Vec<(String, Vec<&str>, usize)> = Vec::new();
+    // tuple: (header_line, body_lines, header_line_number_1based)
+    let mut current: Option<(String, Vec<&str>, usize)> = None;
+    let mut line_no: usize = 0;
+    for line in digest_text.lines() {
+        line_no += 1;
+        if is_section_header(line) {
+            if let Some((h, b, n)) = current.take() {
+                raw.push((h, b, n));
+            }
+            current = Some((line.to_string(), Vec::new(), line_no));
+        } else if let Some((_, ref mut body, _)) = current.as_mut() {
+            body.push(line);
+        } else {
+            // No header seen yet; treat as a pre-amble section with empty
+            // header so the content is not silently dropped. The skeleton
+            // rule applies only to actual headers, so this pre-amble is
+            // subject to the body budget like any other body.
+            current = Some((String::new(), vec![line], line_no));
+        }
+    }
+    if let Some((h, b, n)) = current {
+        raw.push((h, b, n));
+    }
+
+    // 2. Compute body budget: floor(budget_tokens * 0.95).
+    let body_budget_tokens: u32 = ((budget_tokens as f64) * 0.95).floor() as u32;
+    let mut body_budget_chars: usize = body_budget_tokens.saturating_mul(CHARS_PER_TOKEN as u32) as usize;
+
+    // 3. Walk sections in order. Headers (and INDEX bodies) always survive.
+    let mut sections: Vec<BudgetedSection> = Vec::with_capacity(raw.len());
+    let mut truncated = false;
+    let mut resume_line: Option<usize> = None;
+
+    for (header, body_lines, header_no) in &raw {
+        let header_is_index = header.trim().eq_ignore_ascii_case("INDEX");
+        if header_is_index {
+            // INDEX lines are skeleton too: preserved unconditionally.
+            let body = body_lines.join("\n");
+            sections.push(BudgetedSection {
+                header: header.clone(),
+                body,
+            });
+            continue;
+        }
+
+        // Fill body lines in order until body budget exhausted.
+        let mut kept: Vec<&str> = Vec::with_capacity(body_lines.len());
+        for (idx, line) in body_lines.iter().enumerate() {
+            let line_chars = line.len() + 1; // +1 for the newline that join("\n") re-adds
+            if line_chars <= body_budget_chars {
+                body_budget_chars -= line_chars;
+                kept.push(line);
+            } else if body_budget_tokens > 0 {
+                // Only flag truncation when a positive body budget was
+                // requested. With budget_tokens == 0 (skeleton-only request)
+                // no body content was cut mid-fill, so truncated must stay
+                // false per the J-25 WIRING_CONTRACT.
+                truncated = true;
+                // 1-based line in digest_text of the line we just rejected
+                // (the line after the last emitted line): header_no + 1 (the
+                // header itself) + idx (body lines consumed) + 1.
+                resume_line = Some(header_no + 1 + idx + 1);
+                break;
+            } else {
+                // No body budget requested; skip remaining body lines
+                // without marking truncated.
+                break;
+            }
+        }
+        let body = kept.join("\n");
+        sections.push(BudgetedSection {
+            header: header.clone(),
+            body,
+        });
+    }
+
+    // 4. If we exhausted the budget mid-section but never hit the `else`
+    //    branch (e.g. last section's last line exactly fit), truncated stays
+    //    false and resume_hint stays None, which is correct.
+    //    If truncated was set, compute the hint.
+    let resume_hint = if truncated {
+        resume_line.map(|n| format!("line {n}"))
+    } else {
+        None
+    };
+
+    // 5. loaded_tokens: estimated tokens of assembled skeleton + bodies.
+    let mut assembled_len: usize = 0;
+    for s in &sections {
+        assembled_len += s.header.len() + 1 + s.body.len() + 1; // header + \n + body + \n
+    }
+    let loaded_tokens = (assembled_len / CHARS_PER_TOKEN).min(u32::MAX as usize) as u32;
+
+    BudgetedReadResult {
+        sections,
+        loaded_tokens,
+        truncated,
+        resume_hint,
+    }
+}
+
+/// Classify a line as a section header for the budgeted loader.
+///
+/// Markdown headings (`#`, `##`, ...) and ALL-CAPS label lines (e.g.
+/// `SUMMARY`, `CURRENT STATUS:`, `INDEX`) are headers. A line is ALL-CAPS
+/// if its non-space alphabetic characters are all uppercase and it has at
+/// least one alphabetic character.
+fn is_section_header(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') {
+        return true;
+    }
+    let t = trimmed.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let mut alpha_count = 0usize;
+    for ch in t.chars() {
+        if ch.is_alphabetic() {
+            alpha_count += 1;
+            if !ch.is_uppercase() {
+                return false;
+            }
+        } else if !ch.is_whitespace() && ch != ':' && ch != '_' && ch != '-' {
+            // Allow `:`, `_`, `-` as label punctuation (e.g. `CURRENT STATUS:`).
+            return false;
+        }
+    }
+    alpha_count > 0
+}
+
+// ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
 

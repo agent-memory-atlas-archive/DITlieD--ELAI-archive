@@ -128,9 +128,32 @@ pub(crate) fn run_repl(
                         handle.topic_slug, handle.loaded_tokens
                     );
                 } else if let Ok(digest_text) = std::fs::read_to_string(&handle.digest_path) {
+                    let budgeted = elai_orchestrator::read_budgeted_section_aware(
+                        &digest_text,
+                        MAX_TIERED_LOAD_TOKENS,
+                    );
+                    let mut body = String::new();
+                    for section in &budgeted.sections {
+                        if !body.is_empty() {
+                            body.push_str("\n\n");
+                        }
+                        if !section.header.is_empty() {
+                            body.push_str(&section.header);
+                            body.push('\n');
+                        }
+                        body.push_str(&section.body);
+                    }
+                    if let Some(hint) = budgeted.resume_hint.as_ref() {
+                        if !body.is_empty() {
+                            body.push_str("\n\n");
+                        }
+                        body.push_str("[resume hint: ");
+                        body.push_str(hint);
+                        body.push(']');
+                    }
                     let preamble = format!(
                         "[H-51 Tiered Load] Resuming topic '{}'. Prior session digest follows:\n\n{}",
-                        handle.topic_slug, digest_text
+                        handle.topic_slug, body
                     );
                     cli.system_prompt.push(preamble);
                 }
