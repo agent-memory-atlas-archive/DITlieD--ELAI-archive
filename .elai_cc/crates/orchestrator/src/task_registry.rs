@@ -2,7 +2,7 @@
 //! In-memory task registry for sub-agent task lifecycle management.
 
 use rustc_hash::FxHashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,8 @@ pub struct Task {
     pub messages: Vec<TaskMessage>,
     pub output: String,
     pub team_id: Option<String>,
+    /// Agent that owns this task (J-25 T6). None = unowned / legacy rows.
+    pub owner_agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +57,13 @@ pub struct TaskMessage {
 #[derive(Debug, Clone, Default)]
 pub struct TaskRegistry {
     inner: Arc<Mutex<RegistryInner>>,
+}
+
+/// Process-wide registry shared with tools RPC (J-25 T6).
+#[must_use]
+pub fn global_task_registry() -> &'static TaskRegistry {
+    static REGISTRY: OnceLock<TaskRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(TaskRegistry::new)
 }
 
 #[derive(Debug, Default)]
@@ -119,6 +128,7 @@ impl TaskRegistry {
             messages: Vec::new(),
             output: String::new(),
             team_id: None,
+            owner_agent_id: None,
         };
         inner.tasks.insert(task_id, task.clone());
         task
@@ -217,6 +227,35 @@ impl TaskRegistry {
         task.team_id = Some(team_id.to_owned());
         task.updated_at = now_secs(&elai_core::OsClock);
         Ok(())
+    }
+
+    /// Non-terminal (Created|Running) task ids owned by `owner_agent_id`.
+    #[must_use]
+    pub fn non_terminal_task_ids_for_agent(&self, owner_agent_id: &str) -> Vec<String> {
+        let Ok(inner) = self.inner.lock() else {
+            return Vec::new();
+        };
+        inner
+            .tasks
+            .values()
+            .filter(|t| {
+                t.owner_agent_id.as_deref() == Some(owner_agent_id)
+                    && matches!(t.status, TaskStatus::Created | TaskStatus::Running)
+            })
+            .map(|t| t.task_id.clone())
+            .collect()
+    }
+
+    /// Set owner on an existing task. Returns false if missing or lock poisoned.
+    pub fn set_owner_agent_id(&self, task_id: &str, owner_agent_id: impl Into<String>) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        let Some(task) = inner.tasks.get_mut(task_id) else {
+            return false;
+        };
+        task.owner_agent_id = Some(owner_agent_id.into());
+        true
     }
 
     pub fn remove(&self, task_id: &str) -> Option<Task> {

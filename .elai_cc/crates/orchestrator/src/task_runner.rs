@@ -1920,7 +1920,17 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
             // Map session outcome to baby-step outcome.
             let (outcome, session_err) = match session_outcome.final_state {
                 crate::ipc_accept::AgentFinalState::Passed => {
-                    (BabyStepOutcome::Passed, None)
+                    let open = crate::completion_gate::non_terminal_task_ids_for_agent(
+                        crate::task_registry::global_task_registry(),
+                        &agent_id.to_string(),
+                    );
+                    (
+                        crate::completion_gate::maybe_downgrade_passed(
+                            BabyStepOutcome::Passed,
+                            open,
+                        ),
+                        None,
+                    )
                 }
                 crate::ipc_accept::AgentFinalState::Failed { reason } => {
                     (BabyStepOutcome::Failed { reason: reason.clone() }, Some(reason))
@@ -10549,6 +10559,14 @@ async fn drive_task(
                                     summary: format!(
                                         "blocked_by baby_step {}",
                                         blocked_by.0
+                                    ),
+                                }
+                            }
+                            BabyStepOutcome::Partial { ref open_task_ids } => {
+                                FixerValidatorReport::Failed {
+                                    summary: format!(
+                                        "partial: open tasks [{}]",
+                                        open_task_ids.join(",")
                                     ),
                                 }
                             }

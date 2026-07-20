@@ -173,6 +173,8 @@ pub mod context_budget;
 // ELAI_CONTEXT_POLICY_DISABLE=1. No new SSB variant (reuses ContextReduction
 // per GD-1). Wire-in points: conversation.rs:789 + live_cli.rs:1185.
 pub mod context_boundary;
+pub mod completion_gate;
+pub use completion_gate::{maybe_downgrade_passed, non_terminal_task_ids_for_agent};
 pub mod context_policy;
 // I-14: deterministic context compression middleware (CACHE-INVARIANT ECONOMICS).
 // Tier-1 AstFold (tree-sitter body elision) + LspSlice (compiler-error slicing),

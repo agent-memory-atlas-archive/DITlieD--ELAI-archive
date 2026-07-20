@@ -331,6 +331,8 @@ pub enum BabyStepOutcome {
     Skipped { reason: String },
     /// Blocked by unmet dependency.
     Blocked { blocked_by: BabyStepId },
+    /// J-25 T6: agent returned Passed but still owns non-terminal tasks.
+    Partial { open_task_ids: Vec<String> },
 }
 
 /// Result of executing a baby step (outcome + metadata).
@@ -1051,6 +1053,13 @@ impl TreeNavigator for DepthFirstNavigator {
             }
             BabyStepOutcome::Failed { reason } => {
                 self.handle_failure(bs_id, reason, state, tree)
+            }
+            BabyStepOutcome::Partial { open_task_ids } => {
+                let reason = format!(
+                    "j25_completion_gate_open_tasks:{}",
+                    open_task_ids.join(",")
+                );
+                self.handle_failure(bs_id, &reason, state, tree)
             }
         };
         // B-7 (SCHEMA_VERSION 100): cursor moved at most once per

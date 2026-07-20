@@ -99,9 +99,7 @@ fn global_cron_registry() -> &'static CronRegistry {
 }
 
 fn global_task_registry() -> &'static TaskRegistry {
-    use std::sync::OnceLock;
-    static REGISTRY: OnceLock<TaskRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(TaskRegistry::new)
+    elai_orchestrator::task_registry::global_task_registry()
 }
 
 fn global_worker_registry() -> &'static WorkerRegistry {
@@ -1909,13 +1907,21 @@ fn run_ask_user_question(input: AskUserQuestionInput) -> Result<String, String> 
 fn run_task_create(input: TaskCreateInput) -> Result<String, String> {
     let registry = global_task_registry();
     let task = registry.create(&input.prompt, input.description.as_deref());
+    if let Some(owner) = input.owner_agent_id.as_deref().filter(|s| !s.is_empty()) {
+        let _ = registry.set_owner_agent_id(&task.task_id, owner);
+    } else if let Ok(owner) = std::env::var("ELAI_AGENT_ID") {
+        if !owner.is_empty() {
+            let _ = registry.set_owner_agent_id(&task.task_id, owner);
+        }
+    }
     to_pretty_json(json!({
         "task_id": task.task_id,
         "status": task.status,
         "prompt": task.prompt,
         "description": task.description,
         "task_packet": task.task_packet,
-        "created_at": task.created_at
+        "created_at": task.created_at,
+        "owner_agent_id": task.owner_agent_id
     }))
 }
 
@@ -2949,6 +2955,8 @@ struct TaskCreateInput {
     prompt: String,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    owner_agent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
