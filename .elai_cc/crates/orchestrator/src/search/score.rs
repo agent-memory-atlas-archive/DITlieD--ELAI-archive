@@ -160,7 +160,8 @@ impl PhiHistory {
         } else {
             self.zero_delta_streak = 0;
         }
-        let decay_fired = self.zero_delta_streak >= weights.no_progress_window
+        let decay_fired = weights.no_progress_window > 0
+            && self.zero_delta_streak >= weights.no_progress_window
             && self.zero_delta_streak % weights.no_progress_window == 0;
         (delta, decay_fired)
     }
