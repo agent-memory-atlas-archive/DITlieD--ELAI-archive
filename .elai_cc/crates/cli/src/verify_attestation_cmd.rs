@@ -385,7 +385,7 @@ fn render_verdict_text(commit: &str, statement: &InTotoStatement, verdict: &Atte
             println!(
                 "VERIFIED {commit} -- attestation cryptographically intact. \
                  objective: UNCHECKED (sealed hash {sealed_hash} present but no current \
-                 objective text supplied; pass --objective <text> to enable staleness check)"
+                 objective text supplied; pass --current-objective <text> to enable staleness check)"
             );
         }
     }
