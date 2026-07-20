@@ -7,6 +7,10 @@ use crate::telemetry_types::SessionTracer;
 use crate::architecture::approval_fatigue_guard::{
     approval_fatigue_guard_enabled, ApprovalFatigueGuard, ApprovalFatigueVerdict, ApprovalKind,
 };
+use crate::context_policy::{
+    effective_context_window, pressure_level, regime_policy, PressureLevel,
+};
+use crate::dispatcher::BackendMode;
 use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
@@ -169,6 +173,7 @@ pub struct ConversationRuntime<C, T> {
     usage_tracker: UsageTracker,
     hook_runner: HookRunner,
     auto_compaction_input_tokens_threshold: u32,
+    context_backend_mode: BackendMode,
     hook_abort_signal: HookAbortSignal,
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
@@ -241,6 +246,7 @@ where
             usage_tracker,
             hook_runner: HookRunner::from_feature_config(feature_config),
             auto_compaction_input_tokens_threshold: auto_compaction_threshold_from_env(),
+            context_backend_mode: BackendMode::Api,
             hook_abort_signal: HookAbortSignal::default(),
             hook_progress_reporter: None,
             session_tracer: None,
@@ -266,6 +272,12 @@ where
     #[must_use]
     pub fn with_auto_compaction_input_tokens_threshold(mut self, threshold: u32) -> Self {
         self.auto_compaction_input_tokens_threshold = threshold;
+        self
+    }
+
+    #[must_use]
+    pub fn with_context_backend_mode(mut self, mode: BackendMode) -> Self {
+        self.context_backend_mode = mode;
         self
     }
 
@@ -843,6 +855,24 @@ where
 
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
         let input_tokens = self.usage_tracker.cumulative_usage().input_tokens;
+        // J-25 T4: graded pressure ladder drives entry. The window and policy
+        // are derived from the runtime's `context_backend_mode` (threaded via
+        // `with_context_backend_mode` at construction) so Local sessions grade
+        // against the local window, not the Cloud default. The flat threshold
+        // remains a secondary hard floor below the grade so the kill-switch
+        // path keeps its old gate.
+        let mode = self.context_backend_mode;
+        let policy = regime_policy(mode);
+        let window = effective_context_window(mode);
+        let level = pressure_level(input_tokens, window, policy);
+        if level == PressureLevel::Normal {
+            return None;
+        }
+        // Secondary hard floor: even above the grade, never fire below the flat
+        // threshold (preserves the kill-switch flat path semantics when the
+        // policy is disabled; under the active policy this is a no-op for any
+        // grade >= Moderate because the grade already implies used >= 50% of
+        // usable, which is well above the legacy 100k floor for cloud windows).
         if input_tokens < self.auto_compaction_input_tokens_threshold {
             return None;
         }

@@ -370,6 +370,7 @@ pub(crate) fn build_runtime_with_plugin_state(
     runtime = runtime.with_auto_compaction_input_tokens_threshold(
         elai_orchestrator::trim_threshold_for_mode(backend),
     );
+    runtime = runtime.with_context_backend_mode(backend);
     // A-30: wire OutputConfig from elai_cc.toml [output] section.
     runtime = runtime.with_output_config(elai_config.output);
     if emit_output {

@@ -69,6 +69,12 @@ pub const LOCAL_TRIM_FRACTION: f64 = 0.75;
 /// change.
 pub const CLOUD_TRIM_FRACTION: f64 = 0.85;
 
+/// J-25 T4: default output-token cap subtracted from the effective window to
+/// derive the usable input budget. Option (b) from S1 §5: a const rather than
+/// threading `RuntimeCapabilities.max_output` to the tick site, keeping the
+/// `maybe_auto_compact` signature stable.
+pub const DEFAULT_MAX_OUTPUT_CAP: u32 = 20_000;
+
 // ---------------------------------------------------------------------------
 // ContextPolicy
 // ---------------------------------------------------------------------------
@@ -93,6 +99,84 @@ pub fn regime_policy(mode: BackendMode) -> ContextPolicy {
     match mode {
         BackendMode::Local => ContextPolicy::Local,
         BackendMode::Api | BackendMode::Hybrid => ContextPolicy::Cloud,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// J-25 T4 — PressureLevel (graded pressure ladder)
+// ---------------------------------------------------------------------------
+
+/// Graded pressure on the usable context budget, consumed by
+/// `ConversationRuntime::maybe_auto_compact` to decide whether the
+/// compaction ladder should fire. Lower grades short-circuit the ladder;
+/// higher grades let it run.
+///
+/// Boundaries (ratio = `used / usable_context_tokens(window)`):
+///   * `Normal`   -- ratio < 0.50
+///   * `Moderate` -- 0.50 <= ratio < 0.70
+///   * `High`     -- 0.70 <= ratio < 0.85
+///   * `Critical` -- ratio >= 0.85
+///
+/// When the kill-switch `ELAI_CONTEXT_POLICY_DISABLE=1` is active the grade
+/// collapses to the flat-legacy behaviour: `Critical` when
+/// `used >= LEGACY_FLAT_THRESHOLD`, else `Normal`. This mirrors the
+/// `trim_threshold` kill-switch path so the existing flat gate stays intact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum PressureLevel {
+    Normal = 0,
+    Moderate = 1,
+    High = 2,
+    Critical = 3,
+}
+
+impl From<PressureLevel> for u8 {
+    fn from(level: PressureLevel) -> Self {
+        level as u8
+    }
+}
+
+/// Usable input-token budget for grading: `window - min(DEFAULT_MAX_OUTPUT_CAP,
+/// max_output_cap)`. With `max_output_cap = DEFAULT_MAX_OUTPUT_CAP` this is
+/// `window.saturating_sub(DEFAULT_MAX_OUTPUT_CAP)` (option (b) from S1 §5;
+/// `RuntimeCapabilities.max_output` is NOT threaded to the tick site).
+#[must_use]
+pub fn usable_context_tokens(window: u32) -> u32 {
+    let max_output_cap = DEFAULT_MAX_OUTPUT_CAP;
+    window.saturating_sub(max_output_cap.min(DEFAULT_MAX_OUTPUT_CAP))
+}
+
+/// Grade the current context pressure from `used` input tokens against a
+/// `window`-sized effective context window under `policy`. Pure + deterministic
+/// (ABORT-2: no LLM, no I/O).
+///
+/// Kill-switch path: when `context_policy_disabled()` is true, the grade
+/// collapses to the flat-legacy behaviour (`Critical` if
+/// `used >= LEGACY_FLAT_THRESHOLD`, else `Normal`) so the existing
+/// `auto_compaction_input_tokens_threshold` flat gate keeps working.
+#[must_use]
+pub fn pressure_level(used: u32, window: u32, _policy: ContextPolicy) -> PressureLevel {
+    if context_policy_disabled() {
+        return if used >= LEGACY_FLAT_THRESHOLD {
+            PressureLevel::Critical
+        } else {
+            PressureLevel::Normal
+        };
+    }
+    let usable = usable_context_tokens(window);
+    if usable == 0 {
+        return PressureLevel::Critical;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = f64::from(used) / f64::from(usable);
+    if ratio < 0.50 {
+        PressureLevel::Normal
+    } else if ratio < 0.70 {
+        PressureLevel::Moderate
+    } else if ratio < 0.85 {
+        PressureLevel::High
+    } else {
+        PressureLevel::Critical
     }
 }
 

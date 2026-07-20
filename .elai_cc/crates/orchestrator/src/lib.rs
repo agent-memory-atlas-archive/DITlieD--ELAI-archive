@@ -520,6 +520,7 @@ pub use context_policy::{
     ELAI_CONTEXT_POLICY_DISABLE_VAR, ELAI_LOCAL_MAX_CONTEXT_VAR,
     LOCAL_DEFAULT_WINDOW, CLOUD_DEFAULT_WINDOW, LEGACY_FLAT_THRESHOLD,
     LOCAL_TRIM_FRACTION, CLOUD_TRIM_FRACTION,
+    PressureLevel, pressure_level, usable_context_tokens, DEFAULT_MAX_OUTPUT_CAP,
 };
 pub use session_dag::{
     SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,
