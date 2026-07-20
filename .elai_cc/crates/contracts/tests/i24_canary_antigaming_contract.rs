@@ -47,6 +47,12 @@
 
 use std::sync::Arc;
 
+// Serializes tests that mutate the process-global ELAI_CANARY_INJECTOR_ENABLE env
+// var (C1 sets, C3 removes+asserts-zero, C6 sets). Without this, C3 can observe
+// the flag set by C1/C6 mid-run and see a canary row it asserts must be absent.
+// Mirrors the i52/i54 ENV_MUTEX idiom; no external dep.
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::adversary::AdversaryConfig;
 use elai_orchestrator::canary_injector::{
@@ -157,6 +163,7 @@ fn count_all_prm_canary_rows(ssb: &Arc<Ssb>) -> usize {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn i24_c_real_db_prm_canary_event_row_lands() {
+    let _env = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let dir = TempDir::new().expect("tempdir");
     let ssb = test_ssb(&dir, "i24-c1");
     let project_root = write_minimal_fixture(&dir);
@@ -333,6 +340,7 @@ async fn i24_c_kind_roundtrip_all_3_arms() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn i24_c_env_gate_default_off_no_row() {
+    let _env = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     // Ensure the gate is off.
     unsafe { std::env::remove_var(ELAI_CANARY_INJECTOR_ENABLE_ENV) };
 
@@ -491,6 +499,7 @@ async fn i24_c_canary_injected_emit_via_real_emit_fn() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn i24_c_id4_veto_no_canary_row() {
+    let _env = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     // Gate ON to confirm the canary is absent because of ID-4, not because the gate is off.
     unsafe { std::env::set_var(ELAI_CANARY_INJECTOR_ENABLE_ENV, "1") };
 
