@@ -137,6 +137,12 @@ fn d4_session_dag_has_both_recovery_methods() {
 /// must keep stubs UNLOADED (skip recover_stubs) and must NOT fake an R8 caller for
 /// recover_single_stub. The selective per-seq reload is WIRE-DARK[H-50-selective-recover]
 /// in session_dag.rs pending H-50-WIRE-2; CLOUD/API keeps recover_stubs.
+///
+/// The LOCAL/CLOUD assertions isolate the source segment between the LOCAL handoff
+/// guard and the CLOUD/API marker so a regression that re-introduces recover_stubs(
+/// into the LOCAL branch (or drops it from CLOUD/API) is caught, rather than passing
+/// via an unrelated BackendMode::Local or recover_stubs occurrence elsewhere in the
+/// file.
 #[test]
 fn d4b_live_cli_local_path_uses_selective_recovery() {
     let live = read_src("cli/src/live_cli.rs");
@@ -145,9 +151,26 @@ fn d4b_live_cli_local_path_uses_selective_recovery() {
         live.contains("BackendMode::Local"),
         "live_cli.rs must branch on BackendMode::Local for H-50 LOCAL unload"
     );
+    let local_guard = "if matches!(backend_mode, BackendMode::Local) {";
+    let cloud_marker = "// CLOUD / API: recover all stubs";
+    let guard_idx = live
+        .find(local_guard)
+        .unwrap_or_else(|| panic!("live_cli.rs must contain the LOCAL handoff guard: {local_guard}"));
+    let cloud_idx = live[guard_idx..]
+        .find(cloud_marker)
+        .map(|i| guard_idx + i)
+        .unwrap_or_else(|| {
+            panic!("live_cli.rs must contain CLOUD/API marker after LOCAL guard: {cloud_marker}")
+        });
+    let local_segment = &live[guard_idx..cloud_idx];
+    let cloud_segment = &live[cloud_idx..];
     assert!(
-        live.contains("recover_stubs"),
-        "live_cli.rs must still call recover_stubs on the CLOUD/API path"
+        !local_segment.contains("recover_stubs("),
+        "LOCAL handoff segment must not call recover_stubs( (H-50 selective recovery); segment:\n{local_segment}"
+    );
+    assert!(
+        cloud_segment.contains("recover_stubs("),
+        "CLOUD/API handoff segment must call recover_stubs( (cache-stable prefix); segment:\n{cloud_segment}"
     );
     assert!(
         !live.contains("let _ = |seq"),
