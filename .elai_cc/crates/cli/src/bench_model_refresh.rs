@@ -23,7 +23,7 @@ use elai_orchestrator::ssb::{
 use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
 use thiserror::Error;
 
-const BENCH_SESSION_ID: &str = "cli-bench-model-refresh";
+const BENCH_SESSION_PREFIX: &str = "cli-bench-model-refresh";
 const BENCH_AGENT_ID: &str = "cli:bench-model-refresh";
 
 #[derive(Debug, Error)]
@@ -76,7 +76,8 @@ fn run_inner(
     })?;
     let report_path = write_json_report(&project_root, &report)?;
     let rra_path = report_path.with_extension("rra");
-    emit_beacon_and_rra(&project_root, &rra_path, &report)?;
+    let session_id = format!("{BENCH_SESSION_PREFIX}-{}", uuid::Uuid::new_v4());
+    emit_beacon_and_rra(&project_root, &rra_path, &report, &session_id)?;
 
     if json {
         let body = serde_json::to_string_pretty(&report).map_err(|e| {
@@ -159,6 +160,7 @@ fn emit_beacon_and_rra(
     project_root: &Path,
     rra_path: &Path,
     report: &ModelRefreshReport,
+    session_id: &str,
 ) -> Result<(), BenchModelRefreshError> {
     let db_path = sessions_dir_path(project_root).join("ssb.db");
     if let Some(parent) = db_path.parent() {
@@ -171,7 +173,7 @@ fn emit_beacon_and_rra(
         db_path,
         pool_size: None,
         project_id: "default".to_string(),
-        session_id: BENCH_SESSION_ID.to_string(),
+        session_id: session_id.to_string(),
     };
     let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
     let pins = DeterminismConfig::from_env().map_err(|e| {
@@ -204,11 +206,11 @@ fn emit_beacon_and_rra(
             })?;
         }
         let stream = ssb
-            .query_session_stream_asc(BENCH_SESSION_ID)
+            .query_session_stream_asc(session_id)
             .map_err(|e| BenchModelRefreshError::SsbStreamQuery {
                 source_msg: e.to_string(),
             })?;
-        let artifact = build_rra(BENCH_SESSION_ID, &stream, &pins);
+        let artifact = build_rra(session_id, &stream, &pins);
         write_rra(&artifact, rra_path).map_err(|e| BenchModelRefreshError::RraWrite {
             path: rra_path.display().to_string(),
             source_msg: e.to_string(),
