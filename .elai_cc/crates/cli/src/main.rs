@@ -505,6 +505,10 @@ mod darwin_loop_cmd;
 // E-9: external agent-eval benchmark suite (11 suites; SWE-Bench Pro
 // primary; RUNPOD-PENDING live runs). See workflow/reasoning/E-9-decisions.md.
 mod eval_cmd;
+// J-26 S5 (slice S4): `elai eval-corpus-ingest --pack <dir> [--root <corpus-root>]`
+// — load a TaskPack's data/public/task.toml (+ optional task.md overlay) and
+// call elai_eval_corpus::ingest::ingest_task. Exit 0 Accepted / 1 Rejected/Err.
+mod eval_corpus_ingest_cmd;
 // E-55: agentic RL + reward ladder recipe runner. Substrate ships fully
 // under elai_orchestrator::rl::*; live cloud Sonnet rollouts + LoRA
 // training RUNPOD-PENDING. See workflow/reasoning/E-55-decisions.md.
@@ -1789,6 +1793,9 @@ fn run() -> Result<(), anyhow::Error> {
                 title,
             )?;
             pr_review_cmd::run_pr_review_subcommand(action, json)?;
+        }
+        CliAction::EvalCorpusIngest { pack, root } => {
+            eval_corpus_ingest_cmd::run(pack, root)?;
         }
     }
     Ok(())

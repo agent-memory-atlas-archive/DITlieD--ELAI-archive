@@ -1822,6 +1822,15 @@ pub(crate) enum CliAction {
         zero_retention: bool,
         output_format: CliOutputFormat,
     },
+    /// J-26 S5 (slice S4): `elai eval-corpus-ingest --pack <dir>
+    /// [--root <corpus-root>]` — load a TaskPack's
+    /// `data/public/task.toml` (+ optional `task.md` overlay) and call
+    /// `elai_eval_corpus::ingest::ingest_task`. Exit 0 Accepted / 1
+    /// Rejected/Err.
+    EvalCorpusIngest {
+        pack: PathBuf,
+        root: Option<PathBuf>,
+    },
 }
 
 /// I-41 — parameters for `elai critique`.
@@ -3551,6 +3560,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "wrap" => parse_wrap_subcommand_args(&rest[1..], output_format),
         // K-6 — `elai export compliance [--session <id>] [--out <path>] [--zero-retention]`
         "export" => parse_export_subcommand_args(&rest[1..], output_format),
+        // J-26 S5 (slice S4): `elai eval-corpus-ingest --pack <dir>
+        // [--root <corpus-root>]` — load a TaskPack's task.toml and call
+        // ingest_task. Exit 0 Accepted / 1 Rejected/Err.
+        "eval-corpus-ingest" | "eval_corpus_ingest" => {
+            parse_eval_corpus_ingest_args(&rest[1..])
+        }
         other if other.starts_with('/') => parse_direct_slash_cli_action(&rest, output_format),
         _other => Ok(CliAction::Prompt {
             prompt: rest.join(" "),
@@ -9989,4 +10004,48 @@ fn parse_export_compliance_args(
         zero_retention,
         output_format,
     })
+}
+
+/// J-26 S5 (slice S4) — parse `elai eval-corpus-ingest --pack <dir>
+/// [--root <corpus-root>]`. `--pack` is required; `--root` defaults to
+/// `{cwd}/.elai_cc` inside the handler.
+fn parse_eval_corpus_ingest_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut pack: Option<PathBuf> = None;
+    let mut root: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--pack" => {
+                let val = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value after --pack".to_string())?;
+                pack = Some(PathBuf::from(val));
+                i += 2;
+            }
+            flag if flag.starts_with("--pack=") => {
+                pack = Some(PathBuf::from(&flag[7..]));
+                i += 1;
+            }
+            "--root" => {
+                let val = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value after --root".to_string())?;
+                root = Some(PathBuf::from(val));
+                i += 2;
+            }
+            flag if flag.starts_with("--root=") => {
+                root = Some(PathBuf::from(&flag[7..]));
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `eval-corpus-ingest` flag `{other}`; expected --pack, --root"
+                ));
+            }
+        }
+    }
+    let pack = pack.ok_or_else(|| {
+        "`elai eval-corpus-ingest` requires `--pack <dir>`".to_string()
+    })?;
+    Ok(CliAction::EvalCorpusIngest { pack, root })
 }

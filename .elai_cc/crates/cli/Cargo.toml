@@ -21,6 +21,9 @@ futures-util = "0.3"
 blake3 = "1.8"
 crossterm = "0.28"
 elai-core = { path = "../core" }
+# J-26 S5: eval-corpus ingest CLI verb — workspace-internal path dep
+# (same pattern as elai-orchestrator/elai-core; no new external crate).
+elai-eval-corpus = { path = "../eval-corpus" }
 elai-knowledge = { path = "../knowledge", features = ["splade"] }
 elai-orchestrator = { path = "../orchestrator" }
 elai-plugins = { path = "../plugins", features = ["mcp"] }

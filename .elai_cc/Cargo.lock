@@ -1338,6 +1338,7 @@ dependencies = [
  "blake3",
  "crossterm",
  "elai-core",
+ "elai-eval-corpus",
  "elai-knowledge",
  "elai-memory",
  "elai-orchestrator",
