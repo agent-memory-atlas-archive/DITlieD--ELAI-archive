@@ -234,6 +234,13 @@ pub struct TransitionContext {
     // stored status (compute is separated from gate dispatch).
     #[serde(default)]
     pub ears_requirements: Option<crate::requirements::EarsRequirementSet>,
+
+    // J-16: blast-radius / anti-regression gate (EXECUTING -> AUDITING).
+    // Captured diff + declared scope for cone/scope/regression/deletion checks.
+    // R1/R2 fail-closed: `None` is a hard FAIL at the gate (AntiFabricationGate
+    // precedent at evidence.rs:831) — the auditor never ran the cone analysis.
+    #[serde(default)]
+    pub blast_radius_diff: Option<crate::blast_radius::CapturedDiff>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +1037,10 @@ pub fn all_gates() -> Vec<Box<dyn EvidenceGate>> {
         // GroundingSweepGate + IntentPairsGate. Default-OFF blocking (env-gated)
         // + None-degrades. Slot 12 — order-stable append.
         Box::new(crate::requirements::RequirementsGate),
+        // J-16: blast-radius / anti-regression gate (EXECUTING -> AUDITING).
+        // Co-fires with TestFlippedGate + DiagnosticProbeGate + EntrypointAndTraceGate.
+        // Slot 13 — order-stable append so existing index-based gate tests keep working.
+        Box::new(crate::blast_radius::BlastRadiusRegressionGate),
     ]
 }
 

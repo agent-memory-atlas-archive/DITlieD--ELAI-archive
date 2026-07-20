@@ -11098,10 +11098,78 @@ async fn drive_task(
                     // before the gate, (2) persist_wiring_coverage_payloads(
                     // writer, &report).await, (3) WAVE-5 emits the LAYER4_LEG
                     // wiring_evidence row from the trace harness.
+                    // J-16: blast-radius / anti-regression gate
+                    // (EXECUTING -> AUDITING). R1/R2 fail-closed:
+                    // `None` is a hard FAIL at the gate. Thread the
+                    // REAL orchestrator-captured diff here so the
+                    // four legs (cone / scope / regression-set /
+                    // silent-deletion) actually run on real edits
+                    // instead of short-circuiting on
+                    // CapturedDiff::default() (S10 verifier reject
+                    // reason 1). `changed_files` comes from the
+                    // executor's on-disk diff; `changed_symbols` is
+                    // the same set (B-29 compute_impact_radius
+                    // accepts file paths via looks_like_file_path);
+                    // `declared_scope` is derived from the
+                    // BabyStepSpec.file_plan (new_files +
+                    // modified_files paths) plus target_file when
+                    // present; `git_diff` is read from git in the
+                    // project_dir (the off-agent artifact per
+                    // wiring-enforcement R4). OBSERVE-ONLY (GD-4).
+                    let br_changed_files: Vec<String> = exec_result
+                        .changed_files
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect();
+                    let br_changed_symbols = br_changed_files.clone();
+                    let br_declared_scope: Vec<String> = tree
+                        .find_baby_step(bs_id)
+                        .map(|spec| {
+                            let mut scope: Vec<String> = Vec::new();
+                            if let Some(tf) = spec.target_file.as_ref() {
+                                scope.push(tf.display().to_string());
+                            }
+                            if let Some(fp) = spec.file_plan.as_ref() {
+                                for nf in &fp.new_files {
+                                    scope.push(nf.path.display().to_string());
+                                }
+                                for mf in &fp.modified_files {
+                                    scope.push(mf.path.display().to_string());
+                                }
+                            }
+                            scope
+                        })
+                        .unwrap_or_default();
+                    let br_git_diff = read_git_diff_json(
+                        &detected_project_dir,
+                        &br_changed_files,
+                    );
+                    let br_hunks = hunks_from_git_diff_json(&br_git_diff);
                     let exec_audit_ctx = crate::evidence::TransitionContext {
                         diagnostic_probe_outcome: Some(outcome.clone()),
                         layer3_entrypoint_covered: Some(layer3_covered),
                         layer4_trace_present: Some(layer4_present),
+                        blast_radius_diff: Some(
+                            crate::blast_radius::CapturedDiff {
+                                changed_files: br_changed_files,
+                                changed_symbols: br_changed_symbols,
+                                declared_scope: br_declared_scope,
+                                git_diff: br_git_diff,
+                                hunks: br_hunks,
+                                // J-16 FIX (S10 verifier reject reason 3):
+                                // thread `detected_project_dir` so the
+                                // gate + emit can open the B-29
+                                // SymbolGraphCache and run the reverse-
+                                // dep BFS instead of degrading to
+                                // identity. `detected_project_dir` falls
+                                // back to `.` when the resolver returns
+                                // None; we only thread it when the
+                                // resolver actually returned a path so
+                                // the cache open isn't attempted against
+                                // a CWD that may not be the project.
+                                project_dir: project_dir.clone(),
+                            },
+                        ),
                         ..crate::evidence::TransitionContext::default()
                     };
                     let gates = crate::evidence::gates_for_transition(
@@ -11171,6 +11239,33 @@ async fn drive_task(
                             summary = %summary,
                             "task_runner: DiagnosticProbeGate blocked EXECUTING -> AUDITING; auditor will see EvidenceGateEvaluated row"
                         );
+                    }
+                    // J-16 FIX (S10 verifier reject reason 2): emit the
+                    // four BlastRadiusRegressionEvent SSB rows
+                    // (ConeComputed / ScopeViolationFlagged /
+                    // RegressionSetSelected / SilentDeletionFlagged) so
+                    // the plan's observable_effect requirement is
+                    // satisfied. The gate's check() method cannot emit
+                    // (it only receives &TransitionContext, no writer),
+                    // so the emit happens here after the gate loop,
+                    // reusing the same CapturedDiff. OBSERVE-ONLY (GD-4).
+                    if let Some(br_diff) =
+                        exec_audit_ctx.blast_radius_diff.as_ref()
+                    {
+                        let br_ts_ms = elai_core::clock::OsClock
+                            .system_now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or(std::time::Duration::ZERO)
+                            .as_millis();
+                        let br_ts_ms_i64 =
+                            i64::try_from(br_ts_ms).unwrap_or(i64::MAX);
+                        crate::blast_radius::emit_blast_radius_regression_events(
+                            writer,
+                            br_diff,
+                            writer.session_id(),
+                            br_ts_ms_i64,
+                        )
+                        .await;
                     }
                 }
             } else if !outcome_passed && !exec_stderr_tail.is_empty() {
@@ -21120,6 +21215,73 @@ fn extract_edit_target_from_task_summary(task_summary: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// J-16 FIX: read a structured git diff blob for the blast-radius gate.
+/// Returns `Some(serde_json::Value::String(diff_text))` when git produces
+/// a non-empty diff for the changed files, `None` otherwise. This is the
+/// off-agent artifact per wiring-enforcement R4 — the gate reads the
+/// captured diff, never re-runs git itself. Mirrors `prompt::read_git_diff`
+/// but returns a `serde_json::Value` for the `CapturedDiff.git_diff` field
+/// and scopes the diff to the specific changed files (pathspec) so unrelated
+/// workspace noise does not pollute the gate's silent-deletion leg.
+fn read_git_diff_json(
+    project_dir: &std::path::Path,
+    changed_files: &[String],
+) -> Option<serde_json::Value> {
+    if changed_files.is_empty() {
+        return None;
+    }
+    let mut args: Vec<String> = vec![
+        "diff".into(),
+        "--".into(),
+    ];
+    args.extend(changed_files.iter().cloned());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = std::process::Command::new("git")
+        .args(&arg_refs)
+        .current_dir(project_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let diff_text = String::from_utf8(output.stdout).ok()?;
+    if diff_text.trim().is_empty() {
+        return None;
+    }
+    Some(serde_json::Value::String(diff_text))
+}
+
+// J-16 FIX (S10d verifier reject residual): populate CapturedDiff.hunks
+// from the real unified git diff captured into `br_git_diff` so
+// `flag_silent_deletion` can fire on real edits (and R2's unmappable-diff
+// leg is live for the production path). Reuses the in-tree DiffParser
+// (crate::focus_tunnel::diff) — no reimplemented unified-diff parser.
+// Returns empty vec on None / non-String / empty / parse-Err; the caller
+// keeps `git_diff` present so R2 does not false-fire on a parse failure.
+fn hunks_from_git_diff_json(
+    git_diff: &Option<serde_json::Value>,
+) -> Vec<crate::blast_radius::HunkSummary> {
+    let diff_text = match git_diff {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => s,
+        _ => return Vec::new(),
+    };
+    let parsed = crate::focus_tunnel::diff::DiffParser::new().parse(diff_text);
+    match parsed {
+        Ok(hunks) => hunks
+            .into_iter()
+            .map(|h| crate::blast_radius::HunkSummary {
+                file_path: h.file_path,
+                old_start: h.old_start,
+                old_lines: h.old_count,
+                new_start: h.new_start,
+                new_lines: h.new_count,
+                net_delta: (h.new_count as i64) - (h.old_count as i64),
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------

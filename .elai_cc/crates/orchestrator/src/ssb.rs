@@ -1562,6 +1562,15 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // and cli rra export-fixture (FixtureExtracted). Default-ON; no kill-switch (verify path).
     // TOTAL_VARIANTS 590 -> 591.
     SsbActionType::ReproPackEvent(ReproPackKind::TierEvaluated),
+    // J-16 (SCHEMA_VERSION 283): blast-radius / anti-regression gate event.
+    // Pattern-2 single-variant 4-arm BlastRadiusRegressionKind:
+    // ConeComputed / ScopeViolationFlagged / RegressionSetSelected /
+    // SilentDeletionFlagged. Emitted from blast_radius::BlastRadiusRegressionGate
+    // on the EXECUTING -> AUDITING transition. OBSERVE-ONLY (GD-4):
+    // flag, do not block, until FP/friction rate is bounded on >=3 real runs.
+    // J-90 Leg A will widen the Kind to 6-arm (append-only).
+    // TOTAL_VARIANTS 591 -> 592.
+    SsbActionType::BlastRadiusRegressionEvent(BlastRadiusRegressionKind::ConeComputed),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

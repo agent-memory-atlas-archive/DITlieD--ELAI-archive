@@ -4792,6 +4792,16 @@ pub enum SsbActionType {
     ///
     /// Default-ON; no kill-switch (verify path, never masks the verdict). TOTAL_VARIANTS 590 -> 591.
     ReproPackEvent(ReproPackKind),
+    /// J-16 (SCHEMA_VERSION 283): blast-radius / anti-regression gate event.
+    ///
+    /// Pattern-2 single-variant 4-arm [`BlastRadiusRegressionKind`]:
+    /// - `ConeComputed`: emitted with the reverse-dep cone of each changed symbol.
+    /// - `ScopeViolationFlagged`: emitted when an edit touches an out-of-scope file.
+    /// - `RegressionSetSelected`: emitted with the selected existing-test set.
+    /// - `SilentDeletionFlagged`: emitted when a pub item is removed without declaration.
+    ///
+    /// Default-ON; OBSERVE-ONLY (GD-4). TOTAL_VARIANTS 591 -> 592.
+    BlastRadiusRegressionEvent(BlastRadiusRegressionKind),
 }
 
 impl SsbActionType {
@@ -5734,6 +5744,8 @@ impl SsbActionType {
             Self::LocalDeterminismEvent(_) => "local_determinism_event",
             // J-14 (SCHEMA_VERSION 282): repro-pack + RRA verify upgrade telemetry event.
             Self::ReproPackEvent(_) => "repro_pack_event",
+            // J-16 (SCHEMA_VERSION 283): blast-radius / anti-regression gate event.
+            Self::BlastRadiusRegressionEvent(_) => "blast_radius_regression_event",
         }
     }
 }
@@ -6597,6 +6609,10 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // J-14 (SCHEMA_VERSION 282): repro-pack + RRA verify upgrade telemetry event.
         "repro_pack_event" => Ok(SsbActionType::ReproPackEvent(
             ReproPackKind::TierEvaluated,
+        )),
+        // J-16 (SCHEMA_VERSION 283): blast-radius / anti-regression gate event.
+        "blast_radius_regression_event" => Ok(SsbActionType::BlastRadiusRegressionEvent(
+            BlastRadiusRegressionKind::ConeComputed,
         )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }

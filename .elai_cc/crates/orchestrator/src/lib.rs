@@ -1129,6 +1129,9 @@ pub mod taint_flow_ssb_adapter;
 // escape (translate_tool_request) or a denied egress host (fetch_and_extract).
 // Default-ON (kill-switch ELAI_BLAST_RADIUS_DISABLE only). See G-3-decisions.md.
 pub mod blast_radius_ssb_adapter;
+// J-16: blast-radius / anti-regression gate (auditor-owned, OBSERVE-ONLY).
+// J-90 Leg A will extend this module with fuse_crosslang_cone.
+pub mod blast_radius;
 // G-7: lethal-trifecta dual-LLM quarantine SSB emitter. Writes a
 // trifecta_quarantined row when the secret-present + untrusted-span + egress
 // legs co-occur at translate_tool_request and the untrusted span is held back.

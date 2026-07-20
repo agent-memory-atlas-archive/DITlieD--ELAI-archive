@@ -3773,6 +3773,11 @@ pub enum SsbPayload {
     /// Emitted from `rra::verify_rra`, `compiled_pipeline::TemplateCrystallizer`, and
     /// `cli rra export-fixture`. Default-ON; no kill-switch. TOTAL_VARIANTS 590 -> 591.
     ReproPackEvent(ReproPackPayload),
+    /// J-16 (SCHEMA_VERSION 283): blast-radius / anti-regression gate event.
+    /// Pattern-2 single-variant 4-arm [`BlastRadiusRegressionKind`] discriminator.
+    /// Emitted from `blast_radius::BlastRadiusRegressionGate` on EXECUTING -> AUDITING.
+    /// OBSERVE-ONLY (GD-4). TOTAL_VARIANTS 591 -> 592.
+    BlastRadiusRegressionEvent(BlastRadiusRegressionPayload),
 }
 
 impl SsbPayload {
@@ -4597,6 +4602,8 @@ impl SsbPayload {
             Self::LocalLaneE2eMeasured(_) => SsbActionType::LocalLaneE2eMeasured,
             Self::LocalDeterminismEvent(ref p) => SsbActionType::LocalDeterminismEvent(p.kind),
             Self::ReproPackEvent(ref p) => SsbActionType::ReproPackEvent(p.kind),
+            Self::BlastRadiusRegressionEvent(ref p) =>
+                SsbActionType::BlastRadiusRegressionEvent(p.kind),
         }
     }
 }
@@ -20409,5 +20416,53 @@ pub struct ReproPackPayload {
     /// SSB session_id that generated this event.
     pub session_id: String,
     /// Wall-clock unix-ms at emit time.
+    pub ts_ms: i64,
+}
+
+/// J-16 (SCHEMA_VERSION 283): blast-radius / anti-regression gate Kind.
+/// Pattern-2 single-variant discriminator on [`BlastRadiusRegressionPayload`].
+/// Emitted from `blast_radius::BlastRadiusRegressionGate` on EXECUTING -> AUDITING.
+///
+/// J-90 Leg A EXTENDS this enum with 2 more arms:
+/// CrossLangConeWidened / OpaqueSeamWidened. Append-only; do NOT reorder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlastRadiusRegressionKind {
+    ConeComputed,
+    ScopeViolationFlagged,
+    RegressionSetSelected,
+    SilentDeletionFlagged,
+}
+
+impl BlastRadiusRegressionKind {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ConeComputed => "cone_computed",
+            Self::ScopeViolationFlagged => "scope_violation_flagged",
+            Self::RegressionSetSelected => "regression_set_selected",
+            Self::SilentDeletionFlagged => "silent_deletion_flagged",
+        }
+    }
+}
+
+/// J-16 payload for [`SsbActionType::BlastRadiusRegressionEvent`].
+/// TOTAL_VARIANTS 591 -> 592.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlastRadiusRegressionPayload {
+    pub kind: BlastRadiusRegressionKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cone: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_violations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regression_set: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub silent_deletions: Vec<String>,
+    #[serde(default)]
+    pub cone_truncated: bool,
+    pub session_id: String,
     pub ts_ms: i64,
 }

@@ -51,6 +51,7 @@ batch_lifecycle
 belief_state_event
 benchmark_run_observed
 blast_radius_blocked
+blast_radius_regression_event
 branch_closed
 branch_forked
 branch_merge

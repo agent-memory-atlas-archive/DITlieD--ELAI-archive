@@ -5517,7 +5517,13 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- FirstDivergenceLocated / FlowFingerprintMismatch / FixtureExtracted.
         -- Emitted from rra::verify_rra, compiled_pipeline::TemplateCrystallizer, cli rra export-fixture.
         -- Default-ON; no kill-switch (verify path, never masks the verdict).
-        'repro_pack_event'
+        'repro_pack_event',
+        -- J-16 (SCHEMA_VERSION 283): blast-radius / anti-regression gate event.
+        -- Pattern-2 single-variant 4-arm BlastRadiusRegressionKind: ConeComputed /
+        -- ScopeViolationFlagged / RegressionSetSelected / SilentDeletionFlagged.
+        -- Emitted from blast_radius::BlastRadiusRegressionGate on EXECUTING -> AUDITING.
+        -- OBSERVE-ONLY (GD-4): flag, does not block (the hard-block is TestFlippedGate).
+        'blast_radius_regression_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

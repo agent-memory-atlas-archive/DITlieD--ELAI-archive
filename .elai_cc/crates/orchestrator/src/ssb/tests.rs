@@ -3795,6 +3795,19 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 session_id: "s-j14-test".into(),
                 ts_ms: 1_700_000_000_000,
             }),
+            // J-16 (SCHEMA_VERSION 283): explicit arm so test_payload(BlastRadiusRegressionEvent)
+            // returns a real BlastRadiusRegressionPayload instead of falling to the wildcard.
+            SsbActionType::BlastRadiusRegressionEvent(_) => SsbPayload::BlastRadiusRegressionEvent(BlastRadiusRegressionPayload {
+                kind: BlastRadiusRegressionKind::ConeComputed,
+                changed_symbols: vec!["src/main.rs".into()],
+                cone: vec!["src/main.rs".into(), "src/lib.rs".into()],
+                scope_violations: Vec::new(),
+                regression_set: Vec::new(),
+                silent_deletions: Vec::new(),
+                cone_truncated: false,
+                session_id: "s-j16-test".into(),
+                ts_ms: 1_700_000_000_000,
+            }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload
