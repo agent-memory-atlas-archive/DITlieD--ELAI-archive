@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::ssb_viewer::SsbViewer;
@@ -180,7 +180,23 @@ fn rra_show(arguments: &JsonValue) -> JsonValue {
             "tool": RRA_SHOW,
         }));
     };
-    match read_rra(Path::new(path)) {
+    let project_root = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => return tool_error("RRA_READ_ERROR", &format!("cannot resolve project root: {error}"), json!({
+            "status": "error",
+            "tool": RRA_SHOW,
+            "path": path,
+        })),
+    };
+    let confined = match confine_path(&project_root, path) {
+        Ok(confined) => confined,
+        Err(reason) => return tool_error("INVALID_ARGUMENTS", &reason, json!({
+            "status": "invalid_arguments",
+            "tool": RRA_SHOW,
+            "path": path,
+        })),
+    };
+    match read_rra(&confined) {
         Ok(artifact) => match serde_json::to_value(artifact) {
             Ok(payload) => tool_success(payload),
             Err(error) => tool_error("SERIALIZATION_ERROR", &error.to_string(), json!({
@@ -194,6 +210,24 @@ fn rra_show(arguments: &JsonValue) -> JsonValue {
             "path": path,
         })),
     }
+}
+
+fn confine_path(project_root: &Path, requested: &str) -> Result<PathBuf, String> {
+    let requested_path = Path::new(requested);
+    if requested_path.is_absolute() {
+        return Err("path must be relative to the project root".to_string());
+    }
+    let joined = project_root.join(requested_path);
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("cannot canonicalize project root: {e}"))?;
+    let canonical_joined = joined
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve path under project root: {e}"))?;
+    if !canonical_joined.starts_with(canonical_root.as_path()) {
+        return Err("path escapes the project root".to_string());
+    }
+    Ok(canonical_joined)
 }
 
 fn not_available(tool: &str, reason: &str) -> JsonValue {
