@@ -135,6 +135,19 @@ fn j26_r2_negative_missing_results_json_is_hard_fail() {
         .join("data")
         .join("public")
         .join("evaluate.sh");
+
+    // See j26_r2_negative_nonzero_exit_is_hard_fail: TaskPack::read_from
+    // picks the first non-task.md file via read_dir (order is
+    // filesystem-dependent), so remove every other candidate first.
+    let public = pack_root.join("data").join("public");
+    for entry in fs::read_dir(&public).expect("read_dir public") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.is_file() && entry.file_name() != "task.md" && path != evaluator {
+            fs::remove_file(&path).expect("remove non-task.md file");
+        }
+    }
+
     fs::write(&evaluator, "#!/usr/bin/env bash\nexit 0\n").expect("write stub evaluator");
     #[cfg(unix)]
     {
