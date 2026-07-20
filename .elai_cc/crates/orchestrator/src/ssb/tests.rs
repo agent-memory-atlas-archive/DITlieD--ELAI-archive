@@ -8470,8 +8470,8 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            486,
-            "483 prior (thru I-17 TriLayerVerdict) + 3 I-22 (ProgressRewardScored: Delta / FirstErrorTruncated / DecayApplied)",
+            487,
+            "483 prior + 1 I-9 ErrorAmplificationMeasured + 3 I-22 ProgressRewardScored fixtures",
         );
 
         for (i, payload) in payloads.iter().enumerate() {
