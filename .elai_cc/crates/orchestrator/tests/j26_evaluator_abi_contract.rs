@@ -101,7 +101,23 @@ fn j26_r2_negative_missing_results_json_is_hard_fail() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let pack_root = copy_pack_into(tmp.path());
 
-    let evaluator = pack_root.join("data").join("public").join("evaluate.sh");
+    // TaskPack::read_from picks the FIRST non-task.md file under data/public/
+    // via read_dir (filesystem-dependent order). The golden pack ships
+    // evaluate.sh, evaluate.py, and task.toml; overwriting only evaluate.sh
+    // leaves evaluate.py / task.toml as candidate evaluators, so read_from
+    // may select one of those instead and the test would flake. Delete every
+    // non-task.md file first so the only candidate is the no-op evaluator we
+    // write below.
+    let public = pack_root.join("data").join("public");
+    for entry in fs::read_dir(&public).expect("read_dir public") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.is_file() && entry.file_name() != "task.md" {
+            fs::remove_file(&path).expect("remove non-task.md file");
+        }
+    }
+
+    let evaluator = public.join("evaluate.sh");
     fs::write(&evaluator, "#!/usr/bin/env bash\nexit 0\n").expect("write stub evaluator");
     #[cfg(unix)]
     {
