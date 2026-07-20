@@ -127,33 +127,23 @@ fn print_table(rollup: &std::collections::BTreeMap<UsageRollupKey, UsageRollupEn
 }
 
 fn print_json(rollup: &std::collections::BTreeMap<UsageRollupKey, UsageRollupEntry>) {
-    let rows_json: Vec<String> = rollup
+    let rows_json: Vec<serde_json::Value> = rollup
         .iter()
         .map(|(key, entry)| {
-            let cost_json = entry
-                .cost_micros
-                .map_or_else(|| "null".to_string(), |m| m.to_string());
-            format!(
-                r#"{{"lane":"{lane}","identity":"{identity}","model":"{model}","task_id":{task},"session_id":{session},"input_tokens":{input},"output_tokens":{output},"cache_creation_tokens":{cache_creation},"cache_read_tokens":{cache_read},"cost_micros":{cost},"row_count":{rows}}}"#,
-                lane = lane_label(key.lane),
-                identity = key.identity,
-                model = key.model,
-                task = key
-                    .task_id
-                    .as_ref()
-                    .map_or_else(|| "null".to_string(), |t| format!(r#""{t}""#)),
-                session = key
-                    .session_id
-                    .as_ref()
-                    .map_or_else(|| "null".to_string(), |s| format!(r#""{s}""#)),
-                input = entry.input_tokens,
-                output = entry.output_tokens,
-                cache_creation = entry.cache_creation_tokens,
-                cache_read = entry.cache_read_tokens,
-                cost = cost_json,
-                rows = entry.row_count,
-            )
+            serde_json::json!({
+                "lane": lane_label(key.lane),
+                "identity": key.identity,
+                "model": key.model,
+                "task_id": key.task_id,
+                "session_id": key.session_id,
+                "input_tokens": entry.input_tokens,
+                "output_tokens": entry.output_tokens,
+                "cache_creation_tokens": entry.cache_creation_tokens,
+                "cache_read_tokens": entry.cache_read_tokens,
+                "cost_micros": entry.cost_micros,
+                "row_count": entry.row_count,
+            })
         })
         .collect();
-    println!("[{}]", rows_json.join(","));
+    println!("{}", serde_json::Value::Array(rows_json));
 }
