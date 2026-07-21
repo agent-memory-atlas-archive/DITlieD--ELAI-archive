@@ -5,6 +5,8 @@
   import { fsm } from '../state/fsm.svelte';
   import { session } from '../state/session.svelte';
   import { workspace } from '../state/workspace.svelte';
+  import { canvas } from '$lib/state/canvas.svelte';
+  import { graph } from '$lib/state/graph.svelte';
 
   // B-39D: ranks for the dotted effort indicator below the input.
   const EFFORT_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, max: 4 };
@@ -781,6 +783,22 @@
               {#if p.step_id}
                 <span class="status-step mono">{p.step_id}</span>
               {/if}
+            </div>
+
+          {:else if card.kind === 'ack'}
+            {@const p = card.payload as import('../api/types').AckCardPayload}
+            <div class="status-line">
+              <span class="status-arrow">&#8594;</span>
+              <span class="status-state mono">[{p.lane}]</span>
+              <span class="status-msg">{p.scope}</span>
+              <button
+                type="button"
+                class="ack-canvas-link"
+                onclick={() => {
+                  canvas.setMode(p.canvasMode);
+                  if (p.nodeId) graph.focus_node(p.nodeId);
+                }}
+              >Open in canvas &#8594;</button>
             </div>
 
           {:else if card.kind === 'intervention'}

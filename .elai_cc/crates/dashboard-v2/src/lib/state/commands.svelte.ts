@@ -26,6 +26,23 @@ import { session } from './session.svelte';
 // subscriber per stream). When the env var is not exactly "1" the
 // raw chunk callback runs unchanged (zero behaviour change vs pre-E-2).
 import { FramePacer } from '../streaming/frame_pacer';
+import type { CanvasMode } from './canvas.svelte';
+
+function canvasModeForIntent(intent: IntentType): CanvasMode {
+  switch (intent) {
+    case 'TASK':
+    case 'FIX':
+      return 'plan';
+    case 'RESEARCH':
+      return 'research';
+    case 'INTERVENE':
+    case 'STEER':
+    case 'ABORT':
+      return 'system';
+    default:
+      return 'code';
+  }
+}
 
 function framePacerEnabled(): boolean {
   // import.meta.env is the canonical Vite env surface. Use a guarded
@@ -463,6 +480,13 @@ function createCommands() {
     const chip = pendingIntentChip;
     if (!chip) return;
     pendingIntentChip = null;
+    appendCard('ack', {
+      kind: 'ack',
+      lane: chip.laneLabel,
+      scope: chip.text,
+      canvasMode: canvasModeForIntent(chip.intent),
+      nodeId: null,
+    });
     if (chip.intent === 'RESEARCH') {
       appendCard('user', { kind: 'user', text: chip.text, intent: 'RESEARCH' });
       logStub('commands.submit.slash', { command: '/research', arg: chip.text, intent: 'RESEARCH' });

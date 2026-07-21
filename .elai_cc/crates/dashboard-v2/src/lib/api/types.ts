@@ -1124,7 +1124,7 @@ export interface InterventionRequest {
   credential_fields?: CredentialField[];
 }
 
-export type CardKind = 'status' | 'intervention' | 'error' | 'disambiguation' | 'steering' | 'user' | 'response' | 'code-answer' | 'credential-request';
+export type CardKind = 'status' | 'intervention' | 'error' | 'disambiguation' | 'steering' | 'user' | 'response' | 'code-answer' | 'credential-request' | 'ack';
 
 export interface CommandCard {
   id: string;
@@ -1192,13 +1192,22 @@ export type CardPayload =
   | SteeringCardPayload
   | UserCardPayload
   | ResponseCardPayload
-  | CodeAnswerCardPayload;
+  | CodeAnswerCardPayload
+  | AckCardPayload;
 
 export interface StatusCardPayload {
   kind: 'status';
   message: string;
   fsm_state?: FsmState;
   step_id?: string;
+}
+
+export interface AckCardPayload {
+  kind: 'ack';
+  lane: string;
+  scope: string;
+  canvasMode: import('../state/canvas.svelte').CanvasMode;
+  nodeId?: string | null;
 }
 
 export interface InterventionCardPayload {
