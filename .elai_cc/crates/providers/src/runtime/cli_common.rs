@@ -96,7 +96,8 @@ pub fn default_binary_for(backend: RuntimeBackend) -> &'static str {
         // I-49 — Bedrock + Azure OpenAI are direct HTTP backends, not CLI
         // subprocesses.
         | RuntimeBackend::Bedrock
-        | RuntimeBackend::AzureOpenAi => "<non-cli>",
+        | RuntimeBackend::AzureOpenAi
+        | RuntimeBackend::Custom => "<non-cli>",
     }
 }
 

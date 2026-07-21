@@ -169,6 +169,12 @@ pub enum RuntimeBackend {
     /// enterprise accounts that have Azure OpenAI but not Anthropic API
     /// direct access. See `workflow/reasoning/I-49-decisions.md`.
     AzureOpenAi,
+    /// J-30 T2 — user-registered custom endpoint (custom_providers.toml).
+    /// Name is threaded via `RuntimeFactoryConfig::runtime_profile` and
+    /// resolved against the process-local registry in `custom_backends`.
+    /// `create_runtime(Custom)` builds either an anthropic-compat or an
+    /// openai-compat adapter from the registered `CustomBackendSpec`.
+    Custom,
 }
 
 impl RuntimeBackend {
@@ -205,6 +211,7 @@ impl RuntimeBackend {
             // Tier-1; live billed calls are Tier-2 D-026 PENDING.
             Self::Bedrock => "bedrock",
             Self::AzureOpenAi => "azure_openai",
+            Self::Custom => "custom",
         }
     }
 
@@ -254,6 +261,8 @@ impl RuntimeBackend {
             // live calls Tier-2 D-026 PENDING).
             Self::Bedrock,
             Self::AzureOpenAi,
+            // J-30 T2 -- user-registered custom endpoint.
+            Self::Custom,
         ]
     }
 }
@@ -280,6 +289,7 @@ mod is_local_tests {
         assert!(!RuntimeBackend::GroqFree.is_local());
         assert!(!RuntimeBackend::Sglang.is_local()); // cloud-throughput, not local
         assert!(!RuntimeBackend::ClaudeCode.is_local());
+        assert!(!RuntimeBackend::Custom.is_local());
     }
 }
 

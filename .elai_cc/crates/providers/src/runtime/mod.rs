@@ -52,6 +52,11 @@ pub mod copilot_cli;
 /// C-44 — per-backend cost tracking + hashing helpers. Used by the
 /// orchestrator's SSB writer to emit `BackendCostAccrued` rows.
 pub mod cost;
+/// J-30 T2 -- user-registered custom endpoints (custom_providers.toml).
+/// Process-local OnceLock<BTreeMap<String, CustomBackendSpec>> registry
+/// layered on `resolve_backend` / `create_runtime`. See
+/// `workflow/reasoning/J-30_provider_byok_custom_endpoints.md`.
+pub mod custom_backends;
 pub mod event_sink;
 pub mod gemini_cli;
 /// E-34 — `GenAiAdapter` scaffold. RuntimeAdapter slot reserved for the
@@ -197,6 +202,37 @@ pub fn resolve_backend(candidate: &str) -> Result<RuntimeBackend, ResolveBackend
         "azure_openai" | "azure" | "azure-openai" => Some(RuntimeBackend::AzureOpenAi),
         _ => None,
     };
+    // J-30 T2 -- fallback to the custom-backend registry when the static
+    // match misses. The registry is populated at startup from
+    // custom_providers.toml; a hit yields RuntimeBackend::Custom (the name
+    // is threaded via RuntimeFactoryConfig::runtime_profile). On first
+    // unknown lookup we ensure the registry is populated from
+    // custom_providers.toml so a present file is consulted even if the
+    // startup boot hook has not run yet.
+    let resolved = resolved.or_else(|| {
+        if custom_backends::resolve_custom(&normalised).is_some() {
+            Some(RuntimeBackend::Custom)
+        } else {
+            None
+        }
+    }).or_else(|| {
+        match custom_backends::ensure_custom_backends_loaded() {
+            Ok(()) => {
+                if custom_backends::resolve_custom(&normalised).is_some() {
+                    Some(RuntimeBackend::Custom)
+                } else {
+                    None
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target = "custom_backends",
+                    "ensure_custom_backends_loaded failed during resolve_backend({normalised}): {err}"
+                );
+                None
+            }
+        }
+    });
     match resolved {
         Some(backend) => Ok(backend),
         None => Err(ResolveBackendError {
@@ -312,6 +348,38 @@ pub fn create_runtime(
             let adapter = AzureOpenAiRuntime::from_factory_config(&cfg)?;
             Ok(Box::new(adapter))
         }
+        // J-30 T2 -- custom endpoint. The name is threaded via
+        // `cfg.runtime_profile`; the registry maps it to a
+        // `CustomBackendSpec` which `build_adapter` turns into a
+        // anthropic-compat or openai-compat `RuntimeAdapter`. Belt-and-
+        // suspenders: ensure the registry is populated before resolving,
+        // in case the startup boot hook has not run yet.
+        RuntimeBackend::Custom => {
+            let name = cfg.runtime_profile.as_deref().ok_or_else(|| {
+                RuntimeAdapterError::MissingField {
+                    backend: RuntimeBackend::Custom,
+                    field: "runtime_profile",
+                    reason: "Custom backend requires runtime_profile = custom provider name"
+                        .to_string(),
+                }
+            })?;
+            if let Err(err) = custom_backends::ensure_custom_backends_loaded() {
+                tracing::warn!(
+                    target = "custom_backends",
+                    "ensure_custom_backends_loaded failed during create_runtime(Custom): {err}"
+                );
+            }
+            let spec = custom_backends::resolve_custom(name).ok_or_else(|| {
+                RuntimeAdapterError::MissingField {
+                    backend: RuntimeBackend::Custom,
+                    field: "runtime_profile",
+                    reason: format!(
+                        "Custom backend `{name}` not registered (load custom_providers.toml at startup)"
+                    ),
+                }
+            })?;
+            custom_backends::build_adapter(&spec)
+        }
     }
 }
 
@@ -327,13 +395,18 @@ mod tests {
             assert!(seen.insert(name), "duplicate canonical name {name}");
             assert_eq!(name, name.to_ascii_lowercase(), "{name} must be lowercase");
         }
-        // I-49 added Bedrock + AzureOpenAi -> 22 total.
-        assert_eq!(seen.len(), 22);
+        // I-49 added Bedrock + AzureOpenAi -> 22 total; J-30 T2 added Custom -> 23.
+        assert_eq!(seen.len(), 23);
     }
 
     #[test]
     fn resolve_aliases_round_trip_to_canonical() {
         for backend in RuntimeBackend::all() {
+            // Custom requires a registered spec in the custom_backends
+            // registry; the round-trip is exercised in custom_backends tests.
+            if *backend == RuntimeBackend::Custom {
+                continue;
+            }
             let resolved =
                 resolve_backend(backend.canonical_name()).expect("canonical names must resolve");
             assert_eq!(resolved, *backend);
@@ -343,8 +416,8 @@ mod tests {
     #[test]
     fn resolve_backend_miss_returns_full_supported_list() {
         let err = resolve_backend("not-a-backend").expect_err("must miss");
-        // I-49 added Bedrock + AzureOpenAi -> 22 total.
-        assert_eq!(err.supported.len(), 22);
+        // I-49 added Bedrock + AzureOpenAi -> 22 total; J-30 T2 added Custom -> 23.
+        assert_eq!(err.supported.len(), 23);
         assert_eq!(err.candidate, "not-a-backend");
     }
 
