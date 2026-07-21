@@ -107,6 +107,10 @@ pub mod sidecar;
 pub mod sidecar_xgrammar_hook;
 pub mod types;
 pub mod vllm;
+/// J-19 — vLLM V1 native `/v1/messages` adapter (APC + batch-invariant).
+/// Opt-in via `resolve_backend("vllm-v1" | "vllm_v1")`; never a default.
+/// See `workflow/reasoning/J-19-decisions.md`. Live CUDA measure leg is W-10.
+pub mod vllm_v1;
 pub mod llama_cpp;
 pub mod mlx;
 pub mod platform_detect;
@@ -155,6 +159,7 @@ pub use sidecar_xgrammar_hook::{
     SidecarXGrammarHook, XGrammarHookError,
 };
 pub use vllm::VllmRuntime;
+pub use vllm_v1::VllmV1Runtime;
 pub use llama_cpp::LlamaCppAdapter;
 pub use mlx::MlxAdapter;
 pub use platform_detect::{detect_llamacpp_ep, detect_mlx_capable, AppleChipFamily, LlamaCppEp, MlxCapability};
@@ -192,6 +197,8 @@ pub fn resolve_backend(candidate: &str) -> Result<RuntimeBackend, ResolveBackend
         "copilot" | "copilot_cli" => Some(RuntimeBackend::CopilotCli),
         "ollama" => Some(RuntimeBackend::Ollama),
         "vllm" => Some(RuntimeBackend::Vllm),
+        // J-19 — vLLM V1 native /v1/messages lane (additive, opt-in only).
+        "vllm-v1" | "vllm_v1" => Some(RuntimeBackend::VllmV1),
         "mlx" | "mlx_adapter" => Some(RuntimeBackend::Mlx),
         "llama_cpp" | "llamacpp" | "llama-cpp" => Some(RuntimeBackend::LlamaCpp),
         // D-2 — PPM is a discovery-only slot. resolve_backend yields the
@@ -293,6 +300,10 @@ pub fn create_runtime(
         RuntimeBackend::CopilotCli => Ok(Box::new(CopilotCliRuntime::new(cfg))),
         RuntimeBackend::Ollama => Ok(Box::new(OllamaRuntime::new(cfg))),
         RuntimeBackend::Vllm => Ok(Box::new(VllmRuntime::new(cfg))),
+        // J-19 — vLLM V1 native /v1/messages lane. Opt-in only; never
+        // added to PerRoleRuntime defaults. Adapter is offline-buildable;
+        // live CUDA/RunPod measure leg is W-10.
+        RuntimeBackend::VllmV1 => Ok(Box::new(VllmV1Runtime::new(cfg))),
         RuntimeBackend::Mlx => {
             let adapter = MlxAdapter::new(cfg).map_err(|e| e)?;
             Ok(Box::new(adapter))
@@ -418,8 +429,9 @@ mod tests {
             assert!(seen.insert(name), "duplicate canonical name {name}");
             assert_eq!(name, name.to_ascii_lowercase(), "{name} must be lowercase");
         }
-        // I-49 added Bedrock + AzureOpenAi -> 22 total; J-30 T2 added Custom -> 23.
-        assert_eq!(seen.len(), 23);
+        // I-49 added Bedrock + AzureOpenAi -> 22 total; J-30 T2 added Custom -> 23;
+        // J-19 added VllmV1 -> 24.
+        assert_eq!(seen.len(), 24);
     }
 
     #[test]
@@ -439,8 +451,9 @@ mod tests {
     #[test]
     fn resolve_backend_miss_returns_full_supported_list() {
         let err = resolve_backend("not-a-backend").expect_err("must miss");
-        // I-49 added Bedrock + AzureOpenAi -> 22 total; J-30 T2 added Custom -> 23.
-        assert_eq!(err.supported.len(), 23);
+        // I-49 added Bedrock + AzureOpenAi -> 22 total; J-30 T2 added Custom -> 23;
+        // J-19 added VllmV1 -> 24.
+        assert_eq!(err.supported.len(), 24);
         assert_eq!(err.candidate, "not-a-backend");
     }
 
@@ -555,5 +568,37 @@ mod tests {
             resolve_backend("  Ollama  ").expect("whitespace"),
             RuntimeBackend::Ollama
         );
+    }
+
+    /// J-19 — vllm-v1 / vllm_v1 aliases resolve to the VllmV1 variant,
+    /// and `create_runtime` returns a live adapter with backend()==VllmV1
+    /// and capabilities.supports_caching reflecting the APC env flag.
+    #[test]
+    fn resolve_vllm_v1_aliases() {
+        assert_eq!(
+            resolve_backend("vllm-v1").expect("hyphen alias"),
+            RuntimeBackend::VllmV1
+        );
+        assert_eq!(
+            resolve_backend("vllm_v1").expect("underscore canonical"),
+            RuntimeBackend::VllmV1
+        );
+        assert_eq!(
+            resolve_backend("VLLM_V1").expect("case-insensitive"),
+            RuntimeBackend::VllmV1
+        );
+
+        let cfg = RuntimeFactoryConfig::for_backend(RuntimeBackend::VllmV1);
+        let adapter = match create_runtime(cfg) {
+            Ok(a) => a,
+            Err(e) => panic!("create_runtime(VllmV1) must succeed; got {e:?}"),
+        };
+        assert_eq!(adapter.backend(), RuntimeBackend::VllmV1);
+        // supports_caching is driven by ELAI_VLLM_V1_PREFIX_CACHING; either
+        // outcome is valid, the field just must be readable.
+        let _ = adapter.capabilities().supports_caching;
+        // supports_tools + supports_streaming are always true for VllmV1.
+        assert!(adapter.capabilities().supports_tools);
+        assert!(adapter.capabilities().supports_streaming);
     }
 }

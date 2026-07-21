@@ -440,16 +440,17 @@ fn azure_build_request_includes_system_message() {
 }
 
 // =========================================================================
-// 7. Backend enum count is 22
+// 7. Backend enum count (I-49 added Bedrock + AzureOpenAi -> 22;
+//    J-30 T2 added Custom -> 23; J-19 added VllmV1 -> 24)
 // =========================================================================
 
 #[test]
-fn runtime_backend_all_count_is_22() {
+fn runtime_backend_all_count_is_24() {
     let all = RuntimeBackend::all();
     assert_eq!(
         all.len(),
-        22,
-        "RuntimeBackend::all() must have 22 entries after I-49 added Bedrock + AzureOpenAi; got {}",
+        24,
+        "RuntimeBackend::all() must have 24 entries after J-19 added VllmV1; got {}",
         all.len()
     );
 }

@@ -175,6 +175,10 @@ pub enum RuntimeBackend {
     /// `create_runtime(Custom)` builds either an anthropic-compat or an
     /// openai-compat adapter from the registered `CustomBackendSpec`.
     Custom,
+    /// J-19 — vLLM V1 native `/v1/messages` lane (APC + batch-invariant).
+    /// Additive; never default. Opt-in via resolve_backend("vllm-v1").
+    /// Live CUDA/RunPod measure leg is W-10; adapter itself is offline-buildable.
+    VllmV1,
 }
 
 impl RuntimeBackend {
@@ -212,6 +216,7 @@ impl RuntimeBackend {
             Self::Bedrock => "bedrock",
             Self::AzureOpenAi => "azure_openai",
             Self::Custom => "custom",
+            Self::VllmV1 => "vllm_v1",
         }
     }
 
@@ -227,7 +232,7 @@ impl RuntimeBackend {
     pub const fn is_local(self) -> bool {
         matches!(
             self,
-            Self::Sidecar | Self::Mlx | Self::LlamaCpp | Self::Ollama | Self::Vllm
+            Self::Sidecar | Self::Mlx | Self::LlamaCpp | Self::Ollama | Self::Vllm | Self::VllmV1
         )
     }
 
@@ -263,6 +268,8 @@ impl RuntimeBackend {
             Self::AzureOpenAi,
             // J-30 T2 -- user-registered custom endpoint.
             Self::Custom,
+            // J-19 -- vLLM V1 native /v1/messages lane (additive, opt-in).
+            Self::VllmV1,
         ]
     }
 }
@@ -278,6 +285,7 @@ mod is_local_tests {
         assert!(RuntimeBackend::LlamaCpp.is_local());
         assert!(RuntimeBackend::Ollama.is_local());
         assert!(RuntimeBackend::Vllm.is_local());
+        assert!(RuntimeBackend::VllmV1.is_local());
     }
 
     #[test]

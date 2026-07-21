@@ -77,6 +77,7 @@ pub fn default_binary_for(backend: RuntimeBackend) -> &'static str {
         | RuntimeBackend::AnthropicApi
         | RuntimeBackend::Ollama
         | RuntimeBackend::Vllm
+        | RuntimeBackend::VllmV1
         | RuntimeBackend::Mlx
         | RuntimeBackend::LlamaCpp
         | RuntimeBackend::Ppm

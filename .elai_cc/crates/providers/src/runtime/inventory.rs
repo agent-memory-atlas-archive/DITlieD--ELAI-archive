@@ -163,6 +163,7 @@ fn family_for_builtin(backend: RuntimeBackend) -> Option<&'static str> {
         RuntimeBackend::Sidecar
         | RuntimeBackend::Ollama
         | RuntimeBackend::Vllm
+        | RuntimeBackend::VllmV1
         | RuntimeBackend::Mlx
         | RuntimeBackend::LlamaCpp
         | RuntimeBackend::Sglang => Some("qwen-local"),
