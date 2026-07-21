@@ -532,7 +532,8 @@ pub use skill_trust::{
 // trim_threshold_for_mode, regime_policy, context_policy_disabled}`.
 pub use context_policy::{
     context_policy_disabled, effective_context_window, regime_policy,
-    trim_threshold, trim_threshold_for_mode, ContextPolicy,
+    trim_threshold, trim_threshold_for_mode, trim_threshold_for_mode_with_profile,
+    trim_threshold_with_calibration, ContextPolicy,
     ELAI_CONTEXT_POLICY_DISABLE_VAR, ELAI_LOCAL_MAX_CONTEXT_VAR,
     LOCAL_DEFAULT_WINDOW, CLOUD_DEFAULT_WINDOW, LEGACY_FLAT_THRESHOLD,
     LOCAL_TRIM_FRACTION, CLOUD_TRIM_FRACTION,

@@ -35,6 +35,7 @@ use elai_orchestrator::{
     RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
     // H-50: regime-aware auto-compact threshold (local vs cloud window).
     trim_threshold_for_mode,
+    trim_threshold_for_mode_with_profile,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -367,8 +368,12 @@ pub(crate) fn build_runtime_with_plugin_state(
     // ELAI_CONTEXT_POLICY_DISABLE=1 reverts to the legacy flat threshold.
     // This is the PRODUCTION wiring point: `backend` carries the resolved
     // BackendMode (Local for sidecar, Api for cloud) computed above.
+    // J-34 slice-3: thread `None` profile here = folklore behaviour; the
+    // calibrated preference API (`trim_threshold_for_mode_with_profile`)
+    // is the seam a future runtime passes a real `ModelCapabilityProfile`
+    // through. `None` keeps H-50 contracts green.
     runtime = runtime.with_auto_compaction_input_tokens_threshold(
-        elai_orchestrator::trim_threshold_for_mode(backend),
+        elai_orchestrator::trim_threshold_for_mode_with_profile(backend, None),
     );
     runtime = runtime.with_context_backend_mode(backend);
     // A-30: wire OutputConfig from elai_cc.toml [output] section.

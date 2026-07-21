@@ -30,6 +30,7 @@
 //!     `max_tokens_for_model(&self.model)` with
 //!     `effective_context_window_for_backend(backend_mode)`.
 
+use crate::context_budget::ModelCapabilityProfile;
 use crate::dispatcher::BackendMode;
 
 // ---------------------------------------------------------------------------
@@ -221,8 +222,35 @@ pub fn effective_context_window(mode: BackendMode) -> u32 {
 /// * `Cloud`  => `floor(window * CLOUD_TRIM_FRACTION)`
 #[must_use]
 pub fn trim_threshold(policy: ContextPolicy, window: u32) -> u32 {
+    trim_threshold_with_calibration(policy, window, None)
+}
+
+/// J-34 leg-2 seam — calibrated preference for `trim_threshold`.
+///
+/// Kill-switch first (same as `trim_threshold`): when
+/// `ELAI_CONTEXT_POLICY_DISABLE=1`, returns [`LEGACY_FLAT_THRESHOLD`] without
+/// consulting `calibrated_trim_fraction`.
+///
+/// When `calibrated_trim_fraction` is `Some(f)` and `f` is in `(0.0, 1.0]`,
+/// returns `floor(window * f)` — the measured knee overrides the folklore
+/// fraction. When `calibrated_trim_fraction` is `None` or out of range, the
+/// folklore fraction (`LOCAL_TRIM_FRACTION` / `CLOUD_TRIM_FRACTION`) is used
+/// exactly as in `trim_threshold`, so H-50 contract tests stay green.
+#[must_use]
+pub fn trim_threshold_with_calibration(
+    policy: ContextPolicy,
+    window: u32,
+    calibrated_trim_fraction: Option<f64>,
+) -> u32 {
     if context_policy_disabled() {
         return LEGACY_FLAT_THRESHOLD;
+    }
+    if let Some(f) = calibrated_trim_fraction {
+        if f > 0.0 && f <= 1.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let result = (f64::from(window) * f) as u32;
+            return result;
+        }
     }
     let fraction = match policy {
         ContextPolicy::Local => LOCAL_TRIM_FRACTION,
@@ -239,9 +267,23 @@ pub fn trim_threshold(policy: ContextPolicy, window: u32) -> u32 {
 /// and `live_cli.rs prepare_turn_runtime`.
 #[must_use]
 pub fn trim_threshold_for_mode(mode: BackendMode) -> u32 {
+    trim_threshold_for_mode_with_profile(mode, None)
+}
+
+/// J-34 leg-2 seam — calibrated preference wrapper. Derives policy + window
+/// from `BackendMode`, then threads `profile.calibrated_trim_fraction` (when
+/// `Some`) into [`trim_threshold_with_calibration`]. When `profile` is `None`
+/// or its `calibrated_trim_fraction` is `None`, behaviour is identical to
+/// [`trim_threshold_for_mode`] (folklore fraction).
+#[must_use]
+pub fn trim_threshold_for_mode_with_profile(
+    mode: BackendMode,
+    profile: Option<&ModelCapabilityProfile>,
+) -> u32 {
     let policy = regime_policy(mode);
     let window = effective_context_window(mode);
-    trim_threshold(policy, window)
+    let calibrated = profile.and_then(|p| p.calibrated_trim_fraction);
+    trim_threshold_with_calibration(policy, window, calibrated)
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +314,25 @@ mod tests {
     // in dev-deps; BLOCK-5 fix).
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    // J-34 MR-2: centralize the env-mutating unsafe behind test helpers so the
+    // diff against tip adds zero net `unsafe {` blocks (each helper owns one
+    // unsafe block, replacing many scattered call sites).
+    fn clear_context_policy_disable() {
+        unsafe { std::env::remove_var(ELAI_CONTEXT_POLICY_DISABLE_VAR) };
+    }
+
+    fn enable_context_policy_disable() {
+        unsafe { std::env::set_var(ELAI_CONTEXT_POLICY_DISABLE_VAR, "1") };
+    }
+
+    fn clear_local_max_context() {
+        unsafe { std::env::remove_var(ELAI_LOCAL_MAX_CONTEXT_VAR) };
+    }
+
+    fn set_local_max_context(value: &str) {
+        unsafe { std::env::set_var(ELAI_LOCAL_MAX_CONTEXT_VAR, value) };
+    }
+
     #[test]
     fn local_trim_threshold_respects_env() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -279,11 +340,11 @@ mod tests {
         // Safety: test-only env mutation, #[cfg(test)] gate.
         // Explicitly clear the kill-switch so this test is order-independent
         // with respect to kill_switch_returns_legacy_flat (both mutate env).
-        unsafe { std::env::remove_var(ELAI_CONTEXT_POLICY_DISABLE_VAR) };
-        unsafe { std::env::set_var(ELAI_LOCAL_MAX_CONTEXT_VAR, "32000") };
+        clear_context_policy_disable();
+        set_local_max_context("32000");
         let window = effective_context_window(BackendMode::Local);
         let threshold = trim_threshold(ContextPolicy::Local, 32_000);
-        unsafe { std::env::remove_var(ELAI_LOCAL_MAX_CONTEXT_VAR) };
+        clear_local_max_context();
         assert_eq!(window, 32_000, "window must match ELAI_LOCAL_MAX_CONTEXT=32000");
         // D2: trim_threshold(Local, 32000) = floor(32000 * 0.75) = 24000.
         assert_eq!(threshold, 24_000, "trim threshold must be floor(32000 * 0.75) = 24000");
@@ -293,7 +354,7 @@ mod tests {
     fn cloud_trim_threshold_uses_cloud_fraction() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // Ensure kill-switch is OFF so we get the real threshold.
-        unsafe { std::env::remove_var(ELAI_CONTEXT_POLICY_DISABLE_VAR) };
+        clear_context_policy_disable();
         let threshold = trim_threshold(ContextPolicy::Cloud, 200_000);
         assert_eq!(threshold, 170_000, "cloud threshold must be floor(200000 * 0.85)");
     }
@@ -301,9 +362,9 @@ mod tests {
     #[test]
     fn kill_switch_returns_legacy_flat() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var(ELAI_CONTEXT_POLICY_DISABLE_VAR, "1") };
+        enable_context_policy_disable();
         let threshold = trim_threshold_for_mode(BackendMode::Local);
-        unsafe { std::env::remove_var(ELAI_CONTEXT_POLICY_DISABLE_VAR) };
+        clear_context_policy_disable();
         assert_eq!(threshold, LEGACY_FLAT_THRESHOLD, "kill-switch must return legacy threshold");
     }
 
@@ -325,8 +386,102 @@ mod tests {
     #[test]
     fn default_window_when_env_missing() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::remove_var(ELAI_LOCAL_MAX_CONTEXT_VAR) };
+        clear_local_max_context();
         let window = effective_context_window(BackendMode::Local);
         assert_eq!(window, LOCAL_DEFAULT_WINDOW);
+    }
+
+    // J-34 slice-3 — calibrated preference tests.
+
+    #[test]
+    fn calibrated_trim_fraction_overrides_folklore() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        clear_context_policy_disable();
+        // calibrated 0.50 wins over cloud folklore 0.85.
+        let t = trim_threshold_with_calibration(
+            ContextPolicy::Cloud,
+            200_000,
+            Some(0.50),
+        );
+        assert_eq!(t, 100_000, "calibrated 0.50 must override folklore 0.85");
+    }
+
+    #[test]
+    fn calibrated_none_falls_back_to_folklore() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        clear_context_policy_disable();
+        let t = trim_threshold_with_calibration(
+            ContextPolicy::Cloud,
+            200_000,
+            None,
+        );
+        assert_eq!(t, 170_000, "None calibration must match folklore 0.85");
+    }
+
+    #[test]
+    fn calibrated_out_of_range_falls_back_to_folklore() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        clear_context_policy_disable();
+        // 0.0 and 1.5 are out of (0.0, 1.0]; folklore must win.
+        let t_zero = trim_threshold_with_calibration(
+            ContextPolicy::Cloud,
+            200_000,
+            Some(0.0),
+        );
+        assert_eq!(t_zero, 170_000, "0.0 is out of range, folklore wins");
+        let t_high = trim_threshold_with_calibration(
+            ContextPolicy::Cloud,
+            200_000,
+            Some(1.5),
+        );
+        assert_eq!(t_high, 170_000, "1.5 is out of range, folklore wins");
+    }
+
+    #[test]
+    fn calibrated_one_yields_full_window() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        clear_context_policy_disable();
+        let t = trim_threshold_with_calibration(
+            ContextPolicy::Local,
+            32_000,
+            Some(1.0),
+        );
+        assert_eq!(t, 32_000, "1.0 means trim at full window");
+    }
+
+    #[test]
+    fn kill_switch_overrides_calibrated_fraction() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        enable_context_policy_disable();
+        let t = trim_threshold_with_calibration(
+            ContextPolicy::Cloud,
+            200_000,
+            Some(0.50),
+        );
+        clear_context_policy_disable();
+        assert_eq!(
+            t, LEGACY_FLAT_THRESHOLD,
+            "kill-switch must override calibrated fraction"
+        );
+    }
+
+    #[test]
+    fn for_mode_with_profile_threads_calibrated_fraction() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        clear_context_policy_disable();
+        // Build a profile with calibrated_trim_fraction = 0.50.
+        let mut profile = crate::context_budget::ModelCapabilityProfile::cloud_200k();
+        profile.calibrated_trim_fraction = Some(0.50);
+        let t = trim_threshold_for_mode_with_profile(
+            BackendMode::Api,
+            Some(&profile),
+        );
+        assert_eq!(t, 100_000, "profile 0.50 must thread through to threshold");
+        // None profile matches folklore.
+        let t_none = trim_threshold_for_mode_with_profile(
+            BackendMode::Api,
+            None,
+        );
+        assert_eq!(t_none, 170_000, "None profile = folklore 0.85");
     }
 }

@@ -340,6 +340,22 @@ pub(crate) fn curve_measured_details(artifact: &CalibrationArtifact) -> serde_js
     })
 }
 
+/// Build the `details_json` for a `ThresholdApplied` emit from
+/// `recalibrate_budget_with_calibration`. Carries the `calibrated_trim_fraction`
+/// that was applied (or `null` when the fallback ran) and `fallback_used`
+/// so the NEGATIVE contract (no silent pseudo-calibration) is observable
+/// off-agent via SSB. Mirrors `curve_measured_details` in shape.
+#[must_use]
+pub(crate) fn threshold_applied_details(
+    calibrated_trim_fraction: Option<f64>,
+    fallback_used: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "calibrated_trim_fraction": calibrated_trim_fraction,
+        "fallback_used": fallback_used,
+    })
+}
+
 /// Emit a `ContextCalibrationEvent` SSB row best-effort from a sync context.
 /// Mirrors `front_door_emit::emit_intent_routed`: a missed SSB row is never a
 /// correctness failure (the artifact is already stored in-process). When no
@@ -675,6 +691,176 @@ mod tests {
             1_700_000_000,
         );
         store.insert(art);
+        assert_eq!(store.len(), 1);
+    }
+
+    // J-34 slice-3 — ThresholdApplied emit from recalibrate_budget_with_calibration.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn j34_slice3_threshold_applied_row_lands_on_recalibrate_with_knee() {
+        use crate::context_budget::{
+            CumulativeTokenTracker, ModelCapabilityProfile,
+        };
+        let dir = TempDir::new().expect("tempdir");
+        let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+        let ssb = Arc::new(
+            Ssb::new(
+                SsbConfig {
+                    db_path: dir.path().join("j34-slice3-ssb.db"),
+                    pool_size: Some(2),
+                    project_id: "j34-slice3".into(),
+                    session_id: "j34-slice3".into(),
+                },
+                clock,
+            )
+            .expect("ssb open"),
+        );
+
+        let mut profile = ModelCapabilityProfile::micro_7b_12gb();
+        let art = CalibrationArtifact::from_curves(
+            "id-j34-slice3".to_string(),
+            monotone_curve(),
+            PositionalValueCurve::default(),
+            1_700_000_000,
+        );
+        let tracker = CumulativeTokenTracker::new();
+        tracker.recalibrate_budget_with_calibration(
+            &mut profile,
+            None,
+            None,
+            Some(&art),
+            Some(&ssb),
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let rows = ssb
+            .query_by_type(SsbActionType::ContextCalibrationEvent(
+                ContextCalibrationKind::ThresholdApplied,
+            ))
+            .expect("query_by_type ThresholdApplied");
+        assert!(
+            !rows.is_empty(),
+            "expected >= 1 ThresholdApplied row; R1 missing evidence = FAIL"
+        );
+        let decoded = decode_ssb_payload(&rows[0].payload).expect("decode_ssb_payload");
+        match decoded {
+            SsbPayload::ContextCalibrationEvent(p) => {
+                assert_eq!(p.kind, ContextCalibrationKind::ThresholdApplied);
+                assert_eq!(p.model_identity_key, "id-j34-slice3");
+                let details = p.details_json.as_object().expect("details_json object");
+                // calibrated_trim_fraction must be the knee fill (0.50) and
+                // fallback_used must be false (knee was applied).
+                let frac = details["calibrated_trim_fraction"]
+                    .as_f64()
+                    .expect("calibrated_trim_fraction is number");
+                assert!((frac - 0.50).abs() < 1e-6, "knee fill 0.50, got {}", frac);
+                assert_eq!(details["fallback_used"], false);
+            }
+            other => panic!("expected ContextCalibrationEvent; got {:?}", other),
+        }
+        // Profile was actually calibrated.
+        let frac = profile.calibrated_trim_fraction.expect("knee applied");
+        assert!((frac - 0.50).abs() < 1e-6);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn j34_slice3_threshold_applied_row_lands_on_recalibrate_no_knee() {
+        use crate::context_budget::{
+            CumulativeTokenTracker, ModelCapabilityProfile,
+        };
+        let dir = TempDir::new().expect("tempdir");
+        let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+        let ssb = Arc::new(
+            Ssb::new(
+                SsbConfig {
+                    db_path: dir.path().join("j34-slice3-noknee-ssb.db"),
+                    pool_size: Some(2),
+                    project_id: "j34-slice3-noknee".into(),
+                    session_id: "j34-slice3-noknee".into(),
+                },
+                clock,
+            )
+            .expect("ssb open"),
+        );
+
+        // Flat curve -> no knee -> calibrated_trim_fraction stays None.
+        let flat = FillDegradationCurve {
+            samples: vec![sample(0.1, 0.9), sample(0.5, 0.9), sample(0.9, 0.9)],
+        };
+        let art = CalibrationArtifact::from_curves(
+            "id-j34-slice3-noknee".to_string(),
+            flat,
+            PositionalValueCurve::default(),
+            1_700_000_000,
+        );
+        assert!(art.knee.is_none());
+
+        let mut profile = ModelCapabilityProfile::micro_7b_12gb();
+        let tracker = CumulativeTokenTracker::new();
+        tracker.recalibrate_budget_with_calibration(
+            &mut profile,
+            None,
+            None,
+            Some(&art),
+            Some(&ssb),
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let rows = ssb
+            .query_by_type(SsbActionType::ContextCalibrationEvent(
+                ContextCalibrationKind::ThresholdApplied,
+            ))
+            .expect("query_by_type ThresholdApplied");
+        assert!(
+            !rows.is_empty(),
+            "expected >= 1 ThresholdApplied row on no-knee path (NEGATIVE contract observable)"
+        );
+        let decoded = decode_ssb_payload(&rows[0].payload).expect("decode_ssb_payload");
+        match decoded {
+            SsbPayload::ContextCalibrationEvent(p) => {
+                assert_eq!(p.kind, ContextCalibrationKind::ThresholdApplied);
+                let details = p.details_json.as_object().expect("details_json object");
+                assert!(
+                    details["calibrated_trim_fraction"].is_null(),
+                    "no knee -> null calibrated_trim_fraction"
+                );
+                assert_eq!(details["fallback_used"], true);
+            }
+            other => panic!("expected ContextCalibrationEvent; got {:?}", other),
+        }
+        assert!(profile.calibrated_trim_fraction.is_none(), "no pseudo-calibration");
+    }
+
+    #[test]
+    fn threshold_applied_details_shape() {
+        let details = threshold_applied_details(Some(0.5), false);
+        let obj = details.as_object().expect("object");
+        assert_eq!(obj["fallback_used"], false);
+        assert!((obj["calibrated_trim_fraction"].as_f64().unwrap() - 0.5).abs() < 1e-9);
+        let details_none = threshold_applied_details(None, true);
+        let obj_none = details_none.as_object().expect("object");
+        assert!(obj_none["calibrated_trim_fraction"].is_null());
+        assert_eq!(obj_none["fallback_used"], true);
+    }
+
+    // Ensure slice-2 CurveMeasured insert test still PASS after slice-3
+    // changed the recalibrate emit site (the insert path is separate).
+    #[test]
+    fn slice2_curve_measured_insert_still_emits() {
+        let mut store = CalibrationArtifactStore::new();
+        let art = CalibrationArtifact::from_curves(
+            "id-slice3-regression".to_string(),
+            monotone_curve(),
+            PositionalValueCurve::default(),
+            1_700_000_000,
+        );
+        store.insert(art);
+        // No SSB in this test (insert without ssb arg) — just verify store path
+        // is untouched and the artifact lands. The slice-2 SSB-backed test
+        // above (j34_slice2_curve_measured_row_lands_on_insert_with_ssb) pins
+        // the CurveMeasured row contract.
         assert_eq!(store.len(), 1);
     }
 }

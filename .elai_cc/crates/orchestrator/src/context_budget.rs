@@ -892,7 +892,7 @@ impl CumulativeTokenTracker {
     /// no store, no identity, no artifact, no SSB — the legacy no-calibration
     /// path. The leg-2 production seam
     /// (`recalibrate_budget_with_calibration`) threads `Some(&ssb)` so the
-    /// `CurveMeasured` row lands off-agent; this wrapper stays `None` so
+    /// `ThresholdApplied` row lands off-agent; this wrapper stays `None` so
     /// existing callers (and the in-module tests) keep the no-emit contract.
     pub fn recalibrate_budget(&self, profile: &mut ModelCapabilityProfile) {
         self.recalibrate_budget_with_calibration(profile, None, None, None, None);
@@ -931,14 +931,16 @@ impl CumulativeTokenTracker {
     /// artifact with `store=None`, or pass `store` + `identity` with
     /// `artifact=None` to trigger invalidation without a prior lookup.
     ///
-    /// `ssb` threads an optional SSB writer for the `CurveMeasured` emit on
-    /// the apply-artifact paths (explicit `artifact` OR rebuilt-from-curves).
+    /// `ssb` threads an optional SSB writer for the `ThresholdApplied` emit
+    /// on the apply-artifact paths (explicit `artifact` OR rebuilt-from-curves).
     /// When `ssb` is `None` the leg falls back to
     /// [`crate::lock::try_ssb_writer`] so a production runtime that has
     /// installed the global writer still emits the row even when the caller
     /// did not thread one explicitly. When neither is `Some` (contract tests,
     /// cold start) the emit is a no-op. This is the production-wiring seam
-    /// for `CurveMeasured` off-agent observability (J-34 slice-2 R7/R10).
+    /// for `ThresholdApplied` off-agent observability (J-34 slice-3 R7/R10).
+    /// The `CalibrationArtifactStore::insert` CurveMeasured emit (slice-2) is
+    /// a separate site and stays unchanged.
     pub fn recalibrate_budget_with_calibration(
         &self,
         profile: &mut ModelCapabilityProfile,
@@ -971,11 +973,15 @@ impl CumulativeTokenTracker {
         if let Some(art) = artifact {
             crate::context_calibration::apply_to_profile(art, profile);
             if let Some(ssb_arc) = resolved_ssb.as_ref() {
+                let calibrated = profile.calibrated_trim_fraction;
                 crate::context_calibration::emit_context_calibration_event(
                     ssb_arc,
-                    crate::ssb::ContextCalibrationKind::CurveMeasured,
+                    crate::ssb::ContextCalibrationKind::ThresholdApplied,
                     &art.identity_key,
-                    crate::context_calibration::curve_measured_details(art),
+                    crate::context_calibration::threshold_applied_details(
+                        calibrated,
+                        calibrated.is_none(),
+                    ),
                 );
             }
         } else if let Some(fill) = profile.fill_degradation_curve.clone() {
@@ -988,11 +994,15 @@ impl CumulativeTokenTracker {
             );
             crate::context_calibration::apply_to_profile(&rebuilt, profile);
             if let Some(ssb_arc) = resolved_ssb.as_ref() {
+                let calibrated = profile.calibrated_trim_fraction;
                 crate::context_calibration::emit_context_calibration_event(
                     ssb_arc,
-                    crate::ssb::ContextCalibrationKind::CurveMeasured,
+                    crate::ssb::ContextCalibrationKind::ThresholdApplied,
                     &rebuilt.identity_key,
-                    crate::context_calibration::curve_measured_details(&rebuilt),
+                    crate::context_calibration::threshold_applied_details(
+                        calibrated,
+                        calibrated.is_none(),
+                    ),
                 );
             }
         } else if let (Some(s), Some(id)) = (store, identity) {
