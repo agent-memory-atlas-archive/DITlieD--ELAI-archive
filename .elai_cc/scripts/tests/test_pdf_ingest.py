@@ -87,21 +87,63 @@ class PdfIngestTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_happy_path_writes_markdown_from_json(self):
+    def test_happy_path_writes_markdown_from_results_md_content(self):
         self._set_env("1", "")
-        body = json.dumps({"markdown": "$E=mc^2$"}).encode("utf-8")
+        body = json.dumps({
+            "status": "completed",
+            "backend": "pipeline",
+            "results": {
+                "formula_stub": {
+                    "md_content": "$$\\mathsf { E } = \\mathsf { m c } ^ { \\wedge 2 }$$"
+                }
+            },
+        }).encode("utf-8")
         with mock.patch(
             "scripts.pdf_ingest.urllib.request.urlopen",
             return_value=_FakeResponse(200, body),
         ) as urlopen_mock:
             out = Path(self.tmp_pdf.with_suffix(".md").as_posix())
             written, status = ingest(
-                self.tmp_pdf, out, "http://127.0.0.1:8080", timeout=5
+                self.tmp_pdf, out, "http://127.0.0.1:8760", timeout=5
             )
         self.assertEqual(status, "parsed")
         self.assertTrue(written.is_file())
-        self.assertIn("$E=mc^2$", written.read_text(encoding="utf-8"))
+        text = written.read_text(encoding="utf-8")
+        self.assertIn("\\mathsf { E }", text)
         urlopen_mock.assert_called_once()
+        # Verify the request body uses the `files` field name + backend=pipeline.
+        call_args = urlopen_mock.call_args
+        req_obj = call_args.args[0]
+        req_body = req_obj.data
+        self.assertIn(b'name="files"', req_body)
+        self.assertIn(b'name="backend"', req_body)
+        self.assertIn(b"pipeline", req_body)
+        # Old `file` field name must NOT appear.
+        self.assertNotIn(b'name="file"', req_body)
+        # Regression (J-33 S6b-slice4): the closing boundary must appear
+        # exactly once, AFTER the `backend` text field. A premature close
+        # after the file part caused MinerU to ignore `backend` and default
+        # to hybrid-engine (HTTP 409).
+        close_marker = b"--" + b"----elai_pdf_ingest_boundary" + b"--\r\n"
+        self.assertEqual(req_body.count(close_marker), 1)
+        backend_idx = req_body.find(b'name="backend"')
+        close_idx = req_body.rfind(close_marker)
+        self.assertGreater(backend_idx, -1)
+        self.assertGreater(close_idx, backend_idx)
+
+    def test_happy_path_falls_back_to_top_level_markdown(self):
+        self._set_env("1", "")
+        body = json.dumps({"markdown": "$E=mc^2$"}).encode("utf-8")
+        with mock.patch(
+            "scripts.pdf_ingest.urllib.request.urlopen",
+            return_value=_FakeResponse(200, body),
+        ):
+            out = Path(self.tmp_pdf.with_suffix(".md").as_posix())
+            written, status = ingest(
+                self.tmp_pdf, out, "http://127.0.0.1:8080", timeout=5
+            )
+        self.assertEqual(status, "parsed")
+        self.assertIn("$E=mc^2$", written.read_text(encoding="utf-8"))
 
     def test_connection_failure_degrades_without_fake_tex(self):
         self._set_env("1", "")

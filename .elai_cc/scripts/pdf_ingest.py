@@ -1,9 +1,12 @@
 """Ingest a PDF via the ELAI doc-parser (MinerU) HTTP endpoint.
 
-Mirrors the Rust DocParserClient contract (crates/.../doc_parser_client.rs @c420118):
+Mirrors the Rust DocParserClient contract (crates/.../doc_parser_client.rs):
   - env: ELAI_DOC_PARSER_ENABLE (truthy), ELAI_DOC_PARSER_BASE_URL
-  - POST {base_url}/file_parse multipart/form-data field name `file`
-  - response JSON: prefer `markdown`, fallback `content`
+  - POST {base_url}/file_parse multipart/form-data field name `files`
+  - text field `backend=pipeline` (Tier-1 CPU; never the hybrid/VLM default)
+  - response JSON: prefer `results[<key>].md_content` (MinerU 3.4),
+    fallback per-entry `markdown`/`content`, then legacy top-level
+    `markdown`/`content`.
 
 Degrades to a passthrough markdown stub when the service is disabled,
 unreachable, returns non-2xx, or the base URL is missing. The passthrough
@@ -46,24 +49,64 @@ def _multipart_field(field_name: str, filename: str, file_bytes: bytes) -> bytes
         f'filename="{filename}"\r\n'
         f"Content-Type: application/pdf\r\n\r\n"
     ).encode("utf-8")
-    return head + file_bytes + f"\r\n--{BOUNDARY}--\r\n".encode("utf-8")
+    return head + file_bytes + b"\r\n"
+
+
+def _multipart_text_field(name: str, value: str) -> bytes:
+    head = (
+        f"--{BOUNDARY}\r\n"
+        f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+        f"{value}\r\n"
+    ).encode("utf-8")
+    return head
+
+
+def _multipart_body(file_field: str, filename: str, file_bytes: bytes,
+                    text_fields: dict) -> bytes:
+    parts = [_multipart_field(file_field, filename, file_bytes)]
+    for name, value in text_fields.items():
+        parts.append(_multipart_text_field(name, value))
+    parts.append(f"--{BOUNDARY}--\r\n".encode("utf-8"))
+    return b"".join(parts)
 
 
 def _parse_response(body: bytes) -> str:
     if not body:
         raise ValueError("empty response body")
     payload = json.loads(body.decode("utf-8"))
+    results = payload.get("results")
+    if isinstance(results, dict) and results:
+        for _key, entry in results.items():
+            if not isinstance(entry, dict):
+                continue
+            md = entry.get("md_content")
+            if isinstance(md, str) and md:
+                return md
+            mk = entry.get("markdown")
+            if isinstance(mk, str) and mk:
+                return mk
+            ct = entry.get("content")
+            if isinstance(ct, str) and ct:
+                return ct
     markdown = payload.get("markdown")
     if isinstance(markdown, str) and markdown:
         return markdown
     content = payload.get("content")
     if isinstance(content, str) and content:
         return content
-    raise ValueError(f"response JSON missing `markdown` and `content`: {payload!r}")
+    raise ValueError(
+        f"response JSON missing `results[*].md_content`, `markdown`, "
+        f"and `content`: {payload!r}"
+    )
 
 
 def _http_post(base_url: str, pdf_path: Path, timeout: float) -> Tuple[int, bytes]:
-    data = _multipart_field("file", pdf_path.name, pdf_path.read_bytes())
+    data = _multipart_body(
+        "files",
+        pdf_path.name,
+        pdf_path.read_bytes(),
+        {"backend": "pipeline"},
+    )
     url = base_url.rstrip("/") + "/file_parse"
     req = urllib.request.Request(
         url,

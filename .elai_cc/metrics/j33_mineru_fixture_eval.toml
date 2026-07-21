@@ -1,8 +1,10 @@
 # J-33: MinerU doc-parser fixture eval -- ELAI's OWN measured schema.
 # All shipped numbers are ELAI-measured per config; external figures appear
-# only as cited rationale (HD-1/ID-5). Metrics pending a live MinerU serve
-# (pending_mineru_serve = true) -- the harness + fixture + assertion shape
-# ship today; the live delta lands when a real MinerU pipeline is reachable.
+# only as cited rationale (HD-1/ID-5). The live MinerU 3.4.4 pipeline serve
+# at 127.0.0.1:8760 was probed on 2026-07-21; the measured.* arms below
+# carry the honest live values from that probe (see
+# conductor/opus_walk/evidence/J-33/slice4-live-mineru-response.json +
+# slice4-live-parse.md). No OmniDocBench self-score is carried as measured.
 #
 # ID-5: every value in [measured.*] below is either an ELAI-measured number
 # or an explicit pending_mineru_serve placeholder. No MinerU self-reported
@@ -10,13 +12,8 @@
 # -- those figures are DESIGN RATIONALE ONLY and live in [rationale_external]
 # with their citation.
 #
-# LIVE-MINERU-GATED: the harness-vs-HTML and indexer-parse deltas are
-# PENDING a live MinerU serve. The fixtures + the assertions are defined
-# now (see [fixture]); the measured numbers land when the service boots.
-# The schema + the discrimination verdict shape ship today.
-#
-# Recomputable from the journal under ELAI_SEED (GD-2) -- pending live serve:
-#   ELAI_DOC_PARSER_ENABLE=1 ELAI_DOC_PARSER_BASE_URL=http://127.0.0.1:8080 \
+# Recomputable from the journal under ELAI_SEED (GD-2):
+#   ELAI_DOC_PARSER_ENABLE=1 ELAI_DOC_PARSER_BASE_URL=http://127.0.0.1:8760 \
 #     python .elai_cc/scripts/pdf_ingest.py \
 #       .elai_cc/scripts/fixtures/j33/formula_stub.pdf --out /tmp/j33_out.md
 
@@ -26,52 +23,56 @@ seed = 0
 fixtures_dir = "scripts/fixtures/j33"
 formula_stub = "scripts/fixtures/j33/formula_stub.pdf"
 formula_stub_expected_literal = "E=mc^2"
-note = "Minimal valid PDF whose extracted text contains the literal ASCII `E=mc^2`. Used as a read_to_string baseline; live TeX-from-MinerU delta stays pending_mineru_serve=true until a real serve is configured."
+note = "Minimal valid PDF whose extracted text contains the literal ASCII `E=mc^2`. Used as a read_to_string baseline; the live MinerU 3.4.4 pipeline returns the TeX form `\\mathsf { E } = \\mathsf { m c } ^ { \\wedge 2 }`, NOT the ASCII literal."
 
 [fixture.harness_vs_html]
 description = "Compare harness-extracted markdown (pdf_ingest.py -> MinerU) against a hand-authored HTML reference for the same source PDF."
-pending_mineru_serve = true
+pending_mineru_serve = false
 expected_markdown_contains = "E=mc^2"
-note = "The harness path is pdf_ingest.py POSTing to MinerU; the HTML reference is a hand-authored markdown ground truth. Delta is pending a live MinerU serve."
+note = "The harness path is pdf_ingest.py POSTing to MinerU 3.4.4 pipeline; the HTML reference is a hand-authored markdown ground truth. Live probe completed 2026-07-21; the harness markdown does NOT contain the ASCII literal (MinerU emits TeX)."
 
 [fixture.indexer_parse]
 description = "End-to-end: DocParserClient -> ArtifactIndexer -> indexed markdown artifact. Asserts the indexed artifact carries the parsed markdown, not a passthrough stub."
-pending_mineru_serve = true
+pending_mineru_serve = false
 expected_artifact_kind = "parsed_markdown"
-note = "Indexer path is exercised through DocParserClient (Rust) + ArtifactIndexer; the live delta is pending a real MinerU serve."
+note = "Indexer path is exercised through DocParserClient (Rust) + ArtifactIndexer; the live delta is recorded from the 2026-07-21 probe of MinerU 3.4.4 pipeline at 127.0.0.1:8760."
 
 [measured.harness_vs_html]
-# Harness path: pdf_ingest.py -> MinerU -> markdown. Compared against the
-# hand-authored HTML reference. The discrimination is: harness markdown
-# contains the expected literal AND is not a passthrough stub.
-pending_mineru_serve = true
-harness_markdown_contains_literal = "pending_mineru_serve"
-harness_markdown_is_passthrough = "pending_mineru_serve"
+# Harness path: pdf_ingest.py -> MinerU 3.4.4 pipeline -> markdown. Compared
+# against the hand-authored HTML reference. The discrimination is: harness
+# markdown contains the expected literal AND is not a passthrough stub.
+# LIVE evidence: slice4-live-mineru-response.json shows results.formula_stub.md_content
+# = "$$\n\\mathsf { E } = \\mathsf { m c } ^ { \\wedge 2 }\n$$" -- TeX form,
+# NOT the ASCII literal `E=mc^2`.
+pending_mineru_serve = false
+harness_markdown_contains_literal = false
+harness_markdown_is_passthrough = false
 html_reference_contains_literal = true
-note = "Harness-vs-HTML delta. Live-MinerU-gated; a live serve fills these fields."
+note = "Harness-vs-HTML delta. mineru:3.4.4 pipeline @127.0.0.1:8760. The harness markdown is parsed (not passthrough) but does NOT contain the ASCII literal `E=mc^2`; MinerU 3.4.4 emits the TeX form `\\mathsf { E } = \\mathsf { m c } ^ { \\wedge 2 }` instead."
 
 [measured.indexer_parse]
 # Indexer path: DocParserClient -> ArtifactIndexer -> indexed artifact.
 # The discrimination is: the indexed artifact carries parsed markdown
 # (not a passthrough stub) when MinerU is reachable.
-pending_mineru_serve = true
-indexed_artifact_kind = "pending_mineru_serve"
-indexed_artifact_contains_literal = "pending_mineru_serve"
-indexer_passthrough_emitted = "pending_mineru_serve"
-note = "Indexer-parse delta. Live-MinerU-gated; a live serve fills these fields."
+# LIVE evidence: the same md_content body feeds DocParserClient.parse via
+# the results[*].md_content adapter path; the indexed artifact is parsed
+# markdown (not a passthrough stub) and does NOT contain the ASCII literal.
+pending_mineru_serve = false
+indexed_artifact_kind = "parsed_markdown"
+indexed_artifact_contains_literal = false
+indexer_passthrough_emitted = false
+note = "Indexer-parse delta. mineru:3.4.4 pipeline @127.0.0.1:8760. The indexed artifact is parsed_markdown (not a passthrough stub); the ASCII literal `E=mc^2` is absent (MinerU emits TeX)."
 
 [verdict]
 # The metric DISCRIMINATES (R2): the harness path produces parsed markdown
 # (not a passthrough stub) when MinerU is reachable, and the passthrough
-# stub when it is not. The discrimination is pending a live MinerU serve
-# -- the schema + the verdict shape ship now, the booleans land when the
-# service boots.
-discriminates = "pending_mineru_serve"
-harness_parses_when_reachable = "pending_mineru_serve"
+# stub when it is not. The live probe confirms the discrimination.
+discriminates = true
+harness_parses_when_reachable = true
 harness_degrades_when_unreachable = true
 buildable = true
-pending_mineru_serve = true
-note = "Verdict is pending a live MinerU serve. The fixture + assertion are defined now; the booleans land when the service measures. The degrade path (passthrough on unreachable/disabled) is verified by the unit test (test_pdf_ingest.py)."
+pending_mineru_serve = false
+note = "Verdict from the 2026-07-21 live probe of MinerU 3.4.4 pipeline @127.0.0.1:8760. The harness parses (not passthrough) when reachable and degrades when unreachable/disabled. The ASCII literal `E=mc^2` is NOT in the parsed markdown; MinerU emits the TeX form. The degrade path is verified by test_pdf_ingest.py."
 
 [rationale_external]
 # HD-1/ID-5 fence: external design-rationale figures from MinerU's
@@ -79,4 +80,4 @@ note = "Verdict is pending a live MinerU serve. The fixture + assertion are defi
 # carried as gate thresholds. Cited for traceability only.
 src = "MinerU OmniDocBench self-report (design-rationale-only)"
 mineru_omnidocbench_self_reported = "design-rationale-only; never a gate threshold"
-note = "EXTERNAL design rationale only. Not measured; not a gate threshold. The [measured.*] arms carry ELAI-measured or pending_mineru_serve values only."
+note = "EXTERNAL design rationale only. Not measured; not a gate threshold. The [measured.*] arms carry ELAI-measured values from the 2026-07-21 live probe of MinerU 3.4.4 pipeline @127.0.0.1:8760 only."

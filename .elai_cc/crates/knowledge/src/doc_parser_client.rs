@@ -144,27 +144,57 @@ pub enum DocParserError {
     Eligibility(#[from] ParseError),
 }
 
-/// MinerU `serve` `/file_parse` response shape. The Tier-1 wire only reads
-/// the `markdown` / `content` field; the rest is reserved for Tier-2.
-/// Field names accept the two common shapes the MinerU `serve` API emits:
-/// `markdown` (preferred) and `content` (legacy fallback).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MinerUFileParseResponse {
-    /// Parsed markdown body. Empty string when the backend produced no
-    /// flowing text (image-only scan).
+/// MinerU 3.4 `serve` `/file_parse` response entry under `results[<key>]`.
+/// The Tier-1 wire reads `md_content` (MinerU 3.4 shape) and falls back to
+/// `markdown` / `content` for older builds that emit those fields per-entry.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MinerUResultEntry {
+    /// MinerU 3.4 parsed markdown body. Preferred.
+    #[serde(default)]
+    pub md_content: String,
+    /// Older per-entry markdown field name.
     #[serde(default)]
     pub markdown: String,
-    /// Legacy field name some MinerU builds emit. Used only when `markdown`
-    /// is empty.
+    /// Legacy per-entry content field name.
+    #[serde(default)]
+    pub content: String,
+}
+
+/// MinerU `serve` `/file_parse` response shape. MinerU 3.4 emits
+/// `results[<file_key>].md_content`; older builds emitted top-level
+/// `markdown` / `content`. The adapter prefers the 3.4 shape and falls back
+/// to the legacy top-level fields for back-compat.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MinerUFileParseResponse {
+    /// MinerU 3.4 shape: map of `<file_key>` -> entry with `md_content`.
+    /// Empty map on older builds that emit top-level `markdown`/`content`.
+    #[serde(default)]
+    pub results: std::collections::BTreeMap<String, MinerUResultEntry>,
+    /// Legacy top-level markdown field (older MinerU builds).
+    #[serde(default)]
+    pub markdown: String,
+    /// Legacy top-level content field name some MinerU builds emit.
     #[serde(default)]
     pub content: String,
 }
 
 impl MinerUFileParseResponse {
-    /// Return the parsed markdown body, preferring `markdown` and falling
-    /// back to `content` for legacy MinerU `serve` builds.
+    /// Return the parsed markdown body, preferring `results[*].md_content`
+    /// (MinerU 3.4), then per-entry `markdown`/`content`, then legacy
+    /// top-level `markdown`/`content`.
     #[must_use]
     pub fn body(&self) -> &str {
+        for (_key, entry) in &self.results {
+            if !entry.md_content.is_empty() {
+                return &entry.md_content;
+            }
+            if !entry.markdown.is_empty() {
+                return &entry.markdown;
+            }
+            if !entry.content.is_empty() {
+                return &entry.content;
+            }
+        }
         if !self.markdown.is_empty() {
             &self.markdown
         } else {
@@ -280,10 +310,11 @@ impl DocParserClient {
 
         let form = reqwest::blocking::multipart::Form::new()
             .part(
-                "file",
+                "files",
                 reqwest::blocking::multipart::Part::bytes(file_bytes)
                     .file_name(file_name),
-            );
+            )
+            .text("backend", "pipeline");
 
         let url = format!("{}/file_parse", self.base_url);
         let resp = self
@@ -399,8 +430,45 @@ mod tests {
     }
 
     #[test]
-    fn mineru_response_body_prefers_markdown() {
+    fn mineru_response_body_prefers_results_md_content() {
+        let mut results = std::collections::BTreeMap::new();
+        results.insert(
+            "formula_stub".into(),
+            MinerUResultEntry {
+                md_content: "$$E=mc^2$$".into(),
+                ..Default::default()
+            },
+        );
         let r = MinerUFileParseResponse {
+            results,
+            markdown: "# legacy top".into(),
+            content: "legacy".into(),
+        };
+        assert_eq!(r.body(), "$$E=mc^2$$");
+    }
+
+    #[test]
+    fn mineru_response_body_falls_back_to_results_markdown() {
+        let mut results = std::collections::BTreeMap::new();
+        results.insert(
+            "k".into(),
+            MinerUResultEntry {
+                markdown: "# entry".into(),
+                ..Default::default()
+            },
+        );
+        let r = MinerUFileParseResponse {
+            results,
+            markdown: "# top".into(),
+            content: String::new(),
+        };
+        assert_eq!(r.body(), "# entry");
+    }
+
+    #[test]
+    fn mineru_response_body_falls_back_to_top_level_markdown() {
+        let r = MinerUFileParseResponse {
+            results: std::collections::BTreeMap::new(),
             markdown: "# Title".into(),
             content: "legacy".into(),
         };
@@ -408,8 +476,9 @@ mod tests {
     }
 
     #[test]
-    fn mineru_response_body_falls_back_to_content() {
+    fn mineru_response_body_falls_back_to_top_level_content() {
         let r = MinerUFileParseResponse {
+            results: std::collections::BTreeMap::new(),
             markdown: String::new(),
             content: "legacy body".into(),
         };
