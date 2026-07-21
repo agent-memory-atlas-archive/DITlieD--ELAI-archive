@@ -79,10 +79,6 @@ pub fn lookup(provider_id: &str, env_name: &str) -> Result<Option<SecretString>,
         .map(|s| SecretString::new(s.clone())))
 }
 
-// WIRE-DARK[J-30-T5] store's production consumer is the T5 `elai providers
-// configure` CLI flow (out of scope for T1 per task spec). Registered as a
-// deferred-wiring stub: the T5 slice wires this into the CLI configure
-// command. `lookup` is wired in this slice via anthropic.rs.
 pub fn store(provider_id: &str, key: &SecretString) -> Result<(), KeyStoreError> {
     let path = store_path()?;
     if let Some(parent) = path.parent() {

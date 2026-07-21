@@ -101,6 +101,20 @@ pub(crate) enum CliAction {
         target: Option<String>,
         output_format: CliOutputFormat,
     },
+    /// J-30 T5: `elai providers configure [--backend <name>]
+    /// [--key <key>] [--base-url <url>] [--model <model>]`. Direct
+    /// (non-REPL) invocation; the existing `/providers` slash command
+    /// (commands.rs) is listing-only and is NOT touched. Flags-shaped
+    /// struct lives in providers_cmd.rs; the args layer stays free of
+    /// any providers type dependency by carrying the four optional
+    /// strings verbatim.
+    Providers {
+        backend: Option<String>,
+        key: Option<String>,
+        base_url: Option<String>,
+        model: Option<String>,
+        output_format: CliOutputFormat,
+    },
     Skills {
         args: Option<String>,
         output_format: CliOutputFormat,
@@ -3071,6 +3085,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 Err(error) => Err(error.to_string()),
             }
         }
+        // J-30 T5: `elai providers configure [...]` -- direct local parse
+        // (FORK D: the existing /providers slash command is listing-only
+        // and is NOT touched). Sub-verb is `configure`; future subactions
+        // can extend parse_providers_subcommand_args. Handler at
+        // crates/cli/src/providers_cmd.rs.
+        "providers" => parse_providers_subcommand_args(&rest[1..], output_format),
         "skills" => Ok(CliAction::Skills {
             args: join_optional_args(&rest[1..]),
             output_format,
@@ -4164,6 +4184,66 @@ fn parse_wiring_coverage_subcommand_args(
 /// sub-verbs (e.g. compact, inspect) are out-of-scope; the parser errors out
 /// on unknown sub-verbs so a typo doesn't silently fall through to the
 /// fallback Prompt action.
+/// J-30 T5 -- `elai providers configure [--backend <name>] [--key <key>]
+/// [--base-url <url>] [--model <model>]`. Local parser (FORK D: not a
+/// slash command; the existing `/providers` slash command is listing-only
+/// and stays untouched). Supports both `--flag value` and `--flag=value`
+/// forms. Validation of the backend name / key requirement lives in the
+/// handler (providers_cmd.rs) so this layer stays free of any
+/// providers/orchestrator type dependency.
+pub(crate) fn parse_providers_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    if sub != "configure" {
+        return Err(format!(
+            "unknown `providers` sub-command: '{sub}' (expected 'configure')"
+        ));
+    }
+    let mut backend: Option<String> = None;
+    let mut key: Option<String> = None;
+    let mut base_url: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut i = 1;
+    while i < rest.len() {
+        let arg = rest[i].as_str();
+        let (flag, inline) = if let Some(eq) = arg.find('=') {
+            (&arg[..eq], Some(arg[eq + 1..].to_string()))
+        } else {
+            (arg, None)
+        };
+        let take_value =
+            |inline: Option<String>, i: &mut usize| -> Result<String, String> {
+                if let Some(v) = inline {
+                    Ok(v)
+                } else {
+                    let v = rest
+                        .get(*i + 1)
+                        .ok_or_else(|| format!("missing value for {flag}"))?
+                        .clone();
+                    *i += 1;
+                    Ok(v)
+                }
+            };
+        match flag {
+            "--backend" => backend = Some(take_value(inline, &mut i)?),
+            "--key" => key = Some(take_value(inline, &mut i)?),
+            "--base-url" => base_url = Some(take_value(inline, &mut i)?),
+            "--model" => model = Some(take_value(inline, &mut i)?),
+            _ => return Err(format!("unknown providers flag: {arg}")),
+        }
+        i += 1;
+    }
+    Ok(CliAction::Providers {
+        backend,
+        key,
+        base_url,
+        model,
+        output_format,
+    })
+}
+
 pub(crate) fn parse_archive_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
     let sub = rest.first().map(String::as_str).unwrap_or("");
     if sub != "verify" {

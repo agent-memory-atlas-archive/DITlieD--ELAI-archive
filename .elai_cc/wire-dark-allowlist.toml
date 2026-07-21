@@ -2182,25 +2182,26 @@ expiry_date       = "2026-09-01"
 promotion_plan_id = "J-18"
 smoke_test        = "crates/contracts/tests/j18_agentic_grep_repair_on_path.rs::agentic_grep_repair_gate_on_when_enabled"
 
-# J-30 T4 -- per-backend config descriptor API (config_descriptor.rs).
-# descriptor_for / descriptor_for_custom / satisfies are NEW pub symbols
-# whose canonical production consumer is the T5 `elai providers configure`
-# CLI flow (J-30 plan line 45-50, WIRING_CONTRACT line 118-119). T5 is
-# PLANNED but not yet dispatched; these symbols ship WIRE-DARK with the
-# T5 CLI configure flow as the promotion plan. The smoke_test names the
-# unit test (a) as the on-path placeholder until T5 lands the real CLI
-# configure smoke. The auditor re-runs production_caller_check.py over
-# the changeset; a DARK symbol without a WIRE-DARK row + allowlist entry
-# is a BLOCK. The three pub fns each carry the marker
-# `// WIRE-DARK[J-30-T5]` on the line above their definition (same shape
-# as key_store.rs:82).
+# J-30 T4/T5 -- per-backend config descriptor API (config_descriptor.rs)
+# + key_store::store (key_store.rs). descriptor_for /
+# descriptor_for_custom / satisfies are pub symbols whose production
+# consumer is the T5 `elai providers configure` CLI flow
+# (providers_cmd.rs::configure_with_factory), wired via
+# LiveCli::print_providers in live_cli.rs. key_store::store is the
+# fail-closed persist call on Ready/Degraded. The in-code WIRE-DARK
+# markers were removed when the production caller landed in T5; these
+# rows remain as the registered allowlist entries (mirroring the T4
+# shape) with smoke_test updated to the T5 providers_cmd tests that
+# exercise the real configure path end-to-end. The auditor re-runs
+# production_caller_check.py over the changeset; a DARK symbol without
+# a WIRE-DARK row + allowlist entry is a BLOCK.
 [[flag]]
 name              = "WIRE-DARK[J-30-T5]:config_descriptor::descriptor_for"
 type              = "experiment"
 owner             = "maintainer"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "J-30-T5"
-smoke_test        = "crates/providers/src/runtime/config_descriptor.rs::tests::descriptor_for_anthropic_api_requires_secret_api_key"
+smoke_test        = "crates/cli/src/providers_cmd.rs::tests::health_ready_stores_key_and_ok"
 
 [[flag]]
 name              = "WIRE-DARK[J-30-T5]:config_descriptor::descriptor_for_custom"
@@ -2208,7 +2209,7 @@ type              = "experiment"
 owner             = "maintainer"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "J-30-T5"
-smoke_test        = "crates/providers/src/runtime/config_descriptor.rs::tests::descriptor_for_custom_returns_owned_with_template_keys"
+smoke_test        = "crates/cli/src/providers_cmd.rs::tests::health_ready_stores_key_and_ok"
 
 [[flag]]
 name              = "WIRE-DARK[J-30-T5]:config_descriptor::satisfies"
@@ -2216,4 +2217,16 @@ type              = "experiment"
 owner             = "maintainer"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "J-30-T5"
-smoke_test        = "crates/providers/src/runtime/config_descriptor.rs::tests::satisfies_anthropic_api_with_empty_cfg_is_err_with_api_key_some_is_ok"
+smoke_test        = "crates/cli/src/providers_cmd.rs::tests::satisfies_missing_key_aborts_before_health_call"
+
+# J-30 T5 -- key_store::store (key_store.rs). The T1 slice shipped store
+# WIRE-DARK with the T5 configure flow as the promotion plan; T5 wires it
+# via providers_cmd.rs::configure_with_factory (Ready/Degraded branch).
+# Marker removed from key_store.rs:82 when the production caller landed.
+[[flag]]
+name              = "WIRE-DARK[J-30-T5]:key_store::store"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "J-30-T5"
+smoke_test        = "crates/cli/src/providers_cmd.rs::tests::health_ready_stores_key_and_ok"

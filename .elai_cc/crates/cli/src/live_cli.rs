@@ -2922,6 +2922,36 @@ impl LiveCli {
         Ok(())
     }
 
+    /// J-30 T5: render `elai providers configure` output to stdout. Thin
+    /// sync wrapper over `providers_cmd::handle_providers_configure`,
+    /// mirroring `print_runtime` (current-thread tokio runtime). The
+    /// handler owns the 5s health probe + fail-closed key_store::store.
+    pub(crate) fn print_providers(
+        backend: Option<String>,
+        key: Option<String>,
+        base_url: Option<String>,
+        model: Option<String>,
+    ) -> Result<(), anyhow::Error> {
+        let cwd = env::current_dir()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let flags = crate::providers_cmd::ConfigureFlags {
+            backend,
+            key,
+            base_url,
+            model,
+        };
+        let result = runtime.block_on(
+            crate::providers_cmd::handle_providers_configure(flags, &cwd),
+        );
+        match result {
+            Ok(out) => println!("{out}"),
+            Err(e) => println!("[FAIL] {e}"),
+        }
+        Ok(())
+    }
+
     pub(crate) fn print_mucoco(
         action: Option<&str>,
         file: Option<&str>,

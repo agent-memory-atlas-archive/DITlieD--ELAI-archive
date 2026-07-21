@@ -3,7 +3,7 @@
 //! Static `BackendConfigDescriptor` table keyed by `RuntimeBackend` for builtins,
 //! plus `descriptor_for_custom` for the runtime-loaded `CustomBackendSpec` overlay.
 //! Consumed by T5's CLI `configure` flow and the RuntimePanel form generator; this
-//! slice exposes the API only (WIRE-DARK[J-30-T5]). `satisfies()` is pure -- it
+//! slice exposes the API only. `satisfies()` is pure -- it
 //! checks `RuntimeFactoryConfig` fields only and does NOT re-resolve env vars; the
 //! caller is expected to populate `cfg.api_key` / `cfg.base_url` / `cfg.model`
 //! from env or `key_store::lookup` before calling.
@@ -70,10 +70,6 @@ pub struct BackendConfigDescriptor {
 /// Lookup the static descriptor for a builtin `RuntimeBackend`. Returns `None`
 /// for `RuntimeBackend::Custom` (callers must use `descriptor_for_custom` with
 /// the resolved `CustomBackendSpec`).
-// WIRE-DARK[J-30-T5] descriptor_for's production consumer is the T5
-// `elai providers configure` CLI flow (out of scope for T4 per task spec).
-// Registered as a deferred-wiring stub: the T5 slice wires this into the CLI
-// configure command.
 #[must_use]
 pub fn descriptor_for(backend: RuntimeBackend) -> Option<&'static BackendConfigDescriptor> {
     static TABLE: &[(&RuntimeBackend, &BackendConfigDescriptor)] = &[
@@ -114,10 +110,6 @@ pub fn descriptor_for(backend: RuntimeBackend) -> Option<&'static BackendConfigD
 /// spec.api_key_ref / spec.base_url from the `CustomBackendSpec` it already
 /// holds. This avoids `Box::leak` and avoids inventing a `ConfigKeyOwned` /
 /// `Vec` unification in this slice (S2 FORK 3 option A).
-// WIRE-DARK[J-30-T5] descriptor_for_custom's production consumer is the T5
-// `elai providers configure` CLI flow (out of scope for T4 per task spec).
-// Registered as a deferred-wiring stub: the T5 slice wires this into the CLI
-// configure command.
 #[must_use]
 pub fn descriptor_for_custom(spec: &CustomBackendSpec) -> BackendConfigDescriptor {
     let _ = spec;
@@ -137,10 +129,6 @@ pub fn descriptor_for_custom(spec: &CustomBackendSpec) -> BackendConfigDescripto
 /// `cfg.api_key` / `cfg.base_url` / `cfg.model` from env or `key_store`
 /// before calling. Returns the first missing required key, or `Ok(())` if
 /// all required keys are satisfied.
-// WIRE-DARK[J-30-T5] satisfies's production consumer is the T5
-// `elai providers configure` CLI flow (out of scope for T4 per task spec).
-// Registered as a deferred-wiring stub: the T5 slice wires this into the CLI
-// configure command.
 pub fn satisfies(
     descriptor: &BackendConfigDescriptor,
     cfg: &RuntimeFactoryConfig,

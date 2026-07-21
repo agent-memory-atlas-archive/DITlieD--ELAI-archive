@@ -515,6 +515,11 @@ mod eval_corpus_ingest_cmd;
 mod rl_train_cmd;
 mod runtime_client;
 mod runtime_cmd;
+// J-30 T5: `elai providers configure [...]` -- BYOK key entry + live
+// health_check + key_store::store on success. Mirrors runtime_cmd shape
+// (tokio current-thread runtime, 5s health probe timeout, fail-closed
+// store on Unavailable). Handler at crates/cli/src/providers_cmd.rs.
+mod providers_cmd;
 // D-2: `elai ppm health` — three-step PPM sidecar health probe
 // (TCP -> /health -> canary /v1/ppm/score). Sync entrypoint owning a
 // tokio current-thread runtime (mirrors archive_verify::run).
@@ -697,6 +702,11 @@ fn run() -> Result<(), anyhow::Error> {
             // B-37D Phase 4M: text-only output for now; JSON shaping deferred to
             // when RuntimeOrchestrator::health_snapshot lands (Wave-1B).
             LiveCli::print_runtime(action.as_deref(), role.as_deref(), target.as_deref())?;
+        }
+        CliAction::Providers { backend, key, base_url, model, output_format: _ } => {
+            // J-30 T5: text-only output; JSON shaping deferred. The handler
+            // owns the tokio current-thread runtime + 5s health probe.
+            LiveCli::print_providers(backend, key, base_url, model)?;
         }
         CliAction::Skills { args, output_format } => LiveCli::print_skills(args.as_deref(), output_format)?,
         CliAction::PrintSystemPrompt { cwd, date, output_format } => print_system_prompt(cwd, date, output_format)?,
