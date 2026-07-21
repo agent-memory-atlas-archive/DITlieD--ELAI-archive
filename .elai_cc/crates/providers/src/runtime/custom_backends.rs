@@ -20,6 +20,7 @@ use serde::Deserialize;
 
 use super::anthropic_api::AnthropicApiRuntime;
 use super::azure_openai::normalize_finish_reason;
+use super::event_sink::{RuntimeEvent, runtime_event_sink};
 use super::secret::SecretString;
 use super::types::{
     unavailable, AuthSource, CompletionConfig, CompletionResponse, Message, MessageRole,
@@ -150,6 +151,7 @@ pub fn register_custom_backends(
 ) -> Result<(), CustomBackendError> {
     let map: BTreeMap<String, CustomBackendSpec> =
         specs.into_iter().map(|s| (s.name.clone(), s)).collect();
+    let names: Vec<String> = map.keys().cloned().collect();
     let mut guard = registry().lock().expect("custom_backends registry lock");
     if guard.is_some() {
         tracing::warn!(
@@ -159,6 +161,12 @@ pub fn register_custom_backends(
         return Ok(());
     }
     *guard = Some(map);
+    for name in names {
+        runtime_event_sink().record(RuntimeEvent::CustomBackendRegistered {
+            backend: name,
+            ok: true,
+        });
+    }
     Ok(())
 }
 

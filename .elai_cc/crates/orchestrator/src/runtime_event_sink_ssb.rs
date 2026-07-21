@@ -19,9 +19,9 @@ use elai_providers::runtime::{
 use tracing::warn;
 
 use crate::ssb::{
-    CliSubprocessKilledPayload, CliSubprocessSpawnedPayload, RuntimeColdStartObservedPayload,
-    RuntimeFallbackPayload, RuntimeHealthChangedPayload, SglangBackendRegisteredPayload, Ssb,
-    SsbPayload,
+    CliSubprocessKilledPayload, CliSubprocessSpawnedPayload, ProviderByokEventKind,
+    ProviderByokEventPayload, RuntimeColdStartObservedPayload, RuntimeFallbackPayload,
+    RuntimeHealthChangedPayload, SglangBackendRegisteredPayload, Ssb, SsbPayload,
 };
 
 /// SSB-backed `RuntimeEventSink`. Holds an `Arc<Ssb>` and pushes each
@@ -153,6 +153,14 @@ fn runtime_event_to_payload(event: RuntimeEvent) -> Option<SsbPayload> {
             SsbPayload::RuntimeColdStartObserved(RuntimeColdStartObservedPayload {
                 backend_name_hash,
                 elapsed_ms,
+                ts_ms: now_ms_i64(),
+            })
+        }
+        RuntimeEvent::CustomBackendRegistered { backend, ok } => {
+            SsbPayload::ProviderByokEvent(ProviderByokEventPayload {
+                backend,
+                kind: ProviderByokEventKind::CustomBackendRegistered,
+                ok,
                 ts_ms: now_ms_i64(),
             })
         }
@@ -319,6 +327,23 @@ mod tests {
                 assert_eq!(p.elapsed_ms, 1500);
             }
             other => panic!("expected RuntimeColdStartObserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_backend_registered_converts_to_ssbpayload() {
+        let event = RuntimeEvent::CustomBackendRegistered {
+            backend: "my-custom-llm".into(),
+            ok: true,
+        };
+        let payload = runtime_event_to_payload(event).expect("payload");
+        match payload {
+            SsbPayload::ProviderByokEvent(p) => {
+                assert_eq!(p.backend, "my-custom-llm");
+                assert_eq!(p.kind, ProviderByokEventKind::CustomBackendRegistered);
+                assert!(p.ok);
+            }
+            other => panic!("expected ProviderByokEvent, got {other:?}"),
         }
     }
 }

@@ -81,6 +81,14 @@ pub enum RuntimeEvent {
         backend: RuntimeBackend,
         elapsed_ms: u64,
     },
+    /// J-30 T7r — custom_providers.toml backend registration
+    /// observability; mapped by orchestrator `SsbRuntimeEventSink` to
+    /// `ProviderByokEventKind::CustomBackendRegistered`. `backend` is
+    /// the registered name only; NO key material is carried.
+    CustomBackendRegistered {
+        backend: String,
+        ok: bool,
+    },
 }
 
 /// Object-safe sink consumed by the runtime layer. The orchestrator
@@ -247,6 +255,15 @@ mod tests {
             argv_redacted: vec![],
         });
         // No panic, nothing observable.
+    }
+
+    #[test]
+    fn noop_sink_swallows_custom_backend_registered() {
+        let sink = NoopRuntimeEventSink;
+        sink.record(RuntimeEvent::CustomBackendRegistered {
+            backend: "acme-vllm".to_string(),
+            ok: true,
+        });
     }
 
     #[test]
