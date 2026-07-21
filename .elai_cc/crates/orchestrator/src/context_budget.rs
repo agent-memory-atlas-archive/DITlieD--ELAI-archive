@@ -321,6 +321,19 @@ pub struct ModelCapabilityProfile {
     /// false for PROJECTED rows — numbers are estimates, not measurements.
     pub measured: bool,
     pub quant_format: String,
+    /// J-34: measured fill-degradation curve (verified-outcome rate vs
+    /// context-window fill). `None` = no calibration artifact for this
+    /// model; the runtime falls back to `CLOUD_TRIM_FRACTION` / the env
+    /// constant and LOGS that fallback (no silent pseudo-calibration).
+    pub fill_degradation_curve: Option<crate::context_calibration::FillDegradationCurve>,
+    /// J-34: measured positional-value curve (constraint recall vs depth).
+    /// `None` = no calibration artifact; the 3E slot allocator uses today's
+    /// fixed slot order.
+    pub positional_value_curve: Option<crate::context_calibration::PositionalValueCurve>,
+    /// J-34: calibrated trim fraction derived from `fill_degradation_curve`'s
+    /// knee. `None` = no knee (flat curve) or no artifact; `trim_threshold`
+    /// (context_policy.rs:223) falls back to the folklore fraction.
+    pub calibrated_trim_fraction: Option<f64>,
 }
 
 impl ModelCapabilityProfile {
@@ -366,6 +379,9 @@ impl ModelCapabilityProfile {
             steering_viable: false,
             measured: true,
             quant_format: "NF4+FA2".to_string(),
+            fill_degradation_curve: None,
+            positional_value_curve: None,
+            calibrated_trim_fraction: None,
         }
     }
 
@@ -410,6 +426,9 @@ impl ModelCapabilityProfile {
             steering_viable: false,
             measured: true,
             quant_format: "NF4+FA2".to_string(),
+            fill_degradation_curve: None,
+            positional_value_curve: None,
+            calibrated_trim_fraction: None,
         }
     }
 
@@ -461,6 +480,9 @@ impl ModelCapabilityProfile {
             steering_viable: false,
             measured: false,
             quant_format: "FP16".to_string(),
+            fill_degradation_curve: None,
+            positional_value_curve: None,
+            calibrated_trim_fraction: None,
         }
     }
 
@@ -509,6 +531,9 @@ impl ModelCapabilityProfile {
             steering_viable: false,
             measured: false,
             quant_format: "NF4+FA2".to_string(),
+            fill_degradation_curve: None,
+            positional_value_curve: None,
+            calibrated_trim_fraction: None,
         }
     }
 
@@ -553,6 +578,9 @@ impl ModelCapabilityProfile {
             steering_viable: false,
             measured: false,
             quant_format: "NF4+FA2".to_string(),
+            fill_degradation_curve: None,
+            positional_value_curve: None,
+            calibrated_trim_fraction: None,
         }
     }
 
@@ -597,6 +625,9 @@ impl ModelCapabilityProfile {
             steering_viable: false,
             measured: false,
             quant_format: "AWQ-Marlin+FA2+FP8KV".to_string(),
+            fill_degradation_curve: None,
+            positional_value_curve: None,
+            calibrated_trim_fraction: None,
         }
     }
 
@@ -637,6 +668,9 @@ impl ModelCapabilityProfile {
             steering_viable: false,
             measured: false,
             quant_format: "AWQ-Marlin+FA2+FP8KV".to_string(),
+            fill_degradation_curve: None,
+            positional_value_curve: None,
+            calibrated_trim_fraction: None,
         }
     }
 
@@ -677,6 +711,9 @@ impl ModelCapabilityProfile {
             steering_viable: false,
             measured: false,
             quant_format: "AWQ-Marlin+FA2+FP8KV".to_string(),
+            fill_degradation_curve: None,
+            positional_value_curve: None,
+            calibrated_trim_fraction: None,
         }
     }
 
@@ -849,23 +886,80 @@ impl CumulativeTokenTracker {
     /// never zero. Updates `effective_ceiling` to stay in sync (the
     /// `resolve_effective_ceiling` policy is min(vram, attention); we
     /// recompute manually since this function does not own the vram input).
+    ///
+    /// Thin wrapper over [`Self::recalibrate_budget_with_calibration`] with
+    /// no store, no identity, no artifact — the legacy no-calibration path.
     pub fn recalibrate_budget(&self, profile: &mut ModelCapabilityProfile) {
+        self.recalibrate_budget_with_calibration(profile, None, None, None);
+    }
+
+    /// J-34 leg-2 seam — recalibrate the runtime profile AND apply a
+    /// calibration artifact (or invalidate a stale one). This is the
+    /// production caller of `context_calibration::apply_to_profile`,
+    /// `CalibrationArtifact::from_curves`, and
+    /// `CalibrationArtifactStore::invalidate`; the bench arm and the
+    /// runtime recalibrate path both go through here.
+    ///
+    /// 1. ALWAYS runs the expansion-only attention-ceiling clamp first
+    ///    (the body previously inlined in `recalibrate_budget`), so the
+    ///    attention ceiling stays monotone regardless of calibration state.
+    /// 2. If `artifact` is `Some`, applies it to `profile` via
+    ///    [`crate::context_calibration::apply_to_profile`] (sets
+    ///    `calibrated_trim_fraction` from the knee + copies the curves).
+    /// 3. If `artifact` is `None` and `profile.fill_degradation_curve` is
+    ///    `Some`, rebuilds a transient artifact from the profile's curves
+    ///    via [`crate::context_calibration::CalibrationArtifact::from_curves`]
+    ///    and applies it — the re-calibration path for a profile that
+    ///    already carries curves but whose caller did not pre-lookup the
+    ///    store artifact. The transient artifact uses a placeholder
+    ///    identity_key and produced_at_secs=0; only the knee + curves
+    ///    affect the profile.
+    /// 4. If `artifact` is `None` and both `store` and `identity` are
+    ///    `Some`, invalidates any stale artifact for this identity via
+    ///    [`crate::context_calibration::CalibrationArtifactStore::invalidate`]
+    ///    so the next lookup falls back to folklore constants until a fresh
+    ///    bench runs (G-10 model-drift invalidation path). The caller logs
+    ///    the fallback (J-34 NEGATIVE contract: no silent pseudo-calibration).
+    ///
+    /// `store` is `&mut` so `invalidate` can mutate; `artifact` is borrowed
+    /// read-only. The two are independent: a caller may pass a pre-looked-up
+    /// artifact with `store=None`, or pass `store` + `identity` with
+    /// `artifact=None` to trigger invalidation without a prior lookup.
+    pub fn recalibrate_budget_with_calibration(
+        &self,
+        profile: &mut ModelCapabilityProfile,
+        store: Option<&mut crate::context_calibration::CalibrationArtifactStore>,
+        identity: Option<&str>,
+        artifact: Option<&crate::context_calibration::CalibrationArtifact>,
+    ) {
         let desired = self
             .last_response_prompt
             .saturating_add(RECALIBRATE_PROMPT_MARGIN_TOKENS);
         let desired_usize = usize::try_from(desired).unwrap_or(usize::MAX);
-        // Expansion-only clamp + absolute floor.
         let new_ceiling = profile
             .attention_ceiling
             .max(desired_usize)
             .max(RECALIBRATE_MIN_CEILING);
         profile.attention_ceiling = new_ceiling;
-        // Keep effective_ceiling in sync without re-deriving vram input.
         match (profile.in_vram_ceiling, profile.attention_ceiling) {
             (0, 0) => {}
             (0, a) => profile.effective_ceiling = a,
             (v, 0) => profile.effective_ceiling = v,
             (v, a) => profile.effective_ceiling = v.min(a),
+        }
+        if let Some(art) = artifact {
+            crate::context_calibration::apply_to_profile(art, profile);
+        } else if let Some(fill) = profile.fill_degradation_curve.clone() {
+            let pos = profile.positional_value_curve.clone().unwrap_or_default();
+            let rebuilt = crate::context_calibration::CalibrationArtifact::from_curves(
+                String::new(),
+                fill,
+                pos,
+                0,
+            );
+            crate::context_calibration::apply_to_profile(&rebuilt, profile);
+        } else if let (Some(s), Some(id)) = (store, identity) {
+            s.invalidate(id);
         }
     }
 
@@ -981,6 +1075,77 @@ mod cumulative_token_tracker_tests {
             "stub_ban: recalibrate_budget MUST clamp to >= 4096"
         );
         assert!(profile.attention_ceiling > 0, "never 0");
+    }
+
+    #[test]
+    fn recalibrate_with_calibration_applies_knee_artifact() {
+        use crate::context_calibration::{
+            apply_to_profile, CalibrationArtifact, CalibrationArtifactStore,
+            FillDegradationCurve, FillSample, PositionalValueCurve,
+        };
+        let mut profile = ModelCapabilityProfile::micro_7b_12gb();
+        assert!(profile.calibrated_trim_fraction.is_none());
+        let curve = FillDegradationCurve {
+            samples: vec![
+                FillSample { fill_fraction: 0.10, outcome_rate: 1.00 },
+                FillSample { fill_fraction: 0.50, outcome_rate: 0.95 },
+                FillSample { fill_fraction: 0.67, outcome_rate: 0.60 },
+                FillSample { fill_fraction: 0.85, outcome_rate: 0.30 },
+            ],
+        };
+        let art = CalibrationArtifact::from_curves(
+            "id-knee".to_string(),
+            curve,
+            PositionalValueCurve::default(),
+            1_700_000_000,
+        );
+        let t = CumulativeTokenTracker::new();
+        t.recalibrate_budget_with_calibration(
+            &mut profile,
+            None,
+            None,
+            Some(&art),
+        );
+        let frac = profile.calibrated_trim_fraction
+            .expect("knee artifact must set calibrated_trim_fraction");
+        assert!((frac - 0.50).abs() < 1e-6, "trim fraction = knee fill 0.50, got {}", frac);
+        assert!(profile.fill_degradation_curve.is_some());
+        // Reference: direct apply_to_profile must agree.
+        let mut direct = ModelCapabilityProfile::micro_7b_12gb();
+        apply_to_profile(&art, &mut direct);
+        assert_eq!(profile.calibrated_trim_fraction, direct.calibrated_trim_fraction);
+    }
+
+    #[test]
+    fn recalibrate_with_calibration_invalidates_stale_on_none_artifact() {
+        use crate::context_calibration::{
+            CalibrationArtifact, CalibrationArtifactStore,
+            FillDegradationCurve, FillSample, PositionalValueCurve,
+        };
+        let mut store = CalibrationArtifactStore::new();
+        let art = CalibrationArtifact::from_curves(
+            "id-stale".to_string(),
+            FillDegradationCurve {
+                samples: vec![
+                    FillSample { fill_fraction: 0.1, outcome_rate: 1.0 },
+                    FillSample { fill_fraction: 0.5, outcome_rate: 0.5 },
+                ],
+            },
+            PositionalValueCurve::default(),
+            1_700_000_000,
+        );
+        store.insert(art);
+        assert!(store.get("id-stale").is_some());
+        let mut profile = ModelCapabilityProfile::micro_7b_12gb();
+        let t = CumulativeTokenTracker::new();
+        t.recalibrate_budget_with_calibration(
+            &mut profile,
+            Some(&mut store),
+            Some("id-stale"),
+            None,
+        );
+        assert!(store.get("id-stale").is_none(), "invalidate must drop the stale artifact");
+        assert!(profile.calibrated_trim_fraction.is_none(), "no pseudo-calibration on None");
     }
 }
 
@@ -3132,6 +3297,9 @@ mod tests {
             steering_viable: false,
             measured: false,
             quant_format: "NF4+FA2".to_string(),
+            fill_degradation_curve: None,
+            positional_value_curve: None,
+            calibrated_trim_fraction: None,
         };
         // With both ceilings=0 and default weights, should match compute() output.
         let b1 = ContextBudget::compute(8192, [100, 200, 300], 2000).unwrap();

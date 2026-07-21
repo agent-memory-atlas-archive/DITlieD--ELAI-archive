@@ -169,6 +169,12 @@ pub mod cloud_mode;
 // workflow/reasoning/E-39-decisions.md.
 pub mod cost;
 pub mod context_budget;
+// J-34: empirical context calibration — per-model fill-degradation curve,
+// knee detection, artifact store keyed by ModelIdentity::identity_key.
+// Consumed by context_budget::recalibrate_budget_with_calibration (leg 2)
+// and the 3E slot allocator (leg 3). Option fields on ModelCapabilityProfile
+// absent = today's folklore-constant behavior.
+pub mod context_calibration;
 // H-50: regime-aware in-session context management.
 // Single effective_context_window truth + ContextPolicy-by-BackendMode.
 // LOCAL: trim at 75% of real window via compaction ladder; CLOUD: 85% cache-
