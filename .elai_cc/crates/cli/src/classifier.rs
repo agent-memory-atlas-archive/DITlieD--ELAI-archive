@@ -1,75 +1,20 @@
 // A-47: Bare-message fallback classifier for routing unslashed user input.
-// Uses str-based pattern matching (no regex crate in cli/).
-// Hot path — all bare messages pass through this.
+// J-32: the T1 matcher logic now lives in elai_orchestrator::front_door (the
+// single classifier of record). This module is a thin facade: it calls the
+// shared matchers from front_door and maps onto SlashCommand. When
+// ELAI_FRONT_DOOR_ENABLE is OFF the public behavior is bit-identical to the
+// pre-J-32 classifier; when ON it routes via FrontDoorRouter::resolve.
 
 use crate::commands::SlashCommand;
+use elai_orchestrator::front_door::{
+    self, FrontDoorDecision, FrontDoorLane, FrontDoorRouter,
+};
 
-/// Action verbs that indicate a task-mode intent.
-const ACTION_VERBS: &[&str] = &[
-    "implement",
-    "fix",
-    "add",
-    "create",
-    "modify",
-    "refactor",
-    "build",
-    "write",
-];
-
-/// Question prefixes that indicate an inquiry.
-const QUESTION_PREFIXES: &[&str] = &[
-    "how", "what", "why", "when", "does", "is", "can", "compare", "explain",
-];
-
-/// Phrases indicating code-modification intent (negates pure-question routing).
-const CODE_INTENT_PHRASES: &[&str] = &[
-    "make it",
-    "change",
-    "update the code",
-];
-
-/// Check if input contains an action verb as a word boundary match.
-/// Words are delimited by whitespace; we compare lowercase tokens.
-fn has_action_verb(input: &str) -> bool {
-    let lower = input.to_lowercase();
-    lower.split_whitespace().any(|word| {
-        let stripped = word.trim_end_matches(|c: char| c.is_ascii_punctuation());
-        ACTION_VERBS.iter().any(|verb| stripped == *verb)
-    })
-}
-
-/// Check if input looks like a question (ends with '?' or starts with a question word).
-fn has_question(input: &str) -> bool {
-    let trimmed = input.trim();
-    if trimmed.ends_with('?') {
-        return true;
-    }
-    let lower = trimmed.to_lowercase();
-    let first_word = lower.split_whitespace().next().unwrap_or_default();
-    QUESTION_PREFIXES.iter().any(|prefix| first_word == *prefix)
-}
-
-/// Check if input contains code-modification intent phrases.
-fn has_code_intent(input: &str) -> bool {
-    let lower = input.to_lowercase();
-    CODE_INTENT_PHRASES.iter().any(|phrase| lower.contains(phrase))
-}
-
-/// Check if input references a project entity known to the DKG.
-///
-/// `known_names` is a slice of project-known identifiers (file names, function names,
-/// module names) extracted from the DKG index. If empty (DKG unavailable), this
-/// returns `false` — graceful degradation per spec.
-fn has_project_ref(input: &str, known_names: &[&str]) -> bool {
-    if known_names.is_empty() {
-        return false;
-    }
-    let lower = input.to_lowercase();
-    known_names.iter().any(|name| {
-        let name_lower = name.to_lowercase();
-        lower.contains(&name_lower)
-    })
-}
+// Re-export the shared matcher primitives so existing direct callers (and
+// tests) keep compiling without a parallel heuristic.
+pub use elai_orchestrator::front_door::{
+    has_action_verb, has_code_intent, has_project_ref, has_question,
+};
 
 /// Classify a bare (non-slash-prefixed) message into a routed SlashCommand.
 ///
@@ -79,8 +24,54 @@ fn has_project_ref(input: &str, known_names: &[&str]) -> bool {
 /// 3. `HAS_QUESTION && !HAS_CODE_INTENT && !HAS_PROJECT_REF` → `/research`
 /// 4. default → `/task`
 ///
-/// `known_names`: project-known identifiers from DKG. Pass `&[]` if DKG unavailable.
+/// `known_names`: project-known identifiers from DKG. Pass `&[]` if DKG
+/// unavailable.
+///
+/// When `ELAI_FRONT_DOOR_ENABLE` is set, the FrontDoorRouter drives the
+/// decision and the lane is mapped onto SlashCommand. The route table is
+/// preserved (Fix lane maps to Task for SlashCommand parity since
+/// SlashCommand has no Fix variant).
 pub fn classify_bare_message(input: &str, known_names: &[&str]) -> SlashCommand {
+    if front_door::enabled() {
+        let decision = FrontDoorRouter.resolve(input, known_names, &[]);
+        return map_decision_to_slash_command(&decision, input);
+    }
+
+    // Kill-switch OFF: exact pre-J-32 behavior using the shared matchers.
+    classify_bare_message_legacy(input, known_names)
+}
+
+/// Map a FrontDoorDecision onto SlashCommand. The router's lane enum is the
+/// closed set; SlashCommand is the existing route target. Fix maps to Task
+/// (SlashCommand has no Fix variant; the existing classifier routed "fix" to
+/// Task, so this preserves parity).
+fn map_decision_to_slash_command(decision: &FrontDoorDecision, input: &str) -> SlashCommand {
+    match decision.lane {
+        FrontDoorLane::Task | FrontDoorLane::Fix => SlashCommand::Task {
+            description: Some(input.to_string()),
+            surgical: false,
+            new_project: false,
+            via_mcp: false,
+        },
+        FrontDoorLane::Research => SlashCommand::Research {
+            question: Some(input.to_string()),
+        },
+        FrontDoorLane::Explore => SlashCommand::Explore {
+            target: Some(input.to_string()),
+            via_mcp: false,
+        },
+        FrontDoorLane::Chat => SlashCommand::Task {
+            description: Some(input.to_string()),
+            surgical: false,
+            new_project: false,
+            via_mcp: false,
+        },
+    }
+}
+
+/// Pre-J-32 route table using the shared matchers (identical behavior to the
+/// classifier.rs that shipped before J-32).
+fn classify_bare_message_legacy(input: &str, known_names: &[&str]) -> SlashCommand {
     let action = has_action_verb(input);
     let question = has_question(input);
     let code_intent = has_code_intent(input);
@@ -91,9 +82,6 @@ pub fn classify_bare_message(input: &str, known_names: &[&str]) -> SlashCommand 
             description: Some(input.to_string()),
             surgical: false,
             new_project: false,
-            // C-39: classifier-driven routing defaults via_mcp to false.
-            // The flag is set explicitly by the user via /task --via-mcp;
-            // the classifier never opts in on the user's behalf.
             via_mcp: false,
         };
     }
@@ -111,7 +99,6 @@ pub fn classify_bare_message(input: &str, known_names: &[&str]) -> SlashCommand 
         };
     }
 
-    // Default: treat as task.
     SlashCommand::Task {
         description: Some(input.to_string()),
         surgical: false,
@@ -145,7 +132,6 @@ mod tests {
     #[test]
     fn question_with_code_intent_routes_to_task() {
         let result = classify_bare_message("change how does this work?", &[]);
-        // "change" is a code_intent phrase, so even with a question, it falls to default task
         assert!(matches!(result, SlashCommand::Task { .. }));
     }
 
@@ -165,7 +151,6 @@ mod tests {
 
     #[test]
     fn empty_dkg_degrades_gracefully() {
-        // With no known names, project_ref is always false
         let result = classify_bare_message("how does auth_module handle tokens?", &[]);
         assert!(matches!(result, SlashCommand::Research { .. }));
     }
@@ -178,14 +163,12 @@ mod tests {
 
     #[test]
     fn action_verb_takes_priority_over_question() {
-        // "fix" is action verb, "?" makes it a question too, but action wins
         let result = classify_bare_message("fix the broken tests?", &[]);
         assert!(matches!(result, SlashCommand::Task { .. }));
     }
 
     #[test]
     fn action_verb_with_trailing_punctuation() {
-        // "fix!" should still match after stripping punctuation
         let result = classify_bare_message("fix! how does this work?", &[]);
         assert!(matches!(result, SlashCommand::Task { .. }));
     }

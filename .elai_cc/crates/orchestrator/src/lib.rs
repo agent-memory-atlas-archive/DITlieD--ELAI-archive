@@ -133,6 +133,7 @@ pub mod sandbox;
 // bash/file/network operation runs. See `sandbox_policy.rs` for the
 // allow/deny decision matrix.
 pub mod sandbox_policy;
+pub mod front_door;
 pub mod bsp;
 mod bash;
 pub mod checkpoint;
