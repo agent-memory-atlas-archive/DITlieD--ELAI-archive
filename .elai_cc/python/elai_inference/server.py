@@ -2598,11 +2598,18 @@ class InferenceEngine:
         temperature: float = 0.0,
         response_format: Optional[Dict[str, Any]] = None,
         seed: Optional[int] = None,
+        marker_boundary: Optional[int] = None,
     ) -> tuple[TextIteratorStreamer, int]:
         """Start streaming generation in a background thread.
 
         Returns (streamer, input_token_count). The caller iterates the
         streamer to get token chunks as they are produced.
+
+        J-36: cache_read_tokens / cache_creation_tokens are attached as
+        attributes on the returned streamer (streamer.cache_read_tokens,
+        streamer.cache_creation_tokens) so the SSE layer can surface them
+        in message_start / message_delta usage without changing the return
+        tuple shape (preserves existing callers including test_seed.py).
 
         response_format (Phase B): when set + LMFE installed, enforces a JSON
         schema constraint on every token via prefix_allowed_tokens_fn. The
@@ -2616,6 +2623,11 @@ class InferenceEngine:
         under ``torch.inference_mode()``. Errors during ``set_seed`` /
         ``manual_seed`` propagate via the thread's future (no silent
         fallback — A6 brief constraint).
+
+        marker_boundary (J-36): Anthropic cache_control marker boundary,
+        threaded into PrefixKVCache.lease so the streaming path can reuse
+        a frozen-head KV prefix. Mirrors the non-streaming lease block in
+        _generate_impl.
         """
         max_tokens = max_tokens or self.max_new_tokens
         formatted = self._format_prompt(prompt)
@@ -2636,23 +2648,76 @@ class InferenceEngine:
         # is None or LMFE is unavailable; we only attach to kwargs when valid.
         prefix_fn = self._build_constrained_prefix_fn(response_format)
 
+        # J-36: Prefix KV cache lease on the streaming path.
+        # _prefix_kv_cache is None when TQ is active or cache disabled.
+        # FH-3: when marker_boundary is set, the lease keys on the head
+        # boundary and is NOT gated by input_token_count <= PREFILL_CHUNK_SIZE;
+        # the tail beyond the head goes through _chunked_prefill as new tokens.
+        # When marker_boundary is None, preserve the legacy gate (whole input
+        # must fit one chunk) to match the non-streaming path's C-A invariant.
+        cache_read_tokens = 0
+        cache_creation_tokens = 0
+        prefix_cache_hit = False
+        _prefix_cache = None
+        _prefix_len = 0
+        if _prefix_kv_cache is not None:
+            _lease_eligible = (
+                marker_boundary is not None
+                or input_token_count <= self.PREFILL_CHUNK_SIZE
+            )
+            if _lease_eligible:
+                _prefix_cache, _prefix_len, _total_len = _prefix_kv_cache.lease(
+                    inputs.input_ids[0],
+                    marker_boundary=marker_boundary,
+                )
+                if _prefix_cache is not None:
+                    prefix_cache_hit = True
+                    cache_read_tokens = _prefix_len
+                    logger.info(
+                        "prefix_cache_hit_streaming",
+                        prefix_len=_prefix_len,
+                        total_len=_total_len,
+                        marker_boundary=marker_boundary,
+                    )
+
+        # Build gen_input_ids / past_kv / gen_attention_mask.
+        # When prefix_cache_hit, reuse the proven crop-to-_prefix_len-1
+        # invariant from _generate_impl (RoPE/mask correctness fix).
+        # When input > PREFILL_CHUNK_SIZE without a hit, use _chunked_prefill.
+        past_kv = None
+        if prefix_cache_hit:
+            _prefix_cache.crop(_prefix_len - 1)
+            gen_input_ids = inputs.input_ids[:, _prefix_len - 1:]
+            gen_attention_mask = inputs.attention_mask
+            past_kv = _prefix_cache
+        elif input_token_count > self.PREFILL_CHUNK_SIZE:
+            past_kv = self._chunked_prefill(
+                inputs.input_ids, inputs.attention_mask,
+            )
+            gen_input_ids = inputs.input_ids[:, -1:]
+            gen_attention_mask = inputs.attention_mask
+        else:
+            gen_input_ids = inputs.input_ids
+            gen_attention_mask = inputs.attention_mask
+
         # E-28: StreamingLLM attention-sink masking (env-gated, default off).
         # Applied to the prefill attention_mask before generate; no-op when
-        # ELAI_STREAMING_LLM_SINKS is unset/0. The streaming path does not
-        # use chunked prefill, so the mask covers the full input sequence.
-        stream_attention_mask = self._apply_streaming_llm_if_active(
-            inputs.attention_mask, context_position=input_token_count,
+        # ELAI_STREAMING_LLM_SINKS is unset/0.
+        gen_attention_mask = self._apply_streaming_llm_if_active(
+            gen_attention_mask, context_position=input_token_count,
         )
 
         generation_kwargs = {
-            "input_ids": inputs.input_ids,
-            "attention_mask": stream_attention_mask,
+            "input_ids": gen_input_ids,
+            "attention_mask": gen_attention_mask,
             "max_new_tokens": max_tokens,
             "do_sample": temperature > 0,
             "streamer": streamer,
             "output_hidden_states": self.dola_enabled,
             "return_dict_in_generate": True,
         }
+        if past_kv is not None:
+            generation_kwargs["past_key_values"] = past_kv
         if temperature > 0:
             generation_kwargs["temperature"] = temperature
         if prefix_fn is not None:
@@ -2710,7 +2775,11 @@ class InferenceEngine:
             input_tokens=input_token_count,
             max_tokens=max_tokens,
             prompt_chars=len(prompt),
+            cache_read=cache_read_tokens,
+            cache_creation=cache_creation_tokens,
         )
+        streamer.cache_read_tokens = cache_read_tokens
+        streamer.cache_creation_tokens = cache_creation_tokens
         return streamer, input_token_count
 
     # Chunked prefill: cap FFN activation scratch to chunk_size tokens
@@ -2824,7 +2893,8 @@ class InferenceEngine:
             max_tokens=max_tokens,
         )
 
-        # C-A: Prefix KV cache lease (non-streaming path only).
+        # C-A: Prefix KV cache lease (non-streaming path; streaming path
+        # now has its own lease block in generate_streaming per J-36).
         # _prefix_kv_cache is None when TQ is active or cache disabled.
         # Chunked prefill takes priority when input > PREFILL_CHUNK_SIZE.
         cache_read_tokens = 0
@@ -4194,9 +4264,10 @@ async def handle_messages(request: Request):
             logger.warning("h50_journal_turn_failed", error=str(_h50_exc))
 
     if stream:
-        # Streaming branch is OUT OF SCOPE for Track C-D (per s-934436 audit
-        # + context-package §3 STEP 3). Marker is parsed for log visibility
-        # but not threaded — streaming cache_* still hardcoded 0.
+        # J-36: streaming path now threads marker_boundary into
+        # _stream_messages_response so the prefix-KV lease fires on the
+        # streaming generate path (FH-2/FH-3). Cache counters are surfaced
+        # in SSE usage fields instead of hardcoded 0.
         # Phase B (s-1976592): response_format is now wired through to
         # generate_streaming via prefix_allowed_tokens_fn. The L2809 gate
         # above already returns 503 when LMFE is missing, so by the time we
@@ -4209,6 +4280,7 @@ async def handle_messages(request: Request):
             prompt, max_tokens, model_name, tools, temperature,
             response_format=response_format,
             seed=seed,
+            marker_boundary=marker_boundary,
         )
     return await _non_stream_messages_response(
         prompt, max_tokens, model_name, tools, temperature,
@@ -5075,6 +5147,7 @@ def _stream_messages_response(
     temperature: float = 0.0,
     response_format: Optional[Dict[str, Any]] = None,
     seed: Optional[int] = None,
+    marker_boundary: Optional[int] = None,
 ) -> StreamingResponse:
     """Real streaming: tokens are yielded as model.generate() produces them.
 
@@ -5085,6 +5158,10 @@ def _stream_messages_response(
     background ``_run`` thread can call transformers.set_seed +
     torch.manual_seed inside the inference_mode lock right before
     model.generate() — same point coverage as the non-stream path.
+
+    J-36: ``marker_boundary`` threads through to generate_streaming so the
+    streaming path can lease a frozen-head KV prefix. Cache counters are
+    surfaced in SSE message_start / message_delta usage.
     """
 
     async def event_generator() -> AsyncIterator[bytes]:
@@ -5093,7 +5170,10 @@ def _stream_messages_response(
             prompt, max_tokens, temperature,
             response_format=response_format,
             seed=seed,
+            marker_boundary=marker_boundary,
         )
+        cache_read_tokens = getattr(streamer, "cache_read_tokens", 0)
+        cache_creation_tokens = getattr(streamer, "cache_creation_tokens", 0)
 
         # message_start
         yield _sse_bytes(
@@ -5111,8 +5191,8 @@ def _stream_messages_response(
                     "usage": {
                         "input_tokens": input_token_count,
                         "output_tokens": 0,
-                        "cache_creation_input_tokens": 0,
-                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": cache_creation_tokens,
+                        "cache_read_input_tokens": cache_read_tokens,
                     },
                 },
             },
@@ -5242,7 +5322,11 @@ def _stream_messages_response(
             {
                 "type": "message_delta",
                 "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                "usage": {"output_tokens": actual_output_tokens},
+                "usage": {
+                    "output_tokens": actual_output_tokens,
+                    "cache_creation_input_tokens": cache_creation_tokens,
+                    "cache_read_input_tokens": cache_read_tokens,
+                },
             },
         )
 
