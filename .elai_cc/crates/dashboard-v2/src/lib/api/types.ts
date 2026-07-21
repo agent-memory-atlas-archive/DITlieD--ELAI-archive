@@ -1124,7 +1124,7 @@ export interface InterventionRequest {
   credential_fields?: CredentialField[];
 }
 
-export type CardKind = 'status' | 'intervention' | 'error' | 'disambiguation' | 'steering' | 'user' | 'response' | 'code-answer' | 'credential-request' | 'ack';
+export type CardKind = 'status' | 'intervention' | 'error' | 'disambiguation' | 'steering' | 'user' | 'response' | 'code-answer' | 'credential-request' | 'ack' | 'result';
 
 export interface CommandCard {
   id: string;
@@ -1193,7 +1193,8 @@ export type CardPayload =
   | UserCardPayload
   | ResponseCardPayload
   | CodeAnswerCardPayload
-  | AckCardPayload;
+  | AckCardPayload
+  | ResultCardPayload;
 
 export interface StatusCardPayload {
   kind: 'status';
@@ -1208,6 +1209,16 @@ export interface AckCardPayload {
   scope: string;
   canvasMode: import('../state/canvas.svelte').CanvasMode;
   nodeId?: string | null;
+}
+
+export interface ResultCardPayload {
+  kind: 'result';
+  outcome: string;
+  lane?: string;
+  filesTouched?: string[];
+  gateVerdicts?: { gate: string; verdict: string }[];
+  auditVerdict?: string | null;
+  evidenceRowIds?: string[];
 }
 
 export interface InterventionCardPayload {

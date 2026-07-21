@@ -319,6 +319,13 @@ function createCommands() {
         (_stopReason) => {
           tearDownPacer();
           _finalizeStream(requestId);
+          if (needsIntentChip(intent)) {
+            appendCard('result', {
+              kind: 'result',
+              outcome: `${laneLabelFor(intent)} complete`,
+              lane: laneLabelFor(intent),
+            });
+          }
         },
         (errMsg, offline) => {
           tearDownPacer();

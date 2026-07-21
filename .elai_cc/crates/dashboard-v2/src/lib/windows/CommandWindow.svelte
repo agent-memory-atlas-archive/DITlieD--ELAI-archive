@@ -801,6 +801,40 @@
               >Open in canvas &#8594;</button>
             </div>
 
+          {:else if card.kind === 'result'}
+            {@const p = card.payload as import('../api/types').ResultCardPayload}
+            <div class="status-line">
+              <span class="status-arrow">&#10003;</span>
+              {#if p.lane}
+                <span class="status-state mono">[{p.lane}]</span>
+              {/if}
+              <span class="status-msg">{p.outcome}</span>
+              {#if p.filesTouched && p.filesTouched.length}
+                <span class="result-chips mono">
+                  {#each p.filesTouched as f}
+                    <span class="result-chip">{f}</span>
+                  {/each}
+                </span>
+              {/if}
+              {#if p.gateVerdicts && p.gateVerdicts.length}
+                <span class="result-chips mono">
+                  {#each p.gateVerdicts as g}
+                    <span class="result-chip">{g.gate}:{g.verdict}</span>
+                  {/each}
+                </span>
+              {/if}
+              {#if p.evidenceRowIds && p.evidenceRowIds.length}
+                <span class="result-chips mono">
+                  {#each p.evidenceRowIds as r}
+                    <span class="result-chip">ev:{r}</span>
+                  {/each}
+                </span>
+              {/if}
+              {#if p.auditVerdict}
+                <span class="result-chip mono">audit:{p.auditVerdict}</span>
+              {/if}
+            </div>
+
           {:else if card.kind === 'intervention'}
             <!-- Intervention card: floating-in-space, rich content, preserved -->
             {@const p = card.payload as import('../api/types').InterventionCardPayload}
@@ -1560,6 +1594,18 @@
   .status-step {
     font-size: 10px;
     color: var(--dim);
+  }
+  .result-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--s-1);
+  }
+  .result-chip {
+    font-size: 10px;
+    color: var(--dim);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    padding: 0 var(--s-1);
   }
 
   /* ---- Orbit card — an INSET well (§3): --panel below --bg, hairline
