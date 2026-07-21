@@ -3809,6 +3809,12 @@ pub enum SsbPayload {
     /// on the local dispatch path when prefix-KV eligibility is checked.
     /// TOTAL_VARIANTS 595 -> 596.
     LocalPrefixCacheEvent(LocalPrefixCacheEventPayload),
+    /// J-24 (SCHEMA_VERSION 287): behavior steering event. Flat
+    /// variant (Pattern-2, mirrors ContextCalibrationEvent); the 3-arm
+    /// [`BehaviorSteeringKind`] discriminator rides inside the payload.
+    /// Emitted by `emit_behavior_steering_event` (behavior_steering_ssb.rs).
+    /// TOTAL_VARIANTS 595 -> 596.
+    BehaviorSteeringEvent(BehaviorSteeringEventPayload),
 }
 
 impl SsbPayload {
@@ -4641,6 +4647,8 @@ impl SsbPayload {
                 SsbActionType::ContextCalibrationEvent(p.kind),
             Self::LocalPrefixCacheEvent(ref p) =>
                 SsbActionType::LocalPrefixCacheEvent(p.kind),
+            Self::BehaviorSteeringEvent(ref p) =>
+                SsbActionType::BehaviorSteeringEvent(p.kind),
         }
     }
 }
@@ -20712,6 +20720,55 @@ pub struct LocalPrefixCacheEventPayload {
     /// "turboquant_active"). Empty for hit/miss/reprefill arms unless
     /// a reason applies.
     pub eligibility_reason: String,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-24: BehaviorSteeringEvent substrate (behavior steering SSB event)
+// ---------------------------------------------------------------------------
+
+/// J-24 -- 3-arm fire-point discriminator carried by
+/// [`BehaviorSteeringEventPayload::kind`] (Pattern-2 payload-field
+/// convention, mirrors ContextCalibrationKind). The behavior-steering
+/// subsystem emits exactly one arm per event:
+/// - `SteeringVectorApplied`: a steering vector was applied to the model;
+/// - `SteeringEffectMeasured`: the measured effect of a steering intervention;
+/// - `ObservationSizePreassessed`: the observation size was pre-assessed
+///   before dispatch to determine steering eligibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BehaviorSteeringKind {
+    SteeringVectorApplied,
+    SteeringEffectMeasured,
+    ObservationSizePreassessed,
+}
+
+impl BehaviorSteeringKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SteeringVectorApplied => "steering_vector_applied",
+            Self::SteeringEffectMeasured => "steering_effect_measured",
+            Self::ObservationSizePreassessed => "observation_size_preassessed",
+        }
+    }
+}
+
+/// J-24 -- payload for [`SsbActionType::BehaviorSteeringEvent`].
+///
+/// Pattern-2 single-variant 3-arm Kind rides in `kind`. Arm-specific
+/// scalars ride in `details_json` (flexible per-arm schema). Does NOT
+/// derive `Eq` -- the `details_json` value is non-numeric but stable
+/// for serialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BehaviorSteeringEventPayload {
+    /// Fire-point discriminator. See [`BehaviorSteeringKind`].
+    pub kind: BehaviorSteeringKind,
+    /// Arm-specific details (JSON object). Carries per-arm scalars
+    /// like `observation_tokens`, `steering_strength`, `effect_delta`.
+    pub details_json: serde_json::Value,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
 }

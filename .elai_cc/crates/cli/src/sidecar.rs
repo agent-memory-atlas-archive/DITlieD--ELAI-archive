@@ -27,6 +27,15 @@ pub(crate) const SIDECAR_DEFAULT_MODEL_LAYERS: usize = 28;
 /// Environment variable that opts a session into role steering precomputation.
 pub(crate) const ELAI_PRECOMPUTE_STEERING_ENV: &str = "ELAI_PRECOMPUTE_STEERING";
 
+/// Re-export from `elai_orchestrator::behavior_steering_ssb` so the CLI
+/// crate uses the canonical env var name + flag logic. J-24 LEG1=A.
+pub(crate) use elai_orchestrator::behavior_steering_ssb::ELAI_STEERING_ENABLE_ENV;
+
+/// Returns true when `ELAI_STEERING_ENABLE=1` is set in the environment.
+pub(crate) fn steering_env_enabled() -> bool {
+    env::var(ELAI_STEERING_ENABLE_ENV).ok().as_deref() == Some("1")
+}
+
 /// Convert a Windows path like `D:\foo\bar` to WSL `/mnt/d/foo/bar`.
 /// Handles any single-letter drive prefix (A-Z).
 pub(crate) fn windows_to_wsl_path(win_path: &str) -> String {
@@ -65,6 +74,8 @@ pub(crate) fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, an
     let elai_root = env::current_dir()?;
     let wsl_path = windows_to_wsl_path(elai_root.to_str().unwrap_or("."));
 
+    let steering_flag = elai_orchestrator::behavior_steering_ssb::steering_boot_flag();
+
     let child = Command::new("wsl")
         .args([
             "-d", "Ubuntu", "--", "bash", "-c",
@@ -72,7 +83,7 @@ pub(crate) fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, an
                 "source ~/vllm-env/bin/activate && cd '{wsl_path}' && \
                  PYTHONPATH=python python -m elai_inference.server \
                  --model /mnt/d/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-3B-Instruct-abliterated \
-                 --port {port} --no-dola --no-steering --turboquant-bits 8 \
+                 --port {port} --no-dola {steering_flag} --turboquant-bits 8 \
                  --log-level INFO"
             ),
         ])

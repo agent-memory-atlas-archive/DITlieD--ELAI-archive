@@ -81,6 +81,8 @@ use elai_knowledge::reranker::{CrossEncoderReranker, RerankerConfig};
 use elai_knowledge::splade::{SpladeExpander, SpladeConfig};
 use elai_knowledge::index_version::{check_and_upgrade, LogNotifier};
 use elai_orchestrator::indexing_service::IndexingService;
+use elai_orchestrator::behavior_steering_ssb::emit_behavior_steering_event;
+use elai_orchestrator::ssb::BehaviorSteeringKind;
 use elai_core::paths::{
     dkg_db_path as core_dkg_db_path, models_dir_path as core_models_dir_path,
     rules_db_path as core_rules_db_path, vectors_db_path as core_vectors_db_path,
@@ -1131,6 +1133,20 @@ impl LiveCli {
         ));
         let (knowledge_pipeline, indexing_service) =
             Self::build_local_knowledge_stack(&backend_config, &session.id, &clock, ssb.clone(), search_mode_shared_nl);
+
+        // J-24 LEG1=A: emit SteeringVectorApplied SSB row when the sidecar was
+        // booted with --steering (ELAI_STEERING_ENABLE=1). Best-effort; the
+        // boot path itself has no Ssb handle so we emit from here, the first
+        // production caller that can observe steering is active.
+        if sidecar::steering_env_enabled() {
+            if let Some(ref ssb_arc) = ssb {
+                emit_behavior_steering_event(
+                    ssb_arc,
+                    BehaviorSteeringKind::SteeringVectorApplied,
+                    serde_json::json!({"env": sidecar::ELAI_STEERING_ENABLE_ENV, "flag": "--steering"}),
+                );
+            }
+        }
 
         // patch-1.33: opt-in steering vector precompute per agent role. Gated on
         // ELAI_PRECOMPUTE_STEERING=1 so the default cold start (which runs

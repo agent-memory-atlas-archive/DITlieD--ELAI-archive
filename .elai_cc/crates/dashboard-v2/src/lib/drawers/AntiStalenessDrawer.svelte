@@ -5,10 +5,12 @@
   import Button from '$lib/ui/Button.svelte';
   import Divider from '$lib/ui/Divider.svelte';
   import UnwiredNote from '$lib/ui/UnwiredNote.svelte';
-  import { logStub, recompute_steering_vector } from '$lib/api/stub';
+  import { logStub, recompute_steering_vector, get_steering_effect } from '$lib/api/stub';
+  import type { SteeringEffect } from '$lib/api/types';
 
   onMount(() => {
     antiStalenessData.bootstrap();
+    get_steering_effect().then((e: SteeringEffect | null) => { steeringEffect = e; });
     return antiStalenessData.teardown;
   });
 
@@ -19,6 +21,7 @@
   // Static steering status derived from mock
   const steeringActive = $state(true);
   const steeringLastRefresh = NOW - 18 * 60 * 1000; // 18 mins ago
+  let steeringEffect = $state<SteeringEffect | null>(null);
 
   function fmtAgo(ts: number): string {
     const diff = NOW - ts;
@@ -138,6 +141,12 @@
     <div class="steering-action">
       <Button variant="ghost" size="sm" onclick={recomputeSteering}>Recompute</Button>
     </div>
+    {#if steeringEffect}
+      <div class="steering-effect">
+        <span class="meta-label">behavior delta</span>
+        <span class="meta-value">{steeringEffect.behavior_delta.toFixed(2)}</span>
+      </div>
+    {/if}
   </section>
 
   <Divider />
@@ -273,6 +282,13 @@
 
   .steering-action {
     margin-top: var(--s-1);
+  }
+
+  .steering-effect {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    margin-top: var(--s-2);
   }
 
   .metric-table {

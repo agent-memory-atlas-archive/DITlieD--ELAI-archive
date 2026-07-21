@@ -2245,3 +2245,25 @@ owner             = "maintainer"
 expiry_date       = "2026-10-19"
 promotion_plan_id = "J-33"
 smoke_test        = "crates/contracts/tests/j33_mineru_doc_parser_contract.rs::doc_parser_flag_off_returns_false"
+
+# J-24 LEG1=A: steering boot variant. ELAI_STEERING_ENABLE=1 flips the sidecar
+# boot from --no-steering to --steering. Default-OFF; the contract test
+# exercises both the ON and OFF argv paths.
+[[flag]]
+name              = "ELAI_STEERING_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-22"
+promotion_plan_id = "J-24"
+smoke_test        = "crates/contracts/tests/j24_steering_boot_variant.rs::steering_enabled_passes_steering_flag"
+
+# J-24 LEG5=A: pre-existing gap. ELAI_PRECOMPUTE_STEERING gates the opt-in
+# role steering vector precompute at agent-setup time. Default-OFF; the
+# contract test verifies the allowlist row is present with all required fields.
+[[flag]]
+name              = "ELAI_PRECOMPUTE_STEERING"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-22"
+promotion_plan_id = "J-24"
+smoke_test        = "crates/contracts/tests/j24_wire_dark_allowlist_rows.rs::both_rows_present_with_all_fields"

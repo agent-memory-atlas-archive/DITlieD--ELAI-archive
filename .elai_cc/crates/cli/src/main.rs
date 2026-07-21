@@ -467,6 +467,7 @@ mod bench_governance;
 // harness. Three ToolSequenceVerdict arms (Allowed / OrderViolation / HaltEnforced)
 // without live inference. Wiring-enforcement R1 entry point for I-35.
 mod bench_sequence_probe;
+mod bench_steering_vs_prompt;
 // I-32: `elai role-ab-probe` -- role-contract A/B evidence harness. Fixture-driven;
 // no live LLM. Emits RoleContractApplied(AbDelta) SSB rows. Handler below.
 mod role_ab_probe_cmd;
@@ -1617,6 +1618,12 @@ fn run() -> Result<(), anyhow::Error> {
         // ToolSequenceVerdict SSB rows, exits non-zero on any mismatch.
         CliAction::BenchSequenceProbe { seed } => {
             bench_sequence_probe::run(seed)?;
+        }
+        // J-24 MS4: `elai bench steering-vs-prompt --task <fixture> [--seed <u64>] [--json]`
+        // Deterministic fixture scoring of steered vs baseline arm, emits
+        // SteeringEffectMeasured SSB row, writes TOML report.
+        CliAction::BenchSteeringVsPrompt { task, seed, json } => {
+            bench_steering_vs_prompt::run(task, seed, json)?;
         }
         // I-32: `elai role-ab-probe [--seed N]` — role-contract A/B harness.
         // Loads fixtures from crates/contracts/tests/fixtures/role_contracts/,

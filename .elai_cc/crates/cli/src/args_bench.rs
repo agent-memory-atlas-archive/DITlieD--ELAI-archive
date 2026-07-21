@@ -109,9 +109,12 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "local-lane-e2e" {
         return parse_bench_local_lane_e2e_args(&rest[1..]);
     }
+    if sub == "steering-vs-prompt" {
+        return parse_bench_steering_vs_prompt_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -1927,4 +1930,63 @@ fn parse_bench_governance_probe_args(rest: &[String]) -> Result<crate::args::Cli
         }
     }
     Ok(crate::args::CliAction::BenchGovernanceProbe { seed })
+}
+
+// ---------------------------------------------------------------------------
+// J-24 MS4: `elai bench steering-vs-prompt --task <fixture> [--seed <u64>] [--json]`
+// ---------------------------------------------------------------------------
+
+fn parse_bench_steering_vs_prompt_args(
+    rest: &[String],
+) -> Result<crate::args::CliAction, String> {
+    let mut task: Option<String> = None;
+    let mut seed: u64 = 0;
+    let mut json: bool = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--task" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --task".to_string())?;
+                task = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--task=") => {
+                task = Some(flag["--task=".len()..].to_string());
+                i += 1;
+            }
+            "--seed" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seed=") => {
+                let raw = &flag["--seed=".len()..];
+                seed = raw
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `bench steering-vs-prompt` argument: {other}"
+                ));
+            }
+        }
+    }
+    let task = task.ok_or_else(|| "missing required --task <fixture> argument".to_string())?;
+    Ok(crate::args::CliAction::BenchSteeringVsPrompt {
+        task: std::path::PathBuf::from(task),
+        seed,
+        json,
+    })
 }

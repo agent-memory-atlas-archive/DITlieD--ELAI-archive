@@ -10,6 +10,11 @@ use crate::architecture::approval_fatigue_guard::{
 use crate::context_policy::{
     effective_context_window, pressure_level, regime_policy, PressureLevel,
 };
+use crate::context_budget::{
+    preassess_observation_size, ContextBudget, ExecutionMode, PreassessMode,
+};
+use crate::behavior_steering_ssb::emit_behavior_steering_event;
+use crate::ssb::BehaviorSteeringKind;
 use crate::dispatcher::BackendMode;
 use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
@@ -192,6 +197,7 @@ pub struct ConversationRuntime<C, T> {
     /// row is written (legacy / unit-test path). Wire-in via
     /// [`Self::with_ssb_writer`]; default `None`.
     ssb_writer: Option<std::sync::Arc<crate::ssb::Ssb>>,
+    context_budget: Option<ContextBudget>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -260,6 +266,7 @@ where
             // `with_ssb_writer`. Default None keeps emission dormant
             // across every existing constructor and test fixture.
             ssb_writer: None,
+            context_budget: None,
         }
     }
 
@@ -333,6 +340,12 @@ where
     #[must_use]
     pub fn with_ssb_writer(mut self, ssb: std::sync::Arc<crate::ssb::Ssb>) -> Self {
         self.ssb_writer = Some(ssb);
+        self
+    }
+
+    #[must_use]
+    pub fn with_context_budget(mut self, budget: ContextBudget) -> Self {
+        self.context_budget = Some(budget);
         self
     }
 
@@ -752,6 +765,63 @@ where
                         true,
                     ),
                 };
+
+                let observation_tokens: usize = result_message
+                    .blocks
+                    .iter()
+                    .map(|block| match block {
+                        ContentBlock::Text { text } => text.len() / 4 + 1,
+                        ContentBlock::ToolUse { name, input, .. } => {
+                            (name.len() + input.len()) / 4 + 1
+                        }
+                        ContentBlock::ToolResult { tool_name, output, .. } => {
+                            (tool_name.len() + output.len()) / 4 + 1
+                        }
+                    })
+                    .sum();
+                let window = effective_context_window(self.context_backend_mode) as usize;
+                let used = self.usage_tracker.cumulative_usage().input_tokens as usize;
+                let slot_remaining = window.saturating_sub(used);
+                let alpha = 0.8;
+                let mode = preassess_observation_size(observation_tokens, slot_remaining, alpha);
+                if mode != PreassessMode::None {
+                    if let Some(ssb) = self.ssb_writer.clone() {
+                        emit_behavior_steering_event(
+                            &ssb,
+                            BehaviorSteeringKind::ObservationSizePreassessed,
+                            serde_json::json!({
+                                "observation_tokens": observation_tokens,
+                                "slot_remaining": slot_remaining,
+                                "alpha": alpha,
+                                "mode": match mode {
+                                    PreassessMode::None => "none",
+                                    PreassessMode::Selective => "selective",
+                                    PreassessMode::All => "all",
+                                },
+                            }),
+                        );
+                    }
+                    if let (Some(budget), Some(ssb)) =
+                        (self.context_budget.as_mut(), self.ssb_writer.clone())
+                    {
+                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            if let Err(e) = rt.block_on(budget.adaptive_reduce(
+                                0.5,
+                                ExecutionMode::Autonomous,
+                                &ssb,
+                            )) {
+                                tracing::warn!(
+                                    context_budget.adaptive_reduce_err = %e,
+                                    "adaptive_reduce failed in preassess (non-fatal)"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 self.session
                     .push_message(result_message.clone())
                     .map_err(|error| RuntimeError::new(error.to_string()))?;

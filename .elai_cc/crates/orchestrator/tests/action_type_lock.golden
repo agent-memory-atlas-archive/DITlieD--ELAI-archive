@@ -48,6 +48,7 @@ bai_promotion_decision
 baseline_run_completed
 bash_redirected
 batch_lifecycle
+behavior_steering_event
 belief_state_event
 benchmark_run_observed
 blast_radius_blocked

@@ -33,6 +33,7 @@ use elai_orchestrator::{
     ModelPricing, OAuthAuthorizationRequest, OAuthConfig, OAuthTokenExchangeRequest,
     PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode,
     RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    context_budget::ContextBudget,
     // H-50: regime-aware auto-compact threshold (local vs cloud window).
     trim_threshold_for_mode,
     trim_threshold_for_mode_with_profile,
@@ -397,6 +398,14 @@ pub(crate) fn build_runtime_with_plugin_state(
     if let Some(ssb_arc) = ssb.as_ref() {
         runtime = runtime.with_ssb_writer(Arc::clone(ssb_arc));
     }
+    let effective_window = match backend {
+        BackendMode::Local => backend_config
+            .and_then(|c| c.max_context)
+            .map(|v| v as usize)
+            .unwrap_or(elai_orchestrator::LOCAL_MODEL_MAX_CONTEXT),
+        BackendMode::Api | BackendMode::Hybrid => 200_000,
+    };
+    runtime = runtime.with_context_budget(ContextBudget::new(effective_window));
     // Wire SessionTracer with file-based telemetry sink (interim; full SSB sink in later step).
     if let Some(persist_path) = runtime.session().persistence_path() {
         let telemetry_path = persist_path

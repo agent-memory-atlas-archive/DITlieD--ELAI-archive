@@ -1283,6 +1283,14 @@ pub(crate) enum CliAction {
     BenchSequenceProbe {
         seed: u64,
     },
+    /// J-24 MS4: `elai bench steering-vs-prompt --task <fixture> [--seed <u64>] [--json]`
+    /// Deterministic fixture scoring of a steered arm vs a role-prompt baseline.
+    /// Emits `SteeringEffectMeasured` SSB row. No live LLM judge (TD-3).
+    BenchSteeringVsPrompt {
+        task: std::path::PathBuf,
+        seed: u64,
+        json: bool,
+    },
     // E-30: `elai incident record --title <TITLE> --date <DATE> --url <URL>
     //        [--id <ID>]` — store an incident postmortem entry in the SSB
     //        and emit IncidentRecordCreated so the dashboard can surface it.

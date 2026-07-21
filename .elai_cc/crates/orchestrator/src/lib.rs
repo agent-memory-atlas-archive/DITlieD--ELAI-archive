@@ -180,6 +180,10 @@ pub mod context_calibration;
 // TailReprefill) on the local dispatch path when prefix-KV eligibility
 // is checked. Mirrors context_calibration::emit_context_calibration_event.
 pub mod prefix_cache_ssb;
+// J-24: behavior steering SSB event emit helper. Emits
+// BehaviorSteeringEvent (SteeringVectorApplied / SteeringEffectMeasured /
+// ObservationSizePreassessed). Mirrors prefix_cache_ssb::emit_local_prefix_cache_event.
+pub mod behavior_steering_ssb;
 // H-50: regime-aware in-session context management.
 // Single effective_context_window truth + ContextPolicy-by-BackendMode.
 // LOCAL: trim at 75% of real window via compaction ladder; CLOUD: 85% cache-

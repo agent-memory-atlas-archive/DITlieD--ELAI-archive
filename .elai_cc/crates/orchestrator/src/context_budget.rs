@@ -2845,6 +2845,41 @@ impl fmt::Display for ContextBudget {
     }
 }
 
+/// J-24: pre-assessment mode for observation-size steering.
+///
+/// Classifies whether an incoming tool-result observation will pressure
+/// the context window, before it is pushed into the session. The caller
+/// emits an `ObservationSizePreassessed` SSB row with the mode + metrics
+/// and optionally invokes `adaptive_reduce` when the mode is not `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreassessMode {
+    None,
+    Selective,
+    All,
+}
+
+/// J-24: pre-assess an observation against the remaining context slot.
+///
+/// `alpha` (typically 0.8) is the soft-pressure threshold fraction.
+/// Returns `None` when the observation fits comfortably, `Selective` when
+/// it exceeds the soft threshold but still fits, and `All` when it
+/// exceeds the full remaining slot.
+#[must_use]
+pub fn preassess_observation_size(
+    observation_tokens: usize,
+    slot_remaining: usize,
+    alpha: f64,
+) -> PreassessMode {
+    let soft_threshold = slot_remaining as f64 * alpha;
+    if observation_tokens as f64 <= soft_threshold {
+        PreassessMode::None
+    } else if observation_tokens <= slot_remaining {
+        PreassessMode::Selective
+    } else {
+        PreassessMode::All
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3904,5 +3939,30 @@ mod tests {
     #[test]
     fn j36_fh4_none_default_ineligible() {
         assert!(!ModelFeatures::none().prefix_kv_eligible);
+    }
+
+    #[test]
+    fn j24_preassess_none_when_fits() {
+        assert_eq!(preassess_observation_size(100, 500, 0.8), PreassessMode::None);
+    }
+
+    #[test]
+    fn j24_preassess_none_at_soft_boundary() {
+        assert_eq!(preassess_observation_size(400, 500, 0.8), PreassessMode::None);
+    }
+
+    #[test]
+    fn j24_preassess_selective_above_soft() {
+        assert_eq!(preassess_observation_size(450, 500, 0.8), PreassessMode::Selective);
+    }
+
+    #[test]
+    fn j24_preassess_all_exceeds_slot() {
+        assert_eq!(preassess_observation_size(501, 500, 0.8), PreassessMode::All);
+    }
+
+    #[test]
+    fn j24_preassess_all_from_s1_example() {
+        assert_eq!(preassess_observation_size(1000, 500, 0.8), PreassessMode::All);
     }
 }

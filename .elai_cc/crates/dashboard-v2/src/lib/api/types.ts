@@ -1726,6 +1726,13 @@ export interface SteeringStatus {
   applied_count: number;
 }
 
+export interface SteeringEffect {
+  behavior_delta: number;
+  token_cost_delta: number;
+  attribution: string;
+  kind?: string;
+}
+
 // ------------------------------------------------------------------
 // MCP
 // ------------------------------------------------------------------

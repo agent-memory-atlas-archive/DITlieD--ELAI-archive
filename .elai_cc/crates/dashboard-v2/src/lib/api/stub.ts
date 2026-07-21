@@ -64,6 +64,7 @@ import type {
   DepAuditResult,
   MsiStatus,
   SteeringStatus,
+  SteeringEffect,
   McpStatus,
   GateStatus,
   AgentRole,
@@ -748,6 +749,14 @@ export async function recompute_steering_vector(): Promise<SteeringStatus> {
   if (live) return live;
   await delay(180, 240);
   return { ...STEERING_STATUS, last_computed_ts: Date.now(), magnitude: 0.81 };
+}
+
+export async function get_steering_effect(): Promise<SteeringEffect | null> {
+  logStub('get_steering_effect');
+  const live = await tryInvoke<SteeringEffect>('get_steering_effect');
+  if (live) return live;
+  await delay();
+  return null;
 }
 
 export async function get_mcp_status(): Promise<McpStatus> {

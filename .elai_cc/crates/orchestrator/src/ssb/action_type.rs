@@ -4839,6 +4839,15 @@ pub enum SsbActionType {
     /// dispatch path.
     /// TOTAL_VARIANTS 595 -> 596.
     LocalPrefixCacheEvent(LocalPrefixCacheKind),
+    /// J-24 (SCHEMA_VERSION 287): behavior steering event.
+    /// Pattern-2 flat variant (mirrors ContextCalibrationEvent); the 3-arm
+    /// [`crate::ssb::BehaviorSteeringKind`] discriminator
+    /// (SteeringVectorApplied / SteeringEffectMeasured /
+    /// ObservationSizePreassessed) rides inside
+    /// [`crate::ssb::BehaviorSteeringEventPayload::kind`]. Emitted by
+    /// `emit_behavior_steering_event` (behavior_steering_ssb.rs).
+    /// TOTAL_VARIANTS 595 -> 596.
+    BehaviorSteeringEvent(BehaviorSteeringKind),
 }
 
 impl SsbActionType {
@@ -5795,6 +5804,9 @@ impl SsbActionType {
             // J-36 (SCHEMA_VERSION 287): local prefix-KV cache event.
             // Flat variant, Kind rides in the payload.
             Self::LocalPrefixCacheEvent(_) => "local_prefix_cache_event",
+            // J-24 (SCHEMA_VERSION 287): behavior steering event.
+            // Flat variant, Kind rides in the payload.
+            Self::BehaviorSteeringEvent(_) => "behavior_steering_event",
         }
     }
 }
@@ -6678,6 +6690,11 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // Flat variant; Kind rides in the payload, not the action type.
         "local_prefix_cache_event" => Ok(SsbActionType::LocalPrefixCacheEvent(
             LocalPrefixCacheKind::HeadCacheHit,
+        )),
+        // J-24 (SCHEMA_VERSION 287): behavior steering event.
+        // Flat variant; Kind rides in the payload, not the action type.
+        "behavior_steering_event" => Ok(SsbActionType::BehaviorSteeringEvent(
+            BehaviorSteeringKind::ObservationSizePreassessed,
         )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
