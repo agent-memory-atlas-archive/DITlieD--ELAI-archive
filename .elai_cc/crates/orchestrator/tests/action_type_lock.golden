@@ -290,6 +290,7 @@ llamacpp_subprocess_spawned
 local_cloud_routing_event
 local_determinism_event
 local_lane_e2e_measured
+local_prefix_cache_event
 lock_acquired
 lock_contested
 locked_keys_audit_run

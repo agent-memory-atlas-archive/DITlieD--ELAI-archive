@@ -175,6 +175,11 @@ pub mod context_budget;
 // and the 3E slot allocator (leg 3). Option fields on ModelCapabilityProfile
 // absent = today's folklore-constant behavior.
 pub mod context_calibration;
+// J-36: local prefix-KV cache SSB event emit helper. Emits
+// LocalPrefixCacheEvent (CacheIneligible / HeadCacheHit / HeadCacheMiss /
+// TailReprefill) on the local dispatch path when prefix-KV eligibility
+// is checked. Mirrors context_calibration::emit_context_calibration_event.
+pub mod prefix_cache_ssb;
 // H-50: regime-aware in-session context management.
 // Single effective_context_window truth + ContextPolicy-by-BackendMode.
 // LOCAL: trim at 75% of real window via compaction ladder; CLOUD: 85% cache-

@@ -1575,6 +1575,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::IntentRouted => (),
         // J-34 (SCHEMA_VERSION 286): ContextCalibrationEvent flat variant, Kind rides in the payload.
         SsbActionType::ContextCalibrationEvent(_) => (),
+        // J-36 (SCHEMA_VERSION 287): LocalPrefixCacheEvent flat variant, Kind rides in the payload.
+        SsbActionType::LocalPrefixCacheEvent(_) => (),
     }
 }
 

@@ -5538,7 +5538,12 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- Pattern-2 flat variant; 4-arm ContextCalibrationKind rides in the payload.
         -- Emitted by CalibrationArtifactStore::insert (CurveMeasured) and the
         -- leg-2 / leg-3 seams (later slices).
-        'context_calibration_event'
+        'context_calibration_event',
+        -- J-36 (SCHEMA_VERSION 287): local prefix-KV cache event.
+        -- Pattern-2 flat variant; 4-arm LocalPrefixCacheKind rides in the payload.
+        -- Emitted by emit_local_prefix_cache_event (prefix_cache_ssb.rs) on the
+        -- local dispatch path.
+        'local_prefix_cache_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

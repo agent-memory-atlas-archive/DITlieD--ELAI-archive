@@ -4830,6 +4830,15 @@ pub enum SsbActionType {
     /// leg-3 seams (later slices).
     /// TOTAL_VARIANTS 594 -> 595.
     ContextCalibrationEvent(ContextCalibrationKind),
+    /// J-36 (SCHEMA_VERSION 287): local prefix-KV cache event.
+    /// Pattern-2 flat variant (mirrors ContextCalibrationEvent); the 4-arm
+    /// [`crate::ssb::LocalPrefixCacheKind`] discriminator (HeadCacheHit /
+    /// HeadCacheMiss / TailReprefill / CacheIneligible) rides inside
+    /// [`crate::ssb::LocalPrefixCacheEventPayload::kind`]. Emitted by
+    /// `emit_local_prefix_cache_event` (prefix_cache_ssb.rs) on the local
+    /// dispatch path.
+    /// TOTAL_VARIANTS 595 -> 596.
+    LocalPrefixCacheEvent(LocalPrefixCacheKind),
 }
 
 impl SsbActionType {
@@ -5783,6 +5792,9 @@ impl SsbActionType {
             // J-34 (SCHEMA_VERSION 286): empirical context calibration event.
             // Flat variant, Kind rides in the payload.
             Self::ContextCalibrationEvent(_) => "context_calibration_event",
+            // J-36 (SCHEMA_VERSION 287): local prefix-KV cache event.
+            // Flat variant, Kind rides in the payload.
+            Self::LocalPrefixCacheEvent(_) => "local_prefix_cache_event",
         }
     }
 }
@@ -6661,6 +6673,11 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // Flat variant; Kind rides in the payload, not the action type.
         "context_calibration_event" => Ok(SsbActionType::ContextCalibrationEvent(
             ContextCalibrationKind::CurveMeasured,
+        )),
+        // J-36 (SCHEMA_VERSION 287): local prefix-KV cache event.
+        // Flat variant; Kind rides in the payload, not the action type.
+        "local_prefix_cache_event" => Ok(SsbActionType::LocalPrefixCacheEvent(
+            LocalPrefixCacheKind::HeadCacheHit,
         )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }

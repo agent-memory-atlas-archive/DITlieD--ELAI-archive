@@ -1596,6 +1596,14 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // bench-produced artifact, and by the leg-2 / leg-3 seams (later slices).
     // TOTAL_VARIANTS 594 -> 595.
     SsbActionType::ContextCalibrationEvent(ContextCalibrationKind::CurveMeasured),
+    // J-36 (SCHEMA_VERSION 287): local prefix-KV cache event. Flat
+    // variant (Pattern-2, mirrors ContextCalibrationEvent); the 4-arm
+    // LocalPrefixCacheKind (HeadCacheHit / HeadCacheMiss / TailReprefill /
+    // CacheIneligible) rides inside the payload. Emitted by
+    // `emit_local_prefix_cache_event` (prefix_cache_ssb.rs) on the local
+    // dispatch path when prefix-KV eligibility is checked.
+    // TOTAL_VARIANTS 595 -> 596.
+    SsbActionType::LocalPrefixCacheEvent(LocalPrefixCacheKind::HeadCacheHit),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

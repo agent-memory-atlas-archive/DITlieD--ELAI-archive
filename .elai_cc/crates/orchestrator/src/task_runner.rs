@@ -6381,6 +6381,19 @@ async fn drive_task(
                     }
                 }
 
+                // J-36: emit LocalPrefixCacheEvent(CacheIneligible) when the
+                // dispatch context reports prefix-KV cache is not eligible.
+                // Non-fatal: the emit helper warns on failure, never aborts.
+                if !ctx.prefix_kv_eligible {
+                    crate::prefix_cache_ssb::emit_local_prefix_cache_event(
+                        writer,
+                        crate::ssb::LocalPrefixCacheKind::CacheIneligible,
+                        0,
+                        0,
+                        "prefix_kv_ineligible",
+                    );
+                }
+
                 // B-10 / 3E.5 (DECISION-E): wire compute_overlap into the SsbEntries
                 // slot-fill path with REAL per-seq file associations. The
                 // `Ssb::session_files_by_seq` read path (G-5) returns the

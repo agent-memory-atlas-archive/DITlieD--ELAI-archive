@@ -3802,6 +3802,13 @@ pub enum SsbPayload {
     /// for CurveMeasured -- no per-arm payload structs).
     /// TOTAL_VARIANTS 594 -> 595.
     ContextCalibrationEvent(ContextCalibrationEventPayload),
+    /// J-36 (SCHEMA_VERSION 287): local prefix-KV cache event. Flat
+    /// variant (Pattern-2, mirrors ContextCalibrationEvent); the 4-arm
+    /// [`LocalPrefixCacheKind`] discriminator rides inside the payload.
+    /// Emitted by `emit_local_prefix_cache_event` (prefix_cache_ssb.rs)
+    /// on the local dispatch path when prefix-KV eligibility is checked.
+    /// TOTAL_VARIANTS 595 -> 596.
+    LocalPrefixCacheEvent(LocalPrefixCacheEventPayload),
 }
 
 impl SsbPayload {
@@ -4632,6 +4639,8 @@ impl SsbPayload {
             Self::IntentRouted(_) => SsbActionType::IntentRouted,
             Self::ContextCalibrationEvent(ref p) =>
                 SsbActionType::ContextCalibrationEvent(p.kind),
+            Self::LocalPrefixCacheEvent(ref p) =>
+                SsbActionType::LocalPrefixCacheEvent(p.kind),
         }
     }
 }
@@ -20645,6 +20654,64 @@ pub struct ContextCalibrationEventPayload {
     /// `placement_applied` -> `slot_count`, `ordering_seed`;
     /// `calibration_invalidated` -> `reason`, `previous_produced_at_secs`.
     pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-36: LocalPrefixCacheEvent substrate (local prefix-KV cache reuse)
+// ---------------------------------------------------------------------------
+
+/// J-36 -- 4-arm fire-point discriminator carried by
+/// [`LocalPrefixCacheEventPayload::kind`] (Pattern-2 payload-field
+/// convention, mirrors ContextCalibrationKind). The prefix-cache
+/// subsystem emits exactly one arm per event:
+/// - `HeadCacheHit`: the head prefix was found in the KV cache (cache_read > 0);
+/// - `HeadCacheMiss`: the head prefix was not in the KV cache;
+/// - `TailReprefill`: the tail segment was re-prefilled after a cache hit;
+/// - `CacheIneligible`: the model/runtime is not eligible for prefix-KV cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalPrefixCacheKind {
+    HeadCacheHit,
+    HeadCacheMiss,
+    TailReprefill,
+    CacheIneligible,
+}
+
+impl LocalPrefixCacheKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::HeadCacheHit => "head_cache_hit",
+            Self::HeadCacheMiss => "head_cache_miss",
+            Self::TailReprefill => "tail_reprefill",
+            Self::CacheIneligible => "cache_ineligible",
+        }
+    }
+}
+
+/// J-36 -- payload for [`SsbActionType::LocalPrefixCacheEvent`].
+///
+/// Pattern-2 single-variant 4-arm Kind rides in `kind`. Carries typed
+/// scalar fields (head/tail prefill token counts + eligibility reason)
+/// homogeneous across all Kind arms. Does NOT derive `Eq` -- the
+/// `eligibility_reason` string is non-numeric but stable for serialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LocalPrefixCacheEventPayload {
+    /// Fire-point discriminator. See [`LocalPrefixCacheKind`].
+    pub kind: LocalPrefixCacheKind,
+    /// Head prefix token count served from KV cache (cache_read_tokens).
+    /// 0 when `kind` is `CacheIneligible` or `HeadCacheMiss`.
+    pub head_prefill_tokens: u64,
+    /// Tail segment token count re-prefilled after a cache hit.
+    /// 0 when `kind` is `CacheIneligible` or `HeadCacheMiss`.
+    pub tail_prefill_tokens: u64,
+    /// Short static reason string (e.g. "prefix_kv_ineligible",
+    /// "turboquant_active"). Empty for hit/miss/reprefill arms unless
+    /// a reason applies.
+    pub eligibility_reason: String,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
 }
