@@ -393,3 +393,226 @@ def test_sse_message_start_has_cache_tokens(fake_engine):
             break
     else:
         pytest.fail("J-36 GATE3: message_start event not found in SSE stream")
+
+
+# ---------------------------------------------------------------------------
+# GATE 4 — Streaming admit: post-generate KV is admitted on the streaming
+# path so turn-2 lease can hit. Two-turn offline test with fake PrefixKVCache
+# that records admit calls and a fake model.generate returning past_key_values.
+# ---------------------------------------------------------------------------
+
+
+class _AdmitFakeCache:
+    """Fake DynamicCache returned as past_key_values. Records crop calls."""
+
+    def __init__(self, seq_len: int = 100) -> None:
+        self._seq_len = seq_len
+        self.crop_calls: list[int] = []
+
+    def crop(self, new_len: int) -> None:
+        self.crop_calls.append(new_len)
+        self._seq_len = new_len
+
+    def get_seq_length(self) -> int:
+        return self._seq_len
+
+
+class _AdmitFakePrefixKVCache:
+    """Fake PrefixKVCache that records admit calls and can return hits/misses.
+
+    Turn 1: lease returns None (cold miss). admit stores the cache.
+    Turn 2: lease returns a hit (the admitted cache).
+    """
+
+    def __init__(self) -> None:
+        self.admit_calls: list[tuple] = []
+        self._stored: tuple | None = None
+        self.lease_calls: int = 0
+
+    def lease(self, input_ids, marker_boundary=None):
+        self.lease_calls += 1
+        if self._stored is not None:
+            stored_ids, stored_cache, stored_len = self._stored
+            return stored_cache, stored_len, stored_len + 50
+        return None, 0, 0
+
+    def admit(self, input_ids, cache):
+        self.admit_calls.append((input_ids, cache))
+        self._stored = (input_ids, cache, input_ids.shape[0])
+
+
+class _AdmitFakeModel:
+    """Fake model.generate that returns an object with past_key_values."""
+
+    def __init__(self) -> None:
+        self.device = torch.device("cpu")
+        self.generate_calls: list[dict[str, Any]] = []
+
+    def generate(self, **kwargs):
+        self.generate_calls.append(kwargs)
+        _pkv = _AdmitFakeCache(seq_len=200)
+        return types.SimpleNamespace(
+            sequences=torch.zeros(1, 1, dtype=torch.long),
+            past_key_values=_pkv,
+        )
+
+
+def _build_admit_engine(monkeypatch, fake_pkv):
+    """Build a minimal InferenceEngine for GATE4 tests."""
+    fake_model = _AdmitFakeModel()
+    eng = server_mod.InferenceEngine.__new__(server_mod.InferenceEngine)
+    eng.model = fake_model
+    eng.max_new_tokens = 16
+    eng.dola_enabled = False
+    eng.kv_compressor = types.SimpleNamespace(enabled=False)
+    eng.streaming_llm_sinks = 0
+    eng.streaming_llm_window = 0
+    eng._sdpa_pin_enabled = False
+    eng._dola_processor = None
+    eng._gg_collector = types.SimpleNamespace(reset=lambda: None)
+    eng._novelty_tracker = types.SimpleNamespace(
+        compute=lambda p, t, m, tok: 0.0,
+    )
+    eng.lock = __import__("threading").Lock()
+    eng._format_prompt = lambda prompt: prompt
+    eng._build_constrained_prefix_fn = lambda rf: None
+    eng._apply_streaming_llm_if_active = lambda mask, context_position: mask
+    eng._make_cache = lambda: None
+    eng._chunked_prefill = lambda ids, mask: None
+
+    _fake_input_ids = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10] * 3], dtype=torch.long)
+    _fake_attention_mask = torch.ones_like(_fake_input_ids)
+
+    class _FakeTokenizerBatch:
+        def __init__(self, input_ids, attention_mask):
+            self.input_ids = input_ids
+            self.attention_mask = attention_mask
+
+        def to(self, device):
+            return self
+
+    class _FakeTokenizerWithCall:
+        eos_token_id = 0
+
+        def __call__(self, text, return_tensors="pt"):
+            return _FakeTokenizerBatch(_fake_input_ids, _fake_attention_mask)
+
+        def apply_chat_template(self, *a, **kw):
+            return "[stub]"
+
+        def encode(self, text, add_special_tokens=False):
+            return []
+
+        def decode(self, ids, skip_special_tokens=False):
+            return ""
+
+    eng.tokenizer = _FakeTokenizerWithCall()
+    monkeypatch.setattr(server_mod, "_prefix_kv_cache", fake_pkv)
+    return eng
+
+
+def _wait_for_admit(fake_pkv, expected_count=1, timeout=5.0):
+    """Poll for admit_calls to reach expected_count (the _run thread is
+    backgrounded so we can't join it directly)."""
+    import time as _time
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        if len(fake_pkv.admit_calls) >= expected_count:
+            return
+        _time.sleep(0.05)
+    raise AssertionError(
+        f"timed out waiting for {expected_count} admit calls, "
+        f"got {len(fake_pkv.admit_calls)}"
+    )
+
+
+def _wait_for_cache_creation(streamer, timeout=5.0):
+    """Poll until streamer.cache_creation_tokens > 0 so the ordering
+    between _run's admit assignment and the test assertion is explicit."""
+    import time as _time
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        if getattr(streamer, "cache_creation_tokens", 0) > 0:
+            return
+        _time.sleep(0.05)
+    raise AssertionError(
+        f"timed out waiting for cache_creation_tokens > 0, "
+        f"got {getattr(streamer, 'cache_creation_tokens', 0)}"
+    )
+
+
+def test_gate4_streaming_admit_turn1_cold(monkeypatch):
+    """Turn 1: cold generate_streaming. After _run completes:
+    - admit was called with inputs.input_ids[0] and the returned cache
+    - streamer.cache_creation_tokens > 0
+    """
+    fake_pkv = _AdmitFakePrefixKVCache()
+    eng = _build_admit_engine(monkeypatch, fake_pkv)
+
+    streamer, input_count = eng.generate_streaming(
+        "test prompt turn1", max_tokens=8, temperature=0.0,
+    )
+
+    _wait_for_admit(fake_pkv, expected_count=1)
+    _wait_for_cache_creation(streamer)
+
+    assert len(fake_pkv.admit_calls) == 1, (
+        f"J-36 GATE4: expected 1 admit call on turn-1 cold, got {len(fake_pkv.admit_calls)}"
+    )
+    admitted_ids, admitted_cache = fake_pkv.admit_calls[0]
+    assert admitted_ids.shape[0] == input_count, (
+        f"J-36 GATE4: admitted input_ids shape[0] should be {input_count}, "
+        f"got {admitted_ids.shape[0]}"
+    )
+    assert len(admitted_cache.crop_calls) == 1, (
+        f"J-36 GATE4: admitted cache should have been cropped once, "
+        f"got {len(admitted_cache.crop_calls)}"
+    )
+    assert admitted_cache.crop_calls[0] == input_count, (
+        f"J-36 GATE4: crop should be input_token_count={input_count}, "
+        f"got {admitted_cache.crop_calls[0]}"
+    )
+    assert streamer.cache_creation_tokens > 0, (
+        f"J-36 GATE4: streamer.cache_creation_tokens should be > 0 after admit, "
+        f"got {streamer.cache_creation_tokens}"
+    )
+    assert streamer.cache_creation_tokens == input_count, (
+        f"J-36 GATE4: cache_creation_tokens should equal input_token_count "
+        f"({input_count}) on cold miss (cache_read=0), got {streamer.cache_creation_tokens}"
+    )
+
+
+def test_gate4_streaming_admit_turn2_lease_hit(monkeypatch):
+    """Turn 2: same input head. After _run completes:
+    - lease returns a hit (cache_read_tokens > 0)
+    - admit is called again (re-admitting the extended cache)
+    - streamer.cache_read_tokens > 0
+    """
+    fake_pkv = _AdmitFakePrefixKVCache()
+    eng = _build_admit_engine(monkeypatch, fake_pkv)
+
+    streamer1, input_count = eng.generate_streaming(
+        "test prompt turn1", max_tokens=8, temperature=0.0,
+    )
+    _wait_for_admit(fake_pkv, expected_count=1)
+
+    assert len(fake_pkv.admit_calls) == 1, (
+        f"J-36 GATE4 turn2: turn-1 admit should have happened, got {len(fake_pkv.admit_calls)}"
+    )
+
+    streamer2, input_count2 = eng.generate_streaming(
+        "test prompt turn1", max_tokens=8, temperature=0.0,
+    )
+    _wait_for_admit(fake_pkv, expected_count=2)
+
+    assert fake_pkv.lease_calls >= 2, (
+        f"J-36 GATE4 turn2: expected >= 2 lease calls, got {fake_pkv.lease_calls}"
+    )
+    assert streamer2.cache_read_tokens > 0, (
+        f"J-36 GATE4 turn2: cache_read_tokens should be > 0 on lease hit, "
+        f"got {streamer2.cache_read_tokens}"
+    )
+    assert len(fake_pkv.admit_calls) == 2, (
+        f"J-36 GATE4 turn2: expected 2 admit calls (turn-1 + turn-2), "
+        f"got {len(fake_pkv.admit_calls)}"
+    )

@@ -2761,12 +2761,43 @@ class InferenceEngine:
                     if self._sdpa_pin_enabled:
                         _sdpa_ctx, _, _ = pin_sdpa_backend()
                         with _sdpa_ctx:
-                            self.model.generate(**generation_kwargs)
+                            outputs = self.model.generate(**generation_kwargs)
                     else:
-                        self.model.generate(**generation_kwargs)
+                        outputs = self.model.generate(**generation_kwargs)
+                    # J-36 S5: Admit post-generation KV on the streaming path
+                    # so turn-2 lease can hit. Mirrors the non-streaming admit
+                    # (C-A block in _generate_impl). return_dict_in_generate=True
+                    # populates outputs.past_key_values. Crop to input_token_count
+                    # so a future lease aligns with the new prompt's input_ids.
+                    # Only admit when prefix cache is active AND chunked prefill
+                    # was not used (chunked prefill owns the cache lifecycle).
+                    if _prefix_kv_cache is not None and input_token_count <= self.PREFILL_CHUNK_SIZE:
+                        returned_cache = getattr(outputs, "past_key_values", None)
+                        if returned_cache is not None:
+                            try:
+                                returned_cache.crop(input_token_count)
+                            except (ValueError, AttributeError) as e:
+                                logger.warning(
+                                    "prefix_cache_crop_failed_streaming",
+                                    reason=type(e).__name__,
+                                    error=str(e),
+                                )
+                                returned_cache = None
+                        if returned_cache is not None:
+                            _prefix_kv_cache.admit(inputs.input_ids[0], returned_cache)
+                            streamer.cache_creation_tokens = input_token_count - cache_read_tokens
+                            logger.info(
+                                "prefix_cache_admit_streaming",
+                                input_tokens=input_token_count,
+                                cache_read=cache_read_tokens,
+                                cache_creation=streamer.cache_creation_tokens,
+                            )
             finally:
                 if self._dola_processor is not None:
                     self._dola_processor.remove_hooks()
+
+        streamer.cache_read_tokens = cache_read_tokens
+        streamer.cache_creation_tokens = 0
 
         _thread_pool.submit(_run)
 
@@ -2778,8 +2809,6 @@ class InferenceEngine:
             cache_read=cache_read_tokens,
             cache_creation=cache_creation_tokens,
         )
-        streamer.cache_read_tokens = cache_read_tokens
-        streamer.cache_creation_tokens = cache_creation_tokens
         return streamer, input_token_count
 
     # Chunked prefill: cap FFN activation scratch to chunk_size tokens
@@ -5258,6 +5287,16 @@ def _stream_messages_response(
                     "delta": {"type": "text_delta", "text": chunk},
                 },
             )
+
+        # J-36 S5: Re-read cache counters AFTER stream exhaust. The _run
+        # thread updates streamer.cache_creation_tokens post-admit (after
+        # model.generate returns). message_start carries the pre-_run values
+        # (turn-1 creation=0 is correct since admit hasn't happened yet);
+        # message_delta must carry the post-admit values so turn-2 reports
+        # accurate cache_creation. For turn-2 hits, cache_read is already
+        # set pre-_run so message_start is fine.
+        cache_read_tokens = getattr(streamer, "cache_read_tokens", 0)
+        cache_creation_tokens = getattr(streamer, "cache_creation_tokens", 0)
 
         # Close text block
         if text_block_started:
