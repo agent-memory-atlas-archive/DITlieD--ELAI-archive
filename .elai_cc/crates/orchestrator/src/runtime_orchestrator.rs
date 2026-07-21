@@ -496,14 +496,34 @@ impl RuntimeOrchestrator {
                                 &estimator_input_text,
                                 &response.text,
                             );
-                        let normalized = crate::usage_ledger::NormalizedUsage::local(
-                            elai_core::TokenUsage {
-                                input_tokens: usage_tokens_in,
-                                output_tokens: usage_tokens_out,
-                                cache_creation_input_tokens: 0,
-                                cache_read_input_tokens: 0,
-                            },
-                        );
+                        // J-28 FIX: the local-lane NormalizedUsage::local +
+                        // est_cost_micros: 0 payload is correct ONLY for
+                        // genuinely local backends. A non-local backend
+                        // without a cost_model_for entry (e.g. AnthropicApi,
+                        // Sglang, Bedrock) must NOT be persisted as
+                        // lane=Local with a zero cost -- route it through
+                        // the cloud lane with an honest est_cost_micros: 0
+                        // (unknown, mirroring grounding_client.rs's unpriced
+                        // snapshot arm at line 998).
+                        let normalized = if backend.is_local() {
+                            crate::usage_ledger::NormalizedUsage::local(
+                                elai_core::TokenUsage {
+                                    input_tokens: usage_tokens_in,
+                                    output_tokens: usage_tokens_out,
+                                    cache_creation_input_tokens: 0,
+                                    cache_read_input_tokens: 0,
+                                },
+                            )
+                        } else {
+                            crate::usage_ledger::NormalizedUsage::cloud(
+                                elai_core::TokenUsage {
+                                    input_tokens: usage_tokens_in,
+                                    output_tokens: usage_tokens_out,
+                                    cache_creation_input_tokens: 0,
+                                    cache_read_input_tokens: 0,
+                                },
+                            )
+                        };
                         let usage_payload =
                             SsbPayload::UsageTurnEvent(UsageTurnEventPayload {
                                 identity: "local".to_string(),
@@ -516,11 +536,15 @@ impl RuntimeOrchestrator {
                                 output_tokens: usage_tokens_out,
                                 cache_creation_tokens: 0,
                                 cache_read_tokens: 0,
-                                // Free/local backends have zero marginal API
-                                // cost regardless of Kind (mirrors the
-                                // BackendCostAccrued est_cost_micros: 0 arm
-                                // directly above) -- a real Some(0), not an
-                                // unknown, at the T5 rollup layer.
+                                // Local backends have zero marginal API cost
+                                // (mirrors the BackendCostAccrued
+                                // est_cost_micros: 0 arm above). Non-local
+                                // backends without a cost_model_for entry
+                                // also land here with 0 -- an honest unknown
+                                // (no pricing snapshot available at this
+                                // seam, unlike grounding_client.rs which
+                                // computes from snapshot.priced), never a
+                                // silently-wrong sonnet-derived figure.
                                 est_cost_micros: 0,
                                 elapsed_ms: call_elapsed_ms,
                                 semantics_tag: normalized.semantics_tag,
