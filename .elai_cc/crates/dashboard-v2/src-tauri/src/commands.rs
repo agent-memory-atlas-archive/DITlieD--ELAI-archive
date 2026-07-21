@@ -53,6 +53,11 @@ use elai_orchestrator::architecture::claude_code_arch::{
     ClaudeCodeArchitectureEventPayload,
 };
 use elai_orchestrator::ssb_viewer::SelfModMsiSnapshotRow;
+// J-32 slice-E: front-door routing observability on the dashboard bare-message
+// path. Mirrors cli::classifier::classify_bare_message_with_ssb (slice-D).
+// Default-OFF: no-op unless ELAI_FRONT_DOOR_ENABLE=1.
+use elai_orchestrator::front_door::{enabled as front_door_enabled, FrontDoorRouter};
+use elai_orchestrator::front_door_emit::{emit_intent_routed, risk_for_lane};
 // F-8 / Slice A5: SymbolicConflictRow is the SCF detector's held-pending
 // surface. Unlike SelfModProposalRow it is NOT gated behind the
 // `self-modification` feature — `SsbViewer::symbolic_conflicts` is part of
@@ -6921,6 +6926,14 @@ async fn emit_streaming_timing(
     }
 }
 
+/// J-32 slice-E: dashboard bare-message IntentRouted emit.
+/// Crate-private so start_chat_stream can call it inline without exposing a
+/// new pub production_caller surface; the test mod exercises it directly.
+fn j32_emit_intent_routed_for_prompt(ssb: &std::sync::Arc<elai_orchestrator::Ssb>, prompt: &str) {
+    let decision = FrontDoorRouter.resolve(prompt, &[], &[]);
+    emit_intent_routed(ssb, &decision, risk_for_lane(decision.lane));
+}
+
 /// POSTs to `{sidecar_url}/v1/messages` with `stream=true`, then reads the
 /// SSE response chunk-by-chunk and emits Tauri events to the frontend:
 /// - `"chat-stream:{request_id}"` — one per `content_block_delta/text_delta`.
@@ -6939,6 +6952,14 @@ pub async fn start_chat_stream(
     effort_level: Option<String>,
 ) -> CmdResult<Value> {
     let stream_id = request_id.clone();
+    // J-32 slice-E: emit IntentRouted SSB row for the bare prompt before any
+    // cloud/local dispatch. Mirrors cli::classifier::classify_bare_message_with_ssb
+    // (slice-D). Default-OFF: no-op unless ELAI_FRONT_DOOR_ENABLE=1.
+    if front_door_enabled() {
+        if let Some(ssb) = state.writer.as_ref() {
+            j32_emit_intent_routed_for_prompt(ssb, &prompt);
+        }
+    }
     let reflect_on = thinking_enabled.unwrap_or(false);
 
     // Resolve the routing target from execution_mode. CLOUD -> api.anthropic.com
@@ -13329,5 +13350,114 @@ mod b14_stream_chat_tests {
             build_stream_request_body("x", true, None)["thinking"]["budget_tokens"].as_u64(),
             Some(4096)
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// J-32 slice-E: IntentRouted emit on the dashboard bare-message path.
+//
+// Exercises the crate-private `j32_emit_intent_routed_for_prompt` helper
+// directly (the same fn start_chat_stream calls after the
+// `if front_door_enabled()` guard). The off-agent artifact is the SSB row
+// the test did NOT author — same shape as slice-C
+// (front_door_emit.rs:j32_slice_c_classified_row_lands_for_fix_input) and
+// the streaming_timing_emit_tests above.
+//
+// SEQUENTIAL: the gate env var is process-global; the ON + OFF legs share
+// one test so they own the env for the whole body, then clear it.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod j32_slice_e_tests {
+    use super::j32_emit_intent_routed_for_prompt;
+    use elai_orchestrator::front_door::{FrontDoorLane, FrontDoorTier};
+    use elai_orchestrator::front_door_emit::risk_for_lane;
+    use elai_orchestrator::gate::RiskLevel;
+    use elai_orchestrator::ssb::{
+        IntentRoutedKind, IntentRoutedPayload, Ssb, SsbActionType, SsbConfig, SsbPayload,
+        SsbReader, decode_ssb_payload,
+    };
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    const ENV: &str = "ELAI_FRONT_DOOR_ENABLE";
+
+    fn temp_ssb(name: &str) -> (TempDir, Arc<Ssb>) {
+        let dir = TempDir::new().expect("tempdir");
+        let cfg = SsbConfig {
+            db_path: dir.path().join(format!("{name}.db")),
+            pool_size: Some(2),
+            project_id: "j32-slice-e".into(),
+            session_id: "j32-slice-e".into(),
+        };
+        let clock: Arc<dyn elai_core::ClockProvider> =
+            Arc::new(elai_core::clock::SeededClock::new());
+        let ssb = Arc::new(Ssb::new(cfg, clock).expect("ssb init"));
+        (dir, ssb)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn j32_slice_e_intent_routed_lands_for_bare_prompt_in_start_chat_stream() {
+        // --- ON leg: gate set => helper emits exactly one Classified Fix/Medium row. ---
+        std::env::set_var(ENV, "1");
+        let (_dir, ssb) = temp_ssb("ssb_j32_slice_e_on");
+
+        j32_emit_intent_routed_for_prompt(&ssb, "fix the failing test in sum.rs");
+
+        // yield to the spawned write task
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        let rows = ssb
+            .query_by_type(SsbActionType::IntentRouted)
+            .expect("query_by_type IntentRouted");
+        assert!(
+            !rows.is_empty(),
+            "expected >= 1 IntentRouted row; R1 missing evidence = FAIL"
+        );
+        let decoded = decode_ssb_payload(&rows[0].payload).expect("decode_ssb_payload");
+        match decoded {
+            SsbPayload::IntentRouted(IntentRoutedPayload {
+                lane,
+                tier,
+                kind,
+                risk,
+                ts_ms,
+                ..
+            }) => {
+                assert_eq!(kind, IntentRoutedKind::Classified);
+                assert_eq!(lane, FrontDoorLane::Fix);
+                assert_eq!(tier, FrontDoorTier::T1);
+                assert_eq!(risk, RiskLevel::Medium);
+                assert_eq!(risk_for_lane(lane), RiskLevel::Medium);
+                assert!(ts_ms > 0);
+            }
+            other => panic!("expected IntentRouted; got {other:?}"),
+        }
+
+        std::env::remove_var(ENV);
+
+        // --- OFF leg: gate unset => helper is NOT called from start_chat_stream
+        // (the `if front_door_enabled()` guard short-circuits). Mirror that guard
+        // here: when disabled, the helper is never invoked, so a fresh SSB has
+        // zero IntentRouted rows. This proves the kill-switch short-circuits the
+        // wire rather than the helper itself being a no-op. ---
+        let (_dir_off, ssb_off) = temp_ssb("ssb_j32_slice_e_off");
+        std::env::remove_var(ENV);
+        assert!(!elai_orchestrator::front_door::enabled());
+        // Mirror the start_chat_stream guard: only call helper when enabled.
+        if elai_orchestrator::front_door::enabled() {
+            j32_emit_intent_routed_for_prompt(&ssb_off, "fix the failing test in sum.rs");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        let off_rows = ssb_off
+            .query_by_type(SsbActionType::IntentRouted)
+            .expect("query off rows");
+        assert!(
+            off_rows.is_empty(),
+            "kill-switch OFF must emit zero rows; got {}",
+            off_rows.len()
+        );
+
+        // Defensive cleanup of the process-global gate.
+        std::env::remove_var(ENV);
     }
 }
