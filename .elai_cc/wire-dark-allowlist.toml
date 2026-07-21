@@ -2230,3 +2230,18 @@ owner             = "maintainer"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "J-30-T5"
 smoke_test        = "crates/cli/src/providers_cmd.rs::tests::health_ready_stores_key_and_ok"
+
+# J-33 Tier-1: MinerU `serve` doc-parser lane. The HTTP client
+# (DocParserClient) + the indexer pdf/docx branch + the is_binary_file
+# bypass are BUILT; the LIVE MinerU `serve` backend + a production caller
+# that enables the flag by default are Tier-2 / RunPod-pending, because no
+# GPU sidecar is booted by this slice. See
+# workflow/reasoning/J-33-decisions.md. Default-OFF; the contract test
+# exercises the flag-OFF + flag-ON-no-backend paths.
+[[flag]]
+name              = "ELAI_DOC_PARSER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-19"
+promotion_plan_id = "J-33"
+smoke_test        = "crates/contracts/tests/j33_mineru_doc_parser_contract.rs::doc_parser_flag_off_returns_false"

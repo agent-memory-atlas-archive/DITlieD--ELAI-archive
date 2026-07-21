@@ -66,6 +66,12 @@ uuid.workspace = true
 ignore = "0.4"
 globset = "0.4"
 usearch = { version = "2.25.2", default-features = false, optional = true }
+# J-33 Tier-1: reqwest blocking client for the MinerU `serve` /file_parse
+# doc-parser lane (crates/knowledge/src/doc_parser_client.rs). Workspace
+# already pins reqwest 0.12 with json+rustls-tls; we enable blocking+multipart
+# here because the doc-parser POST is a synchronous caller (artifact indexer).
+# Same feature set as crates/cli and crates/tools.
+reqwest = { workspace = true, features = ["blocking", "multipart"] }
 
 [features]
 default = []

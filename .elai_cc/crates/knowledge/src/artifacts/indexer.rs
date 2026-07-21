@@ -233,7 +233,35 @@ impl<'a> ArtifactIndexer<'a> {
         rel_str: &str,
         now_secs: i64,
     ) -> Result<usize, ArtifactError> {
-        let content = std::fs::read_to_string(abs_path).map_err(ArtifactError::Io)?;
+        // J-33 Tier-1: when ELAI_DOC_PARSER_ENABLE is ON and the file is a
+        // .pdf or .docx, route through the MinerU `serve` doc-parser lane
+        // instead of read_to_string (which would decode raw PDF bytes as
+        // UTF-8 text and produce garbage chunks). When the flag is OFF,
+        // today's read_to_string behavior is preserved for every extension.
+        // When the flag is ON but the client cannot be constructed (e.g.
+        // base_url unset), the error is surfaced explicitly via
+        // ArtifactError::Other rather than silently falling back to
+        // read_to_string on a PDF (which would hide a misconfiguration).
+        let content = if is_pdf_or_docx(abs_path) {
+            match crate::doc_parser_client::DocParserClient::from_env() {
+                Some(Ok(client)) => {
+                    let parsed = client.parse(abs_path).map_err(|e| {
+                        ArtifactError::Other(format!(
+                            "doc_parser failed for {rel_str}: {e}"
+                        ))
+                    })?;
+                    parsed.markdown
+                }
+                Some(Err(e)) => {
+                    return Err(ArtifactError::Other(format!(
+                        "doc_parser misconfigured for {rel_str}: {e}"
+                    )));
+                }
+                None => std::fs::read_to_string(abs_path).map_err(ArtifactError::Io)?,
+            }
+        } else {
+            std::fs::read_to_string(abs_path).map_err(ArtifactError::Io)?
+        };
         if content.is_empty() {
             return Ok(0);
         }
@@ -457,6 +485,20 @@ fn is_sql_create_boundary(line: &str) -> bool {
         keyword,
         "TABLE" | "VIEW" | "INDEX" | "UNIQUE" | "FUNCTION" | "TRIGGER" | "TYPE" | "PROCEDURE"
     )
+}
+
+/// J-33 Tier-1: return true when `path`'s extension is `pdf` or `docx`
+/// (case-insensitive). The doc-parser lane routes these through MinerU
+/// `serve` when ELAI_DOC_PARSER_ENABLE is ON; all other extensions stay on
+/// the existing read_to_string path regardless of the flag.
+fn is_pdf_or_docx(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => {
+            let lower = ext.to_ascii_lowercase();
+            lower == "pdf" || lower == "docx"
+        }
+        None => false,
+    }
 }
 
 // ---------------------------------------------------------------------------

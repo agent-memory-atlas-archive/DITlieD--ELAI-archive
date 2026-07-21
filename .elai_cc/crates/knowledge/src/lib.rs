@@ -28,6 +28,12 @@ pub mod degradation;
 // workflow/reasoning/E-52-decisions.md.
 pub mod diagnostic;
 pub mod dkg;
+// J-33 Tier-1: HTTP client for an external MinerU `serve` endpoint. Default
+// OFF behind ELAI_DOC_PARSER_ENABLE; the artifact indexer calls
+// `DocParserClient::from_env()` and, when enabled, POSTs .pdf/.docx files
+// to /file_parse instead of read_to_string-ing raw bytes. See
+// crates/knowledge/src/doc_parser_client.rs.
+pub mod doc_parser_client;
 pub mod dkg_adapter;
 pub mod error;
 pub mod fix_templates;

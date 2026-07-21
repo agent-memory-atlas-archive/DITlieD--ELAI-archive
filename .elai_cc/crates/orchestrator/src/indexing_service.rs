@@ -1459,7 +1459,22 @@ pub struct IndexingSummary {
 
 /// Detect whether a file is binary by checking its first BINARY_DETECT_BYTES
 /// bytes for null bytes.
+///
+/// J-33 Tier-1: when ELAI_DOC_PARSER_ENABLE is ON and the file is a .pdf or
+/// .docx, returns `false` so the indexer routes the file through the MinerU
+/// `serve` doc-parser lane (via `ArtifactIndexer::index_single_file`) instead
+/// of skipping it as binary. The doc-parser client reads the raw bytes via
+/// `std::fs::read` and POSTs them as multipart, so the null-byte check would
+/// incorrectly exclude PDFs from the parsing path.
 fn is_binary_file(path: &Path) -> bool {
+    if elai_knowledge::doc_parser_client::doc_parser_enabled_from_env() {
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            let lower = ext.to_ascii_lowercase();
+            if lower == "pdf" || lower == "docx" {
+                return false;
+            }
+        }
+    }
     let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
