@@ -422,6 +422,7 @@ mod bench_convergence;
 // CalibrationArtifactStore::insert_with_ssb (slice-2 seam). Live per-model
 // inference leg deferred (WIRE-DARK[J-34.leg1-live]).
 mod bench_context_fill;
+mod bench_positional_probe;
 // K-18a (PS-5 observe arm): `elai bench case-reuse [--suite fixture] [--seed N]
 // [--json]` — recurrence-hit-rate over the shipped BM25 retrieval stack. Drives
 // case_reuse_runner over the embedded fixture corpus, writes a blake3-pinned
@@ -1560,6 +1561,15 @@ fn run() -> Result<(), anyhow::Error> {
         // leg deferred (WIRE-DARK[J-34.leg1-live]). Exits 0/1.
         CliAction::BenchContextFill { suite, seeds, json } => {
             bench_context_fill::run(suite, seeds, json)?;
+        }
+        // J-34 leg-3: positional-value curve fixture harness. Builds a
+        // PositionalValueCurve at depth fractions 0.0/0.25/0.5/0.75/1.0,
+        // constructs a CalibrationArtifact, and emits ONE
+        // ContextCalibrationEvent(CurveMeasured) SSB row via
+        // CalibrationArtifactStore::insert_with_ssb. Live per-model inference
+        // leg deferred (WIRE-DARK[J-34.leg3-live]). Exits 0/1.
+        CliAction::BenchPositionalProbe { suite, seeds, json } => {
+            bench_positional_probe::run(suite, seeds, json)?;
         }
         // I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate fixture harness.
         // Statistical floor mechanically enforced (seed_count>=5, paired=true).

@@ -338,6 +338,11 @@ pub struct ModelCapabilityProfile {
     /// knee. `None` = no knee (flat curve) or no artifact; `trim_threshold`
     /// (context_policy.rs:223) falls back to the folklore fraction.
     pub calibrated_trim_fraction: Option<f64>,
+    /// J-34 leg-3: deterministic ordering seed derived from
+    /// `positional_value_curve` by `apply_to_profile`. `None` = no curve;
+    /// `compute_with_profile` carries it onto `ContextBudget` and emits a
+    /// `PlacementApplied` SSB row. Metadata-only, does NOT reorder `slots`.
+    pub ordering_seed: Option<String>,
 }
 
 impl ModelCapabilityProfile {
@@ -387,6 +392,7 @@ impl ModelCapabilityProfile {
             fill_degradation_curve: None,
             positional_value_curve: None,
             calibrated_trim_fraction: None,
+            ordering_seed: None,
         }
     }
 
@@ -435,6 +441,7 @@ impl ModelCapabilityProfile {
             fill_degradation_curve: None,
             positional_value_curve: None,
             calibrated_trim_fraction: None,
+            ordering_seed: None,
         }
     }
 
@@ -490,6 +497,7 @@ impl ModelCapabilityProfile {
             fill_degradation_curve: None,
             positional_value_curve: None,
             calibrated_trim_fraction: None,
+            ordering_seed: None,
         }
     }
 
@@ -542,6 +550,7 @@ impl ModelCapabilityProfile {
             fill_degradation_curve: None,
             positional_value_curve: None,
             calibrated_trim_fraction: None,
+            ordering_seed: None,
         }
     }
 
@@ -590,6 +599,7 @@ impl ModelCapabilityProfile {
             fill_degradation_curve: None,
             positional_value_curve: None,
             calibrated_trim_fraction: None,
+            ordering_seed: None,
         }
     }
 
@@ -638,6 +648,7 @@ impl ModelCapabilityProfile {
             fill_degradation_curve: None,
             positional_value_curve: None,
             calibrated_trim_fraction: None,
+            ordering_seed: None,
         }
     }
 
@@ -682,6 +693,7 @@ impl ModelCapabilityProfile {
             fill_degradation_curve: None,
             positional_value_curve: None,
             calibrated_trim_fraction: None,
+            ordering_seed: None,
         }
     }
 
@@ -726,6 +738,7 @@ impl ModelCapabilityProfile {
             fill_degradation_curve: None,
             positional_value_curve: None,
             calibrated_trim_fraction: None,
+            ordering_seed: None,
         }
     }
 
@@ -1399,6 +1412,9 @@ pub struct ContextBudget {
     pub total_used: usize,
     pub adaptive_level: AdaptiveLevel,
     pub prefix_kv_eligible: bool,
+    /// J-34 leg-3: metadata-only ordering seed derived from
+    /// `positional_value_curve`. Does NOT reorder `slots` (fixed ordinals).
+    pub ordering_seed: Option<String>,
 }
 
 impl ContextBudget {
@@ -1505,6 +1521,7 @@ impl ContextBudget {
             total_used: 0,
             adaptive_level: AdaptiveLevel::Normal,
             prefix_kv_eligible: false,
+            ordering_seed: None,
         }
     }
 }
@@ -1732,6 +1749,21 @@ impl ContextBudget {
             budget.total_allocated, effective_max,
             "total_allocated must equal effective_max"
         );
+
+        if let Some(seed) = &profile.ordering_seed {
+            budget.ordering_seed = Some(seed.clone());
+            if let Some(ssb_arc) = crate::lock::try_ssb_writer() {
+                crate::context_calibration::emit_context_calibration_event(
+                    &ssb_arc,
+                    crate::ssb::ContextCalibrationKind::PlacementApplied,
+                    &profile.model_name,
+                    crate::context_calibration::placement_applied_details(
+                        SLOT_COUNT,
+                        seed,
+                    ),
+                );
+            }
+        }
 
         Ok(budget)
     }
@@ -3381,6 +3413,7 @@ mod tests {
             fill_degradation_curve: None,
             positional_value_curve: None,
             calibrated_trim_fraction: None,
+            ordering_seed: None,
         };
         // With both ceilings=0 and default weights, should match compute() output.
         let b1 = ContextBudget::compute(8192, [100, 200, 300], 2000).unwrap();

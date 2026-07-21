@@ -283,6 +283,20 @@ impl CalibrationArtifactStore {
     }
 }
 
+/// J-34 leg-3: compute a deterministic `ordering_seed` from a
+/// `PositionalValueCurve`. The seed is `blake3` of the canonical JSON of the
+/// curve's samples (same pattern as `CalibrationArtifact::compute_hash`).
+/// Returns `None` when the curve has zero samples (no calibration data).
+#[must_use]
+pub fn compute_ordering_seed(curve: &PositionalValueCurve) -> Option<String> {
+    if curve.samples.is_empty() {
+        return None;
+    }
+    let canonical = serde_json::to_vec(&curve.samples).unwrap_or_default();
+    let h = blake3::hash(&canonical);
+    Some(format!("{:.32}", h.to_hex()))
+}
+
 // ---------------------------------------------------------------------------
 // apply_to_profile — the leg-2 seam
 // ---------------------------------------------------------------------------
@@ -303,6 +317,7 @@ impl CalibrationArtifactStore {
 pub fn apply_to_profile(artifact: &CalibrationArtifact, profile: &mut ModelCapabilityProfile) {
     profile.fill_degradation_curve = Some(artifact.fill_curve.clone());
     profile.positional_value_curve = Some(artifact.positional_curve.clone());
+    profile.ordering_seed = compute_ordering_seed(&artifact.positional_curve);
     if let Some(knee) = &artifact.knee {
         // Clamp to (0.0, 1.0] — a knee at 0.0 is a degenerate curve and
         // must not produce a 0% trim fraction (would trim everything).
@@ -353,6 +368,21 @@ pub(crate) fn threshold_applied_details(
     serde_json::json!({
         "calibrated_trim_fraction": calibrated_trim_fraction,
         "fallback_used": fallback_used,
+    })
+}
+
+/// Build the `details_json` for a `PlacementApplied` emit from
+/// `compute_with_profile`. Carries `slot_count` (SLOT_COUNT, fixed ordinals)
+/// and `ordering_seed` (the blake3 hash of the positional-value curve).
+/// Mirrors `threshold_applied_details` in shape.
+#[must_use]
+pub(crate) fn placement_applied_details(
+    slot_count: usize,
+    ordering_seed: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "slot_count": slot_count,
+        "ordering_seed": ordering_seed,
     })
 }
 

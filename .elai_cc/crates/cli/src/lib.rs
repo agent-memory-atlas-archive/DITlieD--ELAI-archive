@@ -23,3 +23,4 @@
 
 pub mod mcp_client;
 pub mod bench_qdelta;
+pub mod bench_positional_probe;

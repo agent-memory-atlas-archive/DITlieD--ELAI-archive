@@ -1216,6 +1216,18 @@ pub(crate) enum CliAction {
         seeds: u32,
         json: bool,
     },
+    // J-34 leg-3: `elai bench positional-probe --suite <PATH> [--seeds <u32>] [--json]`
+    // Positional-value curve fixture harness. Fills a PositionalValueCurve at
+    // depth fractions 0.0 / 0.25 / 0.5 / 0.75 / 1.0. Scores deterministically
+    // by gate verdicts (never LLM-judged). Emits ONE
+    // ContextCalibrationEvent(CurveMeasured) SSB row via
+    // CalibrationArtifactStore::insert_with_ssb (slice-2 seam). Live per-model
+    // inference leg deferred (WIRE-DARK[J-34.leg3-live]).
+    BenchPositionalProbe {
+        suite: std::path::PathBuf,
+        seeds: u32,
+        json: bool,
+    },
     // I-38: `elai bench qdelta --config <PATH> [--seed <u64>] [--json]`
     // QDELTA defective-diff rate fixture harness. Statistical floor enforced
     // mechanically (seed_count>=5, paired=true). Emits ONE QdeltaMeasured SSB
