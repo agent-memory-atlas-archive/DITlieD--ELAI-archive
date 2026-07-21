@@ -902,6 +902,7 @@ pub fn run() {
             commands::search_artifacts,
             commands::index_artifacts,
             commands::remove_artifacts,
+            commands::get_doc_parser_status,
             commands::list_entry_points,
             // REMOTE SIDECAR BOOT OVERLAY
             commands::start_remote_sidecar,

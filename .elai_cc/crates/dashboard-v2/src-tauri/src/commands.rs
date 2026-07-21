@@ -10681,6 +10681,24 @@ pub async fn remove_artifacts(
     }))
 }
 
+/// Honest status snapshot for the J-33 doc-parser (MinerU) lane. Reads env
+/// vars only; no HTTP probe, no side effect. The frontend renders an
+/// OFF / MISCONFIGURED / READY badge from `lane` so the drawer cannot
+/// invent capability when the lane is off.
+///
+/// Frontend call: `invoke("get_doc_parser_status")`
+/// Returns: `{ enabled: bool, base_url_configured: bool, backend: "mineru", lane: "off"|"misconfigured"|"ready" }`
+#[tauri::command]
+pub fn get_doc_parser_status() -> CmdResult<serde_json::Value> {
+    let s = elai_knowledge::doc_parser_client::status_from_env();
+    Ok(serde_json::json!({
+        "enabled": s.enabled,
+        "base_url_configured": s.base_url_configured,
+        "backend": s.backend,
+        "lane": s.lane,
+    }))
+}
+
 /// Detect entry points in the project (orphan, well-known name, framework
 /// route, test) using the symbol graph reverse index.
 ///

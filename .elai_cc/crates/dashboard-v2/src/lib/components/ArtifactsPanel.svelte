@@ -28,6 +28,13 @@
     score: number;
   };
 
+  type DocParserStatus = {
+    enabled: boolean;
+    base_url_configured: boolean;
+    backend: string;
+    lane: 'off' | 'misconfigured' | 'ready' | 'unknown';
+  };
+
   // db_path must be passed in from the parent (KnowledgeDrawer has the project context).
   // When undefined, the panel renders a "no project" notice.
   let { db_path = '' }: { db_path?: string } = $props();
@@ -46,6 +53,11 @@
   let searchInFlight = $state(false);
   // WARN-5: inline status shown after index_artifacts completes.
   let indexStatus = $state<string | null>(null);
+  // J-33 slice-3: MinerU doc-parser lane status. `null` = not yet fetched;
+  // `unknown` lane = Tauri unavailable or invoke failed (honest ghost text,
+  // never a fake READY).
+  let docParserStatus = $state<DocParserStatus | null>(null);
+  let docParserUnavailable = $state(false);
   let tauriInvoke: (<T>(cmd: string, args?: Record<string, unknown>) => Promise<T>) | null = null;
 
   // ---------------------------------------------------------------------------
@@ -156,17 +168,75 @@
     return content.length > 200 ? content.slice(0, 200) + '…' : content;
   }
 
+  async function loadDocParserStatus(): Promise<void> {
+    try {
+      const inv = await ensureInvoke();
+      if (!inv) {
+        docParserUnavailable = true;
+        return;
+      }
+      const result = await inv<DocParserStatus>('get_doc_parser_status');
+      docParserStatus = result;
+      docParserUnavailable = false;
+    } catch (err) {
+      docParserUnavailable = true;
+      console.debug('[ArtifactsPanel] get_doc_parser_status failed', err);
+    }
+  }
+
+  // PDF/DOCX capability hint per artifact name. Capability hint only; never
+  // claims "parsed-by-MinerU" without proof (lane badge is the MinerU signal).
+  function isPdfOrDocx(name: string): boolean {
+    const lower = name.toLowerCase();
+    return lower.endsWith('.pdf') || lower.endsWith('.docx');
+  }
+
+  // Derive the MinerU badge label + tone from the lane.
+  function mineruBadge(): { label: string; tone: string } | null {
+    if (docParserUnavailable) return null;
+    if (!docParserStatus) return null;
+    switch (docParserStatus.lane) {
+      case 'off':
+        return { label: 'MinerU OFF', tone: 'ghost' };
+      case 'misconfigured':
+        return { label: 'MinerU MISCONFIGURED', tone: 'warn' };
+      case 'ready':
+        return { label: 'MinerU READY', tone: 'teal' };
+      default:
+        return null;
+    }
+  }
+
+  // Detect doc_parser-related failures surfaced via lastError.
+  function mineruParseFailureMessage(): string | null {
+    if (!lastError) return null;
+    const lower = lastError.toLowerCase();
+    if (lower.includes('doc_parser') || lower.includes('mineru')) {
+      return lastError;
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
 
   onMount(() => {
     void loadArtifacts();
+    void loadDocParserStatus();
   });
 </script>
 
 <Card variant="plain" padding={12}>
-  <div class="section-label">CONTEXT ARTIFACTS</div>
+  <div class="section-label">
+    <span>CONTEXT ARTIFACTS</span>
+    {#if docParserUnavailable}
+      <span class="ghost-text mineru-status-ghost">doc-parser status unavailable</span>
+    {:else if mineruBadge()}
+      {@const mb = mineruBadge()!}
+      <Badge tone={mb.tone} size="xs">{mb.label}</Badge>
+    {/if}
+  </div>
 
   {#if !db_path}
     <span class="ghost-text">No project selected — open a project to view artifacts</span>
@@ -182,6 +252,9 @@
         <div class="artifact-row" class:artifact-row--selected={isFiltered}>
           <span class="artifact-name">{artifact.name}</span>
           <div class="artifact-actions">
+            {#if isPdfOrDocx(artifact.name)}
+              <Badge tone="ghost" size="xs">PDF/DOCX</Badge>
+            {/if}
             <Button
               variant="ghost"
               size="sm"
@@ -238,6 +311,9 @@
     {/if}
   {/if}
 
+  {#if mineruParseFailureMessage()}
+    <div class="error-row">MinerU parse failed: {mineruParseFailureMessage()}</div>
+  {/if}
   {#if lastError !== null}
     <div class="error-row">error: {lastError}</div>
   {/if}
@@ -261,6 +337,14 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .mineru-status-ghost {
+    text-transform: none;
+    letter-spacing: normal;
   }
 
   .ghost-text {

@@ -77,6 +77,44 @@ pub fn doc_parser_base_url_from_env() -> Option<String> {
     }
 }
 
+/// Honest status snapshot for the doc-parser lane. Read from env only; no
+/// HTTP probe, no side effect. The dashboard surfaces this via the
+/// `get_doc_parser_status` Tauri command so the KnowledgeDrawer can render
+/// an OFF / MISCONFIGURED / READY badge without inventing capability.
+///
+/// `lane`:
+/// - `"off"`: flag unset (today's behavior; drawer must say OFF, no phantom)
+/// - `"misconfigured"`: flag on but base_url missing
+/// - `"ready"`: flag on and base_url configured (service reachability NOT
+///   probed here; the badge says READY, not "live")
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocParserStatus {
+    pub enabled: bool,
+    pub base_url_configured: bool,
+    pub backend: &'static str,
+    pub lane: &'static str,
+}
+
+/// Build a [`DocParserStatus`] from env vars only. No HTTP, no panic.
+#[must_use]
+pub fn status_from_env() -> DocParserStatus {
+    let enabled = doc_parser_enabled_from_env();
+    let base_url_configured = doc_parser_base_url_from_env().is_some();
+    let lane: &'static str = if !enabled {
+        "off"
+    } else if !base_url_configured {
+        "misconfigured"
+    } else {
+        "ready"
+    };
+    DocParserStatus {
+        enabled,
+        base_url_configured,
+        backend: "mineru",
+        lane,
+    }
+}
+
 /// Errors emitted by the doc-parser lane. Distinct from
 /// [`crate::artifacts::manifest::ArtifactError`] so the indexer can map
 /// them to `ArtifactError::Other` without losing the original cause.
@@ -388,5 +426,56 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().expect("tmp");
         let r = client.parse(tmp.path());
         assert!(matches!(r, Err(DocParserError::Eligibility(_))));
+    }
+
+    #[test]
+    fn status_lane_off_when_flag_unset() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var(DOC_PARSER_ENABLE_ENV);
+        std::env::remove_var(DOC_PARSER_BASE_URL_ENV);
+        let s = status_from_env();
+        assert!(!s.enabled);
+        assert!(!s.base_url_configured);
+        assert_eq!(s.backend, "mineru");
+        assert_eq!(s.lane, "off");
+    }
+
+    #[test]
+    fn status_lane_misconfigured_when_flag_on_base_url_missing() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var(DOC_PARSER_ENABLE_ENV, "1");
+        std::env::remove_var(DOC_PARSER_BASE_URL_ENV);
+        let s = status_from_env();
+        std::env::remove_var(DOC_PARSER_ENABLE_ENV);
+        assert!(s.enabled);
+        assert!(!s.base_url_configured);
+        assert_eq!(s.lane, "misconfigured");
+        assert_eq!(s.backend, "mineru");
+    }
+
+    #[test]
+    fn status_lane_ready_when_flag_on_and_base_url_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var(DOC_PARSER_ENABLE_ENV, "1");
+        std::env::set_var(DOC_PARSER_BASE_URL_ENV, "http://127.0.0.1:8760");
+        let s = status_from_env();
+        std::env::remove_var(DOC_PARSER_ENABLE_ENV);
+        std::env::remove_var(DOC_PARSER_BASE_URL_ENV);
+        assert!(s.enabled);
+        assert!(s.base_url_configured);
+        assert_eq!(s.lane, "ready");
+        assert_eq!(s.backend, "mineru");
+    }
+
+    #[test]
+    fn status_lane_off_when_flag_off_but_base_url_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var(DOC_PARSER_ENABLE_ENV);
+        std::env::set_var(DOC_PARSER_BASE_URL_ENV, "http://127.0.0.1:8760");
+        let s = status_from_env();
+        std::env::remove_var(DOC_PARSER_BASE_URL_ENV);
+        assert!(!s.enabled);
+        assert!(s.base_url_configured);
+        assert_eq!(s.lane, "off");
     }
 }
