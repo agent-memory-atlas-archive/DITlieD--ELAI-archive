@@ -870,10 +870,40 @@ async fn emit_model_drift_check(
                 confirmed_by_fingerprint,
                 "G-10: BehavioralDriftSuspected emitted -- model_drift_suspected row written"
             );
+
+            // J-34 S5 slice-6: when the fingerprint changed, the previous
+            // calibration artifact is invalidated. Emit the
+            // CalibrationInvalidated SSB row (the off-agent observable per R4)
+            // through the same live Arc<Ssb>. The in-process
+            // CalibrationArtifactStore is ephemeral (no process-global
+            // instance), so the SSB row is the durable signal.
+            if should_emit_calibration_invalidated(signals) {
+                let details = serde_json::json!({
+                    "reason": "model_drift_fingerprint_changed",
+                    "previous_produced_at_secs": baseline.captured_at_ms / 1000,
+                });
+                elai_orchestrator::context_calibration::emit_context_calibration_event(
+                    ssb,
+                    elai_orchestrator::ssb::ContextCalibrationKind::CalibrationInvalidated,
+                    &baseline.identity_key,
+                    details,
+                );
+            }
         }
     }
 
     Ok(())
+}
+
+/// J-34 S5 slice-6 -- pure gate: emit CalibrationInvalidated only when the
+/// drift signals include FingerprintChanged (identity change). Extracted as
+/// a helper so the gating logic is unit-testable without an SSB handle.
+fn should_emit_calibration_invalidated(
+    signals: &[elai_orchestrator::model_drift::DriftSignal],
+) -> bool {
+    signals
+        .iter()
+        .any(|s| matches!(s, elai_orchestrator::model_drift::DriftSignal::FingerprintChanged))
 }
 
 /// G-2 -- build + write the `.rra` bundle and emit ONE `run_artifact_emitted`
@@ -1284,5 +1314,35 @@ mod tests {
         );
         // The bridge handle is constructible and Arc-able (stored on wiring).
         let _bridge_handle: Arc<elai_orchestrator::empire::EmpireBridge> = bridge;
+    }
+
+    // J-34 S5 slice-6: prove the FingerprintChanged gate. The helper is pure,
+    // so this test needs no SSB / runtime / fixtures.
+    #[test]
+    fn calibration_invalidated_gate_on_fingerprint_changed() {
+        use elai_orchestrator::model_drift::DriftSignal;
+        assert!(
+            super::should_emit_calibration_invalidated(&[DriftSignal::FingerprintChanged]),
+            "FingerprintChanged alone must trigger CalibrationInvalidated"
+        );
+        assert!(
+            super::should_emit_calibration_invalidated(&[
+                DriftSignal::CanaryRegressed,
+                DriftSignal::FingerprintChanged,
+            ]),
+            "FingerprintChanged among other signals must still trigger"
+        );
+        assert!(
+            !super::should_emit_calibration_invalidated(&[DriftSignal::CanaryRegressed]),
+            "CanaryRegressed without FingerprintChanged must NOT trigger"
+        );
+        assert!(
+            !super::should_emit_calibration_invalidated(&[DriftSignal::MalformedOutputSpike]),
+            "MalformedOutputSpike without FingerprintChanged must NOT trigger"
+        );
+        assert!(
+            !super::should_emit_calibration_invalidated(&[]),
+            "empty signals must NOT trigger"
+        );
     }
 }
