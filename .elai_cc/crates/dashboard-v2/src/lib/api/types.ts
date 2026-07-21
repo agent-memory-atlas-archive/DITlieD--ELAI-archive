@@ -2853,6 +2853,56 @@ export interface TestReport {
   error?: string;
 }
 
+/** Mirror of Rust InventoryStatusJson (J-30 RuntimePanel inventory).
+ *  backend is a free string (canonical_name / custom spec.name), NOT RuntimeBackendId. */
+export interface InventoryStatusJson {
+  backend: string;
+  display_name: string;
+  configured: boolean;
+  verified_at: number | null;
+  models: string[];
+  stale: boolean;
+}
+
+/** Mirror of Rust ConfigKeyJson for descriptor-driven BYOK form. */
+export interface ConfigKeyJson {
+  name: string;
+  kind: string;
+  required: boolean;
+  secret: boolean;
+  default: string | null;
+  description: string;
+}
+
+/** Mirror of Rust BackendConfigDescriptorJson. */
+export interface BackendConfigDescriptorJson {
+  backend: string;
+  display_name: string;
+  keys: ConfigKeyJson[];
+  supports_base_url: boolean;
+  default_base_url: string | null;
+  api_key_optional: boolean;
+}
+
+/** Request body for configure_provider (save=false = test-only). */
+export interface ConfigureProviderRequest {
+  backend: string;
+  api_key?: string | null;
+  base_url?: string | null;
+  model?: string | null;
+  save: boolean;
+}
+
+/** Report from configure_provider. */
+export interface ConfigureProviderReport {
+  backend: string;
+  ok: boolean;
+  health: string;
+  error?: string | null;
+  verified_at?: number | null;
+  saved: boolean;
+}
+
 // ------------------------------------------------------------------
 // C-4 — Tauri commands orchestration + cloud spend surface.
 // Mirrors SsbViewer DTOs (snake_case) + the Tauri wrapper return

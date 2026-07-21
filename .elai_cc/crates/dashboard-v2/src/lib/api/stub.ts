@@ -174,6 +174,11 @@ import type {
   // E-25 Tranche N (s-22600 2026-06-01): Compaction-Ladder dashboard.
   CompactionLadderStateDto,
   CompactionEventDto,
+  // J-30 S5d — RuntimePanel BYOK inventory + configure-provider surface.
+  InventoryStatusJson,
+  BackendConfigDescriptorJson,
+  ConfigureProviderRequest,
+  ConfigureProviderReport,
 } from './types';
 
 import {
@@ -3457,6 +3462,94 @@ export async function setRoleRuntime(
   const inv = await ensureInvoke();
   if (!inv) throw new Error('tauri invoke unavailable');
   await inv<void>('set_role_runtime', { role, backend });
+}
+
+// ------------------------------------------------------------------
+// J-30 S5d — RuntimePanel BYOK inventory + configure-provider surface.
+// Mirrors Rust `list_provider_inventory`, `provider_config_descriptor`,
+// `configure_provider(req: ConfigureProviderRequest)`. Arg shape follows
+// the house convention (e.g. submit_tradeoff_responses): the Rust param
+// name wraps the struct payload, so `{ req: {...} }`, NOT flat fields.
+// ------------------------------------------------------------------
+
+const MOCK_PROVIDER_INVENTORY: InventoryStatusJson[] = [
+  {
+    backend: 'llama_cpp',
+    display_name: 'llama.cpp',
+    configured: true,
+    verified_at: null,
+    models: ['qwen3.5-4b-q4km'],
+    stale: true,
+  },
+  {
+    backend: 'anthropic_api',
+    display_name: 'Anthropic API',
+    configured: false,
+    verified_at: null,
+    models: [],
+    stale: true,
+  },
+];
+
+export async function listProviderInventory(): Promise<InventoryStatusJson[]> {
+  logStub('listProviderInventory');
+  const live = await tryInvoke<InventoryStatusJson[]>('list_provider_inventory');
+  if (live) return live;
+  await delay();
+  return MOCK_PROVIDER_INVENTORY.map((r) => ({ ...r, models: [...r.models] }));
+}
+
+export async function providerConfigDescriptor(
+  backend: string,
+): Promise<BackendConfigDescriptorJson> {
+  logStub('providerConfigDescriptor', { backend });
+  const live = await tryInvoke<BackendConfigDescriptorJson>('provider_config_descriptor', {
+    backend,
+  });
+  if (live) return live;
+  await delay();
+  return {
+    backend,
+    display_name: backend,
+    keys: [
+      {
+        name: 'api_key',
+        kind: 'api_key',
+        required: true,
+        secret: true,
+        default: null,
+        description: 'API key',
+      },
+      {
+        name: 'base_url',
+        kind: 'base_url',
+        required: false,
+        secret: false,
+        default: null,
+        description: 'Base URL override',
+      },
+    ],
+    supports_base_url: true,
+    default_base_url: null,
+    api_key_optional: false,
+  };
+}
+
+export async function configureProvider(
+  req: ConfigureProviderRequest,
+): Promise<ConfigureProviderReport> {
+  logStub('configureProvider', { backend: req.backend, save: req.save });
+  const live = await tryInvoke<ConfigureProviderReport>('configure_provider', { req });
+  if (live) return live;
+  await delay(120, 240);
+  return {
+    backend: req.backend,
+    ok: false,
+    health: 'unavailable',
+    error: 'mock: configure_provider unavailable outside Tauri',
+    verified_at: null,
+    saved: false,
+  };
 }
 
 // ------------------------------------------------------------------

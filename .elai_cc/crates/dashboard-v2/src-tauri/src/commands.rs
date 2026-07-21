@@ -11690,6 +11690,384 @@ pub async fn set_role_runtime(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// J-30 S5a: RuntimePanel inventory + BYOK configure commands.
+// Wraps elai_providers::runtime::{inventory, key_store, config_descriptor}
+// as library APIs; no SSB emission here (FORK1=B -- dashboard SSB deferred).
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct InventoryStatusJson {
+    pub backend: String,
+    pub display_name: String,
+    pub configured: bool,
+    pub verified_at: Option<u64>,
+    pub models: Vec<String>,
+    pub stale: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ConfigKeyJson {
+    pub name: String,
+    pub kind: String,
+    pub required: bool,
+    pub secret: bool,
+    pub default: Option<String>,
+    pub description: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct BackendConfigDescriptorJson {
+    pub backend: String,
+    pub display_name: String,
+    pub keys: Vec<ConfigKeyJson>,
+    pub supports_base_url: bool,
+    pub default_base_url: Option<String>,
+    pub api_key_optional: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ConfigureProviderRequest {
+    pub backend: String,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub save: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ConfigureProviderReport {
+    pub backend: String,
+    pub ok: bool,
+    pub health: String,
+    pub error: Option<String>,
+    pub verified_at: Option<u64>,
+    pub saved: bool,
+}
+
+fn config_key_kind_to_str(kind: elai_providers::runtime::ConfigKeyKind) -> &'static str {
+    use elai_providers::runtime::ConfigKeyKind::*;
+    match kind {
+        ApiKey => "api_key",
+        BaseUrl => "base_url",
+        Model => "model",
+        Region => "region",
+        Profile => "profile",
+    }
+}
+
+fn descriptor_to_json(
+    descriptor: &elai_providers::runtime::BackendConfigDescriptor,
+) -> BackendConfigDescriptorJson {
+    let keys = descriptor
+        .keys
+        .iter()
+        .map(|k| ConfigKeyJson {
+            name: k.name.to_string(),
+            kind: config_key_kind_to_str(k.kind).to_string(),
+            required: k.required,
+            secret: k.secret,
+            default: k.default.map(|s| s.to_string()),
+            description: k.description.to_string(),
+        })
+        .collect();
+    BackendConfigDescriptorJson {
+        backend: descriptor.backend.canonical_name().to_string(),
+        display_name: descriptor.display_name.to_string(),
+        keys,
+        supports_base_url: descriptor.supports_base_url,
+        default_base_url: descriptor.default_base_url.map(|s| s.to_string()),
+        api_key_optional: descriptor.api_key_optional,
+    }
+}
+
+#[tauri::command]
+pub async fn list_provider_inventory() -> Result<Vec<InventoryStatusJson>, String> {
+    use elai_providers::runtime::inventory::all_inventory;
+    let clock = OsClock;
+    let rows = all_inventory(&clock).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|s| InventoryStatusJson {
+            backend: s.backend,
+            display_name: s.display_name,
+            configured: s.configured,
+            verified_at: s.verified_at,
+            models: s.models,
+            stale: s.stale,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn provider_config_descriptor(
+    backend: String,
+) -> Result<BackendConfigDescriptorJson, String> {
+    use elai_providers::runtime::{
+        config_descriptor, custom_backends, resolve_backend, RuntimeBackend,
+    };
+    let resolved = resolve_backend(backend.trim()).map_err(|e| {
+        format!(
+            "unknown backend '{}'. Supported: {}",
+            e.candidate,
+            e.supported.join(", ")
+        )
+    })?;
+    let descriptor = if resolved == RuntimeBackend::Custom {
+        let normalised = backend.trim().to_ascii_lowercase();
+        let spec = custom_backends::resolve_custom(&normalised)
+            .ok_or_else(|| format!("custom backend '{normalised}' not registered"))?;
+        config_descriptor::descriptor_for_custom(&spec)
+    } else {
+        config_descriptor::descriptor_for(resolved)
+            .ok_or_else(|| format!("no descriptor for backend {}", resolved.canonical_name()))?
+            .clone()
+    };
+    Ok(descriptor_to_json(&descriptor))
+}
+
+#[tauri::command]
+pub async fn configure_provider(
+    req: ConfigureProviderRequest,
+) -> Result<ConfigureProviderReport, String> {
+    use elai_providers::runtime::{
+        config_descriptor, create_runtime, custom_backends, inventory, key_store, resolve_backend,
+        RuntimeBackend, RuntimeFactoryConfig, RuntimeHealth, SecretString,
+    };
+
+    let candidate = req.backend.trim();
+    let resolved = resolve_backend(candidate).map_err(|e| {
+        format!(
+            "unknown backend '{}'. Supported: {}",
+            e.candidate,
+            e.supported.join(", ")
+        )
+    })?;
+
+    let (descriptor, provider_id, runtime_profile): (
+        elai_providers::runtime::BackendConfigDescriptor,
+        String,
+        Option<String>,
+    ) = if resolved == RuntimeBackend::Custom {
+        let normalised = candidate.to_ascii_lowercase();
+        let spec = custom_backends::resolve_custom(&normalised)
+            .ok_or_else(|| format!("custom backend '{normalised}' not registered"))?;
+        let desc = config_descriptor::descriptor_for_custom(&spec);
+        let pid = spec.name.clone();
+        let profile = Some(spec.name.clone());
+        (desc, pid, profile)
+    } else {
+        let canon = resolved.canonical_name();
+        let desc = config_descriptor::descriptor_for(resolved)
+            .ok_or_else(|| format!("no descriptor for backend {canon}"))?
+            .clone();
+        let pid = canon.to_string();
+        (desc, pid, None)
+    };
+
+    let mut cfg = RuntimeFactoryConfig::for_backend(resolved);
+    cfg.runtime_profile = runtime_profile;
+
+    if let Some(key) = req.api_key.as_deref() {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            cfg.api_key = Some(SecretString::new(trimmed.to_string()));
+        }
+    }
+    if cfg.api_key.is_none() {
+        if resolved == RuntimeBackend::Custom {
+            if let Some(spec) =
+                custom_backends::resolve_custom(&candidate.to_ascii_lowercase())
+            {
+                if let Ok(Some(existing)) = key_store::lookup(&spec.name, &spec.api_key_ref) {
+                    cfg.api_key = Some(existing);
+                }
+            }
+        } else {
+            let env_name = descriptor
+                .keys
+                .iter()
+                .find(|k| {
+                    k.kind == config_descriptor::ConfigKeyKind::ApiKey && k.secret && k.required
+                })
+                .map(|k| k.name);
+            if let Some(env) = env_name {
+                if let Ok(Some(existing)) = key_store::lookup(&provider_id, env) {
+                    cfg.api_key = Some(existing);
+                }
+            }
+        }
+    }
+
+    if let Some(url) = req.base_url.as_deref() {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            cfg.base_url = Some(trimmed.to_string());
+        }
+    }
+    if cfg.base_url.is_none() {
+        if let Some(default) = descriptor.default_base_url {
+            cfg.base_url = Some(default.to_string());
+        }
+    }
+    if let Some(model) = req.model.as_deref() {
+        let trimmed = model.trim();
+        if !trimmed.is_empty() {
+            cfg.model = Some(trimmed.to_string());
+        }
+    }
+
+    if let Err(missing) = config_descriptor::satisfies(&descriptor, &cfg) {
+        return Ok(ConfigureProviderReport {
+            backend: provider_id,
+            ok: false,
+            health: "unavailable".to_string(),
+            error: Some(redact_secret_substrings(&format!(
+                "missing required config key `{}` ({})",
+                missing.key, missing.reason
+            ))),
+            verified_at: None,
+            saved: false,
+        });
+    }
+
+    let to_store: Option<SecretString> = cfg.api_key.clone();
+    let stamp_models: Vec<String> = cfg
+        .model
+        .as_deref()
+        .map(|m| vec![m.to_string()])
+        .unwrap_or_default();
+
+    let adapter = match create_runtime(cfg) {
+        Ok(a) => a,
+        Err(err) => {
+            let reason = redact_secret_substrings(&err.to_string());
+            return Ok(ConfigureProviderReport {
+                backend: provider_id,
+                ok: false,
+                health: "unavailable".to_string(),
+                error: Some(reason),
+                verified_at: None,
+                saved: false,
+            });
+        }
+    };
+
+    let health = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        adapter.health_check(),
+    )
+    .await
+    .unwrap_or(RuntimeHealth::Unavailable {
+        reason: "health probe timeout (>5s)".to_string(),
+    });
+
+    let (ok, health_tag, error) = match &health {
+        RuntimeHealth::Ready => (true, "ready".to_string(), None),
+        RuntimeHealth::Degraded { reason } => (
+            true,
+            "degraded".to_string(),
+            Some(redact_secret_substrings(reason)),
+        ),
+        RuntimeHealth::Unavailable { reason } => (
+            false,
+            "unavailable".to_string(),
+            Some(redact_secret_substrings(reason)),
+        ),
+    };
+
+    let mut saved = false;
+    let mut verified_at: Option<u64> = None;
+    if ok && req.save {
+        if let Some(key) = to_store.as_ref() {
+            if let Err(err) = key_store::store(&provider_id, key) {
+                return Ok(ConfigureProviderReport {
+                    backend: provider_id,
+                    ok: false,
+                    health: "unavailable".to_string(),
+                    error: Some(format!("key store failed: {err}")),
+                    verified_at: None,
+                    saved: false,
+                });
+            }
+            saved = true;
+        }
+        let clock = OsClock;
+        if let Err(err) = inventory::stamp_verified_at(&provider_id, stamp_models, &clock) {
+            return Ok(ConfigureProviderReport {
+                backend: provider_id,
+                ok: true,
+                health: health_tag,
+                error: Some(format!("inventory stamp failed: {err}")),
+                verified_at: None,
+                saved,
+            });
+        }
+        verified_at = Some(u64::try_from(clock.now_ms()).unwrap_or(0));
+    }
+
+    Ok(ConfigureProviderReport {
+        backend: provider_id,
+        ok,
+        health: health_tag,
+        error,
+        verified_at,
+        saved,
+    })
+}
+
+#[cfg(test)]
+mod j30_runtime_panel_tests {
+    use super::*;
+
+    #[test]
+    fn inventory_status_json_maps_fields() {
+        let row = InventoryStatusJson {
+            backend: "anthropic".to_string(),
+            display_name: "Anthropic API".to_string(),
+            configured: true,
+            verified_at: Some(1_700_000_000_000),
+            models: vec!["claude-sonnet-4-6".to_string()],
+            stale: false,
+        };
+        let json = serde_json::to_string(&row).expect("serialize");
+        let back: InventoryStatusJson = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.backend, row.backend);
+        assert_eq!(back.display_name, row.display_name);
+        assert_eq!(back.configured, row.configured);
+        assert_eq!(back.verified_at, row.verified_at);
+        assert_eq!(back.models, row.models);
+        assert_eq!(back.stale, row.stale);
+    }
+
+    #[test]
+    fn configure_request_save_flag_deserializes() {
+        let save_true = serde_json::json!({
+            "backend": "anthropic",
+            "api_key": "sk-test",
+            "base_url": null,
+            "model": null,
+            "save": true,
+        });
+        let req: ConfigureProviderRequest =
+            serde_json::from_value(save_true).expect("deserialize save=true");
+        assert!(req.save);
+        assert_eq!(req.backend, "anthropic");
+        assert_eq!(req.api_key.as_deref(), Some("sk-test"));
+
+        let save_false = serde_json::json!({
+            "backend": "sidecar",
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "save": false,
+        });
+        let req: ConfigureProviderRequest =
+            serde_json::from_value(save_false).expect("deserialize save=false");
+        assert!(!req.save);
+    }
+}
+
 /// Atomic-write helper for `set_role_runtime`. Mirrors
 /// `cli/src/runtime_cmd.rs::atomic_write` + `set_role_runtime_in_toml`.
 /// Reads the TOML, mutates `[agents.<role>.runtime] backend = "<name>"`

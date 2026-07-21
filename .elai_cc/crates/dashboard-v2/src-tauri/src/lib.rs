@@ -971,6 +971,11 @@ pub fn run() {
             commands::list_runtimes,
             commands::test_runtime,
             commands::set_role_runtime,
+            // J-30 RuntimePanel BYOK/inventory residual
+            // cross-lang-pair: dashboard/tauri/api
+            commands::list_provider_inventory,
+            commands::provider_config_descriptor,
+            commands::configure_provider,
             // C-4 — ORCHESTRATION + CLOUD SPEND SURFACE.
             // 9 new commands wired over SsbViewer methods + a greenfield
             // projects.json persistence pair (list_projects/create_project).

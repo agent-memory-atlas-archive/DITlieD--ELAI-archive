@@ -3,10 +3,13 @@
   introduced by Phase 4M (multi-runtime backend abstraction).
 
   cross-lang-pair: dashboard/tauri/api
-  Pairs with three Tauri commands in src-tauri/src/commands.rs:
+  Pairs with Tauri commands in src-tauri/src/commands.rs:
     - list_runtimes()           returns RuntimeInfo[]
     - test_runtime(backend)     returns TestReport
     - set_role_runtime(role, backend)  mutates AppState.runtime_routing
+    - list_provider_inventory()              returns InventoryStatusJson[]
+    - provider_config_descriptor(backend)   returns BackendConfigDescriptorJson
+    - configure_provider(req)                returns ConfigureProviderReport
 
   Patterns followed:
     - GatesPanel.svelte: $state / $effect rune skeleton + 5-10s poll.
@@ -38,6 +41,7 @@
     TestReport,
     RuntimeAgentRole,
   } from '$lib/api/types';
+  import ProviderInventoryPanel from './ProviderInventoryPanel.svelte';
 
   // -----------------------------------------------------------------
   // Polling state
@@ -263,6 +267,7 @@
       capabilityProbes = { ...capabilityProbes, [backend]: { available: false, reason: String(err), platform_badge: 'error' } };
     }
   }
+
 </script>
 
 <section class="runtime-panel" aria-label="Runtime backends">
@@ -485,6 +490,9 @@
         {/each}
       </div>
     </div>
+
+    <!-- J-30: Provider inventory & BYOK (bring-your-own-key) configure. -->
+    <ProviderInventoryPanel />
   {/if}
 </section>
 
