@@ -65,7 +65,9 @@ use elai_orchestrator::context_calibration::{
     CalibrationArtifact, CalibrationArtifactStore, FillDegradationCurve, PositionalSample,
     PositionalValueCurve,
 };
-use elai_orchestrator::ssb::{SsbActionType, SsbReader as _};
+use elai_orchestrator::ssb::{
+    decode_ssb_payload, ContextCalibrationEventPayload, SsbActionType, SsbPayload, SsbReader as _,
+};
 use elai_orchestrator::{Ssb, SsbConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -231,8 +233,8 @@ pub fn validate_fixture(config: &PositionalProbeConfig) -> Result<(), BenchPosit
 /// Audit the fixture content for NEGATIVE cases: lorem/random padding must
 /// fail the fixture audit. A valid fixture has structured constraint outcomes
 /// (honored booleans), not filler. This checks that the suite label is not
-/// "lorem" or "random" and that the outcomes are not all-true (which would
-/// indicate a flat curve with no signal, not a real probe).
+/// "lorem" or "random" and that the outcomes are not uniformly true or false
+/// (which would indicate a flat curve with no signal, not a real probe).
 pub fn audit_fixture(config: &PositionalProbeConfig) -> Result<(), BenchPositionalProbeError> {
     let suite_lower = config.suite.to_lowercase();
     if suite_lower.contains("lorem") || suite_lower.contains("random") {
@@ -249,9 +251,15 @@ pub fn audit_fixture(config: &PositionalProbeConfig) -> Result<(), BenchPosition
         .flat_map(|lvl| lvl.outcomes.iter())
         .flat_map(|seed| seed.iter())
         .all(|&v| v);
-    if all_true {
+    let all_false = config
+        .levels
+        .iter()
+        .flat_map(|lvl| lvl.outcomes.iter())
+        .flat_map(|seed| seed.iter())
+        .all(|&v| !v);
+    if all_true || all_false {
         return Err(BenchPositionalProbeError::FixtureAudit {
-            reason: "all outcomes are 'honored=true'; flat curve has no probe signal (NEGATIVE: lorem/random padding)".to_string(),
+            reason: "all outcomes are uniformly true or false; flat curve has no probe signal (NEGATIVE: lorem/random padding)".to_string(),
         });
     }
     Ok(())
@@ -459,7 +467,7 @@ pub fn run_inner(
         positional_curve.samples.len(),
         knee_label,
         flat_note,
-        &identity_key[..identity_key.len().min(48)],
+        &identity_key.chars().take(48).collect::<String>(),
         monotonicity_note,
         elai_seed,
         &fixture_blake3[..16],
@@ -595,15 +603,33 @@ fn emit_calibration_artifact(
         let mut store = CalibrationArtifactStore::new();
         store.insert_with_ssb(artifact, Some(&ssb));
 
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-        let rows = ssb
-            .query_by_type(SsbActionType::ContextCalibrationEvent(
-                elai_orchestrator::ssb::ContextCalibrationKind::CurveMeasured,
-            ))
-            .map_err(|e| BenchPositionalProbeError::SsbOpen {
-                source_msg: format!("query_by_type failed: {e}"),
-            })?;
-        if rows.is_empty() {
+        let mut found = false;
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let rows = ssb
+                .query_by_type(SsbActionType::ContextCalibrationEvent(
+                    elai_orchestrator::ssb::ContextCalibrationKind::CurveMeasured,
+                ))
+                .map_err(|e| BenchPositionalProbeError::SsbOpen {
+                    source_msg: format!("query_by_type failed: {e}"),
+                })?;
+            found = rows.iter().any(|row| {
+                if let Ok(SsbPayload::ContextCalibrationEvent(
+                    ContextCalibrationEventPayload {
+                        model_identity_key, ..
+                    },
+                )) = decode_ssb_payload(&row.payload)
+                {
+                    model_identity_key == identity_key
+                } else {
+                    false
+                }
+            });
+            if found {
+                break;
+            }
+        }
+        if !found {
             return Err(BenchPositionalProbeError::SsbOpen {
                 source_msg: format!(
                     "no ContextCalibrationEvent(CurveMeasured) row landed for identity_key={identity_key}"
@@ -612,7 +638,7 @@ fn emit_calibration_artifact(
         }
 
         tracing::info!(
-            positional_probe.ssb_rows = rows.len(),
+            positional_probe.ssb_identity = %identity_key,
             "positional-probe: J-34 CurveMeasured SSB row emitted via CalibrationArtifactStore"
         );
 
