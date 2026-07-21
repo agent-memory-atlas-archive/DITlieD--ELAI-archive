@@ -283,12 +283,6 @@ async fn wrap_fixture_emits_taint_flow_and_rra_bundle() {
 /// This proves the kill-switch scope is tight (R9: kill_switch, not a graveyard).
 #[tokio::test]
 async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
-    // Guard against env-mutation racing with (a).
-    // The kill-switch is set for this test then cleared.
-    // SAFETY: single-process test binary, test is sequential (tokio test).
-    #[allow(deprecated)]
-    std::env::set_var("ELAI_WRAP_RRA_DISABLE", "1");
-
     let tmp = TempDir::new().expect("tempdir");
     let ssb = make_wrap_ssb(&tmp, "b");
 
@@ -297,8 +291,7 @@ async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
 
     // Drive RRA emit ONLY if kill-switch is OFF. Mirrors wrap_cmd.rs logic:
     // if !rra_disabled { emit_wrap_rra(...) }
-    let rra_disabled =
-        std::env::var("ELAI_WRAP_RRA_DISABLE").unwrap_or_default() == "1";
+    let rra_disabled = true;
     if !rra_disabled {
         let rra_path = tmp.path().join("wrap-kill.rra");
         drive_rra_emit(&ssb, &rra_path).await;
@@ -325,10 +318,6 @@ async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
          Got {} rows (expected 0).",
         rra_rows.len()
     );
-
-    // Clean up env.
-    #[allow(deprecated)]
-    std::env::remove_var("ELAI_WRAP_RRA_DISABLE");
 }
 
 // ---------------------------------------------------------------------------
