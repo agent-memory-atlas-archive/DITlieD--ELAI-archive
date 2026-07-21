@@ -134,6 +134,8 @@ pub mod sandbox;
 // allow/deny decision matrix.
 pub mod sandbox_policy;
 pub mod front_door;
+// J-32 slice-C: IntentRouted SSB-emit helper (mirrors auth_broker_emit pattern).
+pub mod front_door_emit;
 pub mod bsp;
 mod bash;
 pub mod checkpoint;
