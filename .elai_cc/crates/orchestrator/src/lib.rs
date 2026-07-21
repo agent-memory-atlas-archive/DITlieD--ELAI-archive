@@ -543,6 +543,7 @@ pub use context_policy::{
     LOCAL_DEFAULT_WINDOW, CLOUD_DEFAULT_WINDOW, LEGACY_FLAT_THRESHOLD,
     LOCAL_TRIM_FRACTION, CLOUD_TRIM_FRACTION,
     PressureLevel, pressure_level, usable_context_tokens, DEFAULT_MAX_OUTPUT_CAP,
+    FROZEN_HEAD_SEQ_BOUNDARY, honors_frozen_head, frozen_head_system_prefix_len,
 };
 pub use session_dag::{
     SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,

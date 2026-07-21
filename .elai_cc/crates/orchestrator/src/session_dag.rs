@@ -17,6 +17,7 @@ pub const MAX_ACTIVE_BRANCHES: usize = 3;
 pub const MAX_PARENT_DEPTH: usize = 1000;
 pub const STUB_THRESHOLD_MIN: usize = 100;
 pub const STUB_THRESHOLD_MAX: usize = 1000;
+/// J-36 alias-equal to `context_policy::FROZEN_HEAD_SEQ_BOUNDARY` (must stay 3).
 pub const PROMPT_CACHE_PREFIX_BOUNDARY: u32 = 3;
 
 // ---------------------------------------------------------------------------
@@ -963,7 +964,9 @@ impl SessionDag {
                 // Already stubbed — never double-stub
                 continue;
             }
-            if msg.seq <= PROMPT_CACHE_PREFIX_BOUNDARY {
+            if msg.seq <= PROMPT_CACHE_PREFIX_BOUNDARY
+                || msg.seq <= crate::context_policy::FROZEN_HEAD_SEQ_BOUNDARY
+            {
                 continue;
             }
             if msg.stub_ssb_seq.is_none() {

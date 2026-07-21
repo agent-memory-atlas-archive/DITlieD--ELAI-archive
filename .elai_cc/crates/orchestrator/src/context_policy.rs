@@ -7,11 +7,14 @@
 //! * [`ContextPolicy::Local`] -- window = `ELAI_LOCAL_MAX_CONTEXT` env var
 //!   (or 32 000 default), trim at `TRIM_FRACTION` (~0.75).  Runs the
 //!   compaction ladder in the interactive REPL turn; does NOT auto-recover all
-//!   stubs (selective-recover only).
+//!   stubs (selective-recover only).  J-36 frozen-head invariant: the
+//!   sys+rules+anchor head (seq <= `FROZEN_HEAD_SEQ_BOUNDARY`) is never
+//!   trimmed, reordered, or unloaded; only the task tail is minimized.  Local
+//!   activates prefix-KV reuse when eligible (see `prefix_kv_eligible`).
 //!
 //! * [`ContextPolicy::Cloud`] -- window = 200 000 (Anthropic cap), trim at
 //!   `CLOUD_TRIM_FRACTION` (0.85 = `SESSION_HANDOFF_THRESHOLD`).  Leaves the
-//!   cache-stable prefix untouched.
+//!   cache-stable prefix untouched.  Honors the frozen-head invariant.
 //!
 //! Kill-switch: `ELAI_CONTEXT_POLICY_DISABLE=1` returns the flat legacy
 //! behaviour from any `trim_threshold` call (falls back to the pre-H-50
@@ -70,6 +73,37 @@ pub const LOCAL_TRIM_FRACTION: f64 = 0.75;
 /// change.
 pub const CLOUD_TRIM_FRACTION: f64 = 0.85;
 
+/// J-36 frozen-head seq ceiling. MUST equal
+/// `session_dag::PROMPT_CACHE_PREFIX_BOUNDARY` (3).  Messages with
+/// seq <= this value are the frozen head (sys+rules+anchor head); never
+/// stub/drop them.
+pub const FROZEN_HEAD_SEQ_BOUNDARY: u32 = 3;
+
+/// J-36: both regimes honor the frozen-head invariant.  Local newly does
+/// (this unit); Cloud already kept the cache-stable prefix intact.
+#[must_use]
+pub fn honors_frozen_head(policy: ContextPolicy) -> bool {
+    match policy {
+        ContextPolicy::Local | ContextPolicy::Cloud => true,
+    }
+}
+
+/// Leading System messages that are NOT an existing compact-summary
+/// preamble form the frozen head on the ConversationMessage path
+/// (compact.rs).  Pure count helper for the compact PRODUCTION_HOOK.
+#[must_use]
+pub fn frozen_head_system_prefix_len(
+    is_system_at: impl Fn(usize) -> bool,
+    is_compact_summary_at: impl Fn(usize) -> bool,
+    len: usize,
+) -> usize {
+    let mut n = 0usize;
+    while n < len && is_system_at(n) && !is_compact_summary_at(n) {
+        n += 1;
+    }
+    n
+}
+
 /// J-25 T4: default output-token cap subtracted from the effective window to
 /// derive the usable input budget. Option (b) from S1 §5: a const rather than
 /// threading `RuntimeCapabilities.max_output` to the tick site, keeping the
@@ -83,11 +117,14 @@ pub const DEFAULT_MAX_OUTPUT_CAP: u32 = 20_000;
 /// Which context-management regime applies for this session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextPolicy {
-    /// Local model (Qwen sidecar): minimise re-sent tokens, no cross-request
-    /// KV cache benefit, window typically 25 000–32 000 tokens.
+    /// Local model (Qwen sidecar): minimise re-sent tokens, window typically
+    /// 25 000-32 000 tokens.  J-36 activates local prefix-KV reuse when
+    /// eligible; the frozen head (sys+rules+anchor head) is never
+    /// trimmed/reordered/unloaded, only the task tail is minimized.
     Local,
     /// Cloud / API model (Sonnet etc.): keep the cache-stable prefix intact,
-    /// use the large Anthropic context window.
+    /// use the large Anthropic context window.  Honors the frozen-head
+    /// invariant.
     Cloud,
 }
 
@@ -483,5 +520,49 @@ mod tests {
             None,
         );
         assert_eq!(t_none, 170_000, "None profile = folklore 0.85");
+    }
+
+    // J-36 slice-5 — frozen-head invariant tests.
+
+    #[test]
+    fn honors_frozen_head_both_regimes() {
+        assert!(honors_frozen_head(ContextPolicy::Local));
+        assert!(honors_frozen_head(ContextPolicy::Cloud));
+    }
+
+    #[test]
+    fn frozen_head_seq_boundary_is_three() {
+        assert_eq!(FROZEN_HEAD_SEQ_BOUNDARY, 3);
+    }
+
+    #[test]
+    fn frozen_head_system_prefix_len_counts_leading_non_summary_systems() {
+        // 3 leading System rows (indices 0-2), then non-System at 3.
+        let n = frozen_head_system_prefix_len(
+            |i| i < 3,
+            |_| false,
+            5,
+        );
+        assert_eq!(n, 3, "3 leading non-summary System rows");
+
+        // First System row IS a compact summary => frozen head is 0.
+        let n = frozen_head_system_prefix_len(
+            |_| true,
+            |i| i == 0,
+            5,
+        );
+        assert_eq!(n, 0, "summary at index 0 => frozen head is 0");
+
+        // Mixed: 2 System then a User at index 2 => stops at 2.
+        let n = frozen_head_system_prefix_len(
+            |i| i < 2,
+            |_| false,
+            5,
+        );
+        assert_eq!(n, 2, "stops at first non-System");
+
+        // Empty => 0.
+        let n = frozen_head_system_prefix_len(|_| true, |_| false, 0);
+        assert_eq!(n, 0, "empty => 0");
     }
 }

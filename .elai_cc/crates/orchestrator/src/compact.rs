@@ -108,22 +108,42 @@ pub fn compact_session(session: &Session, config: CompactionConfig) -> Compactio
         .first()
         .and_then(extract_existing_compacted_summary);
     let compacted_prefix_len = usize::from(existing_summary.is_some());
+
+    // J-36 frozen-head: preserve leading non-summary System messages
+    // (sys+rules+anchor head).
+    let frozen_len = crate::context_policy::frozen_head_system_prefix_len(
+        |i| {
+            session.messages.get(i).is_some_and(|m| m.role == MessageRole::System)
+        },
+        |i| {
+            session
+                .messages
+                .get(i)
+                .and_then(extract_existing_compacted_summary)
+                .is_some()
+        },
+        session.messages.len(),
+    );
+    let start = compacted_prefix_len.max(frozen_len);
+
     let keep_from = session
         .messages
         .len()
         .saturating_sub(config.preserve_recent_messages);
-    let removed = &session.messages[compacted_prefix_len..keep_from];
-    let preserved = session.messages[keep_from..].to_vec();
+    let removed = &session.messages[start..keep_from.max(start)];
+    let preserved = session.messages[keep_from.max(start)..].to_vec();
     let summary =
         merge_compact_summaries(existing_summary.as_deref(), &summarize_messages(removed));
     let formatted_summary = format_compact_summary(&summary);
     let continuation = get_compact_continuation_message(&summary, true, !preserved.is_empty());
 
-    let mut compacted_messages = vec![ConversationMessage {
+    let mut compacted_messages: Vec<ConversationMessage> =
+        session.messages[..frozen_len].to_vec();
+    compacted_messages.push(ConversationMessage {
         role: MessageRole::System,
         blocks: vec![ContentBlock::Text { text: continuation }],
         usage: None,
-    }];
+    });
     compacted_messages.extend(preserved);
 
     let mut compacted_session = session.clone();
@@ -815,5 +835,67 @@ mod tests {
         ]);
         assert_eq!(pending.len(), 1);
         assert!(pending[0].contains("Next: update tests"));
+    }
+
+    #[test]
+    fn compact_preserves_frozen_head_system_message() {
+        let frozen_text = "You are ELAI. Follow the rules.";
+        let mut session = Session::new();
+        session.messages = vec![
+            ConversationMessage {
+                role: MessageRole::System,
+                blocks: vec![ContentBlock::Text {
+                    text: frozen_text.to_string(),
+                }],
+                usage: None,
+            },
+            ConversationMessage::user_text("one ".repeat(200)),
+            ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: "two ".repeat(200),
+            }]),
+            ConversationMessage::tool_result("1", "bash", "ok ".repeat(200), false),
+            ConversationMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![ContentBlock::Text {
+                    text: "recent".to_string(),
+                }],
+                usage: None,
+            },
+        ];
+
+        let result = compact_session(
+            &session,
+            CompactionConfig {
+                preserve_recent_messages: 2,
+                max_estimated_tokens: 1,
+            },
+        );
+
+        // The frozen head System message must survive as messages[0].
+        assert_eq!(
+            result.compacted_session.messages[0].role,
+            MessageRole::System,
+            "frozen head System message must be preserved at index 0"
+        );
+        assert!(
+            matches!(
+                &result.compacted_session.messages[0].blocks[0],
+                ContentBlock::Text { text } if text == frozen_text
+            ),
+            "frozen head text must be byte-identical"
+        );
+        // The continuation summary must be at index 1.
+        assert_eq!(
+            result.compacted_session.messages[1].role,
+            MessageRole::System,
+            "continuation summary must be at index 1"
+        );
+        assert!(
+            matches!(
+                &result.compacted_session.messages[1].blocks[0],
+                ContentBlock::Text { text } if text.contains("Summary:")
+            ),
+            "continuation summary must contain the summary"
+        );
     }
 }
