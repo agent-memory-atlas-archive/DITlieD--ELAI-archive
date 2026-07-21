@@ -29,10 +29,11 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use elai_providers::runtime::{
-    config_descriptor, create_runtime, key_store, resolve_backend, custom_backends,
+    config_descriptor, create_runtime, custom_backends, inventory, key_store, resolve_backend,
     RuntimeAdapter, RuntimeAdapterError, RuntimeBackend, RuntimeFactoryConfig, RuntimeHealth,
     SecretString,
 };
+use elai_core::OsClock;
 use thiserror::Error;
 use tokio::time::timeout;
 
@@ -343,6 +344,12 @@ async fn configure_with_factory(
     // invariant is: the stored key equals cfg.api_key at the point of the
     // health_check call. Cloning a SecretString is cheap (Arc inner).
     let to_store: Option<SecretString> = cfg.api_key.clone();
+    // Capture the model for the inventory stamp (best-effort; T6).
+    let stamp_models: Vec<String> = cfg
+        .model
+        .as_deref()
+        .map(|m| vec![m.to_string()])
+        .unwrap_or_default();
 
     // Construct adapter via the injected factory.
     let adapter = factory(cfg).map_err(|e| ProvidersCmdError::AdapterConstruct(e.to_string()))?;
@@ -361,11 +368,32 @@ async fn configure_with_factory(
             if let Some(key) = to_store {
                 key_store::store(&provider_id, &key)?;
             }
+            // J-30 T6: best-effort inventory stamp. Failure must NOT fail
+            // configure (warn/log only).
+            if let Err(err) = inventory::stamp_verified_at(
+                &provider_id,
+                stamp_models.clone(),
+                &OsClock,
+            ) {
+                eprintln!(
+                    "[warn] inventory stamp failed for {provider_id}: {err}"
+                );
+            }
             Ok(format!("[OK] {display_name} configured (key stored, verified)"))
         }
         RuntimeHealth::Degraded { reason } => {
             if let Some(key) = to_store {
                 key_store::store(&provider_id, &key)?;
+            }
+            // J-30 T6: best-effort inventory stamp (same as Ready).
+            if let Err(err) = inventory::stamp_verified_at(
+                &provider_id,
+                stamp_models.clone(),
+                &OsClock,
+            ) {
+                eprintln!(
+                    "[warn] inventory stamp failed for {provider_id}: {err}"
+                );
             }
             Ok(format!(
                 "[OK] {display_name} configured (key stored, verified) — degraded: {reason}"
@@ -386,6 +414,68 @@ pub async fn handle_providers_configure(
 ) -> Result<String, ProvidersCmdError> {
     let factory: AdapterFactory = Box::new(|cfg| create_runtime(cfg));
     configure_with_factory(flags, factory).await
+}
+
+/// J-30 T6 -- `elai providers status` handler. Reads per-backend
+/// inventory (configured / verified_at / models / stale) from
+/// `provider_status.json` + descriptor + key_store + model catalog via
+/// `inventory::all_inventory` / `inventory_status`. `--backend` filters
+/// to one row (resolved through `resolve_backend` so both builtins and
+/// custom names work). `--json` emits pretty JSON; default is a text
+/// table. No network, no GPU; the clock is `OsClock`.
+pub async fn handle_providers_status(
+    backend: Option<String>,
+    output_format: crate::args::CliOutputFormat,
+) -> Result<String, ProvidersCmdError> {
+    let rows = if let Some(candidate) = backend.as_deref() {
+        let resolved = resolve_backend_with_descriptor(candidate)?;
+        match resolved {
+            ResolvedBackend::Builtin { backend } => {
+                vec![inventory::inventory_status(backend, &OsClock)
+                    .map_err(|e| ProvidersCmdError::AdapterConstruct(e.to_string()))?]
+            }
+            ResolvedBackend::Custom { spec, .. } => {
+                vec![inventory::inventory_status_custom(&spec, &OsClock)
+                    .map_err(|e| ProvidersCmdError::AdapterConstruct(e.to_string()))?]
+            }
+        }
+    } else {
+        inventory::all_inventory(&OsClock)
+            .map_err(|e| ProvidersCmdError::AdapterConstruct(e.to_string()))?
+    };
+    match output_format {
+        crate::args::CliOutputFormat::Json => {
+            Ok(serde_json::to_string_pretty(&rows).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")))
+        }
+        crate::args::CliOutputFormat::Text | crate::args::CliOutputFormat::Toml => {
+            Ok(render_status_table(&rows))
+        }
+    }
+}
+
+fn render_status_table(rows: &[inventory::InventoryStatus]) -> String {
+    let mut out = String::new();
+    out.push_str("BACKEND            CONFIGURED  VERIFIED_AT          STALE  MODELS\n");
+    for row in rows {
+        let verified = row
+            .verified_at
+            .map(|ms| {
+                let secs = ms / 1000;
+                let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+                format!("{h:02}:{m:02}:{s:02}")
+            })
+            .unwrap_or_else(|| "never".to_string());
+        let models = if row.models.is_empty() {
+            "-".to_string()
+        } else {
+            row.models.join(",")
+        };
+        out.push_str(&format!(
+            "{:<18} {:<10}  {:<19}  {:<5}  {}\n",
+            row.backend, row.configured, verified, row.stale, models
+        ));
+    }
+    out
 }
 
 // ============================================================================
@@ -625,6 +715,174 @@ mod tests {
             );
             let path = home.join("provider_keys.json");
             assert!(path.exists(), "key file must be created on Degraded");
+        });
+    }
+
+    /// (e) J-30 T6: configure Ready stamps provider_status.json
+    /// (best-effort). Asserts the sidecar exists after a successful
+    /// configure and contains the provider_id key.
+    #[test]
+    fn configure_ready_stamps_inventory() {
+        with_config_home(|home| {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let factory = stub_factory(
+                RuntimeBackend::AnthropicApi,
+                RuntimeHealth::Ready,
+            );
+            let flags = ConfigureFlags {
+                backend: Some("anthropic".to_string()),
+                key: Some("sk-stamp".to_string()),
+                base_url: None,
+                model: Some("claude-sonnet-4-6".to_string()),
+            };
+            let out = runtime.block_on(configure_with_factory(flags, factory)).unwrap();
+            assert!(out.starts_with("[OK]"), "expected [OK], got: {out}");
+            let status_path = home.join("provider_status.json");
+            assert!(status_path.exists(), "provider_status.json must be created on Ready");
+            let body = std::fs::read_to_string(&status_path).unwrap();
+            assert!(
+                body.contains("\"anthropic\""),
+                "status must be keyed by provider_id, got: {body}"
+            );
+            assert!(
+                body.contains("claude-sonnet-4-6"),
+                "status must record the model, got: {body}"
+            );
+        });
+    }
+
+    /// (f) J-30 T6: configure Degraded also stamps provider_status.json.
+    #[test]
+    fn configure_degraded_stamps_inventory() {
+        with_config_home(|home| {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let factory = stub_factory(
+                RuntimeBackend::AnthropicApi,
+                RuntimeHealth::Degraded { reason: "slow".into() },
+            );
+            let flags = ConfigureFlags {
+                backend: Some("anthropic".to_string()),
+                key: Some("sk-stamp-d".to_string()),
+                base_url: None,
+                model: None,
+            };
+            let out = runtime.block_on(configure_with_factory(flags, factory)).unwrap();
+            assert!(out.starts_with("[OK]"), "expected [OK], got: {out}");
+            assert!(home.join("provider_status.json").exists(), "status must be stamped on Degraded");
+        });
+    }
+
+    /// (g) J-30 T6: handle_providers_status text table includes a
+    /// freshly-stamped builtin. Uses sidecar's api_key_optional path so
+    /// configured=true without any key env.
+    #[test]
+    fn status_text_table_includes_stamped_sidecar() {
+        with_config_home(|home| {
+            std::env::remove_var("ELAI_SIDECAR_URL");
+            // Stamp sidecar so it has a verified_at row.
+            elai_providers::runtime::inventory::stamp_verified_at(
+                "sidecar",
+                vec![],
+                &elai_core::OsClock,
+            )
+            .expect("stamp");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let out = runtime
+                .block_on(handle_providers_status(
+                    Some("sidecar".to_string()),
+                    crate::args::CliOutputFormat::Text,
+                ))
+                .unwrap();
+            assert!(
+                out.contains("sidecar"),
+                "text table must name sidecar, got: {out}"
+            );
+            assert!(
+                out.contains("BACKEND") && out.contains("CONFIGURED"),
+                "text table must have header, got: {out}"
+            );
+            assert!(home.join("provider_status.json").exists());
+        });
+    }
+
+    /// (h) J-30 T6: handle_providers_status --json emits valid JSON
+    /// with the expected backend field.
+    #[test]
+    fn status_json_emits_valid_json() {
+        with_config_home(|_| {
+            std::env::remove_var("ELAI_SIDECAR_URL");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let out = runtime
+                .block_on(handle_providers_status(
+                    Some("sidecar".to_string()),
+                    crate::args::CliOutputFormat::Json,
+                ))
+                .unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&out)
+                .unwrap_or_else(|e| panic!("status --json must be valid JSON: {e}\nout: {out}"));
+            let arr = parsed
+                .as_array()
+                .unwrap_or_else(|| panic!("expected array, got: {out}"));
+            assert!(!arr.is_empty(), "array must have the sidecar row");
+            assert_eq!(
+                arr[0]["backend"].as_str().unwrap_or(""),
+                "sidecar",
+                "first row must be sidecar, got: {out}"
+            );
+        });
+    }
+
+    /// (i) J-30 T6: handle_providers_status without --backend lists all
+    /// builtins (at least one row).
+    #[test]
+    fn status_all_lists_multiple_backends() {
+        with_config_home(|_| {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("ELAI_SIDECAR_URL");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let out = runtime
+                .block_on(handle_providers_status(
+                    None,
+                    crate::args::CliOutputFormat::Text,
+                ))
+                .unwrap();
+            assert!(
+                out.contains("sidecar") && out.contains("anthropic_api"),
+                "all_inventory must include sidecar + anthropic_api, got: {out}"
+            );
+        });
+    }
+
+    /// (j) J-30 T6: handle_providers_status with unknown backend errors.
+    #[test]
+    fn status_unknown_backend_errors() {
+        with_config_home(|_| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let result = runtime.block_on(handle_providers_status(
+                Some("not-a-backend".to_string()),
+                crate::args::CliOutputFormat::Text,
+            ));
+            assert!(result.is_err(), "unknown backend must error");
         });
     }
 }

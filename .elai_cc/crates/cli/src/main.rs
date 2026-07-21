@@ -708,6 +708,11 @@ fn run() -> Result<(), anyhow::Error> {
             // owns the tokio current-thread runtime + 5s health probe.
             LiveCli::print_providers(backend, key, base_url, model)?;
         }
+        CliAction::ProvidersStatus { backend, output_format } => {
+            // J-30 T6: inventory status (configured / verified_at / models /
+            // stale). Text table or --json; no network, no GPU.
+            LiveCli::print_providers_status(backend, output_format)?;
+        }
         CliAction::Skills { args, output_format } => LiveCli::print_skills(args.as_deref(), output_format)?,
         CliAction::PrintSystemPrompt { cwd, date, output_format } => print_system_prompt(cwd, date, output_format)?,
         CliAction::Version { output_format } => print_version(output_format)?,

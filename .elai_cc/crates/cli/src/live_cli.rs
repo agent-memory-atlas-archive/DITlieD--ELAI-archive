@@ -2952,6 +2952,28 @@ impl LiveCli {
         Ok(())
     }
 
+    /// J-30 T6: render `elai providers status` output to stdout. Thin
+    /// sync wrapper over `providers_cmd::handle_providers_status`,
+    /// mirroring `print_providers` (current-thread tokio runtime). No
+    /// network, no GPU; reads `provider_status.json` + descriptor +
+    /// key_store + model catalog.
+    pub(crate) fn print_providers_status(
+        backend: Option<String>,
+        output_format: crate::args::CliOutputFormat,
+    ) -> Result<(), anyhow::Error> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let result = runtime.block_on(
+            crate::providers_cmd::handle_providers_status(backend, output_format),
+        );
+        match result {
+            Ok(out) => println!("{out}"),
+            Err(e) => println!("[FAIL] {e}"),
+        }
+        Ok(())
+    }
+
     pub(crate) fn print_mucoco(
         action: Option<&str>,
         file: Option<&str>,

@@ -60,9 +60,17 @@ pub mod custom_backends;
 /// J-30 T4 -- per-backend config descriptor metadata. Static
 /// `BackendConfigDescriptor` table keyed by `RuntimeBackend` for builtins
 /// plus `descriptor_for_custom` for the runtime-loaded `CustomBackendSpec`
-/// overlay. Consumed by T5's CLI `configure` flow (WIRE-DARK[J-30-T5]).
+/// overlay. Consumed by T5's CLI `configure` flow
+/// (`providers_cmd::configure_with_factory`) and T6's status handler.
 /// See `workflow/reasoning/J-30_provider_byok_custom_endpoints.md`.
 pub mod config_descriptor;
+/// J-30 T6 -- per-backend inventory status (configured / verified_at /
+/// models / stale). Read-side companion to T5's `configure` flow.
+/// `provider_status.json` sidecar in `default_config_home()`; no secrets.
+/// CLI `elai providers status` is the production consumer, wired via
+/// `providers_cmd::handle_providers_status` + `LiveCli::print_providers_status`.
+/// See `workflow/reasoning/J-30_provider_byok_custom_endpoints.md`.
+pub mod inventory;
 pub mod event_sink;
 pub mod gemini_cli;
 /// E-34 — `GenAiAdapter` scaffold. RuntimeAdapter slot reserved for the
@@ -159,6 +167,11 @@ pub use types::{
 pub use config_descriptor::{
     BackendConfigDescriptor, ConfigKey, ConfigKeyKind, MissingKey,
     descriptor_for, descriptor_for_custom, satisfies,
+};
+pub use inventory::{
+    all_inventory, inventory_status, inventory_status_custom,
+    read_status, stamp_verified_at,
+    InventoryError, InventoryStatus, ProviderStatusRow,
 };
 
 /// Resolve a config-file or CLI candidate string to a canonical
