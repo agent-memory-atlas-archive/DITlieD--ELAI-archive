@@ -238,19 +238,20 @@
   let textareaEl = $state<HTMLTextAreaElement | undefined>(undefined);
 
   // ----------------------------------------------------------------
-  // Auto-detect Oracle chip — confirm gate when the classifier infers
-  // RESEARCH on a non-slash submit. Lifecycle owned by commands store
-  // (pendingResearchChip + accept/reject/editResearchChip). Here we
-  // only render, autofocus, and forward Enter/Esc/Tab to the store.
-  // Keybindings are scoped to the chip container; they cannot collide
-  // with the slash palette because the palette closes the moment a
-  // submit fires (which is when the chip can appear), and the textarea
-  // is disabled while the chip is pending so no new '/' opens it.
+  // Intent chip — confirm gate when the classifier infers a chipped
+  // intent (TASK/FIX/RESEARCH/INTERVENE/STEER/ABORT) on a non-slash
+  // submit. Lifecycle owned by commands store (pendingIntentChip +
+  // accept/cancel/editIntentChip). Here we only render, autofocus, and
+  // forward Enter/Esc/Tab to the store. Keybindings are scoped to the
+  // chip container; they cannot collide with the slash palette because
+  // the palette closes the moment a submit fires (which is when the
+  // chip can appear), and the textarea is disabled while the chip is
+  // pending so no new '/' opens it.
   // ----------------------------------------------------------------
   let chipEl = $state<HTMLDivElement | undefined>(undefined);
 
   $effect(() => {
-    if (commands.pendingResearchChip && chipEl) {
+    if (commands.pendingIntentChip && chipEl) {
       chipEl.focus();
     }
   });
@@ -263,16 +264,16 @@
   });
 
   function handleChipKeydown(e: KeyboardEvent) {
-    if (!commands.pendingResearchChip) return;
+    if (!commands.pendingIntentChip) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      void commands.acceptResearchChip();
+      void commands.acceptIntentChip();
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      void commands.rejectResearchChip();
+      void commands.cancelIntentChip();
     } else if (e.key === 'Tab') {
       e.preventDefault();
-      commands.editResearchChip();
+      commands.editIntentChip();
     }
   }
 
@@ -1062,26 +1063,28 @@
       {/each}
     {/if}
 
-    {#if commands.pendingResearchChip}
+    {#if commands.pendingIntentChip}
       <div
         class="card-wrapper anim-enter-lift"
         bind:this={chipEl}
         tabindex={-1}
         onkeydown={handleChipKeydown}
         role="dialog"
-        aria-label="Confirm Oracle Mode"
+        aria-label="Confirm ELAI intent"
       >
-        <div class="orbit-card orbit-card--intervention research-chip">
+        <div class="orbit-card orbit-card--intervention intent-chip">
           <div class="card-inner">
             <div class="card-title-row">
               <Pulse mode="dot" size={6} />
-              <span class="intervention-title">Looks like a research question. Send to Oracle?</span>
+              <span class="intervention-title">
+                ELAI will start: {commands.pendingIntentChip.laneLabel} on {commands.pendingIntentChip.text}
+              </span>
             </div>
-            <span class="card-body mono">{commands.pendingResearchChip.text}</span>
+            <span class="card-body mono">{commands.pendingIntentChip.text}</span>
             <div class="btn-row">
-              <button class="btn-approve" onclick={() => commands.acceptResearchChip()}>Accept &middot; Enter</button>
-              <button class="btn-outlined" onclick={() => commands.rejectResearchChip()}>Reply locally &middot; Esc</button>
-              <button class="btn-outlined" onclick={() => commands.editResearchChip()}>Edit &middot; Tab</button>
+              <button class="btn-approve" onclick={() => commands.acceptIntentChip()}>Run &middot; Enter</button>
+              <button class="btn-outlined" onclick={() => commands.cancelIntentChip()}>Cancel &middot; Esc</button>
+              <button class="btn-outlined" onclick={() => commands.editIntentChip()}>Edit &middot; Tab</button>
             </div>
           </div>
         </div>
@@ -1227,7 +1230,7 @@
           class="slash-toggle"
           class:slash-toggle--active={commands.slashOpen}
           aria-label="Open slash command palette"
-          disabled={!!commands.pendingResearchChip}
+          disabled={!!commands.pendingIntentChip}
           onclick={() => (commands.slashOpen ? closePalette() : openPalette())}
         >
           <Slash size={14} strokeWidth={1.5} />
@@ -1239,7 +1242,7 @@
           value={commands.inputValue}
           placeholder={placeholder()}
           rows={1}
-          disabled={!!commands.pendingResearchChip}
+          disabled={!!commands.pendingIntentChip}
           aria-label="Press Ctrl+Enter to send"
           oninput={handleInput}
           onkeydown={handleKeydown}
@@ -1923,12 +1926,12 @@
     font-style: italic;
   }
 
-  /* ---- Auto-detect Oracle chip ---- */
+  /* ---- Intent chip ---- */
   .card-wrapper:focus,
   .card-wrapper:focus-visible {
     outline: none;
   }
-  .research-chip {
+  .intent-chip {
     border-color: var(--d-teal-soft);
   }
 

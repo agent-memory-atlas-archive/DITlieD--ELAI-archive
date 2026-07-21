@@ -70,13 +70,21 @@ export const INTENT_TEST_CASES: IntentTestCase[] = [
 // ------------------------------------------------------------------
 // Counterfactual gate cases — drive the chip-firing decision.
 // These are NOT direct classifier inputs; they document the gate's
-// firing rule (see commands.svelte.ts submit()). Used for manual
-// verification only.
+// firing rule (see commands.svelte.ts submit() + needsIntentChip in
+// intent.ts). Used for manual verification only.
+//
+// Esc semantics (slice-F): Esc = cancel + restore input + refocus for
+// ALL chipped intents. The old rejectResearchChip "reply locally"
+// path is retired; RESEARCH Esc now also cancels + restores.
 // ------------------------------------------------------------------
 export const GATE_FIRE_CASES: { input: string; chipFires: boolean; reason: string }[] = [
   { input: '/research foo',                          chipFires: false, reason: 'slash prefix bypasses the gate entirely' },
   { input: '/ask foo',                               chipFires: false, reason: 'slash prefix bypasses the gate entirely' },
-  { input: '?',                                      chipFires: false, reason: 'classifier returns AMBIGUOUS, not RESEARCH' },
-  { input: 'what calls foo()?',                      chipFires: false, reason: 'classifier returns EXPLORE_CODE, not RESEARCH' },
-  { input: "what's the latest pytorch version?",     chipFires: true,  reason: 'classifier returns RESEARCH on non-slash input' },
+  { input: '?',                                      chipFires: false, reason: 'classifier returns AMBIGUOUS, not a chipped intent' },
+  { input: 'what calls foo()?',                      chipFires: false, reason: 'classifier returns EXPLORE_CODE, not a chipped intent' },
+  { input: "what's the latest pytorch version?",     chipFires: true,  reason: 'classifier returns RESEARCH, needsIntentChip(RESEARCH)=true' },
+  { input: 'implement a parser for the new manifest format', chipFires: true, reason: 'classifier returns TASK, needsIntentChip(TASK)=true' },
+  { input: 'fix the bug in the auth handler',        chipFires: true,  reason: 'classifier returns FIX, needsIntentChip(FIX)=true' },
+  { input: 'stop',                                   chipFires: true,  reason: 'classifier returns ABORT, needsIntentChip(ABORT)=true' },
+  { input: 'validate image at /tmp/hero.png',        chipFires: false, reason: 'classifier returns MEDIA_VALIDATE, not a chipped intent' },
 ];

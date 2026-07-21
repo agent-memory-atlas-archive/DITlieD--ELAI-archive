@@ -103,3 +103,25 @@ export function classifyIntent(text: string): Intent {
 
   return 'AMBIGUOUS';
 }
+
+// RESEARCH stays chipped for UX; Rust risk_for_lane(Research)=LOW — intentional divergence.
+export function needsIntentChip(intent: Intent): boolean {
+  return intent === 'TASK'
+      || intent === 'FIX'
+      || intent === 'RESEARCH'
+      || intent === 'INTERVENE'
+      || intent === 'STEER'
+      || intent === 'ABORT';
+}
+
+export function laneLabelFor(intent: Intent): string {
+  switch (intent) {
+    case 'TASK': return 'task';
+    case 'FIX': return 'fix';
+    case 'RESEARCH': return 'research';
+    case 'INTERVENE': return 'intervene';
+    case 'STEER': return 'steer';
+    case 'ABORT': return 'abort';
+    default: return intent.toLowerCase();
+  }
+}

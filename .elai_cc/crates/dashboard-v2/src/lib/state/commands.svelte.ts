@@ -16,7 +16,7 @@ import {
   submit_media_validation_for_review,
   type ResearchResult,
 } from '../api/stub';
-import { classifyIntent } from '../utils/intent';
+import { classifyIntent, needsIntentChip, laneLabelFor } from '../utils/intent';
 import { parseSlashCommand, KNOWN_SLASH_COMMANDS } from '../utils/slash-parse';
 import { workspace } from './workspace.svelte';
 import { mediaValidation } from './media_validation.svelte';
@@ -79,14 +79,14 @@ function createCommands() {
   let activeStreamId = $state<string | null>(null);
   // Cleanup fn returned by streamChat — call to unlisten + abort.
   let _streamCleanup: (() => void) | null = null;
-  // Auto-detect Oracle gate. When the classifier returns RESEARCH on a
-  // non-slash submit, we hold the text in this slot and surface a confirm
-  // chip in CommandWindow instead of firing the request. Three resolution
-  // paths: acceptResearchChip / rejectResearchChip / editResearchChip.
-  // Null = no pending chip.
-  let pendingResearchChip = $state<{ text: string } | null>(null);
+  // Intent chip gate. When the classifier returns a chipped intent on a
+  // non-slash submit, we hold the text + intent + laneLabel in this slot
+  // and surface a confirm chip in CommandWindow instead of firing the
+  // request. Three resolution paths: acceptIntentChip /
+  // cancelIntentChip / editIntentChip. Null = no pending chip.
+  let pendingIntentChip = $state<{ text: string; intent: IntentType; laneLabel: string } | null>(null);
   // Signal CommandWindow to refocus the textarea after Edit. Increments on
-  // each editResearchChip call; the window's $effect on this counter calls
+  // each editIntentChip call; the window's $effect on this counter calls
   // textareaEl.focus(). Avoids passing DOM refs through the store.
   let _refocusInputTick = $state(0);
 
@@ -349,27 +349,40 @@ function createCommands() {
     const intent = classifyIntent(text);
     const slash = parseSlashCommand(text);
 
-    // Auto-detect Oracle gate. Fires only when ALL hold:
+    // Intent chip gate. Fires only when ALL hold:
     //   - non-slash input (slash bypass is the explicit power-user path)
-    //   - classifier inferred RESEARCH from the regex layer
+    //   - classifier inferred a chipped intent (needsIntentChip)
     //   - no stream is in flight (popping a chip mid-conversation = jarring)
     //   - no chip already pending (one-at-a-time)
-    // When fired: hold the text on pendingResearchChip and DEFER user-card
-    // append + dispatch until the chip resolves. Editing the chip rolls back
-    // cleanly because nothing was added to the stream yet.
+    // When fired: hold the text + intent + laneLabel on pendingIntentChip
+    // and DEFER user-card append + dispatch until the chip resolves.
     if (
       slash === null
-      && intent === 'RESEARCH'
+      && needsIntentChip(intent)
       && !isStreaming
-      && pendingResearchChip === null
+      && pendingIntentChip === null
     ) {
-      pendingResearchChip = { text };
+      pendingIntentChip = { text, intent, laneLabel: laneLabelFor(intent) };
       inputValue = '';
       slashOpen = false;
       return;
     }
 
-    // Standard path: user-card first, then slash dispatch or local stream.
+    await continueSubmitAfterChip(text, intent, slash);
+  }
+
+  // Post-gate routing body shared by submit() (non-chip path) and
+  // acceptIntentChip() (for non-RESEARCH chipped intents). Appends the
+  // user card, clears input + slash palette, then routes to the matching
+  // branch: EXPLORE_CODE -> knowledge engine, MEDIA_VALIDATE -> monitor
+  // panel, slash -> dispatchSlash, else -> _runStreamingPath. RESEARCH
+  // chip Accept is NOT routed through here (it keeps the Oracle
+  // dispatchSlash('/research') path in acceptIntentChip).
+  async function continueSubmitAfterChip(
+    text: string,
+    intent: IntentType,
+    slash: ReturnType<typeof parseSlashCommand>,
+  ) {
     appendCard('user', { kind: 'user', text, intent });
     inputValue = '';
     slashOpen = false;
@@ -446,28 +459,36 @@ function createCommands() {
     await _runStreamingPath(text, intent);
   }
 
-  async function acceptResearchChip() {
-    const chip = pendingResearchChip;
+  async function acceptIntentChip() {
+    const chip = pendingIntentChip;
     if (!chip) return;
-    pendingResearchChip = null;
-    appendCard('user', { kind: 'user', text: chip.text, intent: 'RESEARCH' });
-    logStub('commands.submit.slash', { command: '/research', arg: chip.text, intent: 'RESEARCH' });
-    await dispatchSlash('/research', chip.text, 'RESEARCH');
+    pendingIntentChip = null;
+    if (chip.intent === 'RESEARCH') {
+      appendCard('user', { kind: 'user', text: chip.text, intent: 'RESEARCH' });
+      logStub('commands.submit.slash', { command: '/research', arg: chip.text, intent: 'RESEARCH' });
+      await dispatchSlash('/research', chip.text, 'RESEARCH');
+      return;
+    }
+    await continueSubmitAfterChip(chip.text, chip.intent, null);
   }
 
-  async function rejectResearchChip() {
-    const chip = pendingResearchChip;
-    if (!chip) return;
-    pendingResearchChip = null;
-    appendCard('user', { kind: 'user', text: chip.text, intent: 'RESEARCH' });
-    await _runStreamingPath(chip.text, 'RESEARCH');
-  }
-
-  function editResearchChip() {
-    const chip = pendingResearchChip;
+  // Esc = cancel + restore input + refocus (NOT "reply locally"). The
+  // old rejectResearchChip fired a local stream; the unified chip
+  // semantics restore the text so the user can re-edit instead. RESEARCH
+  // Esc behavior change is intentional (plan: Esc cancel).
+  function cancelIntentChip() {
+    const chip = pendingIntentChip;
     if (!chip) return;
     inputValue = chip.text;
-    pendingResearchChip = null;
+    pendingIntentChip = null;
+    _refocusInputTick = _refocusInputTick + 1;
+  }
+
+  function editIntentChip() {
+    const chip = pendingIntentChip;
+    if (!chip) return;
+    inputValue = chip.text;
+    pendingIntentChip = null;
     _refocusInputTick = _refocusInputTick + 1;
   }
 
@@ -508,7 +529,7 @@ function createCommands() {
     get slashCommands() { return SLASH_COMMANDS; },
     get isStreaming() { return isStreaming; },
     get activeStreamId() { return activeStreamId; },
-    get pendingResearchChip() { return pendingResearchChip; },
+    get pendingIntentChip() { return pendingIntentChip; },
     get refocusInputTick() { return _refocusInputTick; },
 
     submit,
@@ -518,9 +539,9 @@ function createCommands() {
     openSlash,
     closeSlash,
     setFocused,
-    acceptResearchChip,
-    rejectResearchChip,
-    editResearchChip,
+    acceptIntentChip,
+    cancelIntentChip,
+    editIntentChip,
   };
 }
 
