@@ -274,6 +274,8 @@ pub struct ModelFeatures {
     /// Queried at registration time, never at runtime — see
     /// `workflow/papers/focus-tunnel-design-interface.md` L21-24.
     pub supports_fim: bool,
+    /// J-36 FH-4: architecture admits local PrefixKVCache reuse (standard causal full-attention). Runtime TurboQuant still gates via prefix_kv_eligible().
+    pub prefix_kv_eligible: bool,
 }
 
 impl ModelFeatures {
@@ -286,6 +288,7 @@ impl ModelFeatures {
             chunked_prefill: false,
             kv_compression: false,
             supports_fim: false,
+            prefix_kv_eligible: false,
         }
     }
 }
@@ -370,6 +373,7 @@ impl ModelCapabilityProfile {
             fixed_slot_targets: [330, 400, 800],
             features: ModelFeatures {
                 supports_fim: true,
+                prefix_kv_eligible: true,
                 ..ModelFeatures::none()
             },
             pass_at_1: 0.65,
@@ -417,6 +421,7 @@ impl ModelCapabilityProfile {
             fixed_slot_targets: [330, 500, 1500],
             features: ModelFeatures {
                 supports_fim: true,
+                prefix_kv_eligible: true,
                 ..ModelFeatures::none()
             },
             pass_at_1: 0.72,
@@ -472,6 +477,7 @@ impl ModelCapabilityProfile {
                 chunked_prefill: false,
                 kv_compression: false,
                 supports_fim: false,
+                prefix_kv_eligible: false,
             },
             pass_at_1: 0.85,
             optimal_retries: 2,
@@ -523,6 +529,7 @@ impl ModelCapabilityProfile {
                 chunked_prefill: true,
                 kv_compression: true,
                 supports_fim: true,
+                prefix_kv_eligible: true,
             },
             pass_at_1: 0.927,
             optimal_retries: 2,
@@ -569,6 +576,7 @@ impl ModelCapabilityProfile {
             fixed_slot_targets: [200, 300, 600],
             features: ModelFeatures {
                 supports_fim: true,
+                prefix_kv_eligible: true,
                 ..ModelFeatures::none()
             },
             pass_at_1: 0.72,
@@ -616,6 +624,7 @@ impl ModelCapabilityProfile {
             fixed_slot_targets: [330, 400, 800],
             features: ModelFeatures {
                 supports_fim: true,
+                prefix_kv_eligible: true,
                 ..ModelFeatures::none()
             },
             pass_at_1: 0.65,
@@ -659,6 +668,7 @@ impl ModelCapabilityProfile {
             fixed_slot_targets: [330, 500, 1500],
             features: ModelFeatures {
                 supports_fim: true,
+                prefix_kv_eligible: true,
                 ..ModelFeatures::none()
             },
             pass_at_1: 0.72,
@@ -702,6 +712,7 @@ impl ModelCapabilityProfile {
             fixed_slot_targets: [200, 300, 600],
             features: ModelFeatures {
                 supports_fim: true,
+                prefix_kv_eligible: true,
                 ..ModelFeatures::none()
             },
             pass_at_1: 0.72,
@@ -727,6 +738,13 @@ impl ModelCapabilityProfile {
             (v, a) => v.min(a),
         }
     }
+}
+
+/// J-36 FH-4: runtime gate for PrefixKVCache reuse. Eligible only when the
+/// model architecture admits it (standard causal full-attention, set on
+/// `ModelFeatures.prefix_kv_eligible`) AND TurboQuant is OFF at runtime.
+pub fn prefix_kv_eligible(profile: &ModelCapabilityProfile, turboquant_on: bool) -> bool {
+    profile.features.prefix_kv_eligible && !turboquant_on
 }
 
 // ---------------------------------------------------------------------------
@@ -1380,6 +1398,7 @@ pub struct ContextBudget {
     pub total_allocated: usize,
     pub total_used: usize,
     pub adaptive_level: AdaptiveLevel,
+    pub prefix_kv_eligible: bool,
 }
 
 impl ContextBudget {
@@ -1485,6 +1504,7 @@ impl ContextBudget {
             total_allocated: 0,
             total_used: 0,
             adaptive_level: AdaptiveLevel::Normal,
+            prefix_kv_eligible: false,
         }
     }
 }
@@ -1789,7 +1809,7 @@ impl ContextBudget {
                 bp.valid = false;
                 bp.prefix_hash = new_hash;
             } else {
-                bp.valid = true;
+                bp.valid = self.prefix_kv_eligible;
             }
         }
     }
@@ -3069,6 +3089,18 @@ mod tests {
     }
 
     #[test]
+    fn ineligible_budget_never_validates_breakpoints() {
+        let mut budget = ContextBudget::new(131072);
+        assert!(!budget.prefix_kv_eligible, "default budget must be ineligible");
+        let contents = make_slot_contents();
+        budget.update_breakpoints(&contents);
+        budget.update_breakpoints(&contents);
+        for bp in &budget.cache_breakpoints {
+            assert!(!bp.valid, "ineligible budget must never have valid breakpoints");
+        }
+    }
+
+    #[test]
     fn no_stealing_needed_large_budget() {
         // compute(100000, [100,200,300], 2000):
         // fixed=600, reserve=2000, dynamic=97400
@@ -3816,5 +3848,28 @@ mod tests {
         for prefix in PATH_PREFIXES {
             assert!(prefix.ends_with('/'), "prefix {:?} must end with '/'", prefix);
         }
+    }
+
+    #[test]
+    fn j36_fh4_micro_7b_turboquant_off_eligible() {
+        let profile = ModelCapabilityProfile::micro_7b_12gb();
+        assert!(prefix_kv_eligible(&profile, false));
+    }
+
+    #[test]
+    fn j36_fh4_micro_7b_turboquant_on_ineligible() {
+        let profile = ModelCapabilityProfile::micro_7b_12gb();
+        assert!(!prefix_kv_eligible(&profile, true));
+    }
+
+    #[test]
+    fn j36_fh4_cloud_200k_ineligible() {
+        let profile = ModelCapabilityProfile::cloud_200k();
+        assert!(!prefix_kv_eligible(&profile, false));
+    }
+
+    #[test]
+    fn j36_fh4_none_default_ineligible() {
+        assert!(!ModelFeatures::none().prefix_kv_eligible);
     }
 }

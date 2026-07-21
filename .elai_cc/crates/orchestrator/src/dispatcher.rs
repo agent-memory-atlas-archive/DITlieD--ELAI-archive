@@ -4,7 +4,7 @@
 // enum), and build_dispatch_context() which assembles a context from FSM state,
 // budget breakdown, and backend config.
 
-use crate::context_budget::{BudgetError, ContextBudget, GenerationProfile, ModelCapabilityProfile};
+use crate::context_budget::{prefix_kv_eligible, BudgetError, ContextBudget, GenerationProfile, ModelCapabilityProfile};
 use crate::fsm::FsmState;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -204,6 +204,11 @@ pub struct DispatchContext {
     /// supplied. Carried into the context so the LLM-provider layer can
     /// apply the profile's temperature/top_p without a second lookup.
     pub profile: GenerationProfile,
+    /// J-36 FH-4: whether the dispatch budget may advertise a reusable prefix
+    /// cache. False when no profile is available (cold) or when the profile's
+    /// architecture does not admit prefix KV reuse. When false, cache
+    /// breakpoints are forced invalid by construction.
+    pub prefix_kv_eligible: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -256,10 +261,25 @@ pub fn build_dispatch_context(
         .map(|c| c as usize)
         .unwrap_or(LOCAL_MODEL_MAX_CONTEXT);
     let raw_max = ceiling * LOCAL_BUDGET_FRACTION / 100;
+    let eligible = profile
+        .map(|p| prefix_kv_eligible(p, false))
+        .unwrap_or(false);
+
     let budget = match profile {
         Some(p) => ContextBudget::compute_with_profile(raw_max, p.fixed_slot_targets, p).ok(),
         None => ContextBudget::compute(raw_max, [0, 0, 0], 4096).ok(),
     };
+
+    let budget = budget.map(|mut b| {
+        b.prefix_kv_eligible = eligible;
+        if !eligible {
+            for bp in &mut b.cache_breakpoints {
+                bp.valid = false;
+                bp.prefix_hash = 0;
+            }
+        }
+        b
+    });
 
     // Batch-fu (FU.1 + A-7): assemble the phase-content slot when a phase
     // slot was supplied. The order is fixed:
@@ -289,6 +309,7 @@ pub fn build_dispatch_context(
         budget,
         phase_content,
         profile: applied_profile,
+        prefix_kv_eligible: eligible,
     })
 }
 
