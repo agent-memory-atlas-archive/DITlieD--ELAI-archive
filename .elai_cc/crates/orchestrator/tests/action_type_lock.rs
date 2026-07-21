@@ -1569,6 +1569,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::ReproPackEvent(_) => (),
         // J-16 (SCHEMA_VERSION 283): BlastRadiusRegressionEvent Pattern-2 4-arm blast-radius / anti-regression gate.
         SsbActionType::BlastRadiusRegressionEvent(_) => (),
+        // J-30 T7b (SCHEMA_VERSION 284): ProviderByokEvent flat variant, Kind rides in the payload.
+        SsbActionType::ProviderByokEvent => (),
     }
 }
 

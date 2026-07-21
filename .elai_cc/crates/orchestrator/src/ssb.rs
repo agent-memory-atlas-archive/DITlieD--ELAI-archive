@@ -1571,6 +1571,14 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // J-90 Leg A will widen the Kind to 6-arm (append-only).
     // TOTAL_VARIANTS 591 -> 592.
     SsbActionType::BlastRadiusRegressionEvent(BlastRadiusRegressionKind::ConeComputed),
+    // J-30 T7b (SCHEMA_VERSION 284): provider BYOK lifecycle event. Flat
+    // variant (Pattern-2, mirrors UsageTurnEvent); the 3-arm
+    // ProviderByokEventKind (KeyStored / EndpointVerified /
+    // CustomBackendRegistered) rides inside the payload. Emitted at the
+    // T5 configure + T2 custom-backend register seams (T7c deferred).
+    // NO key/secret/token material in the payload (plan stub_ban).
+    // TOTAL_VARIANTS 592 -> 593.
+    SsbActionType::ProviderByokEvent,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

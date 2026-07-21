@@ -3808,6 +3808,14 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 session_id: "s-j16-test".into(),
                 ts_ms: 1_700_000_000_000,
             }),
+            // J-30 T7b (SCHEMA_VERSION 284): explicit arm so test_payload(ProviderByokEvent)
+            // returns a real ProviderByokEventPayload instead of falling to the wildcard.
+            SsbActionType::ProviderByokEvent => SsbPayload::ProviderByokEvent(ProviderByokEventPayload {
+                backend: "anthropic".into(),
+                kind: ProviderByokEventKind::KeyStored,
+                ok: true,
+                ts_ms: 1_700_000_000_000,
+            }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload

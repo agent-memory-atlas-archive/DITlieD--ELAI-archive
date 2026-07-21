@@ -22,18 +22,21 @@
 //!
 //! See `workflow/reasoning/J-30_provider_byok_custom_endpoints.md`.
 
-use std::future::Future;
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
-use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
+use elai_core::clock::OsClock;
+use elai_orchestrator::Ssb;
+use elai_orchestrator::ssb::ProviderByokEventKind;
+
+use crate::providers_byok_ssb::{emit_provider_byok_event, open_providers_ssb_writer};
 use elai_providers::runtime::{
     config_descriptor, create_runtime, custom_backends, inventory, key_store, resolve_backend,
     RuntimeAdapter, RuntimeAdapterError, RuntimeBackend, RuntimeFactoryConfig, RuntimeHealth,
     SecretString,
 };
-use elai_core::OsClock;
 use thiserror::Error;
 use tokio::time::timeout;
 
@@ -213,6 +216,7 @@ type AdapterFactory = Box<
 async fn configure_with_factory(
     flags: ConfigureFlags,
     factory: AdapterFactory,
+    ssb: Option<Arc<Ssb>>,
 ) -> Result<String, ProvidersCmdError> {
     let candidate = match flags.backend.as_deref() {
         Some(name) => name.to_string(),
@@ -365,6 +369,7 @@ async fn configure_with_factory(
         RuntimeHealth::Ready => {
             // Only on success: persist key. If no api_key was collected
             // (api_key_optional local lane), skip the store.
+            let had_key = to_store.is_some();
             if let Some(key) = to_store {
                 key_store::store(&provider_id, &key)?;
             }
@@ -379,9 +384,28 @@ async fn configure_with_factory(
                     "[warn] inventory stamp failed for {provider_id}: {err}"
                 );
             }
+            // J-30 T7c: best-effort ProviderByokEvent SSB row. ok=true on
+            // Ready; never carries key material.
+            if let Some(ref ssb) = ssb {
+                emit_provider_byok_event(
+                    ssb,
+                    &provider_id,
+                    ProviderByokEventKind::EndpointVerified,
+                    true,
+                );
+                if had_key {
+                    emit_provider_byok_event(
+                        ssb,
+                        &provider_id,
+                        ProviderByokEventKind::KeyStored,
+                        true,
+                    );
+                }
+            }
             Ok(format!("[OK] {display_name} configured (key stored, verified)"))
         }
         RuntimeHealth::Degraded { reason } => {
+            let had_key = to_store.is_some();
             if let Some(key) = to_store {
                 key_store::store(&provider_id, &key)?;
             }
@@ -394,6 +418,25 @@ async fn configure_with_factory(
                 eprintln!(
                     "[warn] inventory stamp failed for {provider_id}: {err}"
                 );
+            }
+            // J-30 T7c: best-effort ProviderByokEvent SSB row. ok=false on
+            // Degraded (endpoint not fully verified); KeyStored still ok=true
+            // (the key was persisted). Never carries key material.
+            if let Some(ref ssb) = ssb {
+                emit_provider_byok_event(
+                    ssb,
+                    &provider_id,
+                    ProviderByokEventKind::EndpointVerified,
+                    false,
+                );
+                if had_key {
+                    emit_provider_byok_event(
+                        ssb,
+                        &provider_id,
+                        ProviderByokEventKind::KeyStored,
+                        true,
+                    );
+                }
             }
             Ok(format!(
                 "[OK] {display_name} configured (key stored, verified) — degraded: {reason}"
@@ -410,10 +453,11 @@ async fn configure_with_factory(
 /// runtime, mirroring `print_runtime`.
 pub async fn handle_providers_configure(
     flags: ConfigureFlags,
-    _project_root: &Path,
+    project_root: &Path,
 ) -> Result<String, ProvidersCmdError> {
     let factory: AdapterFactory = Box::new(|cfg| create_runtime(cfg));
-    configure_with_factory(flags, factory).await
+    let ssb = open_providers_ssb_writer(project_root);
+    configure_with_factory(flags, factory, ssb).await
 }
 
 /// J-30 T6 -- `elai providers status` handler. Reads per-backend
@@ -581,7 +625,7 @@ mod tests {
                 base_url: None,
                 model: None,
             };
-            let out = runtime.block_on(configure_with_factory(flags, factory)).unwrap();
+            let out = runtime.block_on(configure_with_factory(flags, factory, None)).unwrap();
             assert!(
                 out.starts_with("[FAIL]"),
                 "expected [FAIL] line, got: {out}"
@@ -626,7 +670,7 @@ mod tests {
                 base_url: Some("http://127.0.0.1:1".to_string()),
                 model: None,
             };
-            let out = runtime.block_on(configure_with_factory(flags, factory)).unwrap();
+            let out = runtime.block_on(configure_with_factory(flags, factory, None)).unwrap();
             assert!(
                 out.starts_with("[FAIL]"),
                 "expected [FAIL] on Unavailable, got: {out}"
@@ -663,7 +707,7 @@ mod tests {
                 base_url: None,
                 model: None,
             };
-            let out = runtime.block_on(configure_with_factory(flags, factory)).unwrap();
+            let out = runtime.block_on(configure_with_factory(flags, factory, None)).unwrap();
             assert!(
                 out.starts_with("[OK]"),
                 "expected [OK] on Ready, got: {out}"
@@ -704,7 +748,7 @@ mod tests {
                 base_url: None,
                 model: None,
             };
-            let out = runtime.block_on(configure_with_factory(flags, factory)).unwrap();
+            let out = runtime.block_on(configure_with_factory(flags, factory, None)).unwrap();
             assert!(
                 out.starts_with("[OK]"),
                 "expected [OK] on Degraded, got: {out}"
@@ -739,7 +783,7 @@ mod tests {
                 base_url: None,
                 model: Some("claude-sonnet-4-6".to_string()),
             };
-            let out = runtime.block_on(configure_with_factory(flags, factory)).unwrap();
+            let out = runtime.block_on(configure_with_factory(flags, factory, None)).unwrap();
             assert!(out.starts_with("[OK]"), "expected [OK], got: {out}");
             let status_path = home.join("provider_status.json");
             assert!(status_path.exists(), "provider_status.json must be created on Ready");
@@ -774,7 +818,7 @@ mod tests {
                 base_url: None,
                 model: None,
             };
-            let out = runtime.block_on(configure_with_factory(flags, factory)).unwrap();
+            let out = runtime.block_on(configure_with_factory(flags, factory, None)).unwrap();
             assert!(out.starts_with("[OK]"), "expected [OK], got: {out}");
             assert!(home.join("provider_status.json").exists(), "status must be stamped on Degraded");
         });

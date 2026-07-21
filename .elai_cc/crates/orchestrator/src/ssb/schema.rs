@@ -5523,7 +5523,12 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- ScopeViolationFlagged / RegressionSetSelected / SilentDeletionFlagged.
         -- Emitted from blast_radius::BlastRadiusRegressionGate on EXECUTING -> AUDITING.
         -- OBSERVE-ONLY (GD-4): flag, does not block (the hard-block is TestFlippedGate).
-        'blast_radius_regression_event'
+        'blast_radius_regression_event',
+        -- J-30 T7b (SCHEMA_VERSION 284): provider BYOK lifecycle event.
+        -- Pattern-2 flat variant; 3-arm ProviderByokEventKind rides in the payload.
+        -- Emitted at the T5 configure + T2 custom-backend register seams.
+        -- NO key/secret/token material in the payload (plan stub_ban).
+        'provider_byok_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::{
-    default_ssb_path_for_base, RuntimeBackendConfig, RuntimeOrchestrator, Ssb, SsbConfig,
+    default_ssb_path_for_base, AgentRole, RuntimeBackendConfig, RuntimeOrchestrator, Ssb, SsbConfig,
 };
 use elai_providers::runtime::{
     create_runtime, resolve_backend, AuthSource as RuntimeAuthSource, RuntimeBackend,
@@ -280,6 +280,12 @@ fn set_composer2_enabled_in_toml(doc: &mut toml::Value, enabled: bool) {
 async fn render_runtime_list(project_root: &Path) -> Result<String, RuntimeCmdError> {
     let routing = load_runtime_routing(project_root)?;
     let orchestrator = RuntimeOrchestrator::new(RuntimeBackendConfig::default());
+    // J-30 T7a: production caller for `for_role`/`release_turn_lock` with a
+    // non-zero turn_id so the turn lock engages and releases on the real
+    // entrypoint (`/runtime list`). This is a resolve/pin probe; ignore
+    // factory failures so the list command still renders.
+    let _ = orchestrator.for_role(AgentRole::Executor, 1).await;
+    orchestrator.release_turn_lock(1).await;
     // `health_snapshot` already calls each adapter's `health_check`
     // through the orchestrator's lazy-create + cache path. Wrap the
     // whole snapshot in a generous outer timeout so a single hung

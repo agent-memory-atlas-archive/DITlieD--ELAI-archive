@@ -75,6 +75,32 @@ pub enum RuntimeOrchestratorError {
     /// no primary mapping exists).
     #[error("invalid runtime config: {msg}")]
     InvalidConfig { msg: String },
+    /// J-30 T7a: a mid-sequence backend swap was refused. Once a backend
+    /// has been resolved for a given `turn_id`, the orchestrator pins that
+    /// backend until `release_turn_lock(turn_id)` is called; any
+    /// `for_role`/`try_complete` call with the same `turn_id` that would
+    /// resolve a DIFFERENT backend returns this error. The
+    /// `EscalateToCloud` promotion path is orthogonal (it does not call
+    /// `for_role`/`try_complete` for the cloud leg) and is never blocked
+    /// by this lock.
+    #[error("mid-sequence backend swap refused: locked {locked:?}, attempted {attempted:?}, turn_id {turn_id}")]
+    BackendLockedMidSequence {
+        locked: RuntimeBackend,
+        attempted: RuntimeBackend,
+        turn_id: u64,
+    },
+}
+
+/// J-30 T7a: pin stamped on `RuntimeOrchestrator::turn_lock` once a
+/// backend has been resolved for a turn. The pin is cleared by
+/// `release_turn_lock(turn_id)` at sequence end. `turn_id == 0` is the
+/// pre-warm sentinel: `for_role`/`try_complete` calls with `turn_id == 0`
+/// NEVER stamp or check the lock (pre-warm is a prediction, not a
+/// sequence commitment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnBackendPin {
+    pub backend: RuntimeBackend,
+    pub turn_id: u64,
 }
 
 /// Lifecycle event emitted by the orchestrator for downstream SSB
@@ -138,6 +164,11 @@ pub struct RuntimeOrchestrator {
     /// wrap + pre-warm dispatch still fire but emission collapses to a
     /// `tracing::info` line (matches sub-phase 4A behaviour).
     ssb: Option<Arc<Ssb>>,
+    /// J-30 T7a: turn-scoped backend pin. Once a backend is resolved for
+    /// a `turn_id != 0`, the pin refuses mid-sequence swap to a different
+    /// backend. `turn_id == 0` is the pre-warm sentinel and never stamps
+    /// the lock. Cleared by `release_turn_lock(turn_id)` at sequence end.
+    turn_lock: RwLock<Option<TurnBackendPin>>,
 }
 
 impl RuntimeOrchestrator {
@@ -150,6 +181,7 @@ impl RuntimeOrchestrator {
             adapters: RwLock::new(BTreeMap::new()),
             health: RwLock::new(BTreeMap::new()),
             ssb: None,
+            turn_lock: RwLock::new(None),
         }
     }
 
@@ -183,9 +215,18 @@ impl RuntimeOrchestrator {
     /// Return the adapter for `role`'s primary backend, lazily creating
     /// it if missing. On factory failure walks the fallback chain in
     /// order, returning `AllBackendsFailed` if every entry errors out.
+    ///
+    /// J-30 T7a: `turn_id` scopes the backend pin. `turn_id == 0` is the
+    /// pre-warm sentinel: the lock is neither checked nor stamped (pre-warm
+    /// is a prediction, not a sequence commitment). For `turn_id != 0`,
+    /// once a backend is successfully resolved the pin is stamped on
+    /// `turn_lock`; a subsequent call with the same `turn_id` that would
+    /// resolve a DIFFERENT backend returns `BackendLockedMidSequence`.
+    /// The pin is cleared by `release_turn_lock(turn_id)` at sequence end.
     pub async fn for_role(
         &self,
         role: AgentRole,
+        turn_id: u64,
     ) -> Result<Arc<dyn RuntimeAdapter>, RuntimeOrchestratorError> {
         let cfg = self.config.read().await;
         let primary = cfg.per_role.get(role);
@@ -197,11 +238,56 @@ impl RuntimeOrchestrator {
             .collect();
         drop(cfg);
 
+        // J-30 T7a: check the turn-scoped pin BEFORE the chain walk. If a
+        // pin is already stamped for this turn_id and the primary (the
+        // first backend the chain would try) differs from the pinned
+        // backend, refuse mid-sequence swap. The check is skipped for
+        // turn_id == 0 (pre-warm sentinel).
+        if turn_id != 0 {
+            let lock_guard = self.turn_lock.read().await;
+            if let Some(pin) = *lock_guard {
+                if pin.turn_id == turn_id && pin.backend != primary {
+                    warn!(
+                        target = "runtime_orchestrator",
+                        locked = ?pin.backend,
+                        attempted = ?primary,
+                        turn_id,
+                        "mid-sequence backend swap refused"
+                    );
+                    drop(lock_guard);
+                    return Err(RuntimeOrchestratorError::BackendLockedMidSequence {
+                        locked: pin.backend,
+                        attempted: primary,
+                        turn_id,
+                    });
+                }
+            }
+        }
+
         let mut last_err: Option<RuntimeAdapterError> = None;
         for backend in chain {
             tried.push(backend);
             match self.ensure_adapter(backend).await {
-                Ok(adapter) => return Ok(adapter),
+                Ok(adapter) => {
+                    // J-30 T7a: stamp the turn-scoped pin on the first
+                    // successful ensure_adapter in the chain. turn_id == 0
+                    // (pre-warm sentinel) never stamps.
+                    if turn_id != 0 {
+                        let mut lock_guard = self.turn_lock.write().await;
+                        match *lock_guard {
+                            Some(pin) if pin.turn_id == turn_id => {
+                                // Same turn: pin already stamped, no-op.
+                            }
+                            _ => {
+                                *lock_guard = Some(TurnBackendPin {
+                                    backend,
+                                    turn_id,
+                                });
+                            }
+                        }
+                    }
+                    return Ok(adapter);
+                }
                 Err(err) => {
                     warn!(
                         target = "runtime_orchestrator",
@@ -229,15 +315,29 @@ impl RuntimeOrchestrator {
         }
     }
 
+    pub async fn release_turn_lock(&self, turn_id: u64) {
+        let mut lock_guard = self.turn_lock.write().await;
+        if let Some(pin) = *lock_guard {
+            if pin.turn_id == turn_id {
+                *lock_guard = None;
+            }
+        }
+    }
+
     /// Drive a `complete` call for `role` with full fallback. On each
     /// attempt that fails with `Unavailable` / `NotImplemented` /
     /// `HealthTimeout` / `Network`, the chain advances. Returns the
     /// response plus the lifecycle event trail for the SSB writer.
+    ///
+    /// J-30 T7a: `turn_id` scopes the backend pin (see `for_role`'s
+    /// doc comment). `turn_id == 0` is the pre-warm sentinel and never
+    /// stamps or checks the lock.
     pub async fn try_complete(
         &self,
         role: AgentRole,
         messages: Vec<Message>,
         config: CompletionConfig,
+        turn_id: u64,
     ) -> Result<CompleteOutcome, RuntimeOrchestratorError> {
         let cfg = self.config.read().await;
         let primary = cfg.per_role.get(role);
@@ -247,6 +347,28 @@ impl RuntimeOrchestrator {
         // I-34: snapshot grammar_manifest_path before releasing the config lock.
         let grammar_manifest_path: Option<PathBuf> = cfg.grammar_manifest_path.clone();
         drop(cfg);
+
+        // J-30 T7a: check the turn-scoped pin BEFORE the chain walk.
+        if turn_id != 0 {
+            let lock_guard = self.turn_lock.read().await;
+            if let Some(pin) = *lock_guard {
+                if pin.turn_id == turn_id && pin.backend != primary {
+                    warn!(
+                        target = "runtime_orchestrator",
+                        locked = ?pin.backend,
+                        attempted = ?primary,
+                        turn_id,
+                        "mid-sequence backend swap refused"
+                    );
+                    drop(lock_guard);
+                    return Err(RuntimeOrchestratorError::BackendLockedMidSequence {
+                        locked: pin.backend,
+                        attempted: primary,
+                        turn_id,
+                    });
+                }
+            }
+        }
 
         // E-3 sub-phase 4B: wrap `config.system` with the unified
         // role-prompt preamble BEFORE the fallback chain so every
@@ -289,7 +411,24 @@ impl RuntimeOrchestrator {
         for backend in chain {
             tried.push(backend);
             let adapter = match self.ensure_adapter(backend).await {
-                Ok(a) => a,
+                Ok(a) => {
+                    // J-30 T7a: stamp the turn-scoped pin on the first
+                    // successful ensure_adapter in the chain. turn_id == 0
+                    // (pre-warm sentinel) never stamps.
+                    if turn_id != 0 {
+                        let mut lock_guard = self.turn_lock.write().await;
+                        match *lock_guard {
+                            Some(pin) if pin.turn_id == turn_id => {}
+                            _ => {
+                                *lock_guard = Some(TurnBackendPin {
+                                    backend,
+                                    turn_id,
+                                });
+                            }
+                        }
+                    }
+                    a
+                }
                 Err(err) => {
                     last_reason = format!("factory: {err}");
                     debug!(
@@ -871,7 +1010,10 @@ impl RuntimeOrchestrator {
         };
         // Resolve the predicted-next backend without consuming the
         // orchestrator's fallback chain — pre-warm should fail soft.
-        let adapter = match self.for_role(next_role).await {
+        // J-30 T7a: turn_id=0 sentinel — pre-warm is a prediction, not a
+        // sequence commitment; the turn-scoped lock is never stamped or
+        // checked for pre-warm.
+        let adapter = match self.for_role(next_role, 0).await {
             Ok(a) => a,
             Err(e) => {
                 debug!(
@@ -1271,7 +1413,7 @@ mod tests {
     async fn for_role_returns_primary_adapter_by_default() {
         let orch = RuntimeOrchestrator::new(cfg_with_primary(RuntimeBackend::Ollama));
         let adapter = orch
-            .for_role(AgentRole::Executor)
+            .for_role(AgentRole::Executor, 0)
             .await
             .expect("must return adapter (stubs are infallible)");
         // Ollama is a stub at B-37C library-tier; create_runtime returns a
@@ -1301,7 +1443,7 @@ mod tests {
 
         let orch = RuntimeOrchestrator::new(cfg);
         let adapter = orch
-            .for_role(AgentRole::Executor)
+            .for_role(AgentRole::Executor, 0)
             .await
             .expect("Sidecar fallback adapter must instantiate");
         assert_eq!(adapter.backend(), RuntimeBackend::Sidecar);
@@ -1328,6 +1470,7 @@ mod tests {
                     content: "ping".into(),
                 }],
                 CompletionConfig::default(),
+                0,
             )
             .await;
 
@@ -1372,7 +1515,7 @@ mod tests {
     async fn set_config_clears_adapter_cache() {
         let orch = RuntimeOrchestrator::new(RuntimeConfig::default());
         let _adapter = orch
-            .for_role(AgentRole::Executor)
+            .for_role(AgentRole::Executor, 0)
             .await
             .expect("initial adapter");
         // Cache populated; verify count==1.
@@ -1461,7 +1604,7 @@ mod tests {
         // compression + SSB emission run BEFORE the fallback loop, so the
         // off-agent row is written regardless of dispatch outcome.
         let _ = orch
-            .try_complete(AgentRole::Executor, messages, CompletionConfig::default())
+            .try_complete(AgentRole::Executor, messages, CompletionConfig::default(), 0)
             .await;
 
         // --- read the off-agent artifact back ---
@@ -1506,5 +1649,100 @@ mod tests {
             Some(v) => std::env::set_var("ELAI_LOCAL_MAX_CONTEXT", v),
             None => std::env::remove_var("ELAI_LOCAL_MAX_CONTEXT"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // J-30 T7a — turn-scoped backend lock unit tests.
+    //
+    // These tests exercise the turn-scoped pin: once a backend is
+    // resolved for a turn_id != 0, a subsequent call with the same
+    // turn_id that would resolve a DIFFERENT backend returns
+    // BackendLockedMidSequence. turn_id == 0 (pre-warm sentinel) never
+    // stamps or checks the lock.
+
+    #[tokio::test]
+    async fn mid_sequence_swap_refused() {
+        // Step 1: config with Executor -> Ollama, fallback [Ollama, Sidecar].
+        let mut cfg = cfg_with_primary(RuntimeBackend::Ollama);
+        cfg.fallback_chain = vec![RuntimeBackend::Ollama, RuntimeBackend::Sidecar];
+        let orch = RuntimeOrchestrator::new(cfg);
+
+        // Step 2: resolve for turn_id=1 — stamps the lock on Ollama.
+        let adapter = orch
+            .for_role(AgentRole::Executor, 1)
+            .await
+            .expect("must resolve Ollama");
+        assert_eq!(adapter.backend(), RuntimeBackend::Ollama);
+
+        // Step 3: swap config so Executor now maps to Sidecar (different
+        // backend). set_config clears the adapter cache but does NOT
+        // clear the turn_lock (the lock is turn-scoped, not config-scoped).
+        let mut new_cfg = cfg_with_primary(RuntimeBackend::Sidecar);
+        new_cfg.fallback_chain = vec![RuntimeBackend::Sidecar, RuntimeBackend::Ollama];
+        orch.set_config(new_cfg).await;
+
+        // Step 4: same turn_id=1, primary is now Sidecar. The lock holds
+        // Ollama, so the swap must be refused.
+        let result = orch.for_role(AgentRole::Executor, 1).await;
+        match result {
+            Err(RuntimeOrchestratorError::BackendLockedMidSequence {
+                locked,
+                attempted,
+                turn_id,
+            }) => {
+                assert_eq!(locked, RuntimeBackend::Ollama);
+                assert_eq!(attempted, RuntimeBackend::Sidecar);
+                assert_eq!(turn_id, 1);
+            }
+            Ok(_) => panic!("expected BackendLockedMidSequence, got Ok(..)"),
+            Err(e) => panic!("expected BackendLockedMidSequence, got Err: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn release_turn_lock_allows_next_turn() {
+        let mut cfg = cfg_with_primary(RuntimeBackend::Ollama);
+        cfg.fallback_chain = vec![RuntimeBackend::Ollama, RuntimeBackend::Sidecar];
+        let orch = RuntimeOrchestrator::new(cfg);
+
+        // Stamp the lock on Ollama for turn_id=1.
+        let adapter = orch
+            .for_role(AgentRole::Executor, 1)
+            .await
+            .expect("must resolve Ollama");
+        assert_eq!(adapter.backend(), RuntimeBackend::Ollama);
+
+        // Release the lock for turn_id=1.
+        orch.release_turn_lock(1).await;
+
+        // Swap config to Sidecar.
+        let mut new_cfg = cfg_with_primary(RuntimeBackend::Sidecar);
+        new_cfg.fallback_chain = vec![RuntimeBackend::Sidecar, RuntimeBackend::Ollama];
+        orch.set_config(new_cfg).await;
+
+        // turn_id=2 should resolve Sidecar freely (lock released, new turn).
+        let adapter = orch
+            .for_role(AgentRole::Executor, 2)
+            .await
+            .expect("must resolve Sidecar after lock release");
+        assert_eq!(adapter.backend(), RuntimeBackend::Sidecar);
+    }
+
+    #[tokio::test]
+    async fn prewarm_does_not_stamp_lock() {
+        let orch = RuntimeOrchestrator::new(cfg_with_primary(RuntimeBackend::Ollama));
+
+        // turn_id=0 is the pre-warm sentinel — the lock must NOT be stamped.
+        let _adapter = orch
+            .for_role(AgentRole::Executor, 0)
+            .await
+            .expect("must resolve Ollama");
+
+        // Verify the lock field is still None.
+        let lock_guard = orch.turn_lock.read().await;
+        assert!(
+            lock_guard.is_none(),
+            "pre-warm (turn_id=0) must not stamp the turn lock"
+        );
     }
 }

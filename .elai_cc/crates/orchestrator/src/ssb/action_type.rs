@@ -4802,6 +4802,16 @@ pub enum SsbActionType {
     ///
     /// Default-ON; OBSERVE-ONLY (GD-4). TOTAL_VARIANTS 591 -> 592.
     BlastRadiusRegressionEvent(BlastRadiusRegressionKind),
+    /// J-30 T7b (SCHEMA_VERSION 284): provider BYOK lifecycle event -- the
+    /// observability row for `elai providers configure` (KeyStored /
+    /// EndpointVerified) and custom_providers.toml registration
+    /// (CustomBackendRegistered). Flat variant (mirrors `UsageTurnEvent` --
+    /// ONE sql_str, no Kind on the action-type enum itself); the 3-arm
+    /// [`crate::ssb::ProviderByokEventKind`] discriminator rides inside
+    /// [`crate::ssb::ProviderByokEventPayload::kind`] as a payload field.
+    /// NO key/secret/token material in the payload (plan stub_ban).
+    /// TOTAL_VARIANTS 592 -> 593.
+    ProviderByokEvent,
 }
 
 impl SsbActionType {
@@ -5746,6 +5756,9 @@ impl SsbActionType {
             Self::ReproPackEvent(_) => "repro_pack_event",
             // J-16 (SCHEMA_VERSION 283): blast-radius / anti-regression gate event.
             Self::BlastRadiusRegressionEvent(_) => "blast_radius_regression_event",
+            // J-30 T7b (SCHEMA_VERSION 284): provider BYOK lifecycle event.
+            // Flat variant, Kind rides in the payload.
+            Self::ProviderByokEvent => "provider_byok_event",
         }
     }
 }
@@ -6614,6 +6627,9 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "blast_radius_regression_event" => Ok(SsbActionType::BlastRadiusRegressionEvent(
             BlastRadiusRegressionKind::ConeComputed,
         )),
+        // J-30 T7b (SCHEMA_VERSION 284): provider BYOK lifecycle event.
+        // Flat variant; Kind rides in the payload, not the action type.
+        "provider_byok_event" => Ok(SsbActionType::ProviderByokEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

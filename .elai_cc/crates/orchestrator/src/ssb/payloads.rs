@@ -3778,6 +3778,12 @@ pub enum SsbPayload {
     /// Emitted from `blast_radius::BlastRadiusRegressionGate` on EXECUTING -> AUDITING.
     /// OBSERVE-ONLY (GD-4). TOTAL_VARIANTS 591 -> 592.
     BlastRadiusRegressionEvent(BlastRadiusRegressionPayload),
+    /// J-30 T7b (SCHEMA_VERSION 284): provider BYOK lifecycle event. Flat
+    /// variant (Pattern-2, mirrors [`UsageTurnEvent`]); the 3-arm
+    /// [`ProviderByokEventKind`] discriminator rides inside the payload.
+    /// Emitted at the T5 configure + T2 custom-backend register seams.
+    /// TOTAL_VARIANTS 592 -> 593.
+    ProviderByokEvent(ProviderByokEventPayload),
 }
 
 impl SsbPayload {
@@ -4604,6 +4610,7 @@ impl SsbPayload {
             Self::ReproPackEvent(ref p) => SsbActionType::ReproPackEvent(p.kind),
             Self::BlastRadiusRegressionEvent(ref p) =>
                 SsbActionType::BlastRadiusRegressionEvent(p.kind),
+            Self::ProviderByokEvent(_) => SsbActionType::ProviderByokEvent,
         }
     }
 }
@@ -20464,5 +20471,45 @@ pub struct BlastRadiusRegressionPayload {
     #[serde(default)]
     pub cone_truncated: bool,
     pub session_id: String,
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-30 T7b: ProviderByokEvent substrate (BYOK lifecycle observability)
+// ---------------------------------------------------------------------------
+
+/// J-30 T7b -- 3-arm fire-point discriminator carried by
+/// [`ProviderByokEventPayload::kind`] (Pattern-2 payload-field convention,
+/// mirrors [`UsageTurnEventKind`]). NO key/secret/token material is ever
+/// carried in the payload or the Kind (plan stub_ban: the SSB row is
+/// observability only, never a key store).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderByokEventKind {
+    /// A provider API key was stored/rotated via `elai providers configure`.
+    KeyStored,
+    /// A provider endpoint health-check returned Ready (T5 configure flow).
+    EndpointVerified,
+    /// A custom backend was registered from `custom_providers.toml` (T2).
+    CustomBackendRegistered,
+}
+
+/// J-30 T7b -- payload for [`SsbActionType::ProviderByokEvent`]. The BYOK
+/// lifecycle event row: which backend, which lifecycle kind, whether it
+/// succeeded, and when. `backend` is a closed-ish identifier string
+/// (mirrors [`UsageTurnEventPayload::backend`]). NO key material: the
+/// `ok` flag is the success signal, never the key itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderByokEventPayload {
+    /// Backend label (e.g. `"anthropic"`, a custom backend id). Identifier
+    /// only, never key material.
+    pub backend: String,
+    /// Lifecycle discriminator. See [`ProviderByokEventKind`].
+    pub kind: ProviderByokEventKind,
+    /// Success flag: `true` if the lifecycle step succeeded, `false` if it
+    /// failed (e.g. health-check returned Degraded). Never carries the
+    /// error message (use a separate log channel for diagnostics).
+    pub ok: bool,
+    /// Wall-clock milliseconds since UNIX epoch at emit time.
     pub ts_ms: i64,
 }

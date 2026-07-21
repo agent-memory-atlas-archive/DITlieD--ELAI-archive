@@ -401,6 +401,7 @@ proposal_generated
 proposal_rejected
 provenance_attestation_emitted
 provenance_tagged
+provider_byok_event
 provider_signals
 qdelta_measured
 quant_backend_selected
