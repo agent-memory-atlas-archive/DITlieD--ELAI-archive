@@ -602,6 +602,12 @@ pub struct CompletionResponse {
     /// Tokens used. `(input, output)`. `0/0` when the adapter cannot
     /// report token counts.
     pub usage: (u32, u32),
+    /// Prompt-cache creation tokens (Anthropic-style). `0` when the
+    /// adapter does not report cache counts.
+    pub cache_creation_input_tokens: u32,
+    /// Prompt-cache read tokens (Anthropic-style). `0` when the
+    /// adapter does not report cache counts.
+    pub cache_read_input_tokens: u32,
     /// Echoed model name (post any aliasing).
     pub model: String,
 }

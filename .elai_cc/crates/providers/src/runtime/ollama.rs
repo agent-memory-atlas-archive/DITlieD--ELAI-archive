@@ -230,6 +230,8 @@ impl RuntimeAdapter for OllamaRuntime {
                         parsed.prompt_eval_count.unwrap_or(0),
                         parsed.eval_count.unwrap_or(0),
                     ),
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
                     model,
                 });
             }
@@ -258,6 +260,8 @@ impl RuntimeAdapter for OllamaRuntime {
                     .usage
                     .map(|u| (u.prompt_tokens, u.completion_tokens))
                     .unwrap_or((0, 0)),
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 model,
             })
         })

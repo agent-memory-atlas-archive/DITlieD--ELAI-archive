@@ -430,6 +430,8 @@ impl RuntimeAdapter for Composer2RuntimeAdapter {
                     response.usage.prompt_tokens,
                     response.usage.completion_tokens,
                 ),
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 model: if response.model.is_empty() {
                     this.default_model.clone()
                 } else {

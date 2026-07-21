@@ -256,6 +256,8 @@ async fn run_complete(
                 text: final_text,
                 stop_reason: Some("end_turn".to_string()),
                 usage: (0, 0),
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 model: cfg.model.clone().unwrap_or_default(),
             })
     }

@@ -494,6 +494,8 @@ impl RuntimeAdapter for SglangRuntime {
                     .usage
                     .map(|u| (u.prompt_tokens, u.completion_tokens))
                     .unwrap_or((0, 0)),
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 model,
             })
         })

@@ -649,8 +649,8 @@ impl RuntimeOrchestrator {
                                 elai_core::TokenUsage {
                                     input_tokens: usage_tokens_in,
                                     output_tokens: usage_tokens_out,
-                                    cache_creation_input_tokens: 0,
-                                    cache_read_input_tokens: 0,
+                                    cache_creation_input_tokens: response.cache_creation_input_tokens,
+                                    cache_read_input_tokens: response.cache_read_input_tokens,
                                 },
                             )
                         } else {
@@ -673,8 +673,8 @@ impl RuntimeOrchestrator {
                                 session_id: Some(ssb.session_id().to_owned()),
                                 input_tokens: usage_tokens_in,
                                 output_tokens: usage_tokens_out,
-                                cache_creation_tokens: 0,
-                                cache_read_tokens: 0,
+                                cache_creation_tokens: response.cache_creation_input_tokens,
+                                cache_read_tokens: response.cache_read_input_tokens,
                                 // Local backends have zero marginal API cost
                                 // (mirrors the BackendCostAccrued
                                 // est_cost_micros: 0 arm above). Non-local
@@ -698,6 +698,31 @@ impl RuntimeOrchestrator {
                                 target = "runtime_orchestrator",
                                 error = %e,
                                 "ssb write_payload failed for usage_turn_event (local)"
+                            );
+                        }
+                    }
+                    if let Some(ref ssb) = self.ssb {
+                        if backend.is_local() {
+                            let read = response.cache_read_input_tokens as u64;
+                            let create = response.cache_creation_input_tokens as u64;
+                            let (kind, reason) = if read > 0 && create > 0 {
+                                (
+                                    crate::ssb::LocalPrefixCacheKind::TailReprefill,
+                                    "tail_refilled",
+                                )
+                            } else if read > 0 {
+                                (
+                                    crate::ssb::LocalPrefixCacheKind::HeadCacheHit,
+                                    "head_cache_hit",
+                                )
+                            } else {
+                                (
+                                    crate::ssb::LocalPrefixCacheKind::HeadCacheMiss,
+                                    "no_cache_read",
+                                )
+                            };
+                            crate::prefix_cache_ssb::emit_local_prefix_cache_event(
+                                ssb, kind, read, create, reason,
                             );
                         }
                     }

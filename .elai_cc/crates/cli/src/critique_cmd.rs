@@ -84,6 +84,8 @@ impl RuntimeAdapter for StubMockRuntime {
                 text: json.to_owned(),
                 stop_reason: Some("end_turn".to_owned()),
                 usage: (10, 50),
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 model: "stub-mock".to_owned(),
             })
         })

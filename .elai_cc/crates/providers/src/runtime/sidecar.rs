@@ -236,6 +236,8 @@ impl RuntimeAdapter for SidecarRuntime {
                         text,
                         stop_reason: parsed.stop_reason.clone(),
                         usage: (parsed.usage.input_tokens, parsed.usage.output_tokens),
+                        cache_creation_input_tokens: parsed.usage.cache_creation_input_tokens,
+                        cache_read_input_tokens: parsed.usage.cache_read_input_tokens,
                         model: parsed.model,
                     })
                 }
@@ -250,6 +252,8 @@ impl RuntimeAdapter for SidecarRuntime {
                         text,
                         stop_reason: None,
                         usage: (0, 0),
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
                         model: request.model.clone(),
                     })
                 }

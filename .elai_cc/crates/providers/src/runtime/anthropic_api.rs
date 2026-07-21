@@ -265,6 +265,8 @@ impl RuntimeAdapter for AnthropicApiRuntime {
                 text,
                 stop_reason: response.stop_reason.clone(),
                 usage: (response.usage.input_tokens, response.usage.output_tokens),
+                cache_creation_input_tokens: response.usage.cache_creation_input_tokens,
+                cache_read_input_tokens: response.usage.cache_read_input_tokens,
                 model: response.model,
             })
         })

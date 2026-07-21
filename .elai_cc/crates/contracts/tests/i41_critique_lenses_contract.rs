@@ -89,6 +89,8 @@ impl elai_providers::runtime::types::RuntimeAdapter for InlineMockRuntime {
                 text,
                 stop_reason: Some("end_turn".to_owned()),
                 usage: (5, 20),
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 model: "inline-mock".to_owned(),
             })
         })
