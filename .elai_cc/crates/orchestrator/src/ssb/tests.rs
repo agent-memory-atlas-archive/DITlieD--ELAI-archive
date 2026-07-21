@@ -1,6 +1,8 @@
 #![allow(unused_imports)]
 // SSB unit tests (moved verbatim from ssb.rs `mod tests`, Tier-B Move 1).
 use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
+use crate::front_door::{ArgSpan, FrontDoorLane, FrontDoorTier};
+use crate::gate::RiskLevel;
 
     use super::*;
     use elai_core::clock::SeededClock;
@@ -3814,6 +3816,17 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 backend: "anthropic".into(),
                 kind: ProviderByokEventKind::KeyStored,
                 ok: true,
+                ts_ms: 1_700_000_000_000,
+            }),
+            // J-32 (SCHEMA_VERSION 285): explicit arm so test_payload(IntentRouted)
+            // returns a real IntentRoutedPayload instead of falling to the wildcard.
+            SsbActionType::IntentRouted => SsbPayload::IntentRouted(IntentRoutedPayload {
+                lane: FrontDoorLane::Task,
+                tier: FrontDoorTier::T1,
+                confidence: 90,
+                arg_spans: vec![ArgSpan { start: 0, end: 11 }],
+                kind: IntentRoutedKind::Classified,
+                risk: RiskLevel::Low,
                 ts_ms: 1_700_000_000_000,
             }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
@@ -8467,6 +8480,18 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
                 no_progress_window: 5,
                 ts_ms: 1_700_000_020_000,
             }),
+            // J-32 (SCHEMA_VERSION 285): one entry covers the variant (flat
+            // struct, Pattern-2 Kind on the payload). Round-trip through
+            // write_payload + read-back verifies the substrate.
+            SsbPayload::IntentRouted(IntentRoutedPayload {
+                lane: FrontDoorLane::Task,
+                tier: FrontDoorTier::T1,
+                confidence: 90,
+                arg_spans: vec![ArgSpan { start: 0, end: 11 }],
+                kind: IntentRoutedKind::Classified,
+                risk: RiskLevel::Low,
+                ts_ms: 1_700_000_000_000,
+            }),
         ]
     }
 
@@ -8478,8 +8503,8 @@ use crate::ssb::{schema::*, action_type::*, payloads::*, store::*};
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            487,
-            "483 prior + 1 I-9 ErrorAmplificationMeasured + 3 I-22 ProgressRewardScored fixtures",
+            489,
+            "488 tip baseline (assert was stale at 487 on 64d957b) + 1 J-32 IntentRouted",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

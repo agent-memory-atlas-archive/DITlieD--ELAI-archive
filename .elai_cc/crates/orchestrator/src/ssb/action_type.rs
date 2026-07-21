@@ -4812,6 +4812,15 @@ pub enum SsbActionType {
     /// NO key/secret/token material in the payload (plan stub_ban).
     /// TOTAL_VARIANTS 592 -> 593.
     ProviderByokEvent,
+    /// J-32 (SCHEMA_VERSION 285): front-door intent routing decision row.
+    /// Pattern-2 flat variant (mirrors ProviderByokEvent); the 5-arm
+    /// [`crate::ssb::IntentRoutedKind`] discriminator rides inside the
+    /// payload. Emitted by FrontDoorRouter on every classified/confirmed/
+    /// rejected/bypassed/clarified decision. Payload carries lane, tier,
+    /// confidence, arg_span offsets, decision, risk level. NEVER the
+    /// rewritten text (there is none; arg_spans are byte-offsets).
+    /// TOTAL_VARIANTS 593 -> 594.
+    IntentRouted,
 }
 
 impl SsbActionType {
@@ -5759,6 +5768,9 @@ impl SsbActionType {
             // J-30 T7b (SCHEMA_VERSION 284): provider BYOK lifecycle event.
             // Flat variant, Kind rides in the payload.
             Self::ProviderByokEvent => "provider_byok_event",
+            // J-32 (SCHEMA_VERSION 285): front-door intent routing decision.
+            // Flat variant, Kind rides in the payload.
+            Self::IntentRouted => "intent_routed",
         }
     }
 }
@@ -6630,6 +6642,9 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // J-30 T7b (SCHEMA_VERSION 284): provider BYOK lifecycle event.
         // Flat variant; Kind rides in the payload, not the action type.
         "provider_byok_event" => Ok(SsbActionType::ProviderByokEvent),
+        // J-32 (SCHEMA_VERSION 285): front-door intent routing decision.
+        // Flat variant; Kind rides in the payload, not the action type.
+        "intent_routed" => Ok(SsbActionType::IntentRouted),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

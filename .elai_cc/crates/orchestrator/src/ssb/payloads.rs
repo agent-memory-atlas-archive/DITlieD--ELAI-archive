@@ -34,6 +34,8 @@ use crate::mast::MastMode;
 
 use super::*;
 use crate::ssb::{schema::*, action_type::*, store::*};
+use crate::front_door::{ArgSpan, FrontDoorLane, FrontDoorTier};
+use crate::gate::RiskLevel;
 
 // ---------------------------------------------------------------------------
 // Typed payload structs (3B.4)
@@ -3784,6 +3786,13 @@ pub enum SsbPayload {
     /// Emitted at the T5 configure + T2 custom-backend register seams.
     /// TOTAL_VARIANTS 592 -> 593.
     ProviderByokEvent(ProviderByokEventPayload),
+    /// J-32 (SCHEMA_VERSION 285): front-door intent routing decision. Flat
+    /// variant (Pattern-2, mirrors ProviderByokEvent); the 5-arm
+    /// [`IntentRoutedKind`] discriminator rides inside the payload. Emitted
+    /// by FrontDoorRouter on every routing decision. Payload NEVER carries
+    /// the rewritten text (arg_spans are byte-offsets into the original).
+    /// TOTAL_VARIANTS 593 -> 594.
+    IntentRouted(IntentRoutedPayload),
 }
 
 impl SsbPayload {
@@ -4611,6 +4620,7 @@ impl SsbPayload {
             Self::BlastRadiusRegressionEvent(ref p) =>
                 SsbActionType::BlastRadiusRegressionEvent(p.kind),
             Self::ProviderByokEvent(_) => SsbActionType::ProviderByokEvent,
+            Self::IntentRouted(_) => SsbActionType::IntentRouted,
         }
     }
 }
@@ -20510,6 +20520,55 @@ pub struct ProviderByokEventPayload {
     /// failed (e.g. health-check returned Degraded). Never carries the
     /// error message (use a separate log channel for diagnostics).
     pub ok: bool,
+    /// Wall-clock milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-32: IntentRouted substrate (front-door routing decision observability)
+// ---------------------------------------------------------------------------
+
+/// J-32 -- 5-arm fire-point discriminator carried by
+/// [`IntentRoutedPayload::kind`] (Pattern-2 payload-field convention,
+/// mirrors ProviderByokEventKind). The router emits exactly one arm
+/// per decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentRoutedKind {
+    /// T1 matcher classified the message into a lane (auto-dispatched if LOW risk).
+    Classified,
+    /// User confirmed a MEDIUM/HIGH lane via the chip (Enter).
+    Confirmed,
+    /// User rejected the chip (Esc) -- ZERO dispatch rows.
+    Rejected,
+    /// Slash bypass -- the router deferred to SlashCommand::parse; no lane dispatch.
+    Bypassed,
+    /// Sidecar down / ambiguous -- CLARIFY chip, never a silent guess (R1 fail-closed).
+    Clarified,
+}
+
+/// J-32 -- payload for [`SsbActionType::IntentRouted`]. The routing
+/// decision row: which lane, which tier, confidence, the arg spans
+/// (byte-offsets into the original message, NEVER paraphrase), the
+/// decision kind, and the risk level. `lane` is the closed-set
+/// FrontDoorLane; `risk` is gate::RiskLevel (both in the orchestrator
+/// crate, no cli dep).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntentRoutedPayload {
+    /// Routed lane (closed set). See [`crate::front_door::FrontDoorLane`].
+    pub lane: FrontDoorLane,
+    /// Which tier produced the decision (T0 slash bypass, T1 deterministic).
+    pub tier: FrontDoorTier,
+    /// Router confidence 0..100.
+    pub confidence: u8,
+    /// Arg spans as byte-offsets into the original message. The payload
+    /// NEVER carries the rewritten text; the consumer re-slices the
+    /// original input using these offsets.
+    pub arg_spans: Vec<ArgSpan>,
+    /// Decision discriminator. See [`IntentRoutedKind`].
+    pub kind: IntentRoutedKind,
+    /// Risk level for the routed lane (LOW auto, MEDIUM pause, HIGH pause).
+    pub risk: RiskLevel,
     /// Wall-clock milliseconds since UNIX epoch at emit time.
     pub ts_ms: i64,
 }

@@ -5528,7 +5528,12 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- Pattern-2 flat variant; 3-arm ProviderByokEventKind rides in the payload.
         -- Emitted at the T5 configure + T2 custom-backend register seams.
         -- NO key/secret/token material in the payload (plan stub_ban).
-        'provider_byok_event'
+        'provider_byok_event',
+        -- J-32 (SCHEMA_VERSION 285): front-door intent routing decision.
+        -- Pattern-2 flat variant; 5-arm IntentRoutedKind rides in the payload.
+        -- Emitted by FrontDoorRouter on every routing decision.
+        -- NEVER carries rewritten text (arg_spans are byte-offsets).
+        'intent_routed'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

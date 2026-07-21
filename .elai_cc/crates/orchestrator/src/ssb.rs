@@ -1579,6 +1579,15 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // NO key/secret/token material in the payload (plan stub_ban).
     // TOTAL_VARIANTS 592 -> 593.
     SsbActionType::ProviderByokEvent,
+    // J-32 (SCHEMA_VERSION 285): front-door intent routing decision. Flat
+    // variant (Pattern-2, mirrors ProviderByokEvent); the 5-arm
+    // IntentRoutedKind (Classified / Confirmed / Rejected / Bypassed /
+    // Clarified) rides inside the payload. Emitted by FrontDoorRouter on
+    // every routing decision. Payload NEVER carries rewritten text
+    // (arg_spans are byte-offsets). Emission sites land in a later slice
+    // (slice-C, deferred like J-30 T7c).
+    // TOTAL_VARIANTS 593 -> 594.
+    SsbActionType::IntentRouted,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

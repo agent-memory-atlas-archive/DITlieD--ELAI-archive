@@ -8,12 +8,14 @@
 
 use std::env;
 
+use serde::{Deserialize, Serialize};
+
 /// The closed set of lanes the front door can dispatch to.
 ///
 /// Tier-1 maps the existing classifier heuristics onto Chat/Task/Research/
 /// Explore/Fix. The set is intentionally minimal; T2 may expand it but the
 /// function is total by construction (Chat is the safe default).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FrontDoorLane {
     Chat,
     Task,
@@ -23,7 +25,7 @@ pub enum FrontDoorLane {
 }
 
 /// Which tier produced the decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FrontDoorTier {
     T0,
     T1,
@@ -32,7 +34,7 @@ pub enum FrontDoorTier {
 /// A byte-offset span into the original input identifying the argument
 /// fragment for the routed lane. Never a paraphrase; the lane receives the
 /// user's literal bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArgSpan {
     pub start: usize,
     pub end: usize,

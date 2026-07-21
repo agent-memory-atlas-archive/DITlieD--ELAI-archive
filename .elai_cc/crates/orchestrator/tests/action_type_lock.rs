@@ -1571,6 +1571,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::BlastRadiusRegressionEvent(_) => (),
         // J-30 T7b (SCHEMA_VERSION 284): ProviderByokEvent flat variant, Kind rides in the payload.
         SsbActionType::ProviderByokEvent => (),
+        // J-32 (SCHEMA_VERSION 285): IntentRouted flat variant, Kind rides in the payload.
+        SsbActionType::IntentRouted => (),
     }
 }
 
