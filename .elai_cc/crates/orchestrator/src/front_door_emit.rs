@@ -6,9 +6,10 @@
 // A missed SSB row is never a correctness failure (R1 fail-closed is the gate's
 // job, not the emit path's).
 //
-// PRODUCTION_HOOK: repl / start_chat_stream wiring lands in a LATER slice
-// (slice-D). The unit smoke in this module proves the emit path is reachable
-// against a real TempDir SQLite SSB; it does NOT satisfy production-caller R7.
+// slice-D wired the repl bare-message path (classify_bare_message_with_ssb).
+// start_chat_stream wiring is still a future slice; until it lands, the
+// producer-without-consumer R6/R7 leg for this helper is satisfied by the
+// repl bare-message call site (cli/src/repl.rs).
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,9 +18,6 @@ use crate::front_door::{FrontDoorDecision, FrontDoorLane};
 use crate::gate::RiskLevel;
 use crate::ssb::{IntentRoutedKind, IntentRoutedPayload, Ssb, SsbPayload};
 
-// WIRE-DARK[J-32-sliceC]: production callers land in later slice
-// (repl / start_chat_stream). The unit test below does NOT satisfy R7
-// (test-file callers are a separate root set).
 pub fn emit_intent_routed(ssb: &Arc<Ssb>, decision: &FrontDoorDecision, risk: RiskLevel) {
     let kind = if decision.slash_bypass.is_some() {
         IntentRoutedKind::Bypassed
@@ -40,19 +38,29 @@ pub fn emit_intent_routed(ssb: &Arc<Ssb>, decision: &FrontDoorDecision, risk: Ri
         ts_ms,
     });
     let ssb = Arc::clone(ssb);
+    let emit = async move {
+        if let Err(e) = ssb.write_payload("front_door", 0, payload, vec![]).await {
+            tracing::warn!(
+                front_door.ssb_err = %e,
+                "IntentRouted SSB emit failed (routing unaffected)"
+            );
+        }
+    };
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => {
-            handle.spawn(async move {
-                if let Err(e) = ssb.write_payload("front_door", 0, payload, vec![]).await {
-                    tracing::warn!(
-                        front_door.ssb_err = %e,
-                        "IntentRouted SSB emit failed (routing unaffected)"
-                    );
-                }
-            });
+            handle.spawn(emit);
         }
         Err(_) => {
-            tracing::debug!("front_door_emit: no tokio runtime, skipping IntentRouted row");
+            // No async runtime (the repl bare-message dispatch arm is sync,
+            // same shape as HandoffLifecycle / C-30 emit_project_detection_signals).
+            // Build a transient current_thread runtime and block_on the write
+            // so the IntentRouted row still lands; do NOT spawn-and-drop.
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                rt.block_on(emit);
+            }
         }
     }
 }
@@ -71,8 +79,6 @@ pub fn emit_intent_routed(ssb: &Arc<Ssb>, decision: &FrontDoorDecision, risk: Ri
 /// HIGH is RECON_NEEDED: a destructive-content matcher (the "wipe" fixture) is
 /// a future slice and is NOT invented here. Do NOT add a HIGH branch without
 /// grounding it in a real destructive matcher.
-// WIRE-DARK[J-32-sliceC]: production callers land in later slice
-// (repl / start_chat_stream). The unit test below does NOT satisfy R7.
 pub fn risk_for_lane(lane: FrontDoorLane) -> RiskLevel {
     match lane {
         FrontDoorLane::Chat | FrontDoorLane::Research | FrontDoorLane::Explore => RiskLevel::Low,

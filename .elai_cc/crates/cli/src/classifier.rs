@@ -5,10 +5,14 @@
 // ELAI_FRONT_DOOR_ENABLE is OFF the public behavior is bit-identical to the
 // pre-J-32 classifier; when ON it routes via FrontDoorRouter::resolve.
 
+use std::sync::Arc;
+
 use crate::commands::SlashCommand;
 use elai_orchestrator::front_door::{
     self, FrontDoorDecision, FrontDoorLane, FrontDoorRouter,
 };
+use elai_orchestrator::front_door_emit::{emit_intent_routed, risk_for_lane};
+use elai_orchestrator::ssb::Ssb;
 
 // Re-export the shared matcher primitives so existing direct callers (and
 // tests) keep compiling without a parallel heuristic.
@@ -38,6 +42,31 @@ pub fn classify_bare_message(input: &str, known_names: &[&str]) -> SlashCommand 
     }
 
     // Kill-switch OFF: exact pre-J-32 behavior using the shared matchers.
+    classify_bare_message_legacy(input, known_names)
+}
+
+/// Classify a bare message and, when the front door is enabled, emit the
+/// IntentRouted SSB row for the resolved decision. This is the slice-D
+/// production-wired variant of `classify_bare_message`: the repl bare-message
+/// path calls this with `cli.ssb.as_ref()` so the routing observability row
+/// lands on the same code path that drives SlashCommand routing.
+///
+/// When `ELAI_FRONT_DOOR_ENABLE` is OFF the behavior is bit-identical to
+/// `classify_bare_message` (no SSB row; legacy route table). When ON and
+/// `ssb` is `None`, the decision is still resolved and mapped; only the
+/// emit is skipped (a missing SSB handle is not a correctness failure).
+pub fn classify_bare_message_with_ssb(
+    input: &str,
+    known_names: &[&str],
+    ssb: Option<&Arc<Ssb>>,
+) -> SlashCommand {
+    if front_door::enabled() {
+        let decision = FrontDoorRouter.resolve(input, known_names, &[]);
+        if let Some(ssb) = ssb {
+            emit_intent_routed(ssb, &decision, risk_for_lane(decision.lane));
+        }
+        return map_decision_to_slash_command(&decision, input);
+    }
     classify_bare_message_legacy(input, known_names)
 }
 
@@ -177,5 +206,62 @@ mod tests {
     fn action_verb_with_comma() {
         let result = classify_bare_message("implement, test, and deploy the feature", &[]);
         assert!(matches!(result, SlashCommand::Task { .. }));
+    }
+
+    // J-32 slice-D: the repl bare-message path calls
+    // classify_bare_message_with_ssb, which must emit an IntentRouted
+    // Classified SSB row when ELAI_FRONT_DOOR_ENABLE is set and an Ssb
+    // handle is supplied. This is the production-wire proof for
+    // emit_intent_routed (R7: a real caller, not a test-only caller).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn j32_slice_d_with_ssb_emits_intent_routed_row() {
+        std::env::set_var("ELAI_FRONT_DOOR_ENABLE", "1");
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(elai_core::clock::OsClock);
+        let ssb = Arc::new(
+            elai_orchestrator::ssb::Ssb::new(
+                elai_orchestrator::ssb::SsbConfig {
+                    db_path: dir.path().join("j32-slice-d-ssb.db"),
+                    pool_size: Some(2),
+                    project_id: "j32-slice-d".into(),
+                    session_id: "j32-slice-d".into(),
+                },
+                clock,
+            )
+            .expect("ssb open"),
+        );
+
+        let _ = classify_bare_message_with_ssb(
+            "fix the failing test in sum.rs",
+            &[],
+            Some(&ssb),
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        use elai_orchestrator::ssb::SsbReader;
+        let rows = ssb
+            .query_by_type(elai_orchestrator::ssb::SsbActionType::IntentRouted)
+            .expect("query_by_type IntentRouted");
+        assert!(
+            !rows.is_empty(),
+            "expected >= 1 IntentRouted row from classify_bare_message_with_ssb; \
+             R1 missing evidence = FAIL"
+        );
+        let decoded = elai_orchestrator::ssb::decode_ssb_payload(&rows[0].payload)
+            .expect("decode_ssb_payload");
+        match decoded {
+            elai_orchestrator::ssb::SsbPayload::IntentRouted(p) => {
+                assert_eq!(
+                    p.kind,
+                    elai_orchestrator::ssb::IntentRoutedKind::Classified
+                );
+                assert_eq!(p.lane, elai_orchestrator::front_door::FrontDoorLane::Fix);
+                assert!(p.ts_ms > 0);
+            }
+            other => panic!("expected IntentRouted; got {:?}", other),
+        }
+
+        std::env::remove_var("ELAI_FRONT_DOOR_ENABLE");
     }
 }

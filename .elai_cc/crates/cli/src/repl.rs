@@ -182,7 +182,13 @@ pub(crate) fn run_repl(
                     }
                     Ok(None) => {
                         // Bare message: run fallback classifier for routing.
-                        let routed = classifier::classify_bare_message(&trimmed, &[]);
+                        // J-32 slice-D: route through the SSB-aware variant so
+                        // the IntentRouted row lands on the same code path.
+                        let routed = classifier::classify_bare_message_with_ssb(
+                            &trimmed,
+                            &[],
+                            cli.ssb.as_ref(),
+                        );
                         match routed {
                             SlashCommand::Research { .. } => {
                                 // Route to research mode via handle_repl_command.
