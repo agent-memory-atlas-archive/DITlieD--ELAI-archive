@@ -70,6 +70,16 @@ def build_awq_checkpoint(
 
     Raises RuntimeError if autoawq is not installed.
     """
+    if calibration_size < 1:
+        raise RuntimeError(
+            "AWQ build refused: calibration_size must be >= 1 (J-19 L60 NEGATIVE: "
+            "an AWQ checkpoint built without calibration data FAILS its build assert)"
+        )
+    _calibration_probe = _build_calibration_data(calibration_size, seq_len)
+    if not _calibration_probe or not any(s.strip() for s in _calibration_probe):
+        raise RuntimeError(
+            "AWQ build refused: calibration data is empty (J-19 L60 NEGATIVE)"
+        )
     try:
         from awq import AutoAWQForCausalLM
         from transformers import AutoTokenizer
