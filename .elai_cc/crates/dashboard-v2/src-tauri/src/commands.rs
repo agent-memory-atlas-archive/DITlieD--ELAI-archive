@@ -9980,6 +9980,27 @@ pub struct ContextStateDto {
     /// J-29 SLICE-2 -- token limit = `raw_max` from the most recent
     /// `context_budget_computed` row.
     pub token_limit: u64,
+    /// J-34 SLICE-5 -- calibration event kind from the latest
+    /// `context_calibration_event` SSB row ("curve_measured" /
+    /// "threshold_applied" / ...). None when no calibration rows exist.
+    pub calibration_kind: Option<String>,
+    /// J-34 SLICE-5 -- model identity key the calibration was produced under.
+    pub calibration_model_identity_key: Option<String>,
+    /// J-34 SLICE-5 -- fill fraction at the degradation knee (CurveMeasured).
+    pub calibration_knee_fill_fraction: Option<f32>,
+    /// J-34 SLICE-5 -- magnitude of the outcome drop at the knee.
+    pub calibration_drop_magnitude: Option<f32>,
+    /// J-34 SLICE-5 -- number of samples in the calibration curve.
+    pub calibration_sample_count: Option<u64>,
+    /// J-34 SLICE-5 -- blake3 hash of the calibration artifact.
+    pub calibration_content_hash: Option<String>,
+    /// J-34 SLICE-5 -- active calibrated trim fraction (ThresholdApplied).
+    pub calibrated_trim_fraction: Option<f64>,
+    /// J-34 SLICE-5 -- whether folklore fallback was used instead of a
+    /// calibrated threshold.
+    pub calibration_fallback_used: Option<bool>,
+    /// J-34 SLICE-5 -- wall-clock millis of the latest calibration event.
+    pub calibration_ts_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -10028,6 +10049,15 @@ pub async fn get_context_state(state: State<'_, AppState>) -> CmdResult<ContextS
         current_runtime: None,
         absolute_tokens: 0,
         token_limit: 0,
+        calibration_kind: None,
+        calibration_model_identity_key: None,
+        calibration_knee_fill_fraction: None,
+        calibration_drop_magnitude: None,
+        calibration_sample_count: None,
+        calibration_content_hash: None,
+        calibrated_trim_fraction: None,
+        calibration_fallback_used: None,
+        calibration_ts_ms: None,
     };
 
     let Some(viewer) = state.viewer.as_ref() else {
@@ -10124,6 +10154,54 @@ pub async fn get_context_state(state: State<'_, AppState>) -> CmdResult<ContextS
                 if !backend.is_empty() {
                     dto.current_runtime = Some(backend.to_owned());
                 }
+            }
+        }
+    }
+
+    // J-34 SLICE-5 -- calibration fields from `context_calibration_event`
+    // SSB rows. Prefer latest CurveMeasured for knee/sample/hash/drop;
+    // overlay latest ThresholdApplied for calibrated_trim_fraction +
+    // fallback_used. Missing rows leave Options None.
+    if let Ok(rows) = viewer.recent_rows_of_type("context_calibration_event", 16) {
+        for row in &rows {
+            let kind = row.payload_json.get("kind").and_then(|v| v.as_str());
+            let details = row.payload_json.get("details_json");
+            let ts_ms = row.payload_json.get("ts_ms").and_then(|v| v.as_i64());
+            let model_key = row
+                .payload_json
+                .get("model_identity_key")
+                .and_then(|v| v.as_str());
+
+            match kind {
+                Some("curve_measured") if dto.calibration_kind.is_none() => {
+                    dto.calibration_kind = Some("curve_measured".to_owned());
+                    if let Some(d) = details {
+                        dto.calibration_knee_fill_fraction =
+                            d.get("knee_fill_fraction").and_then(|v| v.as_f64()).map(|x| x as f32);
+                        dto.calibration_drop_magnitude =
+                            d.get("drop_magnitude").and_then(|v| v.as_f64()).map(|x| x as f32);
+                        dto.calibration_sample_count =
+                            d.get("sample_count").and_then(|v| v.as_u64());
+                        dto.calibration_content_hash =
+                            d.get("content_hash").and_then(|v| v.as_str()).map(String::from);
+                    }
+                    dto.calibration_model_identity_key = model_key.map(String::from);
+                    dto.calibration_ts_ms = ts_ms;
+                }
+                Some("threshold_applied") if dto.calibrated_trim_fraction.is_none() => {
+                    if let Some(d) = details {
+                        dto.calibrated_trim_fraction =
+                            d.get("calibrated_trim_fraction").and_then(|v| v.as_f64());
+                        dto.calibration_fallback_used =
+                            d.get("fallback_used").and_then(|v| v.as_bool());
+                    }
+                    if dto.calibration_kind.is_none() {
+                        dto.calibration_kind = Some("threshold_applied".to_owned());
+                        dto.calibration_model_identity_key = model_key.map(String::from);
+                        dto.calibration_ts_ms = ts_ms;
+                    }
+                }
+                _ => {}
             }
         }
     }

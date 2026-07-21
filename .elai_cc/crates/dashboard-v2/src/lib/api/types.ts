@@ -3656,6 +3656,24 @@ export interface ContextState {
   absolute_tokens?: number;
   /** J-29 SLICE-2 — token limit (raw_max). */
   token_limit?: number;
+  /** J-34 SLICE-5 — calibration event kind ("curve_measured" / "threshold_applied" / ...). */
+  calibration_kind?: string | null;
+  /** J-34 SLICE-5 — model identity key the calibration was produced under. */
+  calibration_model_identity_key?: string | null;
+  /** J-34 SLICE-5 — fill fraction at the degradation knee. */
+  calibration_knee_fill_fraction?: number | null;
+  /** J-34 SLICE-5 — magnitude of the outcome drop at the knee. */
+  calibration_drop_magnitude?: number | null;
+  /** J-34 SLICE-5 — number of samples in the calibration curve. */
+  calibration_sample_count?: number | null;
+  /** J-34 SLICE-5 — blake3 hash of the calibration artifact. */
+  calibration_content_hash?: string | null;
+  /** J-34 SLICE-5 — active calibrated trim fraction (ThresholdApplied). */
+  calibrated_trim_fraction?: number | null;
+  /** J-34 SLICE-5 — whether folklore fallback was used instead of calibrated. */
+  calibration_fallback_used?: boolean | null;
+  /** J-34 SLICE-5 — wall-clock millis of the latest calibration event. */
+  calibration_ts_ms?: number | null;
 }
 
 export interface TrustReport {

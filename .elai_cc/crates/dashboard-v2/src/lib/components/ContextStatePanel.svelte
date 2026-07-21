@@ -48,6 +48,15 @@
     current_runtime: null,
     absolute_tokens: 0,
     token_limit: 0,
+    calibration_kind: null,
+    calibration_model_identity_key: null,
+    calibration_knee_fill_fraction: null,
+    calibration_drop_magnitude: null,
+    calibration_sample_count: null,
+    calibration_content_hash: null,
+    calibrated_trim_fraction: null,
+    calibration_fallback_used: null,
+    calibration_ts_ms: null,
   });
   let loadError = $state<string | null>(null);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -74,6 +83,30 @@
     if (panelState.runtime_choice_badge === 'cloud_billed') return 'cloud - billed';
     return '';
   });
+
+  const hasCalibration = $derived(
+    panelState.calibration_kind !== null && panelState.calibration_kind !== undefined,
+  );
+
+  const kneePct = $derived(
+    panelState.calibration_knee_fill_fraction != null
+      ? (panelState.calibration_knee_fill_fraction * 100).toFixed(0) + '%'
+      : '',
+  );
+
+  const trimPct = $derived(
+    panelState.calibrated_trim_fraction != null
+      ? (panelState.calibrated_trim_fraction * 100).toFixed(0) + '%'
+      : '',
+  );
+
+  const modelKeyShort = $derived(
+    panelState.calibration_model_identity_key != null
+      ? panelState.calibration_model_identity_key.length > 20
+        ? panelState.calibration_model_identity_key.slice(0, 20) + '…'
+        : panelState.calibration_model_identity_key
+      : '',
+  );
 
   onMount(() => {
     void reload();
@@ -124,6 +157,50 @@
       {panelState.prompt_injection_check_status}
     </span>
   </div>
+
+  {#if hasCalibration}
+    <div class="calibration mono">
+      <div class="row">
+        <span class="row-label">calibration</span>
+        <span class="row-val">{panelState.calibration_kind}</span>
+      </div>
+      {#if kneePct}
+        <div class="row">
+          <span class="row-label">degrades here</span>
+          <span class="row-val">{kneePct}</span>
+        </div>
+      {/if}
+      {#if panelState.calibrated_trim_fraction != null}
+        <div class="row">
+          <span class="row-label">trim</span>
+          <span class="row-val">
+            {#if panelState.calibration_fallback_used}
+              folklore fallback
+            {:else}
+              {trimPct}
+            {/if}
+          </span>
+        </div>
+      {/if}
+      {#if panelState.calibration_sample_count != null}
+        <div class="row">
+          <span class="row-label">samples</span>
+          <span class="row-val">{panelState.calibration_sample_count}</span>
+        </div>
+      {/if}
+      {#if modelKeyShort}
+        <div class="row">
+          <span class="row-label">model</span>
+          <span class="row-val row-val--ghost">{modelKeyShort}</span>
+        </div>
+      {/if}
+    </div>
+  {:else}
+    <div class="row mono">
+      <span class="row-label">calibration</span>
+      <span class="row-val row-val--ghost">no calibration yet, run: elai bench context-fill …</span>
+    </div>
+  {/if}
 
   {#if badgeKind === 'red'}
     <div class="warning mono">
@@ -232,6 +309,15 @@
 
   .injection-not_run {
     color: var(--text-ghost);
+  }
+
+  .calibration {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-subtle);
+    margin-top: 4px;
   }
 
   .warning {
