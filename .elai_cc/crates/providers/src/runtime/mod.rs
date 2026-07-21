@@ -57,6 +57,12 @@ pub mod cost;
 /// layered on `resolve_backend` / `create_runtime`. See
 /// `workflow/reasoning/J-30_provider_byok_custom_endpoints.md`.
 pub mod custom_backends;
+/// J-30 T4 -- per-backend config descriptor metadata. Static
+/// `BackendConfigDescriptor` table keyed by `RuntimeBackend` for builtins
+/// plus `descriptor_for_custom` for the runtime-loaded `CustomBackendSpec`
+/// overlay. Consumed by T5's CLI `configure` flow (WIRE-DARK[J-30-T5]).
+/// See `workflow/reasoning/J-30_provider_byok_custom_endpoints.md`.
+pub mod config_descriptor;
 pub mod event_sink;
 pub mod gemini_cli;
 /// E-34 — `GenAiAdapter` scaffold. RuntimeAdapter slot reserved for the
@@ -149,6 +155,10 @@ pub use types::{
     ResolveBackendError, RuntimeAdapter, RuntimeAdapterError, RuntimeBackend, RuntimeCapabilities,
     RuntimeFactoryConfig, RuntimeFuture, RuntimeHealth, RuntimeHealthFuture,
     RuntimePermissionMode, RuntimeStream, SidecarRuntimeConfig, StreamChunk,
+};
+pub use config_descriptor::{
+    BackendConfigDescriptor, ConfigKey, ConfigKeyKind, MissingKey,
+    descriptor_for, descriptor_for_custom, satisfies,
 };
 
 /// Resolve a config-file or CLI candidate string to a canonical

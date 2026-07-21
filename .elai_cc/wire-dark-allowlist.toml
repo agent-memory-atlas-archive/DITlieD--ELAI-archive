@@ -2181,3 +2181,39 @@ owner             = "maintainer"
 expiry_date       = "2026-09-01"
 promotion_plan_id = "J-18"
 smoke_test        = "crates/contracts/tests/j18_agentic_grep_repair_on_path.rs::agentic_grep_repair_gate_on_when_enabled"
+
+# J-30 T4 -- per-backend config descriptor API (config_descriptor.rs).
+# descriptor_for / descriptor_for_custom / satisfies are NEW pub symbols
+# whose canonical production consumer is the T5 `elai providers configure`
+# CLI flow (J-30 plan line 45-50, WIRING_CONTRACT line 118-119). T5 is
+# PLANNED but not yet dispatched; these symbols ship WIRE-DARK with the
+# T5 CLI configure flow as the promotion plan. The smoke_test names the
+# unit test (a) as the on-path placeholder until T5 lands the real CLI
+# configure smoke. The auditor re-runs production_caller_check.py over
+# the changeset; a DARK symbol without a WIRE-DARK row + allowlist entry
+# is a BLOCK. The three pub fns each carry the marker
+# `// WIRE-DARK[J-30-T5]` on the line above their definition (same shape
+# as key_store.rs:82).
+[[flag]]
+name              = "WIRE-DARK[J-30-T5]:config_descriptor::descriptor_for"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "J-30-T5"
+smoke_test        = "crates/providers/src/runtime/config_descriptor.rs::tests::descriptor_for_anthropic_api_requires_secret_api_key"
+
+[[flag]]
+name              = "WIRE-DARK[J-30-T5]:config_descriptor::descriptor_for_custom"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "J-30-T5"
+smoke_test        = "crates/providers/src/runtime/config_descriptor.rs::tests::descriptor_for_custom_returns_owned_with_template_keys"
+
+[[flag]]
+name              = "WIRE-DARK[J-30-T5]:config_descriptor::satisfies"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-09-01"
+promotion_plan_id = "J-30-T5"
+smoke_test        = "crates/providers/src/runtime/config_descriptor.rs::tests::satisfies_anthropic_api_with_empty_cfg_is_err_with_api_key_some_is_ok"
