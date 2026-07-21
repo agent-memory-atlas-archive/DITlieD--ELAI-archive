@@ -70,9 +70,14 @@ impl AnthropicApiRuntime {
             });
         };
 
+        let base_url = cfg.base_url.clone().or_else(|| {
+            std::env::var("ANTHROPIC_BASE_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        });
         let mut client = AnthropicClient::from_auth(auth);
-        if let Some(base_url) = cfg.base_url.clone() {
-            client = client.with_base_url(base_url);
+        if let Some(url) = base_url {
+            client = client.with_base_url(url);
         }
 
         let default_model = cfg
@@ -96,6 +101,11 @@ impl AnthropicApiRuntime {
             default_model: model.unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string()),
             default_max_tokens: DEFAULT_MAX_TOKENS,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn client_debug(&self) -> String {
+        format!("{:?}", self.client)
     }
 
     fn build_request(&self, messages: Vec<Message>, config: &CompletionConfig) -> MessageRequest {
@@ -429,5 +439,84 @@ impl AuthSource {
     #[must_use]
     pub fn api_key_from_str(value: impl Into<String>) -> Self {
         Self::ApiKey(super::secret::SecretString::new(value.into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn cfg_with_key(base_url: Option<String>) -> RuntimeFactoryConfig {
+        RuntimeFactoryConfig {
+            backend: RuntimeBackend::AnthropicApi,
+            api_key: Some(super::super::secret::SecretString::new(
+                "test-key".to_string(),
+            )),
+            base_url,
+            ..RuntimeFactoryConfig::for_backend(RuntimeBackend::AnthropicApi)
+        }
+    }
+
+    #[test]
+    fn env_var_overrides_default_base_url() {
+        let _g = env_lock();
+        let prev = std::env::var("ANTHROPIC_BASE_URL").ok();
+        std::env::set_var("ANTHROPIC_BASE_URL", "http://test-tunnel:9999");
+        let cfg = cfg_with_key(None);
+        let rt = AnthropicApiRuntime::from_factory_config(&cfg).expect("construct");
+        let debug = rt.client_debug();
+        assert!(
+            debug.contains("http://test-tunnel:9999"),
+            "expected env base_url in client debug, got: {debug}"
+        );
+        match prev {
+            Some(v) => std::env::set_var("ANTHROPIC_BASE_URL", v),
+            None => std::env::remove_var("ANTHROPIC_BASE_URL"),
+        }
+    }
+
+    #[test]
+    fn cfg_base_url_wins_over_env() {
+        let _g = env_lock();
+        let prev = std::env::var("ANTHROPIC_BASE_URL").ok();
+        std::env::set_var("ANTHROPIC_BASE_URL", "http://env:9999");
+        let cfg = cfg_with_key(Some("http://cfg-wins:8888".to_string()));
+        let rt = AnthropicApiRuntime::from_factory_config(&cfg).expect("construct");
+        let debug = rt.client_debug();
+        assert!(
+            debug.contains("http://cfg-wins:8888"),
+            "expected cfg base_url to win, got: {debug}"
+        );
+        assert!(
+            !debug.contains("http://env:9999"),
+            "env base_url should not appear when cfg is set, got: {debug}"
+        );
+        match prev {
+            Some(v) => std::env::set_var("ANTHROPIC_BASE_URL", v),
+            None => std::env::remove_var("ANTHROPIC_BASE_URL"),
+        }
+    }
+
+    #[test]
+    fn empty_env_falls_through_to_default() {
+        let _g = env_lock();
+        let prev = std::env::var("ANTHROPIC_BASE_URL").ok();
+        std::env::set_var("ANTHROPIC_BASE_URL", "   ");
+        let cfg = cfg_with_key(None);
+        let rt = AnthropicApiRuntime::from_factory_config(&cfg).expect("construct");
+        let debug = rt.client_debug();
+        assert!(
+            debug.contains("https://api.anthropic.com"),
+            "expected default base_url when env is empty, got: {debug}"
+        );
+        match prev {
+            Some(v) => std::env::set_var("ANTHROPIC_BASE_URL", v),
+            None => std::env::remove_var("ANTHROPIC_BASE_URL"),
+        }
     }
 }

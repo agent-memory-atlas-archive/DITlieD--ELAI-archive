@@ -42,6 +42,11 @@ impl VllmRuntime {
         let base_url = cfg
             .base_url
             .clone()
+            .or_else(|| {
+                std::env::var("ELAI_VLLM_BASE_URL")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         let model = cfg
             .model
@@ -445,11 +450,23 @@ struct ModelEntry {
 mod tests {
     use super::*;
 
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn default_base_url_is_8000() {
+        let _g = env_lock();
+        let prev = std::env::var("ELAI_VLLM_BASE_URL").ok();
+        std::env::remove_var("ELAI_VLLM_BASE_URL");
         let cfg = RuntimeFactoryConfig::for_backend(BACKEND);
         let rt = VllmRuntime::new(cfg);
         assert_eq!(rt.base_url(), DEFAULT_BASE_URL);
+        match prev {
+            Some(v) => std::env::set_var("ELAI_VLLM_BASE_URL", v),
+            None => std::env::remove_var("ELAI_VLLM_BASE_URL"),
+        }
     }
 
     #[test]
@@ -476,5 +493,50 @@ mod tests {
     #[test]
     fn canonical_name_is_vllm() {
         assert_eq!(VllmRuntime::canonical_name(), "vllm");
+    }
+
+    #[test]
+    fn env_var_overrides_default_base_url() {
+        let _g = env_lock();
+        let prev = std::env::var("ELAI_VLLM_BASE_URL").ok();
+        std::env::set_var("ELAI_VLLM_BASE_URL", "http://vllm-test:8001");
+        let cfg = RuntimeFactoryConfig::for_backend(BACKEND);
+        let rt = VllmRuntime::new(cfg);
+        assert_eq!(rt.base_url(), "http://vllm-test:8001");
+        match prev {
+            Some(v) => std::env::set_var("ELAI_VLLM_BASE_URL", v),
+            None => std::env::remove_var("ELAI_VLLM_BASE_URL"),
+        }
+    }
+
+    #[test]
+    fn cfg_base_url_wins_over_env() {
+        let _g = env_lock();
+        let prev = std::env::var("ELAI_VLLM_BASE_URL").ok();
+        std::env::set_var("ELAI_VLLM_BASE_URL", "http://env-vllm:8001");
+        let cfg = RuntimeFactoryConfig {
+            base_url: Some("http://cfg-vllm:8002".to_string()),
+            ..RuntimeFactoryConfig::for_backend(BACKEND)
+        };
+        let rt = VllmRuntime::new(cfg);
+        assert_eq!(rt.base_url(), "http://cfg-vllm:8002");
+        match prev {
+            Some(v) => std::env::set_var("ELAI_VLLM_BASE_URL", v),
+            None => std::env::remove_var("ELAI_VLLM_BASE_URL"),
+        }
+    }
+
+    #[test]
+    fn empty_env_falls_through_to_default() {
+        let _g = env_lock();
+        let prev = std::env::var("ELAI_VLLM_BASE_URL").ok();
+        std::env::set_var("ELAI_VLLM_BASE_URL", "   ");
+        let cfg = RuntimeFactoryConfig::for_backend(BACKEND);
+        let rt = VllmRuntime::new(cfg);
+        assert_eq!(rt.base_url(), DEFAULT_BASE_URL);
+        match prev {
+            Some(v) => std::env::set_var("ELAI_VLLM_BASE_URL", v),
+            None => std::env::remove_var("ELAI_VLLM_BASE_URL"),
+        }
     }
 }
