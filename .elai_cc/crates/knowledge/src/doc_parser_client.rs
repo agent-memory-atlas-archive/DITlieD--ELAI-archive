@@ -184,13 +184,17 @@ impl MinerUFileParseResponse {
     /// top-level `markdown`/`content`.
     #[must_use]
     pub fn body(&self) -> &str {
-        for (_key, entry) in &self.results {
+        for entry in self.results.values() {
             if !entry.md_content.is_empty() {
                 return &entry.md_content;
             }
+        }
+        for entry in self.results.values() {
             if !entry.markdown.is_empty() {
                 return &entry.markdown;
             }
+        }
+        for entry in self.results.values() {
             if !entry.content.is_empty() {
                 return &entry.content;
             }
