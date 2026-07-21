@@ -759,6 +759,35 @@ fn messages_to_trimmed(
         .collect()
 }
 
+/// J-24 FIX: query the sidecar's `/v1/settings` endpoint and return `true`
+/// only when the engine reports `steering_enabled: true`. This verifies the
+/// connected sidecar was actually started with `--steering`, rather than
+/// trusting the process env var (an already-running sidecar may have been
+/// started with different boot flags). Returns `false` on any error or when
+/// the sidecar is unreachable, so the emission is suppressed rather than
+/// producing false telemetry.
+fn sidecar_steering_verified(sidecar_url: &str) -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let url = format!("{}/v1/settings", sidecar_url.trim_end_matches('/'));
+    let resp = match client.get(&url).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return false,
+    };
+    let body: serde_json::Value = match resp.json() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    body.get("steering_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 impl LiveCli {
     pub(crate) fn new(
         model: String,
@@ -1134,16 +1163,16 @@ impl LiveCli {
         let (knowledge_pipeline, indexing_service) =
             Self::build_local_knowledge_stack(&backend_config, &session.id, &clock, ssb.clone(), search_mode_shared_nl);
 
-        // J-24 LEG1=A: emit SteeringVectorApplied SSB row when the sidecar was
-        // booted with --steering (ELAI_STEERING_ENABLE=1). Best-effort; the
-        // boot path itself has no Ssb handle so we emit from here, the first
-        // production caller that can observe steering is active.
-        if sidecar::steering_env_enabled() {
+        // J-24 LEG1=A: emit SteeringVectorApplied SSB row when the connected
+        // sidecar reports steering is active. Queries /v1/settings so the
+        // emission reflects verified engine state, not just the env var
+        // (an already-running sidecar may have been started without --steering).
+        if sidecar_steering_verified(&backend_config.sidecar_url) {
             if let Some(ref ssb_arc) = ssb {
                 emit_behavior_steering_event(
                     ssb_arc,
                     BehaviorSteeringKind::SteeringVectorApplied,
-                    serde_json::json!({"env": sidecar::ELAI_STEERING_ENABLE_ENV, "flag": "--steering"}),
+                    serde_json::json!({"source": "sidecar /v1/settings", "flag": "--steering"}),
                 );
             }
         }
