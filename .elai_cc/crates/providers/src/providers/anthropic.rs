@@ -906,6 +906,12 @@ where
         return Ok(AuthSource::BearerToken(bearer_token));
     }
 
+    if let Some(api_key) = crate::runtime::key_store::lookup("anthropic", "ANTHROPIC_API_KEY")
+        .map_err(|err| ApiError::Auth(err.to_string()))?
+    {
+        return Ok(AuthSource::ApiKey(api_key.into_inner()));
+    }
+
     let Some(token_set) = load_saved_oauth_token()? else {
         return Err(ApiError::missing_credentials(
             "Anthropic",

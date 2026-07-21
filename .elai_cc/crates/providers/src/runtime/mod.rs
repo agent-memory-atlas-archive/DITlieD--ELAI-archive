@@ -67,6 +67,10 @@ pub mod genai_adapter;
 pub mod hermes;
 pub mod isolation;
 pub mod kiro_cli;
+/// J-30 T1 -- per-provider BYOK key store (env -> 0600 file fallback).
+/// Reuses `SecretString`; no OAuth / device_code arms. The production
+/// consumer is `providers::anthropic::resolve_startup_auth_source`.
+pub mod key_store;
 pub mod ollama;
 pub mod opencode;
 pub mod secret;
@@ -123,6 +127,7 @@ pub use hermes::HermesRuntime;
 pub use kiro_cli::KiroCliRuntime;
 pub use ollama::OllamaRuntime;
 pub use opencode::OpenCodeRuntime;
+pub use key_store::{lookup as lookup_key, store as store_key, KeyStoreError};
 pub use secret::SecretString;
 pub use sglang::{SglangRuntime, SglangRuntimeConfig, StructuredOutputBackend};
 pub use sidecar::SidecarRuntime;
