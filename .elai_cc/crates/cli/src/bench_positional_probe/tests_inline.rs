@@ -296,14 +296,14 @@ fn resolve_identity_key_synthetic_when_absent() {
     assert_ne!(key, key3);
 }
 
+/// Both legs share the process-wide `ELAI_SEED` env var, so they MUST
+/// run in a single test body (no internal parallelism) to avoid the
+/// shared-env race a split pair would hit under cargo's multi-threaded
+/// runner. No `serial_test` dep is available and none is added.
 #[test]
-fn read_elai_seed_defaults_to_zero() {
+fn read_elai_seed_defaults_to_zero_then_parses_value() {
     std::env::remove_var("ELAI_SEED");
     assert_eq!(read_elai_seed(), 0);
-}
-
-#[test]
-fn read_elai_seed_parses_value() {
     std::env::set_var("ELAI_SEED", "42");
     assert_eq!(read_elai_seed(), 42);
     std::env::remove_var("ELAI_SEED");
