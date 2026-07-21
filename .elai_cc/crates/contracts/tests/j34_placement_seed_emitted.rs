@@ -34,6 +34,13 @@ use elai_orchestrator::ssb::{
 };
 use tempfile::TempDir;
 
+/// Serializes tests that call `install_ssb_writer` (a process-global static).
+/// Without this, the parallel test runner can swap the global SSB writer
+/// mid-test, causing false-positive/false-negative on PlacementApplied rows.
+/// Mirrors the `ENV_MUTEX` idiom in h51_handoff_lifecycle_contract.rs
+/// (serial_test is not in dev-deps).
+static SSB_WRITER_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn five_sample_positional_curve() -> PositionalValueCurve {
     PositionalValueCurve {
         samples: vec![
@@ -178,6 +185,7 @@ fn d5b_apply_to_profile_leaves_seed_none_for_empty_curve() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn d6_d7_placement_applied_row_lands_and_slots_unchanged() {
+    let _ssb_guard = SSB_WRITER_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().expect("tempdir");
     let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
     let ssb = Arc::new(
@@ -259,6 +267,7 @@ async fn d6_d7_placement_applied_row_lands_and_slots_unchanged() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn d8_negative_empty_curve_emits_zero_placement_applied() {
+    let _ssb_guard = SSB_WRITER_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().expect("tempdir");
     let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
     let ssb = Arc::new(
