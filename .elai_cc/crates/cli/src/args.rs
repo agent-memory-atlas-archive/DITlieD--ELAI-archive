@@ -1204,6 +1204,18 @@ pub(crate) enum CliAction {
         seeds: u32,
         json: bool,
     },
+    // J-34 leg-1: `elai bench context-fill --suite <PATH> [--seeds <u32>] [--json]`
+    // Verified-outcome-rate vs context-window fill fraction curve fixture
+    // harness. Statistical floor enforced mechanically (seed_count>=5,
+    // paired=true). Builds a FillDegradationCurve, constructs a
+    // CalibrationArtifact, and emits ONE ContextCalibrationEvent(CurveMeasured)
+    // SSB row via CalibrationArtifactStore::insert_with_ssb (slice-2 seam).
+    // Live per-model inference leg deferred (WIRE-DARK[J-34.leg1-live]).
+    BenchContextFill {
+        suite: std::path::PathBuf,
+        seeds: u32,
+        json: bool,
+    },
     // I-38: `elai bench qdelta --config <PATH> [--seed <u64>] [--json]`
     // QDELTA defective-diff rate fixture harness. Statistical floor enforced
     // mechanically (seed_count>=5, paired=true). Emits ONE QdeltaMeasured SSB

@@ -414,6 +414,14 @@ mod bench_crane;
 // ConvergenceCurveMeasured SSB flat beacon per clean run. Live per-node
 // compute-spend leg pending I-4 (WIRE-DARK[I-27]).
 mod bench_convergence;
+// J-34 leg-1: `elai bench context-fill --suite <PATH> [--seeds <u32>] [--json]`
+// Verified-outcome-rate vs context-window fill fraction curve fixture harness.
+// Statistical floor mechanically enforced (seed_count>=5, paired=true). Builds
+// a FillDegradationCurve, constructs a CalibrationArtifact, and emits ONE
+// ContextCalibrationEvent(CurveMeasured) SSB row via
+// CalibrationArtifactStore::insert_with_ssb (slice-2 seam). Live per-model
+// inference leg deferred (WIRE-DARK[J-34.leg1-live]).
+mod bench_context_fill;
 // K-18a (PS-5 observe arm): `elai bench case-reuse [--suite fixture] [--seed N]
 // [--json]` — recurrence-hit-rate over the shipped BM25 retrieval stack. Drives
 // case_reuse_runner over the embedded fixture corpus, writes a blake3-pinned
@@ -1542,6 +1550,16 @@ fn run() -> Result<(), anyhow::Error> {
         // compute-spend leg pending I-4 (WIRE-DARK[I-27]). Exits 0/1.
         CliAction::BenchConvergence { suite, seeds, json } => {
             bench_convergence::run(suite, seeds, json)?;
+        }
+        // J-34 leg-1 (SCHEMA_VERSION 286): context-fill calibration curve
+        // fixture harness. Statistical floor mechanically enforced
+        // (seed_count>=5, paired=true). Builds a FillDegradationCurve,
+        // constructs a CalibrationArtifact, and emits 1
+        // ContextCalibrationEvent(CurveMeasured) SSB row via
+        // CalibrationArtifactStore::insert_with_ssb. Live per-model inference
+        // leg deferred (WIRE-DARK[J-34.leg1-live]). Exits 0/1.
+        CliAction::BenchContextFill { suite, seeds, json } => {
+            bench_context_fill::run(suite, seeds, json)?;
         }
         // I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate fixture harness.
         // Statistical floor mechanically enforced (seed_count>=5, paired=true).

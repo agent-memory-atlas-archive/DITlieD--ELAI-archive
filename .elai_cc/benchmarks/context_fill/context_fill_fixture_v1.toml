@@ -1,0 +1,72 @@
+suite = "context_fill_fixture_v1"
+seed_count = 5
+paired = true
+# Synthetic Tier-1 fixture identity key (no live model). Real runs set this
+# to the ModelIdentity::identity_key (model_drift.rs:160, blake3 of model id).
+identity_key = "fixture:context-fill-v1"
+
+# Tier-1 fixture: verified-outcome rate vs context-window fill fraction.
+# Clear knee: rate is flat-high at low fill, collapses past 0.50, floor at 0.90.
+# The largest step-down (0.75 -> 0.25 = -0.50 at fill=0.50) is the knee the
+# CalibrationArtifact detects; the report-facing knee_label uses the
+# marginal-gain threshold (KNEE_GAIN_THRESHOLD=0.01).
+
+[[levels]]
+fill_fraction = 0.10
+outcomes = [
+  [true, true, true, true],
+  [true, true, true, true],
+  [true, true, true, true],
+  [true, true, true, true],
+  [true, true, true, true]
+]
+
+[[levels]]
+fill_fraction = 0.25
+outcomes = [
+  [true, true, true, true],
+  [true, true, true, true],
+  [true, true, true, true],
+  [true, true, true, true],
+  [true, true, true, true]
+]
+
+[[levels]]
+fill_fraction = 0.50
+outcomes = [
+  [true, true, true, false],
+  [true, true, true, false],
+  [true, true, true, false],
+  [true, true, true, false],
+  [true, true, true, false]
+]
+
+[[levels]]
+fill_fraction = 0.67
+outcomes = [
+  [true, false, false, false],
+  [true, false, false, false],
+  [true, false, false, false],
+  [true, false, false, false],
+  [true, false, false, false]
+]
+
+[[levels]]
+fill_fraction = 0.85
+outcomes = [
+  [true, false, false, false],
+  [true, false, false, false],
+  [true, false, false, false],
+  [true, false, false, false],
+  [true, false, false, false]
+]
+
+[[levels]]
+fill_fraction = 0.90
+outcomes = [
+  [false, false, false, false],
+  [false, false, false, false],
+  [false, false, false, false],
+  [false, false, false, false],
+  [false, false, false, false]
+]
