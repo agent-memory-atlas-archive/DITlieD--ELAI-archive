@@ -1588,6 +1588,14 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // (slice-C, deferred like J-30 T7c).
     // TOTAL_VARIANTS 593 -> 594.
     SsbActionType::IntentRouted,
+    // J-34 (SCHEMA_VERSION 286): empirical context calibration event. Flat
+    // variant (Pattern-2, mirrors PerceptionScaffoldEvent); the 4-arm
+    // ContextCalibrationKind (CurveMeasured / ThresholdApplied /
+    // PlacementApplied / CalibrationInvalidated) rides inside the payload.
+    // Emitted by CalibrationArtifactStore::insert (CurveMeasured) on a
+    // bench-produced artifact, and by the leg-2 / leg-3 seams (later slices).
+    // TOTAL_VARIANTS 594 -> 595.
+    SsbActionType::ContextCalibrationEvent(ContextCalibrationKind::CurveMeasured),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

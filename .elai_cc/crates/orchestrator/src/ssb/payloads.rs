@@ -3793,6 +3793,15 @@ pub enum SsbPayload {
     /// the rewritten text (arg_spans are byte-offsets into the original).
     /// TOTAL_VARIANTS 593 -> 594.
     IntentRouted(IntentRoutedPayload),
+    /// J-34 (SCHEMA_VERSION 286): empirical context calibration event. Flat
+    /// variant (Pattern-2, mirrors PerceptionScaffoldEvent); the 4-arm
+    /// [`ContextCalibrationKind`] discriminator rides inside the payload.
+    /// Emitted by `CalibrationArtifactStore::insert` (CurveMeasured) and the
+    /// leg-2 / leg-3 seams (later slices). Carries the model identity key +
+    /// free-form JSON details (curve samples / knee ride inside details_json
+    /// for CurveMeasured -- no per-arm payload structs).
+    /// TOTAL_VARIANTS 594 -> 595.
+    ContextCalibrationEvent(ContextCalibrationEventPayload),
 }
 
 impl SsbPayload {
@@ -4621,6 +4630,8 @@ impl SsbPayload {
                 SsbActionType::BlastRadiusRegressionEvent(p.kind),
             Self::ProviderByokEvent(_) => SsbActionType::ProviderByokEvent,
             Self::IntentRouted(_) => SsbActionType::IntentRouted,
+            Self::ContextCalibrationEvent(ref p) =>
+                SsbActionType::ContextCalibrationEvent(p.kind),
         }
     }
 }
@@ -20570,5 +20581,70 @@ pub struct IntentRoutedPayload {
     /// Risk level for the routed lane (LOW auto, MEDIUM pause, HIGH pause).
     pub risk: RiskLevel,
     /// Wall-clock milliseconds since UNIX epoch at emit time.
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-34: ContextCalibrationEvent substrate (empirical context calibration)
+// ---------------------------------------------------------------------------
+
+/// J-34 -- 4-arm fire-point discriminator carried by
+/// [`ContextCalibrationEventPayload::kind`] (Pattern-2 payload-field
+/// convention, mirrors PerceptionScaffoldEventKind). The calibration
+/// subsystem emits exactly one arm per event:
+/// - `CurveMeasured`: a bench run produced a fresh fill-degradation curve;
+///   emitted by `CalibrationArtifactStore::insert` (this slice).
+/// - `ThresholdApplied`: `recalibrate_budget_with_calibration` applied a
+///   calibrated trim fraction to a profile (leg-2 slice, deferred).
+/// - `PlacementApplied`: the 3E slot allocator ordered slots using a
+///   positional-value curve (leg-3 slice, deferred).
+/// - `CalibrationInvalidated`: G-10 model-drift dropped a stale artifact
+///   (leg-4 slice, deferred).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCalibrationKind {
+    CurveMeasured,
+    ThresholdApplied,
+    PlacementApplied,
+    CalibrationInvalidated,
+}
+
+impl ContextCalibrationKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CurveMeasured => "curve_measured",
+            Self::ThresholdApplied => "threshold_applied",
+            Self::PlacementApplied => "placement_applied",
+            Self::CalibrationInvalidated => "calibration_invalidated",
+        }
+    }
+}
+
+/// J-34 -- payload for [`SsbActionType::ContextCalibrationEvent`].
+///
+/// Pattern-2 single-variant 4-arm Kind rides in `kind`. Carries the model
+/// identity key (calibration is per-model) + free-form JSON details so each
+/// kind's per-kind scalars ride along without per-kind payload structs.
+/// For `CurveMeasured`, `details_json` carries `sample_count`, `knee_fill_fraction`,
+/// `drop_magnitude`, and `content_hash` of the artifact. Does NOT derive `Eq`
+/// -- `details_json` may carry NaN-not-equal `f32` per the Pattern-2 precedents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextCalibrationEventPayload {
+    /// Fire-point discriminator. See [`ContextCalibrationKind`].
+    pub kind: ContextCalibrationKind,
+    /// `ModelIdentity::identity_key` (model_drift.rs:160) -- the per-model
+    /// cache key the calibration artifact was produced under.
+    pub model_identity_key: String,
+    /// Free-form per-kind context. Serialized as JSON so future kinds can
+    /// extend without a schema bump. Conventional fields per kind:
+    /// `curve_measured` -> `sample_count`, `knee_fill_fraction`,
+    ///   `drop_magnitude`, `content_hash`;
+    /// `threshold_applied` -> `calibrated_trim_fraction`, `fallback_used`;
+    /// `placement_applied` -> `slot_count`, `ordering_seed`;
+    /// `calibration_invalidated` -> `reason`, `previous_produced_at_secs`.
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
 }

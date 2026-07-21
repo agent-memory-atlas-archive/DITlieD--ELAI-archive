@@ -957,6 +957,28 @@ impl CloudGroundingClient {
                         usage.cache_creation_input_tokens,
                     ),
                 );
+                // J-34 slice-2 production-wiring seam: thread `Some(&ssb)`
+                // into `recalibrate_budget_with_calibration` so the
+                // `CurveMeasured` row lands from a REAL production entrypoint
+                // (R7/R10), not just the unit test. The profile is built via
+                // the existing `detect_model_capability_profile` helper (no
+                // new detector); for cloud model strings that don't match the
+                // 32b/7b/3b substring table it falls back to micro_7b_12gb
+                // with a warn — acceptable here because the profile is the
+                // carrier for any curves already loaded by the runtime, and
+                // the emit only fires when an artifact is applied or the
+                // profile carries curves (the recalibrate leg-2 path).
+                let mut profile = crate::context_budget::detect_model_capability_profile(
+                    &self.model,
+                    elai_core::VramTier::Vram48Gb,
+                );
+                tracker.recalibrate_budget_with_calibration(
+                    &mut profile,
+                    None,
+                    None,
+                    None,
+                    self.ssb_writer.as_ref(),
+                );
             }
             // C-15: OsClock-backed cap-check timestamp. Spend ledger reads
             // are observation-only; no determinism contract.

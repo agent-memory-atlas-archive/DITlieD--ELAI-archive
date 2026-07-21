@@ -20,7 +20,11 @@
 //! (model_drift.rs:160, blake3) is the cache key surface.
 
 use crate::context_budget::ModelCapabilityProfile;
+use crate::ssb::{
+    ContextCalibrationEventPayload, ContextCalibrationKind, Ssb, SsbPayload,
+};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Curve types
@@ -211,7 +215,42 @@ impl CalibrationArtifactStore {
     }
 
     /// Insert or replace an artifact. Newest-wins (GD-2 re-run replaces).
+    /// On insert, emits a `ContextCalibrationEvent(CurveMeasured)` SSB row
+    /// when an `Ssb` handle is available so the bench-produced curve is
+    /// observable off-agent (J-34 slice-2 production-wiring seam). The SSB
+    /// writer is resolved via [`crate::lock::try_ssb_writer`]: the
+    /// dashboard / CLI bootstrap installs it once via
+    /// [`crate::lock::install_ssb_writer`], after which every `insert`
+    /// (including the bench arm) threads `Some(&ssb)` automatically. When no
+    /// writer is installed (cold start before SSB init, contract tests) the
+    /// emit is a no-op. The emit is best-effort: a failed write is logged
+    /// and never propagates, since a missing observability row is not a
+    /// correctness failure (the artifact is still stored in-process).
     pub fn insert(&mut self, artifact: CalibrationArtifact) {
+        let ssb = crate::lock::try_ssb_writer();
+        self.insert_with_ssb(artifact, ssb.as_ref());
+    }
+
+    /// Insert with an explicit SSB handle for the CurveMeasured emit. The
+    /// `insert` wrapper resolves the process-global writer via
+    /// [`crate::lock::try_ssb_writer`] (so production callers do not need to
+    /// thread it); this entry point is for callers that already hold an
+    /// `Arc<Ssb>` (e.g. the in-module tests) and for the
+    /// `recalibrate_budget_with_calibration` leg-2 seam, which threads the
+    /// same writer it was passed.
+    pub fn insert_with_ssb(
+        &mut self,
+        artifact: CalibrationArtifact,
+        ssb: Option<&Arc<Ssb>>,
+    ) {
+        if let Some(ssb_arc) = ssb {
+            emit_context_calibration_event(
+                ssb_arc,
+                ContextCalibrationKind::CurveMeasured,
+                &artifact.identity_key,
+                curve_measured_details(&artifact),
+            );
+        }
         self.artifacts.insert(artifact.identity_key.clone(), artifact);
     }
 
@@ -279,6 +318,72 @@ pub fn apply_to_profile(artifact: &CalibrationArtifact, profile: &mut ModelCapab
 }
 
 // ---------------------------------------------------------------------------
+// SSB emit helper (J-34 slice-2 production-wiring seam)
+// ---------------------------------------------------------------------------
+
+/// Build the `details_json` for a `CurveMeasured` emit from an artifact.
+/// Carries `sample_count`, `knee_fill_fraction`, `drop_magnitude`, and the
+/// `content_hash` so the dashboard tile (leg-5) and the journal-regression
+/// leg (leg-4) can recompute without a separate store lookup.
+#[must_use]
+pub(crate) fn curve_measured_details(artifact: &CalibrationArtifact) -> serde_json::Value {
+    let (knee_fill, drop_mag) = match &artifact.knee {
+        Some(k) => (Some(k.knee_fill_fraction), Some(k.drop_magnitude)),
+        None => (None, None),
+    };
+    serde_json::json!({
+        "sample_count": artifact.fill_curve.samples.len(),
+        "knee_fill_fraction": knee_fill,
+        "drop_magnitude": drop_mag,
+        "content_hash": artifact.content_hash,
+        "produced_at_secs": artifact.produced_at_secs,
+    })
+}
+
+/// Emit a `ContextCalibrationEvent` SSB row best-effort from a sync context.
+/// Mirrors `front_door_emit::emit_intent_routed`: a missed SSB row is never a
+/// correctness failure (the artifact is already stored in-process). When no
+/// tokio runtime is available, a transient current-thread runtime is built so
+/// the row still lands (do NOT spawn-and-drop).
+pub fn emit_context_calibration_event(
+    ssb: &Arc<Ssb>,
+    kind: ContextCalibrationKind,
+    model_identity_key: &str,
+    details_json: serde_json::Value,
+) {
+    let ts_ms = crate::ssb::system_time_ms_i64();
+    let payload = SsbPayload::ContextCalibrationEvent(ContextCalibrationEventPayload {
+        kind,
+        model_identity_key: model_identity_key.to_owned(),
+        details_json,
+        ts_ms,
+    });
+    let ssb = Arc::clone(ssb);
+    let agent_id = "context_calibration";
+    let emit = async move {
+        if let Err(e) = ssb.write_payload(agent_id, 0, payload, vec![]).await {
+            tracing::warn!(
+                context_calibration.ssb_err = %e,
+                "ContextCalibrationEvent SSB emit failed (calibration unaffected)"
+            );
+        }
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(emit);
+        }
+        Err(_) => {
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                rt.block_on(emit);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -286,6 +391,12 @@ pub fn apply_to_profile(artifact: &CalibrationArtifact, profile: &mut ModelCapab
 mod tests {
     use super::*;
     use crate::context_budget::ModelCapabilityProfile;
+    use crate::ssb::{
+        decode_ssb_payload, SsbActionType, SsbConfig, SsbReader,
+    };
+    use elai_core::clock::{ClockProvider, OsClock};
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
     fn sample(fill: f32, outcome: f32) -> FillSample {
         FillSample { fill_fraction: fill, outcome_rate: outcome }
@@ -498,5 +609,72 @@ mod tests {
             apply_to_profile(a, &mut profile);
         }
         assert_eq!(profile, before, "missing artifact = no mutation");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn j34_slice2_curve_measured_row_lands_on_insert_with_ssb() {
+        let dir = TempDir::new().expect("tempdir");
+        let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+        let ssb = Arc::new(
+            Ssb::new(
+                SsbConfig {
+                    db_path: dir.path().join("j34-slice2-ssb.db"),
+                    pool_size: Some(2),
+                    project_id: "j34-slice2".into(),
+                    session_id: "j34-slice2".into(),
+                },
+                clock,
+            )
+            .expect("ssb open"),
+        );
+
+        let mut store = CalibrationArtifactStore::new();
+        let art = CalibrationArtifact::from_curves(
+            "id-j34-slice2".to_string(),
+            monotone_curve(),
+            PositionalValueCurve::default(),
+            1_700_000_000,
+        );
+        store.insert_with_ssb(art.clone(), Some(&ssb));
+
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let rows = ssb
+            .query_by_type(SsbActionType::ContextCalibrationEvent(
+                ContextCalibrationKind::CurveMeasured,
+            ))
+            .expect("query_by_type ContextCalibrationEvent");
+        assert!(
+            !rows.is_empty(),
+            "expected >= 1 ContextCalibrationEvent row; R1 missing evidence = FAIL"
+        );
+        let decoded = decode_ssb_payload(&rows[0].payload).expect("decode_ssb_payload");
+        match decoded {
+            SsbPayload::ContextCalibrationEvent(p) => {
+                assert_eq!(p.kind, ContextCalibrationKind::CurveMeasured);
+                assert_eq!(p.model_identity_key, "id-j34-slice2");
+                assert!(p.ts_ms > 0);
+                let details = p.details_json.as_object().expect("details_json object");
+                assert_eq!(details["sample_count"], 6);
+                assert!(details["content_hash"].is_string());
+                assert!(details["knee_fill_fraction"].is_number());
+            }
+            other => panic!("expected ContextCalibrationEvent; got {:?}", other),
+        }
+        // The artifact is also stored in-process (emit does not replace store).
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn insert_without_ssb_does_not_emit_or_panic() {
+        let mut store = CalibrationArtifactStore::new();
+        let art = CalibrationArtifact::from_curves(
+            "id-no-ssb".to_string(),
+            monotone_curve(),
+            PositionalValueCurve::default(),
+            1_700_000_000,
+        );
+        store.insert(art);
+        assert_eq!(store.len(), 1);
     }
 }

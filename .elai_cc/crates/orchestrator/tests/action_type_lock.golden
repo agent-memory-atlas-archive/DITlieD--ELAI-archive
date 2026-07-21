@@ -119,6 +119,7 @@ conformal_validation_completed
 consensus_reevaluated_with_counter
 constraints_injected
 context_budget_computed
+context_calibration_event
 context_pruned
 context_reduction
 context_transform_receipt

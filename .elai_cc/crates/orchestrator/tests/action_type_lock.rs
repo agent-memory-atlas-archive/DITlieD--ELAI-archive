@@ -1573,6 +1573,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::ProviderByokEvent => (),
         // J-32 (SCHEMA_VERSION 285): IntentRouted flat variant, Kind rides in the payload.
         SsbActionType::IntentRouted => (),
+        // J-34 (SCHEMA_VERSION 286): ContextCalibrationEvent flat variant, Kind rides in the payload.
+        SsbActionType::ContextCalibrationEvent(_) => (),
     }
 }
 

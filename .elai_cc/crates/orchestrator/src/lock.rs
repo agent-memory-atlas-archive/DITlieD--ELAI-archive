@@ -164,6 +164,16 @@ fn current_ssb_writer() -> Option<Arc<Ssb>> {
     g.as_ref().map(Arc::clone)
 }
 
+/// J-34 slice-2 fix: pub(crate) accessor over [`current_ssb_writer`] so the
+/// calibration store's `insert()` can thread the process-global SSB writer
+/// (installed by `runtime_setup` via [`install_ssb_writer`]) without a caller
+/// having to pass it explicitly. Same semantics as `current_ssb_writer`:
+/// `Some` only when the dashboard / CLI bootstrap has installed a writer;
+/// `None` in cold-start / contract-test paths. Does NOT mutate the slot.
+pub(crate) fn try_ssb_writer() -> Option<Arc<Ssb>> {
+    current_ssb_writer()
+}
+
 /// B-31.5: derive the project_id slug for the SSB rows. Mirrors
 /// `elai_knowledge::metadata::project_id_from_path` — kept in sync via the
 /// re-export at `startup::project_id_from_path`. We do NOT take a hard

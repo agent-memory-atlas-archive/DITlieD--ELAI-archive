@@ -4821,6 +4821,15 @@ pub enum SsbActionType {
     /// rewritten text (there is none; arg_spans are byte-offsets).
     /// TOTAL_VARIANTS 593 -> 594.
     IntentRouted,
+    /// J-34 (SCHEMA_VERSION 286): empirical context calibration event.
+    /// Pattern-2 flat variant (mirrors PerceptionScaffoldEvent); the 4-arm
+    /// [`crate::ssb::ContextCalibrationKind`] discriminator (CurveMeasured /
+    /// ThresholdApplied / PlacementApplied / CalibrationInvalidated) rides
+    /// inside [`crate::ssb::ContextCalibrationEventPayload::kind`]. Emitted
+    /// by `CalibrationArtifactStore::insert` (CurveMeasured) and the leg-2 /
+    /// leg-3 seams (later slices).
+    /// TOTAL_VARIANTS 594 -> 595.
+    ContextCalibrationEvent(ContextCalibrationKind),
 }
 
 impl SsbActionType {
@@ -5771,6 +5780,9 @@ impl SsbActionType {
             // J-32 (SCHEMA_VERSION 285): front-door intent routing decision.
             // Flat variant, Kind rides in the payload.
             Self::IntentRouted => "intent_routed",
+            // J-34 (SCHEMA_VERSION 286): empirical context calibration event.
+            // Flat variant, Kind rides in the payload.
+            Self::ContextCalibrationEvent(_) => "context_calibration_event",
         }
     }
 }
@@ -6645,6 +6657,11 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // J-32 (SCHEMA_VERSION 285): front-door intent routing decision.
         // Flat variant; Kind rides in the payload, not the action type.
         "intent_routed" => Ok(SsbActionType::IntentRouted),
+        // J-34 (SCHEMA_VERSION 286): empirical context calibration event.
+        // Flat variant; Kind rides in the payload, not the action type.
+        "context_calibration_event" => Ok(SsbActionType::ContextCalibrationEvent(
+            ContextCalibrationKind::CurveMeasured,
+        )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

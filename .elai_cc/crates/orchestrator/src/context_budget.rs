@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use blake3;
 
@@ -888,9 +889,13 @@ impl CumulativeTokenTracker {
     /// recompute manually since this function does not own the vram input).
     ///
     /// Thin wrapper over [`Self::recalibrate_budget_with_calibration`] with
-    /// no store, no identity, no artifact — the legacy no-calibration path.
+    /// no store, no identity, no artifact, no SSB — the legacy no-calibration
+    /// path. The leg-2 production seam
+    /// (`recalibrate_budget_with_calibration`) threads `Some(&ssb)` so the
+    /// `CurveMeasured` row lands off-agent; this wrapper stays `None` so
+    /// existing callers (and the in-module tests) keep the no-emit contract.
     pub fn recalibrate_budget(&self, profile: &mut ModelCapabilityProfile) {
-        self.recalibrate_budget_with_calibration(profile, None, None, None);
+        self.recalibrate_budget_with_calibration(profile, None, None, None, None);
     }
 
     /// J-34 leg-2 seam — recalibrate the runtime profile AND apply a
@@ -925,12 +930,22 @@ impl CumulativeTokenTracker {
     /// read-only. The two are independent: a caller may pass a pre-looked-up
     /// artifact with `store=None`, or pass `store` + `identity` with
     /// `artifact=None` to trigger invalidation without a prior lookup.
+    ///
+    /// `ssb` threads an optional SSB writer for the `CurveMeasured` emit on
+    /// the apply-artifact paths (explicit `artifact` OR rebuilt-from-curves).
+    /// When `ssb` is `None` the leg falls back to
+    /// [`crate::lock::try_ssb_writer`] so a production runtime that has
+    /// installed the global writer still emits the row even when the caller
+    /// did not thread one explicitly. When neither is `Some` (contract tests,
+    /// cold start) the emit is a no-op. This is the production-wiring seam
+    /// for `CurveMeasured` off-agent observability (J-34 slice-2 R7/R10).
     pub fn recalibrate_budget_with_calibration(
         &self,
         profile: &mut ModelCapabilityProfile,
         store: Option<&mut crate::context_calibration::CalibrationArtifactStore>,
         identity: Option<&str>,
         artifact: Option<&crate::context_calibration::CalibrationArtifact>,
+        ssb: Option<&Arc<crate::ssb::Ssb>>,
     ) {
         let desired = self
             .last_response_prompt
@@ -947,8 +962,22 @@ impl CumulativeTokenTracker {
             (v, 0) => profile.effective_ceiling = v,
             (v, a) => profile.effective_ceiling = v.min(a),
         }
+        // Resolve the SSB writer: explicit `ssb` arg first, then the
+        // process-global slot. Kept here so both apply paths below share one
+        // resolution site and the emit lands exactly once per call.
+        let resolved_ssb: Option<Arc<crate::ssb::Ssb>> = ssb
+            .map(Arc::clone)
+            .or_else(crate::lock::try_ssb_writer);
         if let Some(art) = artifact {
             crate::context_calibration::apply_to_profile(art, profile);
+            if let Some(ssb_arc) = resolved_ssb.as_ref() {
+                crate::context_calibration::emit_context_calibration_event(
+                    ssb_arc,
+                    crate::ssb::ContextCalibrationKind::CurveMeasured,
+                    &art.identity_key,
+                    crate::context_calibration::curve_measured_details(art),
+                );
+            }
         } else if let Some(fill) = profile.fill_degradation_curve.clone() {
             let pos = profile.positional_value_curve.clone().unwrap_or_default();
             let rebuilt = crate::context_calibration::CalibrationArtifact::from_curves(
@@ -958,6 +987,14 @@ impl CumulativeTokenTracker {
                 0,
             );
             crate::context_calibration::apply_to_profile(&rebuilt, profile);
+            if let Some(ssb_arc) = resolved_ssb.as_ref() {
+                crate::context_calibration::emit_context_calibration_event(
+                    ssb_arc,
+                    crate::ssb::ContextCalibrationKind::CurveMeasured,
+                    &rebuilt.identity_key,
+                    crate::context_calibration::curve_measured_details(&rebuilt),
+                );
+            }
         } else if let (Some(s), Some(id)) = (store, identity) {
             s.invalidate(id);
         }
@@ -1105,6 +1142,7 @@ mod cumulative_token_tracker_tests {
             None,
             None,
             Some(&art),
+            None,
         );
         let frac = profile.calibrated_trim_fraction
             .expect("knee artifact must set calibrated_trim_fraction");
@@ -1142,6 +1180,7 @@ mod cumulative_token_tracker_tests {
             &mut profile,
             Some(&mut store),
             Some("id-stale"),
+            None,
             None,
         );
         assert!(store.get("id-stale").is_none(), "invalidate must drop the stale artifact");

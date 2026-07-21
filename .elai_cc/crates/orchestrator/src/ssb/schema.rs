@@ -5533,7 +5533,12 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- Pattern-2 flat variant; 5-arm IntentRoutedKind rides in the payload.
         -- Emitted by FrontDoorRouter on every routing decision.
         -- NEVER carries rewritten text (arg_spans are byte-offsets).
-        'intent_routed'
+        'intent_routed',
+        -- J-34 (SCHEMA_VERSION 286): empirical context calibration event.
+        -- Pattern-2 flat variant; 4-arm ContextCalibrationKind rides in the payload.
+        -- Emitted by CalibrationArtifactStore::insert (CurveMeasured) and the
+        -- leg-2 / leg-3 seams (later slices).
+        'context_calibration_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
