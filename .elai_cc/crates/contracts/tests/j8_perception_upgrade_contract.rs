@@ -447,3 +447,151 @@ fn counting_threshold_with_and_without_multi_image() {
     assert_eq!(outcome_multi.decision, RouterDecision::RouteToTiledComposite);
     assert_eq!(outcome_multi.kind, "tiled_composite");
 }
+
+// ---------------------------------------------------------------------------
+// J-8 T8: vision-ladder seed contract (VR-13 / VR-11).
+//
+// All tests below call the SAME production fns in
+// `elai_orchestrator::perception::vision_ladder`:
+//   * `rows` — full table
+//   * `row_by_tier_key` — single-row lookup
+//   * `fastvlm_row` — the VR-11 / JC-9 Apple-silicon rung
+//   * `local_rows_fitting_vram` — budget-filtered local rows
+//
+// They do NOT reimplement the filter in the test body and do NOT grep
+// source text.
+//
+// FALSIFICATION MUTATION (for the orchestrator / auditor to verify):
+//   Delete or blank the FastVLM `[[ladder]]` block from
+//   `data/perception/vision_ladder.toml` (or change its `model_id` away
+//   from "FastVLM"). Case (c) `fastvlm_row_present_and_tagged` will go
+//   RED because `fastvlm_row()` returns None. Restoring the block makes
+//   it GREEN again.
+//
+// UNCOVERED MUTATIONS (named for the orchestrator):
+//   * J-9 vision/OCR lane does not yet consume this file (seed handoff
+//     only).
+//   * J-1 leg-4 probe-model selection does not call
+//     `local_rows_fitting_vram` yet.
+//   * `data/hardware_catalog/model_catalog.toml` already carries parallel
+//     VR-13 rows — this slice does NOT merge/dedupe into hardware_catalog.
+// ---------------------------------------------------------------------------
+
+use elai_orchestrator::perception::vision_ladder;
+
+// (a) rows() has >= 8 entries and every required tier_key is present
+#[test]
+fn vision_ladder_rows_complete() {
+    let rows = vision_ladder::rows();
+    assert!(
+        rows.len() >= 8,
+        "expected at least 8 ladder rows, got {}",
+        rows.len()
+    );
+    let required = [
+        "sub_8gb",
+        "vram_24gb_ocr_basic",
+        "vram_24gb_qat",
+        "vram_48gb_32b",
+        "vram_48gb_72b",
+        "vram_48gb_internvl",
+        "cloud",
+        "fastvlm_apple",
+    ];
+    for key in &required {
+        assert!(
+            rows.iter().any(|r| r.tier_key == *key),
+            "missing tier_key: {key}"
+        );
+    }
+}
+
+// (b) row_by_tier_key("sub_8gb") -> Phi-4-Multimodal
+#[test]
+fn vision_ladder_sub_8gb_is_phi4() {
+    let row = vision_ladder::row_by_tier_key("sub_8gb");
+    assert_eq!(
+        row.map(|r| r.model_id.as_str()),
+        Some("Phi-4-Multimodal")
+    );
+}
+
+// (c) fastvlm_row() is Some, model_id == "FastVLM", platform_tags contains
+//     "apple_silicon", source_tag contains "VR-11" or "JC-9"
+#[test]
+fn fastvlm_row_present_and_tagged() {
+    let row = vision_ladder::fastvlm_row().expect("FastVLM row must exist");
+    assert_eq!(row.model_id, "FastVLM");
+    assert!(
+        row.platform_tags.iter().any(|t| t == "apple_silicon"),
+        "platform_tags must contain apple_silicon"
+    );
+    assert!(
+        row.source_tag.contains("VR-11") || row.source_tag.contains("JC-9"),
+        "source_tag must reference VR-11 or JC-9"
+    );
+}
+
+// (d) local_rows_fitting_vram(8192) contains Phi-4-Multimodal and does NOT
+//     contain FastVLM / anthropic-cloud-vision / InternVL3-78B
+#[test]
+fn local_rows_8gb_fits_phi_excludes_cloud_fastvlm() {
+    let rows = vision_ladder::local_rows_fitting_vram(8192);
+    let model_ids: Vec<&str> = rows.iter().map(|r| r.model_id.as_str()).collect();
+    assert!(
+        model_ids.iter().any(|m| *m == "Phi-4-Multimodal"),
+        "must include Phi-4-Multimodal at 8GB"
+    );
+    assert!(
+        !model_ids.iter().any(|m| *m == "FastVLM"),
+        "must NOT include FastVLM"
+    );
+    assert!(
+        !model_ids.iter().any(|m| *m == "anthropic-cloud-vision"),
+        "must NOT include cloud"
+    );
+    assert!(
+        !model_ids.iter().any(|m| *m == "InternVL3-78B"),
+        "must NOT include InternVL3-78B at 8GB"
+    );
+}
+
+// (e) local_rows_fitting_vram(24576) contains Qwen2.5-VL-7B and
+//     Gemma-3-27B-QAT; still excludes FastVLM + cloud
+#[test]
+fn local_rows_24gb_fits_qwen7b_and_gemma_qat() {
+    let rows = vision_ladder::local_rows_fitting_vram(24576);
+    let model_ids: Vec<&str> = rows.iter().map(|r| r.model_id.as_str()).collect();
+    assert!(
+        model_ids.iter().any(|m| *m == "Qwen2.5-VL-7B"),
+        "must include Qwen2.5-VL-7B at 24GB"
+    );
+    assert!(
+        model_ids.iter().any(|m| *m == "Gemma-3-27B-QAT"),
+        "must include Gemma-3-27B-QAT at 24GB"
+    );
+    assert!(
+        !model_ids.iter().any(|m| *m == "FastVLM"),
+        "must NOT include FastVLM"
+    );
+    assert!(
+        !model_ids.iter().any(|m| *m == "anthropic-cloud-vision"),
+        "must NOT include cloud"
+    );
+}
+
+// (f) unknown tier_key returns None
+#[test]
+fn unknown_tier_key_returns_none() {
+    assert!(vision_ladder::row_by_tier_key("nonexistent_tier").is_none());
+}
+
+// (g) R2: local_rows_fitting_vram(0) is empty (forced zero-budget)
+#[test]
+fn local_rows_zero_budget_is_empty() {
+    let rows = vision_ladder::local_rows_fitting_vram(0);
+    assert!(
+        rows.is_empty(),
+        "zero-budget query must return no rows"
+    );
+}

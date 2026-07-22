@@ -1,0 +1,66 @@
+# J-8 VR-13 / VR-11 — perception vision-ladder seed for J-9.
+# ALL figures [DESIGN] / HD-1 — design rationale only; re-verify at eval.
+
+[[ladder]]
+tier_key = "sub_8gb"
+max_vram_mb = 8192
+model_id = "Phi-4-Multimodal"
+mmmu_design = 55.1
+source_tag = "[DESIGN] VR-13 sub-6B/8GB rung"
+platform_tags = []
+
+[[ladder]]
+tier_key = "vram_24gb_ocr_basic"
+max_vram_mb = 24576
+model_id = "Qwen2.5-VL-7B"
+mmmu_design = 0.0
+source_tag = "[DESIGN] VR-13 single-24GB basic OCR rung"
+platform_tags = []
+
+[[ladder]]
+tier_key = "vram_24gb_qat"
+max_vram_mb = 24576
+model_id = "Gemma-3-27B-QAT"
+mmmu_design = 64.9
+source_tag = "[DESIGN] VR-13 single-24GB Gemma 3 27B QAT rung"
+platform_tags = []
+
+[[ladder]]
+tier_key = "vram_48gb_32b"
+max_vram_mb = 49152
+model_id = "Qwen2.5-VL-32B"
+mmmu_design = 0.0
+source_tag = "[DESIGN] VR-13 48GB+ 32B rung"
+platform_tags = []
+
+[[ladder]]
+tier_key = "vram_48gb_72b"
+max_vram_mb = 65536
+model_id = "Qwen2.5-VL-72B"
+mmmu_design = 70.2
+source_tag = "[DESIGN] VR-13 high-tier 72B rung"
+platform_tags = []
+
+[[ladder]]
+tier_key = "vram_48gb_internvl"
+max_vram_mb = 65536
+model_id = "InternVL3-78B"
+mmmu_design = 72.2
+source_tag = "[DESIGN] VR-13 high-tier InternVL3-78B rung"
+platform_tags = []
+
+[[ladder]]
+tier_key = "cloud"
+max_vram_mb = 0
+model_id = "anthropic-cloud-vision"
+mmmu_design = 0.0
+source_tag = "[DESIGN] VR-13 cloud Anthropic lane"
+platform_tags = ["cloud"]
+
+[[ladder]]
+tier_key = "fastvlm_apple"
+max_vram_mb = 8192
+model_id = "FastVLM"
+mmmu_design = 0.0
+source_tag = "[DESIGN] VR-11 / JC-9 Apple-silicon FastVLM (E-51 MLX only; NOT remote-3090)"
+platform_tags = ["apple_silicon"]
