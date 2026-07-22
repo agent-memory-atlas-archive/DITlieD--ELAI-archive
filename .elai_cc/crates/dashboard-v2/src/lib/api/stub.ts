@@ -182,6 +182,8 @@ import type {
   ConfigureProviderReport,
 } from './types';
 
+import type { SystemCanvas } from '../canvas/system_mode_fixtures';
+
 import {
   FSM_SNAPSHOT,
   QUERY_TRACES,
@@ -2140,6 +2142,21 @@ export async function get_usage_rollup(limit = 500): Promise<UsageRollupResponse
   if (live) return live;
   await delay();
   return { rows: [] };
+}
+
+// ------------------------------------------------------------------
+// SYSTEM CANVAS (J-31 Unit 4b) — system-composition read.
+// Mirrors the get_system_canvas Tauri command (commands.rs). Falls back
+// to an EMPTY canvas when offline so SystemMode renders its empty state
+// (the fixture blend is SystemMode's concern, not this fn's).
+// ------------------------------------------------------------------
+
+export async function get_system_canvas(limit = 500): Promise<SystemCanvas> {
+  logStub('get_system_canvas');
+  const live = await tryInvoke<SystemCanvas>('get_system_canvas', { limit });
+  if (live) return live;
+  await delay();
+  return { nodes: [], edges: [] };
 }
 
 // ------------------------------------------------------------------

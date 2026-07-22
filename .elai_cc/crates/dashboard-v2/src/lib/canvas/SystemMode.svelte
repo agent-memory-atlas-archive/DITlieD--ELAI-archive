@@ -6,18 +6,20 @@
   // verified -> broken) is a DERIVED state, never LLM-set. This renders the
   // intent-side system the user composes; CODE mode renders what exists.
   //
-  // BACKEND PENDING: the orchestrator side (system_canvas.rs binding registry
-  // + verdict derivation, SystemContractEvent SSB, the 'system' dispatcher
-  // namespace) is not built. This component renders MOCK fixtures only and is
-  // ready to wire when those land — swap SYSTEM_CANVAS_FIXTURE for a real
-  // read-command result; the renderer shapes are identical.
+  // BACKEND: the orchestrator side (system_canvas.rs binding registry + verdict
+  // derivation, SystemContractEvent SSB, the 'system' dispatcher namespace) is
+  // landed; the populated branch reads live via get_system_canvas. The other
+  // demoStates (empty/loading/error/disconnected) render synthetic surfaces for
+  // state coverage without a backend.
   //
   // Layout law (DESIGN / J-31): the algorithm owns geometry — nodes sit on a
   // fixed col/row grid (a stand-in for dagre/ELK), NEVER LLM-placed coords.
   // Flat-matte work surface on --bg; quinary state language; role tokens only.
 
+  import { onMount } from 'svelte';
   import NodeStateGlyph from './NodeStateGlyph.svelte';
   import { nodeStory } from './node_story_store.svelte';
+  import { get_system_canvas as getSystemCanvas } from '../api/stub';
   import {
     SYSTEM_CANVAS_FIXTURE,
     BINDING_LABEL,
@@ -46,7 +48,22 @@
   type DemoState = 'populated' | 'empty' | 'loading' | 'error' | 'disconnected';
   let demoState = $state<DemoState>('populated');
 
-  const canvasData: SystemCanvas = SYSTEM_CANVAS_FIXTURE;
+  let liveCanvas = $state<SystemCanvas | null>(null);
+
+  onMount(async () => {
+    try {
+      const c = await getSystemCanvas();
+      if (c && (c.nodes.length > 0 || c.edges.length > 0)) {
+        liveCanvas = c;
+      }
+    } catch {
+      // offline / no backend — liveCanvas stays null, fixture is used.
+    }
+  });
+
+  const canvasData = $derived(
+    demoState === 'populated' && liveCanvas ? liveCanvas : SYSTEM_CANVAS_FIXTURE,
+  );
 
   // selection — a node OR an edge inspector
   let selected = $state<
@@ -91,8 +108,8 @@
         <span class="sys-broken">▲ {brokenEdges} broken</span>
       {/if}
     </span>
-    <span class="sys-pending-note" title="J-31 orchestrator backend (system_canvas.rs + SystemContractEvent SSB) not built — UI shell on mock fixtures">
-      backend: pending
+    <span class="sys-pending-note" title="J-31 orchestrator backend landed; populated branch reads live via get_system_canvas">
+      backend: live on populated
     </span>
     <div class="sys-statepick" role="group" aria-label="Preview state">
       {#each (['populated', 'empty', 'loading', 'error', 'disconnected'] as DemoState[]) as st}
