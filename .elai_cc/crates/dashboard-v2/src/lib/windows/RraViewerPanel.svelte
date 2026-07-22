@@ -173,6 +173,51 @@
     return `div @ pos ${row.divergence_position}: expected ${exp}, got ${got}`;
   }
 
+  // H-23: RerunHashEquality badge (mirrors tier badge pattern above).
+  // rerun_kind is "equal" / "divergent" joined from the latest
+  // RerunHashEquality SSB row for this session_id. Honest "—" when absent.
+  function rerunLabel(kind: string | null | undefined): string {
+    switch (kind) {
+      case 'equal':
+        return 'EQUAL';
+      case 'divergent':
+        return 'DIVERGENT';
+      case null:
+      case undefined:
+        return '—';
+      default:
+        return kind;
+    }
+  }
+
+  function rerunClass(kind: string | null | undefined): string {
+    switch (kind) {
+      case 'equal':
+        return 'rerun rerun-equal';
+      case 'divergent':
+        return 'rerun rerun-divergent';
+      case null:
+      case undefined:
+        return 'rerun rerun-none';
+      default:
+        return 'rerun';
+    }
+  }
+
+  function rerunTitle(row: RunArtifact): string {
+    if (row.rerun_kind == null) {
+      return 'no rerun hash equality row (not yet rerun)';
+    }
+    const parts: string[] = [row.rerun_kind];
+    if (row.rerun_digest_a) parts.push(`a: ${shortHash(row.rerun_digest_a)}`);
+    if (row.rerun_digest_b) parts.push(`b: ${shortHash(row.rerun_digest_b)}`);
+    if (row.rerun_kind === 'divergent') {
+      if (row.rerun_divergent_metric) parts.push(`metric: ${row.rerun_divergent_metric}`);
+      if (row.rerun_first_divergence_index != null) parts.push(`idx: ${row.rerun_first_divergence_index}`);
+    }
+    return parts.join('; ');
+  }
+
   let total = $derived(rows ? rows.length : 0);
 
   onMount(() => {
@@ -229,6 +274,7 @@
             <th>Session</th>
             <th>Guarantee</th>
             <th>Tier</th>
+            <th>Rerun</th>
             <th class="num">Gates</th>
             <th class="num">Seed</th>
             <th>Root (blake3)</th>
@@ -251,6 +297,12 @@
                 <span
                   class={tierClass(row.tier_effective, row.downgrades)}
                   title={tierTitle(row.tier_effective, row.downgrades)}>{tierLabel(row.tier_effective, row.downgrades)}</span
+                >
+              </td>
+              <td class="rerun-cell">
+                <span
+                  class={rerunClass(row.rerun_kind)}
+                  title={rerunTitle(row)}>{rerunLabel(row.rerun_kind)}</span
                 >
               </td>
               <td class="num">{row.gate_count}</td>
@@ -497,6 +549,42 @@
   }
 
   .tier-none {
+    color: var(--text-secondary);
+    font-weight: 400;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  /* H-23: rerun hash equality badge */
+  .rerun-cell {
+    white-space: nowrap;
+  }
+
+  .rerun {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .rerun-equal {
+    background: rgba(110, 180, 140, 0.15);
+    border-color: rgba(110, 180, 140, 0.4);
+    color: rgb(110, 180, 140);
+  }
+
+  .rerun-divergent {
+    background: rgba(220, 160, 80, 0.15);
+    border-color: rgba(220, 160, 80, 0.5);
+    color: rgb(220, 160, 80);
+  }
+
+  .rerun-none {
     color: var(--text-secondary);
     font-weight: 400;
     border-color: transparent;

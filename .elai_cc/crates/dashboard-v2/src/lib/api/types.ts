@@ -4149,6 +4149,12 @@ export interface RunArtifact {
    * when no divergence row exists.
    */
   divergence_actual?: string | null;
+  // H-23 RerunHashEquality join
+  rerun_kind?: string | null;
+  rerun_digest_a?: string | null;
+  rerun_digest_b?: string | null;
+  rerun_first_divergence_index?: number | null;
+  rerun_divergent_metric?: string | null;
 }
 
 /**

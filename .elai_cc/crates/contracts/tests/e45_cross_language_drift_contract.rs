@@ -291,6 +291,8 @@ fn e45_f7_action_type_lock_total_variants_updated() {
     // via its stable wire tag (arm-shape-agnostic; tighter than a source grep).
     let registered = |tag: &str| SSB_ACTION_TYPES.iter().any(|v| v.as_sql_str() == tag);
 
+    // H-23 same-seed rerun hash equality gate.
+    assert!(registered("rerun_hash_equality"), "registry must include RerunHashEquality");
     // H-24 sim-to-real parity gate.
     assert!(registered("sim_real_parity"), "registry must include SimRealParity");
     // H-25 result manifest re-derivation gate.

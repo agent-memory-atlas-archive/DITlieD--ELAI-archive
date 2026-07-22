@@ -22,8 +22,8 @@ use crate::ssb::{
     DagRepairRoundPayload, FeasibilityReportPayload, InterventionOption,
     InterventionRequestPayload, InterventionType, NovelStepDetectedPayload,
     ReflectAuditVerdictPayload, ReflectRefinedPayload, ReflectTriagedPayload, ReproPackKind,
-    ReproPackPayload, SsbActionType, SsbPayload, StubRunPayload, TaskSplitPayload,
-    TaskSubmittedPayload, UsageTurnEventPayload,
+    ReproPackPayload, RerunHashEqualityPayload, SsbActionType, SsbPayload, StubRunPayload,
+    TaskSplitPayload, TaskSubmittedPayload, UsageTurnEventPayload,
 };
 
 /// Maximum length of `phase_id` accepted by [`SsbViewer::step_progress`].
@@ -4711,6 +4711,11 @@ impl SsbViewer {
                     divergence_position: None,
                     divergence_expected: None,
                     divergence_actual: None,
+                    rerun_kind: None,
+                    rerun_digest_a: None,
+                    rerun_digest_b: None,
+                    rerun_first_divergence_index: None,
+                    rerun_divergent_metric: None,
                 });
             }
         }
@@ -4721,6 +4726,7 @@ impl SsbViewer {
         // caveat), so for most installs this leaves the Options None — the
         // honest empty state, not a failure.
         Self::join_repro_pack_events(&conn, &mut out)?;
+        Self::join_rerun_hash_equality(&conn, &mut out)?;
         Ok(out)
     }
 
@@ -4801,6 +4807,55 @@ impl SsbViewer {
                 row.divergence_position = d.divergence_position;
                 row.divergence_expected = d.expected_value.clone();
                 row.divergence_actual = d.actual_value.clone();
+            }
+        }
+        Ok(())
+    }
+
+    // H-23 helper: no new pub symbol — private fn called only from
+    // `run_artifacts` above. Scans recent rerun_hash_equality rows (same hard
+    // cap as the caller) and merges the latest per session_id into the
+    // matching RunArtifactRow entries. Rows with no matching row keep None.
+    fn join_rerun_hash_equality(
+        conn: &Connection,
+        rows: &mut [RunArtifactRow],
+    ) -> Result<(), SsbViewerError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let effective = DRAWER_QUERY_HARD_CAP;
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let mut stmt = conn.prepare(
+            "SELECT session_id, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let entries: Vec<(String, Vec<u8>)> = stmt
+            .query_map(
+                params![SsbActionType::RerunHashEquality.as_sql_str(), limit_i64],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )?
+            .filter_map(Result::ok)
+            .collect();
+        let mut latest: std::collections::HashMap<String, RerunHashEqualityPayload> =
+            std::collections::HashMap::new();
+        for (session_id, bytes) in &entries {
+            let payload: SsbPayload = match rmp_serde::from_slice(bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let SsbPayload::RerunHashEquality(p) = payload {
+                if !latest.contains_key(session_id) {
+                    latest.insert(session_id.clone(), p);
+                }
+            }
+        }
+        for row in rows.iter_mut() {
+            if let Some(p) = latest.get(&row.session_id) {
+                row.rerun_kind = Some(p.kind.label().to_string());
+                row.rerun_digest_a = Some(p.digest_a.clone());
+                row.rerun_digest_b = Some(p.digest_b.clone());
+                row.rerun_first_divergence_index = Some(p.first_divergence_index);
+                row.rerun_divergent_metric = Some(p.divergent_metric.clone());
             }
         }
         Ok(())
@@ -5796,6 +5851,23 @@ pub struct RunArtifactRow {
     /// divergence row exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub divergence_actual: Option<String>,
+    /// H-23: rerun verdict kind ("equal" / "divergent") joined from the latest
+    /// `RerunHashEquality` SSB row for this session_id. `None` when no rerun row
+    /// exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_kind: Option<String>,
+    /// H-23: first digest from the RerunHashEquality row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_digest_a: Option<String>,
+    /// H-23: second digest from the RerunHashEquality row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_digest_b: Option<String>,
+    /// H-23: first divergence index (0-based) from the RerunHashEquality row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_first_divergence_index: Option<u32>,
+    /// H-23: divergent metric name from the RerunHashEquality row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_divergent_metric: Option<String>,
 }
 
 /// G-8 — DTO for [`SsbViewer::attestations`]. One row per signed in-toto v1

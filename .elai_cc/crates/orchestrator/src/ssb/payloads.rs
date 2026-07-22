@@ -17923,7 +17923,7 @@ pub struct TradingNullTestPayload {
     pub corpus_blake3: String,
 }
 
-/// H-21: rerun hash equality kind.
+/// H-23: rerun hash equality kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RerunHashEqualityKind {
     Equal,
@@ -17939,7 +17939,7 @@ impl RerunHashEqualityKind {
     }
 }
 
-/// H-21: rerun hash equality verdict.
+/// H-23: rerun hash equality verdict.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RerunHashEqualityPayload {
     pub kind: RerunHashEqualityKind,
