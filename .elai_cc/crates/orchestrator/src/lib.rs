@@ -434,6 +434,7 @@ pub mod compliance;
 pub mod roadmap_signals;
 pub mod searx_search_backend;
 pub mod research_tier;
+pub mod research_mode;
 pub mod research_tree;
 pub mod pipeline_builder;
 pub mod phase_sizing_splitter;

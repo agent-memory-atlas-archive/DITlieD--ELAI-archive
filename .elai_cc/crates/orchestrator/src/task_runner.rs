@@ -2209,6 +2209,7 @@ impl DefaultWebResearchRunner {
         use elai_web_search::extractor::{BasicExtractor, QueryAwareBasicExtractor, QueryAwareExtractor};
         use elai_web_search::fetcher::WebFetcher;
         use elai_web_search::source_quality::SourceQualityTable;
+        use crate::research_mode::ResearchMode;
 
         let searx = SearxClient::new(&self.searx_base_url, self.clock.clone())
             .map_err(|e| format!("searx client: {e}"))?;
@@ -2273,6 +2274,9 @@ impl DefaultWebResearchRunner {
             Some(writer) => orchestrator.with_ssb_writer(writer.clone()),
             None => orchestrator,
         };
+
+        let mode = ResearchMode::from_env();
+        let orchestrator = orchestrator.with_research_mode(mode);
 
         Ok(orchestrator)
     }

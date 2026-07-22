@@ -32,6 +32,7 @@ use crate::ssb::BlastRadiusKind;
 use crate::capability_flow::{commit_minimal_set, CommittedToolSet};
 use crate::research_budget::{EvidenceItem, ResearchBudgetManager};
 use crate::research_tier::ResearchTierConfig;
+use crate::research_mode::ResearchMode;
 use crate::research_tree::{NodeId, NodeStatus, ResearchNode, SourceCitation,
     SourceQuality, EvidenceLevel};
 use crate::ssb::{SsbPayload, ToolFilterEventKind, ToolFilterPayload};
@@ -51,7 +52,7 @@ const LOW_QUALITY_THRESHOLD: f64 = 0.8;
 const LOW_CONFIDENCE_CUTOFF: f64 = 0.5;
 
 /// Multiplier on depth_limit for max iterations per node.
-const MAX_ITERATIONS_PER_DEPTH: u32 = 10;
+pub(crate) const MAX_ITERATIONS_PER_DEPTH: u32 = 10;
 
 /// Minimum citations before upgrading evidence level to MultiSource.
 const MULTI_SOURCE_THRESHOLD: usize = 2;
@@ -177,6 +178,7 @@ pub struct WebResearchOrchestrator {
     content_index: WebContentIndex,
     budget_manager: ResearchBudgetManager,
     tier_config: ResearchTierConfig,
+    research_mode: ResearchMode,
     #[allow(dead_code)] // reserved for future time-bounded research sessions
     clock: Arc<dyn ClockProvider>,
     chunk_counter: u64,
@@ -216,6 +218,7 @@ impl WebResearchOrchestrator {
             content_index,
             budget_manager,
             tier_config,
+            research_mode: ResearchMode::Standard,
             clock,
             chunk_counter: 0,
             step_emitter: None,
@@ -260,6 +263,11 @@ impl WebResearchOrchestrator {
         self
     }
 
+    pub fn with_research_mode(mut self, mode: ResearchMode) -> Self {
+        self.research_mode = mode;
+        self
+    }
+
     /// D4: attach an ObscuraFetcher. When set, fetch_and_extract uses the
     /// headless-browser path instead of reqwest. Only available with feature = "obscura".
     #[cfg(feature = "obscura")]
@@ -293,7 +301,8 @@ impl WebResearchOrchestrator {
     ) -> Result<u32, WebResearchOrchestratorError> {
         let phi_min = self.tier_config.phi_min;
         let psi_min = self.tier_config.psi_min;
-        let max_iterations = u32::try_from(self.tier_config.depth_limit).unwrap_or(u32::MAX) * MAX_ITERATIONS_PER_DEPTH;
+        let caps = self.research_mode.caps(&self.tier_config);
+        let max_iterations = caps.max_iterations;
         let mut total_sources_fetched: u32 = 0;
         let mut total_sources_used: u32 = 0;
         let mut last_fetcher: &'static str = "";
@@ -426,7 +435,7 @@ impl WebResearchOrchestrator {
             }
 
             // Cap by max_sources_per_node.
-            to_fetch.truncate(self.tier_config.max_sources_per_node);
+            to_fetch.truncate(caps.max_sources_per_node);
             let n_urls_to_fetch = u32::try_from(to_fetch.len()).unwrap_or(u32::MAX);
             total_sources_fetched = total_sources_fetched.saturating_add(n_urls_to_fetch);
 
@@ -514,7 +523,7 @@ impl WebResearchOrchestrator {
             // RETRIEVE: keyword search on indexed content (progressive disclosure).
             let retrieval_results = self.content_index.keyword_search(
                 &node.question,
-                self.tier_config.breadth_factor,
+                caps.breadth_factor,
             );
             debug!(
                 node_id = node.id.0,
