@@ -1924,7 +1924,7 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                         emit_perception_scaffold_event(
                             self.ssb.as_ref(),
                             &self.clock,
-                            crate::ssb::PerceptionScaffoldEventKind::RoutedToSpecialist,
+                            crate::ssb::PerceptionScaffoldEventKind::RouteRuleApplied,
                             None,
                             serde_json::json!({
                                 "kind": outcome.kind,
@@ -1973,9 +1973,10 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                             emit_perception_scaffold_event(
                                 self.ssb.as_ref(),
                                 &self.clock,
-                                crate::ssb::PerceptionScaffoldEventKind::ScaffoldEmitted,
+                                crate::ssb::PerceptionScaffoldEventKind::SchemaApplied,
                                 None,
                                 serde_json::json!({
+                                    "schema": "v2",
                                     "literal_element_count": result.literal_elements.len(),
                                     "call1_temperature": result.call1_temperature,
                                 }),

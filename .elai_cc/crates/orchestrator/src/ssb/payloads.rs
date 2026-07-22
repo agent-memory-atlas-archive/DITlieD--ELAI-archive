@@ -3705,7 +3705,8 @@ pub enum SsbPayload {
     AuthBrokerEvent(AuthBrokerEventPayload),
     /// J-1.T4 (SCHEMA_VERSION 269): perception-gateway scaffold lifecycle event.
     ///
-    /// SINGLE-VARIANT Pattern-2 4-arm [`PerceptionScaffoldEventKind`]:
+    /// SINGLE-VARIANT Pattern-2 [`PerceptionScaffoldEventKind`] (J-1
+    /// lifecycle arms plus J-8 T9 / JC-11 upgrade arms):
     /// - `Preprocessed`: the sidecar preprocess step conditioned the image
     ///   (T5 wires the emit at the preprocess call site; T4 ships the arm
     ///   with no emit site per the controller decision).
@@ -3716,6 +3717,10 @@ pub enum SsbPayload {
     /// - `DegradedPassthrough`: the scaffold or router degraded to
     ///   passthrough (failure / missing paths); the raw image forwards
     ///   UNCONDITIONED with an explicit marker (never a silent fallthrough).
+    /// - `SchemaApplied` / `ResizeRuleApplied` / `RouteRuleApplied` /
+    ///   `EvalScheduled`: J-8 T9 / JC-11 upgrade arms (schema v2, resize
+    ///   rule, route rule, eval scheduled); `SchemaApplied` remaps the
+    ///   scaffold emit, `RouteRuleApplied` remaps the tiled-composite emit.
     ///
     /// Wire-dark unless `ELAI_PERCEPTION_GATEWAY_ENABLE=1` (the gate is
     /// checked at the call site in `handle_infer_request`; the emit helper
@@ -19889,13 +19894,19 @@ pub struct AuthBrokerEventPayload {
 // J-1.T4 (SCHEMA_VERSION 269): PerceptionScaffoldEvent substrate
 // ---------------------------------------------------------------------------
 
-/// J-1.T4 (SCHEMA_VERSION 269): 4-arm fire-point discriminator carried by
+/// J-1.T4 (SCHEMA_VERSION 269): fire-point discriminator carried by
 /// [`PerceptionScaffoldEventPayload`]. Mirrors the
 /// [`DocumentVisionRagEventKind`] / [`AuthBrokerEventKind`] shape
 /// (snake_case wire labels + `as_str()` helper). Pattern-2 (41st
 /// application).
 ///
-/// Arm order: preprocess -> scaffold -> route -> degrade.
+/// The Kind carries the J-1 perception-gateway lifecycle arms PLUS the
+/// J-8 T9 / JC-11 upgrade arms (schema v2, resize rule, route rule,
+/// eval scheduled). The J-1 arms remain constructible so existing
+/// payloads / contract tests stay green; the J-8 arms remap two live
+/// emit sites (see `production_agent_rpc.rs`).
+///
+/// Arm order: preprocess -> scaffold -> route -> degrade -> upgrade arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PerceptionScaffoldEventKind {
@@ -19916,6 +19927,19 @@ pub enum PerceptionScaffoldEventKind {
     /// UNCONDITIONED with an explicit marker (never a silent fallthrough,
     /// plan stub_ban).
     DegradedPassthrough,
+    /// J-8 T9 / JC-11: scaffold schema v2 validated 0-1000 coords.
+    /// Remaps the live `ScaffoldOutcome::ScaffoldEmitted` emit site.
+    SchemaApplied,
+    /// J-8 T9 / JC-11: sweet-spot resize rule applied. No production emit yet
+    /// (preprocess not called from handle_infer_request, same unused-arm
+    /// pattern as `Preprocessed`).
+    ResizeRuleApplied,
+    /// J-8 T9 / JC-11: J-8 route rule applied (multi-image / micro-text).
+    /// Remaps the live `RouterDecision::RouteToTiledComposite` emit site.
+    RouteRuleApplied,
+    /// J-8 T9 / JC-11: Tier-2 EVAL scheduled. No production emit yet (T6
+    /// owner-gated).
+    EvalScheduled,
 }
 
 impl PerceptionScaffoldEventKind {
@@ -19927,6 +19951,10 @@ impl PerceptionScaffoldEventKind {
             Self::ScaffoldEmitted => "scaffold_emitted",
             Self::RoutedToSpecialist => "routed_to_specialist",
             Self::DegradedPassthrough => "degraded_passthrough",
+            Self::SchemaApplied => "schema_applied",
+            Self::ResizeRuleApplied => "resize_rule_applied",
+            Self::RouteRuleApplied => "route_rule_applied",
+            Self::EvalScheduled => "eval_scheduled",
         }
     }
 }
@@ -19936,7 +19964,7 @@ impl PerceptionScaffoldEventKind {
 /// Wire-dark default; emission gated by `ELAI_PERCEPTION_GATEWAY_ENABLE`
 /// env var (see [`crate::perception::ELAI_PERCEPTION_GATEWAY_ENABLE_ENV`]).
 /// The gate is checked at the call site in `handle_infer_request`; the
-/// emit helper does NOT re-gate. Carries the 4-arm discriminator + session
+/// emit helper does NOT re-gate. Carries the Kind discriminator + session
 /// / task ids + free-form JSON details so each kind's per-kind scalars
 /// ride along without per-kind payload structs (Pattern-2 single-variant
 /// scope-lean).

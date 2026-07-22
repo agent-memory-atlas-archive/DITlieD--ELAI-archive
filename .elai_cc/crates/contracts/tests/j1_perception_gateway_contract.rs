@@ -381,16 +381,19 @@ fn target_model_sweet_spot_edges_measured() {
 // (d) PerceptionScaffoldEvent payload + Kind + action_type mapping.
 // T4 lands the PerceptionScaffoldEvent SSB variant (single-variant
 // Pattern-2, Kind: Preprocessed / ScaffoldEmitted / RoutedToSpecialist /
-// DegradedPassthrough). This test asserts the payload constructs with the
-// correct Kind, the action_type() mapping resolves to the declared
-// SsbActionType, and the Kind as_str() wire labels round-trip -- without a
-// live SSB (the gate is wire-dark by default; the round-trip is exercised
-// structurally via the payload + action_type() single source of truth).
+// DegradedPassthrough + J-8 T9 upgrade arms SchemaApplied /
+// ResizeRuleApplied / RouteRuleApplied / EvalScheduled). This test asserts
+// the payload constructs with the correct Kind, the action_type() mapping
+// resolves to the declared SsbActionType, and every Kind as_str() wire
+// label round-trips -- without a live SSB (the gate is wire-dark by
+// default; the round-trip is exercised structurally via the payload +
+// action_type() single source of truth).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn scaffold_event_lands_with_correct_kind() {
-    // (d.1) All 4 Kind arms construct + carry the expected as_str() wire label.
+    // (d.1) All Kind arms construct + carry the expected as_str() wire label.
+    // J-1 lifecycle arms (4) + J-8 T9 / JC-11 upgrade arms (4).
     assert_eq!(PerceptionScaffoldEventKind::Preprocessed.as_str(), "preprocessed");
     assert_eq!(
         PerceptionScaffoldEventKind::ScaffoldEmitted.as_str(),
@@ -403,6 +406,22 @@ fn scaffold_event_lands_with_correct_kind() {
     assert_eq!(
         PerceptionScaffoldEventKind::DegradedPassthrough.as_str(),
         "degraded_passthrough"
+    );
+    assert_eq!(
+        PerceptionScaffoldEventKind::SchemaApplied.as_str(),
+        "schema_applied"
+    );
+    assert_eq!(
+        PerceptionScaffoldEventKind::ResizeRuleApplied.as_str(),
+        "resize_rule_applied"
+    );
+    assert_eq!(
+        PerceptionScaffoldEventKind::RouteRuleApplied.as_str(),
+        "route_rule_applied"
+    );
+    assert_eq!(
+        PerceptionScaffoldEventKind::EvalScheduled.as_str(),
+        "eval_scheduled"
     );
 
     // (d.2) ScaffoldEmitted payload constructs + maps to the declared action_type.

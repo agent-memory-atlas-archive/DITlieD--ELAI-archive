@@ -663,3 +663,149 @@ fn moai_citation_contains_arxiv_id() {
         "citation must contain MoAI"
     );
 }
+
+// ---------------------------------------------------------------------------
+// J-8 T9: SSB JC-11 prefer-reuse, PerceptionScaffoldEventKind upgrade arms.
+//
+// All tests below call the SAME production types the live emit sites use:
+//   * `PerceptionScaffoldEventKind` — the enum extended with four JC-11 arms
+//   * `PerceptionScaffoldEventPayload` — the payload struct
+//   * `SsbPayload::action_type()` — the action_type mapping
+//   * `SsbActionType::PerceptionScaffoldEvent(Kind)` — the declared variant
+//
+// They do NOT grep source text. The j1 contract test
+// (`j1_perception_gateway_contract.rs::scaffold_event_lands_with_correct_kind`)
+// asserts every arm's as_str() wire label and MUST remain green.
+//
+// FALSIFICATION MUTATION (for the orchestrator / auditor to verify):
+//   * Primary: in `production_agent_rpc.rs`, revert the
+//     `ScaffoldOutcome::ScaffoldEmitted` emit back to
+//     `PerceptionScaffoldEventKind::ScaffoldEmitted`. The
+//     `t9_schema_applied_payload_maps_to_action_type` test stays GREEN (it
+//     constructs the payload directly), so the mutation is NOT covered by
+//     this contract, it is covered off-agent by `production_caller_check`
+//     on `SchemaApplied` going DARK, or by deleting the `SchemaApplied` arm
+//     (which breaks the as_str + payload tests RED). NAME this uncovered
+//     mutation in the audit.
+//   * Secondary (unit): break `SchemaApplied.as_str()` return (e.g. return
+//     "scaffold_emitted") -> `t9_upgrade_arms_as_str_wire_labels` goes RED.
+//     Restoring the correct string makes it GREEN again.
+//
+// UNCOVERED MUTATIONS (named for the orchestrator):
+//   * The live production emit-site remap (SchemaApplied / RouteRuleApplied)
+//     is NOT asserted by a contract test this slice (no SSB assertion
+//     contract exists for the production gate emit). The contract proves the
+//     Kind + as_str + action_type mapping; the live emit is verified
+//     off-agent by production_caller_check.
+//   * ResizeRuleApplied + EvalScheduled have no production emit site (same
+//     unused-arm pattern as Preprocessed); their presence is asserted by
+//     as_str only, no fake emit.
+// ---------------------------------------------------------------------------
+
+use elai_orchestrator::ssb::{
+    PerceptionScaffoldEventKind, PerceptionScaffoldEventPayload, SsbActionType, SsbPayload,
+};
+
+// (a) All four new Kind arms construct + as_str() wire labels match.
+#[test]
+fn t9_upgrade_arms_as_str_wire_labels() {
+    assert_eq!(PerceptionScaffoldEventKind::SchemaApplied.as_str(), "schema_applied");
+    assert_eq!(
+        PerceptionScaffoldEventKind::ResizeRuleApplied.as_str(),
+        "resize_rule_applied"
+    );
+    assert_eq!(
+        PerceptionScaffoldEventKind::RouteRuleApplied.as_str(),
+        "route_rule_applied"
+    );
+    assert_eq!(
+        PerceptionScaffoldEventKind::EvalScheduled.as_str(),
+        "eval_scheduled"
+    );
+}
+
+// (b) SchemaApplied payload constructs + maps via action_type() to the
+//     declared SsbActionType::PerceptionScaffoldEvent(SchemaApplied).
+#[test]
+fn t9_schema_applied_payload_maps_to_action_type() {
+    let payload = PerceptionScaffoldEventPayload {
+        kind: PerceptionScaffoldEventKind::SchemaApplied,
+        session_id: Some("sess-j8-t9".to_string()),
+        task_id: None,
+        details_json: serde_json::json!({
+            "schema": "v2",
+            "literal_element_count": 3,
+        }),
+        ts_ms: 1_700_000_000_010,
+    };
+    assert_eq!(
+        SsbPayload::PerceptionScaffoldEvent(payload).action_type(),
+        SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::SchemaApplied)
+    );
+}
+
+// (c) RouteRuleApplied payload constructs + maps via action_type() to the
+//     declared SsbActionType::PerceptionScaffoldEvent(RouteRuleApplied).
+#[test]
+fn t9_route_rule_applied_payload_maps_to_action_type() {
+    let payload = PerceptionScaffoldEventPayload {
+        kind: PerceptionScaffoldEventKind::RouteRuleApplied,
+        session_id: None,
+        task_id: Some("task-j8-t9".to_string()),
+        details_json: serde_json::json!({
+            "kind": "tiled_composite",
+            "image_count": 2,
+        }),
+        ts_ms: 1_700_000_000_011,
+    };
+    assert_eq!(
+        SsbPayload::PerceptionScaffoldEvent(payload).action_type(),
+        SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::RouteRuleApplied)
+    );
+}
+
+// (d) ResizeRuleApplied + EvalScheduled as_str only (unused-arm presence;
+//     no fake emit site). Constructs + action_type round-trips.
+#[test]
+fn t9_unused_arms_construct_and_round_trip_as_str() {
+    let resize = PerceptionScaffoldEventPayload {
+        kind: PerceptionScaffoldEventKind::ResizeRuleApplied,
+        session_id: None,
+        task_id: None,
+        details_json: serde_json::json!({"longest_side_px": 1568}),
+        ts_ms: 1_700_000_000_012,
+    };
+    assert_eq!(
+        SsbPayload::PerceptionScaffoldEvent(resize).action_type(),
+        SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::ResizeRuleApplied)
+    );
+
+    let eval = PerceptionScaffoldEventPayload {
+        kind: PerceptionScaffoldEventKind::EvalScheduled,
+        session_id: None,
+        task_id: None,
+        details_json: serde_json::json!({"bench": "vlm_eval"}),
+        ts_ms: 1_700_000_000_013,
+    };
+    assert_eq!(
+        SsbPayload::PerceptionScaffoldEvent(eval).action_type(),
+        SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::EvalScheduled)
+    );
+}
+
+// (e) The single-variant sql_str stays "perception_scaffold_event" for the
+//     new arms (Pattern-2 single-variant convention; the Kind discriminator
+//     rides inside the payload).
+#[test]
+fn t9_upgrade_arms_share_single_sql_str() {
+    assert_eq!(
+        SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::SchemaApplied)
+            .as_sql_str(),
+        "perception_scaffold_event"
+    );
+    assert_eq!(
+        SsbActionType::PerceptionScaffoldEvent(PerceptionScaffoldEventKind::RouteRuleApplied)
+            .as_sql_str(),
+        "perception_scaffold_event"
+    );
+}
