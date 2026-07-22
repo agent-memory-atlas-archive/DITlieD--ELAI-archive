@@ -27,6 +27,22 @@ pub trait ContentExtractor: Send + Sync {
     fn extract(&self, html: &str, url: &str) -> Result<ExtractedContent, WebSearchError>;
 }
 
+
+/// Trait for query-aware content extraction. Object-safe sibling trait.
+/// The extractor receives the research query and returns a compressed
+/// ExtractedContent containing only the most query-relevant verbatim spans.
+pub trait QueryAwareExtractor: Send + Sync {
+    fn extract_query_aware(
+        &self,
+        html: &str,
+        url: &str,
+        query: &str,
+    ) -> Result<ExtractedContent, WebSearchError>;
+}
+
+/// Maximum number of verbatim sentences kept by the query-aware extractor.
+pub const SPAN_BUDGET_SENTENCES: usize = 5;
+
 /// Basic content extractor: strips script/style/nav/header/footer/head elements,
 /// extracts text from remaining HTML, collapses whitespace.
 pub struct BasicExtractor {
@@ -179,6 +195,130 @@ impl ContentExtractor for BasicExtractor {
     }
 }
 
+
+/// Split text into sentences on ., !, ? followed by whitespace or end-of-string.
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        current.push(ch);
+        if ch == '.' || ch == '!' || ch == '?' {
+            let next = chars.get(i + 1).copied();
+            if next.is_none() || next.is_some_and(|c| c.is_whitespace()) {
+                let trimmed = current.trim().to_owned();
+                if !trimmed.is_empty() {
+                    sentences.push(trimmed);
+                }
+                current.clear();
+            }
+        }
+        i += 1;
+    }
+    let trimmed = current.trim().to_owned();
+    if !trimmed.is_empty() {
+        sentences.push(trimmed);
+    }
+    sentences
+}
+
+/// Query-aware extractor: implements both ContentExtractor (delegating to
+/// BasicExtractor for the no-query path) and QueryAwareExtractor (scoring
+/// per-sentence keyword overlap with the query, keeping top N verbatim spans).
+pub struct QueryAwareBasicExtractor {
+    inner: BasicExtractor,
+}
+
+impl QueryAwareBasicExtractor {
+    pub fn new(extracted_at_ms: u64) -> Self {
+        Self {
+            inner: BasicExtractor::new(extracted_at_ms),
+        }
+    }
+}
+
+impl ContentExtractor for QueryAwareBasicExtractor {
+    fn extract(&self, html: &str, url: &str) -> Result<ExtractedContent, WebSearchError> {
+        self.inner.extract(html, url)
+    }
+}
+
+impl QueryAwareExtractor for QueryAwareBasicExtractor {
+    fn extract_query_aware(
+        &self,
+        html: &str,
+        url: &str,
+        query: &str,
+    ) -> Result<ExtractedContent, WebSearchError> {
+        let extracted = self.inner.extract(html, url)?;
+        if extracted.page_type == PageType::Empty {
+            return Ok(extracted);
+        }
+
+        let sentences = split_sentences(&extracted.text);
+        if sentences.is_empty() {
+            return Ok(extracted);
+        }
+
+        let query_terms: Vec<String> = query
+            .split_whitespace()
+            .map(|t| t.to_ascii_lowercase())
+            .collect();
+
+        let mut scored: Vec<(f64, &str)> = sentences
+            .iter()
+            .map(|s| {
+                let sentence_lower = s.to_ascii_lowercase();
+                let sentence_char_len = s.chars().count().max(1) as f64;
+                let mut score = 0.0_f64;
+                for term in &query_terms {
+                    let term_len = term.chars().count() as f64;
+                    let mut count = 0_usize;
+                    let mut search_from = 0_usize;
+                    while let Some(pos) = sentence_lower[search_from..].find(term.as_str()) {
+                        count += 1;
+                        search_from += pos + term.len();
+                        if search_from >= sentence_lower.len() {
+                            break;
+                        }
+                    }
+                    score += (count as f64) * term_len;
+                }
+                score /= sentence_char_len.sqrt();
+                (score, s.as_str())
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let has_scores = scored.iter().any(|(s, _)| *s > 0.0);
+        let selected: Vec<&str> = if has_scores {
+            scored
+                .into_iter()
+                .filter(|(s, _)| *s > 0.0)
+                .take(SPAN_BUDGET_SENTENCES)
+                .map(|(_, s)| s)
+                .collect()
+        } else {
+            sentences.iter().take(SPAN_BUDGET_SENTENCES).map(|s| s.as_str()).collect()
+        };
+
+        let compressed_text = selected.join(" ... ");
+        let word_count = compressed_text.split_whitespace().count();
+
+        Ok(ExtractedContent {
+            title: extracted.title,
+            text: compressed_text,
+            word_count,
+            page_type: extracted.page_type,
+            extracted_at: extracted.extracted_at,
+        })
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,4 +442,5 @@ mod tests {
 
     // Object-safety compile-time check.
     const _: Option<Box<dyn ContentExtractor>> = None;
+    const _: Option<Box<dyn QueryAwareExtractor>> = None;
 }

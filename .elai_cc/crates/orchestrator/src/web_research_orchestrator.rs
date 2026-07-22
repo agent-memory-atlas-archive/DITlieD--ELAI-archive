@@ -17,7 +17,7 @@ use elai_core::clock::ClockProvider;
 use elai_core::source_tier::SourceTier;
 use elai_knowledge::web_arag::{WebChunk, WebContentIndex};
 use elai_web_search::client::SearxClient;
-use elai_web_search::extractor::{BasicExtractor, ContentExtractor, PageType};
+use elai_web_search::extractor::{BasicExtractor, ContentExtractor, PageType, QueryAwareExtractor};
 use elai_web_search::fetcher::WebFetcher;
 use elai_web_search::source_quality::SourceQualityTable;
 use elai_web_search::{SearchError, SearchResult, WebSearchError};
@@ -169,7 +169,10 @@ pub struct WebResearchOrchestrator {
     /// uses this instead of web_fetcher. Only present with feature = "obscura".
     #[cfg(feature = "obscura")]
     obscura_fetcher: Option<elai_web_search::obscura_fetcher::ObscuraFetcher>,
-    extractor: BasicExtractor,
+    extractor: Box<dyn ContentExtractor>,
+    /// J-40 T1: optional query-aware extractor. When set, fetch_and_extract
+    /// calls extract_query_aware instead of extract.
+    query_aware_extractor: Option<Box<dyn QueryAwareExtractor>>,
     quality_table: SourceQualityTable,
     content_index: WebContentIndex,
     budget_manager: ResearchBudgetManager,
@@ -207,7 +210,8 @@ impl WebResearchOrchestrator {
             web_fetcher,
             #[cfg(feature = "obscura")]
             obscura_fetcher: None,
-            extractor,
+            extractor: Box::new(extractor),
+            query_aware_extractor: None,
             quality_table,
             content_index,
             budget_manager,
@@ -245,6 +249,14 @@ impl WebResearchOrchestrator {
     /// orchestrator progress to SSB `web_research_step` rows.
     pub fn with_step_emitter(mut self, emitter: Arc<dyn WebResearchStepEmitter>) -> Self {
         self.step_emitter = Some(emitter);
+        self
+    }
+
+    /// J-40 T1: attach a query-aware extractor. When set, fetch_and_extract
+    /// calls extract_query_aware with the formulated query instead of the
+    /// plain extract path.
+    pub fn with_query_aware_extractor(mut self, e: Box<dyn QueryAwareExtractor>) -> Self {
+        self.query_aware_extractor = Some(e);
         self
     }
 
@@ -428,7 +440,7 @@ impl WebResearchOrchestrator {
 
             for batch in to_fetch.chunks(batch_size) {
                 for result in batch {
-                    match self.fetch_and_extract(&result.url).await {
+                    match self.fetch_and_extract(&result.url, &query).await {
                         Ok((text, tier, ftag)) => {
                             last_fetcher = ftag;
                             // G-1 INGEST: a web-fetched page body is UNTRUSTED
@@ -757,6 +769,7 @@ impl WebResearchOrchestrator {
     pub async fn fetch_and_extract(
         &mut self,
         url: &str,
+        query: &str,
     ) -> Result<(String, SourceTier, &'static str), WebResearchOrchestratorError> {
         // G-3 EGRESS GATE: reject NUL/control-char host + pin the resolved IP
         // BEFORE connect (fail-closed).
@@ -772,7 +785,11 @@ impl WebResearchOrchestrator {
         #[cfg(not(feature = "obscura"))]
         let (page, fetcher_tag) = (self.web_fetcher.fetch(url).await?, "reqwest");
 
-        let extracted = self.extractor.extract(&page.html, url)?;
+        let extracted = if let Some(ref qe) = self.query_aware_extractor {
+            qe.extract_query_aware(&page.html, url, query)?
+        } else {
+            self.extractor.extract(&page.html, url)?
+        };
 
         if extracted.page_type == PageType::Empty {
             return Err(WebResearchOrchestratorError::FetchFailed(

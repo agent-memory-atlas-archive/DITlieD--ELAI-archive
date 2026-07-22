@@ -2206,7 +2206,7 @@ impl DefaultWebResearchRunner {
         use elai_core::source_tier::parse_source_tier_config;
         use elai_knowledge::web_arag::{WebAragConfig, WebContentIndex};
         use elai_web_search::client::SearxClient;
-        use elai_web_search::extractor::BasicExtractor;
+        use elai_web_search::extractor::{BasicExtractor, QueryAwareBasicExtractor, QueryAwareExtractor};
         use elai_web_search::fetcher::WebFetcher;
         use elai_web_search::source_quality::SourceQualityTable;
 
@@ -2215,6 +2215,7 @@ impl DefaultWebResearchRunner {
         let fetcher = WebFetcher::new(self.clock.clone())
             .map_err(|e| format!("web fetcher: {e}"))?;
         let extractor = BasicExtractor::new(0);
+        let query_aware = QueryAwareBasicExtractor::new(0);
         let tier_cfg = parse_source_tier_config(&self.tier_config_toml)
             .map_err(|e| format!("source tier config: {e}"))?;
         let quality = SourceQualityTable::new_from_config(tier_cfg);
@@ -2229,7 +2230,8 @@ impl DefaultWebResearchRunner {
             budget,
             self.tier_config.clone(),
             self.clock.clone(),
-        );
+        )
+        .with_query_aware_extractor(Box::new(query_aware));
 
         // D4: ELAI_FETCHER=obscura routes to the headless-browser path.
         // Only available when compiled with the "obscura" feature.
