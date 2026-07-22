@@ -2278,3 +2278,62 @@ owner             = "maintainer"
 expiry_date       = "2026-10-22"
 promotion_plan_id = "J-24"
 smoke_test        = "crates/contracts/tests/j24_wire_dark_allowlist_rows.rs::both_rows_present_with_all_fields"
+
+# J-8 T7+T8 REGISTERED-DARK surface (owner R8 / D-174). Loaders ahead of J-9 consumer.
+# Marker already in vision_ladder.rs + prompt_shapes.rs; these rows carry owner/expiry/promotion.
+# Do NOT fake-wire a consumer. promotion_plan_id=J-9 (hardware catalog / vision-lane probe).
+[[flag]]
+name              = "WIRE-DARK[J-8]:vision_ladder::rows"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-22"
+promotion_plan_id = "J-9"
+smoke_test        = "crates/contracts/tests/j8_perception_upgrade_contract.rs::vision_ladder_rows_complete"
+
+[[flag]]
+name              = "WIRE-DARK[J-8]:vision_ladder::row_by_tier_key"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-22"
+promotion_plan_id = "J-9"
+smoke_test        = "crates/contracts/tests/j8_perception_upgrade_contract.rs::vision_ladder_sub_8gb_is_phi4"
+
+[[flag]]
+name              = "WIRE-DARK[J-8]:vision_ladder::fastvlm_row"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-22"
+promotion_plan_id = "J-9"
+smoke_test        = "crates/contracts/tests/j8_perception_upgrade_contract.rs::fastvlm_row_present_and_tagged"
+
+[[flag]]
+name              = "WIRE-DARK[J-8]:vision_ladder::local_rows_fitting_vram"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-22"
+promotion_plan_id = "J-9"
+smoke_test        = "crates/contracts/tests/j8_perception_upgrade_contract.rs::fastvlm_row_present_and_tagged"
+
+[[flag]]
+name              = "WIRE-DARK[J-8]:prompt_shapes::component_inventory_fields"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-22"
+promotion_plan_id = "J-9"
+smoke_test        = "crates/contracts/tests/j8_perception_upgrade_contract.rs::component_inventory_fields_exact_order"
+
+[[flag]]
+name              = "WIRE-DARK[J-8]:prompt_shapes::component_inventory_template"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-22"
+promotion_plan_id = "J-9"
+smoke_test        = "crates/contracts/tests/j8_perception_upgrade_contract.rs::component_inventory_template_contains_all_fields"
+
+[[flag]]
+name              = "WIRE-DARK[J-8]:prompt_shapes::moai_citation"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-22"
+promotion_plan_id = "J-9"
+smoke_test        = "crates/contracts/tests/j8_perception_upgrade_contract.rs::moai_citation_contains_arxiv_id"
