@@ -1625,6 +1625,11 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // Emitted by `emit_node_admission_event` (node_admission.rs) at the
     // task_runner SPLIT_TASK phase_sizing branch.
     SsbActionType::NodeAdmissionEvent(NodeAdmissionEventKind::Admitted),
+    // J-31: system-composition canvas event. Pattern-2 flat variant; 4-arm
+    // SystemContractEventKind rides in the payload. Emitted by
+    // emit_system_contract_event (system_contract_event.rs) at the canvas
+    // bind_node/declare_edge ops + the auditor verdict tick.
+    SsbActionType::SystemContractEvent(SystemContractEventKind::NodeBound),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

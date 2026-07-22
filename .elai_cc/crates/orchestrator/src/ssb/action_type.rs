@@ -4867,6 +4867,11 @@ pub enum SsbActionType {
     /// `emit_node_admission_event` (node_admission.rs) at the task_runner
     /// SPLIT_TASK phase_sizing branch.
     NodeAdmissionEvent(NodeAdmissionEventKind),
+    /// J-31 system-canvas event. Carries a [`SystemContractEventPayload`];
+    /// the [`crate::ssb::SystemContractEventKind`] discriminator (NodeBound /
+    /// EdgeDeclared / EdgeVerdict / NodeDrifted) rides inside the payload.
+    /// Emitted by `emit_system_contract_event` (system_contract_event.rs).
+    SystemContractEvent(SystemContractEventKind),
 }
 
 impl SsbActionType {
@@ -5830,6 +5835,7 @@ impl SsbActionType {
             Self::IntentControlEvent(_) => "intent_control_event",
             // J-39 T2: node admission gate event. Flat variant, Kind rides in the payload.
             Self::NodeAdmissionEvent(_) => "node_admission_event",
+            Self::SystemContractEvent(_) => "system_contract_event",
         }
     }
 }
@@ -6726,6 +6732,9 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // J-39 T2: node admission gate event. Flat variant; Kind rides in the payload.
         "node_admission_event" => Ok(SsbActionType::NodeAdmissionEvent(
             NodeAdmissionEventKind::Admitted,
+        )),
+        "system_contract_event" => Ok(SsbActionType::SystemContractEvent(
+            SystemContractEventKind::NodeBound,
         )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }

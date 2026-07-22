@@ -5558,7 +5558,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- 3-arm NodeAdmissionEventKind rides in the payload. Emitted by
         -- emit_node_admission_event (node_admission.rs) at the task_runner
         -- SPLIT_TASK phase_sizing branch.
-        'node_admission_event'
+        'node_admission_event',
+        -- J-31: system-composition canvas event. Pattern-2 flat variant;
+        -- 4-arm SystemContractEventKind rides in the payload. Emitted by
+        -- emit_system_contract_event (system_contract_event.rs).
+        'system_contract_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

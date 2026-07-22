@@ -1119,6 +1119,18 @@ pub async fn frame_idea(
         .await;
     }
 
+    if let Some(writer) = ssb {
+        crate::system_contract_event::emit_system_contract_event(
+            writer,
+            crate::ssb::SystemContractEventKind::NodeBound,
+            "idea-framing-node",
+            "draft",
+            "",
+            "",
+            serde_json::json!({"session_id": session_id, "phase": "idea_framing"}),
+        );
+    }
+
     // Classification
     let (class, matched) = classify_project_class_with_pattern(trimmed);
     debug!(?class, matched=?matched, "classified project class");

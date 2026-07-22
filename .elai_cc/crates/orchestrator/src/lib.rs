@@ -2565,6 +2565,9 @@ pub use node_admission::admission_ceiling_threshold;
 pub use node_admission::derive_cone_token_floor;
 pub use node_admission::emit_node_admission_event;
 
+pub mod system_contract_event;
+pub use system_contract_event::emit_system_contract_event;
+
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();

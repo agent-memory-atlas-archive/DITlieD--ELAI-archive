@@ -528,6 +528,7 @@ symbol_graph_queried
 symbol_graph_updated
 symbol_query
 symbolic_conflict_detected
+system_contract_event
 system_probe
 taint_flow
 task_advanced

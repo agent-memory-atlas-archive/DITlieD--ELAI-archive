@@ -3894,6 +3894,18 @@ use crate::gate::RiskLevel;
                     }),
                     ts_ms: 1_700_000_000_000,
                 }),
+            SsbActionType::SystemContractEvent(_) =>
+                SsbPayload::SystemContractEvent(SystemContractEventPayload {
+                    kind: SystemContractEventKind::NodeBound,
+                    node_id: "j31-test-node".into(),
+                    binding_kind: "plan_unit".into(),
+                    binding_ref: "concept-2.phase-1".into(),
+                    verdict: String::new(),
+                    details_json: serde_json::json!({
+                        "display": "Market Data Layer",
+                    }),
+                    ts_ms: 1_700_000_000_000,
+                }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload
@@ -8673,6 +8685,17 @@ use crate::gate::RiskLevel;
                 }),
                 ts_ms: 1_700_000_000_000,
             }),
+            SsbPayload::SystemContractEvent(SystemContractEventPayload {
+                kind: SystemContractEventKind::NodeBound,
+                node_id: "j31-test-node".into(),
+                binding_kind: "plan_unit".into(),
+                binding_ref: "concept-2.phase-1".into(),
+                verdict: String::new(),
+                details_json: serde_json::json!({
+                    "display": "Market Data Layer",
+                }),
+                ts_ms: 1_700_000_000_000,
+            }),
         ]
     }
 
@@ -8684,8 +8707,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            494,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent",
+            495,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

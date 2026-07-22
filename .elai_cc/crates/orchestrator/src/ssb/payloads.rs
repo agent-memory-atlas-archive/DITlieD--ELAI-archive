@@ -3978,6 +3978,8 @@ pub enum SsbPayload {
     /// Emitted by `emit_node_admission_event` (node_admission.rs) at the
     /// task_runner SPLIT_TASK phase_sizing branch after estimate+split.
     NodeAdmissionEvent(NodeAdmissionEventPayload),
+    /// J-31 system-canvas event. Carries a [`SystemContractEventPayload`].
+    SystemContractEvent(SystemContractEventPayload),
 }
 
 impl SsbPayload {
@@ -4816,6 +4818,8 @@ impl SsbPayload {
                 SsbActionType::IntentControlEvent(p.kind),
             Self::NodeAdmissionEvent(ref p) =>
                 SsbActionType::NodeAdmissionEvent(p.kind),
+            Self::SystemContractEvent(ref p) =>
+                SsbActionType::SystemContractEvent(p.kind),
         }
     }
 }
@@ -21542,5 +21546,51 @@ pub struct NodeAdmissionEventPayload {
     /// `should_split` (bool), `sub_count` (usize).
     pub details_json: serde_json::Value,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-31: SystemContractEvent substrate (system-composition canvas telemetry)
+// ---------------------------------------------------------------------------
+
+/// J-31 -- 4-arm discriminator carried by [`SystemContractEventPayload::kind`].
+/// - `NodeBound`: a canvas node was bound to a plan-unit/contract/mcp/draft.
+/// - `EdgeDeclared`: an edge contract was declared (not yet checked).
+/// - `EdgeVerdict`: a verdict was derived for an edge (checker-driven, TD-3).
+/// - `NodeDrifted`: a blast-radius cone touched the node's bound symbols.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemContractEventKind {
+    NodeBound,
+    EdgeDeclared,
+    EdgeVerdict,
+    NodeDrifted,
+}
+
+impl SystemContractEventKind {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NodeBound => "node_bound",
+            Self::EdgeDeclared => "edge_declared",
+            Self::EdgeVerdict => "edge_verdict",
+            Self::NodeDrifted => "node_drifted",
+        }
+    }
+}
+
+/// J-31 -- payload for [`SsbActionType::SystemContractEvent`].
+/// Pattern-2 single-variant; 4-arm Kind rides in `kind`. The LLM NEVER sets
+/// `verdict` (TD-3); verdicts derive from checker output. Does NOT derive Eq
+/// (details_json may carry NaN-not-equal values).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemContractEventPayload {
+    pub kind: SystemContractEventKind,
+    pub node_id: String,
+    pub binding_kind: String,
+    pub binding_ref: String,
+    pub verdict: String,
+    pub details_json: serde_json::Value,
     pub ts_ms: i64,
 }
