@@ -202,11 +202,7 @@ impl TaskSplitter for DefaultPhaseSizingSplitter {
         // Default budget used when estimate_complexity is called without a
         // paired split call. The split call below re-evaluates against the
         // caller-supplied budget and may flip the verdict.
-        // NARROWING-OK: f32->u32; no TryFrom<f32> in std; result is clamped by
-        // DEFAULT_TOKEN_BUDGET which is well within u32::MAX.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let threshold =
-            ((DEFAULT_TOKEN_BUDGET as f32) * self.budget_ratio) as u32;
+        let threshold = crate::node_admission::admission_ceiling_threshold(self.budget_ratio);
         let should_split = token_estimate > threshold
             && target.current_depth < self.max_depth;
         ComplexityEstimate {
@@ -215,6 +211,7 @@ impl TaskSplitter for DefaultPhaseSizingSplitter {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn split(&self, target: &SplitTarget, budget: u32) -> Vec<SubTaskSpec> {
         // Gate 1: already at (or past) the depth cap. 4G spec: max depth 2.
         if target.current_depth >= self.max_depth {
@@ -225,10 +222,11 @@ impl TaskSplitter for DefaultPhaseSizingSplitter {
         // caller-supplied budget. Cheap early-exit keeps the happy path
         // (small tasks) allocation-free.
         let token_estimate = Self::estimate_tokens(target);
-        // NARROWING-OK: f32->u32; no TryFrom<f32> in std; budget is u32 so (budget as f32)*ratio
-        // stays within u32::MAX range for any ratio in [0.0, 1.0].
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let threshold = ((budget as f32) * self.budget_ratio) as u32;
+        let threshold = if budget == DEFAULT_TOKEN_BUDGET {
+            crate::node_admission::admission_ceiling_threshold(self.budget_ratio)
+        } else {
+            ((budget as f32) * self.budget_ratio) as u32
+        };
         if token_estimate <= threshold {
             return Vec::new();
         }
@@ -340,7 +338,7 @@ mod tests {
         let target = SplitTarget {
             step_id: "big".into(),
             summary: "large step".into(),
-            estimated_tokens: 8_000,
+            estimated_tokens: 20_000,
             input_contracts: (0..5)
                 .map(|i| cref(&format!("i{i}")))
                 .collect(),

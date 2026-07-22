@@ -2548,6 +2548,9 @@ pub use prompt_artifacts::{
     promote_variant, rollback_on_regression, run_transfer_gap_fixture, TransferGapResult,
 };
 
+pub mod node_admission;
+pub use node_admission::admission_ceiling_threshold;
+
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
