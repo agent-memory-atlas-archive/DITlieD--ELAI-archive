@@ -29,6 +29,7 @@
 pub mod preprocess;
 pub mod router;
 pub mod scaffold;
+pub mod sweet_spot;
 
 // Re-exports — the dispatch seam imports these directly.
 pub use scaffold::{

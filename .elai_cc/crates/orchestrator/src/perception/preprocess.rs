@@ -33,21 +33,25 @@ pub enum TargetModel {
 }
 
 impl TargetModel {
+    /// String key used to look up this model in the sweet-spot table
+    /// (`data/perception/sweet_spots.toml`).
+    #[must_use]
+    pub fn as_key(self) -> &'static str {
+        match self {
+            TargetModel::Claude => "claude",
+            TargetModel::Gpt => "gpt",
+            TargetModel::QwenVl => "qwen_vl",
+        }
+    }
+
     /// Return the longest-side sweet-spot edge in pixels for this target
     /// model. EXTERNAL SRC-3 / HD-1 — design rationale only; the J-1
     /// measurement fixtures (T7) record ELAI-measured deltas, not these
     /// pinned rationale values.
-    // WIRE-DARK[J-1]
     #[must_use]
     pub fn sweet_spot_longest_side_px(self) -> u32 {
-        match self {
-            // EXTERNAL SRC-3 — design rationale, not a measured claim.
-            TargetModel::Claude => 1568,
-            // EXTERNAL SRC-3 — design rationale, not a measured claim.
-            TargetModel::Gpt => 2048,
-            // EXTERNAL SRC-3 — design rationale, not a measured claim.
-            TargetModel::QwenVl => 1280,
-        }
+        super::sweet_spot::longest_side_px(self.as_key())
+            .unwrap_or(0)
     }
 
     /// Default target model used by [`PreprocessSpec::default`]. Claude
@@ -119,6 +123,10 @@ pub struct PreprocessResult {
     pub conditioned_bytes: Vec<u8>,
     /// Longest-side pixel edge applied (Preprocessed) or 0 otherwise.
     pub longest_side_px: u32,
+    /// Whether the target model uses native-resolution passthrough (no
+    /// resize). When true, `longest_side_px` is informational only (the
+    /// table value, not a resize target).
+    pub native_res: bool,
 }
 
 /// Perception-module error type. thiserror — never `Box<dyn Error>`
@@ -158,14 +166,18 @@ pub fn preprocess(spec: &PreprocessSpec, image_bytes: &[u8]) -> Result<Preproces
             outcome: PreprocessOutcome::NoImagePresent,
             conditioned_bytes: Vec::new(),
             longest_side_px: 0,
+            native_res: false,
         });
     }
     // T1 skeleton — T5 wires the live sidecar resize + JPEG + tile +
     // thumbnail. Until then, degrade to passthrough (never a silent
     // downscale fallthrough — plan stub_ban).
+    let longest_side_px = spec.target_model.sweet_spot_longest_side_px();
+    let native_res = super::sweet_spot::native_res(spec.target_model.as_key()).unwrap_or(false);
     Ok(PreprocessResult {
         outcome: PreprocessOutcome::DegradedPassthrough,
         conditioned_bytes: image_bytes.to_vec(),
-        longest_side_px: 0,
+        longest_side_px,
+        native_res,
     })
 }
