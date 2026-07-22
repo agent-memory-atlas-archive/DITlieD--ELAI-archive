@@ -38,7 +38,8 @@ pub use scaffold::{
     ScaffoldOutcome, ScaffoldResult,
 };
 pub use router::{
-    classify_prompt, route, RouterDecision, RouterInput, RouterType,
+    classify_prompt, route, route_outcome, RouteOutcome, RouterDecision, RouterInput, RouterType,
+    MICRO_TEXT_CONFIDENCE_FLOOR, MULTI_IMAGE_MIN_COUNT,
 };
 
 /// Environment-variable name that gates production dispatch through the

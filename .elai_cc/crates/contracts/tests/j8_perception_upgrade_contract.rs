@@ -31,6 +31,10 @@ use elai_orchestrator::perception::{
     apply_schema_v2, coords_within_schema_v2, elements_pass_schema_v2, scaffold_with_call1,
     LiteralElement, SchemaV2Verdict, ScaffoldInput, ScaffoldOutcome,
 };
+use elai_orchestrator::perception::router::{
+    route_outcome, RouterDecision, RouterInput, RouterType, DEFAULT_COUNTING_THRESHOLD,
+    MULTI_IMAGE_MIN_COUNT,
+};
 
 // ---------------------------------------------------------------------------
 // (1) TargetModel::sweet_spot_longest_side_px delegates to the toml table.
@@ -284,4 +288,162 @@ fn scaffold_from_prompt_still_degraded_passthrough() {
         .expect("scaffold should not error on image-present stub");
     assert_eq!(result.outcome, ScaffoldOutcome::DegradedPassthrough);
     assert!(result.literal_elements.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// J-8 T4: multi-image + micro-text routing contract (VR-4/VR-5).
+//
+// All tests below call the SAME production fn: `route_outcome`. They do NOT
+// reimplement the branch in the test body and do NOT grep source text.
+//
+// FALSIFICATION MUTATION (for the orchestrator / auditor to verify):
+//   Inside `route_outcome`, delete the
+//   `image_count >= MULTI_IMAGE_MIN_COUNT` guard arm (comment it out or
+//   force fallthrough to the Counting/MicroText/Normal arms). Cases (a)
+//   and (g-multi) below will go RED because the decision will be
+//   Passthrough/TypedRefusal instead of RouteToTiledComposite. Restoring
+//   the guard makes them GREEN again.
+//
+// UNCOVERED MUTATIONS (named for the orchestrator):
+//   * Live InferRequest frame is text-only: production sets image_count
+//     to 0 or 1 (never >= 2) today, so the tiled-composite arm is NOT
+//     exercised in production until multi-image frames are wired.
+//   * B-24 Mode B / live tiler dispatch is NOT wired this slice; the
+//     RouteToTiledComposite arm emits Kind+residue SSB fields only.
+//   * Production's `route_outcome` call site SSB payload fields (kind,
+//     residue) are not asserted by a contract test this slice (no SSB
+//     assertion contract exists for the production gate emit).
+// ---------------------------------------------------------------------------
+
+// (a) image_count=2, Normal, has_image=true -> RouteToTiledComposite
+#[test]
+fn multi_image_normal_routes_to_tiled_composite() {
+    let input = RouterInput {
+        router_type: RouterType::Normal,
+        has_image: true,
+        image_path: None,
+        reference_path: None,
+        image_count: MULTI_IMAGE_MIN_COUNT,
+        micro_text_confidence: None,
+    };
+    let outcome = route_outcome(&input);
+    assert_eq!(outcome.decision, RouterDecision::RouteToTiledComposite);
+    assert_eq!(outcome.kind, "tiled_composite");
+    assert!(outcome.residue.is_some());
+}
+
+// (b) image_count=1, Normal -> Passthrough (single-image differs from (a))
+#[test]
+fn single_image_normal_routes_to_passthrough() {
+    let input = RouterInput {
+        router_type: RouterType::Normal,
+        has_image: true,
+        image_path: None,
+        reference_path: None,
+        image_count: 1,
+        micro_text_confidence: None,
+    };
+    let outcome = route_outcome(&input);
+    assert_eq!(outcome.decision, RouterDecision::Passthrough);
+    assert_eq!(outcome.kind, "passthrough");
+    assert!(outcome.residue.is_none());
+}
+
+// (c) MicroText, confidence=None -> RouteToTiling + micro_text_tiling residue
+#[test]
+fn micro_text_no_confidence_routes_to_tiling() {
+    let input = RouterInput {
+        router_type: RouterType::MicroText,
+        has_image: true,
+        image_path: None,
+        reference_path: None,
+        image_count: 0,
+        micro_text_confidence: None,
+    };
+    let outcome = route_outcome(&input);
+    assert_eq!(outcome.decision, RouterDecision::RouteToTiling);
+    assert_eq!(outcome.kind, "micro_text_tiling");
+    assert!(outcome.residue.is_some());
+}
+
+// (d) MicroText, confidence=Some(0.1) -> TypedRefusal + micro_text_typed_refusal residue
+#[test]
+fn micro_text_low_confidence_routes_to_typed_refusal() {
+    let input = RouterInput {
+        router_type: RouterType::MicroText,
+        has_image: true,
+        image_path: None,
+        reference_path: None,
+        image_count: 0,
+        micro_text_confidence: Some(0.1),
+    };
+    let outcome = route_outcome(&input);
+    assert_eq!(outcome.decision, RouterDecision::TypedRefusal);
+    assert_eq!(outcome.kind, "micro_text_typed_refusal");
+    assert!(outcome.residue.is_some());
+}
+
+// (e) MicroText, confidence=Some(0.9) -> RouteToTiling
+#[test]
+fn micro_text_high_confidence_routes_to_tiling() {
+    let input = RouterInput {
+        router_type: RouterType::MicroText,
+        has_image: true,
+        image_path: None,
+        reference_path: None,
+        image_count: 0,
+        micro_text_confidence: Some(0.9),
+    };
+    let outcome = route_outcome(&input);
+    assert_eq!(outcome.decision, RouterDecision::RouteToTiling);
+    assert_eq!(outcome.kind, "micro_text_tiling");
+}
+
+// (f) VisualDiff with both paths still RouteToPixelDiff even if image_count=2
+#[test]
+fn visual_diff_wins_over_multi_image() {
+    let input = RouterInput {
+        router_type: RouterType::VisualDiff,
+        has_image: true,
+        image_path: Some(std::path::PathBuf::from("/tmp/a.png")),
+        reference_path: Some(std::path::PathBuf::from("/tmp/b.png")),
+        image_count: MULTI_IMAGE_MIN_COUNT,
+        micro_text_confidence: None,
+    };
+    let outcome = route_outcome(&input);
+    assert_eq!(outcome.decision, RouterDecision::RouteToPixelDiff);
+    assert_eq!(outcome.kind, "pixel_diff");
+    assert!(outcome.residue.is_none());
+}
+
+// (g) Counting threshold>=10 with image_count=1 -> TypedRefusal;
+//     with image_count=2 -> RouteToTiledComposite (multi-image wins)
+#[test]
+fn counting_threshold_with_and_without_multi_image() {
+    let input_single = RouterInput {
+        router_type: RouterType::Counting {
+            threshold: DEFAULT_COUNTING_THRESHOLD,
+        },
+        has_image: true,
+        image_path: None,
+        reference_path: None,
+        image_count: 1,
+        micro_text_confidence: None,
+    };
+    let outcome_single = route_outcome(&input_single);
+    assert_eq!(outcome_single.decision, RouterDecision::TypedRefusal);
+
+    let input_multi = RouterInput {
+        router_type: RouterType::Counting {
+            threshold: DEFAULT_COUNTING_THRESHOLD,
+        },
+        has_image: true,
+        image_path: None,
+        reference_path: None,
+        image_count: MULTI_IMAGE_MIN_COUNT,
+        micro_text_confidence: None,
+    };
+    let outcome_multi = route_outcome(&input_multi);
+    assert_eq!(outcome_multi.decision, RouterDecision::RouteToTiledComposite);
+    assert_eq!(outcome_multi.kind, "tiled_composite");
 }

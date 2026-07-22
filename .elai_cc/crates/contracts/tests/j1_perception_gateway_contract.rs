@@ -136,6 +136,8 @@ fn visual_diff_routes_to_pixel_diff_when_paths_present() {
         has_image: true,
         image_path: Some(std::path::PathBuf::from("/tmp/a.png")),
         reference_path: Some(std::path::PathBuf::from("/tmp/b.png")),
+        image_count: 0,
+        micro_text_confidence: None,
     };
     let decision = route(&input);
     assert_eq!(decision, RouterDecision::RouteToPixelDiff);
@@ -157,6 +159,8 @@ fn over_limit_counting_returns_typed_refusal() {
         has_image: true,
         image_path: None,
         reference_path: None,
+        image_count: 0,
+        micro_text_confidence: None,
     };
     assert_eq!(route(&input), RouterDecision::TypedRefusal);
 }
@@ -172,6 +176,8 @@ fn counting_below_threshold_routes_to_tiling() {
         has_image: true,
         image_path: None,
         reference_path: None,
+        image_count: 0,
+        micro_text_confidence: None,
     };
     assert_eq!(route(&input), RouterDecision::RouteToTiling);
 }
@@ -211,6 +217,8 @@ fn visual_diff_degrades_to_passthrough_when_paths_missing() {
         has_image: true,
         image_path: Some(std::path::PathBuf::from("/tmp/a.png")),
         reference_path: None,
+        image_count: 0,
+        micro_text_confidence: None,
     };
     assert_eq!(route(&input_one), RouterDecision::DegradedPassthrough);
 }

@@ -33,6 +33,15 @@ use serde::{Deserialize, Serialize};
 /// constant — no magic number (anti-stale-training rule).
 pub const DEFAULT_COUNTING_THRESHOLD: u32 = 10;
 
+/// Minimum image count that triggers tiled-composite routing (VR-4: N>1
+/// evidence images escalate to tiled-composite).
+pub const MULTI_IMAGE_MIN_COUNT: u32 = 2;
+
+/// Confidence floor for micro-text routing (VR-5). When a confidence score
+/// is present and below this floor, the router returns typed refusal
+/// instead of tiling.
+pub const MICRO_TEXT_CONFIDENCE_FLOOR: f32 = 0.5;
+
 /// Router type — the hard-limit routing table discriminator. Derived from
 /// the dispatch prompt via the deterministic keyword heuristic
 /// [`classify_prompt`] (no model call — controller decision 4).
@@ -64,7 +73,7 @@ impl Default for RouterType {
 /// this from the prompt + the optional image / reference paths (controller
 /// decision 5: `image_path` + `reference_path` are `Option<PathBuf>`,
 /// serde-defaulted `None`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RouterInput {
     pub router_type: RouterType,
     /// True when the prompt carries an image marker (reuses
@@ -79,12 +88,26 @@ pub struct RouterInput {
     /// against).
     #[serde(default)]
     pub reference_path: Option<PathBuf>,
+    /// Number of evidence images in the frame (VR-4). 0 = unknown / absent;
+    /// >= [`MULTI_IMAGE_MIN_COUNT`] triggers tiled-composite routing.
+    #[serde(default = "default_image_count")]
+    pub image_count: u32,
+    /// Optional confidence score for micro-text routing (VR-5). When
+    /// `Some(c)` and `c < MICRO_TEXT_CONFIDENCE_FLOOR`, the router
+    /// returns typed refusal instead of tiling. `None` = no confidence
+    /// signal available, tiling proceeds.
+    #[serde(default)]
+    pub micro_text_confidence: Option<f32>,
+}
+
+fn default_image_count() -> u32 {
+    0
 }
 
 impl RouterInput {
     /// Construct a [`RouterInput`] with `image_path` + `reference_path`
-    /// set to `None` (the common case at the dispatch gate — the runtime
-    /// InferRequest frame is text-only today).
+    /// set to `None` and `image_count` set to 0 (the common case at the
+    /// dispatch gate — the runtime InferRequest frame is text-only today).
     #[must_use]
     pub fn new(router_type: RouterType, has_image: bool) -> Self {
         Self {
@@ -92,6 +115,8 @@ impl RouterInput {
             has_image,
             image_path: None,
             reference_path: None,
+            image_count: 0,
+            micro_text_confidence: None,
         }
     }
 }
@@ -111,6 +136,10 @@ pub enum RouterDecision {
     /// Counting-below-threshold / micro-text intent — route to tiling
     /// (overlapping tiles + a global thumbnail). T5 wires the live tiler.
     RouteToTiling,
+    /// Multi-image N>1 intent (VR-4) — route to tiled-composite. The
+    /// gate site emits the routing Kind + GD-5 residue; live B-24 Mode B
+    /// dispatch is NOT wired this slice.
+    RouteToTiledComposite,
     /// Counting-at-or-above-threshold intent — typed refusal (D-16
     /// refusal target, never a guess). The gate site returns
     /// `RefusalDecision::Abstain` with `reason=None` (controller decision
@@ -183,41 +212,102 @@ pub fn classify_prompt(prompt: &str) -> RouterType {
     RouterType::Normal
 }
 
-/// Run the hard-limit router on `input`. SYNC — returns a
-/// [`RouterDecision`] only (controller decision 1). The async pixel-diff
-/// dispatch (`ImageValidator::validate().await`) runs at the gate site
-/// (`handle_infer_request`), NOT here.
+/// Shared routing outcome — the decision plus a stable routing Kind string
+/// and an optional GD-5 honest residue note. Contracts and the production
+/// gate call [`route_outcome`] (the SAME fn) so there is one source of truth
+/// for the routing decision + Kind + residue.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteOutcome {
+    pub decision: RouterDecision,
+    pub kind: &'static str,
+    pub residue: Option<&'static str>,
+}
+
+/// Run the hard-limit router on `input` and return the decision + routing
+/// Kind + GD-5 residue. SYNC — model-free (controller decision 4).
 ///
-/// Per-variant logic:
-///   * [`RouterType::VisualDiff`] -> [`RouterDecision::RouteToPixelDiff`]
-///     when both `image_path` + `reference_path` are present; else
-///     [`RouterDecision::DegradedPassthrough`] (no file to diff — never a
-///     VLM, never a silent fallthrough).
-///   * [`RouterType::Counting { threshold }`] -> [`RouterDecision::TypedRefusal`]
-///     when `threshold >= DEFAULT_COUNTING_THRESHOLD` (counting > 10 ->
-///     typed refusal, D-16); else [`RouterDecision::RouteToTiling`].
-///   * [`RouterType::MicroText`] -> [`RouterDecision::RouteToTiling`].
-///   * [`RouterType::Normal`] -> [`RouterDecision::Passthrough`].
+/// Priority (deterministic):
+///   a. `VisualDiff` — paths present -> `RouteToPixelDiff`; else
+///      `DegradedPassthrough`. residue None.
+///   b. `image_count >= MULTI_IMAGE_MIN_COUNT` -> `RouteToTiledComposite`,
+///      kind `"tiled_composite"`, residue naming VR-14 + Mode B not wired.
+///      Multi-image wins over Counting / MicroText / Normal.
+///   c. `Counting { threshold }` — threshold >= DEFAULT -> `TypedRefusal`;
+///      else `RouteToTiling`. residue None.
+///   d. `MicroText` — confidence Some(c) && c < floor -> `TypedRefusal`
+///      (VR-5); else `RouteToTiling`. residue names VR-5.
+///   e. `Normal` -> `Passthrough`. residue None.
 #[must_use]
-pub fn route(input: &RouterInput) -> RouterDecision {
+pub fn route_outcome(input: &RouterInput) -> RouteOutcome {
     match input.router_type {
         RouterType::VisualDiff => {
             if input.image_path.is_some() && input.reference_path.is_some() {
-                RouterDecision::RouteToPixelDiff
+                RouteOutcome {
+                    decision: RouterDecision::RouteToPixelDiff,
+                    kind: "pixel_diff",
+                    residue: None,
+                }
             } else {
-                // Missing paths — degrade to passthrough (never a VLM,
-                // never a silent fallthrough — plan stub_ban).
-                RouterDecision::DegradedPassthrough
+                RouteOutcome {
+                    decision: RouterDecision::DegradedPassthrough,
+                    kind: "degraded_passthrough",
+                    residue: None,
+                }
             }
         }
+        _ if input.image_count >= MULTI_IMAGE_MIN_COUNT => RouteOutcome {
+            decision: RouterDecision::RouteToTiledComposite,
+            kind: "tiled_composite",
+            residue: Some(
+                "[DESIGN] multi-image N>1 escalates to tiled-composite (VR-14); B-24 Mode B live dispatch not wired this slice",
+            ),
+        },
         RouterType::Counting { threshold } => {
             if threshold >= DEFAULT_COUNTING_THRESHOLD {
-                RouterDecision::TypedRefusal
+                RouteOutcome {
+                    decision: RouterDecision::TypedRefusal,
+                    kind: "counting_typed_refusal",
+                    residue: None,
+                }
             } else {
-                RouterDecision::RouteToTiling
+                RouteOutcome {
+                    decision: RouterDecision::RouteToTiling,
+                    kind: "counting_tiling",
+                    residue: None,
+                }
             }
         }
-        RouterType::MicroText => RouterDecision::RouteToTiling,
-        RouterType::Normal => RouterDecision::Passthrough,
+        RouterType::MicroText => {
+            if let Some(c) = input.micro_text_confidence {
+                if c < MICRO_TEXT_CONFIDENCE_FLOOR {
+                    return RouteOutcome {
+                        decision: RouterDecision::TypedRefusal,
+                        kind: "micro_text_typed_refusal",
+                        residue: Some(
+                            "[DESIGN] micro-text confidence below floor \u{2192} typed refusal (VR-5); no guess",
+                        ),
+                    };
+                }
+            }
+            RouteOutcome {
+                decision: RouterDecision::RouteToTiling,
+                kind: "micro_text_tiling",
+                residue: Some(
+                    "[DESIGN] micro-text \u{2192} tiling (VR-5); confidence absent or >= floor",
+                ),
+            }
+        }
+        RouterType::Normal => RouteOutcome {
+            decision: RouterDecision::Passthrough,
+            kind: "passthrough",
+            residue: None,
+        },
     }
+}
+
+/// Thin wrapper over [`route_outcome`] returning only the decision. Kept
+/// for backward compatibility with existing j1 callers.
+#[must_use]
+pub fn route(input: &RouterInput) -> RouterDecision {
+    route_outcome(input).decision
 }

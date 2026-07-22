@@ -1876,12 +1876,12 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                     has_image: perception::prompt_carries_image(&prompt),
                     image_path: None,
                     reference_path: None,
+                    image_count: if perception::prompt_carries_image(&prompt) { 1 } else { 0 },
+                    micro_text_confidence: None,
                 };
-                match perception::route(&router_input) {
+                let outcome = perception::route_outcome(&router_input);
+                match outcome.decision {
                     perception::RouterDecision::RouteToPixelDiff => {
-                        // J-1.T4 — emit RoutedToSpecialist (the router
-                        // dispatched to the B-24 Tier-1 pixel-diff veto
-                        // specialist arm). Non-fatal SSB write.
                         emit_perception_scaffold_event(
                             self.ssb.as_ref(),
                             &self.clock,
@@ -1889,19 +1889,13 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                             None,
                             serde_json::json!({
                                 "router_type": "visual_diff",
+                                "kind": outcome.kind,
                                 "image_path_present": router_input.image_path.is_some(),
                                 "reference_path_present": router_input.reference_path.is_some(),
+                                "residue": outcome.residue,
                             }),
                         )
                         .await;
-                        // Build a MediaValidationRequest for the B-24 Tier-1
-                        // pixel-diff veto. NEVER a VLM (plan stub_ban: Tier-1
-                        // veto is law). image_path / reference_path are None
-                        // at the text-only InferRequest frame today (W-7 fork
-                        // — InputContentBlock has no Image variant); the
-                        // router already returned DegradedPassthrough when
-                        // paths are missing, so this arm only fires when
-                        // paths are present (T5 wires the path extraction).
                         if let (Some(img_path), Some(ref_path)) =
                             (router_input.image_path.as_ref(), router_input.reference_path.as_ref())
                         {
@@ -1912,32 +1906,35 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                                 reference_path: Some(ref_path.clone()),
                                 mode: ValidationMode::Quick,
                                 output_dir: None,
-                                request_id: uuid::Uuid::new_v4(), // entropy-allow: per-request correlator, never byte-compared by replay
+                                request_id: uuid::Uuid::new_v4(),
                             };
                             let tier1 = ImageValidator::default();
                             let result = tier1
                                 .validate(&req, ToolCapabilityFlags::empty())
                                 .await;
                             if !result.pass {
-                                // B-24 Tier-1 veto — refuse, never route to a VLM.
                                 return InferOutcome::Failed(
                                     "perception_gateway: visual-diff pixel-diff veto (Tier-1 fail)"
                                         .to_string(),
                                 );
                             }
                         }
-                        // Paths missing or Tier-1 passed — fall through to
-                        // the scaffold gate (degrade-to-passthrough on
-                        // missing paths is handled by the router returning
-                        // DegradedPassthrough, which the _ arm below catches).
+                    }
+                    perception::RouterDecision::RouteToTiledComposite => {
+                        emit_perception_scaffold_event(
+                            self.ssb.as_ref(),
+                            &self.clock,
+                            crate::ssb::PerceptionScaffoldEventKind::RoutedToSpecialist,
+                            None,
+                            serde_json::json!({
+                                "kind": outcome.kind,
+                                "image_count": router_input.image_count,
+                                "residue": outcome.residue,
+                            }),
+                        )
+                        .await;
                     }
                     perception::RouterDecision::TypedRefusal => {
-                        // D-16 typed refusal — counting over hard limit
-                        // (deterministic, never a guess). Controller decision
-                        // 3: RefusalDecision::Abstain with reason=None (do
-                        // NOT extend RefusalReason). The literal return is
-                        // InferOutcome::Failed (the gate's return type);
-                        // RefusalDecision::Abstain is the semantic refusal.
                         let _refusal = RefusalDecision::Abstain;
                         return InferOutcome::Failed(
                             "perception_gateway: typed refusal (counting over hard limit, RefusalDecision::Abstain reason=None)"
@@ -1945,10 +1942,6 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                         );
                     }
                     perception::RouterDecision::DegradedPassthrough => {
-                        // J-1.T4 — emit DegradedPassthrough (the router could
-                        // not classify / specialist dispatch failed). The raw
-                        // image forwards UNCONDITIONED (never a silent
-                        // fallthrough, plan stub_ban). Non-fatal SSB write.
                         emit_perception_scaffold_event(
                             self.ssb.as_ref(),
                             &self.clock,
@@ -1957,14 +1950,13 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                             serde_json::json!({
                                 "source": "router",
                                 "reason": "router_degraded_passthrough",
+                                "kind": outcome.kind,
+                                "residue": outcome.residue,
                             }),
                         )
                         .await;
-                        // Fall through to the scaffold gate below.
                     }
                     _ => {
-                        // Passthrough / RouteToTiling: fall through to the
-                        // scaffold gate below (no specialist routing emit).
                     }
                 }
                 // J-1.T2 — scaffold gate (two-call flow structure, T5 wires
