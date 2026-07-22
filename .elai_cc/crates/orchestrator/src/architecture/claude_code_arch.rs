@@ -335,6 +335,7 @@ impl ClaudeCodeArchitectureEventKind {
 /// rationale; mirrors `RewardLadderEventPayload` / `SaasPriorArtEventPayload`
 /// shape exactly).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaudeCodeArchitectureEventPayload {
     /// Fire-point discriminator. See [`ClaudeCodeArchitectureEventKind`].
     pub kind: ClaudeCodeArchitectureEventKind,
