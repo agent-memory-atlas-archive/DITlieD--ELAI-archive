@@ -828,6 +828,8 @@ pub fn run() {
             commands::get_cloud_spend,
             // USAGE ROLLUP (J-29 SLICE-1: J-28 usage_ledger consumer)
             commands::get_usage_rollup,
+            // J-31 Unit 4a: system-composition canvas read (system_canvas consumer).
+            commands::get_system_canvas,
             // J-29 SLICE-2: backend cost + pricing rollups over J-28 ledger.
             commands::get_backend_cost_rollup,
             commands::get_pricing_rollup,

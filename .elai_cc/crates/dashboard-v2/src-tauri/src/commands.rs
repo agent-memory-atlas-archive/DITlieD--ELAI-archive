@@ -5705,6 +5705,27 @@ pub fn get_usage_rollup(
     Ok(UsageRollupResponseDto { rows: out })
 }
 
+/// J-31 Unit 4a: dashboard-facing read of the system-composition canvas.
+/// Calls `elai_orchestrator::system_canvas::get_system_canvas` which
+/// re-derives {nodes, edges} from SystemContractEvent SSB rows (the journal is
+/// the sole store, GD-2). Returns an empty canvas (default) when no SsbViewer
+/// is attached (browser-only dev mode) so SystemMode renders its empty state.
+/// The returned `SystemCanvas` serializes to the exact frontend shape in
+/// system_mode_fixtures.ts (camelCase/snake_case mixed keys handled in the DTO).
+#[tauri::command]
+pub fn get_system_canvas(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> CmdResult<elai_orchestrator::system_canvas::SystemCanvas> {
+    let limit = limit.unwrap_or(500).clamp(1, 5000);
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(elai_orchestrator::system_canvas::SystemCanvas::default());
+    };
+    let canvas = elai_orchestrator::system_canvas::get_system_canvas(viewer, limit)
+        .map_err(map_err)?;
+    Ok(canvas)
+}
+
 // ---------------------------------------------------------------------------
 // BACKEND COST ROLLUP (J-29 SLICE-2: aggregate BackendCostAccrued SSB rows)
 // ---------------------------------------------------------------------------
