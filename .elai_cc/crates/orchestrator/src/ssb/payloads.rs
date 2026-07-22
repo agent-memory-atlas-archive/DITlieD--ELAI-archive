@@ -3809,11 +3809,11 @@ pub enum SsbPayload {
     /// on the local dispatch path when prefix-KV eligibility is checked.
     /// TOTAL_VARIANTS 595 -> 596.
     LocalPrefixCacheEvent(LocalPrefixCacheEventPayload),
-    /// J-24 (SCHEMA_VERSION 287): behavior steering event. Flat
+    /// J-24 (SCHEMA_VERSION 288): behavior steering event. Flat
     /// variant (Pattern-2, mirrors ContextCalibrationEvent); the 3-arm
     /// [`BehaviorSteeringKind`] discriminator rides inside the payload.
     /// Emitted by `emit_behavior_steering_event` (behavior_steering_ssb.rs).
-    /// TOTAL_VARIANTS 595 -> 596.
+    /// TOTAL_VARIANTS 596 -> 597.
     BehaviorSteeringEvent(BehaviorSteeringEventPayload),
 }
 
