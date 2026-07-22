@@ -27,6 +27,7 @@
 //! covers every emit / dispatch site in this module; no per-fn env var.
 
 pub mod preprocess;
+pub mod prompt_shapes;
 pub mod router;
 pub mod scaffold;
 pub mod sweet_spot;

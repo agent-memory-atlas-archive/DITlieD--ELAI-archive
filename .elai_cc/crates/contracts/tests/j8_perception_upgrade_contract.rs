@@ -595,3 +595,71 @@ fn local_rows_zero_budget_is_empty() {
         "zero-budget query must return no rows"
     );
 }
+
+// ---------------------------------------------------------------------------
+// J-8 T7: prompt-shape library contract (VR-10 component-inventory + VR-6
+// MoAI citation).
+//
+// All tests below call the SAME production fns in
+// `elai_orchestrator::perception::prompt_shapes`:
+//   * `component_inventory_fields` — ordered field-key list
+//   * `component_inventory_template` — full template body
+//   * `moai_citation` — VR-6 citation string accessor
+//   * `MOAI_CITATION` — the const the accessor returns
+//
+// They do NOT reimplement the branch in the test body and do NOT grep
+// source text.
+//
+// FALSIFICATION MUTATION (for the orchestrator / auditor to verify):
+//   Change `MOAI_CITATION` to drop `arXiv:2403.07508` (or empty the string).
+//   Case (c) `moai_citation_contains_arxiv_id` will go RED because the
+//   string no longer contains the arXiv id. Restoring the const makes it
+//   GREEN again.
+//
+// UNCOVERED MUTATIONS (named for the orchestrator):
+//   * H-14 perception-prompt pipeline does not yet consume
+//     `component_inventory_template` or `moai_citation` (library export
+//     only this slice).
+//   * No scaffold/router/handle_infer_request production mount calls these
+//     fns; they are WIRE-DARK[J-8] by design until H-14 lands.
+// ---------------------------------------------------------------------------
+
+use elai_orchestrator::perception::prompt_shapes;
+
+// (a) component_inventory_fields() returns exactly the four keys in order
+#[test]
+fn component_inventory_fields_exact_order() {
+    let fields = prompt_shapes::component_inventory_fields();
+    assert_eq!(
+        fields,
+        &["type", "verbatim text", "hierarchy", "layout cues"]
+    );
+}
+
+// (b) component_inventory_template() contains each of the four field strings
+#[test]
+fn component_inventory_template_contains_all_fields() {
+    let template = prompt_shapes::component_inventory_template();
+    for &field in prompt_shapes::component_inventory_fields() {
+        assert!(
+            template.contains(field),
+            "template must contain field `{field}`"
+        );
+    }
+}
+
+// (c) moai_citation() equals MOAI_CITATION and contains both the arXiv id
+//     and "MoAI"
+#[test]
+fn moai_citation_contains_arxiv_id() {
+    let citation = prompt_shapes::moai_citation();
+    assert_eq!(citation, prompt_shapes::MOAI_CITATION);
+    assert!(
+        citation.contains("arXiv:2403.07508"),
+        "citation must contain the arXiv id"
+    );
+    assert!(
+        citation.contains("MoAI"),
+        "citation must contain MoAI"
+    );
+}
