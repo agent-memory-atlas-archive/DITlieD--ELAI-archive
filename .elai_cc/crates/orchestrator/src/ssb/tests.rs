@@ -3864,6 +3864,22 @@ use crate::gate::RiskLevel;
                     }),
                     ts_ms: 1_700_000_000_000,
                 }),
+            // J-35 (SCHEMA_VERSION 289): explicit arm so test_payload(IntentControlEvent)
+            // returns a real IntentControlEventPayload instead of falling to the wildcard.
+            SsbActionType::IntentControlEvent(_) =>
+                SsbPayload::IntentControlEvent(IntentControlEventPayload {
+                    kind: IntentControlKind::SpecReconstructed,
+                    spec_id: "j35-test-spec".into(),
+                    premise_flag_count: 0,
+                    route_decision: "proceed_under_assumptions".into(),
+                    assumption_count: 0,
+                    reversibility_class: "reversible".into(),
+                    gate_mode: "autonomous".into(),
+                    details_json: serde_json::json!({
+                        "goal": "test goal",
+                    }),
+                    ts_ms: 1_700_000_000_000,
+                }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload
@@ -8613,6 +8629,22 @@ use crate::gate::RiskLevel;
                 }),
                 ts_ms: 1_700_000_000_000,
             }),
+            // J-35 (SCHEMA_VERSION 289): one entry covers the variant (flat
+            // struct, Pattern-2 Kind on the payload). Round-trip through
+            // write_payload + read-back verifies the substrate.
+            SsbPayload::IntentControlEvent(IntentControlEventPayload {
+                kind: IntentControlKind::SpecReconstructed,
+                spec_id: "j35-test-spec".into(),
+                premise_flag_count: 0,
+                route_decision: "proceed_under_assumptions".into(),
+                assumption_count: 0,
+                reversibility_class: "reversible".into(),
+                gate_mode: "autonomous".into(),
+                details_json: serde_json::json!({
+                    "goal": "test goal",
+                }),
+                ts_ms: 1_700_000_000_000,
+            }),
         ]
     }
 
@@ -8624,8 +8656,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            492,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent",
+            493,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

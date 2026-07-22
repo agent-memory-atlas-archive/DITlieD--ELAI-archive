@@ -592,6 +592,17 @@ expiry_date       = "2026-09-01"
 promotion_plan_id = "B-40"
 smoke_test        = "crates/contracts/tests/idea_framing_contract.rs::contract_frame_idea_emits_all_5_ssb_action_types"
 
+# J-35: intent-control observe-only layer. Emits IntentControlEvent SSB rows
+# (SpecReconstructed, PremiseFlagged, RouteDecided, AssumptionLogged) before
+# decomposition. Never blocks research_decompose. promotion via J-35 Tier-2.
+[[flag]]
+name              = "ELAI_INTENT_CONTROL_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-31"
+promotion_plan_id = "J-35-promotion"
+smoke_test        = "crates/contracts/tests/j35_intent_control_contract.rs::contract_false_premise_emits_premise_flagged"
+
 # B-3: the `autonomous-mode` cargo feature (crates/dashboard-v2/src-tauri/
 # Cargo.toml:75) gates the AutoAdvanceStats Tauri command surface; the default
 # build emits a cfg(not(feature="autonomous-mode")) zeroed stub

@@ -5547,7 +5547,13 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- J-24 (SCHEMA_VERSION 288): behavior steering event.
         -- Pattern-2 flat variant; 3-arm BehaviorSteeringKind rides in the payload.
         -- Emitted by emit_behavior_steering_event (behavior_steering_ssb.rs).
-        'behavior_steering_event'
+        'behavior_steering_event',
+        -- J-35 intent-control layer: typed intent spec + premise-check +
+        -- route + journaled assumptions. Pattern-2 flat variant; 4-arm
+        -- IntentControlKind rides in the payload. Emitted by
+        -- run_intent_control (intent_control.rs) on the task-lane intake
+        -- before decomposition.
+        'intent_control_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

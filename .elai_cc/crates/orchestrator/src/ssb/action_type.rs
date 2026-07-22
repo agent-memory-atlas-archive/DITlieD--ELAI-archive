@@ -4848,6 +4848,17 @@ pub enum SsbActionType {
     /// `emit_behavior_steering_event` (behavior_steering_ssb.rs).
     /// TOTAL_VARIANTS 596 -> 597.
     BehaviorSteeringEvent(BehaviorSteeringKind),
+    /// J-35 intent-control layer: typed intent spec + premise-check +
+    /// route + journaled assumptions. Pattern-2 flat variant (mirrors
+    /// BehaviorSteeringEvent); the 4-arm
+    /// [`crate::ssb::IntentControlKind`] discriminator
+    /// (SpecReconstructed / PremiseFlagged / RouteDecided /
+    /// AssumptionLogged) rides inside
+    /// [`crate::ssb::IntentControlEventPayload::kind`]. Emitted by
+    /// `run_intent_control` (intent_control.rs) on the task-lane
+    /// intake before decomposition.
+    /// TOTAL_VARIANTS 597 -> 598.
+    IntentControlEvent(IntentControlKind),
 }
 
 impl SsbActionType {
@@ -5807,6 +5818,8 @@ impl SsbActionType {
             // J-24 (SCHEMA_VERSION 288): behavior steering event.
             // Flat variant, Kind rides in the payload.
             Self::BehaviorSteeringEvent(_) => "behavior_steering_event",
+            // J-35 intent-control layer: flat variant, Kind rides in the payload.
+            Self::IntentControlEvent(_) => "intent_control_event",
         }
     }
 }
@@ -6695,6 +6708,10 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // Flat variant; Kind rides in the payload, not the action type.
         "behavior_steering_event" => Ok(SsbActionType::BehaviorSteeringEvent(
             BehaviorSteeringKind::ObservationSizePreassessed,
+        )),
+        // J-35 intent-control layer: flat variant; Kind rides in the payload, not the action type.
+        "intent_control_event" => Ok(SsbActionType::IntentControlEvent(
+            IntentControlKind::SpecReconstructed,
         )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }

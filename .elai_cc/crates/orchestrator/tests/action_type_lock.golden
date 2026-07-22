@@ -269,6 +269,7 @@ insecure_rate_measured
 instructor_mode_activated
 integration_checkpoint_success
 intent_confirmed
+intent_control_event
 intent_routed
 intervention_request
 intervention_resolved

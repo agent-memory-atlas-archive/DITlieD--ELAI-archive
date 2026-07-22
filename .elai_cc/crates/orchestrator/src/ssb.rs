@@ -1611,6 +1611,14 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // `emit_behavior_steering_event` (behavior_steering_ssb.rs).
     // TOTAL_VARIANTS 596 -> 597.
     SsbActionType::BehaviorSteeringEvent(BehaviorSteeringKind::ObservationSizePreassessed),
+    // J-35 intent-control layer: typed intent spec + premise-check + route +
+    // journaled assumptions. Flat variant (Pattern-2, mirrors
+    // BehaviorSteeringEvent); the 4-arm IntentControlKind
+    // (SpecReconstructed / PremiseFlagged / RouteDecided / AssumptionLogged)
+    // rides inside the payload. Emitted by `run_intent_control`
+    // (intent_control.rs) on the task-lane intake before decomposition.
+    // TOTAL_VARIANTS 597 -> 598.
+    SsbActionType::IntentControlEvent(IntentControlKind::SpecReconstructed),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

@@ -258,6 +258,8 @@ pub mod github_pr;
 // FRAMING substate before Phase 4D Recursive Decomposition. Public surface
 // re-exported below (FramedIdea, ProjectClass, CriticCategory, etc.).
 pub mod idea_framing;
+// J-35 intent-control: observe-only premise-check + route + journaled assumptions.
+pub mod intent_control;
 // I-41: spec-time critique lenses (L1-L8). Advisory-only; zero path to any
 // accept/block verdict. Lens findings are surfaced to humans / plan-improvement
 // and emitted as CritiqueLensFinding SSB rows (advisory=true). Never imported

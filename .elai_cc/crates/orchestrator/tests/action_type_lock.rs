@@ -1579,6 +1579,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::LocalPrefixCacheEvent(_) => (),
         // J-24 (SCHEMA_VERSION 288): BehaviorSteeringEvent flat variant, Kind rides in the payload.
         SsbActionType::BehaviorSteeringEvent(_) => (),
+        // J-35 (SCHEMA_VERSION 289): IntentControlEvent flat variant, Kind rides in the payload.
+        SsbActionType::IntentControlEvent(_) => (),
     }
 }
 

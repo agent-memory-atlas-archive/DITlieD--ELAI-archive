@@ -6812,6 +6812,30 @@ async fn drive_task(
         }
     }
 
+    // J-35 intent-control: observe-only premise-check + route + journaled
+    // assumptions. Wire-dark by default; opt-in via
+    // ELAI_INTENT_CONTROL_ENABLE=1. Emits IntentControlEvent SSB rows
+    // (SpecReconstructed, PremiseFlagged, RouteDecided, AssumptionLogged)
+    // before decomposition. Never blocks research_decompose.
+    if crate::intent_control::intent_control_enabled() {
+        let ic_clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+        let ic_gate_mode = if let Some(ref gate) = resolved.autonomous_gate {
+            gate.mode().await
+        } else {
+            crate::autonomous_gate::GateMode::Interactive
+        };
+        let ic_risk = crate::gate::RiskLevel::Low;
+        crate::intent_control::run_intent_control(
+            task.task.as_str(),
+            writer,
+            ic_clock,
+            ic_gate_mode,
+            ic_risk,
+            project_dir.as_deref(),
+        )
+        .await;
+    }
+
     // C-41 sub-phase 5A: application-skill pre-classify hook.
     //
     // Wire-dark: gated by `ELAI_APPLICATION_SKILLS_ENABLE=1`. When enabled,

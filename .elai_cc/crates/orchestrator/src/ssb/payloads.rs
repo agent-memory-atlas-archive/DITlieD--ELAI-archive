@@ -3815,6 +3815,14 @@ pub enum SsbPayload {
     /// Emitted by `emit_behavior_steering_event` (behavior_steering_ssb.rs).
     /// TOTAL_VARIANTS 596 -> 597.
     BehaviorSteeringEvent(BehaviorSteeringEventPayload),
+    /// J-35 intent-control layer: typed intent spec + premise-check +
+    /// route + journaled assumptions. Flat variant (Pattern-2, mirrors
+    /// BehaviorSteeringEvent); the 4-arm [`IntentControlKind`]
+    /// discriminator rides inside the payload. Emitted by
+    /// `run_intent_control` (intent_control.rs) on the task-lane
+    /// intake before decomposition.
+    /// TOTAL_VARIANTS 597 -> 598.
+    IntentControlEvent(IntentControlEventPayload),
 }
 
 impl SsbPayload {
@@ -4649,6 +4657,8 @@ impl SsbPayload {
                 SsbActionType::LocalPrefixCacheEvent(p.kind),
             Self::BehaviorSteeringEvent(ref p) =>
                 SsbActionType::BehaviorSteeringEvent(p.kind),
+            Self::IntentControlEvent(ref p) =>
+                SsbActionType::IntentControlEvent(p.kind),
         }
     }
 }
@@ -20768,6 +20778,76 @@ pub struct BehaviorSteeringEventPayload {
     pub kind: BehaviorSteeringKind,
     /// Arm-specific details (JSON object). Carries per-arm scalars
     /// like `observation_tokens`, `steering_strength`, `effect_delta`.
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+/// J-35 intent-control layer -- 4-arm fire-point discriminator carried by
+/// [`IntentControlEventPayload::kind`] (Pattern-2 payload-field convention,
+/// mirrors BehaviorSteeringKind). The intent-control subsystem emits
+/// exactly one arm per event:
+/// - `SpecReconstructed`: the typed intent spec was assembled from the raw
+///   task message (goal, constraints, hidden_assumptions, non_goals);
+/// - `PremiseFlagged`: a premise embedded in the request was flagged by the
+///   deterministic-first check against grounding (format-independent);
+/// - `RouteDecided`: the outcome+reversibility route decision was made
+///   (ask / proceed_under_assumptions / refuse/escalate);
+/// - `AssumptionLogged`: an assumption was injected and journaled for
+///   audit/override (the autonomous safety net).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentControlKind {
+    SpecReconstructed,
+    PremiseFlagged,
+    RouteDecided,
+    AssumptionLogged,
+}
+
+impl IntentControlKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SpecReconstructed => "spec_reconstructed",
+            Self::PremiseFlagged => "premise_flagged",
+            Self::RouteDecided => "route_decided",
+            Self::AssumptionLogged => "assumption_logged",
+        }
+    }
+}
+
+/// J-35 intent-control layer -- payload for
+/// [`SsbActionType::IntentControlEvent`].
+///
+/// Pattern-2 single-variant 4-arm Kind rides in `kind`. Arm-specific
+/// scalars ride in `details_json` (flexible per-arm schema). The payload
+/// carries the spec_id, premise_flag_count, route_decision,
+/// assumption_count, reversibility_class, and gate_mode. It NEVER carries
+/// a stored "true goal" (the spec IS the reconstruction, shown not hidden).
+/// Does NOT derive `Eq` -- the `details_json` value is non-numeric but
+/// stable for serialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntentControlEventPayload {
+    /// Fire-point discriminator. See [`IntentControlKind`].
+    pub kind: IntentControlKind,
+    /// Stable identifier for the reconstructed intent spec (blake3 prefix
+    /// of the task text, hex-encoded).
+    pub spec_id: String,
+    /// Number of premises flagged by the deterministic-first check.
+    pub premise_flag_count: u32,
+    /// Route decision: "ask" / "proceed_under_assumptions" / "refuse" /
+    /// "escalate".
+    pub route_decision: String,
+    /// Number of assumptions injected and journaled.
+    pub assumption_count: u32,
+    /// Reversibility class: "reversible" / "irreversible" / "high_cost".
+    pub reversibility_class: String,
+    /// Gate mode: "interactive" / "autonomous".
+    pub gate_mode: String,
+    /// Arm-specific details (JSON object). Carries per-arm context like
+    /// the flagged premise text, the contradiction evidence, the journal
+    /// source for an autonomous default.
     pub details_json: serde_json::Value,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
