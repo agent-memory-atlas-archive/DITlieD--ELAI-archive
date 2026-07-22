@@ -131,6 +131,8 @@ async fn adaptive_reduce_non_fatal_proceeds_after_error() {
         .adaptive_reduce(0.5, ExecutionMode::Autonomous, &ssb)
         .await;
     assert!(result.is_err());
-    let proceeded = true;
-    assert!(proceeded, "caller proceeds after AdaptiveError (non-fatal)");
+    assert!(
+        budget.total_used > budget.model_max_context,
+        "caller proceeds after AdaptiveError: budget still readable, over-capacity state preserved"
+    );
 }
