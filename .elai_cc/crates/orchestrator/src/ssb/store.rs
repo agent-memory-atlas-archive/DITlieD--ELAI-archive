@@ -338,7 +338,7 @@ impl Ssb {
         #[cfg(debug_assertions)]
         writer_conn.update_hook(Some(
             |action: rusqlite::hooks::Action, _db: &str, table: &str, _rowid: i64| {
-                if (table == "ssb" || table == "ssb_files")
+                if (table == "ssb" || table == "ssb_files" || table == "holdout_budget")
                     && (action == rusqlite::hooks::Action::SQLITE_UPDATE
                         || action == rusqlite::hooks::Action::SQLITE_DELETE)
                 {

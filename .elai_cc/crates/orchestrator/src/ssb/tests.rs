@@ -4585,7 +4585,7 @@ use crate::gate::RiskLevel;
         direct_conn
             .update_hook(Some(
                 move |action: rusqlite::hooks::Action, _db: &str, table: &str, _rowid: i64| {
-                    if (table == "ssb" || table == "ssb_files")
+                    if (table == "ssb" || table == "ssb_files" || table == "holdout_budget")
                         && (action == rusqlite::hooks::Action::SQLITE_UPDATE
                             || action == rusqlite::hooks::Action::SQLITE_DELETE)
                     {
@@ -4627,6 +4627,57 @@ use crate::gate::RiskLevel;
             violation_count.load(Ordering::Relaxed),
             2,
             "DELETE should trigger append-only hook"
+        );
+
+        // holdout_budget table: CREATE + INSERT (no violation), then UPDATE + DELETE (violations)
+        direct_conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS holdout_budget (\
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                 row_id TEXT NOT NULL DEFAULT '',\
+                 kind TEXT NOT NULL DEFAULT 'spent',\
+                 holdout_id TEXT NOT NULL,\
+                 objective TEXT NOT NULL,\
+                 data_window TEXT NOT NULL DEFAULT '',\
+                 budget_total INTEGER NOT NULL DEFAULT 0,\
+                 seed INTEGER NOT NULL DEFAULT 0,\
+                 created_at_ms INTEGER NOT NULL DEFAULT 0,\
+                 session_id TEXT NOT NULL DEFAULT '')",
+                [],
+            )
+            .expect("create holdout_budget table");
+
+        direct_conn
+            .execute(
+                "INSERT INTO holdout_budget (holdout_id, objective) VALUES ('h1', 'obj1')",
+                [],
+            )
+            .expect("insert holdout_budget row");
+        assert_eq!(
+            violation_count.load(Ordering::Relaxed),
+            2,
+            "INSERT into holdout_budget should not trigger append-only hook"
+        );
+
+        direct_conn
+            .execute(
+                "UPDATE holdout_budget SET kind = 'provision' WHERE id = 1",
+                [],
+            )
+            .expect("update holdout_budget executes");
+        assert_eq!(
+            violation_count.load(Ordering::Relaxed),
+            3,
+            "UPDATE on holdout_budget should trigger append-only hook"
+        );
+
+        direct_conn
+            .execute("DELETE FROM holdout_budget WHERE id = 1", [])
+            .expect("delete holdout_budget executes");
+        assert_eq!(
+            violation_count.load(Ordering::Relaxed),
+            4,
+            "DELETE on holdout_budget should trigger append-only hook"
         );
 
         // Verify the production code installs the hook on writer (debug mode).
