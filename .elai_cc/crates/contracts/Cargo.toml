@@ -82,6 +82,9 @@ elai-web-search = { path = "../web_search" }
 elai-web-validator = { path = "../web_validator" }
 # E-30: public-incident hardening contract tests require the safety crate.
 elai-safety = { path = "../safety" }
+# R2 (vacuous-R123): i40 kill-switch test calls the real `elai_cli::wrap_rra_disable::rra_disabled()`
+# production fn instead of hardcoding `let rra_disabled = true`. Path dep only; no new external crate.
+elai-cli = { path = "../cli" }
 # Phase A2 — agent_loop_contract spawns elai_cc_agent and drives an IPC
 # round-trip; both sides share the wire-protocol types from this crate.
 elai-ipc-types.workspace = true

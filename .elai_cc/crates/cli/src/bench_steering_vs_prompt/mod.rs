@@ -46,7 +46,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::behavior_steering_ssb::emit_behavior_steering_event;
-use elai_orchestrator::ssb::{BehaviorSteeringKind, SsbActionType, SsbReader as _};
+use elai_orchestrator::ssb::{BehaviorSteeringKind, SsbActionType};
 use elai_orchestrator::{Ssb, SsbConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -364,30 +364,38 @@ fn emit_steering_event(
             details_json,
         );
 
-        let mut rows = Vec::new();
-        for _ in 0..10 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            rows = ssb
-                .query_by_type(SsbActionType::BehaviorSteeringEvent(
-                    BehaviorSteeringKind::SteeringEffectMeasured,
-                ))
-                .map_err(|e| BenchSteeringVsPromptError::SsbOpen {
-                    source_msg: format!("query_by_type failed: {e}"),
-                })?;
-            if !rows.is_empty() {
-                break;
-            }
-        }
-        if rows.is_empty() {
-            return Err(BenchSteeringVsPromptError::SsbOpen {
-                source_msg: "no BehaviorSteeringEvent(SteeringEffectMeasured) row landed after retries"
-                    .to_string(),
-            });
-        }
+        let expected_seed = elai_seed;
+        let entry = crate::bench_ssb_poll::poll_until_this_run_row(
+            &ssb,
+            SsbActionType::BehaviorSteeringEvent(
+                BehaviorSteeringKind::SteeringEffectMeasured,
+            ),
+            move |row| {
+                if let Ok(elai_orchestrator::ssb::SsbPayload::BehaviorSteeringEvent(
+                    elai_orchestrator::ssb::BehaviorSteeringEventPayload {
+                        details_json, ..
+                    },
+                )) = elai_orchestrator::ssb::decode_ssb_payload(&row.payload)
+                {
+                    details_json
+                        .get("elai_seed")
+                        .and_then(|v| v.as_u64())
+                        .is_some_and(|s| s == expected_seed)
+                } else {
+                    false
+                }
+            },
+        )
+        .await
+        .map_err(|e| BenchSteeringVsPromptError::SsbOpen {
+            source_msg: format!(
+                "no BehaviorSteeringEvent(SteeringEffectMeasured) row with elai_seed={elai_seed} landed: {e}"
+            ),
+        })?;
 
         tracing::info!(
-            steering_vs_prompt.ssb_rows = rows.len(),
-            "steering-vs-prompt: SteeringEffectMeasured SSB row emitted"
+            steering_vs_prompt.ssb_seq = entry.seq,
+            "steering-vs-prompt: SteeringEffectMeasured SSB row emitted (elai_seed={elai_seed})"
         );
 
         Ok::<(), BenchSteeringVsPromptError>(())

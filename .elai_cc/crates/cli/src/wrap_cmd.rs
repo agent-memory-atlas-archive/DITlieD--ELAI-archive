@@ -45,6 +45,7 @@ use elai_orchestrator::vibegate::evaluate_vibegate;
 use elai_orchestrator::RunArtifactEmittedPayload;
 
 use crate::args::CliOutputFormat;
+use crate::wrap_rra_disable::{rra_disabled, WRAP_RRA_DISABLE_ENV};
 
 /// I-40 wrap session identifier (fixture-scoped; a production integration would
 /// derive the session_id from the wrapped agent's identity).
@@ -52,10 +53,6 @@ const WRAP_SESSION_ID: &str = "elai-wrap-proxy";
 
 /// I-40 wrap project identifier.
 const WRAP_PROJECT_ID: &str = "elai-wrap";
-
-/// I-40 kill-switch env var. Set to "1" to suppress the RRA emit.
-/// Registered in wire-dark-allowlist.toml (type=kill_switch, default-ON).
-const WRAP_RRA_DISABLE_ENV: &str = "ELAI_WRAP_RRA_DISABLE";
 
 /// Destructive-write tool classes the wrapper intercepts for gate evaluation.
 /// Mirrors the F-1/F-9/G-3 set from hook_dispatcher.rs (the same categories
@@ -216,7 +213,7 @@ async fn run_fixture_mode(
             .unwrap_or_else(|_| std::path::PathBuf::from("."))
             .join("wrap-fixture.rra")
     });
-    let rra_disabled = std::env::var(WRAP_RRA_DISABLE_ENV).unwrap_or_default() == "1";
+    let rra_disabled = rra_disabled();
     if !rra_disabled {
         emit_wrap_rra(ssb, WRAP_SESSION_ID, &rra_path).await?;
     } else {
@@ -392,7 +389,7 @@ async fn run_subprocess_mode(
             .unwrap_or_else(|_| std::path::PathBuf::from("."))
             .join("wrap-run.rra")
     });
-    let rra_disabled = std::env::var(WRAP_RRA_DISABLE_ENV).unwrap_or_default() == "1";
+    let rra_disabled = rra_disabled();
     if !rra_disabled {
         if let Err(e) = emit_wrap_rra(ssb, WRAP_SESSION_ID, &rra_path).await {
             tracing::warn!(error = %e, "elai wrap: RRA emit failed (best-effort); exit code unaffected");

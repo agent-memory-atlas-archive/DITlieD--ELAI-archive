@@ -49,7 +49,9 @@
 //! we assert on SSB rows not logs, same posture as G-2 rra roundtrip contract).
 
 use std::sync::Arc;
+use std::sync::Mutex;
 
+use elai_cli::wrap_rra_disable::{rra_disabled, WRAP_RRA_DISABLE_ENV};
 use elai_core::clock::OsClock;
 use elai_orchestrator::capability_flow::taint_text;
 use elai_orchestrator::determinism::DeterminismConfig;
@@ -76,6 +78,31 @@ const WRAP_SESSION_ID: &str = "elai-wrap-proxy";
 
 /// The wrap project_id (mirrors WRAP_PROJECT_ID in wrap_cmd.rs).
 const WRAP_PROJECT_ID: &str = "elai-wrap";
+
+static RRA_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+struct EnvRestoreGuard {
+    key: &'static str,
+    prior: Option<String>,
+}
+
+impl EnvRestoreGuard {
+    fn capture(key: &'static str) -> Self {
+        EnvRestoreGuard {
+            key,
+            prior: std::env::var(key).ok(),
+        }
+    }
+}
+
+impl Drop for EnvRestoreGuard {
+    fn drop(&mut self) {
+        match &self.prior {
+            Some(val) => std::env::set_var(self.key, val),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 /// Build an isolated real SSB in a temp dir for the given fixture run.
 /// Returns (ssb, tempdir) — keep tempdir alive for the test duration.
@@ -281,23 +308,33 @@ async fn wrap_fixture_emits_taint_flow_and_rra_bundle() {
 /// ELAI_WRAP_RRA_DISABLE=1 suppresses the RunArtifactEmitted beacon + the .rra
 /// file but MUST NOT suppress TaintFlow rows (the gates still fire).
 /// This proves the kill-switch scope is tight (R9: kill_switch, not a graveyard).
+///
+/// Calls the REAL `elai_cli::wrap_rra_disable::rra_disabled()` production fn
+/// (not a hardcoded `let rra_disabled = true`). Two arms:
+///   - positive: env=1, rra_disabled() returns true, RRA suppressed
+///   - negative: env unset, rra_disabled() returns false, RRA emitted
 #[tokio::test]
 async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
+    let _mutex = RRA_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = EnvRestoreGuard::capture(WRAP_RRA_DISABLE_ENV);
+
+    // --- positive arm: ELAI_WRAP_RRA_DISABLE=1 ---
+    std::env::set_var(WRAP_RRA_DISABLE_ENV, "1");
+    assert!(
+        rra_disabled(),
+        "rra_disabled() must return true when {WRAP_RRA_DISABLE_ENV}=1"
+    );
+
     let tmp = TempDir::new().expect("tempdir");
     let ssb = make_wrap_ssb(&tmp, "b");
 
-    // Drive the fixture emit (same path as (a)); kill-switch will suppress rra.
     drive_fixture_emit(&ssb).await;
 
-    // Drive RRA emit ONLY if kill-switch is OFF. Mirrors wrap_cmd.rs logic:
-    // if !rra_disabled { emit_wrap_rra(...) }
-    let rra_disabled = true;
-    if !rra_disabled {
-        let rra_path = tmp.path().join("wrap-kill.rra");
+    let rra_path = tmp.path().join("wrap-kill.rra");
+    if !rra_disabled() {
         drive_rra_emit(&ssb, &rra_path).await;
     }
 
-    // TaintFlow rows must still exist (gate is not suppressed).
     let taint_rows = ssb
         .query_by_type(SsbActionType::TaintFlow)
         .expect("query TaintFlow under kill-switch");
@@ -307,7 +344,6 @@ async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
          The taint gate fires regardless of the RRA kill-switch."
     );
 
-    // RunArtifactEmitted rows must be zero (the beacon is suppressed).
     let rra_rows = ssb
         .query_by_type(SsbActionType::RunArtifactEmitted)
         .expect("query RunArtifactEmitted under kill-switch");
@@ -317,6 +353,31 @@ async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
         "BLOCK: ELAI_WRAP_RRA_DISABLE=1 must suppress the RunArtifactEmitted beacon. \
          Got {} rows (expected 0).",
         rra_rows.len()
+    );
+
+    // --- negative arm: env unset, rra_disabled() returns false ---
+    std::env::remove_var(WRAP_RRA_DISABLE_ENV);
+    assert!(
+        !rra_disabled(),
+        "rra_disabled() must return false when {WRAP_RRA_DISABLE_ENV} is unset"
+    );
+
+    let tmp2 = TempDir::new().expect("tempdir");
+    let ssb2 = make_wrap_ssb(&tmp2, "b-neg");
+    let rra_path2 = tmp2.path().join("wrap-kill-neg.rra");
+
+    drive_fixture_emit(&ssb2).await;
+    if !rra_disabled() {
+        drive_rra_emit(&ssb2, &rra_path2).await;
+    }
+
+    let rra_rows2 = ssb2
+        .query_by_type(SsbActionType::RunArtifactEmitted)
+        .expect("query RunArtifactEmitted negative arm");
+    assert!(
+        !rra_rows2.is_empty(),
+        "BLOCK: with kill-switch OFF, RunArtifactEmitted rows must be emitted. \
+         Got 0 rows (expected >0)."
     );
 }
 
@@ -502,6 +563,8 @@ fn rra_verify_rejects_malformed_bundle() {
         objective_hash: None,
         chain_prev_hash: None,
         stack_hash: None,
+        sampling_seed: None,
+        determinism_applied: None,
         root_blake3: "deadbeef1234abcd".to_string(), // C3 pass (non-empty)
     };
 

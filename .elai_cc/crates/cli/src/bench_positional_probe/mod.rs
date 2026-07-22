@@ -66,7 +66,7 @@ use elai_orchestrator::context_calibration::{
     PositionalValueCurve,
 };
 use elai_orchestrator::ssb::{
-    decode_ssb_payload, ContextCalibrationEventPayload, SsbActionType, SsbPayload, SsbReader as _,
+    decode_ssb_payload, ContextCalibrationEventPayload, SsbActionType, SsbPayload,
 };
 use elai_orchestrator::{Ssb, SsbConfig};
 use serde::{Deserialize, Serialize};
@@ -603,41 +603,34 @@ fn emit_calibration_artifact(
         let mut store = CalibrationArtifactStore::new();
         store.insert_with_ssb(artifact, Some(&ssb));
 
-        let mut found = false;
-        for _ in 0..10 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let rows = ssb
-                .query_by_type(SsbActionType::ContextCalibrationEvent(
-                    elai_orchestrator::ssb::ContextCalibrationKind::CurveMeasured,
-                ))
-                .map_err(|e| BenchPositionalProbeError::SsbOpen {
-                    source_msg: format!("query_by_type failed: {e}"),
-                })?;
-            found = rows.iter().any(|row| {
+        let expected_key = identity_key.clone();
+        let entry = crate::bench_ssb_poll::poll_until_this_run_row(
+            &ssb,
+            SsbActionType::ContextCalibrationEvent(
+                elai_orchestrator::ssb::ContextCalibrationKind::CurveMeasured,
+            ),
+            move |row| {
                 if let Ok(SsbPayload::ContextCalibrationEvent(
                     ContextCalibrationEventPayload {
                         model_identity_key, ..
                     },
                 )) = decode_ssb_payload(&row.payload)
                 {
-                    model_identity_key == identity_key
+                    model_identity_key == expected_key
                 } else {
                     false
                 }
-            });
-            if found {
-                break;
-            }
-        }
-        if !found {
-            return Err(BenchPositionalProbeError::SsbOpen {
-                source_msg: format!(
-                    "no ContextCalibrationEvent(CurveMeasured) row landed for identity_key={identity_key}"
-                ),
-            });
-        }
+            },
+        )
+        .await
+        .map_err(|e| BenchPositionalProbeError::SsbOpen {
+            source_msg: format!(
+                "no ContextCalibrationEvent(CurveMeasured) row landed for identity_key={identity_key}: {e}"
+            ),
+        })?;
 
         tracing::info!(
+            positional_probe.ssb_seq = entry.seq,
             positional_probe.ssb_identity = %identity_key,
             "positional-probe: J-34 CurveMeasured SSB row emitted via CalibrationArtifactStore"
         );

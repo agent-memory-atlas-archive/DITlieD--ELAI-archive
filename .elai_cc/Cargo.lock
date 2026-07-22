@@ -1769,6 +1769,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "chrono",
+ "elai-cli",
  "elai-core",
  "elai-eval-corpus",
  "elai-ipc-types",

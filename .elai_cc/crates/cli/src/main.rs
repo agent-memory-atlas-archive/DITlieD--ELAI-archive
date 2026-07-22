@@ -99,6 +99,7 @@ mod rra_verify_cmd;
 // new top-level CliAction::Wrap with its own Arc<Ssb>. Kill-switch:
 // ELAI_WRAP_RRA_DISABLE=1 (default-ON emit).
 mod wrap_cmd;
+mod wrap_rra_disable;
 // K-6: `elai export compliance` — redacted RRA + attestation + audit trail
 // + retention statement bundle. Composition only (GD-1).
 mod compliance_export_cmd;
@@ -468,6 +469,7 @@ mod bench_governance;
 // without live inference. Wiring-enforcement R1 entry point for I-35.
 mod bench_sequence_probe;
 mod bench_steering_vs_prompt;
+mod bench_ssb_poll;
 // I-32: `elai role-ab-probe` -- role-contract A/B evidence harness. Fixture-driven;
 // no live LLM. Emits RoleContractApplied(AbDelta) SSB rows. Handler below.
 mod role_ab_probe_cmd;

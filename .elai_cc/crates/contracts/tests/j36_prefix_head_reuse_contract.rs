@@ -3,7 +3,7 @@
 //! Verifies the structural claims from the J-36 S5 slice for the frozen-head
 //! ContextPolicy Local arm:
 //!
-//! D1: `FROZEN_HEAD_SEQ_BOUNDARY` + `honors_frozen_head` +
+//! D1: `FROZEN_HEAD_SEQ_BOUNDARY` +
 //!     `frozen_head_system_prefix_len` exist in context_policy.rs AND are
 //!     re-exported from lib.rs.
 //! D2: `compact_session` body references `frozen_head_system_prefix_len`
@@ -54,10 +54,6 @@ fn d1a_frozen_head_symbols_exist_in_context_policy() {
         "context_policy.rs must export pub const FROZEN_HEAD_SEQ_BOUNDARY"
     );
     assert!(
-        src.contains("pub fn honors_frozen_head"),
-        "context_policy.rs must export pub fn honors_frozen_head"
-    );
-    assert!(
         src.contains("pub fn frozen_head_system_prefix_len"),
         "context_policy.rs must export pub fn frozen_head_system_prefix_len"
     );
@@ -74,10 +70,6 @@ fn d1b_frozen_head_symbols_reexported_from_lib() {
     assert!(
         block.contains("FROZEN_HEAD_SEQ_BOUNDARY"),
         "lib.rs must re-export FROZEN_HEAD_SEQ_BOUNDARY"
-    );
-    assert!(
-        block.contains("honors_frozen_head"),
-        "lib.rs must re-export honors_frozen_head"
     );
     assert!(
         block.contains("frozen_head_system_prefix_len"),

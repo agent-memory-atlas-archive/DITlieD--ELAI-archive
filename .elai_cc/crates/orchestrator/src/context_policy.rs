@@ -79,15 +79,6 @@ pub const CLOUD_TRIM_FRACTION: f64 = 0.85;
 /// stub/drop them.
 pub const FROZEN_HEAD_SEQ_BOUNDARY: u32 = 3;
 
-/// J-36: both regimes honor the frozen-head invariant.  Local newly does
-/// (this unit); Cloud already kept the cache-stable prefix intact.
-#[must_use]
-pub fn honors_frozen_head(policy: ContextPolicy) -> bool {
-    match policy {
-        ContextPolicy::Local | ContextPolicy::Cloud => true,
-    }
-}
-
 /// Leading System messages that are NOT an existing compact-summary
 /// preamble form the frozen head on the ConversationMessage path
 /// (compact.rs).  Pure count helper for the compact PRODUCTION_HOOK.
@@ -523,12 +514,6 @@ mod tests {
     }
 
     // J-36 slice-5 — frozen-head invariant tests.
-
-    #[test]
-    fn honors_frozen_head_both_regimes() {
-        assert!(honors_frozen_head(ContextPolicy::Local));
-        assert!(honors_frozen_head(ContextPolicy::Cloud));
-    }
 
     #[test]
     fn frozen_head_seq_boundary_is_three() {
