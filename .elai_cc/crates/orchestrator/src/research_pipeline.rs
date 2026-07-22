@@ -783,6 +783,8 @@ pub struct PrebindOutcome {
     pub verified_citations: Vec<crate::research::web_orchestrator::citation_verifier::VerifiedCitation>,
     /// `true` if any citation in `citation_checks` has `must_block() == true`.
     pub has_ghost: bool,
+    /// J-41 T1: extractive grounding pass result (OBSERVE-ONLY, None on early returns).
+    pub extractive_grounding: Option<crate::extractive_grounding::ExtractiveGroundingResult>,
 }
 
 /// H-53 — wire the citation pre-binding stage onto the REAL answer path.
@@ -824,6 +826,7 @@ pub fn prebind_research_answer(
             citation_checks: Vec::new(),
             verified_citations: Vec::new(),
             has_ghost: false,
+            extractive_grounding: None,
         };
     }
 
@@ -878,8 +881,24 @@ pub fn prebind_research_answer(
             citation_checks: Vec::new(),
             verified_citations: Vec::new(),
             has_ghost: false,
+            extractive_grounding: None,
         };
     }
+
+    // J-41 T1: extractive grounding pass (OBSERVE-ONLY).
+    let evidence_spans: Vec<&str> = anchor_set
+        .anchors
+        .iter()
+        .map(|a| a.excerpt.as_str())
+        .collect();
+    let extractive_grounding = if evidence_spans.is_empty() {
+        None
+    } else {
+        Some(crate::extractive_grounding::run_extractive_grounding(
+            &answer.answer_text,
+            &evidence_spans,
+        ))
+    };
 
     // Extract [N] citation markers from the answer text.
     let cited_ids = extract_citation_ids(&answer.answer_text);
@@ -934,6 +953,7 @@ pub fn prebind_research_answer(
         citation_checks,
         verified_citations,
         has_ghost,
+        extractive_grounding,
     }
 }
 

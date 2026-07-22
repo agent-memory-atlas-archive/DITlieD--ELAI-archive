@@ -1417,6 +1417,7 @@ pub mod eval_firewall;
 // Tier-2 (constrained-decode grammar via C-26 PER_ROLE_DECODING) DEFERRED.
 // See workflow/reasoning/H-53-decisions.md.
 pub mod citation_prebind;
+pub mod extractive_grounding;
 // H-29 (SCHEMA_VERSION 238) — the LOCKED fail-closed drift state machine (T-13): the master
 // deployment-trust interlock that gates resuming a live trading strategy. Four closed-form
 // drift axes (PSI on inputs+outputs, blake3 schema-fingerprint mismatch, rolling-14d
@@ -1684,6 +1685,9 @@ pub use research_pipeline::{
     prebind_research_answer, PrebindOutcome,
     ClassifiedResults, CollectedResults, FormulatedQueries, PostVerificationResult,
     SearchBackend, SearchResult, StubSearchBackend, select_research_search_backend,
+};
+pub use extractive_grounding::{
+    run_extractive_grounding, ExtractiveGroundingResult, ZeroSpanClaim,
 };
 pub use grounding_client::{
     CloudGroundingClient, GroundingClient, GroundingError, ResearchLevel,
