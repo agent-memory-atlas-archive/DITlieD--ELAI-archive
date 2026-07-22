@@ -35,11 +35,15 @@ static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 struct EnvRestoreGuard {
     key: &'static str,
+    prior: Option<std::ffi::OsString>,
 }
 
 impl Drop for EnvRestoreGuard {
     fn drop(&mut self) {
-        std::env::remove_var(self.key);
+        match &self.prior {
+            Some(val) => std::env::set_var(self.key, val),
+            None => std::env::remove_var(self.key),
+        }
     }
 }
 
@@ -49,9 +53,11 @@ fn env_opt_out_does_not_select_stub() {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
 
+    let prior = std::env::var_os("ELAI_STUB_SEARCH");
     std::env::set_var("ELAI_STUB_SEARCH", "1");
     let _guard = EnvRestoreGuard {
         key: "ELAI_STUB_SEARCH",
+        prior,
     };
 
     let backend = select_research_search_backend("http://127.0.0.1:1/");
