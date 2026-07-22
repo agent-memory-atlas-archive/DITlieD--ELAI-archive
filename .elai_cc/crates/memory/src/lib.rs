@@ -70,6 +70,7 @@ pub mod raw_evidence;
 pub mod retrieval_authorization;
 // F-12 Tier-1 — semantic contradiction pre-filter (deterministic local NLI
 // judge). Fully offline; no ort in the default build.
+pub mod binary_grounding_judge;
 pub mod semantic_contradiction;
 // J-21 Step 1 — commit-aware semantic validation (extends H-32's
 // existence-only check with commit+AST identity re-derivation).
@@ -120,6 +121,9 @@ pub use semantic_contradiction::{
     adjudicate_semantic, collect_cross_key_candidates, pair_fingerprint, ContradictionCandidate,
     DeterministicNliJudge, NliJudge, NliLabel, NliVerdict, SemanticAction, SemanticConflictOutcome,
     SEMANTIC_CONTRADICTION_CONFIDENCE_THRESHOLD,
+};
+pub use binary_grounding_judge::{
+    BinaryGroundingJudge, BinaryGroundingResult, BinaryGroundingVerdict, judge_zero_span_claims,
 };
 pub use store::FactStore;
 pub use tools::{

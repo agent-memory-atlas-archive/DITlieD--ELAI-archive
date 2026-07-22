@@ -785,6 +785,8 @@ pub struct PrebindOutcome {
     pub has_ghost: bool,
     /// J-41 T1: extractive grounding pass result (OBSERVE-ONLY, None on early returns).
     pub extractive_grounding: Option<crate::extractive_grounding::ExtractiveGroundingResult>,
+    /// J-41 T2: binary grounding judge result over zero-span claims (OBSERVE-ONLY, None on early returns).
+    pub binary_grounding: Option<elai_memory::BinaryGroundingResult>,
 }
 
 /// H-53 — wire the citation pre-binding stage onto the REAL answer path.
@@ -827,6 +829,7 @@ pub fn prebind_research_answer(
             verified_citations: Vec::new(),
             has_ghost: false,
             extractive_grounding: None,
+            binary_grounding: None,
         };
     }
 
@@ -882,6 +885,7 @@ pub fn prebind_research_answer(
             verified_citations: Vec::new(),
             has_ghost: false,
             extractive_grounding: None,
+            binary_grounding: None,
         };
     }
 
@@ -898,6 +902,20 @@ pub fn prebind_research_answer(
             &answer.answer_text,
             &evidence_spans,
         ))
+    };
+
+    let binary_grounding = if let Some(ref eg) = extractive_grounding {
+        if eg.zero_span_claims.is_empty() {
+            None
+        } else {
+            let claims: Vec<(&str, usize)> = eg.zero_span_claims
+                .iter()
+                .map(|z| (z.claim_text.as_str(), z.claim_index))
+                .collect();
+            Some(elai_memory::judge_zero_span_claims(&claims, &evidence_spans))
+        }
+    } else {
+        None
     };
 
     // Extract [N] citation markers from the answer text.
@@ -954,6 +972,7 @@ pub fn prebind_research_answer(
         verified_citations,
         has_ghost,
         extractive_grounding,
+        binary_grounding,
     }
 }
 

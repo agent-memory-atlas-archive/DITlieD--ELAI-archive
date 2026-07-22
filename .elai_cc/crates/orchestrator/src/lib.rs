@@ -1689,6 +1689,9 @@ pub use research_pipeline::{
 pub use extractive_grounding::{
     run_extractive_grounding, ExtractiveGroundingResult, ZeroSpanClaim,
 };
+pub use elai_memory::{
+    BinaryGroundingResult, BinaryGroundingVerdict, judge_zero_span_claims,
+};
 pub use grounding_client::{
     CloudGroundingClient, GroundingClient, GroundingError, ResearchLevel,
     SidecarGroundingClient,
