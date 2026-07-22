@@ -246,6 +246,9 @@ phase_4h_freeze_violated = []
 # anti-slopsquatting `cargo info` verification rule -- blake3 placeholder
 # used in archive_crypto.rs scaffold.
 darwinian-evolve = []
+# J-19: forward vllm so model_family.rs cfg(feature="vllm") arms compile
+# when contracts enables --features vllm
+vllm = ["elai-providers/vllm"]
 
 # 3B.bench — SSB single-writer insert throughput micro-benchmark. harness=false
 # + std::time::Instant (orchestrator D2 / DRIFT-2: no criterion dep, mirrors the

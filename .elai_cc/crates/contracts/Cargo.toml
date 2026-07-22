@@ -127,3 +127,6 @@ empire = ["elai-orchestrator/empire"]
 # SSB-roundtrip contract is feature-INDEPENDENT (the action_type + payload live
 # in always-compiled ssb.rs).
 darwinian-evolve = ["elai-orchestrator/darwinian-evolve"]
+# J-19: forward vllm so the agent_role_dispatcher_contract exhaustive match arm
+# (ProviderKind::Vllm) is reachable under --features vllm, not vacuous.
+vllm = ["elai-providers/vllm", "elai-orchestrator/vllm"]

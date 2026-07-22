@@ -94,6 +94,8 @@ fn three_roles_resolve_to_three_distinct_providers() {
             ProviderKind::Xai => "xai",
             ProviderKind::OpenAi => "openai",
             ProviderKind::Gpt55Proxy => "gpt55proxy",
+            #[cfg(feature = "vllm")]
+            ProviderKind::Vllm => "vllm",
         })
         .collect();
     sorted.sort_unstable();
