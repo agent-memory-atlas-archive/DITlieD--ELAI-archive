@@ -94,6 +94,33 @@ impl SearchBackend for StubSearchBackend {
     }
 }
 
+/// Select the research search backend for a given sidecar URL.
+/// Tries `SearxSearchBackend::new(sidecar_url)`; on construction failure
+/// falls back to `StubSearchBackend` (stub_ban-exempted safety net).
+/// Does NOT read `ELAI_STUB_SEARCH`.
+pub fn select_research_search_backend(sidecar_url: &str) -> Box<dyn SearchBackend> {
+    use crate::searx_search_backend::SearxSearchBackend;
+    match SearxSearchBackend::new(sidecar_url) {
+        Ok(b) => {
+            tracing::info!(
+                sidecar_url = %sidecar_url,
+                "research: using SearxSearchBackend"
+            );
+            Box::new(b)
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                sidecar_url = %sidecar_url,
+                "research: SearxSearchBackend construction failed, \
+                 falling back to StubSearchBackend \
+                 (stub_ban-exempted construction-failure safety net)"
+            );
+            Box::new(StubSearchBackend::new())
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase A: Query Formulation
 // ---------------------------------------------------------------------------

@@ -1683,7 +1683,7 @@ pub use research_pipeline::{
     phase_d_extract_facts, phase_e_cross_verify, phase_f_synthesize, phase_g_post_verify,
     prebind_research_answer, PrebindOutcome,
     ClassifiedResults, CollectedResults, FormulatedQueries, PostVerificationResult,
-    SearchBackend, SearchResult, StubSearchBackend,
+    SearchBackend, SearchResult, StubSearchBackend, select_research_search_backend,
 };
 pub use grounding_client::{
     CloudGroundingClient, GroundingClient, GroundingError, ResearchLevel,

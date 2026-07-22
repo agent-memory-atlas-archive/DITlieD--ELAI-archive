@@ -423,7 +423,6 @@ async fn e2e_cloud_sonnet_pipeline() {
     unsafe {
         std::env::set_var("ELAI_DEFAULT_EXECUTION_MODE", "CLOUD");
         std::env::set_var("ELAI_NO_SIDECAR", "1");
-        std::env::set_var("ELAI_STUB_SEARCH", "1");
         std::env::set_var("ELAI_GATE_MODE", "autonomous");
         std::env::set_var("ELAI_GROUNDING_BACKEND", "cloud");
         std::env::set_var("ELAI_CLOUD_MODEL", "claude-sonnet-4-6");

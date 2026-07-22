@@ -361,46 +361,12 @@ pub(super) fn dispatch(
                                 return Ok(false);
                             }
                         };
-                        // Default: hit the sidecar `/search` proxy (SearXNG/Brave-backed).
-                        // Dev opt-out: ELAI_STUB_SEARCH=1 swaps in the in-memory stub for
-                        // offline research-pipeline smoke tests. Falsy values
-                        // (0/false/no/off/empty) explicitly keep the production backend.
-                        let use_stub = std::env::var("ELAI_STUB_SEARCH")
-                            .map(|v| {
-                                let trimmed = v.trim();
-                                !trimmed.is_empty()
-                                    && !matches!(
-                                        trimmed.to_ascii_lowercase().as_str(),
-                                        "0" | "false" | "no" | "off"
-                                    )
-                            })
-                            .unwrap_or(false);
-                        let backend: Box<dyn elai_orchestrator::SearchBackend> = if use_stub {
-                            tracing::info!("research: using StubSearchBackend (ELAI_STUB_SEARCH=1)");
-                            Box::new(elai_orchestrator::StubSearchBackend::new())
-                        } else {
-                            let sidecar_url = std::env::var("ELAI_SIDECAR_URL")
-                                .unwrap_or_else(|_| {
-                                    elai_orchestrator::DEFAULT_SIDECAR_SEARCH_URL.to_string()
-                                });
-                            match elai_orchestrator::SearxSearchBackend::new(&sidecar_url) {
-                                Ok(b) => {
-                                    tracing::info!(
-                                        sidecar_url = %sidecar_url,
-                                        "research: using SearxSearchBackend"
-                                    );
-                                    Box::new(b)
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        sidecar_url = %sidecar_url,
-                                        "research: SearxSearchBackend construction failed, falling back to stub"
-                                    );
-                                    Box::new(elai_orchestrator::StubSearchBackend::new())
-                                }
-                            }
-                        };
+                        let sidecar_url = std::env::var("ELAI_SIDECAR_URL")
+                            .unwrap_or_else(|_| {
+                                elai_orchestrator::DEFAULT_SIDECAR_SEARCH_URL.to_string()
+                            });
+                        let backend: Box<dyn elai_orchestrator::SearchBackend> =
+                            elai_orchestrator::select_research_search_backend(&sidecar_url);
                         // D3: wire SidecarGroundingClient for LLM-backed Phase F synthesis.
                         // run_research_pipeline is sync (phases A-E use sync SearchBackend::search).
                         // Phase F async bridge is handled inside phase_f_synthesize_blocking
