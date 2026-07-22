@@ -130,9 +130,11 @@ fn extract_premises(task_text: &str) -> Vec<String> {
         if lower.contains(phrase) {
             let idx = lower.find(phrase).unwrap_or(0);
             let end = task_text.len().min(idx + 120);
-            let snippet = task_text[idx..end].trim();
-            if !snippet.is_empty() {
-                premises.push(snippet.to_owned());
+            if let Some(snippet) = task_text.get(idx..end) {
+                let snippet = snippet.trim();
+                if !snippet.is_empty() {
+                    premises.push(snippet.to_owned());
+                }
             }
         }
     }
