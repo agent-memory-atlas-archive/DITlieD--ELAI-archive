@@ -108,9 +108,9 @@ fn assert_all_fields_present(row: &FlagRow) {
 }
 
 fn assert_expiry_in_future(row: &FlagRow) {
-    let today = "2026-07-22";
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     assert!(
-        row.expiry_date.as_str() > today,
+        row.expiry_date.as_str() > today.as_str(),
         "expiry_date {} must be in the future (after {})",
         row.expiry_date,
         today
