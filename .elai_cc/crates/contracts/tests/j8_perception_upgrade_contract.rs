@@ -27,6 +27,10 @@
 
 use elai_orchestrator::perception::preprocess::{preprocess, PreprocessSpec, TargetModel};
 use elai_orchestrator::perception::sweet_spot;
+use elai_orchestrator::perception::{
+    apply_schema_v2, coords_within_schema_v2, elements_pass_schema_v2, scaffold_with_call1,
+    LiteralElement, SchemaV2Verdict, ScaffoldInput, ScaffoldOutcome,
+};
 
 // ---------------------------------------------------------------------------
 // (1) TargetModel::sweet_spot_longest_side_px delegates to the toml table.
@@ -120,4 +124,164 @@ fn preprocess_wires_sweet_spot_values() {
             "preprocess() must wire native_res for {model:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// J-8 T2: schema v2 coord validation contract.
+//
+// All tests below call the SAME production fns:
+//   * `coords_within_schema_v2` — the per-bbox validator
+//   * `elements_pass_schema_v2` — the per-element-list validator
+//   * `apply_schema_v2` — the shared verdict fn (also called from
+//     `scaffold_with_call1` -> `scaffold`)
+//   * `scaffold_with_call1` — the production scaffold entry that wires
+//     `apply_schema_v2` into the scaffold flow
+//
+// They do NOT reimplement the branch in the test body and do NOT grep
+// source text.
+//
+// FALSIFICATION MUTATION (for the orchestrator / auditor to verify):
+//   Inside `scaffold_with_call1`, in the `if let Some(elements)` arm,
+//   delete the `apply_schema_v2(elements, schema_attempt)` call and
+//   always return `DegradedPassthrough` (or skip the match). The
+//   `scaffold_with_call1_accepted`, `scaffold_with_call1_reprompt_once`,
+//   and `scaffold_with_call1_typed_refusal` tests below will go RED
+//   because the outcome will be `DegradedPassthrough` instead of
+//   `ScaffoldEmitted` / `SchemaReprompt` / `TypedRefusal`. Restoring the
+//   `apply_schema_v2` call makes them GREEN again.
+//
+// UNCOVERED MUTATION (named for the orchestrator):
+//   The live production_agent_rpc.rs infer path still calls
+//   `ScaffoldInput::from_prompt(&prompt)` -> `scaffold()` which delegates
+//   to `scaffold_with_call1(input, None, 0)`. Since `call1_elements` is
+//   `None` on the live path, the schema v2 validation gate is NOT
+//   exercised in production until T5 feeds real call-1 elements. These
+//   contracts prove the gate works when called with `Some(elements)`;
+//   they do NOT claim live infer coverage that was not built.
+// ---------------------------------------------------------------------------
+
+fn make_element(label: &str, bbox: [u32; 4]) -> LiteralElement {
+    LiteralElement {
+        label: label.to_string(),
+        bbox,
+    }
+}
+
+// (7) coords_within_schema_v2: all values <= 1000 -> true
+#[test]
+fn coords_within_schema_v2_valid_bbox() {
+    assert!(coords_within_schema_v2(&[0, 0, 500, 1000]));
+    assert!(coords_within_schema_v2(&[1000, 1000, 1000, 1000]));
+    assert!(coords_within_schema_v2(&[0, 0, 0, 0]));
+}
+
+// (8) coords_within_schema_v2: any value > 1000 -> false
+#[test]
+fn coords_within_schema_v2_invalid_bbox() {
+    assert!(!coords_within_schema_v2(&[0, 0, 500, 1001]));
+    assert!(!coords_within_schema_v2(&[2000, 0, 0, 0]));
+    assert!(!coords_within_schema_v2(&[0, 0, 0, 99999]));
+}
+
+// (9) elements_pass_schema_v2: all elements valid -> true
+#[test]
+fn elements_pass_schema_v2_all_valid() {
+    let elements = vec![
+        make_element("a", [0, 0, 100, 200]),
+        make_element("b", [500, 500, 1000, 1000]),
+    ];
+    assert!(elements_pass_schema_v2(&elements));
+}
+
+// (10) elements_pass_schema_v2: any element invalid -> false
+#[test]
+fn elements_pass_schema_v2_any_invalid() {
+    let elements = vec![
+        make_element("a", [0, 0, 100, 200]),
+        make_element("b", [500, 500, 1001, 1000]),
+    ];
+    assert!(!elements_pass_schema_v2(&elements));
+}
+
+// (11) apply_schema_v2: all coords <= 1000 -> Accepted (attempt 0)
+#[test]
+fn apply_schema_v2_accepted_valid_coords() {
+    let elements = vec![
+        make_element("a", [0, 0, 100, 200]),
+        make_element("b", [1000, 1000, 1000, 1000]),
+    ];
+    assert_eq!(apply_schema_v2(&elements, 0), SchemaV2Verdict::Accepted);
+    assert_eq!(apply_schema_v2(&elements, 1), SchemaV2Verdict::Accepted);
+}
+
+// (12) apply_schema_v2: any coord > 1000 with attempt=0 -> RepromptOnce
+#[test]
+fn apply_schema_v2_reprompt_once_on_first_failure() {
+    let elements = vec![make_element("a", [0, 0, 500, 1001])];
+    assert_eq!(apply_schema_v2(&elements, 0), SchemaV2Verdict::RepromptOnce);
+}
+
+// (13) apply_schema_v2: any coord > 1000 with attempt=1 -> TypedRefusal
+#[test]
+fn apply_schema_v2_typed_refusal_on_second_failure() {
+    let elements = vec![make_element("a", [0, 0, 500, 1001])];
+    assert_eq!(apply_schema_v2(&elements, 1), SchemaV2Verdict::TypedRefusal);
+}
+
+// (14) scaffold_with_call1: valid elements -> ScaffoldEmitted
+#[test]
+fn scaffold_with_call1_accepted() {
+    let input = ScaffoldInput {
+        image_bytes: vec![0u8],
+        task_prompt: "describe data:image/png;base64,abc".to_string(),
+    };
+    let elements = vec![
+        make_element("a", [0, 0, 100, 200]),
+        make_element("b", [500, 500, 1000, 1000]),
+    ];
+    let result = scaffold_with_call1(&input, Some(&elements), 0)
+        .expect("scaffold should not error on valid call1 elements");
+    assert_eq!(result.outcome, ScaffoldOutcome::ScaffoldEmitted);
+    assert_eq!(result.literal_elements.len(), 2);
+    assert_eq!(result.literal_elements[0].label, "a");
+}
+
+// (15) scaffold_with_call1: invalid coords attempt=0 -> SchemaReprompt
+#[test]
+fn scaffold_with_call1_reprompt_once() {
+    let input = ScaffoldInput {
+        image_bytes: vec![0u8],
+        task_prompt: "describe data:image/png;base64,abc".to_string(),
+    };
+    let elements = vec![make_element("a", [0, 0, 500, 1001])];
+    let result = scaffold_with_call1(&input, Some(&elements), 0)
+        .expect("scaffold should not error on schema reprompt");
+    assert_eq!(result.outcome, ScaffoldOutcome::SchemaReprompt);
+    assert!(result.literal_elements.is_empty());
+}
+
+// (16) scaffold_with_call1: invalid coords attempt=1 -> TypedRefusal
+#[test]
+fn scaffold_with_call1_typed_refusal() {
+    let input = ScaffoldInput {
+        image_bytes: vec![0u8],
+        task_prompt: "describe data:image/png;base64,abc".to_string(),
+    };
+    let elements = vec![make_element("a", [0, 0, 500, 1001])];
+    let result = scaffold_with_call1(&input, Some(&elements), 1)
+        .expect("scaffold should not error on typed refusal");
+    assert_eq!(result.outcome, ScaffoldOutcome::TypedRefusal);
+    assert!(result.literal_elements.is_empty());
+}
+
+// (17) scaffold(&from_prompt(image)) still DegradedPassthrough (stub path
+//      intact). This proves the T2 stub behavior is unchanged when no
+//      call1_elements are provided (the live infer path).
+#[test]
+fn scaffold_from_prompt_still_degraded_passthrough() {
+    let input = ScaffoldInput::from_prompt("describe data:image/png;base64,abc");
+    let result = elai_orchestrator::perception::scaffold(&input)
+        .expect("scaffold should not error on image-present stub");
+    assert_eq!(result.outcome, ScaffoldOutcome::DegradedPassthrough);
+    assert!(result.literal_elements.is_empty());
 }

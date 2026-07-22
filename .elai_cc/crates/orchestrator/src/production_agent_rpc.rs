@@ -2007,6 +2007,32 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                             // No-op: scaffold fires ONLY on image-bearing
                             // dispatches (plan line 63). No SSB emit.
                         }
+                        perception::ScaffoldOutcome::SchemaReprompt => {
+                            emit_perception_scaffold_event(
+                                self.ssb.as_ref(),
+                                &self.clock,
+                                crate::ssb::PerceptionScaffoldEventKind::DegradedPassthrough,
+                                None,
+                                serde_json::json!({
+                                    "source": "scaffold",
+                                    "reason": "schema_v2_reprompt",
+                                }),
+                            )
+                            .await;
+                        }
+                        perception::ScaffoldOutcome::TypedRefusal => {
+                            emit_perception_scaffold_event(
+                                self.ssb.as_ref(),
+                                &self.clock,
+                                crate::ssb::PerceptionScaffoldEventKind::DegradedPassthrough,
+                                None,
+                                serde_json::json!({
+                                    "source": "scaffold",
+                                    "reason": "schema_v2_typed_refusal",
+                                }),
+                            )
+                            .await;
+                        }
                     },
                     Err(e) => {
                         tracing::warn!(

@@ -33,7 +33,9 @@ pub mod sweet_spot;
 
 // Re-exports — the dispatch seam imports these directly.
 pub use scaffold::{
-    prompt_carries_image, scaffold, ScaffoldInput, ScaffoldOutcome, ScaffoldResult,
+    apply_schema_v2, coords_within_schema_v2, elements_pass_schema_v2, prompt_carries_image,
+    scaffold, scaffold_with_call1, LiteralElement, SchemaV2Verdict, ScaffoldInput,
+    ScaffoldOutcome, ScaffoldResult,
 };
 pub use router::{
     classify_prompt, route, RouterDecision, RouterInput, RouterType,

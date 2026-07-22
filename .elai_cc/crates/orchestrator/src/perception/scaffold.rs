@@ -14,6 +14,12 @@
 //! STUBBED in T2 (USER_OVERRIDE for legs 2/4 — T5 replaces the stubs with
 //! real sidecar calls, sidecar-gated W-10). The `scaffold` fn is WIRED —
 //! no WIRE-DARK[J-1] marker, no allowlist row.
+//!
+//! J-8 T2 extension: schema v2 coord validation gate. Call-1
+//! literal-element coords MUST be normalized 0..=SCAFFOLD_COORD_NORMALIZATION_MAX
+//! (1000). A raw-pixel-looking emission (any bbox value >1000) FAILS
+//! validation -> re-prompt once -> on second failure TypedRefusal. The
+//! `apply_schema_v2` fn is the shared production fn contracts MUST call.
 
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +61,15 @@ pub enum ScaffoldOutcome {
     /// etc.). The raw image forwards UNCONDITIONED with an explicit marker
     /// — never a silent fallthrough (plan stub_ban).
     DegradedPassthrough,
+    /// J-8 T2: call-1 elements failed schema v2 coord validation on the
+    /// first attempt; the caller should re-prompt call-1 once with the
+    /// coord constraint re-emphasized, then call
+    /// [`scaffold_with_call1`] with `schema_attempt = 1`.
+    SchemaReprompt,
+    /// J-8 T2: call-1 elements failed schema v2 coord validation on the
+    /// second attempt. The scaffold refuses to emit unvalidated
+    /// coordinates; the raw image forwards with a typed refusal marker.
+    TypedRefusal,
 }
 
 /// One literal element emitted by the describe-literal-elements call.
@@ -127,22 +142,95 @@ pub fn prompt_carries_image(prompt: &str) -> bool {
     prompt.contains(PROMPT_IMAGE_MARKER_DATA) || prompt.contains(PROMPT_IMAGE_MARKER_BASE64)
 }
 
-/// Run the two-call perception scaffold on `input`. T2 ships the
-/// two-call STRUCTURE (call-1 describe-literal-elements dispatch shape +
-/// call-2 task-model dispatch shape + the structured-JSON handoff). The
-/// live VLM calls are STUBBED in T2 (USER_OVERRIDE for legs 2/4 — T5
-/// replaces the stubs with real sidecar calls, sidecar-gated W-10).
+/// J-8 T2: verdict of the schema v2 coord validation gate applied to
+/// call-1 literal elements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaV2Verdict {
+    /// All element bboxes are within `[0, SCAFFOLD_COORD_NORMALIZATION_MAX]`.
+    Accepted,
+    /// At least one bbox value exceeds the normalization max on the first
+    /// attempt; re-prompt call-1 once.
+    RepromptOnce,
+    /// At least one bbox value exceeds the normalization max on the second
+    /// attempt; refuse to emit unvalidated coordinates.
+    TypedRefusal,
+}
+
+/// J-8 T2: true iff every value in `bbox` is within
+/// `[0, SCAFFOLD_COORD_NORMALIZATION_MAX]` (0..=1000).
+#[must_use]
+pub fn coords_within_schema_v2(bbox: &[u32; 4]) -> bool {
+    bbox.iter().all(|&v| v <= SCAFFOLD_COORD_NORMALIZATION_MAX)
+}
+
+/// J-8 T2: true iff every `LiteralElement` in `elements` has a bbox that
+/// passes [`coords_within_schema_v2`].
+#[must_use]
+pub fn elements_pass_schema_v2(elements: &[LiteralElement]) -> bool {
+    elements.iter().all(|e| coords_within_schema_v2(&e.bbox))
+}
+
+/// J-8 T2: apply the schema v2 coord validation gate to `elements` at the
+/// given `attempt` (0 = first call-1, 1 = after re-prompt). This is the
+/// shared production fn that both [`scaffold_with_call1`] and contract
+/// tests call.
+///
+/// - If all bboxes pass -> [`SchemaV2Verdict::Accepted`]
+/// - If any bbox fails and `attempt == 0` -> [`SchemaV2Verdict::RepromptOnce`]
+/// - If any bbox fails and `attempt >= 1` -> [`SchemaV2Verdict::TypedRefusal`]
+#[must_use]
+pub fn apply_schema_v2(elements: &[LiteralElement], attempt: u8) -> SchemaV2Verdict {
+    if elements_pass_schema_v2(elements) {
+        SchemaV2Verdict::Accepted
+    } else if attempt == 0 {
+        SchemaV2Verdict::RepromptOnce
+    } else {
+        SchemaV2Verdict::TypedRefusal
+    }
+}
+
+/// J-8 T2: run the perception scaffold with call-1 literal elements
+/// provided. When `call1_elements` is `Some`, the schema v2 coord
+/// validation gate runs via [`apply_schema_v2`]. When `None`, the scaffold
+/// falls through to the T2 DegradedPassthrough stub (T5 wires the live
+/// sidecar call-1).
+///
+/// `schema_attempt` is 0 on the first call-1, 1 after a re-prompt.
 ///
 /// # Errors
 /// Returns [`PerceptionError::ScaffoldFailed`] only on internal
 /// inconsistency. Otherwise degrades to passthrough rather than panicking.
-pub fn scaffold(input: &ScaffoldInput) -> Result<ScaffoldResult, PerceptionError> {
+pub fn scaffold_with_call1(
+    input: &ScaffoldInput,
+    call1_elements: Option<&[LiteralElement]>,
+    schema_attempt: u8,
+) -> Result<ScaffoldResult, PerceptionError> {
     if input.image_bytes.is_empty() {
         return Ok(ScaffoldResult {
             outcome: ScaffoldOutcome::NoImagePresent,
             literal_elements: Vec::new(),
             call1_temperature: SCAFFOLD_CALL1_TEMPERATURE,
         });
+    }
+    if let Some(elements) = call1_elements {
+        return match apply_schema_v2(elements, schema_attempt) {
+            SchemaV2Verdict::Accepted => Ok(ScaffoldResult {
+                outcome: ScaffoldOutcome::ScaffoldEmitted,
+                literal_elements: elements.to_vec(),
+                call1_temperature: SCAFFOLD_CALL1_TEMPERATURE,
+            }),
+            SchemaV2Verdict::RepromptOnce => Ok(ScaffoldResult {
+                outcome: ScaffoldOutcome::SchemaReprompt,
+                literal_elements: Vec::new(),
+                call1_temperature: SCAFFOLD_CALL1_TEMPERATURE,
+            }),
+            SchemaV2Verdict::TypedRefusal => Ok(ScaffoldResult {
+                outcome: ScaffoldOutcome::TypedRefusal,
+                literal_elements: Vec::new(),
+                call1_temperature: SCAFFOLD_CALL1_TEMPERATURE,
+            }),
+        };
     }
     // T2 skeleton — the two-call flow STRUCTURE is in place (call-1
     // describe-literal-elements at temp 0, 0-1000 normalized coords,
@@ -154,4 +242,23 @@ pub fn scaffold(input: &ScaffoldInput) -> Result<ScaffoldResult, PerceptionError
         literal_elements: Vec::new(),
         call1_temperature: SCAFFOLD_CALL1_TEMPERATURE,
     })
+}
+
+/// Run the two-call perception scaffold on `input`. T2 ships the
+/// two-call STRUCTURE (call-1 describe-literal-elements dispatch shape +
+/// call-2 task-model dispatch shape + the structured-JSON handoff). The
+/// live VLM calls are STUBBED in T2 (USER_OVERRIDE for legs 2/4 — T5
+/// replaces the stubs with real sidecar calls, sidecar-gated W-10).
+///
+/// J-8 T2: delegates to [`scaffold_with_call1`] with `call1_elements =
+/// None` and `schema_attempt = 0`, preserving the existing
+/// DegradedPassthrough stub behavior when no call-1 elements are
+/// provided (the live infer path still uses `from_prompt` which carries
+/// no call-1 elements until T5 feeds them).
+///
+/// # Errors
+/// Returns [`PerceptionError::ScaffoldFailed`] only on internal
+/// inconsistency. Otherwise degrades to passthrough rather than panicking.
+pub fn scaffold(input: &ScaffoldInput) -> Result<ScaffoldResult, PerceptionError> {
+    scaffold_with_call1(input, None, 0)
 }
