@@ -39,16 +39,23 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use crate::cloud_mode::{
+    CloudConfig, CloudModeRouter, ExecMode, RoutedProvider, SpendSnapshotInput,
+};
 use crate::grammar_gate::call_grammar_gate;
 use crate::handoff_payload::compress_handoff_payload;
+use crate::local_serving::{
+    DecideInput, LocalServingDecision, LocalServingRouter, TierResidencySnapshot, TierState,
+};
 use crate::role_predict::{predict_next_role, tier_allows_prewarm, VramTier};
 use crate::role_prompt::{
     build_role_prompt, default_voice_toml_path, load_voice_anchor_from_toml, VoiceAnchor,
 };
 use crate::runtime_config::RuntimeConfig;
 use crate::ssb::{
-    BackendCostAccruedPayload, RuntimeHandoffEventKind, RuntimeHandoffEventPayload, Ssb, SsbPayload,
-    UsageTurnEventKind, UsageTurnEventPayload, ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV,
+    BackendCostAccruedPayload, RouteDecisionEventKind, RouteDecisionEventPayload,
+    RuntimeHandoffEventKind, RuntimeHandoffEventPayload, Ssb, SsbPayload, UsageTurnEventKind,
+    UsageTurnEventPayload, ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV,
 };
 
 /// Errors surfaced by the runtime orchestrator. CLI subprocess errors are
@@ -169,6 +176,9 @@ pub struct RuntimeOrchestrator {
     /// backend. `turn_id == 0` is the pre-warm sentinel and never stamps
     /// the lock. Cleared by `release_turn_lock(turn_id)` at sequence end.
     turn_lock: RwLock<Option<TurnBackendPin>>,
+    /// J-48: per-tier residency tracker (warm/cold + inflight count).
+    /// Drives the `LocalServingRouter::decide()` pre-step in `try_complete`.
+    tier_residency: RwLock<TierResidencySnapshot>,
 }
 
 impl RuntimeOrchestrator {
@@ -182,6 +192,7 @@ impl RuntimeOrchestrator {
             health: RwLock::new(BTreeMap::new()),
             ssb: None,
             turn_lock: RwLock::new(None),
+            tier_residency: RwLock::new(TierResidencySnapshot::new()),
         }
     }
 
@@ -324,6 +335,17 @@ impl RuntimeOrchestrator {
         }
     }
 
+    /// J-48: decrement the inflight count for a tier after the chain
+    /// walk completes (success or failure). Paired with the inflight
+    /// bump in `try_complete` when ServeLocal/HibernateThenServe was
+    /// chosen.
+    async fn release_tier_inflight(&self, tier: VramTier) {
+        let mut guard = self.tier_residency.write().await;
+        if let Some(state) = guard.get_mut(&tier) {
+            state.inflight = state.inflight.saturating_sub(1);
+        }
+    }
+
     /// Drive a `complete` call for `role` with full fallback. On each
     /// attempt that fails with `Unavailable` / `NotImplemented` /
     /// `HealthTimeout` / `Network`, the chain advances. Returns the
@@ -369,6 +391,130 @@ impl RuntimeOrchestrator {
                 }
             }
         }
+
+        // J-48: local serving tier router pre-step. Before the fallback
+        // chain, ask the LocalServingRouter whether to serve locally,
+        // queue, hibernate+serve, or spill to cloud. The decision is
+        // binding: SpillToCloud/AdmitQueued/Wait skip local backends in
+        // the chain; ServeLocal/HibernateThenServe proceed and bump
+        // tier_residency inflight so the map is not inert.
+        let serving_decision = {
+            let residency_guard = self.tier_residency.read().await;
+            let cloud_cfg = CloudConfig::default();
+            let cloud_available = !cloud_cfg.air_gapped;
+            let router = LocalServingRouter::new();
+            let requested_tier = VramTier::from_env();
+            let input = DecideInput {
+                requested_tier,
+                residency: &residency_guard,
+                cloud_available,
+                spend: None,
+            };
+            router.decide(&input)
+        };
+
+        // J-48: write tier_residency so the map has writers, not just
+        // readers. ServeLocal bumps inflight + marks warm;
+        // HibernateThenServe evicts the small tier then warms big;
+        // SpillToCloud/AdmitQueued/Wait leave residency unchanged (no
+        // local serve this turn). The inflight is decremented after the
+        // chain walk via release_tier_inflight.
+        let served_tier: Option<VramTier> = match &serving_decision {
+            LocalServingDecision::ServeLocal { tier } => Some(*tier),
+            LocalServingDecision::HibernateThenServe { evict, serve } => {
+                let mut guard = self.tier_residency.write().await;
+                guard.insert(*evict, TierState::cold());
+                Some(*serve)
+            }
+            _ => None,
+        };
+        if let Some(tier) = served_tier {
+            let mut guard = self.tier_residency.write().await;
+            let entry = guard.entry(tier).or_insert_with(TierState::cold);
+            entry.warm = true;
+            entry.inflight = entry.inflight.saturating_add(1);
+            if tier == VramTier::High {
+                for (t, s) in guard.iter_mut() {
+                    if *t != VramTier::High {
+                        s.warm = false;
+                        s.inflight = 0;
+                    }
+                }
+            }
+        }
+
+        // Emit the decision audit row via E-31 RouteDecisionEvent
+        // (prefer-reuse, net 0 SSB). Wire-dark unless
+        // ELAI_ROUTE_DECISION_SSB_ENABLE=1.
+        if crate::cloud_mode::route_decision_ssb_enabled() {
+            if let Some(ref ssb) = self.ssb {
+                let kind = match &serving_decision {
+                    LocalServingDecision::ServeLocal { .. }
+                    | LocalServingDecision::AdmitQueued { .. }
+                    | LocalServingDecision::Wait => {
+                        crate::ssb::RouteDecisionEventKind::LocalRouteKept
+                    }
+                    LocalServingDecision::HibernateThenServe { .. } => {
+                        crate::ssb::RouteDecisionEventKind::TierModelSwapped
+                    }
+                    LocalServingDecision::SpillToCloud { .. } => {
+                        crate::ssb::RouteDecisionEventKind::CloudRouteChosen
+                    }
+                };
+                let payload = crate::ssb::RouteDecisionEventPayload {
+                    kind,
+                    route: serving_decision.as_str().to_string(),
+                    score: 0.0,
+                    ms: 0,
+                    reason: match &serving_decision {
+                        LocalServingDecision::SpillToCloud { reason } => reason.clone(),
+                        _ => String::new(),
+                    },
+                    session_id: Some(ssb.session_id().to_owned()),
+                    details_json: serving_decision.details_json(),
+                    ts_ms: now_ms(),
+                };
+                if let Err(e) = ssb
+                    .write_payload(
+                        "runtime_orchestrator",
+                        0,
+                        SsbPayload::RouteDecisionEvent(payload),
+                        Vec::new(),
+                    )
+                    .await
+                {
+                    warn!(
+                        target = "runtime_orchestrator",
+                        error = %e,
+                        "ssb write_payload failed for local_serving route decision"
+                    );
+                }
+            }
+        }
+
+        // J-48: apply the decision to the fallback chain. SpillToCloud,
+        // AdmitQueued, and Wait skip local backends so the decision is
+        // not discarded. ServeLocal and HibernateThenServe proceed with
+        // the full chain (residency was already bumped above).
+        let skip_local = matches!(
+            &serving_decision,
+            LocalServingDecision::SpillToCloud { .. }
+                | LocalServingDecision::AdmitQueued { .. }
+                | LocalServingDecision::Wait
+        );
+        let chain: Vec<RuntimeBackend> = if skip_local {
+            if let LocalServingDecision::SpillToCloud { ref reason } = serving_decision {
+                info!(
+                    target = "runtime_orchestrator",
+                    role = ?role,
+                    reason = %reason,
+                    "J-48 local serving router spilled to cloud"
+                );
+            }
+            chain.into_iter().filter(|b| !b.is_local()).collect()
+        } else {
+            chain
+        };
 
         // E-3 sub-phase 4B: wrap `config.system` with the unified
         // role-prompt preamble BEFORE the fallback chain so every
@@ -737,6 +883,9 @@ impl RuntimeOrchestrator {
                         grammar_manifest_path.as_ref(),
                         &response.text,
                     ).await;
+                    if let Some(tier) = served_tier {
+                        self.release_tier_inflight(tier).await;
+                    }
                     return Ok(CompleteOutcome {
                         response,
                         used_backend: backend,
@@ -773,6 +922,9 @@ impl RuntimeOrchestrator {
                             succeeded: None,
                             reason,
                         });
+                        if let Some(tier) = served_tier {
+                            self.release_tier_inflight(tier).await;
+                        }
                         return Err(RuntimeOrchestratorError::AllBackendsFailed { tried });
                     }
                     continue;
@@ -795,6 +947,9 @@ impl RuntimeOrchestrator {
             succeeded: None,
             reason: exhausted_reason,
         });
+        if let Some(tier) = served_tier {
+            self.release_tier_inflight(tier).await;
+        }
         Err(RuntimeOrchestratorError::AllBackendsFailed { tried })
     }
 

@@ -1437,6 +1437,11 @@ pub mod drift_interlock;
 #[cfg(feature = "empire")]
 pub mod empire;
 
+// J-48: local multi-model serving tier router (coarse admission + warm/cold
+// lifecycle + busy/cold cloud-spill). Wired into try_complete as a pre-step
+// before the local fallback chain.
+pub mod local_serving;
+
 // I-11: typed, versioned BeliefState for cross-model / cross-tier handoffs.
 // Replaces raw session-history passthrough on the cloud escalation path.
 // Wired into task_runner (adaptive_reduce + evaluate_handoff production callers).
