@@ -208,6 +208,58 @@ async fn drive_rra_emit(ssb: &Arc<Ssb>, rra_path: &std::path::Path) {
         .expect("run_artifact_emitted write");
 }
 
+/// Resolve the `elai` CLI binary path (same pattern as agent_loop_contract.rs:
+/// walk up from current_exe to the profile dir, then find the sibling binary).
+fn elai_binary_path() -> std::path::PathBuf {
+    let mut cur = std::env::current_exe().expect("current_exe");
+    cur.pop();
+    if cur.ends_with("deps") {
+        cur.pop();
+    }
+    let exe_name = if cfg!(windows) { "elai.exe" } else { "elai" };
+    cur.join(exe_name)
+}
+
+/// Drive `elai wrap --fixture` via the REAL production subprocess path.
+/// The subprocess creates its own SSB at `<tmp>/.elai_cc/sessions/ssb.db`
+/// and writes the .rra bundle to `rra_path`. This exercises the production
+/// `wrap_cmd::run_fixture_mode` including the `rra_disabled()` check at
+/// wrap_cmd.rs:216 — removing or inverting that check is detected.
+fn run_wrap_fixture_subprocess(tmp: &TempDir, rra_path: &std::path::Path) {
+    let bin = elai_binary_path();
+    assert!(
+        bin.exists(),
+        "elai binary missing at {} — run `cargo build --bin elai` first",
+        bin.display()
+    );
+    let status = std::process::Command::new(&bin)
+        .arg("wrap")
+        .arg("--fixture")
+        .arg("--output")
+        .arg(rra_path)
+        .current_dir(tmp.path())
+        .status()
+        .expect("spawn `elai wrap --fixture`");
+    assert!(
+        status.success(),
+        "BLOCK: `elai wrap --fixture` exited with {status} — production fixture path failed"
+    );
+}
+
+/// Open the SSB that `elai wrap --fixture` created at
+/// `<tmp>/.elai_cc/sessions/ssb.db` for read-back assertions. Uses the same
+/// project_id / session_id as the production wrap_cmd so query_by_type matches.
+fn open_production_wrap_ssb(tmp: &TempDir) -> Arc<Ssb> {
+    let cfg = SsbConfig {
+        db_path: tmp.path().join(".elai_cc").join("sessions").join("ssb.db"),
+        pool_size: Some(2),
+        project_id: WRAP_PROJECT_ID.to_string(),
+        session_id: WRAP_SESSION_ID.to_string(),
+    };
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+    Arc::new(Ssb::new(cfg, clock).expect("open production wrap ssb"))
+}
+
 // ---------------------------------------------------------------------------
 // (a) REAL-DB arm — the load-bearing wiring proof
 // ---------------------------------------------------------------------------
@@ -309,10 +361,14 @@ async fn wrap_fixture_emits_taint_flow_and_rra_bundle() {
 /// file but MUST NOT suppress TaintFlow rows (the gates still fire).
 /// This proves the kill-switch scope is tight (R9: kill_switch, not a graveyard).
 ///
-/// Calls the REAL `elai_cli::wrap_rra_disable::rra_disabled()` production fn
-/// (not a hardcoded `let rra_disabled = true`). Two arms:
-///   - positive: env=1, rra_disabled() returns true, RRA suppressed
-///   - negative: env unset, rra_disabled() returns false, RRA emitted
+/// Drives the REAL `elai wrap --fixture` production subprocess (which calls
+/// `wrap_cmd::run_fixture_mode` including the production `rra_disabled()` check
+/// at wrap_cmd.rs:216). Two arms:
+///   - positive: env=1, production path suppresses RRA, TaintFlow still lands
+///   - negative: env unset, production path emits RRA
+/// Removing or inverting the `rra_disabled()` check in wrap_cmd.rs would be
+/// detected because the production subprocess is the thing under test, not a
+/// test-local `if`.
 #[tokio::test]
 async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
     let _mutex = RRA_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -326,14 +382,10 @@ async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
     );
 
     let tmp = TempDir::new().expect("tempdir");
-    let ssb = make_wrap_ssb(&tmp, "b");
-
-    drive_fixture_emit(&ssb).await;
-
     let rra_path = tmp.path().join("wrap-kill.rra");
-    if !rra_disabled() {
-        drive_rra_emit(&ssb, &rra_path).await;
-    }
+    run_wrap_fixture_subprocess(&tmp, &rra_path);
+
+    let ssb = open_production_wrap_ssb(&tmp);
 
     let taint_rows = ssb
         .query_by_type(SsbActionType::TaintFlow)
@@ -355,6 +407,13 @@ async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
         rra_rows.len()
     );
 
+    assert!(
+        !rra_path.exists(),
+        "BLOCK: .rra file must NOT be written under kill-switch. \
+         Found {} (expected absent).",
+        rra_path.display()
+    );
+
     // --- negative arm: env unset, rra_disabled() returns false ---
     std::env::remove_var(WRAP_RRA_DISABLE_ENV);
     assert!(
@@ -363,13 +422,10 @@ async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
     );
 
     let tmp2 = TempDir::new().expect("tempdir");
-    let ssb2 = make_wrap_ssb(&tmp2, "b-neg");
     let rra_path2 = tmp2.path().join("wrap-kill-neg.rra");
+    run_wrap_fixture_subprocess(&tmp2, &rra_path2);
 
-    drive_fixture_emit(&ssb2).await;
-    if !rra_disabled() {
-        drive_rra_emit(&ssb2, &rra_path2).await;
-    }
+    let ssb2 = open_production_wrap_ssb(&tmp2);
 
     let rra_rows2 = ssb2
         .query_by_type(SsbActionType::RunArtifactEmitted)
@@ -378,6 +434,13 @@ async fn wrap_fixture_kill_switch_suppresses_rra_not_taint() {
         !rra_rows2.is_empty(),
         "BLOCK: with kill-switch OFF, RunArtifactEmitted rows must be emitted. \
          Got 0 rows (expected >0)."
+    );
+
+    assert!(
+        rra_path2.exists(),
+        "BLOCK: .rra file must be written when kill-switch is OFF. \
+         Expected at {}",
+        rra_path2.display()
     );
 }
 
