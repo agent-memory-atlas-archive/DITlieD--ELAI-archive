@@ -494,3 +494,19 @@ pub fn intent_control_enabled() -> bool {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
+
+/// Production gate for J-35: default-OFF. `drive_task` calls this; contracts
+/// must call THIS SAME fn so deleting the guard makes the OFF-path test red.
+pub async fn maybe_run_intent_control(
+    task_text: &str,
+    ssb: &Arc<Ssb>,
+    clock: Arc<dyn ClockProvider>,
+    gate_mode: GateMode,
+    risk: RiskLevel,
+    project_root: Option<&Path>,
+) {
+    if !intent_control_enabled() {
+        return;
+    }
+    run_intent_control(task_text, ssb, clock, gate_mode, risk, project_root).await;
+}

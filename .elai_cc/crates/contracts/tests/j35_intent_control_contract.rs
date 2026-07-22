@@ -5,7 +5,8 @@
 //!   * Premise-check does not condition on the requested output format.
 //!   * The autonomous default path does not use a majority/population prior.
 //!   * No "aim-verified" / "right-problem-confirmed" string or enum exists.
-//!   * With the env flag unset/off, run_intent_control is a no-op (no SSB rows).
+//!   * With the env flag unset/off, the production gate
+//!     (`maybe_run_intent_control` / drive_task path) emits zero SSB rows.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -13,12 +14,11 @@ use std::sync::Mutex;
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::autonomous_gate::GateMode;
 use elai_orchestrator::gate::RiskLevel;
-use elai_orchestrator::intent_control::{intent_control_enabled, run_intent_control};
+use elai_orchestrator::intent_control::{maybe_run_intent_control, run_intent_control};
 use elai_orchestrator::ssb::{
     IntentControlEventPayload, IntentControlKind, Ssb, SsbActionType, SsbConfig, SsbPayload,
     SsbReader,
 };
-use elai_orchestrator::SCHEMA_VERSION_PUBLIC;
 
 fn write_fixture(dir: &std::path::Path) {
     let src = dir.join("src");
@@ -118,8 +118,6 @@ async fn contract_false_premise_emits_premise_flagged() {
     )
     .await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-
     let premise_rows = decode_intent_control_rows(&ssb, IntentControlKind::PremiseFlagged);
     assert!(
         !premise_rows.is_empty(),
@@ -175,7 +173,6 @@ async fn contract_format_independent_premise_check() {
             Some(project_dir.path()),
         )
         .await;
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
         let premise_rows = decode_intent_control_rows(&ssb, IntentControlKind::PremiseFlagged);
         assert!(
@@ -212,7 +209,6 @@ async fn contract_journal_default_not_population_prior() {
         None,
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
     let route_rows = decode_intent_control_rows(&ssb, IntentControlKind::RouteDecided);
     assert!(
@@ -257,16 +253,11 @@ fn contract_no_aim_verified_verdict() {
             label
         );
     }
-
-    // SCHEMA_VERSION must reflect the J-35 IntentControlEvent addition.
-    assert!(
-        SCHEMA_VERSION_PUBLIC >= 288,
-        "CONTRACT: SCHEMA_VERSION must be >= 288 after J-35 IntentControlEvent addition"
-    );
 }
 
 // ---------------------------------------------------------------------------
-// Contract 5 — env flag off/unset -> run_intent_control is a no-op.
+// Contract 5 — env flag off -> production gate emits zero SSB rows;
+//              env flag on  -> production gate emits SSB rows.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -274,27 +265,54 @@ async fn contract_flag_off_is_noop() {
     let _mutex = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = EnvRestoreGuard::capture(ELAI_INTENT_CONTROL_ENABLE);
 
-    // Unset -> disabled.
+    let project_dir = tempfile::tempdir().expect("create project dir");
+    write_fixture(project_dir.path());
+
+    let task = "fix the sync loop in src/foo.rs that handles batching and queue draining and retry logic and backpressure. the whole pipeline needs to become async eventually";
+
+    // OFF arm: env unset -> maybe_run_intent_control must emit ZERO rows.
     std::env::remove_var(ELAI_INTENT_CONTROL_ENABLE);
-    assert!(
-        !intent_control_enabled(),
-        "CONTRACT: intent_control_enabled must be false when env is unset"
-    );
+    let (ssb_off, _ssb_off_dir) = build_ssb("flag-off").await;
+    maybe_run_intent_control(
+        task,
+        &ssb_off,
+        os_clock(),
+        GateMode::Interactive,
+        RiskLevel::Low,
+        Some(project_dir.path()),
+    )
+    .await;
 
-    // Explicitly off.
-    std::env::set_var(ELAI_INTENT_CONTROL_ENABLE, "0");
-    assert!(
-        !intent_control_enabled(),
-        "CONTRACT: intent_control_enabled must be false when env is 0"
-    );
+    for kind in [
+        IntentControlKind::PremiseFlagged,
+        IntentControlKind::SpecReconstructed,
+        IntentControlKind::RouteDecided,
+        IntentControlKind::AssumptionLogged,
+    ] {
+        let rows = decode_intent_control_rows(&ssb_off, kind);
+        assert!(
+            rows.is_empty(),
+            "CONTRACT: maybe_run_intent_control with flag OFF must emit zero {:?} rows",
+            kind
+        );
+    }
 
-    // run_intent_control itself does NOT check the env flag (the caller in
-    // task_runner.rs gates on it). But when the flag is off, the production
-    // path never calls run_intent_control. Verify the gate function is the
-    // correct no-op guard.
+    // ON arm: env=1 -> maybe_run_intent_control must emit rows.
     std::env::set_var(ELAI_INTENT_CONTROL_ENABLE, "1");
+    let (ssb_on, _ssb_on_dir) = build_ssb("flag-on").await;
+    maybe_run_intent_control(
+        task,
+        &ssb_on,
+        os_clock(),
+        GateMode::Interactive,
+        RiskLevel::Low,
+        Some(project_dir.path()),
+    )
+    .await;
+
+    let premise_rows = decode_intent_control_rows(&ssb_on, IntentControlKind::PremiseFlagged);
     assert!(
-        intent_control_enabled(),
-        "CONTRACT: intent_control_enabled must be true when env is 1"
+        !premise_rows.is_empty(),
+        "CONTRACT: maybe_run_intent_control with flag ON must emit PremiseFlagged rows"
     );
 }

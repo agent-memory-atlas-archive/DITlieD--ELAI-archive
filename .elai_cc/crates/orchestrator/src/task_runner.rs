@@ -6817,7 +6817,7 @@ async fn drive_task(
     // ELAI_INTENT_CONTROL_ENABLE=1. Emits IntentControlEvent SSB rows
     // (SpecReconstructed, PremiseFlagged, RouteDecided, AssumptionLogged)
     // before decomposition. Never blocks research_decompose.
-    if crate::intent_control::intent_control_enabled() {
+    {
         let ic_clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
         let ic_gate_mode = if let Some(ref gate) = resolved.autonomous_gate {
             gate.mode().await
@@ -6825,7 +6825,7 @@ async fn drive_task(
             crate::autonomous_gate::GateMode::Interactive
         };
         let ic_risk = crate::gate::RiskLevel::Low;
-        crate::intent_control::run_intent_control(
+        crate::intent_control::maybe_run_intent_control(
             task.task.as_str(),
             writer,
             ic_clock,
