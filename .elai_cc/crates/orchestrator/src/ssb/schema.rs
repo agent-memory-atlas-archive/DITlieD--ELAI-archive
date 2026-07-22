@@ -5553,7 +5553,12 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- IntentControlKind rides in the payload. Emitted by
         -- run_intent_control (intent_control.rs) on the task-lane intake
         -- before decomposition.
-        'intent_control_event'
+        'intent_control_event',
+        -- J-39 T2: node admission gate event. Pattern-2 flat variant;
+        -- 3-arm NodeAdmissionEventKind rides in the payload. Emitted by
+        -- emit_node_admission_event (node_admission.rs) at the task_runner
+        -- SPLIT_TASK phase_sizing branch.
+        'node_admission_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

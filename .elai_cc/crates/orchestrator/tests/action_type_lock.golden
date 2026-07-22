@@ -350,6 +350,7 @@ mucoco_mutation_applied
 mucoco_skip_reason
 mutation_budgeted_run_ci_cleared
 mutation_survived
+node_admission_event
 novel_step_detected
 novelty_classified
 objective_sealed

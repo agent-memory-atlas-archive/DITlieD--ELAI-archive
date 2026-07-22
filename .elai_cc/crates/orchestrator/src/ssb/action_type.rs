@@ -4859,6 +4859,14 @@ pub enum SsbActionType {
     /// intake before decomposition.
     /// TOTAL_VARIANTS 597 -> 598.
     IntentControlEvent(IntentControlKind),
+    /// J-39 T2: node admission gate event. Pattern-2 flat variant
+    /// (mirrors ContextCalibrationEvent); the 3-arm
+    /// [`crate::ssb::NodeAdmissionEventKind`] discriminator (Admitted /
+    /// SplitForced / EscalatedToCloud) rides inside
+    /// [`crate::ssb::NodeAdmissionEventPayload::kind`]. Emitted by
+    /// `emit_node_admission_event` (node_admission.rs) at the task_runner
+    /// SPLIT_TASK phase_sizing branch.
+    NodeAdmissionEvent(NodeAdmissionEventKind),
 }
 
 impl SsbActionType {
@@ -5820,6 +5828,8 @@ impl SsbActionType {
             Self::BehaviorSteeringEvent(_) => "behavior_steering_event",
             // J-35 intent-control layer: flat variant, Kind rides in the payload.
             Self::IntentControlEvent(_) => "intent_control_event",
+            // J-39 T2: node admission gate event. Flat variant, Kind rides in the payload.
+            Self::NodeAdmissionEvent(_) => "node_admission_event",
         }
     }
 }
@@ -6712,6 +6722,10 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // J-35 intent-control layer: flat variant; Kind rides in the payload, not the action type.
         "intent_control_event" => Ok(SsbActionType::IntentControlEvent(
             IntentControlKind::SpecReconstructed,
+        )),
+        // J-39 T2: node admission gate event. Flat variant; Kind rides in the payload.
+        "node_admission_event" => Ok(SsbActionType::NodeAdmissionEvent(
+            NodeAdmissionEventKind::Admitted,
         )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }

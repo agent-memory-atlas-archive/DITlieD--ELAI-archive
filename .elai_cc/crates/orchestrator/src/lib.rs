@@ -2550,6 +2550,7 @@ pub use prompt_artifacts::{
 
 pub mod node_admission;
 pub use node_admission::admission_ceiling_threshold;
+pub use node_admission::emit_node_admission_event;
 
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {

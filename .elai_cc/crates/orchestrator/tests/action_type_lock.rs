@@ -1581,6 +1581,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::BehaviorSteeringEvent(_) => (),
         // J-35 (SCHEMA_VERSION 289): IntentControlEvent flat variant, Kind rides in the payload.
         SsbActionType::IntentControlEvent(_) => (),
+        // J-39 T2: NodeAdmissionEvent flat variant, Kind rides in the payload.
+        SsbActionType::NodeAdmissionEvent(_) => (),
     }
 }
 

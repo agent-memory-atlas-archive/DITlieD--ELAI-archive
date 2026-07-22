@@ -18093,6 +18093,27 @@ async fn emit_autonomous_decision(
                     &target,
                     crate::phase_sizing_splitter::DEFAULT_TOKEN_BUDGET,
                 );
+                {
+                    let ceiling_threshold = crate::node_admission::admission_ceiling_threshold(
+                        crate::pipeline_builder::SPLIT_RATIO as f32,
+                    );
+                    let kind = if subs.is_empty() {
+                        crate::ssb::NodeAdmissionEventKind::Admitted
+                    } else {
+                        crate::ssb::NodeAdmissionEventKind::SplitForced
+                    };
+                    crate::node_admission::emit_node_admission_event(
+                        writer,
+                        kind,
+                        step_id,
+                        est.token_estimate,
+                        ceiling_threshold,
+                        serde_json::json!({
+                            "should_split": est.should_split,
+                            "sub_count": subs.len(),
+                        }),
+                    );
+                }
                 if subs.is_empty() {
                     let ids: Vec<String> = split_plan
                         .sub_tasks

@@ -1619,6 +1619,12 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // (intent_control.rs) on the task-lane intake before decomposition.
     // TOTAL_VARIANTS 597 -> 598.
     SsbActionType::IntentControlEvent(IntentControlKind::SpecReconstructed),
+    // J-39 T2: node admission gate event. Pattern-2 flat variant (mirrors
+    // ContextCalibrationEvent); the 3-arm NodeAdmissionEventKind
+    // (Admitted / SplitForced / EscalatedToCloud) rides inside the payload.
+    // Emitted by `emit_node_admission_event` (node_admission.rs) at the
+    // task_runner SPLIT_TASK phase_sizing branch.
+    SsbActionType::NodeAdmissionEvent(NodeAdmissionEventKind::Admitted),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

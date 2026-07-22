@@ -3823,6 +3823,12 @@ pub enum SsbPayload {
     /// intake before decomposition.
     /// TOTAL_VARIANTS 597 -> 598.
     IntentControlEvent(IntentControlEventPayload),
+    /// J-39 T2: node admission gate event. Pattern-2 flat variant
+    /// (mirrors ContextCalibrationEvent); the 3-arm
+    /// [`NodeAdmissionEventKind`] discriminator rides inside the payload.
+    /// Emitted by `emit_node_admission_event` (node_admission.rs) at the
+    /// task_runner SPLIT_TASK phase_sizing branch after estimate+split.
+    NodeAdmissionEvent(NodeAdmissionEventPayload),
 }
 
 impl SsbPayload {
@@ -4659,6 +4665,8 @@ impl SsbPayload {
                 SsbActionType::BehaviorSteeringEvent(p.kind),
             Self::IntentControlEvent(ref p) =>
                 SsbActionType::IntentControlEvent(p.kind),
+            Self::NodeAdmissionEvent(ref p) =>
+                SsbActionType::NodeAdmissionEvent(p.kind),
         }
     }
 }
@@ -20848,6 +20856,64 @@ pub struct IntentControlEventPayload {
     /// Arm-specific details (JSON object). Carries per-arm context like
     /// the flagged premise text, the contradiction evidence, the journal
     /// source for an autonomous default.
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// J-39 T2: NodeAdmissionEvent substrate (observe-only admission telemetry)
+// ---------------------------------------------------------------------------
+
+/// J-39 T2 -- 3-arm fire-point discriminator carried by
+/// [`NodeAdmissionEventPayload::kind`] (Pattern-2 payload-field discriminator).
+///
+/// - `Admitted`: the splitter admitted the task without splitting (token
+///   estimate at or below the admission ceiling).
+/// - `SplitForced`: the splitter forced a sub-task decomposition (token
+///   estimate exceeded the admission ceiling).
+/// - `EscalatedToCloud`: reserved for the EXP-1 cloud-escalation path
+///   (owner-gated, NOT selected this slice).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeAdmissionEventKind {
+    Admitted,
+    SplitForced,
+    EscalatedToCloud,
+}
+
+impl NodeAdmissionEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Admitted => "admitted",
+            Self::SplitForced => "split_forced",
+            Self::EscalatedToCloud => "escalated_to_cloud",
+        }
+    }
+}
+
+/// J-39 T2 -- payload for [`SsbActionType::NodeAdmissionEvent`].
+///
+/// Pattern-2 single-variant 3-arm Kind rides in `kind`. Carries the step
+/// id, token estimate, ceiling threshold, and free-form JSON details so
+/// each kind's per-kind scalars ride along without per-kind payload structs.
+/// For `Admitted`, `details_json` carries `should_split` and `sub_count`.
+/// For `SplitForced`, `details_json` carries `should_split` and `sub_count`.
+/// Does NOT derive `Eq` -- `details_json` may carry NaN-not-equal values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeAdmissionEventPayload {
+    /// Fire-point discriminator. See [`NodeAdmissionEventKind`].
+    pub kind: NodeAdmissionEventKind,
+    /// Step id of the task under admission evaluation.
+    pub step_id: String,
+    /// Token estimate from `estimate_complexity`.
+    pub token_estimate: u32,
+    /// Admission ceiling threshold from `admission_ceiling_threshold`.
+    pub ceiling_threshold: u32,
+    /// Free-form per-kind context. Conventional fields:
+    /// `should_split` (bool), `sub_count` (usize).
     pub details_json: serde_json::Value,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,

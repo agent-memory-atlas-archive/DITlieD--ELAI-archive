@@ -3880,6 +3880,20 @@ use crate::gate::RiskLevel;
                     }),
                     ts_ms: 1_700_000_000_000,
                 }),
+            // J-39 T2: explicit arm so test_payload(NodeAdmissionEvent)
+            // returns a real NodeAdmissionEventPayload instead of falling to the wildcard.
+            SsbActionType::NodeAdmissionEvent(_) =>
+                SsbPayload::NodeAdmissionEvent(NodeAdmissionEventPayload {
+                    kind: NodeAdmissionEventKind::Admitted,
+                    step_id: "j39-test-step".into(),
+                    token_estimate: 1000,
+                    ceiling_threshold: 6000,
+                    details_json: serde_json::json!({
+                        "should_split": false,
+                        "sub_count": 0,
+                    }),
+                    ts_ms: 1_700_000_000_000,
+                }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload
@@ -8645,6 +8659,20 @@ use crate::gate::RiskLevel;
                 }),
                 ts_ms: 1_700_000_000_000,
             }),
+            // J-39 T2: one entry covers the variant (flat struct, Pattern-2
+            // Kind on the payload). Round-trip through write_payload +
+            // read-back verifies the substrate.
+            SsbPayload::NodeAdmissionEvent(NodeAdmissionEventPayload {
+                kind: NodeAdmissionEventKind::Admitted,
+                step_id: "j39-test-step".into(),
+                token_estimate: 1000,
+                ceiling_threshold: 6000,
+                details_json: serde_json::json!({
+                    "should_split": false,
+                    "sub_count": 0,
+                }),
+                ts_ms: 1_700_000_000_000,
+            }),
         ]
     }
 
@@ -8656,8 +8684,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            493,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent",
+            494,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent",
         );
 
         for (i, payload) in payloads.iter().enumerate() {
