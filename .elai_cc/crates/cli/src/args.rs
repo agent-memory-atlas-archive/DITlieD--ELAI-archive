@@ -329,6 +329,16 @@ pub(crate) enum CliAction {
         depth: u32,
         output_format: CliOutputFormat,
     },
+    /// J-39 T3: `elai cone_token_floor --target <file-or-symbol>
+    /// [--depth <u32>] [--project-root <path>] [--output-format text|json]`
+    /// Thin shell wrapper around
+    /// `elai_orchestrator::derive_cone_token_floor`.
+    ConeTokenFloor {
+        project_root: PathBuf,
+        target: String,
+        depth: u32,
+        output_format: CliOutputFormat,
+    },
     /// B-29 Phase 5b: `elai symbol_context --name <symbol-name>
     /// [--file <path>] [--project-root <path>] [--output-format text|json]`
     /// Thin shell wrapper around
@@ -3386,6 +3396,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // Handlers at crates/cli/src/symbol_graph.rs.
         "symbol_impact" | "symbol-impact" => {
             crate::args_symbol::parse_symbol_impact_args(&rest[1..], output_format)
+        }
+        "cone_token_floor" | "cone-token-floor" => {
+            crate::args_symbol::parse_cone_token_floor_args(&rest[1..], output_format)
         }
         "symbol_context" | "symbol-context" => {
             crate::args_symbol::parse_symbol_context_args(&rest[1..], output_format)

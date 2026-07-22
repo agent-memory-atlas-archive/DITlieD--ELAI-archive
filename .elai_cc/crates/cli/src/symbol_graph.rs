@@ -285,6 +285,51 @@ pub(crate) fn run_symbol_impact(
     Ok(())
 }
 
+/// Run `elai cone_token_floor --target <X> [--depth N] [--output-format ...]`.
+///
+/// Calls `elai_orchestrator::derive_cone_token_floor` against the project's
+/// SymbolGraphCache. Prints JSON `{target, depth, cone_token_floor}`.
+pub(crate) fn run_cone_token_floor(
+    project_root: PathBuf,
+    target: String,
+    depth: u32,
+    output_format: CliOutputFormat,
+) -> Result<(), anyhow::Error> {
+    let project_root = normalize_workspace_root(project_root);
+    let db_path = core_dkg_db_path(&project_root);
+    if !db_path.exists() {
+        return Err(anyhow::anyhow!(
+            "cone_token_floor: DKG database not found at {} — run `elai symbol_graph build --project-root {}` first",
+            db_path.display(),
+            project_root.display(),
+        ));
+    }
+    let project_id = project_id_from_path(&project_root);
+
+    let mut cache = SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
+        .map_err(|e| anyhow::anyhow!("SymbolGraphCache::new failed: {e}"))?;
+
+    let entry_files = vec![target.clone()];
+    let floor = elai_orchestrator::derive_cone_token_floor(&entry_files, &mut cache, depth);
+
+    match output_format {
+        CliOutputFormat::Json => {
+            let json = serde_json::json!({
+                "target": target,
+                "depth": depth,
+                "cone_token_floor": floor,
+            });
+            println!("{json}");
+        }
+        CliOutputFormat::Text | CliOutputFormat::Toml => {
+            println!("Cone token floor for '{}':", target);
+            println!("  depth      : {}", depth);
+            println!("  token_floor: {}", floor);
+        }
+    }
+    Ok(())
+}
+
 /// Run `elai symbol_context --name <X> [--file PATH] [--output-format ...]`.
 ///
 /// Calls `compute_symbol_context` for all definitions of `name` (filtered

@@ -159,6 +159,94 @@ pub(crate) fn parse_symbol_impact_args(
     })
 }
 
+/// J-39 T3 — parse `elai cone_token_floor --target <X> [--depth N]
+/// [--project-root PATH] [--output-format text|json]`. Thin shell wrapper
+/// around `derive_cone_token_floor` for fork-exec callers.
+pub(crate) fn parse_cone_token_floor_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut project_root: Option<PathBuf> = None;
+    let mut target: Option<String> = None;
+    let mut depth: u32 = 2;
+    let mut output_format_override: Option<CliOutputFormat> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--project-root" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --project-root".to_string())?;
+                project_root = Some(PathBuf::from(value));
+                i += 2;
+            }
+            flag if flag.starts_with("--project-root=") => {
+                project_root = Some(PathBuf::from(&flag[15..]));
+                i += 1;
+            }
+            "--target" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --target".to_string())?;
+                target = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--target=") => {
+                target = Some(flag[9..].to_string());
+                i += 1;
+            }
+            "--depth" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --depth".to_string())?;
+                depth = value
+                    .parse::<u32>()
+                    .map_err(|e| format!("--depth must be a non-negative integer: {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--depth=") => {
+                depth = flag[8..]
+                    .parse::<u32>()
+                    .map_err(|e| format!("--depth must be a non-negative integer: {e}"))?;
+                i += 1;
+            }
+            "--output-format" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output-format".to_string())?;
+                output_format_override =
+                    Some(crate::args::parse_output_format_value(value)?);
+                i += 2;
+            }
+            flag if flag.starts_with("--output-format=") => {
+                output_format_override =
+                    Some(crate::args::parse_output_format_value(&flag[16..])?);
+                i += 1;
+            }
+            "--json" => {
+                output_format_override = Some(CliOutputFormat::Json);
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `cone_token_floor` argument: {other}"));
+            }
+        }
+    }
+    let target = target.ok_or_else(|| "missing required --target".to_string())?;
+    let project_root = match project_root {
+        Some(p) => p,
+        None => std::env::current_dir().map_err(|e| {
+            format!("`cone_token_floor` cannot determine cwd for --project-root default: {e}")
+        })?,
+    };
+    Ok(CliAction::ConeTokenFloor {
+        project_root,
+        target,
+        depth,
+        output_format: output_format_override.unwrap_or(output_format),
+    })
+}
+
 /// B-29 Phase 5b — parse `elai symbol_context --name <X> [--file PATH]
 /// [--project-root PATH] [--output-format text|json]`. Thin shell wrapper
 /// around `compute_symbol_context` for fork-exec callers.

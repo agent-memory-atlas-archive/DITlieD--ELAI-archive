@@ -1122,6 +1122,9 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::SymbolImpact { project_root, target, depth, output_format } => {
             symbol_graph::run_symbol_impact(project_root, target, depth, output_format)?
         }
+        CliAction::ConeTokenFloor { project_root, target, depth, output_format } => {
+            symbol_graph::run_cone_token_floor(project_root, target, depth, output_format)?
+        }
         CliAction::SymbolContext { project_root, name, file, output_format } => {
             symbol_graph::run_symbol_context(project_root, name, file, output_format)?
         }

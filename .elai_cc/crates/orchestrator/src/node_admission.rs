@@ -13,6 +13,11 @@ use crate::phase_sizing_splitter::DEFAULT_TOKEN_BUDGET;
 use crate::ssb::{
     system_time_ms_i64, NodeAdmissionEventKind, NodeAdmissionEventPayload, Ssb, SsbPayload,
 };
+use crate::usage_ledger::estimate_tokens_cached;
+use elai_knowledge::symbol_graph::{
+    cache::SymbolGraphCache, traversal::compute_impact_radius,
+};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// Admission ceiling for the splitter threshold, derived from the live
@@ -76,4 +81,37 @@ pub fn emit_node_admission_event(
             }
         }
     }
+}
+
+/// Sum of `estimate_tokens_cached` over every file in the union of
+/// `compute_impact_radius` cones for `entry_files` at `cone_depth`.
+/// Empty `entry_files` returns 0 without touching `cache`. Read failures
+/// and traversal errors contribute 0 (never panics).
+#[must_use]
+pub fn derive_cone_token_floor(
+    entry_files: &[String],
+    cache: &mut SymbolGraphCache,
+    cone_depth: u32,
+) -> u32 {
+    if entry_files.is_empty() {
+        return 0;
+    }
+    let mut cone: BTreeSet<String> = BTreeSet::new();
+    for entry in entry_files {
+        match compute_impact_radius(cache, entry, cone_depth) {
+            Ok(impact) => {
+                for file in impact.resolved_files {
+                    cone.insert(file);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    let mut total: u32 = 0;
+    for path in &cone {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            total = total.saturating_add(estimate_tokens_cached(&content));
+        }
+    }
+    total
 }
