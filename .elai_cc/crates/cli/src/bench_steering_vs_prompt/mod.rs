@@ -364,17 +364,23 @@ fn emit_steering_event(
             details_json,
         );
 
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-        let rows = ssb
-            .query_by_type(SsbActionType::BehaviorSteeringEvent(
-                BehaviorSteeringKind::SteeringEffectMeasured,
-            ))
-            .map_err(|e| BenchSteeringVsPromptError::SsbOpen {
-                source_msg: format!("query_by_type failed: {e}"),
-            })?;
+        let mut rows = Vec::new();
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            rows = ssb
+                .query_by_type(SsbActionType::BehaviorSteeringEvent(
+                    BehaviorSteeringKind::SteeringEffectMeasured,
+                ))
+                .map_err(|e| BenchSteeringVsPromptError::SsbOpen {
+                    source_msg: format!("query_by_type failed: {e}"),
+                })?;
+            if !rows.is_empty() {
+                break;
+            }
+        }
         if rows.is_empty() {
             return Err(BenchSteeringVsPromptError::SsbOpen {
-                source_msg: "no BehaviorSteeringEvent(SteeringEffectMeasured) row landed"
+                source_msg: "no BehaviorSteeringEvent(SteeringEffectMeasured) row landed after retries"
                     .to_string(),
             });
         }
