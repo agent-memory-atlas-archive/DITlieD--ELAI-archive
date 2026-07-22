@@ -5544,7 +5544,7 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- Emitted by emit_local_prefix_cache_event (prefix_cache_ssb.rs) on the
         -- local dispatch path.
         'local_prefix_cache_event',
-        -- J-24 (SCHEMA_VERSION 287): behavior steering event.
+        -- J-24 (SCHEMA_VERSION 288): behavior steering event.
         -- Pattern-2 flat variant; 3-arm BehaviorSteeringKind rides in the payload.
         -- Emitted by emit_behavior_steering_event (behavior_steering_ssb.rs).
         'behavior_steering_event'
