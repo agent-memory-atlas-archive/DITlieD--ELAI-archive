@@ -42,6 +42,7 @@ use crate::gate::RiskLevel;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileWritePayload {
     pub path: String,
     pub size_bytes: u64,
@@ -49,11 +50,13 @@ pub struct FileWritePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileReadPayload {
     pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolResultPayload {
     pub tool_id: String,
     pub success: bool,
@@ -61,6 +64,7 @@ pub struct ToolResultPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TestOutcomePayload {
     pub test_name: String,
     pub passed: bool,
@@ -75,6 +79,7 @@ pub struct TestOutcomePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FindingPayload {
     pub severity: String,
     pub category: String,
@@ -116,6 +121,7 @@ pub struct FewShotExample {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaimPayload {
     pub claim_text: String,
     pub grounding_source: String,
@@ -123,6 +129,7 @@ pub struct ClaimPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckpointPayload {
     pub agent_state_hash: String,
     pub grc_history_hash: String,
@@ -132,6 +139,7 @@ pub struct CheckpointPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelSwapPayload {
     pub from_model: String,
     pub to_model: String,
@@ -141,6 +149,7 @@ pub struct ModelSwapPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PhaseTransitionPayload {
     pub from_state: String,
     pub to_state: String,
@@ -148,6 +157,7 @@ pub struct PhaseTransitionPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KnowledgeDegradationPayload {
     pub component: String,
     pub old_mode: String,
@@ -156,6 +166,7 @@ pub struct KnowledgeDegradationPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IsolationMetricPayload {
     pub agent_id: String,
     pub phase_id: String,
@@ -163,6 +174,7 @@ pub struct IsolationMetricPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanUpdatePayload {
     pub phase_id: String,
     pub version: String,
@@ -170,6 +182,7 @@ pub struct PlanUpdatePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplanRequestPayload {
     pub agent_id: String,
     pub severity: String, // "MINOR" or "MAJOR"
@@ -177,6 +190,7 @@ pub struct ReplanRequestPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StubReferencePayload {
     pub phase_id: String,
     pub step_id: String,
@@ -184,6 +198,7 @@ pub struct StubReferencePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReasoningTracePayload {
     pub agent_id: String,
     pub step_index: u32,
@@ -198,6 +213,7 @@ pub struct ReasoningTracePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PhaseCompletePayload {
     pub phase_id: String,
     pub agent_id: String,
@@ -208,6 +224,7 @@ pub struct PhaseCompletePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryMonitoringPayload {
     pub channel_id: String,
     pub deep_size_bytes: u64,
@@ -215,6 +232,7 @@ pub struct MemoryMonitoringPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeathEventPayload {
     pub agent_id: String,
     pub classification: String,
@@ -224,6 +242,7 @@ pub struct DeathEventPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecoveryEventPayload {
     pub agent_id: String,
     pub classification: String,
@@ -235,6 +254,7 @@ pub struct RecoveryEventPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SupervisionExhaustedPayload {
     pub agent_id: String,
     pub phase_id: String,
@@ -245,6 +265,7 @@ pub struct SupervisionExhaustedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpiralDetectedPayload {
     pub agent_id: String,
     pub phase_id: String,
@@ -252,6 +273,7 @@ pub struct SpiralDetectedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContextReductionPayload {
     pub level: u8,
     pub before_tokens: usize,
@@ -264,6 +286,7 @@ pub struct ContextReductionPayload {
 /// per-slot bar chart can render real allocation values matching the active
 /// model tier (e.g. 12.5/66.7/12.5/8.3 weighting for 7B-12GB).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContextBudgetComputedPayload {
     /// Tier label (e.g. "micro_7b_12gb", "micro_3b_12gb", "large_32b_48gb",
     /// "micro_8gb"). Sourced from the
@@ -284,6 +307,7 @@ pub struct ContextBudgetComputedPayload {
 /// the SsbEntries slot truncation drops candidates scoring below
 /// [`crate::context_budget::FILE_OVERLAP_THRESHOLD`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SsbFilteredByOverlapPayload {
     pub entries_total: usize,
     pub entries_kept: usize,
@@ -297,6 +321,7 @@ pub struct SsbFilteredByOverlapPayload {
 /// one of these per tier per dispatch; an absent row means the tier ran
 /// within budget.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HookLatencyViolationPayload {
     /// Hook point name — `"PreToolUse"`, `"PostToolUse"`, `"Stop"`,
     /// or `"PreCompact"`.
@@ -325,6 +350,7 @@ pub struct HookLatencyViolationPayload {
 ///     `debug_assert!` and silently drops unknown phases in release builds
 ///     rather than corrupting the SSB stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MarkerReportPayload {
     /// Agent identifier (e.g. `"task_runner"`, `"executor"`, `"auditor"`).
     pub agent_id: String,
@@ -355,6 +381,7 @@ pub struct MarkerReportPayload {
 /// `empire_connected` row payload. Emitted once per successful factory-brain
 /// handshake.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmpireConnectedPayload {
     pub brain_id: String,
     pub protocol_version: u8,
@@ -364,6 +391,7 @@ pub struct EmpireConnectedPayload {
 /// (e.g. `"heartbeat_timeout"`, `"protocol_error"`, `"explicit_shutdown"`)
 /// so the dashboard can group disconnects without parsing structured JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmpireDisconnectedPayload {
     pub brain_id: String,
     pub reason: String,
@@ -374,6 +402,7 @@ pub struct EmpireDisconnectedPayload {
 /// label; `payload` is opaque JSON the bridge does NOT inspect (forwarded
 /// verbatim).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmpireEventReceivedPayload {
     pub source: String,
     pub event_type: String,
@@ -384,6 +413,7 @@ pub struct EmpireEventReceivedPayload {
 /// ElaiNeuron `ToolFilter` permitted the call. `allowed=false` rows form
 /// the security audit trail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmpireCapabilityInvokedPayload {
     pub capability: String,
     pub caller: String,
@@ -394,6 +424,7 @@ pub struct EmpireCapabilityInvokedPayload {
 /// (`circular_dep` / `hard_import` / `stdlib_shadow` / other); `fix_kind`
 /// is a single-token summary of the proposed remediation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmpireRepairProposedPayload {
     pub issue: String,
     pub target_path: String,
@@ -408,6 +439,7 @@ pub struct EmpireRepairProposedPayload {
 /// `cap_period` is `"daily"` or `"monthly"` — the dashboard filters on
 /// this string to surface the right gauge animation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RouteBlockedPayload {
     pub reason: String,
     pub spent_usd: f64,
@@ -421,6 +453,7 @@ pub struct RouteBlockedPayload {
 /// [`SsbActionType::WarnLimitReached`]. Emitted ONCE per UTC day when
 /// `day_usd` crosses `cap * warn_at_percent / 100.0`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WarnLimitReachedPayload {
     pub spent_usd: f64,
     pub cap_usd: f64,
@@ -443,6 +476,7 @@ pub struct WarnLimitReachedPayload {
 /// `"measured_<source>"` once `TOKENS_PER_LOC_UNGROUNDED_HEURISTIC` is
 /// replaced by a measured value (CLAUDE.md grounded-by-default).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CostEstimatePayload {
     pub low_usd: f64,
     pub high_usd: f64,
@@ -478,6 +512,7 @@ pub struct CostEstimatePayload {
 /// Paper: arXiv:2604.19086 (interface map at
 /// workflow/papers/mucoco-2604.19086-interface.md).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MucocoMutationAppliedPayload {
     pub operator: String,
     pub language: String,
@@ -488,6 +523,7 @@ pub struct MucocoMutationAppliedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BranchMergePayload {
     pub winner_name: String,
     pub abandoned_names: Vec<String>,
@@ -503,6 +539,7 @@ pub struct BranchMergePayload {
 /// tombstone's `seq` are logically deleted. `query_by_baby_step` filters them
 /// out automatically. This preserves SSB append-only invariant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MistakeEntryPayload {
     /// Identifies which baby step this mistake belongs to.
     pub baby_step_id: String,
@@ -539,6 +576,7 @@ pub struct MistakeEntryPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkloadProfilePayload {
     pub agent_role: String, // Serialized as snake_case string from AgentRole enum
     pub phase_id: String,
@@ -552,6 +590,7 @@ pub struct WorkloadProfilePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResearchStepPayload {
     pub agent_id: String,
     pub node_id: u64,
@@ -562,6 +601,7 @@ pub struct ResearchStepPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebResearchStepPayload {
     pub agent_id: String,
     pub node_id: u64,
@@ -594,6 +634,7 @@ pub struct WebResearchStepPayload {
 /// Emitted once per `phase_f_synthesize` call with the chosen synthesis path
 /// ("llm" or "deterministic_fallback") and the reason for that choice.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResearchPathChosenPayload {
     /// "llm" | "deterministic_fallback"
     pub path: String,
@@ -608,6 +649,7 @@ pub struct ResearchPathChosenPayload {
 /// Emitted by `ground_or_cached` on each call so the dashboard can aggregate
 /// cache efficiency per research session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GroundingCacheEventPayload {
     /// "hit" | "miss"
     pub kind: String,
@@ -623,6 +665,7 @@ pub struct GroundingCacheEventPayload {
 /// Emitted by CrossEncoderReranker + OrtVectorModule on state changes.
 /// Dashboard get_embedding_breakers queries latest row per `model`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CircuitBreakerStateChangePayload {
     /// Model identifier: "graphcodebert" | "granite-embed" | "ms-marco-l12" | "cross-encoder-l6" | "splade-v3"
     /// (E-17 SP2: corrected "ms-marco-l6" -> "cross-encoder-l6"; the on-disk
@@ -650,6 +693,7 @@ pub struct CircuitBreakerStateChangePayload {
 ///   "research_alternative" | "redecompose_step" | "replan_phase" | "replan_concept"
 ///   | "diagnose_and_retry" | "escalate"
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BubbleUpTypedPayload {
     pub from_level: String,
     pub to_level: String,
@@ -664,6 +708,7 @@ pub struct BubbleUpTypedPayload {
 /// `level` is the DecompositionLevel discriminant: "BabyStep" | "Step" | "Phase" | "Concept".
 /// This structured variant replaces the generic Finding row emitted by B-20A task_runner.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntegrationCheckpointSuccessPayload {
     pub level: String,
     pub node_id: u64,
@@ -676,6 +721,7 @@ pub struct IntegrationCheckpointSuccessPayload {
 /// B-7: one row per RepairAction emitted by DagRepairLoop::repair().
 /// `action_kind` is "reorder" | "substitute".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DagRepairRoundPayload {
     pub action_kind: String,
     pub round: u32,
@@ -686,6 +732,7 @@ pub struct DagRepairRoundPayload {
 /// `node_kind` is "concept" | "phase" | "step" | "baby_step".
 /// `parent_id` is 0 for root concept nodes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConceptDecompositionNodePayload {
     pub node_kind: String,
     pub node_id: u64,
@@ -698,6 +745,7 @@ pub struct ConceptDecompositionNodePayload {
 /// position state from TreeNavigatorState. The dashboard PlanWindow uses
 /// this to highlight the current node + drift trail.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TreePositionChangedPayload {
     /// Snake-case node id (e.g. "bs-3", "step-1"); empty when navigator
     /// produced no current step (traversal exhausted).
@@ -716,6 +764,7 @@ pub struct TreePositionChangedPayload {
 /// detail pane can render per-baby-step retry history without any
 /// additional shape negotiation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FailureRecordedPayload {
     pub baby_step_id: u64,
     pub step_id: u64,
@@ -732,6 +781,7 @@ pub struct FailureRecordedPayload {
 /// dashboard PlanWindow renders a tick / warning badge next to each
 /// PackageRef in the decision-source detail pane.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackageRefVerifiedPayload {
     pub name: String,
     pub registry: String,
@@ -746,6 +796,7 @@ pub struct PackageRefVerifiedPayload {
 /// Plan-literal RESEARCH | EXISTING_PROJECT | USER_SPECIFIED | FALLBACK
 /// is fabricated — only the 3 actual DecisionSource variants are emitted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TechStackDecidedPayload {
     pub component: String,
     pub chosen: String,
@@ -761,6 +812,7 @@ pub struct TechStackDecidedPayload {
 /// B-6: emitted after each EvidenceGate::check() call in the FSM grounding-sweep path.
 /// `verdict` is "pass" | "block". `gate_id` is the gate's canonical snake_case name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceGateEvaluatedPayload {
     /// Canonical snake_case gate name, e.g. "knowledge_readiness_gate".
     pub gate_id: String,
@@ -774,6 +826,7 @@ pub struct EvidenceGateEvaluatedPayload {
 /// `event` is "restart" | "kill" | "spiral_detected".
 /// `attempt` is the 1-based restart count within the current phase window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SupervisionEventPayload {
     pub agent_id: String,
     /// "restart" | "kill" | "spiral_detected"
@@ -787,6 +840,7 @@ pub struct SupervisionEventPayload {
 /// `snapshot_id` is "{session_id}:superstep:{n}".
 /// `channels_count` is the number of active channel topics at barrier exit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BspSuperstepPayload {
     /// "{session_id}:superstep:{n}" uniquely identifies the snapshot.
     pub snapshot_id: String,
@@ -800,6 +854,7 @@ pub struct BspSuperstepPayload {
 /// `state` is "spawned" | "ready" | "exited".
 /// `death_class` is present only when `state == "exited"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentLifecyclePayload {
     pub agent_id: String,
     /// AgentRole discriminant in snake_case (e.g. "executor", "auditor").
@@ -814,6 +869,7 @@ pub struct AgentLifecyclePayload {
 /// B-6: anti-spiral escalation signal — the same step hash has appeared `count` times
 /// within the current phase, triggering the escalation path in the SpiralTracker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AntiSpiralHitPayload {
     pub agent_id: String,
     /// Blake3 hex hash of the step content (or step_id string).
@@ -836,6 +892,7 @@ pub struct AntiSpiralHitPayload {
 /// across all baby-steps of the task. This matches spec D-4:303-305 and
 /// supersedes B-27's original phase_count × avg_tokens approximation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CloudSpendPayload {
     pub provider: String,
     pub model: String,
@@ -856,6 +913,7 @@ pub struct CloudSpendPayload {
 /// audit trail for "why did this step go to the cloud?" without consumers
 /// having to reconstruct the decision from per-call signals.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EscalateToCloudPayload {
     pub step_id: String,
     pub trigger_reason: String,
@@ -876,6 +934,7 @@ pub struct EscalateToCloudPayload {
 /// records the resulting table-row growth so the dashboard can render
 /// "deprecated_patterns +1 (cargo, blake2 -> blake3)".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DataTableGrewPayload {
     pub proposal_id: String,
     pub table: String,           // snake_case table name (matches DataTable::as_str)
@@ -890,6 +949,7 @@ pub struct DataTableGrewPayload {
 /// review only. Self-mod NEVER applies these. The dashboard surfaces them
 /// for an operator approve / reject decision.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct L3ProposalPayload {
     pub proposal_id: String,
     pub change_type: String,      // matches StructuralChangeType::as_str
@@ -902,6 +962,7 @@ pub struct L3ProposalPayload {
 /// ConfigVariants per `pipeline_mode` all crossed the similarity threshold.
 /// Triggers exploration-bonus boost in next parent_selection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConvergenceStagnantPayload {
     pub pipeline_mode: String,
     pub window: u32,             // consecutive variants measured
@@ -914,6 +975,7 @@ pub struct ConvergenceStagnantPayload {
 /// passed the similarity threshold (sim(N,N-2) AND sim(N-1,N-3) >= 0.95).
 /// Triggers AllowedConfigKey runtime-exclusion freeze for differing keys.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigOscillationPayload {
     pub pipeline_mode: String,
     pub period: u32,             // currently always 2
@@ -926,6 +988,7 @@ pub struct ConfigOscillationPayload {
 /// Distinct from `pass_to_fail` in TestOutcomeReport: REG spans the entire
 /// pipeline history per AC, not a single eval.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegressionDetectedPayload {
     pub pipeline_id: String,
     pub pipeline_mode: String,
@@ -938,6 +1001,7 @@ pub struct RegressionDetectedPayload {
 /// variants never structurally evolved (similarity >= 0.95 across every
 /// consecutive pair). Forces MSI verdict to STABILIZING for the mode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvolutionWithheldPayload {
     pub pipeline_mode: String,
     pub identical_streak: u32,
@@ -953,6 +1017,7 @@ pub struct EvolutionWithheldPayload {
 /// B-39: TRIAGE stage verdict for a chat turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct ReflectTriagedPayload {
     pub turn_id: String,
     pub class: String,
@@ -961,6 +1026,7 @@ pub struct ReflectTriagedPayload {
 /// B-39: single REASONER candidate emitted during best-of-N generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct ReflectCandidatePayload {
     pub turn_id: String,
     pub candidate_index: u32,
@@ -970,6 +1036,7 @@ pub struct ReflectCandidatePayload {
 /// B-39: AUDITOR best-of-N verdict selecting the winning candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct ReflectAuditVerdictPayload {
     pub turn_id: String,
     pub best_index: u32,
@@ -979,6 +1046,7 @@ pub struct ReflectAuditVerdictPayload {
 /// B-39: SYNTHESIZE final output after the full REFLECT pipeline completes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct ReflectRefinedPayload {
     pub turn_id: String,
     pub total_tokens_used: u32,
@@ -1001,6 +1069,7 @@ pub struct ReflectRefinedPayload {
 /// pipeline step that produced the artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct MediaValidationStartedPayload {
     pub step_id: String,
     pub media_type: String,
@@ -1012,6 +1081,7 @@ pub struct MediaValidationStartedPayload {
 /// so the dashboard can aggregate without a payload re-serialization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct MediaTier1CompletePayload {
     pub step_id: String,
     pub pass: bool,
@@ -1022,6 +1092,7 @@ pub struct MediaTier1CompletePayload {
 /// B-24: Tier-2 (VLM) advisory complete.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct MediaTier2CompletePayload {
     pub step_id: String,
     pub advisory_pass: bool,
@@ -1033,6 +1104,7 @@ pub struct MediaTier2CompletePayload {
 /// finished producing a captured-frame set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct RenderCompletePayload {
     pub step_id: String,
     pub adapter_name: String,
@@ -1044,6 +1116,7 @@ pub struct RenderCompletePayload {
 /// `converged` is true when the issues set stabilized.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct VisualFeedbackIterationPayload {
     pub step_id: String,
     pub iteration: u32,
@@ -1054,6 +1127,7 @@ pub struct VisualFeedbackIterationPayload {
 /// B-24: HumanReview branch — validator could not auto-decide.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct MediaHumanReviewRequiredPayload {
     pub step_id: String,
     pub reason: String,
@@ -1065,6 +1139,7 @@ pub struct MediaHumanReviewRequiredPayload {
 /// Additional fields (`agent_id`, `build_success`, `dev_server_ok`) carry
 /// orchestrator/observability context for SSB consumers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreviewAvailablePayload {
     pub url: String,
     pub step_id: String,
@@ -1075,6 +1150,7 @@ pub struct PreviewAvailablePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResearchDecomposeLevelPayload {
     pub agent_id: String,
     pub level: u32,
@@ -1171,6 +1247,7 @@ pub struct DiffSummary {
 
 /// Payload for `intervention_request` actions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InterventionRequestPayload {
     pub step_id: String,
     pub intervention_type: InterventionType,
@@ -1183,6 +1260,7 @@ pub struct InterventionRequestPayload {
 ///
 /// `request_id` references the `seq` of the original `intervention_request` row.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InterventionResponsePayload {
     pub request_id: i64,
     pub chosen: InterventionOption,
@@ -1196,6 +1274,7 @@ pub struct InterventionResponsePayload {
 /// is recorded in the SSB so downstream consumers (dashboard activity feed,
 /// replay tools) can observe the full task lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskSubmittedPayload {
     pub task: String,
     pub project_id: String,
@@ -1212,6 +1291,7 @@ pub struct TaskSubmittedPayload {
 /// lives purely for chat history replay (same deferral pattern as
 /// `TaskSubmittedPayload`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatMessagePayload {
     pub session_id: String,
     pub text: String,
@@ -1227,6 +1307,7 @@ pub struct ChatMessagePayload {
 /// is one of "status" | "error" | "disambiguation" | "steering_ack". `body`
 /// is the rendered card text. Row is append-only, no ACK flow.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatResponsePayload {
     pub session_id: String,
     pub card_kind: String,
@@ -1247,6 +1328,7 @@ pub struct ChatResponsePayload {
 /// 20); the dashboard emits a follow-up `Finding` row to flag the gap when
 /// the user selects one of those modes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionModeChangedPayload {
     pub from_mode: String,
     pub to_mode: String,
@@ -1265,6 +1347,7 @@ pub struct ExecutionModeChangedPayload {
 /// and renders "GG · entropy 2.4" style rows. High-entropy thresholds (>3.5
 /// warn, <1.0 confident) are resolved on the frontend (ActivityEntry.svelte).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderSignalsPayload {
     pub gg_mean_logprob: Option<f64>,
     pub gg_min_logprob: Option<f64>,
@@ -1283,6 +1366,7 @@ pub struct ProviderSignalsPayload {
 /// the `reason` reported by the sidecar ETC monitor plus a threshold label so
 /// the dashboard can render "search trigger · low_confidence" style rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchTriggerFiredPayload {
     pub reason: String,
     pub threshold_hit: String,
@@ -1295,6 +1379,7 @@ pub struct SearchTriggerFiredPayload {
 /// `tier` is one of `"8GB"` / `"12GB"` / `"16GB"` / `"24GB"` / `"48GB"` /
 /// `"cloud"`. `detected_via` is one of `"nvml"` / `"env"` / `"default"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VramTierDetectedPayload {
     pub tier: String,
     pub detected_via: String,
@@ -1315,6 +1400,7 @@ pub struct VramTierDetectedPayload {
 /// cannot cheaply enumerate the project (e.g. very large repos). The
 /// frontend renders "42/150 files" only when `files_total > 0`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IndexingProgressPayload {
     /// One of `"start"` / `"dkg_parsing"` / `"bm25_indexing"` / `"complete"`
     /// / `"failed"`. Stable set; see contract
@@ -1355,6 +1441,7 @@ pub struct IndexingProgressPayload {
 /// bundles, generated protobuf go, minified CSS) without having to parse
 /// tracing output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MinifiedFileChunkedPayload {
     /// Path relative to the project root, e.g. `vendor/bundle.min.js`.
     /// Stable across machines (no absolute prefix).
@@ -1383,6 +1470,7 @@ pub struct MinifiedFileChunkedPayload {
 /// while `ssb.rs` was locked. Consumers (GraphWindow event listener,
 /// KnowledgeDrawer refresh hook) drive UI invalidation on receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SymbolGraphUpdatedPayload {
     /// BLAKE3-derived per-project identifier (matches
     /// `metadata::project_id_from_path`).
@@ -1424,6 +1512,7 @@ pub struct SymbolGraphUpdatedPayload {
 /// reading the SsbEntry envelope. `started_at_ms` is the wall-clock unix-ms
 /// timestamp sourced from the injected [`elai_core::ClockProvider`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IdeaFramingStartedPayload {
     pub session_id: String,
     pub prompt: String,
@@ -1437,6 +1526,7 @@ pub struct IdeaFramingStartedPayload {
 /// records the regex / keyword that fired in the classifier; `None` when the
 /// fallback `Other` arm matched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectClassClassifiedPayload {
     pub session_id: String,
     pub project_class: String,
@@ -1453,6 +1543,7 @@ pub struct ProjectClassClassifiedPayload {
 /// `info_count` are the per-severity totals. `converged` is true when
 /// `block_count == 0` (loop exits early).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CriticRoundCompletePayload {
     pub session_id: String,
     pub round_index: u32,
@@ -1474,6 +1565,7 @@ pub struct CriticRoundCompletePayload {
 /// [`crate::task_runner::derive_framing_evidence`] (the 7th
 /// AutoAdvanceEvaluator check, gated on FRAMING substate).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IdeaFramedPayload {
     pub session_id: String,
     pub artifact_path: String,
@@ -1496,6 +1588,7 @@ pub struct IdeaFramedPayload {
 /// returns. Lets the dashboard render an entry-point summary card without
 /// re-running detection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EntryPointsDetectedPayload {
     pub project_id: String,
     /// Total detected entry points (including tests if include_tests=true).
@@ -1510,6 +1603,7 @@ pub struct EntryPointsDetectedPayload {
 /// (re)indexing run finishes. Carries the partition of artifacts that were
 /// freshly indexed vs. already up-to-date.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactsIndexedPayload {
     pub project_id: String,
     /// Artifact names freshly (re)indexed in this run.
@@ -1526,6 +1620,7 @@ pub struct ArtifactsIndexedPayload {
 ///
 /// Emitted by the `search_artifacts` dispatcher arm after each query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactSearchedPayload {
     pub project_id: String,
     /// Optional artifact name filter applied to the query (None = all).
@@ -1543,6 +1638,7 @@ pub struct ArtifactSearchedPayload {
 /// Emitted when the ArtifactIndexer detects that an artifact's content has
 /// changed (blake3 hash mismatch). Triggers a dashboard staleness badge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactStalePayload {
     pub project_id: String,
     pub artifact_name: String,
@@ -1558,6 +1654,7 @@ pub struct ArtifactStalePayload {
 /// per-tradeoff option-list lengths (for dashboard validation that responses
 /// reference valid options).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TradeoffCardEmittedPayload {
     pub session_id: String,
     pub tradeoff_names: Vec<String>,
@@ -1578,6 +1675,7 @@ pub struct TradeoffCardEmittedPayload {
 /// encoding — no SCHEMA_VERSION bump required for the additive optional
 /// field). Consumers parse p50/p99 across recent rows for the scale TOMLs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IndexCheckpointPayload {
     /// BLAKE3-derived per-project identifier (matches
     /// `metadata::project_id_from_path`).
@@ -1608,6 +1706,7 @@ pub struct IndexCheckpointPayload {
 /// * `build_index_resumable` returning [`crate::indexing_service::IndexResult::Resumed`].
 /// * `auto_resume_indexed_projects` after a resumed run completes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IndexResumePayload {
     /// BLAKE3-derived per-project identifier.
     pub project_id: String,
@@ -1624,6 +1723,7 @@ pub struct IndexResumePayload {
 /// `build_index_resumable`, OR when `graceful_shutdown` signals a project
 /// during the SHUTTING_DOWN cancellation pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IndexCancelPayload {
     /// BLAKE3-derived per-project identifier.
     pub project_id: String,
@@ -1640,6 +1740,7 @@ pub struct IndexCancelPayload {
 /// uses the same lowercase string as `LockScope::as_str` (`"index"` or
 /// `"watch"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LockAcquiredPayload {
     /// BLAKE3-derived per-project identifier.
     pub project_id: String,
@@ -1656,6 +1757,7 @@ pub struct LockAcquiredPayload {
 /// SSB writer is installed. `holder_pid` is the LIVE holder (not the
 /// contender — the contender is the process emitting the row).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LockContestedPayload {
     /// BLAKE3-derived per-project identifier.
     pub project_id: String,
@@ -1673,6 +1775,7 @@ pub struct LockContestedPayload {
 /// stub for a real `DkgQuerierAdapter`; see
 /// `docs/mvp-wiring-audit-2026-04-18.md` section 3 A-48.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DkgReadyPayload {
     /// Project identifier — matches the `project_id` on `TaskSubmittedPayload`.
     pub project_id: String,
@@ -1699,6 +1802,7 @@ pub struct DkgReadyPayload {
 /// feed by `hook_event` action_type and renders "hook · T1 BLOCK" style
 /// rows keyed on `tier` + `verdict`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HookEventPayload {
     /// `"T1"` / `"T2"` / `"T3"` / `"Composite"` — matches `HookTier::as_str`.
     pub tier: String,
@@ -1725,6 +1829,7 @@ pub struct HookEventPayload {
 /// [`HookEventPayload`] rows. Lets the dashboard render "T1 · 3 rules /
 /// 0.4ms" without having to aggregate the individual hook_event rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TieredAnalysisPayload {
     /// `"T1"` / `"T2"` / `"T3"` — matches `elai_orchestrator::hook_dispatcher::HookTier::as_str`.
     pub tier: String,
@@ -1750,6 +1855,7 @@ pub struct TieredAnalysisPayload {
 /// counts use the 4-chars-per-token heuristic that matches the rest of
 /// the codebase (see `output_postprocessor::CHARS_PER_TOKEN`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShortCoderCompressionPayload {
     /// Approximate input token count (bytes / 4).
     pub tokens_in: u32,
@@ -1771,6 +1877,7 @@ pub struct ShortCoderCompressionPayload {
 /// Batch 2B — per-dispatch summary row. Emitted once per call to each of
 /// the six `ToolDispatcher` methods.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolDispatchPayload {
     /// One of `"edit" | "validate" | "classify_failure" | "git_commit"
     /// | "file_read_outline" | "incremental_compile"`.
@@ -1789,6 +1896,7 @@ pub struct ToolDispatchPayload {
 
 /// Batch 2B — per-tier validation verdict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ValidationTierPayload {
     /// One of `"determinism" | "quality_ast" | "unit" | "integration" | "stress"`.
     pub tier: String,
@@ -1802,6 +1910,7 @@ pub struct ValidationTierPayload {
 /// Confidence is stored as u16 in basis points (0..=10000) to keep the
 /// payload `Eq` for msgpack-serialised equality tests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FailureClassifiedPayload {
     pub category: String,
     /// Confidence × 10000 (basis points). 10000 = 1.0, 7000 = 0.7.
@@ -1813,6 +1922,7 @@ pub struct FailureClassifiedPayload {
 
 /// Batch 2B — real git2 commit boundary row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitCommitPayload {
     pub commit_sha: String,
     pub branch: String,
@@ -1870,6 +1980,7 @@ pub const DAIRA_MARKERS: &[&str] = &[
 /// Legacy values remain valid and are NOT rejected — this is a superset
 /// expansion, not a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DairaTracePayload {
     /// DAIRA phase marker — see [`DAIRA_MARKERS`] for the canonical 15-value
     /// vocabulary. Legacy values `"enter"` / `"exit"` remain accepted.
@@ -1896,6 +2007,7 @@ pub struct DairaTracePayload {
 /// cleanly. `detection_method` / `tier` are stable string labels matching
 /// `DetectionMethod::as_str()` and the `VramTierDetectedPayload` tier set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemProbePayload {
     pub gpu_name: Option<String>,
     pub vram_total_mb: Option<u32>,
@@ -1913,6 +2025,7 @@ pub struct SystemProbePayload {
 /// Batch 3A — per-concept / per-task feasibility summary. Percent values are
 /// encoded as basis-point u16 (0..=10000) so the payload stays `Eq`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FeasibilityReportPayload {
     /// `"feasible"` / `"marginal"` / `"infeasible"`.
     pub task_feasibility: String,
@@ -1929,6 +2042,7 @@ pub struct FeasibilityReportPayload {
 /// Batch 3A — one row per novel step detected by the feasibility probe.
 /// Emitted inline with the enclosing [`FeasibilityReportPayload`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NovelStepDetectedPayload {
     pub step_id: String,
     pub reason: String,
@@ -1938,6 +2052,7 @@ pub struct NovelStepDetectedPayload {
 /// Batch 3A — one row per stub execution inside the feasibility probe.
 /// Emitted per novel step + per baby-step probe invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StubRunPayload {
     pub step_id: String,
     pub passed: bool,
@@ -1950,6 +2065,7 @@ pub struct StubRunPayload {
 /// `"substitute_model"` / `"escalate"`). `risk_level` is populated on
 /// RequestHuman; `reason` on RequestHuman / Escalate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateDecisionPayload {
     pub decision: String,
     pub risk_level: Option<String>,
@@ -1966,6 +2082,7 @@ pub struct GateDecisionPayload {
 /// token estimate). All three carry `#[serde(default)]` so rows serialized
 /// before FUL-B still deserialize into `None` / `None` / `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskSplitPayload {
     pub original_task_id: String,
     pub sub_task_ids: Vec<String>,
@@ -2001,6 +2118,7 @@ pub struct TaskSplitPayload {
 /// [`crate::autonomous_gate::EscalationTrigger::as_str`] label. `details` is
 /// free-form (e.g. the AntiSpiralDetector depth).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EscalationFiredPayload {
     pub trigger: String,
     pub step_id: String,
@@ -2010,6 +2128,7 @@ pub struct EscalationFiredPayload {
 /// Batch 3B (Phase 4G) — gate-mode change. Lower-cased (`"interactive"` /
 /// `"autonomous"`) to match the `/mode` slash-command syntax.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModeChangedPayload {
     pub from: String,
     pub to: String,
@@ -2018,6 +2137,7 @@ pub struct ModeChangedPayload {
 /// Batch 3C (Phase 4H) — Layer 1A proposal generated row. Emitted once per
 /// `process_outcome` proposal that passes the FPR + security-sensitive gates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProposalGeneratedPayload {
     pub proposal_id: String,
     pub table: String,
@@ -2029,6 +2149,7 @@ pub struct ProposalGeneratedPayload {
 /// Batch 3C (Phase 4H) — Layer 1A proposal applied row. `commit_sha` is
 /// `None` when git2 wiring is absent or the commit failed (non-fatal).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProposalAppliedPayload {
     pub proposal_id: String,
     pub table: String,
@@ -2040,6 +2161,7 @@ pub struct ProposalAppliedPayload {
 /// automatic rejection time (FPR/security) and from the dashboard reject
 /// command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProposalRejectedPayload {
     pub proposal_id: String,
     pub table: String,
@@ -2049,6 +2171,7 @@ pub struct ProposalRejectedPayload {
 /// Batch 3C (Phase 4H) — MSI update row. Emitted on every apply. `status` is
 /// one of `"IMPROVING"` / `"STABILIZING"` / `"DIVERGING"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MsiUpdatePayload {
     pub pipeline_mode: String,
     pub msi_value: f32,
@@ -2058,6 +2181,7 @@ pub struct MsiUpdatePayload {
 /// Batch 3C (Phase 4H) — config archive cap event. `dropped_id` is
 /// `Some(_)` when the 51st apply bumped an old entry out; `None` otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigArchivedPayload {
     pub pipeline_mode: String,
     pub archived_count: u32,
@@ -2073,6 +2197,7 @@ pub struct ConfigArchivedPayload {
 /// string label for the dispatch role (`"executor"`, `"auditor"`, etc.).
 /// `fsm_state` is the [`crate::fsm::FsmState`] rendered via its `Display` impl.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileSelectedPayload {
     pub profile: String,
     pub role: String,
@@ -2086,6 +2211,7 @@ pub struct ProfileSelectedPayload {
 /// state boundary. Both `from` and `to` are the `Display`-rendered FSM state
 /// names (e.g. `"IDLE"`, `"RESEARCHING"`, `"EXECUTING"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FsmTransitionPayload {
     pub from: String,
     pub to: String,
@@ -2099,6 +2225,7 @@ pub struct FsmTransitionPayload {
 /// for the activity feed; full text remains in the SSB for detail view.
 /// `confidence` is the reflection's self-reported 0.0..=1.0 score.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MicroReflectionPayload {
     pub step_id: String,
     pub root_cause: String,
@@ -2111,6 +2238,7 @@ pub struct MicroReflectionPayload {
 /// Emitted by [`crate::telescope_caller::invoke_telescope`] each time a
 /// repair-context build trims layers to fit under a token budget.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TelescopeCollapsePayload {
     pub from_tokens: u32,
     pub to_tokens: u32,
@@ -2125,6 +2253,7 @@ pub struct TelescopeCollapsePayload {
 /// safe default. `config` is a short identifier (e.g. `"source-tiers.toml"`);
 /// `reason` is a short classifier (e.g. `"file_not_found"`, `"parse_error"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigWarningPayload {
     pub config: String,
     pub reason: String,
@@ -2141,6 +2270,7 @@ pub struct ConfigWarningPayload {
 /// in addition to the SSB `project_id` column so subscribe-only consumers that
 /// only see the payload can still filter by project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConstraintsInjectedPayload {
     pub project_id: String,
     pub constraint_count: u32,
@@ -2154,6 +2284,7 @@ pub struct ConstraintsInjectedPayload {
 /// `InterventionRequest`. Pairs with the request by `intervention_id` so the
 /// dashboard can close out a request-row once resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InterventionResolvedPayload {
     pub intervention_id: String,
     pub approved: bool,
@@ -2175,6 +2306,7 @@ pub struct InterventionResolvedPayload {
 /// `"adapter"` (DkgQuerierAdapter). Additional tags may be added as the
 /// querier hierarchy grows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DkgQuerierSwappedPayload {
     /// Project identifier — matches the `project_id` on `TaskSubmittedPayload`.
     pub project_id: String,
@@ -2192,6 +2324,7 @@ pub struct DkgQuerierSwappedPayload {
 /// label, final vector dim, L2 norm, elapsed wall-clock time in ms, and the
 /// cache path (stringified for JSON round-trip friendliness).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SteeringComputedPayload {
     /// Role label the vector was computed for (e.g. `"executor"`).
     pub role: String,
@@ -2217,6 +2350,7 @@ pub struct SteeringComputedPayload {
 /// `"http_error"`, `"zero_magnitude"`, `"cache_write_failed"`) suffixed with
 /// the human detail where available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SteeringComputeFailedPayload {
     pub role: String,
     pub reason: String,
@@ -2229,6 +2363,7 @@ pub struct SteeringComputeFailedPayload {
 /// only (for "mcp · connected · 7 tools" dashboard rows) and may be zero if
 /// the server exposes resources but no tools.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpServerConnectedPayload {
     /// URL the bridge connected to (e.g. `http://localhost:8200` or
     /// `stdio://elai-mcp-stub`). Useful for the dashboard to display.
@@ -2244,6 +2379,7 @@ pub struct McpServerConnectedPayload {
 /// `"timeout"` — so the dashboard can colour the row without parsing the
 /// detail string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpToolCalledPayload {
     pub tool_name: String,
     pub server_url: String,
@@ -2258,6 +2394,7 @@ pub struct McpToolCalledPayload {
 /// classifier (`"user_disabled"`, `"heartbeat_timeout"`, `"protocol_error"`,
 /// `"connection_closed"`) optionally suffixed with the human detail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpServerDisconnectedPayload {
     pub server_url: String,
     pub reason: String,
@@ -2277,6 +2414,7 @@ pub struct McpServerDisconnectedPayload {
 /// helper `crate::focus_tunnel::mode_distribution_for_payloads` parses
 /// `mode` back into a [`crate::focus_tunnel::GenerationMode`] enum value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenerationModeSelectedPayload {
     /// `"baby_step_{id}"` stringified at emit time so the dashboard can
     /// correlate this row with other beacons keyed by the same step id.
@@ -2319,6 +2457,7 @@ pub struct GenerationModeSelectedPayload {
 /// unbounded_string_literal); `reason_detail` carries the structured detail
 /// (pattern_id for LazyPattern; depth for UnbalancedBraces; etc).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamingEarlyTerminatedPayload {
     /// `"baby_step_{id}"` stringified at emit time so the dashboard can
     /// correlate this row with its originating GenerationModeSelected row
@@ -2363,6 +2502,7 @@ pub struct StreamingEarlyTerminatedPayload {
 /// symbols. `was_discarded == true` and `bytes_assembled == 0` mark a
 /// canceled pre-assembly (the rolling-window discard path).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelinePreAssembledPayload {
     /// Zero-based index of the step whose pre-assembly produced this row.
     pub step_idx: u64,
@@ -2388,6 +2528,7 @@ pub struct PipelinePreAssembledPayload {
 /// `ExecutionModeChangedPayload` precedent — keeps the focus_tunnel ↔ ssb
 /// dependency direction unidirectional).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DependencyResolvedPayload {
     /// Wire-form import language: `"rust"` / `"python"` / `"typescript"` /
     /// `"go"` / `"javascript"` (matches `ImportLanguage::wire_str`).
@@ -2413,6 +2554,7 @@ pub struct DependencyResolvedPayload {
 /// `reason` value (e.g. `"undefined_symbol"`) maps to NeedsMicroStep
 /// semantics. `count` is 0 on cap-exhausted rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MicroStepCreatedPayload {
     /// Baby-step id of the step that triggered the micro-step (the parent).
     pub parent_step_id: u64,
@@ -2441,6 +2583,7 @@ pub struct MicroStepCreatedPayload {
 /// Both lists are deterministically sorted — derived from a `BTreeMap` source —
 /// so downstream consumers can rely on stable ordering without sorting themselves.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LanguageGrammarStatusPayload {
     /// Language IDs successfully loaded, in alphabetical order.
     pub loaded: Vec<String>,
@@ -2462,6 +2605,7 @@ impl From<elai_knowledge::dkg::LanguageRegistryStatus> for LanguageGrammarStatus
 /// Consumed by the dashboard KnowledgeDrawer Impact Analysis panel and
 /// the ActivityFeed via `SsbViewer::latest_action_of_type("symbol_query")`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SymbolQueryPayload {
     /// The tool that was invoked ("symbol_impact" / "symbol_flow" / etc.).
     pub tool: String,
@@ -4683,6 +4827,7 @@ impl SsbPayload {
 /// `AmbiguityScore.breakdown` shape but flattened to avoid pulling the
 /// `elai-reasoning` crate type into the SSB schema surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AmbiguityScoredPayload {
     /// Overall ambiguity score, in `[0.0, 1.0]`, rounded to 4 dp.
     pub score: f32,
@@ -4701,6 +4846,7 @@ pub struct AmbiguityScoredPayload {
 /// Emitted by the GroundingSweepGate when one or more per-dimension floors
 /// were breached even when `overall_score <= AMBIGUITY_THRESHOLD`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AmbiguityFloorFailedPayload {
     pub score: f32,
     /// Component names that fell below their floor (e.g. `"goal_clarity"`).
@@ -4714,6 +4860,7 @@ pub struct AmbiguityFloorFailedPayload {
 /// itself returns BLOCK on this case; the row is purely informational so
 /// the dashboard can show 1/2 → 2/2 progress.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AmbiguityStreakAdvancedPayload {
     pub score: f32,
     /// The streak count INCLUDING this snapshot (e.g. 1 means the snapshot
@@ -4731,6 +4878,7 @@ pub struct AmbiguityStreakAdvancedPayload {
 /// and the manifest size so the dashboard can render a "N/M refreshing"
 /// progress card.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CosmosRefreshStartedPayload {
     /// Number of artifacts identified as stale/missing for this refresh sweep.
     pub queued: u32,
@@ -4743,6 +4891,7 @@ pub struct CosmosRefreshStartedPayload {
 /// Emitted by `knowledge::cosmos_worker::CosmosWorker` after a successful
 /// artifact refresh (network fetch + body hash + manifest write).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CosmosArtifactUpdatedPayload {
     /// Logical artifact name (e.g. `"saas_pricing_patterns"`).
     pub name: String,
@@ -4760,6 +4909,7 @@ pub struct CosmosArtifactUpdatedPayload {
 /// exceeds `3 * cadence_interval`. The artifact is still served; the
 /// row is informational so the dashboard can render a DECAYED badge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CosmosArtifactDecayedPayload {
     /// Logical artifact name.
     pub name: String,
@@ -4775,6 +4925,7 @@ pub struct CosmosArtifactDecayedPayload {
 /// `VerificationMethod::CosmosCheck` dispatch resolves a claim against
 /// the cosmos store.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CosmosGroundingUsedPayload {
     /// Claim category (e.g. `"design"`, `"ip_boundary"`, `"monetization"`).
     pub claim_category: String,
@@ -4794,6 +4945,7 @@ pub struct CosmosGroundingUsedPayload {
 /// — kept as strings so this payload stays decoupled from the auditor_mode
 /// module (avoids a cyclic dep in payload deserialization).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PerLevelAuditStartedPayload {
     /// Auditor mode label: `"concepts" | "phases" | "steps" | "babysteps" |
     /// "babystep_detail" | "plan"`.
@@ -4812,6 +4964,7 @@ pub struct PerLevelAuditStartedPayload {
 /// `auditor_mode::persist_verdict`; SSB carries only the metadata so payload
 /// size stays bounded).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PerLevelAuditVerdictPayload {
     pub mode: String,
     pub tier: String,
@@ -4830,6 +4983,7 @@ pub struct PerLevelAuditVerdictPayload {
 /// the immediate parent in the decomposition hierarchy
 /// (concept ← phase ← step ← baby_step ← baby_step_detail-cascades-to-baby_step).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PerLevelAuditCascadePayload {
     pub mode: String,
     pub tier: String,
@@ -4849,6 +5003,7 @@ pub struct PerLevelAuditCascadePayload {
 /// human-readable explanation surfaced from the underlying
 /// `RuntimeAdapterError` or success message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeFallbackPayload {
     pub role: elai_ipc_types::AgentRole,
     pub primary: elai_providers::runtime::RuntimeBackend,
@@ -4865,6 +5020,7 @@ pub struct RuntimeFallbackPayload {
 /// serde shape (tag = "status") so dashboard renderers can decode
 /// without reaching into the providers crate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeHealthChangedPayload {
     pub backend: elai_providers::runtime::RuntimeBackend,
     pub prev: elai_providers::runtime::RuntimeHealth,
@@ -4879,6 +5035,7 @@ pub struct RuntimeHealthChangedPayload {
 /// the row is written; the writer is the last line of defence against
 /// accidental secret leakage into the SSB store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CliSubprocessSpawnedPayload {
     pub backend: elai_providers::runtime::RuntimeBackend,
     pub pid: u32,
@@ -4892,6 +5049,7 @@ pub struct CliSubprocessSpawnedPayload {
 /// or user-driven cancel. `exit_code` is None when the process was
 /// signalled.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CliSubprocessKilledPayload {
     pub backend: elai_providers::runtime::RuntimeBackend,
     pub pid: u32,
@@ -4905,6 +5063,7 @@ pub struct CliSubprocessKilledPayload {
 
 /// E-51 — payload for [`SsbActionType::MlxSubprocessSpawned`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MlxSubprocessSpawnedPayload {
     pub pid: u32,
     pub argv_redacted: Vec<String>,
@@ -4912,6 +5071,7 @@ pub struct MlxSubprocessSpawnedPayload {
 
 /// E-51 — payload for [`SsbActionType::MlxSubprocessKilled`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MlxSubprocessKilledPayload {
     pub pid: u32,
     pub exit_code: Option<i32>,
@@ -4920,6 +5080,7 @@ pub struct MlxSubprocessKilledPayload {
 
 /// E-51 — payload for [`SsbActionType::LlamaCppSubprocessSpawned`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LlamaCppSubprocessSpawnedPayload {
     pub pid: u32,
     pub ep: String,
@@ -4928,6 +5089,7 @@ pub struct LlamaCppSubprocessSpawnedPayload {
 
 /// E-51 — payload for [`SsbActionType::LlamaCppSubprocessKilled`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LlamaCppSubprocessKilledPayload {
     pub pid: u32,
     pub exit_code: Option<i32>,
@@ -4936,6 +5098,7 @@ pub struct LlamaCppSubprocessKilledPayload {
 
 /// E-51 — payload for [`SsbActionType::MlxApplePlatformDetected`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MlxApplePlatformDetectedPayload {
     pub chip_family: String,
     pub gpu_cores: u8,
@@ -4943,12 +5106,14 @@ pub struct MlxApplePlatformDetectedPayload {
 
 /// E-51 — payload for [`SsbActionType::LlamaCppEpDetected`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LlamaCppEpDetectedPayload {
     pub ep: String,
 }
 
 /// E-51 — payload for [`SsbActionType::RuntimeChainBuilt`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeChainBuiltPayload {
     pub chain: Vec<elai_providers::runtime::RuntimeBackend>,
 }
@@ -4963,6 +5128,7 @@ pub struct RuntimeChainBuiltPayload {
 /// input stages by `knowledge::deep::deep_pool_cap`. `max_allowed` is the
 /// per-stage cap that fired (typically `DEEP_CAP_DEFAULT = 100`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeepPoolCappedPayload {
     pub capped_count: u32,
     pub max_allowed: u32,
@@ -4975,6 +5141,7 @@ pub struct DeepPoolCappedPayload {
 /// floor by `knowledge::deep::rrf_quality_gate`; `total_before` is the
 /// candidate pool size before the gate ran (post-RRF-accumulator).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RrfQualityGateFiredPayload {
     pub dropped_count: u32,
     pub floor: f64,
@@ -4987,6 +5154,7 @@ pub struct RrfQualityGateFiredPayload {
 /// CodeSymbol / Mixed query that would otherwise have invoked HyDE
 /// (DEEP tier + >= MIN_WORDS_FOR_HYDE).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HydeSkippedCodeQueryPayload {
     pub query_class: String,
     pub word_count: u32,
@@ -5000,6 +5168,7 @@ pub struct HydeSkippedCodeQueryPayload {
 /// `code_vec_weight` is None when ELAI_CODE_VEC is disabled or no code
 /// index is loaded).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RrfComponentWeightsPayload {
     pub bm25_weight: Option<f64>,
     pub code_vec_weight: Option<f64>,
@@ -5020,6 +5189,7 @@ pub struct RrfComponentWeightsPayload {
 /// time since the runner entered the GRC step (caller supplies; clock is
 /// the runner's `ClockProvider`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GrcStepEmittedPayload {
     pub agent_id: String,
     pub topic: String,
@@ -5042,6 +5212,7 @@ pub struct GrcStepEmittedPayload {
 ///   GroundingSweepCard for an at-a-glance preview. `None` when all
 ///   claims are grounded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GroundingSweepResultPayload {
     pub ungrounded: u32,
     pub verify_needed: u32,
@@ -5058,6 +5229,7 @@ pub struct GroundingSweepResultPayload {
 /// check has `guard_added=true`. `blocked` is `true` when the runner's
 /// `hook_pre_blocked` flag was set as a result of the verdict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CsqEvaluatedPayload {
     pub severity: String,
     pub guard_present: bool,
@@ -5073,6 +5245,7 @@ pub struct CsqEvaluatedPayload {
 /// the observed count of `FINDING:` rows in the topic state;
 /// `expected_min` is the gate threshold (currently `1`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditorRubberStampRejectedPayload {
     pub role: String,
     pub finding_count: u32,
@@ -5096,6 +5269,7 @@ pub struct AuditorRubberStampRejectedPayload {
 /// `.elai_cc/python/elai_inference/c37_snowballing/` measures the
 /// downstream effect of these per-role choices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PerRoleDecodingAppliedPayload {
     /// Canonical snake_case agent role (one of:
     /// designer / executor / critic / auditor / researcher,
@@ -5120,6 +5294,7 @@ pub struct PerRoleDecodingAppliedPayload {
 /// (short query / breaker open / sidecar error). `cache_hit=true`
 /// indicates the cache TTL window was within bounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HydeQueryPayload {
     pub query_hash: String,
     pub hypothesis_len: u32,
@@ -5134,6 +5309,7 @@ pub struct HydeQueryPayload {
 /// `0.0..=100.0`. The producer skips emission when `hits + misses == 0`,
 /// so every row carries non-zero traffic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VectorCacheHitRatePayload {
     pub session_id: String,
     pub hits: u32,
@@ -5151,6 +5327,7 @@ pub struct VectorCacheHitRatePayload {
 /// `QueryTrace::query_id`. `tier` is one of `"FAST" / "STANDARD" /
 /// "DEEP" / "AUTO"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueryTracePayload {
     pub query_id: String,
     pub tier: String,
@@ -5176,6 +5353,7 @@ pub struct QueryTracePayload {
 /// future N-level decompositions). `parent_concept_id` is the
 /// containing concept (always present per location_index invariant).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PhaseNodeReadyPayload {
     pub phase_id: u64,
     pub concept_id: u64,
@@ -5190,6 +5368,7 @@ pub struct PhaseNodeReadyPayload {
 /// `parent_concept_id` are the containing decomposition ancestors so
 /// the dashboard can render the row inside the correct tree column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StepNodeReadyPayload {
     pub step_id: u64,
     pub phase_id: u64,
@@ -5206,6 +5385,7 @@ pub struct StepNodeReadyPayload {
 /// label so the dashboard BubbleUpStrip can show a per-baby-step
 /// bubble without joining additional rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BabyStepReadyPayload {
     pub baby_step_id: u64,
     pub step_id: u64,
@@ -5223,6 +5403,7 @@ pub struct BabyStepReadyPayload {
 /// ([`SsbActionType::DagRepairRound`]) from "gave up after N rounds"
 /// so the dashboard can surface a distinct ESCALATED badge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DagRepairEscalatedPayload {
     /// Number of rounds the repair loop executed before escalating.
     pub rounds: u32,
@@ -5242,6 +5423,7 @@ pub struct DagRepairEscalatedPayload {
 /// `timestamp_ms` is sourced from the engine's `ClockProvider` (never
 /// `SystemTime::now` directly) per ENTROPY_QUARANTINE.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentStatusChangedPayload {
     pub agent_id: String,
     /// AgentRole discriminant in snake_case (mirrors `AgentLifecyclePayload.role`).
@@ -5263,6 +5445,7 @@ pub struct AgentStatusChangedPayload {
 /// by [`crate::anti_spiral::SpiralTracker`] when the same step_hash
 /// repeats 3+ times within the current phase window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StagnationSpinningDetectedPayload {
     pub agent_id: String,
     pub pattern: String,
@@ -5275,6 +5458,7 @@ pub struct StagnationSpinningDetectedPayload {
 /// Defined now; producer wiring lands in C-10. Period-2 oscillation
 /// pattern (e.g. step_hash sequence A B A B A).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StagnationOscillationDetectedPayload {
     pub agent_id: String,
     pub pattern: String,
@@ -5289,6 +5473,7 @@ pub struct StagnationOscillationDetectedPayload {
 /// loop (`"hacker" | "researcher" | "simplifier" | "architect" |
 /// "contrarian"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LateralThinkingActivatedPayload {
     pub agent_id: String,
     pub persona: String,
@@ -5303,6 +5488,7 @@ pub struct LateralThinkingActivatedPayload {
 /// summary has diverged from the original task intent by more than
 /// `drift_score` cosine distance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GoalDriftWarningPayload {
     pub agent_id: String,
     pub drift_score: f32,
@@ -5316,6 +5502,7 @@ pub struct GoalDriftWarningPayload {
 /// Emitted when an agent exceeds its per-step wall-clock budget
 /// without producing observable output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatchdogTimeoutPayload {
     pub agent_id: String,
     pub elapsed_ms: u64,
@@ -5335,6 +5522,7 @@ pub struct WatchdogTimeoutPayload {
 /// after a persona suggestion was consumed. Carries the persona that
 /// broke the loop plus the iteration count at success.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LateralThinkingSucceededPayload {
     pub agent_id: String,
     pub persona: String,
@@ -5349,6 +5537,7 @@ pub struct LateralThinkingSucceededPayload {
 /// personas attempted (always 5 in the current implementation; field
 /// kept for forward-compat if the persona roster expands).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LateralThinkingExhaustedPayload {
     pub agent_id: String,
     pub personas_tried: u32,
@@ -5363,6 +5552,7 @@ pub struct LateralThinkingExhaustedPayload {
 /// reading (see workflow/reasoning/C-10-decisions.md DRIFT-3). Lower
 /// score = more drift; `drift_score < 0.4` triggers this Block row.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GoalDriftBlockPayload {
     pub agent_id: String,
     pub drift_score: f32,
@@ -5392,6 +5582,7 @@ pub struct GoalDriftBlockPayload {
 /// `step_id` is the baby-step identifier that triggered the squash; empty
 /// when invoked directly via the `elai wip-squash` CLI subcommand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WipSquashCompletePayload {
     pub wip_count: u32,
     pub squashed: bool,
@@ -5409,6 +5600,7 @@ pub struct WipSquashCompletePayload {
 /// `alternative_index` is 0-indexed (0 = first attempt, the original step).
 /// Up to `MAX_ALTERNATIVES_PER_STEP` (3) rows per NovelStep.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AlternativeExploredPayload {
     pub step_id: String,
     pub alternative_index: u8,
@@ -5422,6 +5614,7 @@ pub struct AlternativeExploredPayload {
 /// mode) or `Replan` (Autonomous mode). `variant` is the
 /// `FeasibilityEscalation` discriminant tag in snake_case.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FeasibilityEscalatedPayload {
     pub reason: String,
     pub variant: String,
@@ -5441,6 +5634,7 @@ pub struct FeasibilityEscalatedPayload {
 /// snapshot id at the branch tip. `parent_snap_id` is the snapshot the
 /// branch was forked from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BranchForkedPayload {
     pub branch_name: String,
     pub tip_snap_id: String,
@@ -5459,6 +5653,7 @@ pub struct BranchForkedPayload {
 /// `trunk_snap_id` is the trunk snapshot id post-merge. `abandoned_names`
 /// is the set of non-winner active branches at the time of the merge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BranchMergedPayload {
     pub winner_name: String,
     pub trunk_snap_id: String,
@@ -5473,6 +5668,7 @@ pub struct BranchMergedPayload {
 /// dashboard activity feed can render context without inspecting other
 /// rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BranchClosedPayload {
     pub branch_name: String,
     pub reason: String,
@@ -5510,6 +5706,7 @@ pub enum PlanSkeletonSource {
 /// concatenated step names (stable across rustc versions — DefaultHasher
 /// is NOT used, per C-25 Q5 resolution).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanSkeletonPayload {
     pub plan_id: String,
     pub step_count: u32,
@@ -5524,6 +5721,7 @@ pub struct PlanSkeletonPayload {
 /// successful cache hit followed by a successful run. `use_count` is the
 /// `CompiledPipeline.use_count` AFTER the increment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompiledPipelineFiredPayload {
     pub pipeline_id: String,
     pub concept_class: String,
@@ -5537,6 +5735,7 @@ pub struct CompiledPipelineFiredPayload {
 /// when the N-consecutive-success threshold (default N=3) is met and a new
 /// CompiledPipeline is materialized.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TemplateCrystallizedPayload {
     pub concept_class: String,
     pub plan_skeleton_hash: u64,
@@ -5552,6 +5751,7 @@ pub struct TemplateCrystallizedPayload {
 /// PAYLOAD_MAX_BYTES). `soft_timeout_secs` is the auto-detach boundary;
 /// `hard_timeout_secs` is the kill boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackgroundTaskStartedPayload {
     pub task_id: String,
     pub command_summary: String,
@@ -5566,6 +5766,7 @@ pub struct BackgroundTaskStartedPayload {
 /// is `true` when the manager dropped the JoinHandle at the soft boundary;
 /// `timed_out` is `true` when the hard boundary was exceeded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackgroundTaskCompletePayload {
     pub task_id: String,
     pub exit_status: i32,
@@ -5601,6 +5802,7 @@ pub enum DecompileTriggerReason {
 /// dashboards / contract tests filtered on `decompile_triggered` saw
 /// zero rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecompileTriggeredPayload {
     pub concept_class: String,
     pub plan_skeleton_hash: u64,
@@ -5633,6 +5835,7 @@ pub struct DecompileTriggeredPayload {
 ///                           `BubbleUpAction::Escalate` row in the same
 ///                           cycle. C-26 plan path A always sets `true`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FutilityDetectedPayload {
     pub error_class: String,
     pub consecutive_count: u32,
@@ -5657,6 +5860,7 @@ pub struct FutilityDetectedPayload {
 ///                    `ThinkingPersona::as_str()` — defaults to `"hacker"`
 ///                    for NoDrift). `None` when C-10 is unavailable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FutilityOutputStagnationPayload {
     pub similarity: f32,
     pub threshold: f32,
@@ -5689,6 +5893,7 @@ pub struct FutilityOutputStagnationPayload {
 /// dashboard derives it from the FileWrite diff (typically the
 /// `@@ -N,M +P,Q @@` header content hash).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChangeDecisionPayload {
     pub decision: String,
     pub path: String,
@@ -5723,6 +5928,7 @@ pub struct ChangeDecisionPayload {
 /// so the dashboard can render a "last N transitions" timeline without
 /// N round-trips. May be empty on the first transition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchModeChangedPayload {
     pub mode: String,
     #[serde(default)]
@@ -5751,6 +5957,7 @@ pub struct SearchModeChangedPayload {
 ///     by the producer (RedactingBabyStepExecutor) using its injected
 ///     clock so deterministic tests stay stable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedactionAppliedPayload {
     pub count: u64,
     #[serde(default)]
@@ -5791,6 +5998,7 @@ pub enum WiringViolationKind {
 /// `[wiring.entrypoints]` symbol path. Zero rows when the contract declares
 /// no produces_symbols.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WiringEvidencePayload {
     /// The configured entrypoint that reached the verified symbols.
     pub entrypoint: String,
@@ -5813,6 +6021,7 @@ pub struct WiringEvidencePayload {
 /// (forbidden regex literal for StubPattern; symbol name for
 /// UnreachableSymbol; observable trigger name for BrokenObservable).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WiringViolationPayload {
     pub violation_kind: WiringViolationKind,
     pub file: String,
@@ -5830,6 +6039,7 @@ pub struct WiringViolationPayload {
 /// stream up to (but not including) `first_divergence_index`. Identical
 /// sequences emit zero rows (contract: no false positives).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeterminismDriftPayload {
     pub seed: u64,
     pub run_a_hash: String,
@@ -5853,6 +6063,7 @@ pub struct DeterminismDriftPayload {
 /// `replace_+_with_-` for cargo-mutants binary-op replacements, or
 /// `delete_line` for mutmut statement deletions).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MutationSurvivedPayload {
     pub file: String,
     pub line: u32,
@@ -5873,6 +6084,7 @@ pub struct MutationSurvivedPayload {
 /// branch). `pair_count` is the count of populated pairs at confirmation
 /// time and must be >= the active `min_pairs` (the gate guarantees this).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntentConfirmedPayload {
     pub step_id: u64,
     pub pair_count: u8,
@@ -5891,6 +6103,7 @@ pub struct IntentConfirmedPayload {
 /// MrViolated is NOT a standalone Block — score aggregation deferred to
 /// T-4 per C-29 plan §13(c).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MrViolatedPayload {
     pub step_id: u64,
     pub relation: String,
@@ -5910,6 +6123,7 @@ pub struct MrViolatedPayload {
 /// SurgicalPanel and downstream auditors can reconstruct the plan summary
 /// without re-running the DKG traversal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurgicalPlanCreatedPayload {
     /// Stable identifier for the originating `/task` invocation
     /// (`task_<unix_secs>_<short_hash>` per surgical_decomposer.rs).
@@ -5934,6 +6148,7 @@ pub struct SurgicalPlanCreatedPayload {
 /// dashboard can render distinct treatments for Interactive (user must
 /// confirm) vs Autonomous (may escalate).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurgicalLocWarningPayload {
     pub task_id: String,
     pub total_loc_estimate: u32,
@@ -5950,6 +6165,7 @@ pub struct SurgicalLocWarningPayload {
 /// (the project_hash component is kept private to avoid leaking path info
 /// via the SSB stream).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OracleCacheHitPayload {
     pub query_hash_hex: String,
     /// Lowercase tier identifier: `"t1_authoritative"` | `"t2_strong"` |
@@ -5970,6 +6186,7 @@ pub struct OracleCacheHitPayload {
 /// is the lowercase serde form of `AnswerConfidence` (`"high"` | `"medium"`
 /// | `"low"` | `"unknown"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OracleCacheMissPayload {
     pub query_hash_hex: String,
     pub confidence: String,
@@ -5987,6 +6204,7 @@ pub struct OracleCacheMissPayload {
 /// (`"required"` | `"strong"` | `"weak"`). `fired = true` means the signal
 /// matched (e.g. `Cargo.toml` present, or `rust_file_count >= 10`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectDetectionSignalPayload {
     pub signal_name: String,
     pub weight: String,
@@ -6005,6 +6223,7 @@ pub struct ProjectDetectionSignalPayload {
 /// signatures + BLANK_N body placeholders) and surfaces this row so the
 /// dashboard can render "skeleton with N blanks" before any fill begins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkeletonGeneratedPayload {
     pub blank_count: u32,
     /// Lowercase language tag (`"rust"` | `"python"` | ...).
@@ -6019,6 +6238,7 @@ pub struct SkeletonGeneratedPayload {
 /// loop performs ZERO disk writes; this single `fs::write` is the only
 /// disk-side effect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkeletonFlushedPayload {
     pub path: String,
     pub completeness_ratio: f32,
@@ -6030,6 +6250,7 @@ pub struct SkeletonFlushedPayload {
 /// (`"pass"`/`"warn"`/`"block"`) and the short reason tag the dashboard
 /// ReasoningDrawer renders.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MiniCriticVerdictPayload {
     pub blank_id: u8,
     pub verdict: String,
@@ -6045,6 +6266,7 @@ pub struct MiniCriticVerdictPayload {
 /// `StructuralRetryOutcome` (or `"converged"` / `"exhausted"` /
 /// `"accept_and_complete"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralRetryStageAttemptPayload {
     pub blank_id: u8,
     pub stage: String,
@@ -6058,6 +6280,7 @@ pub struct StructuralRetryStageAttemptPayload {
 /// the bridge kind, the written path, and the module count assembled into
 /// the bridge file body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BridgeFileGeneratedPayload {
     /// Lowercase kind tag (`"mod_rs_aggregator"` | `"init_py_barrel"` |
     /// `"index_ts_barrel"` | `"go_package_doc"`).
@@ -6077,6 +6300,7 @@ pub struct BridgeFileGeneratedPayload {
 /// snake_case matching the wire labels defined on
 /// `reasoning_template::{Domain,PatternKind,ArchiveStatus}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArchiveEntryAddedPayload {
     pub template_id: String,
     pub content_hash: String,
@@ -6091,6 +6315,7 @@ pub struct ArchiveEntryAddedPayload {
 /// Emitted once when a template transitions to `Retired`. `retired_at_ms` is
 /// unix-millis from the injected [`elai_core::clock::ClockProvider`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArchiveEntryRetiredPayload {
     pub template_id: String,
     pub retired_at_ms: i64,
@@ -6102,6 +6327,7 @@ pub struct ArchiveEntryRetiredPayload {
 /// D-5 BAI Thompson promotion is the producer (lands in a later session);
 /// the wire surface is added now so the schema bump is atomic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TemplatePromotedPayload {
     pub template_id: String,
     pub stage: String,
@@ -6110,6 +6336,7 @@ pub struct TemplatePromotedPayload {
 
 /// D-1 — payload for [`SsbActionType::TemplateCandidateRejected`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TemplateCandidateRejectedPayload {
     pub template_id: String,
     pub rejection_reason: String,
@@ -6122,6 +6349,7 @@ pub struct TemplateCandidateRejectedPayload {
 /// stable `fact_id` plus the indexed columns the dashboard MemoryDrawer
 /// renders without re-querying the on-disk store.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryFactExtractedPayload {
     /// UUIDv4 hex of the new row.
     pub fact_id: String,
@@ -6145,6 +6373,7 @@ pub struct MemoryFactExtractedPayload {
 /// [`elai_memory::FactStore::supersede`] returns Ok. Both `fact_id`s are
 /// surfaced so the dashboard MemoryDrawer can draw the supersession edge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryFactSupersededPayload {
     /// `fact_id` of the row that has just been closed (`valid_to_ms != null`).
     pub old_fact_id: String,
@@ -6163,6 +6392,7 @@ pub struct MemoryFactSupersededPayload {
 /// for the SSB wire format (intrinsic values originate as f32 from the
 /// sidecar; widening is lossless).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PpmScoredPayload {
     pub candidate_id: String,
     pub verifier_id: String,
@@ -6180,6 +6410,7 @@ pub struct PpmScoredPayload {
 /// is below the configured `threshold`. Carries both numbers so dashboards
 /// can render the gap without re-loading the threshold config.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PpmGatingFailedPayload {
     pub candidate_id: String,
     pub verifier_id: String,
@@ -6196,6 +6427,7 @@ pub struct PpmGatingFailedPayload {
 /// the counts the dashboard ChatMemoryDrawer renders without
 /// re-querying the underlying stores.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatReflectionCompletedPayload {
     /// UUIDv4 hex of the new `memory_notes` row.
     pub note_id: String,
@@ -6220,6 +6452,7 @@ pub struct ChatReflectionCompletedPayload {
 /// `"end"`; `duration_ms` is `0` on `"start"` and the elapsed time
 /// from start to end on `"end"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryEvolutionRunPayload {
     /// `"start"` | `"end"`.
     pub phase: String,
@@ -6238,6 +6471,7 @@ pub struct MemoryEvolutionRunPayload {
 /// another orchestration session; this payload is shipped now so the
 /// dashboard surface can subscribe without further schema churn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryNoteInsertedPayload {
     /// UUIDv4 hex of the inserted `memory_notes` row.
     pub note_id: String,
@@ -6259,6 +6493,7 @@ pub struct MemoryNoteInsertedPayload {
 /// path; carries both old and new content hashes so the dashboard can
 /// render a diff-friendly evolution history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryNoteEvolvedPayload {
     /// UUIDv4 hex of the evolved `memory_notes` row.
     pub note_id: String,
@@ -6281,6 +6516,7 @@ pub struct MemoryNoteEvolvedPayload {
 /// `"version_drift"`) can land without a schema bump because the field
 /// is a free-form string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryConflictDetectedPayload {
     /// `fact_id` (or `note_id`) of the older row.
     pub fact_id_a: String,
@@ -6297,6 +6533,7 @@ pub struct MemoryConflictDetectedPayload {
 /// variant strictly records edits to an already-pinned core block, so
 /// the dashboard's drift / edit-count indicator stays accurate).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoreBlockReplacedPayload {
     /// Owner of the core block (single-user installs use `"default"`).
     pub user_id: String,
@@ -6317,6 +6554,7 @@ pub struct CoreBlockReplacedPayload {
 /// snake_case `ConsensusRule::rule_id()` label so downstream consumers
 /// don't need to re-decode the rule body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifierConsensusPassPayload {
     pub candidate_id: String,
     pub template_id: String,
@@ -6333,6 +6571,7 @@ pub struct VerifierConsensusPassPayload {
 /// is non-empty for `Fail`; for `Inconclusive` it is empty and `reason`
 /// carries the inconclusive-detail string (e.g. `"missing_kinds=ppm"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifierConsensusFailPayload {
     pub candidate_id: String,
     pub template_id: String,
@@ -6348,6 +6587,7 @@ pub struct VerifierConsensusFailPayload {
 /// threshold; here no score exists. Carried atomically from D-2
 /// (DECISION-1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PpmUnavailablePayload {
     pub candidate_id: String,
     pub verifier_id: String,
@@ -6374,6 +6614,7 @@ pub struct PpmUnavailablePayload {
 /// when either side carried no score (Deterministic / CrossContext
 /// always have 0.0 / 1.0 scores so the delta is meaningful even there).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifierDisagreementPayload {
     pub candidate_id: String,
     pub template_id: String,
@@ -6395,6 +6636,7 @@ pub struct VerifierDisagreementPayload {
 /// shingle-jaccard similarity on `[0.0, 1.0]` widened to f64 for the
 /// SSB wire format.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrossContextDispatchedPayload {
     pub claim_id: String,
     pub context_a_hash: String,
@@ -6414,6 +6656,7 @@ pub struct CrossContextDispatchedPayload {
 /// row is a signal that PageRank never ran at all — not that it ran
 /// with an empty graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PagerankRunPayload {
     pub workspace_root_hash: u64,
     pub node_count: u32,
@@ -6428,6 +6671,7 @@ pub struct PagerankRunPayload {
 /// `trigger_reason` is a snake-case label so dashboards can group rebuild causes:
 /// `"missing"` | `"stale"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DkgRebuildStartedPayload {
     pub workspace_root_hash: u64,
     pub trigger_reason: String,
@@ -6440,6 +6684,7 @@ pub struct DkgRebuildStartedPayload {
 /// `duration_ms` is wall-clock from start to end of the rebuild.
 /// `node_count` is the number of DKG nodes produced (0 on failure).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DkgRebuildCompletePayload {
     pub workspace_root_hash: u64,
     pub success: bool,
@@ -6455,6 +6700,7 @@ pub struct DkgRebuildCompletePayload {
 /// identity without leaking the upstream URL. `ts_ms` is wall-clock
 /// milliseconds since UNIX epoch (caller-supplied via [`ClockProvider`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GithubPrOpenedPayload {
     pub pr_number: u32,
     pub pr_url_hash: u64,
@@ -6470,6 +6716,7 @@ pub struct GithubPrOpenedPayload {
 /// status-transition rows (hash != prev_hash) without persisting the raw
 /// label set, which gh evolves over time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GithubPrStatusFetchedPayload {
     pub pr_number: u32,
     pub ci_status_hash: u64,
@@ -6484,6 +6731,7 @@ pub struct GithubPrStatusFetchedPayload {
 /// so dashboards can branch on the discriminant rather than join raw
 /// rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GithubPrClosedPayload {
     pub pr_number: u32,
     pub ts_ms: i64,
@@ -6497,6 +6745,7 @@ pub struct GithubPrClosedPayload {
 /// merged PR with the local `branch_merged` SSB row (C-23) without
 /// leaking the upstream SHA.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GithubPrMergedPayload {
     pub pr_number: u32,
     pub merge_sha_hash: u64,
@@ -6512,6 +6761,7 @@ pub struct GithubPrMergedPayload {
 /// can group by identity without exposing the raw integer to
 /// broadcast subscribers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrReviewComposedPayload {
     pub pr_number_hash: u64,
     pub comment_kind_hash: u64,
@@ -6524,6 +6774,7 @@ pub struct PrReviewComposedPayload {
 /// call. `new_comments_count` is the number of comments that landed
 /// strictly after the caller-supplied watermark.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrCommentWatchedPayload {
     pub pr_number_hash: u64,
     pub new_comments_count: u32,
@@ -6538,6 +6789,7 @@ pub struct PrCommentWatchedPayload {
 /// deterministic regex + known-squat list across all 3 ecosystems
 /// (Cargo / pypi / npm).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrPackageVerifyResultPayload {
     pub pr_number_hash: u64,
     pub slopsquat_count: u32,
@@ -6552,6 +6804,7 @@ pub struct PrPackageVerifyResultPayload {
 /// canonical snake_case severity label (`info` / `warning` / `error` /
 /// `owasp_llm` / `other` / `toolchain_missing`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrSemgrepGateResultPayload {
     pub pr_number_hash: u64,
     pub findings_count: u32,
@@ -6566,6 +6819,7 @@ pub struct PrSemgrepGateResultPayload {
 /// `block_reason_hash` is the 64-bit prefix of blake3 over the
 /// canonical reason label (`loc_over_cap` / `multi_file` / `owned_paths`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrAutoMergeBlockedPayload {
     pub pr_number_hash: u64,
     pub block_reason_hash: u64,
@@ -6590,6 +6844,7 @@ pub struct PrAutoMergeBlockedPayload {
 /// value modulo RNG seed, which the producer documents in its module
 /// header). `sampled_value` is the realised Beta draw in [0.0, 1.0].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThompsonSampledPayload {
     /// 32-char simple-hex of the candidate arm's
     /// [`crate::reasoning_template::TemplateId`].
@@ -6624,6 +6879,7 @@ pub struct ThompsonSampledPayload {
 /// / SkillExecuted pair is a ELAI-local observability surface inspired
 /// by the C-40 GithubPr* hashing pattern.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillTriggeredPayload {
     /// blake3-prefix u64 of the resolved skill name. Stable across runs
     /// for a given name; rotating a skill name produces a new hash.
@@ -6649,6 +6905,7 @@ pub struct SkillTriggeredPayload {
 /// pattern so dashboards can join the routing decision with the dispatch
 /// outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillExecutedPayload {
     /// Same blake3-prefix hash shape as [`SkillTriggeredPayload::skill_name_hash`].
     pub skill_name_hash: u64,
@@ -6676,6 +6933,7 @@ pub struct SkillExecutedPayload {
 /// See workflow/reasoning/D-6-decisions.md DECISION-7 for the BAI/held-out
 /// layering rationale.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HeldOutPromotionGatePayload {
     /// Simple-hex uuid (32 chars) of the candidate template under
     /// evaluation. Mirrors `BaiArmUpdatedPayload::template_id`.
@@ -6707,6 +6965,7 @@ pub struct HeldOutPromotionGatePayload {
 /// 6-month retirement policy rationale (ELAI-novel, not
 /// LiveCodeBench-specified).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HeldOutRefreshPayload {
     /// Snake-case label from
     /// [`crate::held_out::TaskSource::label`] for the rows added on this
@@ -6733,6 +6992,7 @@ pub struct HeldOutRefreshPayload {
 /// symmetry with [`GatewayPolicyDeniedPayload`] so downstream consumers
 /// can read `deny_reason_label` uniformly across allow/deny rows).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayPolicyAllowedPayload {
     pub role_hash: u64,
     pub tool_hash: u64,
@@ -6753,6 +7013,7 @@ pub struct GatewayPolicyAllowedPayload {
 /// reason string so the dashboard can group "same failure mode" rows
 /// without surfacing the raw reason text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayPolicyDeniedPayload {
     pub role_hash: u64,
     pub tool_hash: u64,
@@ -6777,6 +7038,7 @@ pub struct GatewayPolicyDeniedPayload {
 /// evidence package the L3 challenge protocol would send to the operator
 /// device. In session 2 this field is unused.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayHitlPendingPayload {
     pub role_hash: u64,
     pub tool_hash: u64,
@@ -6805,6 +7067,7 @@ pub struct GatewayHitlPendingPayload {
 /// `threshold_pct` is the operating fail-band in percent so dashboards
 /// can render both without re-reading the toml stanza.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrossDomainRegressionPayload {
     /// Domain of the candidate's target family (where the win was
     /// observed).
@@ -6833,6 +7096,7 @@ pub struct CrossDomainRegressionPayload {
 /// is the candidate's pass-rate on the family in percent (range
 /// `[0.0, 100.0]`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanaryFamilyPassPayload {
     /// Snake-case family label (`code_fix` / `math_proof` /
     /// `prose_reason` / `planning_decomposition` / `tool_use`).
@@ -6856,6 +7120,7 @@ pub struct CanaryFamilyPassPayload {
 /// [`CrossDomainRegressionPayload`] grounding note. Invariant:
 /// `sample_count < min_required`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanaryInsufficientDataPayload {
     /// Snake-case family label.
     pub family: String,
@@ -6893,6 +7158,7 @@ pub struct CanaryInsufficientDataPayload {
 /// (archive practice) are supporting documentation for the integrity-
 /// rationale; neither paper specifies this wire layout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArchiveVerifyResultPayload {
     /// Identity for the audited chain. Currently the absolute path of
     /// the JSONL file (D-1 chain has no separate header type yet).
@@ -6935,6 +7201,7 @@ pub struct ArchiveVerifyResultPayload {
 /// that paper is Thompson-Sampling agent learning, NOT scope-freeze.
 /// See workflow/sessions/s-25120/mistakes.md for the bad-cite analysis.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScopeFreezeRatifiedPayload {
     /// blake3 of scope-freeze.toml content, truncated to 64 bits LE.
     pub manifest_hash: u64,
@@ -6959,6 +7226,7 @@ pub struct ScopeFreezeRatifiedPayload {
 ///
 /// ELAI design hypothesis — no paper grounding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScopeFreezeViolatedPayload {
     /// blake3 of the workspace-relative path, truncated to 64 bits LE.
     pub item_path_hash: u64,
@@ -6995,6 +7263,7 @@ pub struct ScopeFreezeViolatedPayload {
 /// shape is ELAI-internal. See workflow/papers/composer2-interface.md
 /// for the shallow-cite-fit analysis.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackendCostAccruedPayload {
     /// FxHash-derived 64-bit hash of `RuntimeBackend::canonical_name`.
     /// Stable across renames because the canonical_name is the
@@ -7026,6 +7295,7 @@ pub struct BackendCostAccruedPayload {
 /// Paper grounding: arXiv:2605.13295 (Zehle 2026, CANTANTE Section 3.2).
 /// See `workflow/papers/cantante-credit-attribution.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentRoleDroppedPayload {
     /// FxHash-derived 64-bit hash of the snake_case `AgentRole` id
     /// (e.g. "executor", "auditor"). Resolved via
@@ -7051,6 +7321,7 @@ pub struct AgentRoleDroppedPayload {
 /// rollouts NOT K^N; partition divisibility K % g == 0 per Section
 /// 4.4 footnote 1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreditAttributionRunPayload {
     /// Caller-supplied stable id for this pilot run (typically blake3-
     /// prefix of a session-scoped run name). Allows a Result beacon
@@ -7082,6 +7353,7 @@ pub struct CreditAttributionRunPayload {
 /// Paper grounding: arXiv:2605.13295 (Zehle 2026, Section 3.2 — scalar
 /// c in [-1, +1]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreditAttributionResultPayload {
     /// Matches the `run_id_hash` of the paired
     /// [`CreditAttributionRunPayload`] beacons. Allows dashboards to
@@ -7121,6 +7393,7 @@ pub struct CreditAttributionResultPayload {
 /// requiring code paths use `action_type()` instead of structural
 /// equality on the payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectiveDelegationDecisionPayload {
     /// blake3-prefix u64 of the caller-supplied task id. Allows the
     /// Decision / Escalated / CostSaved triple to be joined without
@@ -7156,6 +7429,7 @@ pub struct SelectiveDelegationDecisionPayload {
 /// stage with verifier-gated curriculum; failure-recovery via broader-
 /// pool re-routing is the obvious deployment-time analog).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectiveDelegationEscalatedPayload {
     /// blake3-prefix u64 of the caller-supplied task id (joins to the
     /// originating Decision beacon).
@@ -7193,6 +7467,7 @@ pub struct SelectiveDelegationEscalatedPayload {
 /// precedent so dashboards can sum across both rows without unit
 /// translation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectiveDelegationCostSavedPayload {
     /// blake3-prefix u64 of the caller-supplied task id (joins to the
     /// originating Decision beacon).
@@ -7227,6 +7502,7 @@ pub struct SelectiveDelegationCostSavedPayload {
 /// the trajectory record at the SSB layer; aggregation lives in the
 /// plugins-side [`elai_plugins::ToolCalibrationRegistry`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCallLoggedPayload {
     /// blake3-prefix u64 of the snake-case tool name.
     pub tool_name_hash: u64,
@@ -7258,6 +7534,7 @@ pub struct ToolCallLoggedPayload {
 /// the raw model-facing text on the wire (the actual text remains in
 /// the prompt-assembly side-channel).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCalibrationHintEmittedPayload {
     pub tool_name_hash: u64,
     pub call_shape_hash: u64,
@@ -7276,6 +7553,7 @@ pub struct ToolCalibrationHintEmittedPayload {
 /// not-equal). Equality-requiring code paths use `action_type()`
 /// instead of structural equality.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCalibrationDriftDetectedPayload {
     pub tool_name_hash: u64,
     pub error_rate: f32,
@@ -7295,6 +7573,7 @@ pub struct ToolCalibrationDriftDetectedPayload {
 /// arXiv:2605.14443 (Sayana, Todi, Jash 2026). The full RL-trained
 /// prompter (Algorithm 1, GRPO + KL anchor) is RUNPOD-PENDING.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptPolicyDistillationRunPayload {
     /// blake3-prefix u64 of the canonical snake_case skill name.
     pub skill_name_hash: u64,
@@ -7321,6 +7600,7 @@ pub struct PromptPolicyDistillationRunPayload {
 /// instead of structural equality (matches the C-47
 /// `ToolCalibrationDriftDetectedPayload` precedent).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptFragmentSelectedPayload {
     pub skill_name_hash: u64,
     pub fragment_hash: u64,
@@ -7342,6 +7622,7 @@ pub struct PromptFragmentSelectedPayload {
 /// snake_case rejection reason (e.g. `"below_min_freq"`,
 /// `"below_min_success_rate"`, `"audit_pass_false"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptFragmentDiscardedPayload {
     pub skill_name_hash: u64,
     pub fragment_hash: u64,
@@ -7374,6 +7655,7 @@ pub struct PromptFragmentDiscardedPayload {
 /// §3.1-§3.4 SycophancyEval probe taxonomy. See
 /// workflow/papers/sharma-sycophancy-2310.13548-interface.md.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SycophancyProbeDispatchedPayload {
     pub claim_id: String,
     pub probe_kind: String,
@@ -7411,6 +7693,7 @@ pub struct SycophancyProbeDispatchedPayload {
 /// Grounding: arXiv:2310.13548 §3.2 (user-disagreement-flip
 /// detection) + §4 (preference-model residual sycophancy).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SycophancyFlagPayload {
     pub claim_id: String,
     pub flip_detected: bool,
@@ -7441,6 +7724,7 @@ pub struct SycophancyFlagPayload {
 /// `f64` (NaN-not-equal). Equality-requiring tests use field-wise
 /// comparison.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SycophancyBenchRunCompletedPayload {
     /// True positives: ground_truth_sycophant=true AND verdict.is_flag().
     pub tp: u32,
@@ -7497,6 +7781,7 @@ pub struct SycophancyBenchRunCompletedPayload {
 /// payload (all integer counters + verdict string) — `PartialEq` is
 /// sufficient and matches the surrounding payload conventions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanaryBenchRunCompletedPayload {
     /// Harmful fixtures the canary blocked. Equals `harmful_blocked`.
     pub true_block: u32,
@@ -7550,6 +7835,7 @@ pub struct CanaryBenchRunCompletedPayload {
 /// — `PartialEq + Eq` are both safe and the surrounding payload
 /// conventions both derive them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeterminismTamperSuiteCompletedPayload {
     /// Total scenarios consumed by the run (locked at 10 by the plan's
     /// 10-scenario matrix; the field is wire-stable so the dashboard
@@ -7610,6 +7896,7 @@ pub struct DeterminismTamperSuiteCompletedPayload {
 /// `AdversarialCorpusGenerated` + `PpmFinetuneCompleted` REJECTED
 /// — see D-19/D-23/D-24/D-25 single-variant precedent).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdversarialFarmRunCompletedPayload {
     /// Total samples (candidate-step chains) that passed the Z>1.96
     /// filter and entered the corpus across all rounds. Capped at
@@ -7693,6 +7980,7 @@ pub struct ArmPosteriorSummary {
 /// suggested per-family + per-arm rows; rejected per pattern-2 in
 /// workflow/sessions/s-25120/completion-drive/SESSION-3-HANDOFF.md).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HierarchicalBaiRoundCompletedPayload {
     /// Monotonically increasing round counter (1-indexed) within a
     /// single dispatch session. Wraps after u32::MAX (~4.3B rounds —
@@ -7779,6 +8067,7 @@ pub struct HierarchicalBaiRoundCompletedPayload {
 /// extends THIS payload via the four `Option` fields rather than
 /// introducing a `CalibrationBootstrapCiCompleted` second variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CalibrationBootstrapCompletedPayload {
     /// Snake_case slug for the published corpus (e.g. `"truthfulqa"`).
     pub corpus_slug: String,
@@ -7835,6 +8124,7 @@ pub struct CalibrationBootstrapCompletedPayload {
 /// Grounding: arXiv:2604.13100 §4.4 (Discriminator surface).
 /// See workflow/papers/contract-coding-interface.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContractTestScaffoldedPayload {
     pub fn_name_hash: u64,
     pub contract_kind_hash: u64,
@@ -7864,6 +8154,7 @@ pub struct ContractTestScaffoldedPayload {
 /// Discriminator pre-stage ships here; the RL-trained variant is
 /// RUNPOD-PENDING.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContractViolationDetectedPayload {
     pub fn_name_hash: u64,
     pub violation_kind_hash: u64,
@@ -7914,6 +8205,7 @@ pub struct ContractViolationDetectedPayload {
 /// heuristic dispatches can record the attempt; the emission site
 /// fires only when a remote runner has Dafny installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DafnyVerifyCompletedPayload {
     pub tier_hash: u64,
     pub dafny_pass: bool,
@@ -7937,6 +8229,7 @@ pub struct DafnyVerifyCompletedPayload {
 /// `#[serde(default)]` on deserialize); the field is always populated on
 /// the producer side.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TripwireFiredPayload {
     pub event_id: String,
     pub tripwire_kind: String,
@@ -7962,6 +8255,7 @@ pub struct TripwireFiredPayload {
 /// the field is kept `u64` so future cross-tick aggregation can widen it
 /// without a wire break.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TripwireFiredConcurrentPayload {
     pub candidate_id: String,
     pub tripwire_a: String,
@@ -7978,6 +8272,7 @@ pub struct TripwireFiredConcurrentPayload {
 /// target the orchestrator switches to (None when the retired template was
 /// a root).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TemplateAutoRevertedPayload {
     pub template_id: String,
     pub parent_template_id: Option<String>,
@@ -7997,6 +8292,7 @@ pub struct TemplateAutoRevertedPayload {
 /// the JSONL fixture the run was computed against (anti-stale: pins
 /// dashboard rows to a specific dataset revision).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrmBenchRunCompletedPayload {
     /// Total fixture rows the runner consumed (includes `insufficient`
     /// rows where the PPM hook returned an error).
@@ -8031,6 +8327,7 @@ pub struct PrmBenchRunCompletedPayload {
 /// Fields ordered alpha-first/beta-second to match the conjugate Beta
 /// notation in arXiv:2104.05593 §2.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BaiArmUpdatedPayload {
     /// Hex (32-char simple) of the candidate template id.
     pub template_id: String,
@@ -8064,6 +8361,7 @@ pub struct BaiArmUpdatedPayload {
 /// `audit_id` is a fresh [`uuid::Uuid`] formatted as 32-char simple-hex so
 /// external audit tools can correlate this row across logs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BaiPromotionDecisionPayload {
     /// 32-char simple-hex of the candidate template id.
     pub template_id: String,
@@ -8089,6 +8387,7 @@ pub struct BaiPromotionDecisionPayload {
 /// string from [`crate::held_out::TaskSource::label`] so the dashboard
 /// can group without re-deserializing the full enum.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HeldOutTaskAddedPayload {
     /// Simple-hex uuid of the held-out task (32 chars).
     pub task_id: String,
@@ -8117,6 +8416,7 @@ pub struct HeldOutTaskAddedPayload {
 /// `consumer_template_id` is the empty string when the consumer is the
 /// pre-promotion scaffold (no template yet).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HeldOutTaskUsedPayload {
     /// Simple-hex uuid of the held-out task that was consumed.
     pub task_id: String,
@@ -8137,6 +8437,7 @@ pub struct HeldOutTaskUsedPayload {
 /// NanoFlux-style (arxiv:2509.23252, T1) defense: target-family wins
 /// must not silently regress adjacent families.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanaryRunCompletedPayload {
     /// Blake3 (64-char hex) of the serialized report body. Deterministic
     /// identifier the per-family rows reference via `report_id` so the
@@ -8167,6 +8468,7 @@ pub struct CanaryRunCompletedPayload {
 /// Grounding: arxiv:1908.04734 (Everitt current-RF principle); see
 /// docs/thefinalglance/D-plan/D-9_l3_frozen_surfaces.md.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LockedKeysAuditRunPayload {
     /// Per-audit-run correlator. The matching
     /// [`LockedKeysViolationDetectedPayload`] rows carry the same id
@@ -8193,6 +8495,7 @@ pub struct LockedKeysAuditRunPayload {
 /// entry. `audit_id` matches the parent [`LockedKeysAuditRunPayload`]
 /// row so the dashboard renders the full audit context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LockedKeysViolationDetectedPayload {
     /// Matches the parent [`LockedKeysAuditRunPayload::audit_id`].
     pub audit_id: uuid::Uuid,
@@ -8222,6 +8525,7 @@ pub struct LockedKeysViolationDetectedPayload {
 /// [`CanaryRunCompletedPayload`]). Matched to the parent run via
 /// `report_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanaryFamilyEvaluatedPayload {
     /// Matches the parent [`CanaryRunCompletedPayload::report_id`].
     pub report_id: String,
@@ -8254,6 +8558,7 @@ pub struct CanaryFamilyEvaluatedPayload {
 /// Grounding: arxiv:2412.21154 (Devin task-ledger pattern; SWE-bench
 /// 13.86% solve rate driven by explicit task-state tracking).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskAdvancedPayload {
     /// Task id (string for IPC portability — the orchestrator uses a
     /// `TaskId` newtype internally).
@@ -8284,6 +8589,7 @@ pub struct TaskAdvancedPayload {
 /// $0.70/issue — non-agentic 3-phase localize/repair/validate beats
 /// every open-source agentic system at that time).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentlessShortcutTakenPayload {
     /// Task id that elected the shortcut.
     pub task_id: String,
@@ -8307,6 +8613,7 @@ pub struct AgentlessShortcutTakenPayload {
 /// D-7 [`CanaryFamily::PlanningDecomposition`] for the orthogonal
 /// canary surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GoalDriftFiredPayload {
     /// 64-char lowercase hex blake3 of the canonical initial goal
     /// string. Stable across firings so the dashboard joins them.
@@ -8343,6 +8650,7 @@ pub struct GoalDriftFiredPayload {
 ///   * arxiv:1908.04734 (Everitt current-RF principle, T1).
 ///   * arxiv:1906.01820 (Hubinger mesa-optimization, T1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaimRoutedPayload {
     /// Stable per-claim identifier (uuid string in production; any
     /// non-empty stable string in tests).
@@ -8380,6 +8688,7 @@ pub struct ClaimRoutedPayload {
 ///     (routing predicate baseline).
 ///   * D-21 plan ACCEPTANCE: macro F1 >= 0.85 + per-mode F1 >= 0.70.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModeRoutingBenchRunCompletedPayload {
     /// Total fixture rows the runner consumed.
     pub total: u32,
@@ -8428,6 +8737,7 @@ pub struct ModeRoutingBenchRunCompletedPayload {
 ///   * arxiv:2211.12588 (Program-of-Thought, T1, TMLR 2023).
 ///   * arxiv:2402.01030 (CodeAct, T1, ICML 2024).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckerResultEmittedPayload {
     /// Stable id assigned at register time.
     pub checker_id: String,
@@ -8460,6 +8770,7 @@ pub struct CheckerResultEmittedPayload {
 ///   * arxiv:2504.16760 (T1) lightweight latent verifiers
 ///     (heterogeneous-family verification).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdversaryGeneratedPayload {
     /// Stable per-counter id (typically blake3-derived).
     pub counter_id: String,
@@ -8490,6 +8801,7 @@ pub struct AdversaryGeneratedPayload {
 ///   * arxiv:2403.07974 (T1) adversarial verification.
 ///   * arxiv:2504.16760 (T1) heterogeneous-family verifier transfer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConsensusReevaluatedWithCounterPayload {
     /// Stable claim id the verdict was re-computed against.
     pub claim_id: String,
@@ -8524,6 +8836,7 @@ pub struct ConsensusReevaluatedWithCounterPayload {
 ///   * arxiv:2305.16291 Voyager (T1) — skill-with-measurable-effect.
 ///   * arxiv:2407.01489 AGENTLESS (T1) — single-step verification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BabyStepDispatchedPayload {
     pub step_id: String,
     pub parent_task_id: String,
@@ -8546,6 +8859,7 @@ pub struct BabyStepDispatchedPayload {
 ///   * Vovk et al. *Algorithmic Learning in a Random World* (2005)
 ///     §2.2 — quantile-based conformal predictor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConformalTauComputedPayload {
     /// The threshold `tau` returned by
     /// [`crate::conformal_calibration::compute_tau`]; non-conformity
@@ -8601,6 +8915,7 @@ pub struct ConformalTauComputedPayload {
 /// before the field landed. See D-16-decisions.md DECISION-2 +
 /// DECISION-3.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConformalRefusalDecidedPayload {
     pub claim_id: String,
     pub claim_score: f64,
@@ -8650,6 +8965,7 @@ pub struct ConformalRefusalDecidedPayload {
 ///
 /// Paper grounding: arXiv:2509.01455 UniCR Eq.5 CRC quantile formula.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CalibrationCorpusUpdatedPayload {
     pub corpus_size: u32,
     pub new_tau: f64,
@@ -8671,6 +8987,7 @@ pub struct CalibrationCorpusUpdatedPayload {
 /// dashboard renders the profile slug via a reverse-lookup table
 /// keyed on the hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FrameworkProfileSelectedPayload {
     /// blake3-prefix 64-bit of the canonical profile slug
     /// (e.g. `nextjs15` / `svelte5` / `fastapi-modern` / `hono` /
@@ -8698,6 +9015,7 @@ pub struct FrameworkProfileSelectedPayload {
 /// `.prettierrc`, `.flake8`, `setup.cfg [flake8]` section,
 /// `pyproject.toml [tool.black]` / `[tool.isort]` sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LegacyConfigStrippedPayload {
     /// blake3-prefix of the removed file path (relative to the
     /// project root).
@@ -8733,6 +9051,7 @@ pub struct LegacyConfigStrippedPayload {
 /// real-problem-solving-grounded-2026-05-19.md §4.6 (refusal rate as a
 /// first-class quality metric).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefusalRateSnapshotPayload {
     pub refusal_rate: f64,
     pub window_total: u32,
@@ -8760,6 +9079,7 @@ pub struct RefusalRateSnapshotPayload {
 /// Grounding: arXiv:2503.01345 (UniCR honest refusal — formal Mode E
 /// surface the SLA monitors).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefusalSlaBreachPayload {
     pub rate: f64,
     pub threshold: f64,
@@ -8799,6 +9119,7 @@ pub struct RefusalSlaBreachPayload {
 /// 2005 §2.2 (quantile-based conformal predictor); D-22 plan
 /// `docs/thefinalglance/D-plan/D-22_conformal_calibration_validation.md`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConformalValidationCompletedPayload {
     pub tau: f64,
     pub epsilon: f64,
@@ -8844,6 +9165,7 @@ pub struct ConformalValidationCompletedPayload {
 /// `docs/thefinalglance/D-plan/D-20_arc_agi2_ood_probe.md`.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ARCBenchmarkCompletedPayload {
     pub total: u32,
     pub honestly_evaluated_count: u32,
@@ -8859,6 +9181,7 @@ pub struct ARCBenchmarkCompletedPayload {
 /// plugins::mcp::lazy (tool_lazy_resolved). See C-35 plan.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolGateEventPayload {
     pub tool_name: String,
     pub fsm_state: String,
@@ -8866,6 +9189,7 @@ pub struct ToolGateEventPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuantBackendSelectedPayload {
     pub backend: String,
     pub kv_dtype: String,
@@ -8874,6 +9198,7 @@ pub struct QuantBackendSelectedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KvCacheDtypeSoftwareSimPayload {
     pub kv_dtype: String,
     pub throughput_cost_pct: f32,
@@ -8881,6 +9206,7 @@ pub struct KvCacheDtypeSoftwareSimPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AwqCheckpointBuiltPayload {
     pub model_path: String,
     pub calibration_size: usize,
@@ -8890,6 +9216,7 @@ pub struct AwqCheckpointBuiltPayload {
 
 /// C-39: Emitted per tool call routed via --via-mcp CLI flag.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CliMcpDispatchPayload {
     pub tool_name: String,
     pub port: u16,
@@ -8897,18 +9224,21 @@ pub struct CliMcpDispatchPayload {
 
 /// C-39: Emitted when the CLI auto-launches an MCP co-process.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CliMcpServerStartedPayload {
     pub port: u16,
 }
 
 /// C-39: Emitted when the CLI-launched MCP co-process exits.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CliMcpServerStoppedPayload {
     pub port: u16,
 }
 
 /// E-15: Emitted when Firecracker snapshot-restore exceeds restore_budget_ms.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FirecrackerRestoreSlowPayload {
     pub agent_id: String,
     pub actual_ms: u64,
@@ -8917,6 +9247,7 @@ pub struct FirecrackerRestoreSlowPayload {
 
 /// E-15: Emitted per restore when TCP ISN seed + entropy seeds refreshed.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotUniquenessRegeneratedPayload {
     pub agent_id: String,
     pub restore_count: u64,
@@ -8924,6 +9255,7 @@ pub struct SnapshotUniquenessRegeneratedPayload {
 
 /// E-15: Emitted per LRU or age-based snapshot eviction.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotEvictedPayload {
     pub agent_id: String,
     pub reason: String,
@@ -8932,6 +9264,7 @@ pub struct SnapshotEvictedPayload {
 
 /// E-15: Emitted once per agent spawn with the selected backend.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxBackendSelectedPayload {
     pub agent_id: String,
     pub backend: String,
@@ -8939,6 +9272,7 @@ pub struct SandboxBackendSelectedPayload {
 
 /// E-15: Emitted per baby-step fork-from-snapshot.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentForkedFromSnapshotPayload {
     pub agent_id: String,
     pub baby_step_id: u64,
@@ -8947,6 +9281,7 @@ pub struct AgentForkedFromSnapshotPayload {
 
 /// E-15: Emitted when iptables REJECT fires for a non-allowlisted destination.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResearcherNetEgressBlockedPayload {
     pub agent_id: String,
     pub destination: String,
@@ -8955,6 +9290,7 @@ pub struct ResearcherNetEgressBlockedPayload {
 
 /// E-24: Emitted when blake3 hash of tools/list mismatches the pinned hash.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpSchemaPinViolationPayload {
     pub server_url: String,
     pub pinned_hash: String,
@@ -8964,6 +9300,7 @@ pub struct McpSchemaPinViolationPayload {
 
 /// E-24: Emitted per Trail-of-Bits line-jumping rule match during sanitization.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpSanitizationRuleAppliedPayload {
     pub server_url: String,
     pub tool_name: String,
@@ -8973,6 +9310,7 @@ pub struct McpSanitizationRuleAppliedPayload {
 
 /// E-24: Emitted when tools are dropped from tools/list to fit token budget.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpBudgetEnforcedPayload {
     pub server_url: String,
     pub dropped_tools: Vec<String>,
@@ -8982,6 +9320,7 @@ pub struct McpBudgetEnforcedPayload {
 
 /// E-24: Emitted at startup when SSE-only transport is used (deprecated).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpLegacySseTransportPayload {
     pub server_url: String,
     pub deprecation_notice: String,
@@ -8989,6 +9328,7 @@ pub struct McpLegacySseTransportPayload {
 
 /// E-24: Emitted when the LLM-guard hook denies an MCP tool call.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpLlmGuardBlockedPayload {
     pub server_url: String,
     pub tool_name: String,
@@ -8998,6 +9338,7 @@ pub struct McpLlmGuardBlockedPayload {
 
 /// E-24: Emitted at startup when ANTHROPIC_BASE_URL is a known gateway URL.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnthropicGatewayDetectedPayload {
     pub base_url: String,
     pub detected_gateway: String,
@@ -9007,6 +9348,7 @@ pub struct AnthropicGatewayDetectedPayload {
 
 /// C-48: Emitted when a MemoryFact is stored with its TrustTier label.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryTierAssignedPayload {
     pub fact_id: String,
     pub trust_tier: String,
@@ -9015,6 +9357,7 @@ pub struct MemoryTierAssignedPayload {
 
 /// C-48: Emitted when a retrieval query excludes rows by TierCeiling.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryQueryFilteredPayload {
     pub query_type: String,
     pub excluded_count: u32,
@@ -9022,6 +9365,7 @@ pub struct MemoryQueryFilteredPayload {
 
 /// C-48: Emitted when a T2/T3 row is blocked from a safety-critical decision context.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SafetyCriticalBlockedPayload {
     pub fact_id: String,
     pub trust_tier: String,
@@ -9030,6 +9374,7 @@ pub struct SafetyCriticalBlockedPayload {
 
 /// E-30: Emitted when check_argv() returns AllowlistVerdict::Deny.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArgvDestructiveDeniedPayload {
     /// Blake3 hex of the argv slice (privacy-safe — no literal args stored).
     pub argv_hash: String,
@@ -9041,6 +9386,7 @@ pub struct ArgvDestructiveDeniedPayload {
 
 /// E-30: Emitted when check_argv() returns AllowlistVerdict::RequireHumanApproval.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArgvApprovalRequiredPayload {
     pub argv_hash: String,
     pub reason: String,
@@ -9049,6 +9395,7 @@ pub struct ArgvApprovalRequiredPayload {
 
 /// E-30: Emitted when ensure_session_trust() defers a hook load (CVE-2025-59536).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrustDialogHookDeferredPayload {
     /// Path of the settings file whose hooks were blocked.
     pub settings_path: String,
@@ -9058,6 +9405,7 @@ pub struct TrustDialogHookDeferredPayload {
 
 /// E-30: Emitted when ensure_session_trust() blocks an env-redirect (CVE-2026-21852).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrustDialogEnvDeferredPayload {
     /// Which env var triggered the block (ANTHROPIC_BASE_URL or OPENAI_BASE_URL).
     pub env_var: String,
@@ -9066,6 +9414,7 @@ pub struct TrustDialogEnvDeferredPayload {
 
 /// E-30: Emitted when an MCP server version is refused by the exact-pin policy.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpPinVersionRefusedPayload {
     pub server_name: String,
     /// The version string that was presented (and refused).
@@ -9078,6 +9427,7 @@ pub struct McpPinVersionRefusedPayload {
 
 /// E-30: Emitted when auditor and executor share the same lineage group.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditorLineageCollisionPayload {
     pub auditor_agent_id: String,
     pub executor_agent_id: String,
@@ -9088,6 +9438,7 @@ pub struct AuditorLineageCollisionPayload {
 
 /// E-30: Emitted when an untrusted TextSource attempts a memory write.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UntrustedMemoryWriteBlockedPayload {
     /// TextSource trust label (e.g. "ExternalTool", "UserPrompt").
     pub source_label: String,
@@ -9097,6 +9448,7 @@ pub struct UntrustedMemoryWriteBlockedPayload {
 
 /// E-30: Emitted when an incident postmortem entry is stored.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IncidentRecordCreatedPayload {
     pub incident_id: String,
     pub title: String,
@@ -9111,6 +9463,7 @@ pub struct IncidentRecordCreatedPayload {
 /// request (prompt_len > 8K) when `ELAI_FITM_ENABLED=1`.
 /// Grounding: arxiv:2406.16008 (Found-in-the-Middle, ACL 2024).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FitmCalibrationAppliedPayload {
     /// Token count of the real prompt that triggered FITM.
     pub prompt_len: u32,
@@ -9126,6 +9479,7 @@ pub struct FitmCalibrationAppliedPayload {
 /// indicates the 1M-context variant is active.
 /// Grounding: arxiv:2501.15383 (Qwen2.5-1M DCA technical report).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeepModeActivatedPayload {
     /// HF model ID loaded in deep mode (e.g. "Qwen/Qwen2.5-7B-Instruct-1M").
     pub model_id: String,
@@ -9142,6 +9496,7 @@ pub struct DeepModeActivatedPayload {
 /// a cross-file synthesis task (>3 files, no clear retrieval answer).
 /// Grounding: arxiv:2407.16833 (Self-Route EMNLP 2024).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeepModeEscalationChosenPayload {
     /// Human-readable reason for choosing deep mode over cloud.
     pub reason: String,
@@ -9155,6 +9510,7 @@ pub struct DeepModeEscalationChosenPayload {
 /// a Qwen2.5-Coder model (15-20% quality drop on short prompts).
 /// Grounding: vllm issue 18728; arxiv:2601.15300.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct YarnRefusedPayload {
     /// The model name/path that triggered the refusal.
     pub model_name: String,
@@ -9169,6 +9525,7 @@ pub struct YarnRefusedPayload {
 /// dep-audit tile. Producer ships in B-23; B-3 reserves the variant so
 /// the renderer can subscribe without rendering zero rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DepAuditCompletedPayload {
     /// Number of dependencies flagged as out-of-date or vulnerable.
     pub findings: u32,
@@ -9186,6 +9543,7 @@ pub struct DepAuditCompletedPayload {
 /// the pass/fail summary the AntiStalenessDrawer renders in its
 /// baseline tile. Producer ships in B-4; B-3 reserves the variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BaselineRunCompletedPayload {
     /// Number of baseline checks executed.
     pub checks_run: u32,
@@ -9206,6 +9564,7 @@ pub struct BaselineRunCompletedPayload {
 /// renders in its deterministic-audit tile. Producer ships in B-15;
 /// B-3 reserves the variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeterministicAuditRunPayload {
     /// One of "passed" | "failed" | "skipped".
     pub verdict: String,
@@ -9226,6 +9585,7 @@ pub struct DeterministicAuditRunPayload {
 /// -> RETIRED). The RulesDrawer subscribes to this stream so it can
 /// render the last-5 transitions inline without polling the rules DB.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuleTransitionPayload {
     /// The rule's stable identifier.
     pub rule_id: String,
@@ -9264,6 +9624,7 @@ pub struct RuleTransitionPayload {
 ///     `true` when a real comparison happened.
 ///   * `ts_ms` — wall-clock UNIX ms at observation time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanaryDriftPayload {
     pub similarity: f64,
     pub drift_threshold: f64,
@@ -9297,6 +9658,7 @@ pub struct CanaryDriftPayload {
 ///   * docs/specs/guide/real-problem-solving-grounded-2026-05-19.md
 ///     §1 Mode C (lines 68-89) + §4.8 (lines 310-328).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NoveltyClassifiedPayload {
     pub template_id: String,
     pub class: String,
@@ -9397,6 +9759,7 @@ impl DiscoveryCandidateStatus {
 /// for Fitting Battery Thermal Runaway Models" — unrelated to typed
 /// test predicates).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservableEffectVerifiedPayload {
     pub effect_id: String,
     pub trigger_kind: String,
@@ -9428,6 +9791,7 @@ pub struct ObservableEffectVerifiedPayload {
 /// Coscientist arxiv:2304.05332 §4 (sandbox vs production label is
 /// required at dispatch time, not inferred post-hoc).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservableEffectDispatchedPayload {
     pub effect_id: String,
     pub trigger: String,
@@ -9456,6 +9820,7 @@ pub struct ObservableEffectDispatchedPayload {
 /// invariant (component-wise reward components must vary across runs;
 /// constant components flag Goodhart failure modes).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GoodhartRiskFlagPayload {
     pub effect_id: String,
     pub risk_kind: String,
@@ -9490,6 +9855,7 @@ pub struct GoodhartRiskFlagPayload {
 /// from production claim; both phases emit, but with distinct row
 /// families and distinct outcome taxonomies).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxObservationPayload {
     pub effect_id: String,
     pub tier: String,
@@ -9524,6 +9890,7 @@ pub struct SandboxObservationPayload {
 /// instrument_file is the load-bearing element that licenses
 /// automatic promotion).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProductionObservationProposalPayload {
     pub effect_id: String,
     pub instrument_file: Option<String>,
@@ -9546,6 +9913,7 @@ pub struct ProductionObservationProposalPayload {
 /// testing requires a concrete cycle anchor so kill-rate can be
 /// attributed back to a Red->Green transition).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TddCycleStartedPayload {
     pub task_id_hash: u64,
     pub ts_ms: i64,
@@ -9566,6 +9934,7 @@ pub struct TddCycleStartedPayload {
 ///     classifier (e.g. `assert_failed`, `panic`, `timeout`).
 ///   * `ts_ms` — wall-clock UNIX ms at failure observation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TddTestFailedPayload {
     pub task_id_hash: u64,
     pub test_name_hash: u64,
@@ -9593,6 +9962,7 @@ pub struct TddTestFailedPayload {
 /// the "test flipped" signal is the canonical non-LLM verifier under
 /// D-3 aggregation).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TddTestPassedPayload {
     pub task_id_hash: u64,
     pub test_name_hash: u64,
@@ -9691,6 +10061,7 @@ impl TddVerificationEventKind {
 ///         impl_diff_lines (always 0 for this arm), file_path_hash.
 ///   * `ts_ms` -- fire-point wall-clock (millis since UNIX_EPOCH).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TddVerificationEventPayload {
     pub kind: TddVerificationEventKind,
     pub task_id_hash: u64,
@@ -9728,6 +10099,7 @@ pub const ELAI_E50_ARCHETYPE_SELECTED_EMIT_ENABLE_ENV: &str =
 ///     redaction is automatic for private hosts.
 ///   * `ts_ms` — wall-clock UNIX ms at run entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserE2eRunStartedPayload {
     pub journey_name_hash: u64,
     pub url_hash: u64,
@@ -9749,6 +10121,7 @@ pub struct BrowserE2eRunStartedPayload {
 ///     classifier (e.g. `html_does_not_contain`, `no_selector`).
 ///   * `ts_ms` — wall-clock UNIX ms at failure observation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserE2eAssertionFailedPayload {
     pub journey_name_hash: u64,
     pub assertion_hash: u64,
@@ -9762,6 +10135,7 @@ pub struct BrowserE2eAssertionFailedPayload {
 /// `BrowserE2eAssertionFailed` so the dashboard can render pass/fail
 /// counts without polling the orchestrator.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserE2eAssertionPassedPayload {
     pub journey_name_hash: u64,
     pub assertion_hash: u64,
@@ -9776,6 +10150,7 @@ pub struct BrowserE2eAssertionPassedPayload {
 /// html_and_screenshot / html_and_ax_tree / full) without needing an
 /// extra column per artifact type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserE2eSnapshotCapturedPayload {
     pub journey_name_hash: u64,
     pub snapshot_kind_hash: u64,
@@ -9797,6 +10172,7 @@ pub struct BrowserE2eSnapshotCapturedPayload {
 ///   * `ts_ms` — wall-clock UNIX ms at the Pass verdict (NOT at tool
 ///     dispatch — there's a small window between).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolReliabilityGatePassedPayload {
     pub tool_name_hash: u64,
     pub call_shape_hash: u64,
@@ -9816,6 +10192,7 @@ pub struct ToolReliabilityGatePassedPayload {
 /// a stable column type and the dashboard can render the reject-cause
 /// histogram without per-cause column proliferation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolReliabilityGateRejectedPayload {
     pub tool_name_hash: u64,
     pub reject_reason_hash: u64,
@@ -9837,6 +10214,7 @@ pub struct ToolReliabilityGateRejectedPayload {
 ///     dashboard render a histogram of spill sizes.
 ///   * `ts_ms` — wall-clock UNIX ms at spill write completion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCallSpilledPayload {
     pub tool_name_hash: u64,
     pub spill_path_hash: u64,
@@ -9860,6 +10238,7 @@ pub struct ToolCallSpilledPayload {
 ///     `elai_ipc_types::AgentRole` snake-case label.
 ///   * `ts_ms` — wall-clock UNIX ms at the escalate verdict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCallRetryEscalatedPayload {
     pub tool_name_hash: u64,
     pub attempt: u32,
@@ -9881,6 +10260,7 @@ pub struct ToolCallRetryEscalatedPayload {
 /// on an ingest span. Logged but does NOT block.
 /// Grounding: arXiv:2507.15219 PromptArmor (off-model classifier design).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InjectionAttemptDetectedPayload {
     pub source_hash: u64,
     pub classifier_verdict_hash: u64,
@@ -9892,6 +10272,7 @@ pub struct InjectionAttemptDetectedPayload {
 /// argv carrying untrusted provenance.
 /// Grounding: arXiv:2503.18813 CaMeL §3.1 (capability denial).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InjectionAttemptBlockedPayload {
     pub source_hash: u64,
     pub defense_layer_hash: u64,
@@ -9902,6 +10283,7 @@ pub struct InjectionAttemptBlockedPayload {
 /// Emitted once per `wrap_spotlight` envelope.
 /// Grounding: arXiv:2403.14720 Spotlight datamarking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpotlightWrappedPayload {
     pub input_hash: u64,
     pub marker_hash: u64,
@@ -9912,6 +10294,7 @@ pub struct SpotlightWrappedPayload {
 /// Emitted when input contained marker bytes that would break the envelope
 /// (forged-wrapper attack attempt).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpotlightBreachedPayload {
     pub input_hash: u64,
     pub marker_hash: u64,
@@ -9923,6 +10306,7 @@ pub struct SpotlightBreachedPayload {
 /// value (`safety::tool_description_pin::DescPinStatus::Drift`).
 /// Grounding: OWASP MCP03:2025 Tool Poisoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolDescriptionPinMismatchPayload {
     pub tool_name_hash: u64,
     pub expected_hash: u64,
@@ -9934,6 +10318,7 @@ pub struct ToolDescriptionPinMismatchPayload {
 /// Emitted when destructive tool argv carried at least one untrusted-provenance
 /// arg. Grounding: arXiv:2503.18813 CaMeL §3.1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityGateRejectedPayload {
     pub tool_name_hash: u64,
     pub origin_trust_hash: u64,
@@ -9943,6 +10328,7 @@ pub struct CapabilityGateRejectedPayload {
 /// E-37 — payload for [`SsbActionType::ProvenanceTagged`].
 /// Emitted (sampled) when a value gets a non-trivial Provenance tag.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvenanceTaggedPayload {
     pub text_source_hash: u64,
     pub trust_level_hash: u64,
@@ -9953,6 +10339,7 @@ pub struct ProvenanceTaggedPayload {
 /// Emitted on every classify_injection call (verdict-rate observability).
 /// Grounding: arXiv:2507.15219 PromptArmor + arXiv:2502.06703 cheap monitors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptArmorVerdictPayload {
     pub verdict_hash: u64,
     pub reason_hash: u64,
@@ -9965,6 +10352,7 @@ pub struct PromptArmorVerdictPayload {
 /// harness can land additively later.
 /// Grounding: arXiv:2406.13352 AgentDojo + CVE-2025-32711 EchoLeak.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InjectionFixtureReplayedPayload {
     pub fixture_name_hash: u64,
     pub defenses_passed: u32,
@@ -9984,6 +10372,7 @@ pub struct InjectionFixtureReplayedPayload {
 /// precedent in `conversation.rs`).
 /// Grounding: OWASP LLM Top 10 LLM01:2025 + LLM06:2025 + CVE-2025-32711.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputClassifierFlaggedPayload {
     pub tool_name: String,
     pub stripped_count: u32,
@@ -10007,6 +10396,7 @@ pub struct OutputClassifierFlaggedPayload {
 /// four call shapes; `result_count` is the unbounded match-count
 /// returned to the caller.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SymbolGraphQueriedPayload {
     pub query_kind_hash: u64,
     pub symbol_hash: u64,
@@ -10020,6 +10410,7 @@ pub struct SymbolGraphQueriedPayload {
 /// `node_count` lets the dashboard surface "graph has N nodes" without
 /// re-loading the underlying JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SymbolGraphCacheLoadedPayload {
     pub graph_path_hash: u64,
     pub node_count: u32,
@@ -10032,6 +10423,7 @@ pub struct SymbolGraphCacheLoadedPayload {
 /// label (rust / python / typescript / go). On-demand-only discipline —
 /// >5 invocations/session is treated as a bug per E-40-decisions.md.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LspOracleConsultedPayload {
     pub language_hash: u64,
     pub symbol_hash: u64,
@@ -10049,6 +10441,7 @@ pub struct LspOracleConsultedPayload {
 /// `file_count` mirrors the on-disk file count (4 msgpack + 1 ASCII
 /// timestamp = 5 per `checkpoint.rs:23-29`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckpointWrittenPayload {
     pub session_id_hash: u64,
     pub schema_version: u32,
@@ -10059,6 +10452,7 @@ pub struct CheckpointWrittenPayload {
 /// E-44 — payload for [`SsbActionType::CheckpointResumed`].
 /// Emitted once per successful resume path (load_latest -> apply).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckpointResumedPayload {
     pub session_id_hash: u64,
     pub schema_version: u32,
@@ -10071,6 +10465,7 @@ pub struct CheckpointResumedPayload {
 /// that bridged at least one schema-version boundary.
 /// `transform_count` is the number of versioned transforms that ran.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckpointMigratedPayload {
     pub from_version: u32,
     pub to_version: u32,
@@ -10084,6 +10479,7 @@ pub struct CheckpointMigratedPayload {
 /// over method tag + canonical request body); `cached_result_hash` is
 /// the blake3-prefix of the cached result for diagnostic correlation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IdempotentDispatchSkippedPayload {
     pub call_shape_hash: u64,
     pub cached_result_hash: u64,
@@ -10097,6 +10493,7 @@ pub struct IdempotentDispatchSkippedPayload {
 /// `holder_hash` is a blake3-prefix of the contending holder identity
 /// when available (0 when unknown).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DurabilityLockBlockedPayload {
     pub lock_path_hash: u64,
     pub holder_hash: u64,
@@ -10110,6 +10507,7 @@ pub struct DurabilityLockBlockedPayload {
 /// "sidecar_orchestrator_schemas"); `severity_max` is the worst
 /// severity across the drift items (1=info, 2=warning, 3=critical).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrossLangDriftDetectedPayload {
     pub pair_kind_hash: u64,
     pub drift_count: u32,
@@ -10124,6 +10522,7 @@ pub struct CrossLangDriftDetectedPayload {
 /// path; `pair_count` is the number of pairs evaluated from the
 /// `cross-lang-pairs.toml` registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrossLangPairScannedPayload {
     pub repo_root_hash: u64,
     pub pair_count: u32,
@@ -10135,6 +10534,7 @@ pub struct CrossLangPairScannedPayload {
 /// the Rust-side `SCHEMA_VERSION` and a sidecar-reported wire schema
 /// version. Both fields are the literal monotonic integer values.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaVersionMismatchPayload {
     pub rust_schema: u32,
     pub python_schema: u32,
@@ -10152,6 +10552,7 @@ pub struct SchemaVersionMismatchPayload {
 /// Emitted once per `coding_metrics::MetricsCollector::capture_metrics`.
 /// `session_id_hash` is the blake3-prefix of the session id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CodingAgentMetricsCapturedPayload {
     pub session_id_hash: u64,
     pub pass_at_1_x10000: u32,
@@ -10164,6 +10565,7 @@ pub struct CodingAgentMetricsCapturedPayload {
 /// Emitted once when `coding_metrics::run_swebench_pro` begins a live
 /// run. Live transport is RUNPOD-PENDING; payload shape is stable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SweBenchProRunStartedPayload {
     pub task_pool_version_hash: u64,
     pub model_id_hash: u64,
@@ -10174,6 +10576,7 @@ pub struct SweBenchProRunStartedPayload {
 /// E-49 — payload for [`SsbActionType::SweBenchProRunCompleted`].
 /// Emitted once at the end of a SWE-Bench Pro live run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SweBenchProRunCompletedPayload {
     pub task_pool_version_hash: u64,
     pub model_id_hash: u64,
@@ -10186,6 +10589,7 @@ pub struct SweBenchProRunCompletedPayload {
 /// E-49 — payload for [`SsbActionType::RefineBenchScoreEmitted`].
 /// Emitted once per RefineBench scoring pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefineBenchScoreEmittedPayload {
     pub suite_version_hash: u64,
     pub model_id_hash: u64,
@@ -10196,6 +10600,7 @@ pub struct RefineBenchScoreEmittedPayload {
 /// E-49 — payload for [`SsbActionType::MetricsAggregationRun`].
 /// Emitted once per `coding_metrics::aggregate_session_metrics` call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsAggregationRunPayload {
     pub session_count: u32,
     pub pass_at_1_avg_x10000: u32,
@@ -10218,6 +10623,7 @@ pub struct MetricsAggregationRunPayload {
 /// `language_hash` is the blake3-prefix of the language slug
 /// (rust / python / typescript / svelte).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiagnosticProbeDispatchedPayload {
     pub probe_kind_hash: u64,
     pub language_hash: u64,
@@ -10232,6 +10638,7 @@ pub struct DiagnosticProbeDispatchedPayload {
 /// tool_missing) — added for the DRIFT-14 closure so Timeout and
 /// ToolMissing surface without breaking the locked Tier-A envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiagnosticProbeCompletedPayload {
     pub probe_kind_hash: u64,
     pub run_status_hash: u64,
@@ -10248,6 +10655,7 @@ pub struct DiagnosticProbeCompletedPayload {
 /// never written to SSB; the EvidenceGate carries the full list out-of-
 /// band).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiagnosticProbeBlockPayload {
     pub probe_kind_hash: u64,
     pub error_count: u32,
@@ -10262,6 +10670,7 @@ pub struct DiagnosticProbeBlockPayload {
 /// shards merged; `crate_count` is the number of distinct crates the
 /// refresh touched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScipRefreshCompletedPayload {
     pub shard_count: u32,
     pub crate_count: u32,
@@ -10318,6 +10727,7 @@ pub struct ScipRefreshCompletedPayload {
 /// workflow/sessions/s-25120/completion-drive/mistakes.md cite-
 /// incident #11 (E-53-INGEST-pending) per cluster cite-discipline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FormalVerifierCompletedPayload {
     pub verifier_kind_hash: u64,
     pub outcome_hash: u64,
@@ -10342,6 +10752,7 @@ pub struct FormalVerifierCompletedPayload {
 /// E-35 — payload for [`SsbActionType::XgrammarMaskApplied`].
 /// Emitted once per sidecar XGrammar mask application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct XgrammarMaskAppliedPayload {
     pub schema_id_hash: u64,
     pub schema_hash_hash: u64,
@@ -10355,6 +10766,7 @@ pub struct XgrammarMaskAppliedPayload {
 /// Emitted once per INSTRUCTOR-mode dispatch (reasoning roles per CRANE:
 /// Auditor / Planner / Decomposer / IdeaFramer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstructorModeActivatedPayload {
     pub role_hash: u64,
     pub block_hash: u64,
@@ -10365,6 +10777,7 @@ pub struct InstructorModeActivatedPayload {
 /// Emitted once per GRAMMAR-mode dispatch (low-reasoning enum/header blocks:
 /// FailureTaxonomy / BabyStepStatus / ReasoningTemplate type-tag).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GrammarModeActivatedPayload {
     pub role_hash: u64,
     pub block_hash: u64,
@@ -10377,6 +10790,7 @@ pub struct GrammarModeActivatedPayload {
 /// the existing role + RuntimeBackend composition per
 /// E41_AGENTROLE_FROZEN_AT_17.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CodeactActionExecutedPayload {
     pub action_hash: u64,
     pub line_count: u32,
@@ -10389,6 +10803,7 @@ pub struct CodeactActionExecutedPayload {
 /// Emitted on successful `SearchReplaceMatcher::apply` (custom non-git
 /// ELAI fences `<<< ELAI_SEARCH` / `=== ELAI_REPLACE` / `>>> ELAI_END`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchReplaceTier1HitPayload {
     pub file_path_hash: u64,
     pub edit_count: u32,
@@ -10399,6 +10814,7 @@ pub struct SearchReplaceTier1HitPayload {
 /// Emitted when `DelimiterCollisionGuard` flags ELAI fence text in the
 /// source buffer; matcher falls back to whole-file rewrite tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchReplaceCollisionFallbackPayload {
     pub file_path_hash: u64,
     pub collision_token_hash: u64,
@@ -10411,6 +10827,7 @@ pub struct SearchReplaceCollisionFallbackPayload {
 /// the call site; header propagation through AnthropicClient is
 /// RUNPOD-PENDING (provider-crate extension).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CloudStrictSchemaAppliedPayload {
     pub provider_hash: u64,
     pub schema_id_hash: u64,
@@ -10424,6 +10841,7 @@ pub struct CloudStrictSchemaAppliedPayload {
 /// Expected `compiled_count` for full warmup is 64 (8 AgentRole values *
 /// 8 BabyStepSpec blocks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GrammarCacheLoadedPayload {
     pub compiled_count: u32,
     pub cache_hits: u32,
@@ -10437,6 +10855,7 @@ pub struct GrammarCacheLoadedPayload {
 /// (lm-format-enforcer) that is EXPLICITLY rejected in favour of XGrammar.
 /// Refuse loud; never silent fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuredEngineRejectedPayload {
     pub engine_hash: u64,
     pub reason_hash: u64,
@@ -10448,6 +10867,7 @@ pub struct StructuredEngineRejectedPayload {
 /// CloudGroundingClient; the call is refused with a typed error rather
 /// than silently downgrading to free-form JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LegacyJsonObjectRefusedPayload {
     pub provider_hash: u64,
     pub ts_ms: u64,
@@ -10488,6 +10908,7 @@ pub struct MastModeCount {
 ///
 /// ENV gate: `ELAI_FAILURE_TRACKER_ENABLE=1` (wire-dark default off).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditMastTaggedPayload {
     /// SSB `seq` of the originating PerLevelAuditVerdict row.
     pub verdict_seq: i64,
@@ -10524,6 +10945,7 @@ pub struct AuditMastTaggedPayload {
 /// arXiv:2506.18203 (Weaver: decorrelated weak verifiers close the
 /// generation-verification gap; the keep/cut metric is unique-catch not lift).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IsoBudgetMeasuredPayload {
     /// Path to the task-fixture TOML used.
     pub task_fixture: String,
@@ -10575,6 +10997,7 @@ pub struct IsoBudgetMeasuredPayload {
 /// Grounding: arXiv:2511.09710 Echoing + arXiv:2412.00804 Identity Drift +
 /// arXiv:2601.04170 Agent Drift.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PersonaReanchoredPayload {
     /// AgentRole snake_case wire tag for the agent the anchor applied to.
     pub agent_role: String,
@@ -10604,6 +11027,7 @@ pub struct PersonaReanchoredPayload {
 /// Grounding: arXiv:2507.02778 — 64.5% same-model blind-spot rate makes
 /// cross-family auxiliary signal the structural fix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrossFamilyUnavailablePayload {
     /// Executor's model family at the refusal site (snake_case
     /// `ModelFamily::as_str`).
@@ -10718,6 +11142,7 @@ impl DarwinianPhase {
 /// Wire-dark default; emission gated by `ELAI_DARWINIAN_LOOP_ENABLE`
 /// env var AND `cfg(feature = "darwinian-evolve")` cargo feature.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DarwinianGenerationCompletedPayload {
     /// Fire-point discriminator. See [`DarwinianPhase`].
     pub phase: DarwinianPhase,
@@ -10758,6 +11183,7 @@ pub enum HandoffSignalPhase {
 
 /// E-3 — payload for [`SsbActionType::RuntimeHandoffSignal`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeHandoffSignalPayload {
     /// Begin / Complete discriminator.
     pub phase: HandoffSignalPhase,
@@ -10773,6 +11199,7 @@ pub struct RuntimeHandoffSignalPayload {
 
 /// E-26 — payload for [`SsbActionType::SglangBackendRegistered`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SglangBackendRegisteredPayload {
     /// Lower-cased base_url blake3 hex (full 64-char prefix).
     pub base_url_blake3: String,
@@ -10785,6 +11212,7 @@ pub struct SglangBackendRegisteredPayload {
 
 /// E-26 — payload for [`SsbActionType::XgrammarSchemaCompiled`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct XgrammarSchemaCompiledPayload {
     /// Cache-key blake3 prefix (64-bit) for the schema.
     pub schema_id_hash: u64,
@@ -10798,6 +11226,7 @@ pub struct XgrammarSchemaCompiledPayload {
 
 /// E-26 — payload for [`SsbActionType::RuntimeColdStartObserved`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeColdStartObservedPayload {
     /// Backend canonical name hash.
     pub backend_name_hash: u64,
@@ -10809,6 +11238,7 @@ pub struct RuntimeColdStartObservedPayload {
 
 /// E-2 — payload for [`SsbActionType::StreamingTimingRecorded`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamingTimingRecordedPayload {
     /// Correlator id for the chat stream (dashboard-assigned).
     pub request_id: String,
@@ -10833,6 +11263,7 @@ pub struct StreamingTimingRecordedPayload {
 
 /// E-2 — payload for [`SsbActionType::UxPacingVoteRecorded`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UxPacingVoteRecordedPayload {
     /// Correlator id for the stream the user voted on.
     pub request_id: String,
@@ -10850,6 +11281,7 @@ pub struct UxPacingVoteRecordedPayload {
 
 /// E-28 — payload for [`SsbActionType::StreamingLlmEngaged`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamingLlmEngagedPayload {
     /// Attention-sink count (paper-recommended >= 4 per arXiv:2309.17453).
     pub sink_count: u32,
@@ -10863,6 +11295,7 @@ pub struct StreamingLlmEngagedPayload {
 
 /// E-28 — payload for [`SsbActionType::SdpaBackendPinned`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SdpaBackendPinnedPayload {
     /// Resolved backend
     /// (`flash_attention` / `efficient_attention` / `math` / `unknown`).
@@ -10877,6 +11310,7 @@ pub struct SdpaBackendPinnedPayload {
 
 /// E-28 — payload for [`SsbActionType::YarnRopeScalingApplied`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct YarnRopeScalingAppliedPayload {
     /// YaRN scaling factor (e.g. 4.0 targets 128K from 32K base).
     pub factor: f64,
@@ -10963,6 +11397,7 @@ impl OptimizerPhase {
 /// admit / retire verdict without re-issuing a query against the
 /// orchestrator-side state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptOptimizationCompletedPayload {
     /// Fire-point discriminator. See [`OptimizerPhase`].
     pub phase: OptimizerPhase,
@@ -11056,6 +11491,7 @@ impl CriticTilePhase {
 /// paired-bootstrap p + Simplify/Keep verdict without re-issuing a query
 /// against the orchestrator-side state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CriticDecisionEventPayload {
     /// Fire-point discriminator. See [`CriticTilePhase`].
     pub phase: CriticTilePhase,
@@ -11128,6 +11564,7 @@ impl SkillEventPhase {
 /// Raw prompt text is omitted by design (blake3 8-byte prefix only --
 /// CTIM-Rover defense).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillSystemEventPayload {
     /// Fire-point discriminator. See [`SkillEventPhase`].
     pub phase: SkillEventPhase,
@@ -11219,6 +11656,7 @@ impl BenchPhase {
 /// (required_n / observed_variance) extend the payload as Option fields when
 /// the live calibration loop comes online.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BenchmarkRunObservedPayload {
     /// Fire-point discriminator. See [`BenchPhase`].
     pub phase: BenchPhase,
@@ -11332,6 +11770,7 @@ impl ProbeKind {
 ///   * L6VerifierDiversity: `verdict` = "pass" / "disagree", `extras`
 ///     carries the reason slug + the two agreement booleans.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReasoningQualityProbePayload {
     /// Fire-point discriminator. See [`ProbeKind`].
     pub kind: ProbeKind,
@@ -11470,6 +11909,7 @@ impl CorpusEventPhase {
 /// `details_json` (serde_json::Value) so future phases can extend the
 /// payload without a schema bump.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvalCorpusEventPayload {
     /// Fire-point discriminator. See [`CorpusEventPhase`].
     pub phase: CorpusEventPhase,
@@ -11571,6 +12011,7 @@ impl RewardLadderEventKind {
 /// penalty breakdowns, unlock-condition flags) can ride along without
 /// per-kind payload structs (Pattern-2 single-variant scope-lean).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RewardLadderEventPayload {
     /// Fire-point discriminator. See [`RewardLadderEventKind`].
     pub kind: RewardLadderEventKind,
@@ -11639,6 +12080,7 @@ impl PriorArtEventKind {
 /// count, prior-art result count, caller-site label) without per-kind
 /// payload structs (Pattern-2 single-variant scope-lean).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SaasPriorArtEventPayload {
     /// Fire-point discriminator. See [`PriorArtEventKind`].
     pub kind: PriorArtEventKind,
@@ -11721,6 +12163,7 @@ impl TrendingEventKind {
 /// any orchestrator query. Empty strings + 0 integers on fields not
 /// applicable to the current kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GithubTrendingEventPayload {
     /// Fire-point discriminator. See [`TrendingEventKind`].
     pub kind: TrendingEventKind,
@@ -11821,6 +12264,7 @@ impl DiscourseEventKind {
 /// re-issuing any orchestrator query. Empty strings + 0 numbers on fields
 /// not applicable to the current kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeveloperDiscourseEventPayload {
     /// Fire-point discriminator. See [`DiscourseEventKind`].
     pub kind: DiscourseEventKind,
@@ -11945,6 +12389,7 @@ impl AgenticObservabilityEventKind {
 ///     (single-element vec when emitted per-row; multi-element when
 ///     batched) + `dataset_label` + `scoring_rubric`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgenticObservabilityEventPayload {
     /// Fire-point discriminator. See [`AgenticObservabilityEventKind`].
     pub kind: AgenticObservabilityEventKind,
@@ -12306,6 +12751,7 @@ impl LeaderboardEventKind {
 /// (suite, model) tuples on the read side without keeping the full
 /// row. blake3 -- NOT blake2/sha2 per CLAUDE.md Anti-Stale-Training.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CodingModelLeaderboardEventPayload {
     /// Fire-point discriminator. See [`LeaderboardEventKind`].
     pub kind: LeaderboardEventKind,
@@ -12456,6 +12902,7 @@ impl RoadmapSignalKind {
 ///   * `posture_doc_stale` populates `posture_doc_path` +
 ///     `posture_doc_mtime_ms` + `age_days`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AiRoadmapSignalEventPayload {
     /// Fire-point discriminator. See [`RoadmapSignalKind`].
     pub kind: RoadmapSignalKind,
@@ -12593,6 +13040,7 @@ impl CostEventKind {
 /// remaining_pct, override_amount, etc.) can ride along without per-
 /// kind payload structs (Pattern-2 single-variant scope-lean).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CostTokenEventPayload {
     /// Fire-point discriminator. See [`CostEventKind`].
     pub kind: CostEventKind,
@@ -12733,6 +13181,7 @@ impl SaasArchPatternEventKind {
 /// platform, override layer, etc.) can ride along without per-kind
 /// payload structs (Pattern-2 single-variant scope-lean).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SaasArchPatternEventPayload {
     /// Fire-point discriminator. See [`SaasArchPatternEventKind`].
     pub kind: SaasArchPatternEventKind,
@@ -12891,6 +13340,7 @@ impl ChatUxCritiqueKind {
 /// ambiguity score, correction trigger, etc.) ride along without
 /// per-kind payload structs (Pattern-2 single-variant scope-lean).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatUxCritiqueEventPayload {
     /// Fire-point discriminator. See [`ChatUxCritiqueKind`].
     pub kind: ChatUxCritiqueKind,
@@ -12980,6 +13430,7 @@ impl VlmImageValidationKind {
 /// Does NOT derive `Eq` — `details_json` may contain NaN-not-equal
 /// `f64` values (e.g. `yaml_diff_pct`) per Pattern-2 28th precedent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VlmImageValidationEventPayload {
     /// Fire-point discriminator. See [`VlmImageValidationKind`].
     pub kind: VlmImageValidationKind,
@@ -13110,6 +13561,7 @@ impl RoutingEventKind {
 /// `f64` / `f32` values (entropy score / threshold / burn USD) per
 /// the Pattern-2 28th + 31st precedents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalCloudRoutingEventPayload {
     /// Fire-point discriminator. See [`RoutingEventKind`].
     pub kind: RoutingEventKind,
@@ -13203,6 +13655,7 @@ impl PeerSystemsEventKind {
 /// values that violate `Eq` (NaN-not-equal). Mirrors the E-20 / E-39 /
 /// E-50 / E-4 precedent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PeerSystemsEventPayload {
     /// Fire-point discriminator. See [`PeerSystemsEventKind`].
     pub kind: PeerSystemsEventKind,
@@ -13302,6 +13755,7 @@ impl DocumentVisionRagEventKind {
 /// Does NOT derive `Eq` — `details_json` may carry NaN-not-equal
 /// `f32` (parser_confidence) per the Pattern-2 28th / 31st precedents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DocumentVisionRagEventPayload {
     /// Fire-point discriminator. See [`DocumentVisionRagEventKind`].
     pub kind: DocumentVisionRagEventKind,
@@ -13413,6 +13867,7 @@ impl TreeSitterGrammarEventKind {
 /// `f32` values (e.g. error rate ratios in Svelte health detail
 /// blobs) per the Pattern-2 28th / 31st / 34th precedents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TreeSitterGrammarEventPayload {
     /// Fire-point discriminator. See [`TreeSitterGrammarEventKind`].
     pub kind: TreeSitterGrammarEventKind,
@@ -13551,6 +14006,7 @@ impl PlanningDecompositionEventKind {
 /// / `f64` values (entropy ratio, jaccard, cosine, process-reward score)
 /// per the Pattern-2 28th / 31st / 34th precedents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanningDecompositionEventPayload {
     /// Fire-point discriminator. See [`PlanningDecompositionEventKind`].
     pub kind: PlanningDecompositionEventKind,
@@ -13692,6 +14148,7 @@ impl WebResearchEventKind {
 /// values (evidence_delta, recency mean_age_days, citation faithfulness
 /// scores) per the Pattern-2 28th / 31st / 34th / 36th precedents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebResearchEventPayload {
     /// Fire-point discriminator. See [`WebResearchEventKind`].
     pub kind: WebResearchEventKind,
@@ -13838,6 +14295,7 @@ impl DurabilityEventKind {
 /// values (reliability metrics rdc / vaf / gds / mop) per the Pattern-2
 /// 28th / 31st / 34th / 36th / 37th precedents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DurabilityEventPayload {
     /// Fire-point discriminator. See [`DurabilityEventKind`].
     pub kind: DurabilityEventKind,
@@ -13923,6 +14381,7 @@ impl HeadDimInvariantVerifiedKind {
 /// loaded model object. Both must agree for the Qwen2.5-Coder family
 /// to attain stable SDPA / FA2 / xformers attention performance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HeadDimInvariantVerifiedPayload {
     /// Fire-point discriminator. See [`HeadDimInvariantVerifiedKind`].
     pub kind: HeadDimInvariantVerifiedKind,
@@ -13976,6 +14435,7 @@ pub const ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV: &str =
 /// Producer: `crates/dashboard-v2/src-tauri/src/commands.rs::record_model_visibility`
 /// (Tauri command emitted by `SettingsWindow.svelte` on toggle change).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoleShownModelHiddenPayload {
     /// Agent role string (e.g. `"executor"`, `"auditor"`,
     /// `"prompt-engineer"`). Free-form so the payload survives future
@@ -14072,6 +14532,7 @@ impl CodingMetricNamedTokenKind {
 /// surfacing the named tokens the original E-49 ship omitted under the
 /// canonical strings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CodingMetricNamedTokenPayload {
     /// Fire-point discriminator. See [`CodingMetricNamedTokenKind`].
     pub kind: CodingMetricNamedTokenKind,
@@ -14180,6 +14641,7 @@ impl RuntimeHandoffEventKind {
 /// + envelope shipped now so dashboard + CLI consumers can begin building
 /// against a stable wire surface in 4B).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeHandoffEventPayload {
     /// Fire-point discriminator. See [`RuntimeHandoffEventKind`].
     pub kind: RuntimeHandoffEventKind,
@@ -14308,6 +14770,7 @@ impl RouteDecisionEventKind {
 ///   * `details_json` -- free-form per-fire-point context.
 ///   * `ts_ms` -- fire-point wall-clock (millis since UNIX_EPOCH).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RouteDecisionEventPayload {
     /// Fire-point discriminator. See [`RouteDecisionEventKind`].
     pub kind: RouteDecisionEventKind,
@@ -14411,6 +14874,7 @@ impl LoraShipGateEventPhase {
 ///   * `details_json` -- free-form per-fire-point context.
 ///   * `ts_ms` -- fire-point wall-clock (millis since UNIX_EPOCH).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoraShipGateEventPayload {
     /// Outcome discriminator. See [`LoraShipGateEventPhase`].
     pub kind: LoraShipGateEventPhase,
@@ -14496,6 +14960,7 @@ impl SymbolGraphEventKind {
 /// per-fire-point context object (DSL string, matched symbol names,
 /// claim refutation diff, etc.).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SymbolGraphEventPayload {
     /// Outcome discriminator. See [`SymbolGraphEventKind`].
     pub kind: SymbolGraphEventKind,
@@ -14574,6 +15039,7 @@ impl McpAuthzEventKind {
 /// tuple_id, etc.). Hashed identifiers (no plaintext) so the wire format
 /// is privacy-preserving and stable across sessions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpAuthzEventPayload {
     /// Outcome discriminator. See [`McpAuthzEventKind`].
     pub kind: McpAuthzEventKind,
@@ -14692,6 +15158,7 @@ impl ToolCalibrationEventKind {
 /// privacy-preserving and stable across sessions (parity with C-45 /
 /// C-46 hashing discipline).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCalibrationEventPayload {
     /// Outcome discriminator. See [`ToolCalibrationEventKind`].
     pub kind: ToolCalibrationEventKind,
@@ -14752,6 +15219,7 @@ pub const CASE_BASE_PERSIST_PATH: &str = ".elai_cc/data/case_base/case_base.sqli
 ///
 /// Wire-dark unless [`ELAI_B39_SOFTWARN_ENABLE_ENV`] is set truthy.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReflectBudgetSoftWarnPayload {
     /// blake3-prefix u64 of the `turn_id` correlator (raw turn_id stays
     /// off the wire surface; the dashboard joins via SsbRow.agent_id +
@@ -14825,6 +15293,7 @@ impl ContractCodingEventKind {
 /// Wire-dark default; emission gated by
 /// [`ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE_ENV`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContractCodingEventPayload {
     /// Outcome discriminator. See [`ContractCodingEventKind`].
     pub kind: ContractCodingEventKind,
@@ -14924,6 +15393,7 @@ impl VibeGateBlockedKind {
 ///     time (e.g. `"executing"`, `"testing_first"`). `None` when the gate
 ///     fires outside the FSM cycle.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VibeGateBlockedPayload {
     /// Fire-point discriminator. See [`VibeGateBlockedKind`].
     pub kind: VibeGateBlockedKind,
@@ -14970,6 +15440,7 @@ pub const ELAI_VIBE_GATE_ENABLE_ENV: &str = "ELAI_VIBE_GATE_ENABLE";
 ///   * `candidate_blake3` -- blake3 hex-prefix (first 16 chars) of the
 ///     candidate edit blob. Never the full source text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityRuleBlockedPayload {
     /// Identifier of the security rule that blocked.
     pub rule_id: String,
@@ -15040,6 +15511,7 @@ impl TestIntegrityEventKind {
 ///   * `kind`        -- 2-arm fire-point discriminator. See
 ///     [`TestIntegrityEventKind`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TestIntegrityEventPayload {
     /// Name or identifier of the test run.
     pub test_name: String,
@@ -15113,6 +15585,7 @@ impl ToolFilterEventKind {
 ///   * `kind`                -- 2-arm fire-point discriminator. See
 ///     [`ToolFilterEventKind`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolFilterPayload {
     /// blake3 64-hex commit hash from [`CommittedToolSet`](crate::capability_flow::CommittedToolSet).
     pub commit_hash: String,
@@ -15188,6 +15661,7 @@ impl WriteTimeSlopVerdictKind {
 ///     `TooNew`; `None` for `NotFound`.
 ///   * `ts_ms`              -- wall-clock milliseconds since UNIX_EPOCH.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WriteTimeSlopsquatBlockedPayload {
     /// blake3 64-bit prefix of the dependency name.
     pub dep_name_hash: u64,
@@ -15254,6 +15728,7 @@ pub enum LoopKind {
 ///     `"python"`, `"typescript"`). Lowercase; matches the language-tag
 ///     vocabulary used by the F-1 vibegate scanner.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityClassRegressionBlockedPayload {
     /// blake3 hex-prefix of the regressing candidate edit blob.
     pub delta_blake3: String,
@@ -15300,6 +15775,7 @@ pub struct SecurityClassRegressionBlockedPayload {
 ///   * `corpus_blake3` -- blake3 hex-prefix of the corpus blob (provenance;
 ///     never the full corpus text).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InsecureRateMeasuredPayload {
     /// Benchmark suite / harness label.
     pub suite: String,
@@ -15357,6 +15833,7 @@ pub struct InsecureRateMeasuredPayload {
 ///   * `fixture_blake3`      -- blake3 hex of the canonical fixture bytes
 ///     (provenance; never the full fixture text).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ErrorAmplificationMeasuredPayload {
     /// Benchmark suite / harness label.
     pub suite: String,
@@ -15435,6 +15912,7 @@ impl SkillLibraryEventKind {
 ///   * `invocations`  -- cumulative successful invocations at event time.
 ///   * `failure_rate` -- failure rate (failures / total) at event time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillLibraryEventPayload {
     /// Stable id of the learned skill.
     pub skill_id: String,
@@ -15489,6 +15967,7 @@ pub struct SkillLibraryEventPayload {
 ///     to `QUARANTINE_QUEUE_CAPACITY` overflow at emit time (W-2 no silent
 ///     drop; 0 in the steady state).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StalenessQuarantineBroadcastPayload {
     /// Stable id of the quarantined fact.
     pub fact_id: String,
@@ -15544,6 +16023,7 @@ pub struct StalenessQuarantineBroadcastPayload {
 ///   * `fsm_substate` -- the FSM agent sub-state at flag time (provenance of
 ///     the admission attempt).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SymbolicConflictPayload {
     /// blake3 hex-prefix of the conflict tuple (`kind` + `key` + `detail`).
     pub fingerprint: String,
@@ -15597,6 +16077,7 @@ pub struct SymbolicConflictPayload {
 /// it is not encoded anywhere in this payload or its thresholds. F-7 gates on
 /// wiring + smoothing-correctness, not a numeric uplift.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TemplateUtilityRankedPayload {
     /// Concept-class key the crystallized template is bucketed under (one half
     /// of the cache key).
@@ -15643,6 +16124,7 @@ pub struct TemplateUtilityRankedPayload {
 /// W-2 disposition + the wire-dark-allowlist row are recorded in
 /// workflow/reasoning/F-13-session-archive-decisions.md.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionArchivedPayload {
     /// The session whose stale-version store was archived.
     pub session_id: String,
@@ -15712,6 +16194,7 @@ impl DarwinianAdmitKind {
 /// hard-coded threshold numbers live in this payload; `alpha` is the real,
 /// candidate-derived evaluation score.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DarwinianAdmitPayload {
     /// Admit/reject/loop-closed discriminator. See [`DarwinianAdmitKind`].
     pub kind: DarwinianAdmitKind,
@@ -15739,6 +16222,7 @@ pub struct DarwinianAdmitPayload {
 
 /// G-4: MCP rug-pull blocked at http_list_tools gate.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpRugPullBlockedPayload {
     pub server_url: String,
     pub schema_blake3_before: String,
@@ -15750,6 +16234,7 @@ pub struct McpRugPullBlockedPayload {
 
 /// E-37 U3 — MCP-scan classifier blocked at http_list_tools.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpScanClassifierBlockedPayload {
     pub server_url: String,
     pub tool_count: u32,
@@ -15778,6 +16263,7 @@ impl TaintFlowKind {
 
 /// G-1: data-plane taint flow blocked at destructive sink.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaintFlowPayload {
     pub kind: TaintFlowKind,
     pub origin_blake3: String,
@@ -15815,6 +16301,7 @@ impl From<elai_safety::blast_radius::BlastRadiusKind> for BlastRadiusKind {
 
 /// G-3: blast-radius gate block.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlastRadiusBlockedPayload {
     pub kind: BlastRadiusKind,
     pub pre_expansion_command: String,
@@ -15827,6 +16314,7 @@ pub struct BlastRadiusBlockedPayload {
 
 /// G-7: lethal trifecta quarantine.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrifectaQuarantinedPayload {
     pub task_id: String,
     pub untrusted_origin_blake3: String,
@@ -15840,6 +16328,7 @@ pub struct TrifectaQuarantinedPayload {
 
 /// G-2: reproducible-run artifact sealed.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunArtifactEmittedPayload {
     pub root_blake3: String,
     pub guarantee_level: String,
@@ -15854,6 +16343,7 @@ pub struct RunArtifactEmittedPayload {
 
 /// G-5: reviewer-cockpit DSR score.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewSurfaceScoredPayload {
     pub session_id: String,
     pub dsr: f64,
@@ -15868,6 +16358,7 @@ pub struct ReviewSurfaceScoredPayload {
 
 /// G-8: signed in-toto provenance attestation emitted.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvenanceAttestationEmittedPayload {
     pub session_id: String,
     pub subject_blake3: String,
@@ -15879,6 +16370,7 @@ pub struct ProvenanceAttestationEmittedPayload {
 
 /// G-6: SAFEDELTA gate-ON vs gate-OFF measurement.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SafetyDeltaMeasuredPayload {
     pub suite: String,
     pub model_id: String,
@@ -15904,6 +16396,7 @@ pub struct SafetyDeltaMeasuredPayload {
 /// `delta` = `off_defective_rate` - `on_defective_rate` (positive = gates improve quality).
 /// `runpod_pending = true` for Tier-1 fixture runs (no live inference, D-026).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QdeltaMeasuredPayload {
     /// Suite label (e.g. "test_qdelta_fixture" for Tier-1).
     pub suite: String,
@@ -15986,6 +16479,7 @@ impl ClaimScopeMeasuredKind {
 /// on the cloud path if `divergence_pct > 5.0`).
 /// TOTAL_VARIANTS 544 -> 545.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaimScopeMeasuredPayload {
     /// Discriminator arm.
     pub kind: ClaimScopeMeasuredKind,
@@ -16042,6 +16536,7 @@ pub enum CacheEconomicsEventKind {
 /// Emitted by `orchestrator::cache_economics::emit_cache_economics_event`.
 /// Default-ON; kill-switch `ELAI_CACHE_ECONOMICS_DISABLE=1`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CacheEconomicsEventPayload {
     /// Which arm of the event.
     pub kind: CacheEconomicsEventKind,
@@ -16091,6 +16586,7 @@ pub enum TrajectoryAbortedKind {
 ///     (DeadEndHash — Wave-1 wiring in task_runner).
 ///   - I-17 check-runner watchdog hook (HaltingBound — Wave-3).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrajectoryAbortedPayload {
     /// Which arm triggered the abort.
     pub kind: TrajectoryAbortedKind,
@@ -16140,6 +16636,7 @@ pub enum DirectiveExecutedKind {
 /// generator emits pure `Directive` structs; the Supervisor is the sole
 /// side-effect executor and the sole producer of this row.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DirectiveExecutedPayload {
     /// Which terminal outcome the directive reached.
     pub kind: DirectiveExecutedKind,
@@ -16182,6 +16679,7 @@ pub enum GovernancePrimitiveFiredKind {
 /// Emitted by `decision_governance::emit_governance_fired` at the
 /// `governed_prompt_decision` call site and by the `bench_governance` fixture driver.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GovernancePrimitiveFiredPayload {
     /// Which governance primitive fired.
     pub kind: GovernancePrimitiveFiredKind,
@@ -16217,6 +16715,7 @@ pub enum RoleContractAppliedKind {
 /// Emitted by `report_fns::build_system_prompt_for_role` (PersonaStripped /
 /// PersonaRetained) and by the `--role-ab-probe` CLI harness (AbDelta).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoleContractAppliedPayload {
     /// Which outcome occurred.
     pub kind: RoleContractAppliedKind,
@@ -16254,6 +16753,7 @@ pub enum ToolSequenceVerdictKind {
 /// Emitted by `directive::InProcessSupervisor::run_sequence_gate` (the 5th
 /// supervisor gate arm) for every dispatch cycle where a sequence rule triggers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolSequenceVerdictPayload {
     /// Which verdict was produced.
     pub kind: ToolSequenceVerdictKind,
@@ -16322,6 +16822,7 @@ pub enum CritiqueLensFindingKind {
 /// as a post-convergence advisory from `idea_framing::run_critic_loop`.
 /// `advisory=true` is invariant (compile-time structural isolation from gate plane).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CritiqueLensFindingPayload {
     /// Which kind of event this is.
     pub kind: CritiqueLensFindingKind,
@@ -16360,6 +16861,7 @@ pub enum BashRedirectedKind {
 /// when `run_bash` returns `Err` with `error_code` `bash_redirected`,
 /// `bash_fixedup`, or `bash_prefix_blocked`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BashRedirectedPayload {
     /// Which interception arm fired.
     pub kind: BashRedirectedKind,
@@ -16403,6 +16905,7 @@ pub enum PromptHardeningAppliedKind {
 /// Pattern-2 single-variant; kind discriminator is [`PromptHardeningAppliedKind`].
 /// Emitted by `tools::execute_agent_with_spawn` once per dispatch where hardening was applied.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptHardeningAppliedPayload {
     /// Which hardening arm fired.
     pub kind: PromptHardeningAppliedKind,
@@ -16448,6 +16951,7 @@ pub enum BranchWorkspaceEventKind {
 /// uses the same `elai_safety::blast_radius::worktree_root_blake3` helper as the
 /// blast-radius SSB adapter so a forensic reader can group rows by root.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BranchWorkspaceEventPayload {
     /// Which barrier arm fired.
     pub kind: BranchWorkspaceEventKind,
@@ -16497,6 +17001,7 @@ pub enum ContextPrunedKind {
 /// Wire-dark until I-4 `SearchLadder::run_best_of_n` ships (Wave 4).
 /// Tier-1 coverage via `crates/contracts/tests/i5_pristine_context_contract.rs`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContextPrunedPayload {
     /// Which pruning arm fired.
     pub kind: ContextPrunedKind,
@@ -16546,6 +17051,7 @@ pub enum BeliefStateEventKind {
 /// BeliefState::emit_handoff_receipt, HonestyJob::run}`.
 /// Production wiring: `task_runner::drive_task` (I-11 block, post `adaptive_reduce`).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BeliefStateEventPayload {
     /// Which arm of the belief-state event.
     pub kind: BeliefStateEventKind,
@@ -16585,6 +17091,7 @@ pub enum MemoryGuardEventKind {
 /// Production wiring: both CLI chokepoints call `MemoryWriteScanner::scan` which triggers
 /// the emit; the TraceQuery arm wires directly in `production_agent_rpc.rs`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryGuardEventPayload {
     /// Which arm of the memory-guard event.
     pub kind: MemoryGuardEventKind,
@@ -16630,6 +17137,7 @@ pub enum ContextTransformKind {
 /// `production_agent_rpc.rs`, invoked from `ipc_accept.rs` `run_agent_session` at the
 /// tool-result byte seam.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContextTransformReceiptPayload {
     /// Which transform strategy produced this receipt.
     pub kind: ContextTransformKind,
@@ -16673,6 +17181,7 @@ pub enum PlaybookEventKind {
 /// The `outcome_row_ids` field embeds the SSB seq IDs of the outcome rows used as
 /// evidence — grep-verifiable and off-agent auditable (R8 gate-freeze).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlaybookEventPayload {
     /// Stable identifier of the rule being promoted/demoted/validated/exported.
     pub rule_id: String,
@@ -16763,6 +17272,7 @@ impl GateId {
 /// veto supremacy: for a `HardVeto` row it MUST be `0` (the vetoed branch never
 /// reached the L2 calibrated scorer). The auditor's contract test asserts this.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TriLayerVerdictPayload {
     /// Stable identifier of the branch this verdict scores.
     pub branch_id: String,
@@ -16829,6 +17339,7 @@ impl RowChainSealedKind {
 /// `break_seq` is the seq of the broken row (`Some` only on ChainBroken arm).
 /// TOTAL_VARIANTS 561 -> 562.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RowChainSealedPayload {
     /// Which arm fired.
     pub kind: RowChainSealedKind,
@@ -16891,6 +17402,7 @@ impl TddPreflightBlockedKind {
 ///     (SyntaxDryRunFailed arm only; empty string on other arms).
 ///   * `ts_ms`          -- wall-clock unix-ms at emission time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TddPreflightBlockedPayload {
     /// Fire-point discriminator. See [`TddPreflightBlockedKind`].
     pub kind: TddPreflightBlockedKind,
@@ -16957,6 +17469,7 @@ impl MutationBudgetedRunKind {
 /// / `survivor_mutation` fields carry the structured counterexample; for the
 /// `CacheHit` arm `n_sampled == 0` and the CI bounds are `0.0`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MutationBudgetedRunPayload {
     /// Fire-point discriminator. See [`MutationBudgetedRunKind`].
     pub kind: MutationBudgetedRunKind,
@@ -17051,6 +17564,7 @@ impl SprintContractEventKind {
 /// carries the D-13 adversary counter text (empty unless AdversaryEscalated).
 /// All free-text fields are bounded by the caller before construction.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SprintContractEventPayload {
     /// Fire-point discriminator. See [`SprintContractEventKind`].
     pub kind: SprintContractEventKind,
@@ -17129,6 +17643,7 @@ impl SearchNodeEventKind {
 /// fields recompute under `ELAI_SEED` (GD-2): `mutation_kill_rate` is the
 /// Wilson-CI point estimate, `progress_score` the rank-3 tie-breaker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchNodeEventPayload {
     /// Fire-point discriminator. See [`SearchNodeEventKind`].
     pub kind: SearchNodeEventKind,
@@ -17212,6 +17727,7 @@ impl EscalationCascadeKind {
 ///     `CONDENSED_PAYLOAD_MAX_BYTES` ceiling on `Condensed`/`Escalated`).
 ///   * `ts_ms`           -- wall-clock unix-ms at emission time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EscalationCascadePayload {
     /// Fire-point discriminator. See [`EscalationCascadeKind`].
     pub kind: EscalationCascadeKind,
@@ -17293,6 +17809,7 @@ impl ProgressRewardScoredKind {
 ///   * `decay_factor`   -- the multiplier applied (< 1.0); 1.0 on other arms.
 ///   * `no_progress_window` -- the D parameter from metrics/progress_reward_weights.toml (0 on other arms).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProgressRewardScoredPayload {
     /// Fire-point discriminator. See [`ProgressRewardScoredKind`].
     pub kind: ProgressRewardScoredKind,
@@ -17398,6 +17915,7 @@ impl RequirementVerifiedKind {
 /// `mutation_coverage` is the I-20 sampled score (`None` until a scoring audit
 /// runs; recomputable under `ELAI_SEED`, GD-2 -- never fabricated).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequirementVerifiedPayload {
     /// Fire-point discriminator. See [`RequirementVerifiedKind`].
     pub kind: RequirementVerifiedKind,
@@ -17463,6 +17981,7 @@ impl RetentionPurgedKind {
 /// you can prove the raw bytes are gone AND the verdict still verifies. Secret-
 /// free by construction (only file-class extensions + a hash, never raw bytes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetentionPurgedPayload {
     /// Fire-point discriminator. See [`RetentionPurgedKind`].
     pub kind: RetentionPurgedKind,
@@ -17529,6 +18048,7 @@ impl CheckpointToolEventKind {
 /// load-bearing safety observable (R1: the divergence-refusal must LAND so the
 /// auditor can prove the rewind was refused, not silently applied).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckpointToolEventPayload {
     /// Fire-point discriminator. See [`CheckpointToolEventKind`].
     pub kind: CheckpointToolEventKind,
@@ -17597,6 +18117,7 @@ impl StructuralEditAppliedKind {
 /// load-bearing safety observable (R1: a stale-match refusal must LAND so the
 /// auditor can prove the apply was refused, not silently corrupting the file).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralEditAppliedPayload {
     /// Fire-point discriminator. See [`StructuralEditAppliedKind`].
     pub kind: StructuralEditAppliedKind,
@@ -17634,6 +18155,7 @@ impl DriftSignalKind {
 
 /// G-10: exogenous behavioral regression suspected.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelDriftSuspectedPayload {
     pub identity_key: String,
     pub kind: DriftSignalKind,
@@ -17646,6 +18168,7 @@ pub struct ModelDriftSuspectedPayload {
 
 /// G-9: write-time secret/PII redaction advisory.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecretRedactedPayload {
     pub session_id: String,
     pub field: String,
@@ -17656,6 +18179,7 @@ pub struct SecretRedactedPayload {
 
 /// G-7b: per-change conformal confidence decision.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaimConfidenceScoredPayload {
     pub claim_id: String,
     pub claim_score: f64,
@@ -17670,6 +18194,7 @@ pub struct ClaimConfidenceScoredPayload {
 
 /// G-11: steering-vector refresh triggered.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SteeringVectorRefreshTriggeredPayload {
     pub pipeline_mode: String,
     pub rules_db_path: String,
@@ -17713,6 +18238,7 @@ impl CanvasOpKind {
 
 /// H-10 canvas: canvas op applied at dispatcher.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanvasOpPayload {
     pub kind: CanvasOpKind,
     pub node_id: String,
@@ -17742,6 +18268,7 @@ impl CanvasViewKind {
 
 /// H-10 canvas: canvas view event.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanvasViewPayload {
     pub kind: CanvasViewKind,
     pub view_type: String,
@@ -17777,6 +18304,7 @@ impl CanvasActivityKind {
 
 /// H-10 canvas: canvas activity (reading/editing) event.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanvasActivityPayload {
     pub kind: CanvasActivityKind,
     pub target_node_id: String,
@@ -17814,6 +18342,7 @@ impl BatchLifecycleKind {
 
 /// H-1: Anthropic batch API lifecycle row.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BatchLifecyclePayload {
     pub kind: BatchLifecycleKind,
     pub batch_id: String,
@@ -17829,6 +18358,7 @@ pub struct BatchLifecyclePayload {
 
 /// H-17: Sharpe-ratio deflation gate verdict.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeflationGateEvaluatedPayload {
     pub objective: String,
     pub data_window: String,
@@ -17866,6 +18396,7 @@ impl LeakageBlockedKind {
 
 /// H-18: data-leakage blocked.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LeakageBlockedPayload {
     pub kind: LeakageBlockedKind,
     pub kapoor_code: String,
@@ -17898,6 +18429,7 @@ impl LookaheadDifferentialKind {
 
 /// H-19: lookahead differential verdict.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LookaheadDifferentialPayload {
     pub kind: LookaheadDifferentialKind,
     pub strategy_path: String,
@@ -17931,6 +18463,7 @@ impl TradingNullTestKind {
 
 /// H-20: trading null-hypothesis test verdict.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TradingNullTestPayload {
     pub kind: TradingNullTestKind,
     pub strategy_path: String,
@@ -17964,6 +18497,7 @@ impl RerunHashEqualityKind {
 
 /// H-23: rerun hash equality verdict.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RerunHashEqualityPayload {
     pub kind: RerunHashEqualityKind,
     pub strategy_path: String,
@@ -17995,6 +18529,7 @@ impl SimRealParityKind {
 
 /// H-22: sim vs real parity verdict.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimRealParityPayload {
     pub kind: SimRealParityKind,
     pub strategy_path: String,
@@ -18026,6 +18561,7 @@ impl ResultManifestVerifiedKind {
 
 /// H-23: result manifest verified verdict.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResultManifestVerifiedPayload {
     pub kind: ResultManifestVerifiedKind,
     pub strategy_path: String,
@@ -18059,6 +18595,7 @@ impl DifferentialDivergenceKind {
 
 /// H-24: differential divergence between primary and shadow.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DifferentialDivergencePayload {
     pub kind: DifferentialDivergenceKind,
     pub strategy_path: String,
@@ -18098,6 +18635,7 @@ impl GateSelfValidationKind {
 
 /// H-25: gate self-validation mutation score verdict.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateSelfValidationPayload {
     pub kind: GateSelfValidationKind,
     pub gates_total: u32,
@@ -18130,6 +18668,7 @@ impl RewardTamperingKind {
 
 /// H-26: reward tampering detection verdict.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RewardTamperingPayload {
     pub kind: RewardTamperingKind,
     pub harness_blake3: String,
@@ -18164,6 +18703,7 @@ impl HoldoutBudgetKind {
 
 /// H-27: holdout budget exhaustion or running.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HoldoutBudgetPayload {
     pub kind: HoldoutBudgetKind,
     pub holdout_id: String,
@@ -18199,6 +18739,7 @@ impl DriftInterlockKind {
 
 /// H-28: drift interlock running/warning/halted.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriftInterlockPayload {
     pub kind: DriftInterlockKind,
     pub strategy_id: String,
@@ -18210,6 +18751,7 @@ pub struct DriftInterlockPayload {
 
 /// H-17: strategy trial count persisted.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrialRegisteredPayload {
     pub objective: String,
     pub data_window: String,
@@ -18220,6 +18762,7 @@ pub struct TrialRegisteredPayload {
 
 /// C-36 extension: MuCoCo inconsistency detected.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MucocoInconsistencyDetectedPayload {
     pub operator: String,
     pub language: String,
@@ -18232,6 +18775,7 @@ pub struct MucocoInconsistencyDetectedPayload {
 
 /// C-36 extension: MuCoCo operator inapplicable skip reason.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MucocoSkipReasonPayload {
     pub operator: String,
     pub language: String,
@@ -18314,6 +18858,7 @@ impl UserDecisionEventKind {
 
 /// H-30: user decision captured or superseded.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UserDecisionSupersededPayload {
     pub kind: UserDecisionEventKind,
     pub old_fact_id: String,
@@ -18325,6 +18870,7 @@ pub struct UserDecisionSupersededPayload {
 
 /// H-17 staleness benchmark measured result.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StalenessEvalMeasuredPayload {
     pub suite: String,
     pub n_cases: u32,
@@ -18369,6 +18915,7 @@ pub enum ReviewStatus {
 /// sha2/blake2 per CLAUDE.md) of `<name>@<file>:<line>`, or empty string when no
 /// parseable `dkg:` pointer was found.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FactValidationFailedPayload {
     /// `fact_id` of the excluded Tier-A fact.
     pub fact_id: String,
@@ -18406,6 +18953,7 @@ pub enum MemoryGovernanceKind {
 /// `actor` is `"cli"` or `"dashboard"` to distinguish the write path.
 /// `session_id` is the ELAI session that emitted the beacon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryGovernanceEventPayload {
     /// `fact_id` of the governed fact.
     pub fact_id: String,
@@ -18425,6 +18973,7 @@ pub struct MemoryGovernanceEventPayload {
 /// (first use of a withheld tool) when `ELAI_MCP_DEFER_SCHEMA_ENABLE=1`.
 /// One row per deferred-schema resolve, NOT per subsequent hit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpToolDeferredPayload {
     /// MCP server name (e.g. `"local-rag"`).
     pub server_name: String,
@@ -18443,6 +18992,7 @@ pub struct McpToolDeferredPayload {
 /// Emitted by `elai bench mcp-schema-budget`. All token counts are COMPUTED
 /// from the corpus fixture — no numeric literals in the runner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpSchemaBudgetMeasuredPayload {
     /// Suite label (e.g. `"mcp_schema_budget"`).
     pub suite: String,
@@ -18466,6 +19016,7 @@ pub struct McpSchemaBudgetMeasuredPayload {
 /// on each successful rewind. A no-op rewind (target==head) emits NO row.
 /// All fields are intent/outcome only -- message content is NEVER stored here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionRewoundPayload {
     /// Session that was rewound.
     pub session_id: String,
@@ -18508,6 +19059,7 @@ pub enum AgentNotificationKind {
 /// event. Never updated; append-only (one row per fire). Token-injection surface is
 /// ZERO -- notification text is two fixed short strings, never model-generated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentNotificationEmittedPayload {
     /// Two-arm discriminator: Completion | NeedsInput.
     pub kind: AgentNotificationKind,
@@ -18561,6 +19113,7 @@ impl PlanDecisionKind {
 /// stays at source). A REDIRECT row carries `target_state` = the redirected
 /// target, not TESTING_FIRST.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanDecisionPayload {
     /// Outcome: Approve | Redirect | Reject | AutoAdvance.
     pub decision_kind: PlanDecisionKind,
@@ -18597,6 +19150,7 @@ pub enum StopOutcomeKind {
 /// the current UTC day at stop time — recomputable from the SSB CloudSpend ledger
 /// under any `ELAI_SEED` (off-agent, R4-compliant).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StopConfirmationPayload {
     /// Gate outcome: ConfirmedProceed | RejectedHeld | PassedNoFriction.
     pub outcome: StopOutcomeKind,
@@ -18628,6 +19182,7 @@ pub struct StopConfirmationPayload {
 ///
 /// Default-ON, kill-switch `ELAI_ABSTENTION_SCORE_DISABLE` (W-2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AbstentionScoredPayload {
     /// Benchmark suite label (e.g. "seccodeplt", "safedelta").
     pub suite: String,
@@ -18667,6 +19222,7 @@ pub struct AbstentionScoredPayload {
 /// - Kambhampati arXiv:2402.08115 — Mode-A coverage is the verification lever.
 /// - Xu arXiv:2401.11817 Table 3 — NP-complete / undecidable = never-LLM-grade.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckerGapDetectedPayload {
     /// Identifier of the claim that triggered the gap (mirrors `claim_id` in
     /// the paired `claim_routed` row).
@@ -18708,6 +19264,7 @@ pub struct CheckerGapDetectedPayload {
 /// - Li et al. arXiv:2402.12875 — T serial CoT steps simulate a size-T circuit.
 /// - Yehudai et al. arXiv:2503.01544 — compositional tasks need ~O(n) CoT tokens.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReasoningBudgetScaledPayload {
     /// Dominant failure class for the SSB Kind arm: "depth_bound", "access_bound",
     /// or "neither".  Derived from [`crate::reasoning_budget::FailureClass::as_ssb_kind_str`].
@@ -18805,6 +19362,7 @@ impl FitnessEvaluatedKind {
 /// recomputes byte-identically under the same `seed` and `test_set_hash`.
 /// TOTAL_VARIANTS 531 -> 532.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FitnessEvaluatedPayload {
     /// Dominant signal arm: `ExecutionPassRate` for normal scoring;
     /// `DualAgreement` for the agreement leg; `FitnessRegression` when the
@@ -18906,6 +19464,7 @@ impl TrapBehaviorDetectedKind {
 /// under the same `seed` and `corpus_hash` over the frozen corpus.
 /// TOTAL_VARIANTS 532 -> 533.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrapBehaviorDetectedPayload {
     /// Which behavioral detection arm fired (or keyword fallback).
     pub kind: TrapBehaviorDetectedKind,
@@ -18982,6 +19541,7 @@ impl PromotionScoreAggregatedKind {
 /// byte-identically under the same `seed` and verdicts.
 /// TOTAL_VARIANTS 533 -> 534.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromotionScoreAggregatedPayload {
     /// Which arm of the aggregation fired.
     pub kind: PromotionScoreAggregatedKind,
@@ -19051,6 +19611,7 @@ impl CladeSelectedKind {
 /// byte-identically under the same `seed` and `fitness_deltas`.
 /// TOTAL_VARIANTS 534 -> 535.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CladeSelectedPayload {
     /// Which arm fired.
     pub kind: CladeSelectedKind,
@@ -19121,6 +19682,7 @@ impl EvalFirewallEventKind {
 /// byte-identically under the same `seed` and `generation_id`.
 /// TOTAL_VARIANTS 535 -> 536.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvalFirewallPayload {
     /// Which arm fired (the dominant event for this generation).
     pub kind: EvalFirewallEventKind,
@@ -19198,6 +19760,7 @@ impl EditHistoryEventKind {
 /// under the same file content and session state.
 /// TOTAL_VARIANTS 536 -> 537.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EditHistoryEventPayload {
     /// Which arm fired for this event.
     pub kind: EditHistoryEventKind,
@@ -19265,6 +19828,7 @@ impl HandoffLifecycleEventKind {
 /// GD-2: resume token cost recomputable from the journal row under ELAI_SEED.
 /// TOTAL_VARIANTS 537 -> 538.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HandoffLifecyclePayload {
     /// Which arm fired.
     pub kind: HandoffLifecycleEventKind,
@@ -19346,6 +19910,7 @@ impl FindingAnchoredKind {
 /// snippet + the diff under `ELAI_SEED`.
 /// TOTAL_VARIANTS 538 -> 539.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FindingAnchoredPayload {
     /// Stable caller-supplied finding identifier.
     pub finding_id: String,
@@ -19406,6 +19971,7 @@ impl CitationAnchorsBoundKind {
 /// the env var was absent). Carried for GD-2 reproducibility.
 /// TOTAL_VARIANTS 539 -> 540.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CitationAnchorsBoundPayload {
     /// Which arm fired.
     pub kind: CitationAnchorsBoundKind,
@@ -19427,6 +19993,7 @@ pub struct CitationAnchorsBoundPayload {
 /// same inputs (deterministic). Default-ON; no kill-switch needed (pure
 /// read path). TOTAL_VARIANTS 540 -> 541.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanStateDerivedPayload {
     /// Plan letter (e.g. "B", "C", "H"). Empty string when deriving all letters.
     pub letter: String,
@@ -19487,6 +20054,7 @@ impl ObjectiveSealedKind {
 /// `ts_ms` is the wall-clock unix-ms at emit time.
 /// TOTAL_VARIANTS 541 -> 542.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObjectiveSealedPayload {
     /// Which arm fired.
     pub kind: ObjectiveSealedKind,
@@ -19540,6 +20108,7 @@ impl GrammarGateEventKind {
 /// `ts_ms` is the wall-clock unix-ms at emit time.
 /// TOTAL_VARIANTS 542 -> 543.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GrammarGateEventPayload {
     /// Which arm fired.
     pub kind: GrammarGateEventKind,
@@ -19564,6 +20133,7 @@ pub struct GrammarGateEventPayload {
 /// for adversarial verification. `reviewer_id` must be non-empty (enforced
 /// at the command layer before this payload is constructed).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiscoveryRatifiedPayload {
     /// ID of the template being ratified (mirrors `NoveltyClassifiedPayload.template_id`).
     pub template_id: String,
@@ -19580,6 +20150,7 @@ pub struct DiscoveryRatifiedPayload {
 /// `reviewer_id` and `reason` must be non-empty (enforced at the command
 /// layer before this payload is constructed).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiscoveryRejectedPayload {
     /// ID of the template being rejected.
     pub template_id: String,
@@ -19656,6 +20227,7 @@ impl PrmCanaryEventKind {
 ///
 /// GD-2: results are recomputable under the same `ELAI_SEED` + frozen fixture set.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrmCanaryEventPayload {
     /// Fire-point discriminator. See [`PrmCanaryEventKind`].
     pub kind: PrmCanaryEventKind,
@@ -19732,6 +20304,7 @@ pub struct ConvergenceCurvePoint {
 /// When I-4 ships, the compute_level field will carry per-node spend from SearchNodeEvent;
 /// the payload shape is forward-compatible (compute_level is an opaque label).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConvergenceCurveMeasuredPayload {
     /// Fixture suite label (e.g. "convergence_fixture_v1").
     pub fixture_suite: String,
@@ -19804,6 +20377,7 @@ impl PromptCompiledKind {
 ///   - `prompt_artifacts::run_transfer_gap_fixture` (TransferGapMeasured arm, Tier-2 DEFER).
 ///   - `prompt_artifacts::rollback_on_regression` (Rolledback arm).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptCompiledPayload {
     /// Which event occurred.
     pub kind: PromptCompiledKind,
@@ -19877,6 +20451,7 @@ impl AuthBrokerEventKind {
 ///   - `AuthBroker::register_provider()` → `ProviderLinked` arm (future multi-provider).
 ///   - `AuthBroker::refresh()` error path → `RefreshFailed` arm.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthBrokerEventPayload {
     /// Which auth broker lifecycle event occurred.
     pub kind: AuthBrokerEventKind,
@@ -19972,6 +20547,7 @@ impl PerceptionScaffoldEventKind {
 /// Does NOT derive `Eq` -- `details_json` may carry NaN-not-equal `f32`
 /// (e.g. scaffold call1_temperature) per the Pattern-2 precedents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PerceptionScaffoldEventPayload {
     /// Fire-point discriminator. See [`PerceptionScaffoldEventKind`].
     pub kind: PerceptionScaffoldEventKind,
@@ -20009,6 +20585,7 @@ pub struct PerceptionScaffoldEventPayload {
 /// the metric here), PS-5 (proof-spine case-reuse-compounding owner number,
 /// `.claude/rules/proof-spine.md`).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecurrenceHitRateMeasuredPayload {
     /// Suite label (only `"fixture"` is runnable at K-18a; `"journal"` is
     /// F-2 deferred).
@@ -20077,6 +20654,7 @@ pub struct RecurrenceHitRateMeasuredPayload {
 /// metric here), PS-2 (proof-spine composed-gate-tax owner number,
 /// `.claude/rules/proof-spine.md`).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateTaxMeasuredPayload {
     /// Deterministic seed passed to `run_gate_tax` (plumbing parity with the
     /// bench-family CLI shape; does not drive RNG in this runner).
@@ -20189,6 +20767,7 @@ pub enum UsageTurnEventKind {
 /// `identity` defaults to `"local"` (S-50: a field, never multi-user
 /// infrastructure -- ELAI has no multi-tenant identity concept today).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UsageTurnEventPayload {
     /// S-50: a field, never infrastructure. `"local"` unless/until ELAI
     /// grows a real multi-identity concept.
@@ -20238,6 +20817,7 @@ pub enum HardwareModelCatalogEventKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HardwareCatalogQuantizationFitPayload {
     pub quantization: String,
     pub min_vram_mb: u32,
@@ -20247,6 +20827,7 @@ pub struct HardwareCatalogQuantizationFitPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HardwareCatalogEntryPayload {
     pub model_id: String,
     pub backend: String,
@@ -20260,6 +20841,7 @@ pub struct HardwareCatalogEntryPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HardwareCatalogLanePayload {
     pub lane: String,
     pub eligible_count: u32,
@@ -20267,6 +20849,7 @@ pub struct HardwareCatalogLanePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HardwareModelCatalogEventPayload {
     pub kind: HardwareModelCatalogEventKind,
     pub detected_tier: String,
@@ -20286,6 +20869,7 @@ pub struct HardwareModelCatalogEventPayload {
 /// the deterministic report fields required to recompute the benchmark result
 /// from the journal row and seed without trusting CLI stdout.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoutingEconomicsMeasuredPayload {
     pub seed: u64,
     pub runner_status: String,
@@ -20318,6 +20902,7 @@ pub struct RoutingEconomicsMeasuredPayload {
 /// deterministic audit gate; the selector does not suppress checks, only
 /// records what the policy would have chosen.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateIntensitySelectedPayload {
     pub tier: String,
     pub always_on: Vec<String>,
@@ -20341,6 +20926,7 @@ pub enum ModelRefreshCadenceKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRefreshCadencePayload {
     pub kind: ModelRefreshCadenceKind,
     pub lane: String,
@@ -20362,6 +20948,7 @@ pub struct ModelRefreshCadencePayload {
 /// `hallucination_rate_gate_on` (positive = gate reduces hallucination).
 /// `runpod_pending = true` for Tier-1 fixture runs (no live inference).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HallucinationDeltaMeasuredPayload {
     pub suite: String,
     pub model_id: String,
@@ -20383,6 +20970,7 @@ pub struct HallucinationDeltaMeasuredPayload {
 /// `functional_pass = compile_exit_code == 0 && test_exit_code == 0`.
 /// `schema_version` pins the SSB schema version at emit time.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalLaneE2eMeasuredPayload {
     pub model: String,
     pub host: String,
@@ -20414,6 +21002,7 @@ pub enum LocalDeterminismKind {
 /// the model + host lane tag, the suite + seed under test, probe +
 /// divergence counts, and freeform notes.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalDeterminismEventPayload {
     pub kind: LocalDeterminismKind,
     pub model: String,
@@ -20468,6 +21057,7 @@ impl ReproPackKind {
 /// `session_id` is the session that generated this event. `ts_ms` is wall-clock unix-ms at emit.
 /// TOTAL_VARIANTS 590 -> 591.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReproPackPayload {
     /// Which arm fired.
     pub kind: ReproPackKind,
@@ -20540,6 +21130,7 @@ impl BlastRadiusRegressionKind {
 /// J-16 payload for [`SsbActionType::BlastRadiusRegressionEvent`].
 /// TOTAL_VARIANTS 591 -> 592.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlastRadiusRegressionPayload {
     pub kind: BlastRadiusRegressionKind,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -20584,6 +21175,7 @@ pub enum ProviderByokEventKind {
 /// (mirrors [`UsageTurnEventPayload::backend`]). NO key material: the
 /// `ok` flag is the success signal, never the key itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderByokEventPayload {
     /// Backend label (e.g. `"anthropic"`, a custom backend id). Identifier
     /// only, never key material.
@@ -20628,6 +21220,7 @@ pub enum IntentRoutedKind {
 /// FrontDoorLane; `risk` is gate::RiskLevel (both in the orchestrator
 /// crate, no cli dep).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntentRoutedPayload {
     /// Routed lane (closed set). See [`crate::front_door::FrontDoorLane`].
     pub lane: FrontDoorLane,
@@ -20694,6 +21287,7 @@ impl ContextCalibrationKind {
 /// `drop_magnitude`, and `content_hash` of the artifact. Does NOT derive `Eq`
 /// -- `details_json` may carry NaN-not-equal `f32` per the Pattern-2 precedents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContextCalibrationEventPayload {
     /// Fire-point discriminator. See [`ContextCalibrationKind`].
     pub kind: ContextCalibrationKind,
@@ -20753,6 +21347,7 @@ impl LocalPrefixCacheKind {
 /// homogeneous across all Kind arms. Does NOT derive `Eq` -- the
 /// `eligibility_reason` string is non-numeric but stable for serialization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalPrefixCacheEventPayload {
     /// Fire-point discriminator. See [`LocalPrefixCacheKind`].
     pub kind: LocalPrefixCacheKind,
@@ -20809,6 +21404,7 @@ impl BehaviorSteeringKind {
 /// derive `Eq` -- the `details_json` value is non-numeric but stable
 /// for serialization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BehaviorSteeringEventPayload {
     /// Fire-point discriminator. See [`BehaviorSteeringKind`].
     pub kind: BehaviorSteeringKind,
@@ -20864,6 +21460,7 @@ impl IntentControlKind {
 /// Does NOT derive `Eq` -- the `details_json` value is non-numeric but
 /// stable for serialization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntentControlEventPayload {
     /// Fire-point discriminator. See [`IntentControlKind`].
     pub kind: IntentControlKind,
@@ -20931,6 +21528,7 @@ impl NodeAdmissionEventKind {
 /// For `SplitForced`, `details_json` carries `should_split` and `sub_count`.
 /// Does NOT derive `Eq` -- `details_json` may carry NaN-not-equal values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeAdmissionEventPayload {
     /// Fire-point discriminator. See [`NodeAdmissionEventKind`].
     pub kind: NodeAdmissionEventKind,
