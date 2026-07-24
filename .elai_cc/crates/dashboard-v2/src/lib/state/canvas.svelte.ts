@@ -41,7 +41,7 @@ import { canvasActivity } from './canvasActivity.svelte';
 // UI shell + mock fixtures ship now; the orchestrator backend
 // (system_canvas.rs + SystemContractEvent SSB) lands later. The mode flag is
 // still a plain string union, NOT an FSM substate.
-export type CanvasMode = 'code' | 'plan' | 'research' | 'arch' | 'design' | 'system';
+export type CanvasMode = 'code' | 'plan' | 'research' | 'arch' | 'design' | 'system' | 'process';
 
 /** Named constants for each mode (avoids magic strings at call sites). */
 export const CANVAS_MODE_CODE: CanvasMode = 'code';
@@ -50,13 +50,14 @@ export const CANVAS_MODE_RESEARCH: CanvasMode = 'research';
 export const CANVAS_MODE_ARCH: CanvasMode = 'arch';
 export const CANVAS_MODE_DESIGN: CanvasMode = 'design';
 export const CANVAS_MODE_SYSTEM: CanvasMode = 'system';
+export const CANVAS_MODE_PROCESS: CanvasMode = 'process';
 
 /** Modes that are fully wired. arch wired in H-13; design wired in H-14.
  *  H-14: 'design' is now a wired mode (DesignPageNode + CanvasPanel mounted;
  *  DESIGN_NAMESPACE const added in canvas_dispatcher.rs). The live proxy
  *  done-gate (painted preview screenshot) is Tier-2 deferred (stub-8) but
  *  the mode infrastructure is live. */
-const WIRED_MODES = new Set<CanvasMode>(['code', 'plan', 'research', 'arch', 'design', 'system']);
+const WIRED_MODES = new Set<CanvasMode>(['code', 'plan', 'research', 'arch', 'design', 'system', 'process']);
 
 // ---------------------------------------------------------------------------
 // Single-consumer SSB arbiter

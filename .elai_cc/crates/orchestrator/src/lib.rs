@@ -2576,6 +2576,8 @@ pub use system_contract_event::emit_system_contract_event;
 pub mod system_canvas;
 pub use system_canvas::{derive_edge_verdict, get_system_canvas, EdgeVerdictInputs};
 
+pub mod process_canvas;
+
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();

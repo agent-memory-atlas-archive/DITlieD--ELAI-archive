@@ -2160,6 +2160,46 @@ export async function get_system_canvas(limit = 500): Promise<SystemCanvas> {
 }
 
 // ------------------------------------------------------------------
+// PROCESS CANVAS (J-60 slice-2) — process-composition read.
+// Mirrors the get_process_canvas Tauri command (commands.rs). Falls back
+// to an EMPTY registry when offline so ProcessLayer renders its empty
+// state.
+// ------------------------------------------------------------------
+
+export interface ProcessNodeDisplay {
+  label: string;
+  status: 'active' | 'idle' | 'completed';
+}
+
+export interface ProcessNode {
+  node_id: string;
+  binding:
+    | { fsm_session: string }
+    | { agent_worker: string }
+    | { phase_step: string };
+  display: ProcessNodeDisplay;
+}
+
+export interface WorktreeDiffEntry {
+  path: string;
+  seq: number;
+}
+
+export interface ProcessCanvasRegistry {
+  nodes: ProcessNode[];
+  diff_entries: WorktreeDiffEntry[];
+  fingerprint: string;
+}
+
+export async function get_process_canvas(limit = 500): Promise<ProcessCanvasRegistry> {
+  logStub('get_process_canvas');
+  const live = await tryInvoke<ProcessCanvasRegistry>('get_process_canvas', { limit });
+  if (live) return live;
+  await delay();
+  return { nodes: [], diff_entries: [], fingerprint: '' };
+}
+
+// ------------------------------------------------------------------
 // BACKEND COST ROLLUP (J-29 SLICE-2)
 // ------------------------------------------------------------------
 

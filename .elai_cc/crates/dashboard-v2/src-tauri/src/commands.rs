@@ -5726,6 +5726,44 @@ pub fn get_system_canvas(
     Ok(canvas)
 }
 
+/// J-60 slice-2: dashboard-facing read of the process canvas. Mirrors
+/// get_system_canvas above; derives {nodes, diff_entries, fingerprint} from
+/// phase_transition + edit_history_event SSB rows via
+/// ProcessCanvasRegistry::derive. Returns an empty registry when no SsbViewer
+/// is attached (browser-only dev mode) so ProcessLayer renders its empty
+/// state.
+#[tauri::command]
+pub fn get_process_canvas(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> CmdResult<elai_orchestrator::process_canvas::ProcessCanvasRegistry> {
+    let limit = limit.unwrap_or(500).clamp(1, 5000);
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(elai_orchestrator::process_canvas::ProcessCanvasRegistry {
+            nodes: Vec::new(),
+            diff_entries: Vec::new(),
+            fingerprint: String::new(),
+        });
+    };
+    let phase_rows = viewer
+        .recent_rows_of_type(
+            SsbActionType::PhaseTransition.as_sql_str(),
+            limit,
+        )
+        .map_err(map_err)?;
+    let edit_rows = viewer
+        .recent_rows_of_type(
+            SsbActionType::EditHistoryEvent.as_sql_str(),
+            limit,
+        )
+        .map_err(map_err)?;
+    let mut rows = phase_rows;
+    rows.extend(edit_rows);
+    let registry = elai_orchestrator::process_canvas::ProcessCanvasRegistry::derive(&rows)
+        .map_err(map_err)?;
+    Ok(registry)
+}
+
 // ---------------------------------------------------------------------------
 // BACKEND COST ROLLUP (J-29 SLICE-2: aggregate BackendCostAccrued SSB rows)
 // ---------------------------------------------------------------------------
