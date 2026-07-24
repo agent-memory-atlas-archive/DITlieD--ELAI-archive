@@ -50,6 +50,8 @@ pub mod grammar_tier;
 // Named `tree_sitter_health` (not `tree_sitter`) to avoid shadowing the
 // external `tree_sitter` crate inside this lib.
 pub mod tree_sitter_health;
+// J-38 Unit 2: mid-task hybrid_search tool handler.
+pub mod hybrid_search_tool;
 pub mod hyde;
 pub mod knowledge_ssb_sink;
 pub mod incremental_profile;

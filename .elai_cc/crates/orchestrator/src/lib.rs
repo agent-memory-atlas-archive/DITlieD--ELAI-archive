@@ -169,6 +169,8 @@ pub mod cloud_mode;
 // workflow/reasoning/E-39-decisions.md.
 pub mod cost;
 pub mod context_budget;
+// J-38 Unit 1: deterministic context-sufficiency gate.
+pub mod context_sufficiency;
 // J-34: empirical context calibration — per-model fill-degradation curve,
 // knee detection, artifact store keyed by ModelIdentity::identity_key.
 // Consumed by context_budget::recalibrate_budget_with_calibration (leg 2)
