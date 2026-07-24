@@ -171,6 +171,9 @@ pub mod cost;
 pub mod context_budget;
 // J-38 Unit 1: deterministic context-sufficiency gate.
 pub mod context_sufficiency;
+// J-38 Unit 3: agentic retrieval loop wiring (compute_context_sufficiency +
+// check_round_limit + QueryPipeline::hybrid_search + expand_with_graph_neighbors).
+pub mod retrieval_loop;
 // J-34: empirical context calibration — per-model fill-degradation curve,
 // knee detection, artifact store keyed by ModelIdentity::identity_key.
 // Consumed by context_budget::recalibrate_budget_with_calibration (leg 2)

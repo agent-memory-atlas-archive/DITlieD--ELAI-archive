@@ -9353,6 +9353,66 @@ async fn drive_task(
             }
         }
 
+        // J-38 Unit 3 fix 2: run the agentic retrieval loop before executor
+        // so search results flow into the agent's input via escalation_message.
+        // context_symbols are derived from task_summary (symbol-like tokens)
+        // so the sufficiency gate has real signal instead of an empty vec.
+        let retrieval_augment: Option<String> = if let Some(spec) = tree.find_baby_step(bs_id) {
+            let intent_symbols: Vec<String> = spec
+                .intent_pairs
+                .pairs
+                .iter()
+                .map(|p| p.natural_language_intent.clone())
+                .collect();
+            let context_symbols: Vec<String> = task_summary
+                .split_whitespace()
+                .filter(|w| w.len() > 2 && w.chars().any(|c| c == '_' || c.is_uppercase()))
+                .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string())
+                .filter(|w| w.len() > 2)
+                .collect();
+            let dkg_db_path = project_dir
+                .as_deref()
+                .map(elai_core::paths::dkg_db_path);
+            let dkg = dkg_db_path
+                .as_ref()
+                .and_then(|p| elai_knowledge::dkg::DkgEngine::new(p, None, 0).ok());
+            let loop_output = crate::retrieval_loop::run_retrieval_loop(
+                crate::retrieval_loop::RetrievalLoopInput {
+                    intent_symbols,
+                    context_symbols,
+                    pipeline: None,
+                    dkg: dkg.as_ref(),
+                    current_round: 0,
+                },
+            );
+            tracing::debug!(
+                coverage = loop_output.sufficiency.coverage_ratio,
+                is_sufficient = loop_output.sufficiency.is_sufficient,
+                missing_count = loop_output.sufficiency.missing.len(),
+                search_results = loop_output.search_results.len(),
+                "j-38 retrieval loop"
+            );
+            if !loop_output.search_results.is_empty() {
+                let augment = loop_output
+                    .search_results
+                    .iter()
+                    .map(|r| format!("{}: {}", r.chunk_id, r.snippet))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(format!("[retrieval context]\n{}", augment))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let escalation_message = match (escalation_message, retrieval_augment) {
+            (Some(msg), Some(aug)) => Some(format!("{}\n\n{}", aug, msg)),
+            (Some(msg), None) => Some(msg),
+            (None, Some(aug)) => Some(aug),
+            (None, None) => None,
+        };
+
         let exec_ctx = BabyStepExecutionCtx {
             baby_step_id: bs_id.0,
             task_summary: task_summary.clone(),

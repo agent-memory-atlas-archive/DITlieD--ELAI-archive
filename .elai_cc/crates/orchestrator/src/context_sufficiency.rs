@@ -56,7 +56,6 @@ impl SufficiencyReport {
 /// # Edge cases
 /// - Empty intent_symbols: coverage_ratio = 1.0 (vacuously sufficient).
 /// - Empty context_symbols: coverage_ratio = 0.0 (all intent symbols missing).
-// WIRE-DARK[J-38]: compute_context_sufficiency has no production caller; the gate consumer (fire hybrid_search on low coverage) + real intent-symbol source (IntentPair C-29) land in Unit 3 SpIDER fusion.
 pub fn compute_context_sufficiency(
     intent_symbols: &[String],
     context_symbols: &[String],

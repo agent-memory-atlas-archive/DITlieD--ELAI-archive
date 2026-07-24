@@ -1715,7 +1715,6 @@ impl QueryPipeline {
     ///
     /// Delegates to the hybrid_search_tool module which wraps query_with_tier
     /// with FAST tier and round-limit guards.
-    // WIRE-DARK[J-38]: QueryPipeline::hybrid_search method has no production caller; the free fn handle_hybrid_search is the wired path; method lands when Unit 3 SpIDER fusion threads it.
     pub fn hybrid_search(
         &self,
         query: String,
