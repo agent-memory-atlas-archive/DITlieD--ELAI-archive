@@ -64,6 +64,15 @@ try:
 except ImportError:  # pragma: no cover -- broken deployment fallback
     _h50_maybe_journal_turn = None  # type: ignore[assignment]
     _H50_JOURNAL_AVAILABLE = False
+
+try:
+    from elai_inference.posthog_client import capture as _ph_capture, posthog_client as _ph_client
+    _PH_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    def _ph_capture(event: str, properties=None) -> None:  # type: ignore[misc]
+        pass
+    _ph_client = None
+    _PH_AVAILABLE = False
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -3932,6 +3941,13 @@ async def steering_compute(request: Request):
         cache_path=str(cache_path),
     )
 
+    _ph_capture("steering_vector_computed", {
+        "role": role,
+        "layer": layer_idx,
+        "vector_dim": vector_dim,
+        "norm": round(norm, 4),
+        "elapsed_ms": elapsed_ms,
+    })
     return OrjsonResponse({
         "vector": vector.tolist(),
         "vector_dim": vector_dim,
@@ -4007,6 +4023,7 @@ async def handle_cache_flush(request: Request):
     if _prefix_kv_cache is None:
         return OrjsonResponse({"flushed": False, "n_entries_cleared": 0})
     n = _prefix_kv_cache.clear()
+    _ph_capture("cache_flushed", {"n_entries_cleared": n})
     return OrjsonResponse({"flushed": True, "n_entries_cleared": n})
 
 
@@ -4124,6 +4141,11 @@ async def handle_set_settings(request: Request) -> OrjsonResponse:
             logger.warning("settings.unknown_key", key=key, value=value)
             silently_skipped.append(key)
 
+    _ph_capture("settings_updated", {
+        "applied_count": len(applied),
+        "requires_restart_count": len(boot_flags_require_restart),
+        "skipped_count": len(silently_skipped),
+    })
     return OrjsonResponse({
         "applied": applied,
         "boot_flags_require_restart": boot_flags_require_restart,
@@ -4430,6 +4452,18 @@ async def handle_completions(request: Request):
             ),
         },
     }
+    _ph_capture("inference_request_completed", {
+        "endpoint": "completions",
+        "stream": False,
+        "model_name": _engine.model_name,
+        "input_tokens": input_token_count,
+        "output_tokens": len(tokens),
+        "elapsed_ms": int(elapsed * 1000),
+        "finish_reason": finish_reason,
+        "dola_enabled": _engine.dola_enabled,
+        "turboquant_enabled": _engine.kv_compressor.enabled,
+        "steering_enabled": _engine.steering_enabled,
+    })
     return OrjsonResponse(response)
 
 
@@ -4971,6 +5005,13 @@ async def handle_ppm_score(request: Request):
         score_var=score_var,
         latency_ms=elapsed_ms,
     )
+    _ph_capture("ppm_score_completed", {
+        "mode": mode,
+        "n_steps": len(per_step),
+        "score_mean": round(score_mean, 4),
+        "score_var": round(score_var, 4),
+        "elapsed_ms": elapsed_ms,
+    })
 
     return OrjsonResponse({
         "candidate_id": candidate_id,
@@ -5011,6 +5052,11 @@ async def handle_search(request: Request):
         if results:
             logger.info("search_completed", query=query, source="searxng",
                         result_count=len(results))
+            _ph_capture("search_performed", {
+                "result_count": len(results),
+                "source": "searxng",
+                "query_length": len(query),
+            })
             return OrjsonResponse({
                 "query": query,
                 "number_of_results": len(results),
@@ -5025,6 +5071,11 @@ async def handle_search(request: Request):
         if results:
             logger.info("search_completed", query=query, source="brave",
                         result_count=len(results))
+            _ph_capture("search_performed", {
+                "result_count": len(results),
+                "source": "brave",
+                "query_length": len(query),
+            })
             return OrjsonResponse({
                 "query": query,
                 "number_of_results": len(results),
@@ -5126,6 +5177,12 @@ async def handle_mucoco_mutate(request: Request):
         applied=result.applied,
         skip_reason=result.skip_reason,
     )
+    _ph_capture("mucoco_mutation_applied", {
+        "operator": result.operator,
+        "language": language,
+        "applied": result.applied,
+        "source_length": len(source),
+    })
 
     return OrjsonResponse({
         "operator": result.operator,
@@ -5491,6 +5548,20 @@ async def _non_stream_messages_response(
         # ELAI custom field. Anthropic SDK clients ignore unknown top-level keys.
         "elapsed_ms": elapsed_ms,
     }
+    if _engine is not None:
+        _ph_capture("inference_request_completed", {
+            "endpoint": "messages",
+            "stream": False,
+            "model_name": _engine.model_name,
+            "input_tokens": input_token_count,
+            "output_tokens": len(tokens),
+            "elapsed_ms": elapsed_ms,
+            "stop_reason": stop_reason,
+            "has_tool_calls": bool(tool_calls),
+            "dola_enabled": _engine.dola_enabled,
+            "turboquant_enabled": _engine.kv_compressor.enabled,
+            "steering_enabled": _engine.steering_enabled,
+        })
     return OrjsonResponse(response)
 
 
@@ -5632,6 +5703,17 @@ def main():
             ctx_cap=_deep_mode_ctx_cap,
             vram_gb=vram_gb,
         )
+
+    _ph_capture("engine_initialized", {
+        "model_name": args.model,
+        "n_layers": _engine.n_layers,
+        "hidden_dim": _engine.hidden_dim,
+        "dola_enabled": args.dola,
+        "turboquant_bits": args.turboquant_bits,
+        "steering_enabled": args.steering,
+        "kv_cache_size": args.kv_cache_size,
+        "deep_mode": _deep_mode_ctx_cap > 0,
+    })
 
     # Load pre-computed steering vectors if provided
     if args.steering and _engine.steering_engine and args.steering_vector_path:
