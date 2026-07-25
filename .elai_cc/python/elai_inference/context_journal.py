@@ -49,6 +49,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import orjson
 import structlog
 
+try:
+    from elai_inference.posthog_client import capture as _ph_capture
+    _PH_AVAILABLE = True
+except ImportError:
+    def _ph_capture(event: str, properties=None) -> None:  # type: ignore[misc]
+        pass
+    _PH_AVAILABLE = False
+
 logger = structlog.get_logger("elai_inference.context_journal")
 
 # ---------------------------------------------------------------------------
@@ -466,6 +474,13 @@ def maybe_journal_turn(
         "ts": time.time(),
     }
     _JOURNAL.append(turn_row)
+    _ph_capture("context_journal_recorded", {
+        "regime": regime,
+        "input_tokens": input_tokens,
+        "trim_at": target,
+        "exceeds_trim_at": input_tokens > target,
+        "message_count": len(messages),
+    })
 
     # Optional would-reduce annotation (second, more-expensive kill-switch).
     proof = os.environ.get(_ENV_JOURNAL_PROOF, "").strip().lower() in (
