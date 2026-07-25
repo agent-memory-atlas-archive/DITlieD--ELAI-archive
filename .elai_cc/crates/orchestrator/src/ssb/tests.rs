@@ -1015,6 +1015,7 @@ use crate::gate::RiskLevel;
                     backend: elai_providers::runtime::RuntimeBackend::ClaudeCode,
                     pid: 12345,
                     argv_redacted: vec!["claude".into(), "-p".into(), "[REDACTED]".into()],
+                    transport: elai_providers::runtime::BridgeTransport::DirectCli,
                 },
             ),
             SsbActionType::CliSubprocessKilled => SsbPayload::CliSubprocessKilled(
@@ -5310,6 +5311,7 @@ use crate::gate::RiskLevel;
                 backend: elai_providers::runtime::RuntimeBackend::ClaudeCode,
                 pid: 12345,
                 argv_redacted: vec!["claude".into(), "-p".into(), "[REDACTED]".into()],
+                transport: elai_providers::runtime::BridgeTransport::DirectCli,
             }),
             SsbPayload::CliSubprocessKilled(CliSubprocessKilledPayload {
                 backend: elai_providers::runtime::RuntimeBackend::ClaudeCode,

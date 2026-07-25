@@ -81,6 +81,7 @@ impl MlxAdapter {
                     backend: RuntimeBackend::Mlx,
                     pid: 0,
                     argv_redacted: vec!["vllm-mlx".into(), "(not spawned yet)".into()],
+                    transport: super::types::BridgeTransport::DirectCli,
                 });
             }
         }

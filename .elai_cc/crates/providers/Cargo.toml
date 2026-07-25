@@ -37,6 +37,18 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-
 # external crate is introduced.
 futures-util = "0.3"
 nvml-wrapper = { version = "0.11", optional = true }
+# J-64 — ACP (Agent Client Protocol) transport for agent bridges.
+# Pinned to 0.15.0 per plan (anti-slopsquat-verified 2026-07-25 via docs.rs:
+# not yanked, no advisory, Apache-2.0). The ACP crate provides JSON-RPC over
+# stdio for driving external agent CLIs (claude-agent-acp etc) through the
+# SAME cli_common::spawn_isolated_with_event Tier-C isolation seam.
+agent-client-protocol = "=0.15.0"
+# J-64 — tokio-util compat bridge: ACP's ByteStreams requires
+# futures::AsyncRead/AsyncWrite but cli_common::spawn_isolated returns
+# tokio::process::Child stdio. tokio-util is already a transitive dep
+# (v0.7.17 via reqwest/tokio-rustls); promoting to direct with "compat"
+# to access TokioAsyncReadCompatExt / TokioAsyncWriteCompatExt.
+tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]
 # I-34: grammar_store tests create temp EBNF fixtures + manifests for pin

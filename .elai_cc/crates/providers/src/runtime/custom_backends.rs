@@ -221,6 +221,7 @@ fn build_anthropic_compat(
         stdout_idle_timeout_seconds: None,
         sidecar: None,
         allow_danger: false,
+        transport: super::types::BridgeTransport::default(),
     };
     let inner = AnthropicApiRuntime::from_factory_config(&cfg)?;
     Ok(Box::new(CustomAnthropicCompatRuntime {

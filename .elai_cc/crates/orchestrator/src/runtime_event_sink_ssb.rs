@@ -121,10 +121,12 @@ fn runtime_event_to_payload(event: RuntimeEvent) -> Option<SsbPayload> {
             backend,
             pid,
             argv_redacted,
+            transport,
         } => SsbPayload::CliSubprocessSpawned(CliSubprocessSpawnedPayload {
             backend,
             pid,
             argv_redacted,
+            transport,
         }),
         RuntimeEvent::CliSubprocessKilled {
             backend,
@@ -254,6 +256,7 @@ mod tests {
             backend: RuntimeBackend::ClaudeCode,
             pid: 42,
             argv_redacted: vec!["claude".into(), "-p".into(), "hello".into()],
+            transport: elai_providers::runtime::BridgeTransport::DirectCli,
         });
         let events = sink.events.lock().expect("lock");
         assert_eq!(events.len(), 1);

@@ -2337,3 +2337,11 @@ owner             = "maintainer"
 expiry_date       = "2026-10-22"
 promotion_plan_id = "J-9"
 smoke_test        = "crates/contracts/tests/j8_perception_upgrade_contract.rs::moai_citation_contains_arxiv_id"
+
+[[flag]]
+name              = "WIRE-DARK[J-64]:acp_transport::with_spawn"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-25"
+promotion_plan_id = "J-64"
+smoke_test        = "crates/providers/src/runtime/acp_transport.rs::tests::with_spawn_injects_custom_spawn"

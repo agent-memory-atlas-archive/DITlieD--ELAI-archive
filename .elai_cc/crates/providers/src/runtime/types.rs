@@ -433,6 +433,23 @@ impl Default for SidecarRuntimeConfig {
     }
 }
 
+/// J-64 — transport selection for agent bridges. `DirectCli` is the
+/// legacy stdio spawn path via `cli_common::spawn_isolated_with_event`;
+/// `Acp` drives the agent through Agent Client Protocol JSON-RPC over
+/// the same Tier-C-isolated subprocess stdio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BridgeTransport {
+    DirectCli,
+    Acp,
+}
+
+impl Default for BridgeTransport {
+    fn default() -> Self {
+        Self::DirectCli
+    }
+}
+
 /// Factory configuration consumed by `create_runtime`. Every field is
 /// optional except `backend`; the adapter constructor decides which
 /// fields it actually needs and surfaces a `RuntimeAdapterError` if a
@@ -457,6 +474,11 @@ pub struct RuntimeFactoryConfig {
     /// `RuntimeAdapterError::PermissionDenied` when this is `false`.
     /// See B-37B-decisions.md MEDIUM-1.
     pub allow_danger: bool,
+    /// J-64 — transport selection for agent bridges. Defaults to
+    /// `DirectCli` (legacy stdio spawn). When `Acp`, `create_runtime`
+    /// routes to `AcpTransport` which drives the agent CLI through
+    /// ACP JSON-RPC over the same Tier-C-isolated subprocess.
+    pub transport: BridgeTransport,
 }
 
 impl RuntimeFactoryConfig {
@@ -478,6 +500,7 @@ impl RuntimeFactoryConfig {
             stdout_idle_timeout_seconds: None,
             sidecar: None,
             allow_danger: false,
+            transport: BridgeTransport::default(),
         }
     }
 }

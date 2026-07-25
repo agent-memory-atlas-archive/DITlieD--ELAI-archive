@@ -38,7 +38,8 @@ use tokio::process::Child;
 use super::event_sink::{redact_argv, runtime_event_sink, RuntimeEvent};
 use super::isolation::{TierCSpawn, TierCSpawnError, TierCStdio};
 use super::types::{
-    RuntimeAdapterError, RuntimeBackend, RuntimeFactoryConfig, RuntimePermissionMode,
+    BridgeTransport, RuntimeAdapterError, RuntimeBackend, RuntimeFactoryConfig,
+    RuntimePermissionMode,
 };
 
 /// Default startup-output timeout when `RuntimeFactoryConfig.startup_output_timeout_seconds`
@@ -341,6 +342,7 @@ pub fn spawn_isolated_with_event(
     stderr: TierCStdio,
     permission_mode: RuntimePermissionMode,
     env_overrides: Vec<(String, String)>,
+    transport: BridgeTransport,
 ) -> Result<Child, TierCSpawnError> {
     let child = spawn.spawn_isolated(
         program,
@@ -363,6 +365,7 @@ pub fn spawn_isolated_with_event(
         backend,
         pid,
         argv_redacted: redact_argv(&full_argv),
+        transport,
     });
     Ok(child)
 }

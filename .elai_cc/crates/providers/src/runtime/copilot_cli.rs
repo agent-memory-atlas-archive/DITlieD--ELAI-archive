@@ -171,6 +171,7 @@ async fn run_complete(
                 TierCStdio::Piped,
                 cfg.permission_mode,
                 Vec::new(),
+                cfg.transport,
             )
             .map_err(cli_common::spawn_err_to_adapter_err)?;
             let child_pid = child.id().unwrap_or(0);

@@ -5044,6 +5044,10 @@ pub struct CliSubprocessSpawnedPayload {
     pub backend: elai_providers::runtime::RuntimeBackend,
     pub pid: u32,
     pub argv_redacted: Vec<String>,
+    /// J-64 — transport used for the spawn. `#[serde(default)]` so old
+    /// SSB rows (pre-J-64) deserialize as `DirectCli`.
+    #[serde(default)]
+    pub transport: elai_providers::runtime::BridgeTransport,
 }
 
 /// B-37C — payload for [`SsbActionType::CliSubprocessKilled`].

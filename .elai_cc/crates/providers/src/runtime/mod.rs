@@ -24,6 +24,12 @@ pub mod bedrock;
 /// (reuses openai_compat shim); live billed calls D-026 PENDING. See
 /// `workflow/reasoning/I-49-decisions.md`.
 pub mod azure_openai;
+/// J-64 — ACP (Agent Client Protocol) transport for Claude Code and
+/// other ACP-speaking agent bridges. Reuses Tier-C isolation via
+/// `cli_common::spawn_isolated_with_event`; deny-by-default callback
+/// policy for fs-access and permission requests. See
+/// `workflow/reasoning/J-64-acp-transport.md`.
+pub mod acp_transport;
 pub mod anthropic_api;
 pub mod cli_common;
 pub mod claude_code;
@@ -125,6 +131,7 @@ pub use azure_openai::{
     normalize_finish_reason as azure_normalize_finish_reason,
 };
 pub use anthropic_api::AnthropicApiRuntime;
+pub use acp_transport::AcpTransport;
 pub use claude_code::ClaudeCodeRuntime;
 pub use cloud_route_difficulty::{
     classifier_unavailable_reason, classify_difficulty, BackendDifficultyAdapter,
@@ -164,9 +171,9 @@ pub use llama_cpp::LlamaCppAdapter;
 pub use mlx::MlxAdapter;
 pub use platform_detect::{detect_llamacpp_ep, detect_mlx_capable, AppleChipFamily, LlamaCppEp, MlxCapability};
 pub use types::{
-    unavailable, AuthSource, CompletionConfig, CompletionResponse, Message, MessageRole,
-    ResolveBackendError, RuntimeAdapter, RuntimeAdapterError, RuntimeBackend, RuntimeCapabilities,
-    RuntimeFactoryConfig, RuntimeFuture, RuntimeHealth, RuntimeHealthFuture,
+    unavailable, AuthSource, BridgeTransport, CompletionConfig, CompletionResponse, Message,
+    MessageRole, ResolveBackendError, RuntimeAdapter, RuntimeAdapterError, RuntimeBackend,
+    RuntimeCapabilities, RuntimeFactoryConfig, RuntimeFuture, RuntimeHealth, RuntimeHealthFuture,
     RuntimePermissionMode, RuntimeStream, SidecarRuntimeConfig, StreamChunk,
 };
 pub use config_descriptor::{
@@ -291,7 +298,10 @@ pub fn create_runtime(
             let adapter = AnthropicApiRuntime::from_factory_config(&cfg)?;
             Ok(Box::new(adapter))
         }
-        RuntimeBackend::ClaudeCode => Ok(Box::new(ClaudeCodeRuntime::new(cfg))),
+        RuntimeBackend::ClaudeCode => match cfg.transport {
+            BridgeTransport::Acp => Ok(Box::new(AcpTransport::new(cfg))),
+            BridgeTransport::DirectCli => Ok(Box::new(ClaudeCodeRuntime::new(cfg))),
+        },
         RuntimeBackend::CodexCli => Ok(Box::new(CodexCliRuntime::new(cfg))),
         RuntimeBackend::OpenCode => Ok(Box::new(OpenCodeRuntime::new(cfg))),
         RuntimeBackend::Hermes => Ok(Box::new(HermesRuntime::new(cfg))),

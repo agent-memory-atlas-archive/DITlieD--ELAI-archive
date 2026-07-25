@@ -29,7 +29,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use super::types::{RuntimeBackend, RuntimeHealth};
+use super::types::{BridgeTransport, RuntimeBackend, RuntimeHealth};
 
 /// Provider-side lifecycle event. Mirrors the four
 /// `runtime_*` / `cli_subprocess_*` `SsbPayload` variants in
@@ -59,6 +59,7 @@ pub enum RuntimeEvent {
         backend: RuntimeBackend,
         pid: u32,
         argv_redacted: Vec<String>,
+        transport: BridgeTransport,
     },
     /// CLI subprocess killed / exited (`cli_common::kill_and_reap`).
     CliSubprocessKilled {
@@ -253,6 +254,7 @@ mod tests {
             backend: RuntimeBackend::ClaudeCode,
             pid: 1,
             argv_redacted: vec![],
+            transport: BridgeTransport::DirectCli,
         });
         // No panic, nothing observable.
     }

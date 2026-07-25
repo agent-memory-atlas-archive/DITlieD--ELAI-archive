@@ -55,6 +55,7 @@ impl LlamaCppAdapter {
             backend: RuntimeBackend::LlamaCpp,
             pid: 0,
             argv_redacted: vec!["llama-server".into(), "(not spawned yet)".into()],
+            transport: super::types::BridgeTransport::DirectCli,
         });
 
         let base_url = cfg
