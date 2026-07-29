@@ -4,13 +4,15 @@
 
 # LIA
 
-<sub>formerly ELAI</sub>
+<sub>formerly ELAI </sub>
 
 <br>
 
 <img src="https://img.shields.io/badge/Rust-1B7A6E?style=flat-square&logo=rust&logoColor=0d1117" alt="Rust"> &nbsp; <img src="https://img.shields.io/badge/local--first-1B7A6E?style=flat-square" alt="local-first"> &nbsp; <img src="https://img.shields.io/badge/trust--evidenced-1B7A6E?style=flat-square" alt="trust-evidenced">
 
 <br>
+
+STILL IN DEVELOPMENT, NOT READY, DONT DOWNLOAD.
 
 an autonomous engineering system where the harness is the product<br>
 the model generates, the deterministic harness sizes the work, owns the state,<br>
