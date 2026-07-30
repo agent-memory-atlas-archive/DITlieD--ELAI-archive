@@ -1431,7 +1431,7 @@ pub fn build_production_hook_dispatcher(
             crate::task_runner::RUNNER_AGENT_ID,
             crate::task_runner::RUNNER_SUPERSTEP,
         )
-        .with_action_gate(Arc::new(crate::intervention::ActionGate::empty()));
+        .with_action_gate(Arc::new(crate::intervention::load_action_gate(project_root)));
     // H-38 BLOCK-1: wire the interactive gate when provided (CLI Interactive mode).
     // Headless/autonomous callers pass None; gate defaults to HOLD (fail-closed).
     if let Some(gate) = stop_gate {
