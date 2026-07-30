@@ -6274,7 +6274,17 @@ async fn drive_task(
             }
         }
         match retrieve_top1_skill(&task.task, &corpus, DEFAULT_MIN_SCORE) {
-            Some(hit) => format!(" skill_id={} skill_score={:.4}", hit.id, hit.score),
+            Some(hit) => {
+                crate::intervention_ssb::emit_harness_intervention_event(
+                    writer,
+                    crate::ssb::HarnessInterventionKind::SkillRetrieved,
+                    serde_json::json!({
+                        "skill_id": hit.id,
+                        "skill_score": hit.score,
+                    }),
+                );
+                format!(" skill_id={} skill_score={:.4}", hit.id, hit.score)
+            }
             None => String::new(),
         }
     };

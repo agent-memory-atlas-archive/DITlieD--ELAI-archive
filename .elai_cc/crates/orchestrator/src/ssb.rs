@@ -1630,6 +1630,8 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // emit_system_contract_event (system_contract_event.rs) at the canvas
     // bind_node/declare_edge ops + the auditor verdict tick.
     SsbActionType::SystemContractEvent(SystemContractEventKind::NodeBound),
+    // J-12: HarnessInterventionEvent (Pattern-2; Kind in payload).
+    SsbActionType::HarnessInterventionEvent(HarnessInterventionKind::ActionGateBlocked),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

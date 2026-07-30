@@ -189,6 +189,7 @@ pub mod prefix_cache_ssb;
 // BehaviorSteeringEvent (SteeringVectorApplied / SteeringEffectMeasured /
 // ObservationSizePreassessed). Mirrors prefix_cache_ssb::emit_local_prefix_cache_event.
 pub mod behavior_steering_ssb;
+pub mod intervention_ssb;
 // H-50: regime-aware in-session context management.
 // Single effective_context_window truth + ContextPolicy-by-BackendMode.
 // LOCAL: trim at 75% of real window via compaction ladder; CLOUD: 85% cache-

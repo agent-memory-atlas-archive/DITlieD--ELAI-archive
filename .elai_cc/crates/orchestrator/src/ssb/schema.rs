@@ -5562,7 +5562,9 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- J-31: system-composition canvas event. Pattern-2 flat variant;
         -- 4-arm SystemContractEventKind rides in the payload. Emitted by
         -- emit_system_contract_event (system_contract_event.rs).
-        'system_contract_event'
+        'system_contract_event',
+        -- J-12: HarnessInterventionEvent Pattern-2.
+        'harness_intervention_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

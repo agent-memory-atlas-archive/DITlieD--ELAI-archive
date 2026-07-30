@@ -1584,6 +1584,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // J-39 T2: NodeAdmissionEvent flat variant, Kind rides in the payload.
         SsbActionType::NodeAdmissionEvent(_) => (),
         SsbActionType::SystemContractEvent(_) => (),
+        SsbActionType::HarnessInterventionEvent(_) => (),
     }
 }
 

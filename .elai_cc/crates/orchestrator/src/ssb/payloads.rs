@@ -3980,6 +3980,8 @@ pub enum SsbPayload {
     NodeAdmissionEvent(NodeAdmissionEventPayload),
     /// J-31 system-canvas event. Carries a [`SystemContractEventPayload`].
     SystemContractEvent(SystemContractEventPayload),
+    /// J-12 runtime intervention harness event. Pattern-2; Kind rides in payload.
+    HarnessInterventionEvent(HarnessInterventionEventPayload),
 }
 
 impl SsbPayload {
@@ -4820,6 +4822,8 @@ impl SsbPayload {
                 SsbActionType::NodeAdmissionEvent(p.kind),
             Self::SystemContractEvent(ref p) =>
                 SsbActionType::SystemContractEvent(p.kind),
+            Self::HarnessInterventionEvent(ref p) =>
+                SsbActionType::HarnessInterventionEvent(p.kind),
         }
     }
 }
@@ -21596,5 +21600,47 @@ pub struct SystemContractEventPayload {
     pub binding_ref: String,
     pub verdict: String,
     pub details_json: serde_json::Value,
+    pub ts_ms: i64,
+}
+
+
+// J-12: HarnessInterventionEvent substrate (runtime intervention harness telemetry)
+
+/// J-12 -- 4-arm discriminator carried by [`HarnessInterventionEventPayload::kind`].
+/// Pattern-2 payload-field convention (mirrors BehaviorSteeringKind).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessInterventionKind {
+    ContractInjected,
+    ActionGateBlocked,
+    ResultAnnotated,
+    SkillRetrieved,
+}
+
+impl HarnessInterventionKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ContractInjected => "contract_injected",
+            Self::ActionGateBlocked => "action_gate_blocked",
+            Self::ResultAnnotated => "result_annotated",
+            Self::SkillRetrieved => "skill_retrieved",
+        }
+    }
+}
+
+/// J-12 -- payload for [`SsbActionType::HarnessInterventionEvent`].
+///
+/// Pattern-2 single-variant; 4-arm Kind rides in `kind`. Arm-specific
+/// scalars ride in `details_json`. Does NOT derive `Eq`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessInterventionEventPayload {
+    /// Fire-point discriminator. See [`HarnessInterventionKind`].
+    pub kind: HarnessInterventionKind,
+    /// Arm-specific details (JSON object).
+    pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
 }

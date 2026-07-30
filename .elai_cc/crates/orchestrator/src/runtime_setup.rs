@@ -1422,10 +1422,15 @@ pub fn build_production_hook_dispatcher(
         // H-38 BLOCK-1: wire stop-cost SSB so day_usd is read from real CloudSpend
         // rows and StopConfirmationEvent beacons are emitted unconditionally on the
         // blocked path (R1/R4 off-agent artifact, fail-closed).
-        .with_stop_cost_ssb(ssb, db_path_str)
+        .with_stop_cost_ssb(ssb.clone(), db_path_str)
         // J-12 H2: wire the protocol action gate. Empty rules = always Exec
         // (noop contract until rules load lands in a later slice). All 3
         // production callers reach check() via this single bootstrap point.
+        .with_intervention_ssb(
+            ssb.clone(),
+            crate::task_runner::RUNNER_AGENT_ID,
+            crate::task_runner::RUNNER_SUPERSTEP,
+        )
         .with_action_gate(Arc::new(crate::intervention::ActionGate::empty()));
     // H-38 BLOCK-1: wire the interactive gate when provided (CLI Interactive mode).
     // Headless/autonomous callers pass None; gate defaults to HOLD (fail-closed).

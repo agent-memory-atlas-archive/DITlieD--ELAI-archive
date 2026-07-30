@@ -4872,6 +4872,9 @@ pub enum SsbActionType {
     /// EdgeDeclared / EdgeVerdict / NodeDrifted) rides inside the payload.
     /// Emitted by `emit_system_contract_event` (system_contract_event.rs).
     SystemContractEvent(SystemContractEventKind),
+    /// J-12 HarnessInterventionEvent. Pattern-2; Kind rides in payload.
+    /// Emitted by `emit_harness_intervention_event` (intervention_ssb.rs).
+    HarnessInterventionEvent(HarnessInterventionKind),
 }
 
 impl SsbActionType {
@@ -5836,6 +5839,7 @@ impl SsbActionType {
             // J-39 T2: node admission gate event. Flat variant, Kind rides in the payload.
             Self::NodeAdmissionEvent(_) => "node_admission_event",
             Self::SystemContractEvent(_) => "system_contract_event",
+            Self::HarnessInterventionEvent(_) => "harness_intervention_event",
         }
     }
 }
@@ -6735,6 +6739,9 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         )),
         "system_contract_event" => Ok(SsbActionType::SystemContractEvent(
             SystemContractEventKind::NodeBound,
+        )),
+        "harness_intervention_event" => Ok(SsbActionType::HarnessInterventionEvent(
+            HarnessInterventionKind::ActionGateBlocked,
         )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }

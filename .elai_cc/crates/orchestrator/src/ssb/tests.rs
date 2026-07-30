@@ -3907,6 +3907,12 @@ use crate::gate::RiskLevel;
                     }),
                     ts_ms: 1_700_000_000_000,
                 }),
+            SsbActionType::HarnessInterventionEvent(_) =>
+                SsbPayload::HarnessInterventionEvent(HarnessInterventionEventPayload {
+                    kind: HarnessInterventionKind::ActionGateBlocked,
+                    details_json: serde_json::json!({}),
+                    ts_ms: 0,
+                }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload
@@ -8710,7 +8716,7 @@ use crate::gate::RiskLevel;
         assert_eq!(
             payloads.len(),
             495,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent",
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

@@ -611,6 +611,8 @@ pub struct InProcessHookDispatcher {
     ///
     /// Tuple: `(writer, agent_id, superstep)`.
     tdd_preflight_ssb: Option<(Arc<crate::ssb::Ssb>, String, i64)>,
+    /// J-12: emit HarnessInterventionEvent rows from the action gate.
+    intervention_ssb: Option<(Arc<crate::ssb::Ssb>, String, i64)>,
     /// J-12 H2: optional protocol action gate. When `Some`,
     /// `dispatch_pre_tool_use` calls `gate.check(tool_name, args_json)` and
     /// pushes a Block finding on `GateVerdict::Block`. `None` preserves
@@ -651,6 +653,7 @@ impl InProcessHookDispatcher {
             stop_cost_ssb: None,
             supervisor: None,
             tdd_preflight_ssb: None,
+            intervention_ssb: None,
             action_gate: None,
         }
     }
@@ -809,6 +812,17 @@ impl InProcessHookDispatcher {
         self.action_gate = Some(gate);
         self
     }
+    /// J-12: wire SSB writer for HarnessInterventionEvent emits on ActionGate Block.
+    pub fn with_intervention_ssb(
+        mut self,
+        writer: Arc<crate::ssb::Ssb>,
+        agent_id: impl Into<String>,
+        superstep: i64,
+    ) -> Self {
+        self.intervention_ssb = Some((writer, agent_id.into(), superstep));
+        self
+    }
+
 
     /// I-19: Run the TDD preflight gate against the current invocation and
     /// return any findings. Constructs a [`crate::tdd_preflight::TddPreflight`]
@@ -1447,11 +1461,22 @@ impl HookDispatcher for InProcessHookDispatcher {
                             findings.push(HookFinding {
                                 tier: HookTier::T1,
                                 verdict: HookVerdictKind::Block,
-                                rule_id: Some(rule_id),
+                                rule_id: Some(rule_id.clone()),
                                 category: "harness_intervention".into(),
                                 message: format!("j12-action-gate: {message}"),
                                 fix_template: None,
                             });
+                            if let Some((ssb, _agent, _ss)) = self.intervention_ssb.as_ref() {
+                                crate::intervention_ssb::emit_harness_intervention_event(
+                                    ssb,
+                                    crate::ssb::HarnessInterventionKind::ActionGateBlocked,
+                                    serde_json::json!({
+                                        "rule_id": rule_id,
+                                        "message": message,
+                                        "tool": tool_name,
+                                    }),
+                                );
+                            }
                         }
                         crate::intervention::GateVerdict::Exec => {}
                     }
