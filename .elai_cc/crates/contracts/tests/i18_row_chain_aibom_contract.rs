@@ -297,18 +297,17 @@ fn i18_f6_build_attestation_aibom_entry_non_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// (F7) SCHEMA_VERSION 253 literal matches the lock in ssb.rs.
+// (F7) SCHEMA_VERSION floor: I-18 introduced at 253; later letters may bump.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn i18_f7_schema_version_253() {
-    // The SCHEMA_VERSION_PUBLIC const in ssb.rs must be 253 for I-18.
+    // I-18 introduced SCHEMA_VERSION 253 (I-17 was 252). Later letters may bump
+    // SCHEMA_VERSION further, so the contract is a floor (>= 253), not equality.
     // SCHEMA_VERSION_PUBLIC mirrors the private SCHEMA_VERSION at ssb.rs:3300.
-    // If this fails, the bump comment in ssb.rs is out of sync with I-18.
-    assert_eq!(
-        elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC,
-        253,
-        "SCHEMA_VERSION must be 253 after I-18 (I-17 was 252); got {}",
+    assert!(
+        elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC >= 253,
+        "SCHEMA_VERSION must be >= 253 after I-18 (I-17 was 252); got {}",
         elai_orchestrator::ssb::SCHEMA_VERSION_PUBLIC
     );
 }

@@ -213,6 +213,13 @@ fn render_show_text(art: &RunArtifact) {
     if art.manifest.is_empty() {
         println!("    (no F-gate verdicts present — a valid gate-off state, not a failure)");
     }
+    // I-18: 5-layer stack hash display.
+    if let Some(stack) = &art.stack_hash {
+        println!("  stack_hash     : state={} deps={} process={} result={} verify={}",
+            stack.state, stack.deps, stack.process, stack.result, stack.verify);
+    } else {
+        println!("  stack_hash     : (none, LEGACY receipt pre-I-18)");
+    }
     // I-40 Step 5 — render the action-stream event rows so wrapped-run rows
     // (taint_flow + run_artifact_emitted from `elai wrap`) are visible in the
     // existing RRA viewer. Capped to avoid flooding the terminal on a long
@@ -222,18 +229,9 @@ fn render_show_text(art: &RunArtifact) {
 
 /// I-40 Step 5 — render the action-stream event rows in the text viewer.
 ///
-/// Each event row shows its append-only seq, its SSB action_type wire tag, and
-/// its sealed content hash (event_blake3). This makes wrapped-run rows
-/// (taint_flow from the untrusted-ingest / blocked-write gates, and the
-/// run_artifact_emitted beacon) visible when an operator runs
-/// `elai rra show <wrap-fixture.rra>`. The dashboard `RraViewerPanel` already
-/// surfaces the run_artifact_emitted beacon via `get_run_artifact` (no session
-/// filter), so the frontend_pair is satisfied without a new Svelte component.
-///
-/// Capped at [`EVENT_STREAM_RENDER_CAP`] rows to bound terminal output; a
-/// `... N more` indicator is printed when the stream is truncated. The full
-/// event stream is always available via `--output json` (the JSON path
-/// serializes the entire `RunArtifact` including every event).
+/// Each event row shows its append-only seq, SSB action_type wire tag, and
+/// sealed content hash (event_blake3). Capped at [`EVENT_STREAM_RENDER_CAP`]
+/// rows; the full stream is available via `--output json`.
 const EVENT_STREAM_RENDER_CAP: usize = 50;
 
 fn render_event_stream(art: &RunArtifact) {
@@ -451,6 +449,14 @@ fn render_verdict_text(path: &std::path::Path, verdict: &ReplayVerdict) {
                 "VERIFIED {} — artifact cryptographically intact. \
                  objective: UNCHECKED (sealed hash {sealed_hash} present but no current \
                  objective text supplied; pass --current-objective <text> to enable staleness check)",
+                path.display()
+            );
+        }
+        // I-18: a 5-layer stack hash layer did not re-derive from the RRA data.
+        ReplayVerdict::StackHashMismatch { layer, expected, got } => {
+            println!(
+                "STACK-HASH-MISMATCH {} — layer `{layer}` did not re-derive \
+                 (expected {expected}, got {got}); the RRA data was tampered after sealing",
                 path.display()
             );
         }

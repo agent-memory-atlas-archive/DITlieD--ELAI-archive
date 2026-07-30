@@ -401,6 +401,7 @@ pub mod rra;
 pub mod rra_emit;
 pub mod rra_export;
 pub mod rra_tiers;
+pub mod stack_hash;
 // G-8 (SCHEMA_VERSION 213): signed in-toto v1 provenance attestation. Re-expresses
 // the G-2 RunArtifact manifest as a custom in-toto Statement + predicate, signs it
 // with a LOCAL blake3-Merkle proof (no new dep), and verifies it OFFLINE
@@ -2134,6 +2135,7 @@ pub use rra::{
     build_rra, canonical_objective_bytes, compute_root, read_rra, verify_artifact,
     verify_artifact_with_objective, verify_rra, write_rra,
     GateVerdictHash, GuaranteeLevel, ReplayVerdict, RraError, RraEvent, RunArtifact,
+    StackHash, StackHashMismatch,
     RRA_COMPRESSION_DEFERRED, RRA_FORMAT_VERSION, RRA_HEX_PREFIX_LEN,
 };
 // J-14 S5: pure ReproPackEvent payload builders (TierEvaluated +

@@ -287,40 +287,10 @@ pub struct RunArtifact {
     pub root_blake3: String,
 }
 
-/// I-18: 5-layer blake3 stack hash sealed into the RRA by [`build_rra`].
-///
-/// Each layer is a blake3 16-hex prefix (same truncation as the bundle root).
-/// The five layers are computed over the ordered SSB stream at seal time:
-/// - `state`:   blake3 of the concatenated SSB entry bytes (snapshot of the
-///   action stream state at seal time; any row mutation changes this layer).
-/// - `deps`:    blake3 of the Cargo.lock bytes at seal time (dependency pin);
-///   a mid-run Cargo.lock mutation is caught here and halts the run.
-/// - `process`: blake3 of the process-execution environment fingerprint
-///   (seed || hardware_class || system_fingerprint_pin).
-/// - `result`:  blake3 of the sealed objective hash bytes (the I-45
-///   `objective_hash` field from `build_rra`); a tampered or absent objective
-///   changes this layer. When no objective was framed, hashes the sentinel
-///   string `"no-objective"`.
-/// - `verify`:  blake3 of (state || deps || process || result) as the
-///   cross-layer integrity combiner — a single-layer tamper changes this.
-///
-/// All five layers use blake3 (CLAUDE.md hard rule, no sha256/blake2).
-/// `None` on LEGACY receipts (pre-I-18); `#[serde(default)]` on `stack_hash`
-/// in `RunArtifact` preserves backward compat.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StackHash {
-    /// blake3 16-hex of the SSB action-stream state at seal time.
-    pub state: String,
-    /// blake3 16-hex of the Cargo.lock bytes at seal time.
-    pub deps: String,
-    /// blake3 16-hex of the process environment (seed + hw_class + fp_pin).
-    pub process: String,
-    /// blake3 16-hex of the sealed objective hash bytes (I-45 `objective_hash`
-    /// from `build_rra`). Sentinel `"no-objective"` when no objective was framed.
-    pub result: String,
-    /// blake3 16-hex of the cross-layer combiner (state || deps || process || result).
-    pub verify: String,
-}
+// I-18: StackHash + StackHashMismatch + seal_stack_hash + verify impl moved
+// to crate::stack_hash (MR-1 maintainability split). Re-exported here so
+// existing import paths (`elai_orchestrator::rra::StackHash`) resolve.
+pub use crate::stack_hash::{StackHash, StackHashMismatch};
 
 /// The verdict of a `replay --verify` on a `.rra`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,6 +337,19 @@ pub enum ReplayVerdict {
     ObjectiveUnchecked {
         /// Hash recorded in the sealed bundle.
         sealed_hash: String,
+    },
+    /// I-18: a 5-layer stack hash layer did not re-derive from the RRA data.
+    /// Names the first mismatched layer (STATE/PROCESS/RESULT/VERIFY) for
+    /// diagnostics. DEPS is not re-derivable from the RRA alone (Cargo.lock
+    /// bytes are not bundled) and is therefore never reported here.
+    StackHashMismatch {
+        /// Which layer mismatched (`"state"` / `"process"` / `"result"` /
+        /// `"verify"`).
+        layer: String,
+        /// The sealed layer hash.
+        expected: String,
+        /// The re-derived layer hash.
+        got: String,
     },
 }
 
@@ -657,74 +640,8 @@ pub fn build_rra_with_sampling_seed(
     art
 }
 
-/// I-18: Compute the 5-layer [`StackHash`] sealed into the RRA.
-///
-/// Each layer is a blake3 16-hex prefix (same truncation as the bundle root).
-/// All layers use blake3 (no sha256 / blake2, CLAUDE.md Anti-Stale-Training).
-///
-/// This is a Tier-1 offline computation — no new deps, no cosign-rs. The
-/// cosign-rs Rekor push path stays behind `#[cfg(feature="cosign-attest")]`
-/// in attestation.rs:517.
-fn seal_stack_hash(
-    decoded: &[(SsbEntry, Option<SsbPayload>)],
-    pins: &DeterminismConfig,
-    objective_hash: &Option<String>,
-) -> StackHash {
-    // STATE layer: hash of the concatenated raw payload bytes from the SSB
-    // stream at seal time (any row mutation changes this layer).
-    let state_input: Vec<u8> = decoded
-        .iter()
-        .flat_map(|(e, _)| e.payload.iter().copied())
-        .collect();
-    let state = truncate_hex(&blake3::hash(&state_input).to_hex());
-
-    // DEPS layer: hash of the Cargo.lock bytes if readable, else hash of a
-    // deterministic "no-cargo-lock" sentinel (so the field is never empty).
-    let deps = {
-        let cargo_lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../Cargo.lock");
-        let cargo_bytes = std::fs::read(&cargo_lock_path)
-            .unwrap_or_else(|_| b"no-cargo-lock".to_vec());
-        truncate_hex(&blake3::hash(&cargo_bytes).to_hex())
-    };
-
-    // PROCESS layer: hash of (seed || hardware_class_label || system_fingerprint_pin).
-    // hardware_class_label() produces the same canonical string stored in the
-    // RunArtifact.hardware_class field ("cpu" / "gpu:<sku>" / "unknown").
-    // system_fingerprint_pin is Option<String>; None serializes as empty bytes.
-    let hw_label = hardware_class_label(&pins.hardware_class);
-    let fp_pin = pins
-        .system_fingerprint_pin
-        .as_deref()
-        .unwrap_or("")
-        .as_bytes();
-    let mut process_input = Vec::new();
-    process_input.extend_from_slice(&pins.seed.to_le_bytes());
-    process_input.extend_from_slice(hw_label.as_bytes());
-    process_input.extend_from_slice(fp_pin);
-    let process = truncate_hex(&blake3::hash(&process_input).to_hex());
-
-    // RESULT layer: hash of the objective_hash bytes (G-2 bundle root proxy).
-    // A tampered artifact changes the objective hash and therefore this layer.
-    let result = {
-        let input = objective_hash
-            .as_deref()
-            .unwrap_or("no-objective")
-            .as_bytes();
-        truncate_hex(&blake3::hash(input).to_hex())
-    };
-
-    // VERIFY combiner: hash of (state || deps || process || result) as the
-    // cross-layer integrity combiner — a single-layer tamper changes this.
-    let mut verify_input = Vec::new();
-    verify_input.extend_from_slice(state.as_bytes());
-    verify_input.extend_from_slice(deps.as_bytes());
-    verify_input.extend_from_slice(process.as_bytes());
-    verify_input.extend_from_slice(result.as_bytes());
-    let verify = truncate_hex(&blake3::hash(&verify_input).to_hex());
-
-    StackHash { state, deps, process, result, verify }
-}
+// I-18: seal_stack_hash moved to crate::stack_hash (MR-1 split).
+use crate::stack_hash::seal_stack_hash;
 
 /// Snake-case label for a [`crate::determinism::HardwareClass`] (mirrors the
 /// `ELAI_HARDWARE_CLASS` encoding).
@@ -831,8 +748,22 @@ pub fn verify_artifact_with_objective(
             });
         }
     }
-    // 3. Objective staleness check (I-45). Runs AFTER tamper/divergence so a
-    //    tampered bundle never reaches this branch.
+    // 3. I-18: 5-layer stack hash verify. Re-derives STATE/PROCESS/RESULT/VERIFY
+    //    from the RRA data and compares against the sealed values. DEPS is not
+    //    re-derivable (Cargo.lock not bundled) and is skipped. Runs AFTER
+    //    tamper/divergence so a tampered bundle never reaches this branch. A
+    //    LEGACY receipt (stack_hash = None) skips this check.
+    if let Some(sealed_stack) = &art.stack_hash {
+        if let Err(mismatch) = sealed_stack.verify(art) {
+            return Ok(ReplayVerdict::StackHashMismatch {
+                layer: mismatch.layer,
+                expected: mismatch.expected,
+                got: mismatch.got,
+            });
+        }
+    }
+    // 4. Objective staleness check (I-45). Runs AFTER tamper/divergence/stack
+    //    so a tampered bundle never reaches this branch.
     if let Some(sealed_hash) = &art.objective_hash {
         match current_objective {
             None => {
@@ -856,6 +787,8 @@ pub fn verify_artifact_with_objective(
     // LEGACY receipt (objective_hash = None) or matching objective — verified.
     Ok(ReplayVerdict::Verified)
 }
+
+// I-18: i18_stack_hash_tests moved to crate::stack_hash (MR-1 split).
 
 #[cfg(test)]
 mod j13_sampling_seed_tests {
