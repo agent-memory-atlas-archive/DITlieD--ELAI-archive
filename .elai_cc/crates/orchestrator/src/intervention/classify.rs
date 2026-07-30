@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn <REDACTED_TOKEN>() {
+    fn regression_rejects_blocked_valid_fixture() {
         let r = regression_check(&[upd("a1", true, false), upd("b2", false, false)]);
         assert_eq!(r.accepted.len(), 1);
         assert_eq!(r.accepted[0].id, "b2");
@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn <REDACTED_TOKEN>() {
+    fn regression_accepts_may_over_trigger_without_blocked_valid() {
         let r = regression_check(&[upd("a1", false, true)]);
         assert_eq!(r.accepted.len(), 1);
         assert!(r.accepted[0].may_over_trigger);

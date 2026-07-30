@@ -148,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn <REDACTED_TOKEN>() {
+    fn single_exact_match_returns_id_with_positive_score() {
         let docs = vec![doc("a", "rust async runtime tokio")];
         let r = retrieve_top1_skill("tokio", &docs, DEFAULT_MIN_SCORE).unwrap();
         assert_eq!(r.id, "a");
