@@ -273,6 +273,11 @@ pub mod intent_control;
 pub mod critique;
 pub mod hooks;
 pub mod hook_dispatcher;
+// J-12 H2: runtime intervention harness (deterministic agent-loop
+// interventions, LLM-free at runtime). Slice-1 ships the action_gate module
+// (protocol-violation pre-check). Later slices add tool_decor, annotate,
+// skill_retrieval, classify. See docs/thefinalglance/J-plan/J-12_*.md.
+pub mod intervention;
 // I-1: directive supervisor enforcement plane. The generator emits pure
 // Directive structs; the Supervisor is the sole side-effect executor, gate-
 // checking (F-1/E-30/G-3) before execution and firing E-44 saga compensation

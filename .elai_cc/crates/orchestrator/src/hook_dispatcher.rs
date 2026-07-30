@@ -611,6 +611,11 @@ pub struct InProcessHookDispatcher {
     ///
     /// Tuple: `(writer, agent_id, superstep)`.
     tdd_preflight_ssb: Option<(Arc<crate::ssb::Ssb>, String, i64)>,
+    /// J-12 H2: optional protocol action gate. When `Some`,
+    /// `dispatch_pre_tool_use` calls `gate.check(tool_name, args_json)` and
+    /// pushes a Block finding on `GateVerdict::Block`. `None` preserves
+    /// pre-J-12 behaviour. Empty rules = always Exec (noop until rules load).
+    action_gate: Option<Arc<crate::intervention::ActionGate>>,
 }
 
 impl InProcessHookDispatcher {
@@ -646,6 +651,7 @@ impl InProcessHookDispatcher {
             stop_cost_ssb: None,
             supervisor: None,
             tdd_preflight_ssb: None,
+            action_gate: None,
         }
     }
 
@@ -790,6 +796,17 @@ impl InProcessHookDispatcher {
         superstep: i64,
     ) -> Self {
         self.tdd_preflight_ssb = Some((writer, agent_id.into(), superstep));
+        self
+    }
+
+    /// J-12 H2: install the protocol action gate. When installed,
+    /// `dispatch_pre_tool_use` calls `gate.check(tool_name, args_json)` and
+    /// pushes a Block finding on `GateVerdict::Block`. `None` (the default)
+    /// preserves pre-J-12 behaviour. Production bootstrap passes
+    /// `ActionGate::empty()` (noop until rules load lands in a later slice).
+    #[must_use]
+    pub fn with_action_gate(mut self, gate: Arc<crate::intervention::ActionGate>) -> Self {
+        self.action_gate = Some(gate);
         self
     }
 
@@ -1415,6 +1432,29 @@ impl HookDispatcher for InProcessHookDispatcher {
                 let tdd_findings = self.run_tdd_preflight_check(&invocation).await;
                 if !tdd_findings.is_empty() {
                     findings.extend(tdd_findings);
+                }
+            }
+
+            // J-12 H2: protocol action gate. Runs after TDD preflight and before
+            // the I-35 history push, while !self.disabled. Empty rules = always
+            // Exec (noop contract until rules load lands in a later slice).
+            if !self.disabled {
+                if let Some(gate) = self.action_gate.as_ref() {
+                    let tool_name = invocation.action_type;
+                    let args_json = invocation.source.unwrap_or("{}");
+                    match gate.check(tool_name, args_json) {
+                        crate::intervention::GateVerdict::Block { rule_id, message } => {
+                            findings.push(HookFinding {
+                                tier: HookTier::T1,
+                                verdict: HookVerdictKind::Block,
+                                rule_id: Some(rule_id),
+                                category: "harness_intervention".into(),
+                                message: format!("j12-action-gate: {message}"),
+                                fix_template: None,
+                            });
+                        }
+                        crate::intervention::GateVerdict::Exec => {}
+                    }
                 }
             }
 
@@ -2503,5 +2543,27 @@ mod tests {
         let inner: Arc<dyn elai_plugins::IpcHookTrait + Send + Sync> = Arc::new(StubIpcHook);
         let adapter: Arc<dyn HookDispatcher> = Arc::new(IpcHookAsyncAdapter::new(inner));
         assert!(Arc::strong_count(&adapter) >= 1);
+    }
+
+    /// J-12 H2: action gate with an Active rule blocks a Write invocation
+    /// missing the required `path` arg, producing a Block finding with the
+    /// rule_id on the dispatch_pre_tool_use path.
+    #[tokio::test]
+    async fn action_gate_blocks_missing_required_arg() {
+        use crate::intervention::{ActionGate, ProtocolRule, RuleLifecycleStage};
+        let gate = Arc::new(ActionGate::new(vec![ProtocolRule {
+            id: "t".into(),
+            tool_name: "Write".into(),
+            required_args: vec!["path".into()],
+            stage: RuleLifecycleStage::Active,
+        }]));
+        let d = InProcessHookDispatcher::new(None).with_action_gate(gate);
+        let inv = HookInvocation::for_pre_tool_use("Write", "{}", "step_1");
+        let findings = d.dispatch_pre_tool_use(inv).await.expect("ok");
+        let block = findings
+            .iter()
+            .find(|f| f.is_block() && f.rule_id.as_deref() == Some("t"));
+        assert!(block.is_some(), "expected a Block finding with rule_id t");
+        assert_eq!(block.unwrap().category, "harness_intervention");
     }
 }
