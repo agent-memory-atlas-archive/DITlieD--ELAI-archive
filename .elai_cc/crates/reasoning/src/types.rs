@@ -119,6 +119,69 @@ impl GrcBudget {
 }
 
 // ---------------------------------------------------------------------------
+// AuditorBudgetReserve: J-70 E2a — auditor financial-independence budget
+// reservation. The orchestrator cannot raid this pool for executor work
+// (NASA-STD financial independence: the auditor's budget is HARD-reserved).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditorBudgetReserve {
+    pub max_calls: u32,
+    pub max_chars: u32,
+    pub calls_used: u32,
+    pub chars_used: u32,
+}
+
+impl Default for AuditorBudgetReserve {
+    fn default() -> Self {
+        Self {
+            max_calls: 10,
+            max_chars: 1200,
+            calls_used: 0,
+            chars_used: 0,
+        }
+    }
+}
+
+impl AuditorBudgetReserve {
+    pub fn new(max_calls: u32, max_chars: u32) -> Self {
+        Self {
+            max_calls,
+            max_chars,
+            calls_used: 0,
+            chars_used: 0,
+        }
+    }
+
+    pub fn remaining_calls(&self) -> u32 {
+        self.max_calls.saturating_sub(self.calls_used)
+    }
+
+    pub fn remaining_chars(&self) -> u32 {
+        self.max_chars.saturating_sub(self.chars_used)
+    }
+
+    pub fn charge(&mut self, calls: u32, chars: u32) -> Result<(), &str> {
+        if self.calls_used.saturating_add(calls) > self.max_calls
+            || self.chars_used.saturating_add(chars) > self.max_chars
+        {
+            return Err("auditor budget reserve exceeded");
+        }
+        self.calls_used = self.calls_used.saturating_add(calls);
+        self.chars_used = self.chars_used.saturating_add(chars);
+        Ok(())
+    }
+
+    pub fn refuse_raid(&self, calls: u32, chars: u32) -> Result<(), &str> {
+        if calls == 0 && chars == 0 {
+            Ok(())
+        } else {
+            Err("auditor financial independence: reserve cannot be raided by the orchestrator")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GroundingLevel: strength of evidence behind a claim
 // ---------------------------------------------------------------------------
 

@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use elai_core::EntropySource;
 use elai_reasoning::{
-    agent_grc_config_for_role, AgentGrcConfig, AgentGrcConfigLoader, BasicGrcEngine, GrcBudget,
-    GrcEngine, GrcState, GroundingLevel, TomlConfigLoader,
+    agent_grc_config_for_role, AgentGrcConfig, AgentGrcConfigLoader, AuditorBudgetReserve,
+    BasicGrcEngine, GrcBudget, GrcEngine, GrcState, GroundingLevel, TomlConfigLoader,
 };
 
 use crate::sandbox::{AgentSandbox, AppContainerConfig, SandboxHandle};
@@ -299,6 +299,9 @@ pub struct InProcessAgentPool<E: EntropySource> {
     /// Sandbox instance for process isolation (Phase 3J.11)
     /// None when sandbox is disabled (Phase 3 in-process)
     sandbox: Option<Box<dyn AgentSandbox>>,
+    /// J-70 E2a: auditor financial-independence budget reserve. The
+    /// orchestrator cannot raid this pool for executor work.
+    pub auditor_budget_reserve: AuditorBudgetReserve,
 }
 
 impl<E: EntropySource> InProcessAgentPool<E> {
@@ -321,6 +324,7 @@ impl<E: EntropySource> InProcessAgentPool<E> {
             entropy,
             model_pool,
             sandbox,
+            auditor_budget_reserve: AuditorBudgetReserve::default(),
         }
     }
 
@@ -345,6 +349,18 @@ impl<E: EntropySource> InProcessAgentPool<E> {
 
     pub fn get_agent_mut(&mut self, id: &Uuid) -> Option<&mut AgentHandle> {
         self.agents.get_mut(id)
+    }
+
+    /// J-70 E2a: attempt to reallocate budget from the auditor reserve to
+    /// executor work. This ALWAYS fails — the auditor budget is a HARD
+    /// reservation the orchestrator cannot raid (NASA-STD financial
+    /// independence).
+    pub fn try_reallocate_from_auditor_reserve(
+        &self,
+        calls: u32,
+        chars: u32,
+    ) -> Result<(), &str> {
+        self.auditor_budget_reserve.refuse_raid(calls, chars)
     }
 
     /// Launch an agent as an OS process (Phase 4A).
@@ -663,15 +679,59 @@ impl<E: EntropySource> InProcessAgentPool<E> {
                 scope: None,
             };
             match grc_engine.think(seed) {
-                Ok(_) => tracing::debug!(
-                    agent_id = %agent_id,
-                    "agent_pool: seeded auditor Observe for anti-rubber-stamp gate activation"
-                ),
+                Ok(_) => {
+                    tracing::debug!(
+                        agent_id = %agent_id,
+                        "agent_pool: seeded auditor Observe for anti-rubber-stamp gate activation"
+                    );
+                    if let Err(e) = self.auditor_budget_reserve.charge(1, 0) {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            error = e,
+                            "agent_pool: auditor budget reserve charge failed for Observe seed"
+                        );
+                    }
+                }
                 Err(e) => tracing::warn!(
                     agent_id = %agent_id,
                     error = ?e,
                     "agent_pool: auditor seed rejected; engine continues without seed"
                 ),
+            }
+        }
+
+        // J-70 E2a financial independence: could this executor draw from the
+        // auditor reserve? The only transfer API must refuse a real non-zero
+        // raid amount. Skip auditor roles (they own the reserve). Fail closed
+        // if a future edit makes refuse_raid succeed on a positive amount.
+        if !matches!(
+            role,
+            AgentRole::Auditor
+                | AgentRole::AuditorConcepts
+                | AgentRole::AuditorPhases
+                | AgentRole::AuditorSteps
+                | AgentRole::AuditorBabySteps
+                | AgentRole::AuditorBabyStepDetail
+                | AgentRole::AuditorProductionGrade
+        ) {
+            match self.try_reallocate_from_auditor_reserve(
+                grc_config.budget.max_calls.max(1),
+                grc_config.budget.max_chars.max(1),
+            ) {
+                Ok(()) => {
+                    tracing::error!(
+                        target: "orchestrator::j70_financial_independence",
+                        "INVARIANT BROKEN: auditor reserve accepted a raid; refusing spawn funding from reserve"
+                    );
+                }
+                Err(msg) => {
+                    tracing::debug!(
+                        target: "orchestrator::j70_financial_independence",
+                        error = msg,
+                        executor_calls = grc_config.budget.max_calls,
+                        "executor funded from own GRC budget; auditor reserve untouched"
+                    );
+                }
             }
         }
 
@@ -4456,5 +4516,35 @@ mod tests {
             assert_eq!(*status, deserialized);
         }
         assert_eq!(statuses.len(), 6);
+    }
+
+    #[test]
+    fn auditor_reserve_refuses_orchestrator_raid() {
+        let mut pool = test_pool(u64::MAX);
+        let result = pool.try_reallocate_from_auditor_reserve(1, 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("financial independence") || msg.contains("cannot be raided"),
+            "expected financial-independence message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn auditor_reserve_refuse_raid_zero_is_noop() {
+        let pool = test_pool(u64::MAX);
+        let result = pool.try_reallocate_from_auditor_reserve(0, 0);
+        assert!(result.is_ok(), "zero-zero raid should be a no-op Ok, got: {result:?}");
+    }
+
+    #[test]
+    fn auditor_reserve_charge_ok() {
+        let mut pool = test_pool(u64::MAX);
+        let before = pool.auditor_budget_reserve.remaining_calls();
+        assert_eq!(before, 10);
+        let result = pool.auditor_budget_reserve.charge(1, 0);
+        assert!(result.is_ok());
+        let after = pool.auditor_budget_reserve.remaining_calls();
+        assert_eq!(after, 9);
     }
 }

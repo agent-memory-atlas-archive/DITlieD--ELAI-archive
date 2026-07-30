@@ -39,10 +39,10 @@ pub use engine::{
     extract_intrinsic_signals, BasicGrcEngine, ExtractedIntrinsicSignals, GrcEngine, InferenceOutput,
 };
 pub use types::{
-    AgentGrcConfig, CsqCheck, CsqResult, CsqSeverity, FeasibilityMethod, FeasibilityOutcome,
-    GrcBudget, GrcDefaults, GrcError, GrcState, GroundingLevel, GroundingResult,
-    InlineFeasibilityResult, InlineFeasibilityState, PlanGroundingResult, TestRunResult,
-    ThinkResult, ThinkStep, TopicState, VerificationMethod, VerificationResult,
+    AgentGrcConfig, AuditorBudgetReserve, CsqCheck, CsqResult, CsqSeverity, FeasibilityMethod,
+    FeasibilityOutcome, GrcBudget, GrcDefaults, GrcError, GrcState, GroundingLevel,
+    GroundingResult, InlineFeasibilityResult, InlineFeasibilityState, PlanGroundingResult,
+    TestRunResult, ThinkResult, ThinkStep, TopicState, VerificationMethod, VerificationResult,
 };
 pub use layer_routing::configure_layers_for_tier;
 pub use prompt_builder::{
