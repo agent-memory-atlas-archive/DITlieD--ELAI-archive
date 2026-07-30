@@ -1779,7 +1779,7 @@ impl ProductionAgentRpcServer {
             cache_control: None,
         };
 
-        vec![
+        let tools = vec![
             edit, file_read, validate, compile_check, classify, git_commit,
             // C-24: B-29 Phase 5 symbol-graph tools, now agent-visible.
             symbol_impact, symbol_flow, symbol_context, symbol_list,
@@ -1803,7 +1803,11 @@ impl ProductionAgentRpcServer {
             // I-54: agent-callable structural (AST-aware) edit tool. 3 tools
             // (search/preview/apply over the shipped tree-sitter grammars).
             structural_search, structural_preview, structural_apply,
-        ]
+        ];
+        // J-12 H3: tool description embedding. Constraints default empty
+        // this slice (rules load is a later residual); the call makes
+        // decorate_tool_descriptions production-reachable (D-030).
+        crate::intervention::decorate_tool_descriptions(tools, &[])
     }
 
     /// Construct from environment variables, mirroring the `task_runner.rs`
