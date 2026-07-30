@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn <REDACTED_TOKEN>() {
+    fn non_matching_tool_name_only_annotators_leave_identical() {
         let out = annotate_tool_result(
             "read_file",
             "hello",
