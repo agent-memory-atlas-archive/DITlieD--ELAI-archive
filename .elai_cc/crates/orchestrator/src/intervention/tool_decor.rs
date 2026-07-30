@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn <REDACTED_TOKEN>() {
+    fn all_tools_constraint_appends_to_every_description() {
         let tools = vec![tool("a", Some("desc a")), tool("b", None)];
         let cs = [constraint("c1", None, "be safe")];
         let out = decorate_tool_descriptions(tools, &cs);
@@ -125,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn <REDACTED_TOKEN>() {
+    fn two_constraints_sort_by_id_deterministic() {
         let tools = vec![tool("a", Some("desc a"))];
         let cs = [
             constraint("z1", None, "second"),
