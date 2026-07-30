@@ -737,7 +737,22 @@ pub async fn run_agent_session(
                     // tile (I-14 promotion) is wired. Until then, receipts always record
                     // superstep=0, which is correct for identity receipts (no transform fired).
                     let out = if ok {
-                        rpc.transform_tool_output(out, 0).await
+                        let transformed = rpc.transform_tool_output(out, 0).await;
+                        // J-12 H4: post-execution result annotators. Append
+                        // deterministic notes to a SUCCESSFUL tool result after
+                        // compression, before the ToolResult frame is built. Empty
+                        // registry = identity (no change to bytes the agent sees).
+                        // Domain annotators + rules load land in a later residual.
+                        let transformed_str = match std::str::from_utf8(&transformed) {
+                            Ok(s) => s.to_string(),
+                            Err(_) => String::from_utf8_lossy(&transformed).into_owned(),
+                        };
+                        let annotated = crate::intervention::annotate_tool_result(
+                            &tool_id,
+                            &transformed_str,
+                            &[],
+                        );
+                        annotated.into_bytes()
                     } else {
                         out
                     };
