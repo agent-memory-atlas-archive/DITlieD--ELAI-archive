@@ -6,3 +6,5 @@ pub mod annotate;
 pub use annotate::*;
 pub mod skill_retrieval;
 pub use skill_retrieval::*;
+pub mod classify;
+pub use classify::*;

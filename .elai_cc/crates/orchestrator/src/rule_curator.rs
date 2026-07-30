@@ -144,12 +144,26 @@ impl PlaybookCurator {
 
             if evidence_count < MIN_EVIDENCE_COUNT {
                 // Insufficient evidence: emit ValidationRun beacon and skip.
+                // J-12 H6: fold intervention failure classification into the
+                // emitted payload so classify_intervention_failure +
+                // regression_check are production-reachable (D-030). Empty
+                // signals => p4_residual_reasoning (offline intake tag for I-12).
+                use crate::intervention::{
+                    classify_intervention_failure, regression_check, FailureSignals,
+                    ProposedUpdate,
+                };
+                let signals = FailureSignals::default();
+                let class = classify_intervention_failure(&signals);
+                let reg = regression_check(&[] as &[ProposedUpdate]);
+                let mut row_ids = outcome_rows;
+                row_ids.push(failclass_tag(&class));
+                let reg_count = reg.rejected.len() as u32;
                 let payload = PlaybookEventPayload {
                     rule_id: rule_id.clone(),
                     kind: PlaybookEventKind::ValidationRun,
-                    outcome_row_ids: outcome_rows,
+                    outcome_row_ids: row_ids,
                     lift: None,
-                    regression_count: 0,
+                    regression_count: reg_count,
                     evidence_count,
                     ts_ms: self.now_ms(),
                 };
@@ -180,12 +194,36 @@ impl PlaybookCurator {
             let regression_count = count_regressions_for_rule(ssb, rule_id);
 
             if regression_count > 0 {
+                // J-12 H6: fold intervention failure classification into the
+                // emitted payload (D-030). Map C-28 regression gate pressure
+                // onto trajectory degeneration signals so the branch produces a
+                // non-p4 class from real tick state (regression_count > 0).
+                use crate::intervention::{
+                    classify_intervention_failure, regression_check, FailureSignals,
+                    InterventionFailureClass, ProposedUpdate,
+                };
+                let signals = FailureSignals {
+                    stall: true,
+                    budget_thrash: regression_count > 1,
+                    ..FailureSignals::default()
+                };
+                let class = classify_intervention_failure(&signals);
+                let proposals = vec![ProposedUpdate {
+                    id: rule_id.clone(),
+                    targets: class.class,
+                    may_over_trigger: true,
+                    blocked_valid_fixture: false,
+                }];
+                let reg = regression_check(&proposals);
+                let mut row_ids = outcome_rows;
+                row_ids.push(failclass_tag(&class));
+                let reg_bump = reg.rejected.len() as u32;
                 let payload = PlaybookEventPayload {
                     rule_id: rule_id.clone(),
                     kind: PlaybookEventKind::ValidationRun,
-                    outcome_row_ids: outcome_rows,
+                    outcome_row_ids: row_ids,
                     lift: None,
-                    regression_count,
+                    regression_count: regression_count + reg_bump,
                     evidence_count,
                     ts_ms: self.now_ms(),
                 };
@@ -466,6 +504,20 @@ fn count_regressions_for_rule(ssb: &Arc<Ssb>, rule_id: &str) -> u32 {
 fn compute_lift_estimate(metrics: &elai_rules::lifecycle::MetricsSnapshot) -> f32 {
     let lift = metrics.true_positive_rate - metrics.false_positive_rate;
     lift.clamp(0.0, 1.0) as f32
+}
+
+/// J-12 H6: compact diagnostic tag appended to ValidationRun outcome_row_ids
+/// so classify_intervention_failure is observable on every emitted row.
+/// Format: `j12_failclass:p{priority}:{snake_tag}`
+fn failclass_tag(class: &crate::intervention::Classification) -> String {
+    use crate::intervention::InterventionFailureClass;
+    let tag = match class.class {
+        InterventionFailureClass::ActionRealization => "p1_action_realization",
+        InterventionFailureClass::EnvContract => "p2_env_contract",
+        InterventionFailureClass::TrajectoryDegeneration => "p3_trajectory_degeneration",
+        InterventionFailureClass::ResidualReasoning => "p4_residual_reasoning",
+    };
+    format!("j12_failclass:{}", tag)
 }
 
 // ---------------------------------------------------------------------------
