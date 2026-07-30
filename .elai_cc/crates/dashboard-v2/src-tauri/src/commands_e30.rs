@@ -39,6 +39,8 @@ const E30_ACTION_TYPES: &[&str] = &[
     "incident_record_created",
 ];
 
+const INTERVENTION_ACTION_TYPES: &[&str] = &["harness_intervention_event"];
+
 /// One row of the panel. `kind` is the E-30 action_type sql_str.
 ///
 /// Optional fields are populated based on which action_type emitted the
@@ -71,6 +73,9 @@ pub struct IncidentRow {
     pub incident_id: Option<String>,
     pub title: Option<String>,
     pub source_url: Option<String>,
+    // harness intervention events (J-12)
+    pub intervention_kind: Option<String>,
+    pub details_json: Option<String>,
 }
 
 /// Return the last `limit` E-30 incident rows from SSB, newest first.
@@ -88,7 +93,10 @@ pub async fn get_recent_incidents(
     };
 
     let mut combined: Vec<IncidentRow> = Vec::new();
-    for at in E30_ACTION_TYPES {
+    for at in E30_ACTION_TYPES
+        .iter()
+        .chain(INTERVENTION_ACTION_TYPES.iter())
+    {
         match viewer.recent_rows_of_type(at, limit) {
             Ok(rows) => {
                 for detail in rows {
@@ -115,7 +123,11 @@ pub async fn get_recent_incidents(
 /// the matching `&'static str` from E30_ACTION_TYPES so the frontend gets
 /// stable kind constants.
 fn canonical_kind(action_type: &str) -> Option<&'static str> {
-    E30_ACTION_TYPES.iter().copied().find(|k| *k == action_type)
+    E30_ACTION_TYPES
+        .iter()
+        .chain(INTERVENTION_ACTION_TYPES.iter())
+        .copied()
+        .find(|k| *k == action_type)
 }
 
 fn obj_str(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
@@ -143,6 +155,8 @@ fn incident_detail_to_row(d: elai_orchestrator::SsbActionDetail) -> Option<Incid
         incident_id: None,
         title: None,
         source_url: None,
+        intervention_kind: None,
+        details_json: None,
     };
 
     if let Some(obj) = obj {
@@ -178,6 +192,16 @@ fn incident_detail_to_row(d: elai_orchestrator::SsbActionDetail) -> Option<Incid
                 row.incident_id = obj_str(obj, "incident_id");
                 row.title = obj_str(obj, "title");
                 row.source_url = obj_str(obj, "source_url");
+            }
+            "harness_intervention_event" => {
+                row.intervention_kind = obj_str(obj, "kind");
+                row.details_json = obj.get("details_json").map(|v| {
+                    if v.is_string() {
+                        v.as_str().map(String::from).unwrap_or_default()
+                    } else {
+                        serde_json::to_string(v).unwrap_or_default()
+                    }
+                });
             }
             _ => {}
         }

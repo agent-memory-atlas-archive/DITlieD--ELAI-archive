@@ -34,7 +34,8 @@
     | 'mcp_pin_version_refused'
     | 'auditor_lineage_collision'
     | 'untrusted_memory_write_blocked'
-    | 'incident_record_created';
+    | 'incident_record_created'
+    | 'harness_intervention_event';
 
   type IncidentRow = {
     seq: number;
@@ -53,6 +54,8 @@
     incident_id: string | null;
     title: string | null;
     source_url: string | null;
+    intervention_kind: string | null;
+    details_json: string | null;
   };
 
   let rows = $state<IncidentRow[]>([]);
@@ -129,8 +132,25 @@
         return 'memory UNTRUSTED';
       case 'incident_record_created':
         return 'postmortem';
+      case 'harness_intervention_event':
+        return 'intervention';
       default:
         return kind;
+    }
+  }
+
+  function interventionKindLabel(interventionKind: string | null): string {
+    switch (interventionKind) {
+      case 'contract_injected':
+        return 'CONTRACT';
+      case 'action_gate_blocked':
+        return 'GATE';
+      case 'result_annotated':
+        return 'ANNOTATE';
+      case 'skill_retrieved':
+        return 'SKILL';
+      default:
+        return '?';
     }
   }
 
@@ -144,6 +164,7 @@
       case 'trust_dialog_hook_deferred':
       case 'trust_dialog_env_deferred':
       case 'auditor_lineage_collision':
+      case 'harness_intervention_event':
         return 'warn';
       case 'incident_record_created':
         return 'info';
@@ -168,6 +189,8 @@
         return `source=${row.text_source ?? '?'}`;
       case 'incident_record_created':
         return row.title ?? row.incident_id ?? '';
+      case 'harness_intervention_event':
+        return row.details_json ?? '';
       default:
         return '';
     }
@@ -223,7 +246,14 @@
           {@const sev = kindSeverity(row.kind)}
           <tr class="row-{sev}">
             <td>{fmtTs(row.ts)}</td>
-            <td><span class="badge badge-{sev}">{kindLabel(row.kind)}</span></td>
+            <td>
+              <span class="badge badge-{sev}">{kindLabel(row.kind)}</span>
+              {#if row.kind === 'harness_intervention_event'}
+                <span class="badge badge-{sev} sub-badge"
+                  >{interventionKindLabel(row.intervention_kind)}</span
+                >
+              {/if}
+            </td>
             <td>{rowDetail(row)}</td>
             <td>
               {#if row.argv_hash}
@@ -342,6 +372,12 @@
   .badge-info {
     background: rgba(80, 150, 220, 0.15);
     border-color: rgba(80, 150, 220, 0.4);
+  }
+
+  .sub-badge {
+    margin-left: 4px;
+    font-size: 9px;
+    opacity: 0.85;
   }
 
   .citation {
