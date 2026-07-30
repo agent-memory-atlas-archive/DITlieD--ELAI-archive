@@ -6251,11 +6251,40 @@ async fn drive_task(
     )
     .await;
 
+    // J-12 H5: task-start top-1 skill retrieval (BM25). Empty store / empty
+    // corpus => None (empty suffix). Hit id+score folds into observe_content
+    // so emit_reasoning carries a production consumer (not discarded).
+    // SkillRetrieved SSB remains a later residual.
+    let h5_observe_suffix = {
+        use crate::intervention::{retrieve_top1_skill, SkillDoc, DEFAULT_MIN_SCORE};
+        use crate::skill_trust::SkillTrustTier;
+        let mut corpus: Vec<SkillDoc> = Vec::new();
+        if let Some(store) = resolved.skill_store.as_ref() {
+            let guard = store.lock().await;
+            for s in guard.skills().values() {
+                match s.tier {
+                    SkillTrustTier::S1 => {}
+                    SkillTrustTier::S2 | SkillTrustTier::S3 | SkillTrustTier::S4 => {
+                        corpus.push(SkillDoc {
+                            id: s.id.clone(),
+                            text: s.description.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        match retrieve_top1_skill(&task.task, &corpus, DEFAULT_MIN_SCORE) {
+            Some(hit) => format!(" skill_id={} skill_score={:.4}", hit.id, hit.score),
+            None => String::new(),
+        }
+    };
+
     // --- 1. Decomposition (L1 "designer" surrogate) ---------------------
     let observe_content = format!(
-        "task seq={} text={:?}",
+        "task seq={} text={:?}{}",
         seq,
-        truncate_for_log(&task.task, 120)
+        truncate_for_log(&task.task, 120),
+        h5_observe_suffix,
     );
     emit_reasoning(
         writer,

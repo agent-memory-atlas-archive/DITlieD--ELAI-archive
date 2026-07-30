@@ -4,3 +4,5 @@ pub mod tool_decor;
 pub use tool_decor::*;
 pub mod annotate;
 pub use annotate::*;
+pub mod skill_retrieval;
+pub use skill_retrieval::*;
