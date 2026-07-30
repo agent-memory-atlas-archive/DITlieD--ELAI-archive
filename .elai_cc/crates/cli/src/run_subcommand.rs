@@ -94,9 +94,13 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
     // surfaces are distinguishable in SSB row diagnostics.
     let session_id = format!("cli-run-{}", std::process::id());
     let project_root = args.project_root.clone();
+    // I-18 R1: capture the Cargo.lock DEPS hash at run start so emit_run_artifact
+    // can detect a mid-run mutation and emit RowChainSealed(ChainBroken).
+    let cargo_lock_baseline = elai_orchestrator::cargo_lock_deps_hex();
     tracing::info!(
         project_root = %project_root.display(),
         session_id = %session_id,
+        cargo_lock_baseline = %cargo_lock_baseline,
         "elai run: starting task_runner"
     );
 
@@ -560,7 +564,12 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
                 .join(&session_id)
                 .join("run.rra")
         });
-        if let Err(e) = emit_run_artifact(&rra_ssb, &session_id, &rra_path).await {
+        if let Err(e) = emit_run_artifact(&rra_ssb, &session_id, &rra_path, &cargo_lock_baseline).await {
+            let msg = e.to_string();
+            if msg.contains("chain broken") || msg.contains("I-18 chain broken") {
+                tracing::error!(error = %e, "elai run: Cargo.lock chain broken mid-run, halting");
+                return Err(e);
+            }
             tracing::warn!(error = %e, "elai run: G-2 RRA emit failed (best-effort); run outcome unaffected");
         }
     } else {
@@ -914,6 +923,7 @@ async fn emit_run_artifact(
     ssb: &Arc<elai_orchestrator::Ssb>,
     session_id: &str,
     rra_path: &std::path::Path,
+    cargo_lock_baseline: &str,
 ) -> Result<(), anyhow::Error> {
     use elai_orchestrator::ssb::SsbReader as _;
 
@@ -978,16 +988,41 @@ async fn emit_run_artifact(
         }
     }
 
-    // 6. I-18: emit RowChainSealed(ChainAdvanced) to record the per-row rolling
+    // 6. I-18 R1: check Cargo.lock DEPS baseline before sealing ChainAdvanced.
+    //    If the lockfile mutated mid-run, emit RowChainSealed(ChainBroken) on the
+    //    live SSB and halt the run. The reader walk_chain already handles this arm.
+    let chain_seq = ssb
+        .query_session_stream_asc(session_id)
+        .map(|s| s.last().map(|e| e.seq).unwrap_or(0))
+        .unwrap_or(0);
+    if let Err(msg) = elai_orchestrator::check_cargo_lock_baseline(cargo_lock_baseline) {
+        let broken_payload = elai_orchestrator::ssb::SsbPayload::RowChainSealed(
+            elai_orchestrator::ssb::RowChainSealedPayload {
+                kind: elai_orchestrator::ssb::RowChainSealedKind::ChainBroken,
+                seq: chain_seq,
+                session_id: session_id.to_owned(),
+                ts_ms: i64::try_from(
+                    std::time::SystemTime::now() // entropy-allow: ssb-row-chain-broken-ts-ms-cli-entrypoint
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis(),
+                )
+                .unwrap_or(i64::MAX),
+                break_seq: Some(chain_seq),
+            },
+        );
+        ssb.write_payload("cli:run-chain-broken", 0, broken_payload, Vec::new())
+            .await
+            .map_err(|e| anyhow::anyhow!("writing row_chain_sealed(chain_broken) row: {e}"))?;
+        return Err(anyhow::anyhow!(msg));
+    }
+
+    // 7. I-18: emit RowChainSealed(ChainAdvanced) to record the per-row rolling
     //    blake3 chain beacon in the SSB. This is the PRODUCTION CALLER that
     //    wires chain_prev_hash (computed by build_rra) into the live SSB stream.
     //    The chain_prev_hash field on the artifact is None when this is the first
     //    RRA in the session (GENESIS marker); ChainAdvanced is still emitted so
     //    verifiers have a stable beacon to count and walk.
-    let chain_seq = ssb
-        .query_session_stream_asc(session_id)
-        .map(|s| s.last().map(|e| e.seq).unwrap_or(0))
-        .unwrap_or(0);
     let chain_payload = elai_orchestrator::ssb::SsbPayload::RowChainSealed(
         elai_orchestrator::ssb::RowChainSealedPayload {
             kind: elai_orchestrator::ssb::RowChainSealedKind::ChainAdvanced,

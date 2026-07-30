@@ -151,6 +151,33 @@ impl StackHash {
     }
 }
 
+/// I-18: blake3 16-hex of the Cargo.lock bytes (DEPS layer formula).
+///
+/// Path = `CARGO_MANIFEST_DIR/../Cargo.lock`; bytes read or `"no-cargo-lock"`
+/// sentinel. Same formula as the DEPS layer in [`seal_stack_hash`]; extracted
+/// so the CLI run-time baseline check and the seal-time hash share one source.
+#[must_use]
+pub fn cargo_lock_deps_hex() -> String {
+    let cargo_lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../Cargo.lock");
+    let cargo_bytes = std::fs::read(&cargo_lock_path)
+        .unwrap_or_else(|_| b"no-cargo-lock".to_vec());
+    crate::rra::truncate_hex(&blake3::hash(&cargo_bytes).to_hex())
+}
+
+/// I-18 R1: compare a run-start baseline against the current Cargo.lock DEPS
+/// hash. `Ok(())` when unchanged; `Err(message)` when the lockfile mutated
+/// mid-run. Production caller: `emit_run_artifact` before ChainAdvanced.
+pub fn check_cargo_lock_baseline(baseline: &str) -> Result<(), String> {
+    let now = cargo_lock_deps_hex();
+    if now != baseline {
+        return Err(format!(
+            "I-18 chain broken: Cargo.lock mutated mid-run (deps baseline {baseline} != seal {now})"
+        ));
+    }
+    Ok(())
+}
+
 /// I-18: Compute the 5-layer [`StackHash`] sealed into the RRA.
 ///
 /// Each layer is a blake3 16-hex prefix (same truncation as the bundle root).
@@ -174,13 +201,7 @@ pub(crate) fn seal_stack_hash(
 
     // DEPS layer: hash of the Cargo.lock bytes if readable, else hash of a
     // deterministic "no-cargo-lock" sentinel (so the field is never empty).
-    let deps = {
-        let cargo_lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../Cargo.lock");
-        let cargo_bytes = std::fs::read(&cargo_lock_path)
-            .unwrap_or_else(|_| b"no-cargo-lock".to_vec());
-        crate::rra::truncate_hex(&blake3::hash(&cargo_bytes).to_hex())
-    };
+    let deps = cargo_lock_deps_hex();
 
     // PROCESS layer: hash of (seed || hardware_class_label || system_fingerprint_pin).
     // hardware_class_label() produces the same canonical string stored in the
@@ -407,6 +428,38 @@ mod i18_stack_hash_tests {
             verdict,
             ReplayVerdict::Verified,
             "LEGACY receipt without stack_hash must still verify"
+        );
+    }
+
+    #[test]
+    fn cargo_lock_deps_hex_is_stable_and_nonempty() {
+        let h = cargo_lock_deps_hex();
+        assert_eq!(h.len(), RRA_HEX_PREFIX_LEN, "deps hex must be 16 chars");
+        assert!(
+            h.chars().all(|c| c.is_ascii_hexdigit()),
+            "deps hex must be lowercase hex"
+        );
+        let h2 = cargo_lock_deps_hex();
+        assert_eq!(h, h2, "deps hex must be stable across calls");
+    }
+
+    #[test]
+    fn check_cargo_lock_baseline_ok_when_unchanged() {
+        let baseline = cargo_lock_deps_hex();
+        assert!(
+            check_cargo_lock_baseline(&baseline).is_ok(),
+            "baseline matching current lock must pass"
+        );
+    }
+
+    #[test]
+    fn check_cargo_lock_baseline_err_on_mismatch() {
+        let fake = "0000000000000000";
+        let err = check_cargo_lock_baseline(fake)
+            .expect_err("fake baseline must mismatch current lock");
+        assert!(
+            err.contains("chain broken"),
+            "error message must name the failure: {err}"
         );
     }
 }

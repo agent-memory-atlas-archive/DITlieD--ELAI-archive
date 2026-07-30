@@ -2138,6 +2138,9 @@ pub use rra::{
     StackHash, StackHashMismatch,
     RRA_COMPRESSION_DEFERRED, RRA_FORMAT_VERSION, RRA_HEX_PREFIX_LEN,
 };
+// I-18 R1: Cargo.lock mutation baseline check. Re-exported so the CLI
+// run_subcommand can capture a baseline at run start and check it at seal.
+pub use stack_hash::{cargo_lock_deps_hex, check_cargo_lock_baseline};
 // J-14 S5: pure ReproPackEvent payload builders (TierEvaluated +
 // FirstDivergenceLocated). No Ssb handle, no async write; the CLI / orchestrator
 // layer owns the ssb.write_payload call. Re-exported so rra_cmd.rs and contract
