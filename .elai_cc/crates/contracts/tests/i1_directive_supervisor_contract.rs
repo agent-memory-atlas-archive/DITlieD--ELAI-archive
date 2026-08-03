@@ -453,3 +453,137 @@ fn i1_e_schema_lock() {
         "SSB_ACTION_TYPES must include DirectiveExecuted"
     );
 }
+
+// ---------------------------------------------------------------------------
+// (f) GENERATOR-CANT-REACH-GATE-OR-SINK-CODE: no file outside the supervisor
+// plane that constructs a Directive may call gate/sink functions directly.
+// The supervisor plane (directive.rs, hook_dispatcher.rs, task_runner.rs,
+// runtime_setup.rs) owns the gate; generator modules emit pure Directive
+// structs and must not bypass the Supervisor by calling check_argv,
+// check_fs_target, check_egress_host, evaluate_vibegate, or the sink
+// execute_directive / execute_directive_dyn themselves.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn i1_f_generator_cannot_reach_gate_or_sink_code() {
+    use std::fs;
+
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(std::path::Path::to_path_buf)
+        .expect("resolve repo root");
+
+    let orch_src = root.join("crates").join("orchestrator").join("src");
+
+    let allowlist: &[&str] = &[
+        "directive.rs",
+        "hook_dispatcher.rs",
+        "task_runner.rs",
+        "runtime_setup.rs",
+    ];
+
+    let forbidden_tokens = [
+        "check_argv(",
+        "check_fs_target(",
+        "check_egress_host(",
+        "evaluate_vibegate(",
+        "execute_directive(",
+        "execute_directive_dyn(",
+    ];
+
+    fn strip_comments(src: &str) -> String {
+        src.lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//") && !trimmed.starts_with("///")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn is_cfg_test_only(src: &str) -> bool {
+        src.lines()
+            .any(|l| l.trim().starts_with("#[cfg(test)]"))
+            && !src.lines().any(|l| {
+                let t = l.trim();
+                t.starts_with("pub fn ") || t.starts_with("pub async fn ") || t.starts_with("pub struct ")
+            })
+    }
+
+    let mut generator_files: Vec<std::path::PathBuf> = Vec::new();
+
+    fn walk_dir(
+        dir: &std::path::Path,
+        allowlist: &[&str],
+        forbidden_tokens: &[&str],
+        generator_files: &mut Vec<std::path::PathBuf>,
+    ) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk_dir(&path, allowlist, forbidden_tokens, generator_files);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if allowlist.contains(&file_name) {
+                continue;
+            }
+            let body = match std::fs::read_to_string(&path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if is_cfg_test_only(&body) {
+                continue;
+            }
+            let stripped = strip_comments(&body);
+            if stripped.contains("Directive::new(") || stripped.contains("Directive {") {
+                generator_files.push(path);
+            }
+        }
+    }
+
+    walk_dir(
+        &orch_src,
+        allowlist,
+        &forbidden_tokens,
+        &mut generator_files,
+    );
+
+    for gf in &generator_files {
+        let body = fs::read_to_string(gf)
+            .unwrap_or_else(|e| panic!("read {}: {e}", gf.display()));
+        let stripped = strip_comments(&body);
+        for token in &forbidden_tokens {
+            assert!(
+                !stripped.contains(token),
+                "GENERATOR-CANT-REACH-GATE: {} contains forbidden gate/sink token '{}' \
+                 on a non-comment line; generator modules must not bypass the Supervisor \
+                 by calling gate or sink functions directly",
+                gf.display(),
+                token
+            );
+        }
+    }
+
+    let directive_rs = orch_src.join("directive.rs");
+    let drs_body = fs::read_to_string(&directive_rs)
+        .unwrap_or_else(|e| panic!("read directive.rs: {e}"));
+    let drs_stripped = strip_comments(&drs_body);
+    assert!(
+        drs_stripped.contains("check_argv(") || drs_stripped.contains("run_gates"),
+        "POSITIVE-CONTROL: directive.rs must still contain check_argv( or run_gates \
+         so the generator-cant-reach scan is not vacuous (if all forbidden tokens \
+         vanish everywhere the test would green without coverage)"
+    );
+}

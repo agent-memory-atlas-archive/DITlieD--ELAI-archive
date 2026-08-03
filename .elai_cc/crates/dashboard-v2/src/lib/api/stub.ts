@@ -141,6 +141,7 @@ import type {
   BabyStepDetailResponse,
   PhaseProgressRow,
   RecentActionRow,
+  DirectiveExecutedRow,
   FileChangeRow,
   ActionDetailResponse,
   ListProjectsResponse,
@@ -3709,6 +3710,16 @@ export async function get_recent_actions(
 ): Promise<RecentActionRow[]> {
   logStub('get_recent_actions', { limit, offset });
   const live = await tryInvoke<RecentActionRow[]>('get_recent_actions', { limit, offset });
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+export async function get_directive_executed_recent(
+  n: number,
+): Promise<DirectiveExecutedRow[]> {
+  logStub('get_directive_executed_recent', { n });
+  const live = await tryInvoke<DirectiveExecutedRow[]>('get_directive_executed_recent', { n });
   if (live) return live;
   await delay();
   return [];

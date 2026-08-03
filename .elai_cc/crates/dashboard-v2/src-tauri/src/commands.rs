@@ -2038,6 +2038,44 @@ pub fn get_rule_transitions(state: State<'_, AppState>, n: u32) -> CmdResult<Val
     Ok(json!(out))
 }
 
+/// I-1: recent `directive_executed` SSB rows. Reads the most recent
+/// DirectiveExecuted rows so the ToolsHooksDrawer can render supervisor
+/// verdicts (Executed / Discarded / CompensationFired) inline. Returns
+/// an empty array when no SSB DB is reachable or no rows exist yet.
+#[tauri::command]
+pub fn get_directive_executed_recent(state: State<'_, AppState>, n: u32) -> CmdResult<Value> {
+    const DIRECTIVE_EXECUTED_DEFAULT: usize = 10;
+    const DIRECTIVE_EXECUTED_HARD_CAP: usize = 200;
+    let limit = match n as usize {
+        0 => DIRECTIVE_EXECUTED_DEFAULT,
+        v => v.min(DIRECTIVE_EXECUTED_HARD_CAP),
+    };
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows = viewer
+        .recent_rows_of_type("directive_executed", limit)
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("DirectiveExecuted")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "kind": inner.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+            "tool_name": inner.get("tool_name").and_then(|v| v.as_str()).unwrap_or(""),
+            "intent_id": inner.get("intent_id").and_then(|v| v.as_str()).unwrap_or(""),
+            "initiator": inner.get("initiator").and_then(|v| v.as_str()).unwrap_or(""),
+            "ts_ms": inner.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0),
+        }));
+    }
+    Ok(json!(out))
+}
+
 /// B-4: latest canary-drift snapshot. SCHEMA_VERSION 99 adds the
 /// `SsbActionType::CanaryDrift` variant; the periodic cascade evaluator
 /// in `cli::live_cli::spawn_cascade_evaluator_loop` emits one row at

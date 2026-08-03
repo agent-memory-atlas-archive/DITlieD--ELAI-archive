@@ -2998,6 +2998,17 @@ export interface RecentActionRow {
   summary: string;
 }
 
+/** I-1: DirectiveExecuted SSB row (supervisor verdict). */
+export interface DirectiveExecutedRow {
+  seq: number;
+  ts: number;
+  kind: 'Executed' | 'Discarded' | 'CompensationFired' | string;
+  tool_name: string;
+  intent_id: string;
+  initiator: string;
+  ts_ms: number;
+}
+
 /** Mirror of `SsbViewer::FileChange`. */
 export interface FileChangeRow {
   path: string;

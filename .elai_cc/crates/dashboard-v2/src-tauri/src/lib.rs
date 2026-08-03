@@ -995,6 +995,7 @@ pub fn run() {
             commands::get_file_changes,
             commands::get_action_detail,
             commands::get_research_node_history,
+            commands::get_directive_executed_recent,
             // C-7: review-window reviewer-verdict commands. Each emits one
             // ChangeDecision SSB row (SCHEMA_VERSION 49). Live diff itself
             // remains carried by FileWrite rows; these record only verdicts.

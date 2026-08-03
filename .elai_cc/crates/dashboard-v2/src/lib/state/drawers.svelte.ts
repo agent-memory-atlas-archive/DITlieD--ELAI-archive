@@ -81,6 +81,8 @@ import type {
   DarwinianAdmit,
   // H-46 — CMP parent-selection feed row.
   CladeSelection,
+  // I-1 — DirectiveExecuted supervisor verdict row.
+  DirectiveExecutedRow,
 } from '../api/types';
 
 const POLL_INTERVAL_MS = 10_000;
@@ -915,19 +917,22 @@ function createToolsHooks() {
   });
   let failureTaxonomy = $state<FailureTaxonomyResult | null>(null);
   let hiddenToolNames = $state<string[]>([]);
+  let directiveVerdicts = $state<DirectiveExecutedRow[]>([]);
 
   async function refresh() {
     try {
-      const [hooks, sc, taxonomy, toolVis] = await Promise.all([
+      const [hooks, sc, taxonomy, toolVis, directives] = await Promise.all([
         stub.get_hook_executions(),
         stub.get_shortcoder_stats(),
         stub.get_failure_taxonomy_last(),
         stub.get_tool_visibility(),
+        stub.get_directive_executed_recent(10),
       ]);
       hookExecutions = hooks;
       shortcoderStats = sc;
       failureTaxonomy = taxonomy;
       hiddenToolNames = toolVis.hidden_tools;
+      directiveVerdicts = directives;
     } catch (err) {
       console.debug('[toolsHooksData] refresh failed', err);
     }
@@ -940,6 +945,7 @@ function createToolsHooks() {
     get shortcoderStats() { return shortcoderStats; },
     get failureTaxonomy() { return failureTaxonomy; },
     get hiddenTools() { return hiddenToolNames; },
+    get directiveVerdicts() { return directiveVerdicts; },
     unwired: {
       tieredAnalysis: true,  // synthetic per-tier counts in drawer
       shortcoderRules: true, // per-rule hit counts are synthetic

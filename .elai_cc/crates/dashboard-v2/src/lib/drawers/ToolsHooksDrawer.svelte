@@ -37,6 +37,7 @@
 
   // Hidden tools list — derived from toolsHooksData.hiddenTools (wired via get_tool_visibility in PART11).
   const hiddenTools = $derived(toolsHooksData.hiddenTools);
+  const directiveVerdicts = $derived(toolsHooksData.directiveVerdicts);
 
   // Failure-taxonomy categories — only rendered when toolsHooksData.unwired.taxonomyDistribution is false
   // (currently always true; kept here so the {:else} branch type-checks).
@@ -72,6 +73,12 @@
 
   function tierBarWidth(n: number, total: number): string {
     return total > 0 ? `${Math.round((n / total) * 100)}%` : '0%';
+  }
+
+  function directiveTone(kind: string): string {
+    if (kind === 'Executed') return 'teal';
+    if (kind === 'Discarded') return 'fail';
+    return 'warn';
   }
 </script>
 
@@ -218,6 +225,26 @@
       <div class="tool-chips">
         {#each hiddenTools as tool}
           <span class="tool-chip">{tool}</span>
+        {/each}
+      </div>
+    {/if}
+  </section>
+
+  <Divider />
+
+  <!-- SUPERVISOR VERDICTS -->
+  <section class="section">
+    <h3 class="section-header">SUPERVISOR VERDICTS (DirectiveExecuted)</h3>
+    {#if directiveVerdicts.length === 0}
+      <span class="ts-ghost">no directive verdicts yet</span>
+    {:else}
+      <div class="hook-list">
+        {#each directiveVerdicts.slice(0, 10) as d}
+          <div class="hook-row">
+            <Badge tone={directiveTone(d.kind)} size="xs">{d.kind}</Badge>
+            <span class="tool-name">{d.tool_name}</span>
+            <span class="ts-ghost">{fmtAgo(d.ts_ms)}</span>
+          </div>
         {/each}
       </div>
     {/if}
