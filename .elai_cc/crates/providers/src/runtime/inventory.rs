@@ -167,7 +167,8 @@ fn family_for_builtin(backend: RuntimeBackend) -> Option<&'static str> {
         | RuntimeBackend::Mlx
         | RuntimeBackend::LlamaCpp
         | RuntimeBackend::Sglang => Some("qwen-local"),
-        RuntimeBackend::Ppm | RuntimeBackend::Lsp | RuntimeBackend::Custom => None,
+        RuntimeBackend::Ppm | RuntimeBackend::Lsp | RuntimeBackend::Custom
+        | RuntimeBackend::FreePool => None,
     }
 }
 

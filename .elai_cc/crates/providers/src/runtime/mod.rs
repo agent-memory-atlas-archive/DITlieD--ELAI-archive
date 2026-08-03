@@ -117,6 +117,9 @@ pub mod vllm;
 /// Opt-in via `resolve_backend("vllm-v1" | "vllm_v1")`; never a default.
 /// See `workflow/reasoning/J-19-decisions.md`. Live CUDA measure leg is W-10.
 pub mod vllm_v1;
+/// J-54 — FreePool multi-provider free-tier pool with fallback chain,
+/// quota tracking, and Pollinations keyless overflow.
+pub mod free_pool;
 pub mod llama_cpp;
 pub mod mlx;
 pub mod platform_detect;
@@ -167,6 +170,7 @@ pub use sidecar_xgrammar_hook::{
 };
 pub use vllm::VllmRuntime;
 pub use vllm_v1::VllmV1Runtime;
+pub use free_pool::FreePoolAdapter;
 pub use llama_cpp::LlamaCppAdapter;
 pub use mlx::MlxAdapter;
 pub use platform_detect::{detect_llamacpp_ep, detect_mlx_capable, AppleChipFamily, LlamaCppEp, MlxCapability};
@@ -237,6 +241,8 @@ pub fn resolve_backend(candidate: &str) -> Result<RuntimeBackend, ResolveBackend
         // I-49 — Bedrock + Azure direct lanes.
         "bedrock" | "aws_bedrock" | "aws-bedrock" => Some(RuntimeBackend::Bedrock),
         "azure_openai" | "azure" | "azure-openai" => Some(RuntimeBackend::AzureOpenAi),
+        // J-54 — FreePool multi-provider free-tier pool.
+        "free_pool" | "freepool" | "free-pool" => Some(RuntimeBackend::FreePool),
         _ => None,
     };
     // J-30 T2 -- fallback to the custom-backend registry when the static
@@ -314,6 +320,12 @@ pub fn create_runtime(
         // added to PerRoleRuntime defaults. Adapter is offline-buildable;
         // live CUDA/RunPod measure leg is W-10.
         RuntimeBackend::VllmV1 => Ok(Box::new(VllmV1Runtime::new(cfg))),
+        // J-54 — FreePool multi-provider free-tier pool. Collects env keys
+        // at build time; no api_key required in the factory config.
+        RuntimeBackend::FreePool => {
+            let adapter = FreePoolAdapter::from_factory_config(&cfg)?;
+            Ok(Box::new(adapter))
+        }
         RuntimeBackend::Mlx => {
             let adapter = MlxAdapter::new(cfg).map_err(|e| e)?;
             Ok(Box::new(adapter))
@@ -440,8 +452,8 @@ mod tests {
             assert_eq!(name, name.to_ascii_lowercase(), "{name} must be lowercase");
         }
         // I-49 added Bedrock + AzureOpenAi -> 22 total; J-30 T2 added Custom -> 23;
-        // J-19 added VllmV1 -> 24.
-        assert_eq!(seen.len(), 24);
+        // J-19 added VllmV1 -> 24; J-54 added FreePool -> 25.
+        assert_eq!(seen.len(), 25);
     }
 
     #[test]
@@ -462,8 +474,8 @@ mod tests {
     fn resolve_backend_miss_returns_full_supported_list() {
         let err = resolve_backend("not-a-backend").expect_err("must miss");
         // I-49 added Bedrock + AzureOpenAi -> 22 total; J-30 T2 added Custom -> 23;
-        // J-19 added VllmV1 -> 24.
-        assert_eq!(err.supported.len(), 24);
+        // J-19 added VllmV1 -> 24; J-54 added FreePool -> 25.
+        assert_eq!(err.supported.len(), 25);
         assert_eq!(err.candidate, "not-a-backend");
     }
 

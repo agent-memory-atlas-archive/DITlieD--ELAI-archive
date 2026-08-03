@@ -95,6 +95,7 @@ pub fn descriptor_for(backend: RuntimeBackend) -> Option<&'static BackendConfigD
         (&RuntimeBackend::GroqFree, &GROQ),
         (&RuntimeBackend::Bedrock, &BEDROCK),
         (&RuntimeBackend::AzureOpenAi, &AZURE),
+        (&RuntimeBackend::FreePool, &FREE_POOL),
     ];
     TABLE
         .iter()
@@ -631,6 +632,15 @@ const GROQ: BackendConfigDescriptor = BackendConfigDescriptor {
     supports_base_url: true,
     default_base_url: None,
     api_key_optional: false,
+};
+
+const FREE_POOL: BackendConfigDescriptor = BackendConfigDescriptor {
+    backend: RuntimeBackend::FreePool,
+    display_name: "Free Pool",
+    keys: &[],
+    supports_base_url: false,
+    default_base_url: None,
+    api_key_optional: true,
 };
 
 /// Static template for `descriptor_for_custom`. Placeholder names mirror the

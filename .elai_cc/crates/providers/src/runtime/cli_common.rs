@@ -99,7 +99,8 @@ pub fn default_binary_for(backend: RuntimeBackend) -> &'static str {
         // subprocesses.
         | RuntimeBackend::Bedrock
         | RuntimeBackend::AzureOpenAi
-        | RuntimeBackend::Custom => "<non-cli>",
+        | RuntimeBackend::Custom
+        | RuntimeBackend::FreePool => "<non-cli>",
     }
 }
 

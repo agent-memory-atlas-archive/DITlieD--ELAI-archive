@@ -179,6 +179,9 @@ pub enum RuntimeBackend {
     /// Additive; never default. Opt-in via resolve_backend("vllm-v1").
     /// Live CUDA/RunPod measure leg is W-10; adapter itself is offline-buildable.
     VllmV1,
+    /// J-54 — FreePool multi-provider free-tier pool with fallback chain,
+    /// quota tracking, and Pollinations keyless overflow. Not local.
+    FreePool,
 }
 
 impl RuntimeBackend {
@@ -217,6 +220,7 @@ impl RuntimeBackend {
             Self::AzureOpenAi => "azure_openai",
             Self::Custom => "custom",
             Self::VllmV1 => "vllm_v1",
+            Self::FreePool => "free_pool",
         }
     }
 
@@ -270,6 +274,8 @@ impl RuntimeBackend {
             Self::Custom,
             // J-19 -- vLLM V1 native /v1/messages lane (additive, opt-in).
             Self::VllmV1,
+            // J-54 -- FreePool multi-provider free-tier pool.
+            Self::FreePool,
         ]
     }
 }
