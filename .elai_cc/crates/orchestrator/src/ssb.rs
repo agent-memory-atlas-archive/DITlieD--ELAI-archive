@@ -1632,6 +1632,8 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::SystemContractEvent(SystemContractEventKind::NodeBound),
     // J-12: HarnessInterventionEvent (Pattern-2; Kind in payload).
     SsbActionType::HarnessInterventionEvent(HarnessInterventionKind::ActionGateBlocked),
+    // J-54 UNIT8: FreePoolEvent (Pattern-2 flat; 3-arm Kind in payload).
+    SsbActionType::FreePoolEvent,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

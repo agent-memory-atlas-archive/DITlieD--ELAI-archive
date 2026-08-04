@@ -1585,6 +1585,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::NodeAdmissionEvent(_) => (),
         SsbActionType::SystemContractEvent(_) => (),
         SsbActionType::HarnessInterventionEvent(_) => (),
+        // J-54 UNIT8: FreePoolEvent flat variant, Pattern-2 single-variant.
+        SsbActionType::FreePoolEvent => (),
     }
 }
 

@@ -4875,6 +4875,9 @@ pub enum SsbActionType {
     /// J-12 HarnessInterventionEvent. Pattern-2; Kind rides in payload.
     /// Emitted by `emit_harness_intervention_event` (intervention_ssb.rs).
     HarnessInterventionEvent(HarnessInterventionKind),
+    /// J-54 UNIT8: free-pool rotation / backoff / trust-downgrade.
+    /// Pattern-2 single-variant; 3-arm FreePoolEventKind rides in payload.
+    FreePoolEvent,
 }
 
 impl SsbActionType {
@@ -5840,6 +5843,7 @@ impl SsbActionType {
             Self::NodeAdmissionEvent(_) => "node_admission_event",
             Self::SystemContractEvent(_) => "system_contract_event",
             Self::HarnessInterventionEvent(_) => "harness_intervention_event",
+            Self::FreePoolEvent => "free_pool_event",
         }
     }
 }
@@ -6743,6 +6747,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "harness_intervention_event" => Ok(SsbActionType::HarnessInterventionEvent(
             HarnessInterventionKind::ActionGateBlocked,
         )),
+        "free_pool_event" => Ok(SsbActionType::FreePoolEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

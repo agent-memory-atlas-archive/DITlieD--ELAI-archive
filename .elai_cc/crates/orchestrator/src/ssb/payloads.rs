@@ -3982,6 +3982,9 @@ pub enum SsbPayload {
     SystemContractEvent(SystemContractEventPayload),
     /// J-12 runtime intervention harness event. Pattern-2; Kind rides in payload.
     HarnessInterventionEvent(HarnessInterventionEventPayload),
+    /// J-54 UNIT8: free-pool rotation / backoff / trust-downgrade.
+    /// Pattern-2 single-variant; 3-arm FreePoolEventKind rides in payload.
+    FreePoolEvent(FreePoolEventPayload),
 }
 
 impl SsbPayload {
@@ -4824,6 +4827,7 @@ impl SsbPayload {
                 SsbActionType::SystemContractEvent(p.kind),
             Self::HarnessInterventionEvent(ref p) =>
                 SsbActionType::HarnessInterventionEvent(p.kind),
+            Self::FreePoolEvent(_) => SsbActionType::FreePoolEvent,
         }
     }
 }
@@ -21641,6 +21645,43 @@ pub struct HarnessInterventionEventPayload {
     pub kind: HarnessInterventionKind,
     /// Arm-specific details (JSON object).
     pub details_json: serde_json::Value,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+// J-54 UNIT8: FreePoolEvent substrate (free-pool rotation / backoff / trust-downgrade)
+
+/// J-54 UNIT8 -- 3-arm discriminator carried by [`FreePoolEventPayload::kind`].
+/// Pattern-2 payload-field convention (mirrors BehaviorSteeringKind).
+/// NO raw API keys -- only fingerprints (`model_fp`, `key_fp`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FreePoolEventKind {
+    /// A model was rotated into the free pool for a group.
+    ModelRotated {
+        group: String,
+        model_fp: String,
+        key_fp: String,
+    },
+    /// Free pool exhausted; backoff scheduled.
+    PoolExhaustedBackoff {
+        soonest_reset_ms: i64,
+    },
+    /// Trust downgrade for a free-pool role.
+    FreePoolTrustDowngrade {
+        role: String,
+    },
+}
+
+/// J-54 UNIT8 -- payload for [`SsbActionType::FreePoolEvent`].
+///
+/// Pattern-2 single-variant; 3-arm Kind rides in `kind`. Does NOT derive `Eq`
+/// (arm scalars are `String` / `i64`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FreePoolEventPayload {
+    /// Fire-point discriminator. See [`FreePoolEventKind`].
+    pub kind: FreePoolEventKind,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
 }

@@ -212,6 +212,7 @@ fitm_calibration_applied
 fitness_evaluated
 formal_verifier_completed
 framework_profile_selected
+free_pool_event
 fsm_transition
 futility_detected
 futility_output_stagnation

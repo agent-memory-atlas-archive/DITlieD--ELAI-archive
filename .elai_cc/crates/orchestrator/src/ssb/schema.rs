@@ -5564,7 +5564,9 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- emit_system_contract_event (system_contract_event.rs).
         'system_contract_event',
         -- J-12: HarnessInterventionEvent Pattern-2.
-        'harness_intervention_event'
+        'harness_intervention_event',
+        -- J-54 UNIT8: FreePoolEvent Pattern-2 flat; 3-arm Kind in payload.
+        'free_pool_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
