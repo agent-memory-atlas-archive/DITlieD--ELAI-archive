@@ -2780,9 +2780,10 @@ export interface LevelAuditVerdictJson {
 // SidecarStatus, AmbiguityState, CosmosArtifactStatus).
 // ------------------------------------------------------------------
 
-/** Canonical snake_case identifier for a runtime backend. The 11
+/** Canonical snake_case identifier for a runtime backend. The
  *  variants match `RuntimeBackend::canonical_name()` in
- *  providers/src/runtime/types.rs. */
+ *  providers/src/runtime/types.rs. `free_pool` is the FreePool
+ *  trust-gated arm (W-2). */
 export type RuntimeBackendId =
   | 'sidecar'
   | 'anthropic_api'
@@ -2798,7 +2799,8 @@ export type RuntimeBackendId =
   | 'mlx'
   | 'llama_cpp'
   | 'ppm'
-  | 'composer2';
+  | 'composer2'
+  | 'free_pool';
 
 /** Stable iteration order matching `RuntimeBackend::all()`. */
 export const RUNTIME_BACKEND_IDS: readonly RuntimeBackendId[] = [
@@ -2817,6 +2819,7 @@ export const RUNTIME_BACKEND_IDS: readonly RuntimeBackendId[] = [
   'llama_cpp',
   'ppm',
   'composer2',
+  'free_pool',
 ] as const;
 
 /** Discriminator for the `RuntimeHealth` serde tag. */

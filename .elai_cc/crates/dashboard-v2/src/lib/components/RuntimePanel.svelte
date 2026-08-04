@@ -163,6 +163,37 @@
   );
 
   // -----------------------------------------------------------------
+  // Free-pool trust UI (J-54 W-6). free_pool is a trust-gated arm
+  // (W-2): surface an assignment note when any role is on the pool,
+  // and a `non-reproducible (free-pool)` badge when a VERIFICATION
+  // role (executor / auditor / auditor-* / plan-auditor) is on it.
+  // -----------------------------------------------------------------
+  const FREE_POOL: RuntimeBackendId = 'free_pool';
+  const VERIFICATION_ROLE_PREFIXES = ['auditor'];
+  const VERIFICATION_ROLE_EXACT = new Set<string>(['executor', 'plan-auditor']);
+
+  function isVerificationRole(role: string): boolean {
+    return (
+      VERIFICATION_ROLE_EXACT.has(role) ||
+      role.startsWith('auditor')
+    );
+  }
+
+  /** Roles currently routed to free_pool (derived from roleToBackend). */
+  const freePoolRoles = $derived.by(() => {
+    const roles: RuntimeAgentRole[] = [];
+    for (const role of Object.keys(roleToBackend) as RuntimeAgentRole[]) {
+      if (roleToBackend[role] === FREE_POOL) roles.push(role);
+    }
+    return roles;
+  });
+
+  const anyFreePool = $derived(freePoolRoles.length > 0);
+  const freePoolVerificationRoles = $derived(
+    freePoolRoles.filter((r) => isVerificationRole(r)),
+  );
+
+  // -----------------------------------------------------------------
   // Health pill colour (matches GatesPanel's red/yellow/green band).
   // -----------------------------------------------------------------
   function healthColor(status: RuntimeHealthStatus): string {
@@ -410,6 +441,24 @@
           </label>
         {/each}
       </div>
+      {#if anyFreePool}
+        <div class="runtime-panel__free-pool-note" role="note">
+          <span class="runtime-panel__free-pool-label">free-pool</span>
+          <span class="runtime-panel__free-pool-text">
+            free_pool is selectable and assignment-gated (W-2).
+            Roles on pool:
+            <span class="mono">{freePoolRoles.join(', ')}</span>.
+          </span>
+          {#each freePoolVerificationRoles as vrole (vrole)}
+            <span
+              class="runtime-panel__pill runtime-panel__pill--warn"
+              title="Verification role on free-pool is not reproducible"
+            >
+              non-reproducible (free-pool)
+            </span>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <!-- C-44: Composer 2 paid-backend status + cumulative cost. -->
@@ -587,6 +636,35 @@
     padding: 0.15rem 0.5rem;
     border-radius: 3px;
     text-transform: uppercase;
+  }
+  .runtime-panel__pill--warn {
+    background: #a33;
+    color: #fff;
+    text-transform: none;
+    letter-spacing: 0.02em;
+  }
+  .runtime-panel__free-pool-note {
+    margin-top: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #1a1a1a;
+    font-size: 0.78rem;
+    color: #ccc;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .runtime-panel__free-pool-label {
+    font-weight: 700;
+    color: #fc6;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+  }
+  .runtime-panel__free-pool-text {
+    color: #bbb;
   }
   .runtime-panel__stub-badge {
     font-size: 0.65rem;
