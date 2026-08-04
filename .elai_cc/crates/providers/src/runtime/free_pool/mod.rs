@@ -12,10 +12,12 @@
 //!
 //! Streaming is not supported (returns `NotImplemented`).
 
+pub mod catalog;
 pub mod dispatch;
 pub mod heal;
 pub mod quota;
 
+pub use catalog::{load_free_pool_catalog, FreePoolCatalogEntry};
 pub use dispatch::{Deployment, FreePoolDispatcher, PoolExhausted, ProviderGroup};
 pub use heal::{heal_or_spill, select_with_heal, HealConfig, HealOutcome, SelectError};
 pub use quota::{KeyId, QuotaLimits, QuotaTracker};

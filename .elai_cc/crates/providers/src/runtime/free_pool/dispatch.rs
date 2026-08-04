@@ -7,8 +7,7 @@
 //! Pollinations overflow on all NON-uncensored groups (invariant I-7:
 //! >=1 deployment always reachable).
 
-use std::collections::HashMap;
-
+use super::catalog::load_free_pool_catalog;
 use super::quota::KeyId;
 
 /// Provider group for fallback routing.
@@ -50,64 +49,6 @@ pub struct Deployment {
     pub keyless: bool,
 }
 
-/// Static catalog row for a free-tier model.
-#[derive(Debug, Clone)]
-struct CatalogRow {
-    group: ProviderGroup,
-    model: &'static str,
-    provider: &'static str,
-    base_url: &'static str,
-    env_key: &'static str,
-}
-
-/// Static free-tier catalog. In a later slice this is loaded from
-/// models.toml (I-51); for now a small static const suffices.
-/// NO dynamic fetch / OpenRouter models API / cheahjs sync (S7 rejected).
-static FREE_CATALOG: &[CatalogRow] = &[
-    CatalogRow {
-        group: ProviderGroup::Big,
-        model: "llama-4-scout",
-        provider: "groq",
-        base_url: "https://api.groq.com/openai/v1",
-        env_key: "GROQ_API_KEY",
-    },
-    CatalogRow {
-        group: ProviderGroup::FastSmall,
-        model: "llama-3.3-70b",
-        provider: "groq",
-        base_url: "https://api.groq.com/openai/v1",
-        env_key: "GROQ_API_KEY",
-    },
-    CatalogRow {
-        group: ProviderGroup::GeminiFlash,
-        model: "gemini-2.0-flash",
-        provider: "google",
-        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-        env_key: "GEMINI_API_KEY",
-    },
-    CatalogRow {
-        group: ProviderGroup::Mistral,
-        model: "mistral-small-latest",
-        provider: "mistral",
-        base_url: "https://api.mistral.ai/v1",
-        env_key: "MISTRAL_API_KEY",
-    },
-    CatalogRow {
-        group: ProviderGroup::OpenrouterFree,
-        model: "meta-llama/llama-3.3-70b-instruct:free",
-        provider: "openrouter",
-        base_url: "https://openrouter.ai/api/v1",
-        env_key: "OPENROUTER_API_KEY",
-    },
-];
-
-/// Denylisted model IDs that must never appear in deployments.
-static DENYLISTED_MODELS: &[&str] = &[
-    "gpt-4",
-    "gpt-4o",
-    "claude-3-opus",
-];
-
 /// Pollinations keyless overflow deployment (interface map §5).
 /// api_key = "none", always reachable (invariant I-7).
 const POLLINATIONS_BASE: &str = "https://text.pollinations.ai/openai";
@@ -133,25 +74,26 @@ pub struct FreePoolDispatcher {
 }
 
 impl FreePoolDispatcher {
-    /// Build deployments from the static catalog + env keys.
+    /// Build deployments from the TOML catalog + env keys.
     /// Collects GROQ_API_KEY, GROQ_API_KEY_1, GROQ_API_KEY_2, etc.
     /// Always adds Pollinations overflow for non-uncensored groups.
     pub fn new() -> Self {
+        let catalog = load_free_pool_catalog();
         let mut deployments = Vec::new();
 
-        for row in FREE_CATALOG {
+        for row in &catalog {
             if row.group == ProviderGroup::Uncensored {
                 continue;
             }
-            for raw_key in collect_env_keys(row.env_key) {
-                let key_id = KeyId::from_raw_key(row.provider, &raw_key);
+            for raw_key in collect_env_keys(&row.env_key) {
+                let key_id = KeyId::from_raw_key(&row.provider, &raw_key);
                 deployments.push(Deployment {
                     group: row.group,
-                    model: row.model.to_string(),
-                    provider: row.provider.to_string(),
-                    base_url: row.base_url.to_string(),
+                    model: row.model.clone(),
+                    provider: row.provider.clone(),
+                    base_url: row.base_url.clone(),
                     key_id,
-                    env_key_name: row.env_key.to_string(),
+                    env_key_name: row.env_key.clone(),
                     keyless: false,
                 });
             }
@@ -165,21 +107,22 @@ impl FreePoolDispatcher {
     /// Build with an explicit list of (env_key, raw_key) pairs for testing.
     #[cfg(test)]
     pub(super) fn with_keys(keys: &[(String, String)]) -> Self {
+        let catalog = load_free_pool_catalog();
         let mut deployments = Vec::new();
-        for row in FREE_CATALOG {
+        for row in &catalog {
             if row.group == ProviderGroup::Uncensored {
                 continue;
             }
             for (env_name, raw_key) in keys {
-                if env_name == row.env_key {
-                    let key_id = KeyId::from_raw_key(row.provider, raw_key);
+                if *env_name == row.env_key {
+                    let key_id = KeyId::from_raw_key(&row.provider, raw_key);
                     deployments.push(Deployment {
                         group: row.group,
-                        model: row.model.to_string(),
-                        provider: row.provider.to_string(),
-                        base_url: row.base_url.to_string(),
+                        model: row.model.clone(),
+                        provider: row.provider.clone(),
+                        base_url: row.base_url.clone(),
                         key_id,
-                        env_key_name: row.env_key.to_string(),
+                        env_key_name: row.env_key.clone(),
                         keyless: false,
                     });
                 }
@@ -269,7 +212,7 @@ fn add_pollinations_overflow(deployments: &mut Vec<Deployment>) {
 
 /// Check if a model ID is denylisted.
 fn is_denylisted(model: &str) -> bool {
-    DENYLISTED_MODELS.iter().any(|&d| d == model)
+    super::catalog::DENYLISTED_MODEL_IDS.iter().any(|&d| d == model)
 }
 
 /// Simple shuffle: rotate by one position each call (deterministic round-robin).

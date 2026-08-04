@@ -137,3 +137,45 @@ last_verified = "2026-06-12"
 # These will be added as a separate [[models]] entry in patch-N when cloud_mode
 # consts are migrated. The zero-price-constant grep in the drift contract test
 # EXCLUDES cloud_mode.rs from its scope to avoid false-blocking on deferred consts.
+
+# Free-pool deployments (J-54): typed catalog loaded by
+# free_pool::catalog::load_free_pool_catalog() at dispatcher build time.
+# group values must match ProviderGroup::as_str():
+#   big | fast-small | gemini-flash | mistral | openrouter-free | uncensored
+[free_pool]
+denylisted = ["gpt-4", "gpt-4o", "claude-3-opus"]
+
+[[free_pool.deployments]]
+group = "big"
+model = "llama-4-scout"
+provider = "groq"
+base_url = "https://api.groq.com/openai/v1"
+env_key = "GROQ_API_KEY"
+
+[[free_pool.deployments]]
+group = "fast-small"
+model = "llama-3.3-70b"
+provider = "groq"
+base_url = "https://api.groq.com/openai/v1"
+env_key = "GROQ_API_KEY"
+
+[[free_pool.deployments]]
+group = "gemini-flash"
+model = "gemini-2.0-flash"
+provider = "google"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+env_key = "GEMINI_API_KEY"
+
+[[free_pool.deployments]]
+group = "mistral"
+model = "mistral-small-latest"
+provider = "mistral"
+base_url = "https://api.mistral.ai/v1"
+env_key = "MISTRAL_API_KEY"
+
+[[free_pool.deployments]]
+group = "openrouter-free"
+model = "meta-llama/llama-3.3-70b-instruct:free"
+provider = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
