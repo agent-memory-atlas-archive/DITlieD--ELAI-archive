@@ -90,6 +90,13 @@ pub enum RuntimeEvent {
         backend: String,
         ok: bool,
     },
+    /// J-54 UNIT7 — free-pool assigned to executor/auditor: trust downgrade.
+    /// Mapped by orchestrator `SsbRuntimeEventSink` to
+    /// `FreePoolEventKind::FreePoolTrustDowngrade { role }`. Role is
+    /// snake_case string only; NO key material.
+    FreePoolTrustDowngrade {
+        role: String,
+    },
 }
 
 /// Object-safe sink consumed by the runtime layer. The orchestrator

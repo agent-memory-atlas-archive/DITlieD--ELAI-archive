@@ -19,9 +19,10 @@ use elai_providers::runtime::{
 use tracing::warn;
 
 use crate::ssb::{
-    CliSubprocessKilledPayload, CliSubprocessSpawnedPayload, ProviderByokEventKind,
-    ProviderByokEventPayload, RuntimeColdStartObservedPayload, RuntimeFallbackPayload,
-    RuntimeHealthChangedPayload, SglangBackendRegisteredPayload, Ssb, SsbPayload,
+    CliSubprocessKilledPayload, CliSubprocessSpawnedPayload, FreePoolEventKind,
+    FreePoolEventPayload, ProviderByokEventKind, ProviderByokEventPayload,
+    RuntimeColdStartObservedPayload, RuntimeFallbackPayload, RuntimeHealthChangedPayload,
+    SglangBackendRegisteredPayload, Ssb, SsbPayload,
 };
 
 /// SSB-backed `RuntimeEventSink`. Holds an `Arc<Ssb>` and pushes each
@@ -163,6 +164,12 @@ fn runtime_event_to_payload(event: RuntimeEvent) -> Option<SsbPayload> {
                 backend,
                 kind: ProviderByokEventKind::CustomBackendRegistered,
                 ok,
+                ts_ms: now_ms_i64(),
+            })
+        }
+        RuntimeEvent::FreePoolTrustDowngrade { role } => {
+            SsbPayload::FreePoolEvent(FreePoolEventPayload {
+                kind: FreePoolEventKind::FreePoolTrustDowngrade { role },
                 ts_ms: now_ms_i64(),
             })
         }

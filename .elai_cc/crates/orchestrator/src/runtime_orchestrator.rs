@@ -30,9 +30,9 @@ use std::time::Instant;
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_ipc_types::AgentRole;
 use elai_providers::runtime::{
-    backend_name_hash, cost_model_for, create_runtime, role_name_hash, runtime_event_sink,
-    CompletionConfig, CompletionResponse, Message, RuntimeAdapter, RuntimeAdapterError,
-    RuntimeBackend, RuntimeEvent, RuntimeHealth,
+    apply_trust_marker, backend_name_hash, cost_model_for, create_runtime, role_name_hash,
+    runtime_event_sink, CompletionConfig, CompletionResponse, Message, RuntimeAdapter,
+    RuntimeAdapterError, RuntimeBackend, RuntimeEvent, RuntimeHealth,
 };
 use elai_providers::{default_manifest_path, DecodingMode};
 use thiserror::Error;
@@ -590,6 +590,11 @@ impl RuntimeOrchestrator {
             // J-28 RECON_NEEDED-4: CompletionResponse carries no elapsed_ms;
             // measure it with a seam-local wall-clock instead.
             let call_started = Instant::now(); // entropy-allow: monotonic start-marker for live backend-call latency telemetry only; a seeded clock would not measure real provider duration
+            // J-54 UNIT7: free-pool on a verification role stamps trust
+            // downgrade (non_reproducible) before the complete call.
+            if backend == RuntimeBackend::FreePool {
+                let _marker = apply_trust_marker(&agent_role_to_snake(role));
+            }
             match adapter.complete(messages.clone(), config.clone()).await {
                 Ok(response) => {
                     let call_elapsed_ms =

@@ -41,7 +41,7 @@ use thiserror::Error;
 use crate::determinism::DeterminismConfig;
 use crate::rra_tiers::seal_determinism_applied;
 use crate::ssb::{
-    decode_ssb_payload, SsbEntry, SsbPayload,
+    decode_ssb_payload, FreePoolEventKind, FreePoolEventPayload, SsbEntry, SsbPayload,
 };
 
 // J-14: re-export the tiered-verify public surface from rra_tiers so existing
@@ -282,6 +282,10 @@ pub struct RunArtifact {
     /// `determinism_applied` FAILS verify (missing evidence = FAIL).
     #[serde(default)]
     pub determinism_applied: Option<DeterminismApplied>,
+    /// J-54 UNIT7: free-pool verification lane stamps non-reproducible.
+    /// LEGACY receipts deserialize as false via serde default.
+    #[serde(default)]
+    pub non_reproducible: bool,
     /// blake3 root over the canonical bundle bytes (everything above except
     /// this field). A single-byte tamper flips it. See [`compute_root`].
     pub root_blake3: String,
@@ -631,13 +635,37 @@ pub fn build_rra_with_sampling_seed(
         stack_hash,
         sampling_seed,
         determinism_applied,
+        non_reproducible: false,
         // Filled in after the canonical bytes are stable (includes I-18 fields).
         root_blake3: String::new(),
     };
     // compute_root cannot fail in practice (msgpack of owned data), but we
     // propagate the empty-root on the impossible error path rather than panic.
     art.root_blake3 = compute_root(&art).unwrap_or_default();
+
+    // J-54 UNIT7: if the stream carries a FreePoolTrustDowngrade event,
+    // stamp the artifact non-reproducible and recompute the root so the
+    // field is covered by the Merkle root.
+    let has_trust_downgrade = decoded.iter().any(|(_, payload)| {
+        matches!(
+            payload,
+            Some(SsbPayload::FreePoolEvent(FreePoolEventPayload {
+                kind: FreePoolEventKind::FreePoolTrustDowngrade { .. },
+                ..
+            }))
+        )
+    });
+    if has_trust_downgrade {
+        stamp_non_reproducible(&mut art);
+    }
+
     art
+}
+
+/// J-54 UNIT7: stamp free-pool trust downgrade onto a sealed artifact and recompute root.
+pub fn stamp_non_reproducible(art: &mut RunArtifact) {
+    art.non_reproducible = true;
+    art.root_blake3 = compute_root(art).unwrap_or_default();
 }
 
 // I-18: seal_stack_hash moved to crate::stack_hash (MR-1 split).

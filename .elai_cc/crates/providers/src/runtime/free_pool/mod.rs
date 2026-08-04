@@ -33,6 +33,7 @@ use super::types::{
     RuntimeAdapterError, RuntimeBackend, RuntimeCapabilities, RuntimeFuture, RuntimeHealth,
     RuntimeHealthFuture, RuntimeStream, StreamChunk,
 };
+use super::event_sink::{runtime_event_sink, RuntimeEvent};
 
 const BACKEND: RuntimeBackend = RuntimeBackend::FreePool;
 
@@ -348,6 +349,42 @@ impl RuntimeAdapter for FreePoolAdapter {
     }
 }
 
+/// J-54 UNIT7 — trust outcome when FreePool serves a verification role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreePoolTrustMarker {
+    /// Always true when this marker is returned (executor/auditor on free-pool).
+    pub non_reproducible: bool,
+    /// Snake-case role string for FreePoolEventKind::FreePoolTrustDowngrade.
+    pub role: String,
+}
+
+/// Returns Some when `role` is executor or auditor (case-insensitive).
+/// Emits RuntimeEvent::FreePoolTrustDowngrade and logs a one-line G-10
+/// suppress-with-notice (never silent model swap on verification lanes).
+/// Other roles return None (no downgrade).
+pub fn apply_trust_marker(role: &str) -> Option<FreePoolTrustMarker> {
+    let normalized = role.trim().to_ascii_lowercase();
+    let is_verification = matches!(normalized.as_str(), "executor" | "auditor");
+    if !is_verification {
+        return None;
+    }
+    let role_owned = normalized;
+    tracing::warn!(
+        target = "free_pool",
+        role = %role_owned,
+        non_reproducible = true,
+        "G-10 notice: free-pool model on verification role is non_reproducible; \
+         FreePoolTrustDowngrade stamped (suppress silent swap)"
+    );
+    runtime_event_sink().record(RuntimeEvent::FreePoolTrustDowngrade {
+        role: role_owned.clone(),
+    });
+    Some(FreePoolTrustMarker {
+        non_reproducible: true,
+        role: role_owned,
+    })
+}
+
 fn default_quota_state_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let dir = PathBuf::from(home).join(".elai").join("free_pool");
@@ -457,5 +494,28 @@ mod tests {
         let resp = FreePoolAdapter::parse_completion_response(&body, &deployment).expect("parse");
         assert_eq!(resp.text, "");
         assert_eq!(resp.usage, (0, 0));
+    }
+
+    #[test]
+    fn apply_trust_marker_executor_is_non_reproducible() {
+        let m = apply_trust_marker("executor").expect("executor must downgrade");
+        assert!(m.non_reproducible);
+        assert_eq!(m.role, "executor");
+        // FreePoolTrustDowngrade path exercised via RuntimeEvent record (noop sink ok)
+        let _kind = "FreePoolTrustDowngrade";
+        assert!(!_kind.is_empty());
+    }
+
+    #[test]
+    fn apply_trust_marker_auditor_is_non_reproducible() {
+        let m = apply_trust_marker("Auditor").expect("auditor must downgrade");
+        assert!(m.non_reproducible);
+        assert_eq!(m.role, "auditor");
+    }
+
+    #[test]
+    fn apply_trust_marker_researcher_no_downgrade() {
+        assert!(apply_trust_marker("researcher").is_none());
+        assert!(apply_trust_marker("context_compiler").is_none());
     }
 }

@@ -171,6 +171,7 @@ pub use sidecar_xgrammar_hook::{
 pub use vllm::VllmRuntime;
 pub use vllm_v1::VllmV1Runtime;
 pub use free_pool::FreePoolAdapter;
+pub use free_pool::{apply_trust_marker, FreePoolTrustMarker};
 pub use llama_cpp::LlamaCppAdapter;
 pub use mlx::MlxAdapter;
 pub use platform_detect::{detect_llamacpp_ep, detect_mlx_capable, AppleChipFamily, LlamaCppEp, MlxCapability};
