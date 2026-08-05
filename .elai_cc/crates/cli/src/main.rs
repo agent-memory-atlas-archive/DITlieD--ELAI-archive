@@ -584,6 +584,9 @@ pub(crate) mod args_pr;
 pub(crate) mod args_memory;
 pub(crate) mod args_critic;
 pub(crate) mod args_skills;
+// J-72 slice C: `elai retrieval gold-build` parser + handler.
+pub(crate) mod args_retrieval;
+pub(crate) mod retrieval_cmd;
 
 #[cfg(test)]
 mod cli_tests;
@@ -1858,6 +1861,25 @@ fn run() -> Result<(), anyhow::Error> {
         }
         CliAction::EvalCorpusIngest { pack, root } => {
             eval_corpus_ingest_cmd::run(pack, root)?;
+        }
+        // J-72 slice C: `elai retrieval gold-build` — Tier-1 gold-set
+        // assembler. Handler in retrieval_cmd.rs.
+        CliAction::RetrievalGoldBuild {
+            out,
+            rra_dir,
+            history,
+            seed_queries,
+            max_hard_neg,
+            json,
+        } => {
+            retrieval_cmd::run_retrieval_gold_build(
+                out,
+                rra_dir,
+                history,
+                seed_queries,
+                max_hard_neg,
+                json,
+            )?;
         }
     }
     Ok(())

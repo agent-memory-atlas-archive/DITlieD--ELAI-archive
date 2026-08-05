@@ -38,6 +38,9 @@ pub mod dkg_adapter;
 pub mod error;
 pub mod fix_templates;
 pub mod freshness;
+// J-72 slice C: Tier-1 gold-set assembler pure types + merge/write. Pure
+// std + serde + toml; no elai_orchestrator dep (CLI layer owns RRA loading).
+pub mod gold_set;
 // E-42 Tier-A: tree-sitter grammar tier metadata (parallel to LanguageRegistry).
 // Pin invariants (kotlin-ng / svelte-ng / no language-pack / runtime 0.26)
 // locked by crates/contracts/tests/grammar_tier_contract.rs. Tier-B refactors

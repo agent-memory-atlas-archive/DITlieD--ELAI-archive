@@ -1897,6 +1897,19 @@ pub(crate) enum CliAction {
         pack: PathBuf,
         root: Option<PathBuf>,
     },
+    /// J-72 slice C: `elai retrieval gold-build --out <path>
+    /// [--rra-dir <dir>] [--history <path>] [--seed-queries <path>]
+    /// [--max-hard-neg <N>] [--json]` — assemble a Tier-1 retrieval
+    /// gold-set JSONL from RRA bundles + history JSONL + seed TOML.
+    /// Parser in `args_retrieval.rs`; handler in `retrieval_cmd.rs`.
+    RetrievalGoldBuild {
+        out: PathBuf,
+        rra_dir: Option<PathBuf>,
+        history: Option<PathBuf>,
+        seed_queries: Option<PathBuf>,
+        max_hard_neg: usize,
+        json: bool,
+    },
 }
 
 /// I-41 — parameters for `elai critique`.
@@ -3641,6 +3654,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "eval-corpus-ingest" | "eval_corpus_ingest" => {
             parse_eval_corpus_ingest_args(&rest[1..])
         }
+        // J-72 slice C: `elai retrieval gold-build ...` — Tier-1 gold-set
+        // assembler. Parser in args_retrieval.rs.
+        "retrieval" => crate::args_retrieval::parse_retrieval_subcommand_args(&rest[1..]),
         other if other.starts_with('/') => parse_direct_slash_cli_action(&rest, output_format),
         _other => Ok(CliAction::Prompt {
             prompt: rest.join(" "),
