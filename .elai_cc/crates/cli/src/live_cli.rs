@@ -602,6 +602,11 @@ pub(crate) struct LiveCli {
     /// fixtures to confirm the "Continuing from where we left off..."
     /// prelude actually fires on a fresh-session turn.
     pub(crate) preamble_emit_count: u32,
+    /// J-59: per-seat namespace identity for this CLI session. Stamped on
+    /// `DispatchContext` (write path) and `RetrievalFilter` (read path) so
+    /// facts are namespace-isolated by seat. Defaults to `"local"` (W-2
+    /// single-seat) unless `ELAI_SEAT_IDENTITY` is set.
+    pub(crate) seat_identity: String,
 }
 
 pub(crate) struct RuntimePluginState {
@@ -789,6 +794,15 @@ fn sidecar_steering_verified(sidecar_url: &str) -> bool {
 }
 
 impl LiveCli {
+    /// J-59: resolve the per-seat identity from `ELAI_SEAT_IDENTITY` env,
+    /// defaulting to `"local"` (W-2 single-seat). Does NOT invent auth (J-2 deferred).
+    fn resolve_seat_identity() -> String {
+        std::env::var("ELAI_SEAT_IDENTITY")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| crate::user_memory_capture::DEFAULT_SEAT_ID.to_string())
+    }
+
     pub(crate) fn new(
         model: String,
         enable_tools: bool,
@@ -809,8 +823,9 @@ impl LiveCli {
         permission_mode: PermissionMode,
         export_jsonl: bool,
     ) -> Result<Self, anyhow::Error> {
+        let seat_identity = Self::resolve_seat_identity();
         let (mut system_prompt, role_contract_outcome) =
-            crate::report_fns::build_system_prompt_with_outcome(false)?;
+            crate::report_fns::build_system_prompt_with_outcome(false, &seat_identity)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
@@ -930,6 +945,7 @@ impl LiveCli {
             project_detection_done: false,
             chat_memory_turn_count: 0,
             preamble_emit_count: 0,
+            seat_identity,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -950,6 +966,7 @@ impl LiveCli {
             None => Self::new_with_options(model, enable_tools, allowed_tools, permission_mode, false),
             Some(backend_ref) => {
                 let backend_cfg: elai_orchestrator::BackendConfig = backend_ref.into();
+                let seat_identity = Self::resolve_seat_identity();
                 // Wire Local backend: same path as new_with_options but passes
                 // backend_cfg so build_runtime applies BudgetPolicy::Local.
                 // skip_instruction_files=true mirrors new_local — local models
@@ -966,7 +983,7 @@ impl LiveCli {
                     vec![LIVE_CHAT_SYSTEM_PROMPT.to_string()]
                 } else {
                     let (sections, outcome) =
-                        crate::report_fns::build_system_prompt_with_outcome(true)?;
+                        crate::report_fns::build_system_prompt_with_outcome(true, &seat_identity)?;
                     local_role_contract_outcome = Some(outcome);
                     sections
                 };
@@ -1072,6 +1089,7 @@ impl LiveCli {
                     project_detection_done: false,
                     chat_memory_turn_count: 0,
                     preamble_emit_count: 0,
+                    seat_identity,
                 };
                 cli.persist_session()?;
                 Ok(cli)
@@ -1089,8 +1107,9 @@ impl LiveCli {
         backend_config: BackendConfig,
         permission_mode: PermissionMode,
     ) -> Result<Self, anyhow::Error> {
+        let seat_identity = Self::resolve_seat_identity();
         let (mut system_prompt, role_contract_outcome) =
-            crate::report_fns::build_system_prompt_with_outcome(true)?;
+            crate::report_fns::build_system_prompt_with_outcome(true, &seat_identity)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
@@ -1240,6 +1259,7 @@ impl LiveCli {
             project_detection_done: false,
             chat_memory_turn_count: 0,
             preamble_emit_count: 0,
+            seat_identity,
         };
         cli.persist_session()?;
         Ok(cli)

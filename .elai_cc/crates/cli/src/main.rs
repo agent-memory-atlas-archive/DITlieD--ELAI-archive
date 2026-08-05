@@ -1375,7 +1375,13 @@ fn run() -> Result<(), anyhow::Error> {
         // user-memory ledger (activating the wire-dark elai_memory substrate via dispatch_one) and
         // emits a UserDecisionSuperseded SSB row. Gated behind ELAI_USER_MEMORY_ENABLE (R9).
         CliAction::Remember { text, json } => {
-            let outcome = user_memory_capture::capture_remember(&text)
+            let seat_id = std::env::var("ELAI_SEAT_IDENTITY")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| user_memory_capture::DEFAULT_SEAT_ID.to_string());
+            let clock: std::sync::Arc<dyn elai_core::clock::ClockProvider> =
+                std::sync::Arc::new(elai_core::clock::OsClock);
+            let outcome = user_memory_capture::capture_remember_with_clock(&text, &seat_id, &clock)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             user_memory_capture::print_capture_outcome(&outcome, json);
         }

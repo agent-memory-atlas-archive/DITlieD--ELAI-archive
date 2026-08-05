@@ -21,6 +21,7 @@ fn make_fact_with_tier(
     MemoryFact {
         fact_id: fact_id.into(),
         user_id: "default".into(),
+        seat_id: "local".to_string(),
         project_id: Some("proj-a".into()),
         scope: Scope::Project,
         fact_type: FactType::Preference,
@@ -85,6 +86,7 @@ fn safety_critical_filter_excludes_t2_t3() {
 
     let filter = RetrievalFilter {
         project_id: Some("proj-a".into()),
+        seat_id: None,
         fact_type: None,
         trust_override: None,
         safety_critical: true,
@@ -142,6 +144,7 @@ fn migration_default_is_t3() {
 
     let filter = RetrievalFilter {
         project_id: Some("proj-a".into()),
+        seat_id: None,
         fact_type: None,
         trust_override: None,
         safety_critical: true,

@@ -175,6 +175,7 @@ mod tests {
         MemoryFact {
             fact_id: MemoryFact::new_id(),
             user_id: "default".into(),
+            seat_id: "local".into(),
             project_id: Some("p1".into()),
             scope: Scope::Project,
             fact_type: FactType::Mistake,

@@ -141,6 +141,11 @@ pub struct MemoryFact {
     pub fact_id: String,
     /// User identifier (single-user installs hardcode `"default"`).
     pub user_id: String,
+    /// Per-seat namespace key (J-59 multi-seat isolation). Defaults to
+    /// `"local"` for single-seat installs; the dispatcher stamps
+    /// `DispatchContext::seat_id` here so rows are namespace-isolated at
+    /// retrieval via `RetrievalFilter::seat_id`.
+    pub seat_id: String,
     /// Project identifier (`None` for `scope == Global`).
     pub project_id: Option<String>,
     /// `project` or `global`.
@@ -259,6 +264,7 @@ mod cold_wiring_tests {
         MemoryFact {
             fact_id: "fact-1".to_string(),
             user_id: "user-1".to_string(),
+            seat_id: "local".to_string(),
             project_id: Some("proj-1".to_string()),
             scope: Scope::Project,
             fact_type: FactType::Preference,

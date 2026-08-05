@@ -59,6 +59,11 @@ pub(crate) const DEFAULT_USER_ID: &str = "default";
 /// `scope_tag="global"`).
 const DEFAULT_SCOPE_TAG: &str = "global";
 
+/// J-59 W-2: the default seat id for single-seat installs. When no multi-seat
+/// context is active, all facts are stamped with `"local"` so the seat filter
+/// on retrieval is a no-op match (not a structural exclusion).
+pub(crate) const DEFAULT_SEAT_ID: &str = "local";
+
 /// Project id stamped on the emitted SSB rows.
 const CAPTURE_PROJECT_ID: &str = "elai-user-memory";
 
@@ -155,12 +160,15 @@ pub(crate) fn user_memory_enabled() -> bool {
 /// [`CaptureOutcome::Disabled`] without touching the store.
 pub(crate) fn capture_remember(text: &str) -> Result<CaptureOutcome, CaptureError> {
     let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
-    capture_remember_with_clock(text, &clock)
+    capture_remember_with_clock(text, DEFAULT_SEAT_ID, &clock)
 }
 
 /// Clock-injected core (testable without `SystemTime`). All wall-clock reads go through `clock`.
+/// `seat_id` is the J-59 per-seat namespace key stamped on the `DispatchContext` so rows are
+/// namespace-isolated at retrieval. Pass `DEFAULT_SEAT_ID` (`"local"`) for single-seat installs.
 pub(crate) fn capture_remember_with_clock(
     text: &str,
+    seat_id: &str,
     clock: &Arc<dyn ClockProvider>,
 ) -> Result<CaptureOutcome, CaptureError> {
     if !user_memory_enabled() {
@@ -216,6 +224,7 @@ pub(crate) fn capture_remember_with_clock(
     let now_ms: u128 = clock.now_ms();
     let ctx = DispatchContext {
         user_id: DEFAULT_USER_ID.to_string(),
+        seat_id: seat_id.to_string(),
         project_id: None,
         scope: Scope::Global,
         provenance: Provenance::user_direct(DEFAULT_SCOPE_TAG),
@@ -656,7 +665,7 @@ mod tests {
     fn capture_is_noop_when_flag_off() {
         let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
         with_flag(None, || {
-            let out = capture_remember_with_clock("i prefer rust over go", &clock)
+            let out = capture_remember_with_clock("i prefer rust over go", DEFAULT_SEAT_ID, &clock)
                 .expect("capture");
             assert_eq!(out, CaptureOutcome::Disabled);
         });
@@ -666,7 +675,7 @@ mod tests {
     fn empty_text_is_error_when_flag_on() {
         let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
         with_flag(Some("1"), || {
-            let err = capture_remember_with_clock("   ", &clock).unwrap_err();
+            let err = capture_remember_with_clock("   ", DEFAULT_SEAT_ID, &clock).unwrap_err();
             assert!(matches!(err, CaptureError::EmptyText));
         });
     }
@@ -729,9 +738,9 @@ mod tests {
         let clock: Arc<dyn ClockProvider> = Arc::new(SteppingClock::new(1_700_000_000_000));
 
         let (first_key, second_key) = with_flag(Some("1"), || {
-            let first = capture_remember_with_clock("i prefer tracing over log", &clock)
+            let first = capture_remember_with_clock("i prefer tracing over log", DEFAULT_SEAT_ID, &clock)
                 .expect("first capture");
-            let second = capture_remember_with_clock("i prefer log over tracing", &clock)
+            let second = capture_remember_with_clock("i prefer log over tracing", DEFAULT_SEAT_ID, &clock)
                 .expect("second capture");
             let CaptureOutcome::Captured { key: k1 } = first else {
                 panic!("first contradicting statement must CAPTURE (ADD), got {first:?}");

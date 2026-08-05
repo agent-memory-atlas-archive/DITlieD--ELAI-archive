@@ -523,6 +523,7 @@ mod tests {
         MemoryFact {
             fact_id: fact_id.into(),
             user_id: "u1".into(),
+            seat_id: "local".into(),
             project_id: Some("proj-1".into()),
             scope: Scope::Project,
             fact_type: FactType::DomainKnowledge,
@@ -547,6 +548,7 @@ mod tests {
         MemoryFact {
             fact_id: "fact-pref".into(),
             user_id: "u1".into(),
+            seat_id: "local".into(),
             project_id: None,
             scope: Scope::Global,
             fact_type: FactType::Preference,

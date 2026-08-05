@@ -143,7 +143,11 @@ pub(super) fn dispatch(
             // (activates the wire-dark elai_memory substrate via dispatch_one) and emit a
             // UserDecisionSuperseded SSB row. Gated behind ELAI_USER_MEMORY_ENABLE (R9, default-OFF).
             SlashCommand::Remember { text } => {
-                match crate::user_memory_capture::capture_remember(&text) {
+                match crate::user_memory_capture::capture_remember_with_clock(
+                    &text,
+                    &cli.seat_identity,
+                    &cli.clock,
+                ) {
                     Ok(outcome) => crate::user_memory_capture::print_capture_outcome(&outcome, false),
                     Err(e) => println!("remember: {e}"),
                 }

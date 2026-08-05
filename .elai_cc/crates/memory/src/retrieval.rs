@@ -34,6 +34,11 @@ pub struct RetrievalFilter {
     /// Project filter: include rows with `scope='project' AND project_id=Some(p)`.
     /// Rows with `scope='global'` are always included regardless.
     pub project_id: Option<String>,
+    /// J-59 per-seat namespace hard-exclude. When `Some(sid)`, only facts
+    /// with `seat_id == sid` are returned (structural filter, not soft
+    /// rank). `None` = no seat exclusion (backward compat for callers not
+    /// yet wired to multi-seat).
+    pub seat_id: Option<String>,
     /// Restrict to a single `fact_type` (e.g. `Preference`). When `None`
     /// every fact_type is candidate.
     pub fact_type: Option<FactType>,
@@ -106,6 +111,11 @@ pub fn get_relevant_facts(
 
     let mut filtered: Vec<MemoryFact> = candidates_allowed
         .into_iter()
+        // J-59 per-seat hard-exclude: structural filter, not soft rank.
+        .filter(|f| match &filter.seat_id {
+            None => true,
+            Some(sid) => f.seat_id == *sid,
+        })
         .filter(|f| match (f.scope, &filter.project_id) {
             // Globals always pass the scope filter.
             (Scope::Global, _) => true,
@@ -200,4 +210,89 @@ pub fn get_relevant_facts(
     }
 
     Ok((filtered, validation_exclusions))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fact::FactType;
+    use crate::store::FactStore;
+    use crate::trust::{Provenance, TrustTier};
+
+    fn make_fact(seat_id: &str, user_id: &str) -> MemoryFact {
+        MemoryFact {
+            fact_id: MemoryFact::new_id(),
+            user_id: user_id.into(),
+            seat_id: seat_id.into(),
+            project_id: Some("proj-1".into()),
+            scope: Scope::Project,
+            fact_type: FactType::Preference,
+            key: "prefers_tracing".into(),
+            value: serde_json::json!({ "v": true }),
+            confidence: 0.9,
+            trust_score: 0.8,
+            ingested_at_ms: 1_000,
+            valid_from_ms: 1_000,
+            valid_to_ms: None,
+            decay_rate_per_day: 0.05,
+            last_observed_at_ms: 1_000,
+            evidence_pointers: vec!["ev-1".into()],
+            superseded_by: None,
+            trust_tier: TrustTier::T0UserDirect,
+            provenance: Provenance::user_direct("test"),
+            last_validated_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn seat_filter_excludes_non_matching_seat() {
+        let store = FactStore::open_in_memory().expect("open");
+        store.insert(&make_fact("seat-a", "u1")).expect("insert");
+        let filter = RetrievalFilter {
+            seat_id: Some("seat-b".into()),
+            ..Default::default()
+        };
+        let (facts, _) = get_relevant_facts(&store, "u1", &filter, 10, 2_000).expect("retrieve");
+        assert!(facts.is_empty(), "seat-b filter should exclude seat-a row");
+    }
+
+    #[test]
+    fn seat_filter_includes_matching_seat() {
+        let store = FactStore::open_in_memory().expect("open");
+        store.insert(&make_fact("seat-a", "u1")).expect("insert");
+        let filter = RetrievalFilter {
+            seat_id: Some("seat-a".into()),
+            ..Default::default()
+        };
+        let (facts, _) = get_relevant_facts(&store, "u1", &filter, 10, 2_000).expect("retrieve");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].seat_id, "seat-a");
+    }
+
+    #[test]
+    fn seat_filter_none_no_exclusion() {
+        let store = FactStore::open_in_memory().expect("open");
+        store.insert(&make_fact("seat-a", "u1")).expect("insert");
+        store.insert(&make_fact("seat-b", "u1")).expect("insert");
+        let filter = RetrievalFilter {
+            seat_id: None,
+            ..Default::default()
+        };
+        let (facts, _) = get_relevant_facts(&store, "u1", &filter, 10, 2_000).expect("retrieve");
+        assert_eq!(facts.len(), 2, "None seat_id should not exclude any seat");
+    }
+
+    #[test]
+    fn default_seat_id_local_on_insert() {
+        let store = FactStore::open_in_memory().expect("open");
+        let fact = make_fact("local", "u1");
+        store.insert(&fact).expect("insert");
+        let filter = RetrievalFilter {
+            seat_id: Some("local".into()),
+            ..Default::default()
+        };
+        let (facts, _) = get_relevant_facts(&store, "u1", &filter, 10, 2_000).expect("retrieve");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].seat_id, "local");
+    }
 }

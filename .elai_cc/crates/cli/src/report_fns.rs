@@ -1123,6 +1123,7 @@ pub(crate) fn build_system_prompt(skip_instruction_files: bool) -> Result<Vec<St
     let (sections, _outcome) = build_system_prompt_for_role(
         skip_instruction_files,
         elai_orchestrator::AgentRole::Executor,
+        crate::user_memory_capture::DEFAULT_SEAT_ID,
     )?;
     Ok(sections)
 }
@@ -1132,10 +1133,12 @@ pub(crate) fn build_system_prompt(skip_instruction_files: bool) -> Result<Vec<St
 /// live CLI construction sites where an SSB handle is available after `build_runtime`.
 pub(crate) fn build_system_prompt_with_outcome(
     skip_instruction_files: bool,
+    seat_id: &str,
 ) -> Result<(Vec<String>, ApplyOutcome), anyhow::Error> {
     build_system_prompt_for_role(
         skip_instruction_files,
         elai_orchestrator::AgentRole::Executor,
+        seat_id,
     )
 }
 
@@ -1148,6 +1151,7 @@ pub(crate) fn build_system_prompt_with_outcome(
 pub(crate) fn build_system_prompt_for_role(
     skip_instruction_files: bool,
     role: elai_orchestrator::AgentRole,
+    seat_id: &str,
 ) -> Result<(Vec<String>, ApplyOutcome), anyhow::Error> {
     let mut sections = load_system_prompt(
         env::current_dir()?,
@@ -1204,7 +1208,7 @@ pub(crate) fn build_system_prompt_for_role(
     // H-31: append the user-memory section iff the firewall allows this role AND the flag is on.
     // No SSB available at construction time — callers that have self.ssb should use
     // assemble_user_memory_section_with_ssb directly when they want SSB emission.
-    if let Some(section) = assemble_user_memory_section(role, None) {
+    if let Some(section) = assemble_user_memory_section(role, None, seat_id) {
         sections.push(section);
     }
     Ok((sections, outcome))
@@ -1295,6 +1299,7 @@ pub(crate) fn emit_role_contract_applied(
 pub(crate) fn assemble_user_memory_section(
     role: elai_orchestrator::AgentRole,
     ssb: Option<&Arc<elai_orchestrator::ssb::Ssb>>,
+    seat_id: &str,
 ) -> Option<String> {
     use crate::dkg_citation_validator::DkgCitationValidator;
     use crate::user_memory_capture::{user_memory_enabled, DEFAULT_USER_ID};
@@ -1347,6 +1352,7 @@ pub(crate) fn assemble_user_memory_section(
     let tier_b_scope = ValidationScope::at_head("", "");
     let tier_b_filter = RetrievalFilter {
         fact_type: Some(FactType::Preference),
+        seat_id: Some(seat_id.to_string()),
         ..RetrievalFilter::default()
     };
     if let Ok((tier_b_facts, _)) = get_authorized_facts(
@@ -1399,6 +1405,7 @@ pub(crate) fn assemble_user_memory_section(
         let tier_a_filter = RetrievalFilter {
             fact_type: Some(tier_a_type),
             citation_validator: Some(citation_validator),
+            seat_id: Some(seat_id.to_string()),
             ..RetrievalFilter::default()
         };
         if let Ok((tier_a_facts, exclusions)) =

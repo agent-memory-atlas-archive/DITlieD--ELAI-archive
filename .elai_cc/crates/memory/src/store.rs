@@ -23,6 +23,7 @@ const CREATE_TABLE_SQL: &str = "\
 CREATE TABLE IF NOT EXISTS memory_facts (
     fact_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
+    seat_id TEXT NOT NULL DEFAULT 'local',
     project_id TEXT,
     scope TEXT NOT NULL,
     fact_type TEXT NOT NULL,
@@ -45,6 +46,8 @@ CREATE INDEX IF NOT EXISTS idx_memory_facts_user_scope
     ON memory_facts(user_id, scope, fact_type);
 CREATE INDEX IF NOT EXISTS idx_memory_facts_valid_now
     ON memory_facts(user_id) WHERE valid_to_ms IS NULL;
+CREATE INDEX IF NOT EXISTS idx_memory_facts_seat_user
+    ON memory_facts(seat_id, user_id) WHERE valid_to_ms IS NULL;
 ";
 
 /// Bi-temporal CRUD facade over the `memory_facts` SQLite table.
@@ -76,6 +79,12 @@ impl FactStore {
         let _ = conn.execute_batch(
             "ALTER TABLE memory_facts ADD COLUMN last_validated_at_ms INTEGER;"
         );
+        // J-59 migration: add seat_id column to existing DBs. Idempotent:
+        // SQLite returns an error if the column already exists, which we
+        // silently ignore (fresh DBs have it via CREATE_TABLE_SQL).
+        let _ = conn.execute_batch(
+            "ALTER TABLE memory_facts ADD COLUMN seat_id TEXT NOT NULL DEFAULT 'local';"
+        );
         Ok(Self { conn })
     }
 
@@ -89,6 +98,9 @@ impl FactStore {
         let _ = conn.execute_batch(
             "ALTER TABLE memory_facts ADD COLUMN last_validated_at_ms INTEGER;"
         );
+        let _ = conn.execute_batch(
+            "ALTER TABLE memory_facts ADD COLUMN seat_id TEXT NOT NULL DEFAULT 'local';"
+        );
         Ok(Self { conn })
     }
 
@@ -101,21 +113,22 @@ impl FactStore {
         let provenance_json = serde_json::to_string(&fact.provenance)?;
         self.conn.execute(
             "INSERT INTO memory_facts (
-                fact_id, user_id, project_id, scope, fact_type, key, value,
+                fact_id, user_id, seat_id, project_id, scope, fact_type, key, value,
                 confidence, trust_score, ingested_at_ms, valid_from_ms,
                 valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                 evidence_pointers, superseded_by,
                 trust_tier, provenance, last_validated_at_ms
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                ?8, ?9, ?10, ?11,
-                ?12, ?13, ?14,
-                ?15, ?16,
-                ?17, ?18, ?19
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15,
+                ?16, ?17,
+                ?18, ?19, ?20
             )",
             params![
                 fact.fact_id,
                 fact.user_id,
+                fact.seat_id,
                 fact.project_id,
                 fact.scope.as_str(),
                 fact.fact_type.as_str(),
@@ -141,7 +154,7 @@ impl FactStore {
     /// Fetch a single fact by `fact_id`.
     pub fn get(&self, fact_id: &str) -> Result<Option<MemoryFact>, MemoryError> {
         let mut stmt = self.conn.prepare(
-            "SELECT fact_id, user_id, project_id, scope, fact_type, key, value,
+            "SELECT fact_id, user_id, seat_id, project_id, scope, fact_type, key, value,
                     confidence, trust_score, ingested_at_ms, valid_from_ms,
                     valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                     evidence_pointers, superseded_by,
@@ -166,7 +179,7 @@ impl FactStore {
         limit: usize,
     ) -> Result<Vec<MemoryFact>, MemoryError> {
         let mut sql = String::from(
-            "SELECT fact_id, user_id, project_id, scope, fact_type, key, value,
+            "SELECT fact_id, user_id, seat_id, project_id, scope, fact_type, key, value,
                     confidence, trust_score, ingested_at_ms, valid_from_ms,
                     valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                     evidence_pointers, superseded_by,
@@ -234,7 +247,7 @@ impl FactStore {
         let type_tag = fact_type.map(|t| t.as_str().to_owned());
         let sql = if type_tag.is_some() {
             format!(
-                "SELECT fact_id, user_id, project_id, scope, fact_type, key, value,
+                "SELECT fact_id, user_id, seat_id, project_id, scope, fact_type, key, value,
                         confidence, trust_score, ingested_at_ms, valid_from_ms,
                         valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                         evidence_pointers, superseded_by, trust_tier, provenance, last_validated_at_ms
@@ -244,7 +257,7 @@ impl FactStore {
             )
         } else {
             format!(
-                "SELECT fact_id, user_id, project_id, scope, fact_type, key, value,
+                "SELECT fact_id, user_id, seat_id, project_id, scope, fact_type, key, value,
                         confidence, trust_score, ingested_at_ms, valid_from_ms,
                         valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                         evidence_pointers, superseded_by, trust_tier, provenance, last_validated_at_ms
@@ -292,21 +305,22 @@ impl FactStore {
         let provenance_json = serde_json::to_string(&new_fact.provenance)?;
         tx.execute(
             "INSERT INTO memory_facts (
-                fact_id, user_id, project_id, scope, fact_type, key, value,
+                fact_id, user_id, seat_id, project_id, scope, fact_type, key, value,
                 confidence, trust_score, ingested_at_ms, valid_from_ms,
                 valid_to_ms, decay_rate_per_day, last_observed_at_ms,
                 evidence_pointers, superseded_by,
                 trust_tier, provenance, last_validated_at_ms
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                ?8, ?9, ?10, ?11,
-                ?12, ?13, ?14,
-                ?15, ?16,
-                ?17, ?18, ?19
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15,
+                ?16, ?17,
+                ?18, ?19, ?20
             )",
             params![
                 new_fact.fact_id,
                 new_fact.user_id,
+                new_fact.seat_id,
                 new_fact.project_id,
                 new_fact.scope.as_str(),
                 new_fact.fact_type.as_str(),
@@ -447,23 +461,24 @@ pub struct DecayInputRow {
 fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MemoryFact, MemoryError>> {
     let fact_id: String = row.get(0)?;
     let user_id: String = row.get(1)?;
-    let project_id: Option<String> = row.get(2)?;
-    let scope_tag: String = row.get(3)?;
-    let fact_type_tag: String = row.get(4)?;
-    let key: String = row.get(5)?;
-    let value_text: String = row.get(6)?;
-    let confidence: f64 = row.get(7)?;
-    let trust_score: f64 = row.get(8)?;
-    let ingested_at: i64 = row.get(9)?;
-    let valid_from: i64 = row.get(10)?;
-    let valid_to: Option<i64> = row.get(11)?;
-    let decay_rate: f64 = row.get(12)?;
-    let last_observed: i64 = row.get(13)?;
-    let evidence_text: String = row.get(14)?;
-    let superseded_by: Option<String> = row.get(15)?;
-    let trust_tier_tag: String = row.get(16)?;
-    let provenance_text: String = row.get(17)?;
-    let last_validated_at: Option<i64> = row.get(18)?;
+    let seat_id: String = row.get(2)?;
+    let project_id: Option<String> = row.get(3)?;
+    let scope_tag: String = row.get(4)?;
+    let fact_type_tag: String = row.get(5)?;
+    let key: String = row.get(6)?;
+    let value_text: String = row.get(7)?;
+    let confidence: f64 = row.get(8)?;
+    let trust_score: f64 = row.get(9)?;
+    let ingested_at: i64 = row.get(10)?;
+    let valid_from: i64 = row.get(11)?;
+    let valid_to: Option<i64> = row.get(12)?;
+    let decay_rate: f64 = row.get(13)?;
+    let last_observed: i64 = row.get(14)?;
+    let evidence_text: String = row.get(15)?;
+    let superseded_by: Option<String> = row.get(16)?;
+    let trust_tier_tag: String = row.get(17)?;
+    let provenance_text: String = row.get(18)?;
+    let last_validated_at: Option<i64> = row.get(19)?;
 
     let value: serde_json::Value = match serde_json::from_str(&value_text) {
         Ok(v) => v,
@@ -494,6 +509,7 @@ fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MemoryFact, M
     Ok(Ok(MemoryFact {
         fact_id,
         user_id,
+        seat_id,
         project_id,
         scope,
         fact_type,

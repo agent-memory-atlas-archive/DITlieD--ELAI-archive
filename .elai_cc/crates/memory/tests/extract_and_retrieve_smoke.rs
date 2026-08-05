@@ -36,6 +36,7 @@ fn extract_then_persist_then_retrieve_with_decay() {
     let fact = MemoryFact {
         fact_id: MemoryFact::new_id(),
         user_id: "default".into(),
+        seat_id: "local".to_string(),
         project_id: Some("proj-x".into()),
         scope: Scope::Project,
         fact_type: c.fact_type,
@@ -66,6 +67,7 @@ fn extract_then_persist_then_retrieve_with_decay() {
     //    above the Preference threshold (0.5).
     let filter = RetrievalFilter {
         project_id: Some("proj-x".into()),
+        seat_id: None,
         fact_type: Some(FactType::Preference),
         trust_override: None,
         safety_critical: false,
@@ -92,6 +94,7 @@ fn empty_evidence_rejected_at_insert() {
     let bad = MemoryFact {
         fact_id: MemoryFact::new_id(),
         user_id: "default".into(),
+        seat_id: "local".to_string(),
         project_id: Some("proj-y".into()),
         scope: Scope::Project,
         fact_type: FactType::Preference,
@@ -122,6 +125,7 @@ fn project_scope_filter_isolates_projects() {
         let f = MemoryFact {
             fact_id: MemoryFact::new_id(),
             user_id: "default".into(),
+            seat_id: "local".to_string(),
             project_id: Some((*proj).into()),
             scope: Scope::Project,
             fact_type: FactType::Preference,
@@ -145,6 +149,7 @@ fn project_scope_filter_isolates_projects() {
 
     let filter = RetrievalFilter {
         project_id: Some("proj-a".into()),
+        seat_id: None,
         fact_type: None,
         trust_override: None,
         safety_critical: false,

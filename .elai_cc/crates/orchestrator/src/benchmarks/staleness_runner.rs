@@ -335,6 +335,7 @@ impl StalenessEvalRunner {
         Ok(MemoryFact {
             fact_id: format!("{}-stale", case.id),
             user_id: FIXTURE_USER_ID.to_string(),
+            seat_id: "local".to_string(),
             project_id: Some(FIXTURE_PROJECT_ID.to_string()),
             scope: Scope::Project,
             fact_type,
@@ -365,6 +366,7 @@ impl StalenessEvalRunner {
         Ok(MemoryFact {
             fact_id: format!("{}-fresh", case.id),
             user_id: FIXTURE_USER_ID.to_string(),
+            seat_id: "local".to_string(),
             project_id: Some(FIXTURE_PROJECT_ID.to_string()),
             scope: Scope::Project,
             fact_type,
@@ -424,6 +426,7 @@ impl StalenessEvalRunner {
         //    structural filter via the read-only include-closed accessor.
         let filter = RetrievalFilter {
             project_id: Some(FIXTURE_PROJECT_ID.to_string()),
+            seat_id: None,
             fact_type: Some(fact_type),
             trust_override: None,
             safety_critical: false,

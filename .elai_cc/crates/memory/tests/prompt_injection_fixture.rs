@@ -22,6 +22,7 @@ fn prompt_injection_t2_blocked_from_safety_critical() {
     let malicious_fact = MemoryFact {
         fact_id: "inject-t2".into(),
         user_id: "default".into(),
+        seat_id: "local".to_string(),
         project_id: Some("proj-a".into()),
         scope: Scope::Project,
         fact_type: FactType::Preference,
@@ -49,6 +50,7 @@ fn prompt_injection_t2_blocked_from_safety_critical() {
     let legitimate_fact = MemoryFact {
         fact_id: "legit-t0".into(),
         user_id: "default".into(),
+        seat_id: "local".to_string(),
         project_id: Some("proj-a".into()),
         scope: Scope::Project,
         fact_type: FactType::Preference,
@@ -72,6 +74,7 @@ fn prompt_injection_t2_blocked_from_safety_critical() {
     // Safety-critical query: destructive_command_intent -> T0/T1 only.
     let filter = RetrievalFilter {
         project_id: Some("proj-a".into()),
+        seat_id: None,
         fact_type: None,
         trust_override: None,
         safety_critical: true,

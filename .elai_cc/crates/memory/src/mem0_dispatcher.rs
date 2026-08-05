@@ -92,6 +92,10 @@ impl DispatchOp {
 pub struct DispatchContext {
     /// User identifier for the new rows.
     pub user_id: String,
+    /// Per-seat namespace key (J-59). Stamped on every fact built from this
+    /// context so rows are namespace-isolated at retrieval. Defaults to
+    /// `"local"` for single-seat installs.
+    pub seat_id: String,
     /// Project identifier when `scope == Project`. `None` for `Global`.
     pub project_id: Option<String>,
     /// Per-row scope (`Project` for newly extracted rows by default).
@@ -115,6 +119,9 @@ impl DispatchContext {
     pub fn validate(&self) -> Result<(), MemoryError> {
         if self.user_id.is_empty() {
             return Err(MemoryError::Invalid("user_id is empty".into()));
+        }
+        if self.seat_id.is_empty() {
+            return Err(MemoryError::Invalid("seat_id is empty".into()));
         }
         if !(0.0..=1.0).contains(&self.initial_trust_score) {
             return Err(MemoryError::Invalid(format!(
@@ -259,6 +266,7 @@ fn build_fact_from_candidate(candidate: &ExtractedFact, ctx: &DispatchContext) -
     MemoryFact {
         fact_id: MemoryFact::new_id(),
         user_id: ctx.user_id.clone(),
+        seat_id: ctx.seat_id.clone(),
         project_id: ctx.project_id.clone(),
         scope: ctx.scope,
         fact_type: candidate.fact_type,
@@ -316,6 +324,7 @@ mod tests {
     fn ctx(now: u128) -> DispatchContext {
         DispatchContext {
             user_id: "default".into(),
+            seat_id: "local".into(),
             project_id: Some("proj-a".into()),
             scope: Scope::Project,
             provenance: Provenance::user_direct("test"),

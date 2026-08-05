@@ -271,6 +271,7 @@ async fn run_inner(
             let fact = MemoryFact {
                 fact_id: fact_id_new.clone(),
                 user_id: user_id.to_owned(),
+                seat_id: "local".to_string(),
                 project_id: None,
                 scope: parsed_scope,
                 fact_type: parsed_ft,

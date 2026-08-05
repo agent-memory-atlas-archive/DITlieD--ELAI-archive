@@ -14,6 +14,7 @@ fn make_trust_fact(id: &str, tier: TrustTier, trust: f32) -> MemoryFact {
     MemoryFact {
         fact_id: id.into(),
         user_id: "u1".into(),
+        seat_id: "local".to_string(),
         project_id: Some("p1".into()),
         scope: Scope::Project,
         fact_type: FactType::DomainKnowledge,
@@ -103,6 +104,7 @@ fn contract_safety_critical_retrieval_filter() {
 
     let sc_filter = RetrievalFilter {
         project_id: Some("p1".into()),
+        seat_id: None,
         fact_type: None,
         trust_override: None,
         safety_critical: true,

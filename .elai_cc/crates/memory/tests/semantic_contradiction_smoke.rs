@@ -35,6 +35,7 @@ fn fact(id: &str, key: &str, value: serde_json::Value, t: u128) -> MemoryFact {
     MemoryFact {
         fact_id: id.into(),
         user_id: "default".into(),
+        seat_id: "local".to_string(),
         project_id: Some("p1".into()),
         scope: Scope::Project,
         fact_type: FactType::Preference,
