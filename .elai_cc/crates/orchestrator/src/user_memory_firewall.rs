@@ -32,6 +32,9 @@
 //! See `workflow/reasoning/H-31-decisions.md`.
 
 use crate::agent_role::ConsensusRole;
+use crate::ssb::{
+    MemoryGovernanceEventPayload, MemoryGovernanceKind, SsbPayload,
+};
 use elai_ipc_types::AgentRole;
 
 /// Compile-time ALLOWLIST gate for the agent-dispatch role enum.
@@ -95,6 +98,30 @@ pub fn consensus_role_gets_user_memory(role: ConsensusRole) -> bool {
         | ConsensusRole::Reflector
         | ConsensusRole::Auditor => false,
     }
+}
+
+/// J-59: build a [`SsbPayload::MemoryGovernanceEvent`] for per-seat isolation
+/// audit rows (`WriteStamped` / `RetrievalFiltered` / `FirewallBlocked`).
+///
+/// `fact_id` is `""` for isolation-only rows that are not bound to a single
+/// fact. **NEVER** include memory content, preference text, or seat secrets in
+/// the payload — only the opaque `seat_id` handle and the kind discriminator.
+#[must_use]
+pub fn memory_isolation_payload(
+    kind: MemoryGovernanceKind,
+    seat_id: &str,
+    actor: &str,
+    session_id: &str,
+    created_at_ms: u64,
+) -> SsbPayload {
+    SsbPayload::MemoryGovernanceEvent(MemoryGovernanceEventPayload {
+        fact_id: String::new(),
+        kind,
+        actor: actor.to_owned(),
+        session_id: session_id.to_owned(),
+        created_at_ms,
+        seat_id: seat_id.to_owned(),
+    })
 }
 
 #[cfg(test)]

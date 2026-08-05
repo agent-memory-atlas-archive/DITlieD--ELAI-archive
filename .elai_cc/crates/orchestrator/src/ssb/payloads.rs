@@ -18956,6 +18956,14 @@ pub enum MemoryGovernanceKind {
     Pinned,
     /// User unpinned a previously-pinned fact (decay resumes on next tick).
     Unpinned,
+    /// J-59: memory write stamped with a seat identity (per-seat isolation audit).
+    WriteStamped,
+    /// J-59: cross-seat retrieval hard-excluded (seat-scoped filter blocked a
+    /// cross-seat fetch; the fact was NOT returned to the requesting seat).
+    RetrievalFiltered,
+    /// J-59: auditor/critic role denied user-memory under a seat (Personalization-
+    /// Trap firewall blocked the role; zero memory content surfaced).
+    FirewallBlocked,
 }
 
 /// H-33 payload for [`SsbActionType::MemoryGovernanceEvent`].
@@ -18971,7 +18979,9 @@ pub enum MemoryGovernanceKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryGovernanceEventPayload {
-    /// `fact_id` of the governed fact.
+    /// `fact_id` of the governed fact. Empty string (`""`) for isolation-only
+    /// rows (J-59 `WriteStamped`/`RetrievalFiltered`/`FirewallBlocked`) when the
+    /// event is not bound to a single fact.
     pub fact_id: String,
     /// Governance action taken.
     pub kind: MemoryGovernanceKind,
@@ -18981,6 +18991,10 @@ pub struct MemoryGovernanceEventPayload {
     pub session_id: String,
     /// Wall-clock ms of emission.
     pub created_at_ms: u64,
+    /// J-59: opaque seat handle for per-seat isolation audit. Empty string is
+    /// OK for pre-J-59 forget/pin/unpin rows where the seat is unknown. NEVER
+    /// carries memory content, preference text, or seat secrets.
+    pub seat_id: String,
 }
 
 /// H-34 payload for [`SsbActionType::McpToolDeferred`].

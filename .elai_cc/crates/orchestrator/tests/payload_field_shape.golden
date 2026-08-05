@@ -102,7 +102,7 @@ CliMcpDispatchPayload	port:u16,tool_name:String
 CliMcpServerStartedPayload	port:u16
 CliMcpServerStoppedPayload	port:u16
 CliSubprocessKilledPayload	backend:elai_providers::runtime::RuntimeBackend,exit_code:Option<i32>,pid:u32,reason:String
-CliSubprocessSpawnedPayload	argv_redacted:Vec<String>,backend:elai_providers::runtime::RuntimeBackend,pid:u32
+CliSubprocessSpawnedPayload	argv_redacted:Vec<String>,backend:elai_providers::runtime::RuntimeBackend,pid:u32,transport:elai_providers::runtime::BridgeTransport
 CloudSpendPayload	cache_creation_tokens:u32,cache_read_tokens:u32,cost_usd:f64,input_tokens:u32,model:String,output_tokens:u32,provider:String,task_id:String,ts_ms:i64
 CloudStrictSchemaAppliedPayload	provider_hash:u64,schema_id_hash:u64,ts_ms:u64
 CodeactActionExecutedPayload	action_hash:u64,duration_ms:u32,line_count:u32,outcome_hash:u64,ts_ms:u64
@@ -211,6 +211,7 @@ FitmCalibrationAppliedPayload	applied_ms:f64,dummy_len:u32,prompt_len:u32
 FitnessEvaluatedPayload	candidate_blake3:String,dual_agreement:f64,fitness:f64,kind:FitnessEvaluatedKind,pass_rate:f64,seed:u64,test_set_hash:[u8; 32],tests_total:u32
 FormalVerifierCompletedPayload	contract_emitted:bool,csq_class_hash:u64,duration_ms:u32,outcome_hash:u64,ts_ms:u64,verifier_kind_hash:u64
 FrameworkProfileSelectedPayload	language_hash:u64,profile_name_hash:u64,ts_ms:u64,version_pin_hash:u64
+FreePoolEventPayload	kind:FreePoolEventKind,ts_ms:i64
 FsmTransitionPayload	from:String,reason:String,to:String
 FutilityDetectedPayload	consecutive_count:u32,error_class:String,escalated:bool,level:String
 FutilityOutputStagnationPayload	level:String,new_persona:Option<String>,similarity:f32,threshold:f32
@@ -242,6 +243,7 @@ GroundingSweepResultPayload	grounded:u32,top_claim:Option<String>,ungrounded:u32
 HallucinationDeltaMeasuredPayload	ci_high:f64,ci_low:f64,corpus_blake3:String,gate_recall:f64,hallucination_delta:f64,model_id:String,n_tasks:u32,runpod_pending:bool,seed:u64,stdout_hash:Option<String>,suite:String
 HandoffLifecyclePayload	digest_path:Option<String>,kind:HandoffLifecycleEventKind,loaded_tokens:Option<u32>,session_id:String,topic_slug:String
 HardwareModelCatalogEventPayload	detected_tier:String,eligible_count:u32,kind:HardwareModelCatalogEventKind,lanes:Vec<HardwareCatalogLanePayload>,lanes_unavailable:Option<String>,residue_notes:Vec<String>,seed_blake3:String,vram_total_mb:u32
+HarnessInterventionEventPayload	details_json:serde_json::Value,kind:HarnessInterventionKind,ts_ms:i64
 HeadDimInvariantVerifiedPayload	details_json:serde_json::Value,head_dim_expected:u32,head_dim_observed:u32,kind:HeadDimInvariantVerifiedKind,model_id:String,ok:bool,ts_ms:i64
 HeldOutPromotionGatePayload	allow:bool,delta:f64,fails:u32,passes:u32,reason:String,regression_threshold:f64,task_id:String
 HeldOutRefreshPayload	added_count:u32,retired_count:u32,source_label:String,ts_ms:i64
@@ -322,7 +324,7 @@ MemoryConflictDetectedPayload	conflict_kind:String,fact_id_a:String,fact_id_b:St
 MemoryEvolutionRunPayload	duration_ms:u64,notes_touched:u32,phase:String
 MemoryFactExtractedPayload	fact_id:String,fact_type:String,key:String,project_id:Option<String>,scope:String,trust_score:f32,user_id:String
 MemoryFactSupersededPayload	new_fact_id:String,old_fact_id:String,valid_to_ms:u64
-MemoryGovernanceEventPayload	actor:String,created_at_ms:u64,fact_id:String,kind:MemoryGovernanceKind,session_id:String
+MemoryGovernanceEventPayload	actor:String,created_at_ms:u64,fact_id:String,kind:MemoryGovernanceKind,seat_id:String,session_id:String
 MemoryGuardEventPayload	byte_range:Option<String>,kind:MemoryGuardEventKind,pattern_class:Option<String>,token_delta:Option<u32>,ts_ms:i64
 MemoryMonitoringPayload	channel_id:String,deep_size_bytes:u64,threshold_exceeded:bool
 MemoryNoteEvolvedPayload	links_added:u32,links_removed:u32,new_content_blake3:String,note_id:String,old_content_blake3:String
@@ -529,6 +531,7 @@ SymbolGraphQueriedPayload	query_kind_hash:u64,result_count:u32,symbol_hash:u64,t
 SymbolGraphUpdatedPayload	built_ms:i64,edge_count:u64,file_count:u32,is_incremental:Option<bool>,project_id:String,symbol_count:u64
 SymbolQueryPayload	hop_count:u32,latency_ms:u32,target:String,tool:String,total_files:u32
 SymbolicConflictPayload	candidate_id:String,detail:String,fingerprint:String,fsm_substate:String,key:String,kind:String
+SystemContractEventPayload	binding_kind:String,binding_ref:String,details_json:serde_json::Value,kind:SystemContractEventKind,node_id:String,ts_ms:i64,verdict:String
 SystemProbePayload	detection_method:String,disk_free_mb:u64,disk_total_mb:u64,gpu_name:Option<String>,ram_free_mb:u64,ram_total_mb:u64,tier:String,vram_free_mb:Option<u32>,vram_total_mb:Option<u32>
 TaintFlowPayload	blocked:bool,kind:TaintFlowKind,origin_blake3:String,sink_tool:Option<String>,task_id:String,trust_level:String
 TaskAdvancedPayload	blocker:String,completion_pct:f64,parent_id:String,status:String,task_id:String,ts_ms:i64

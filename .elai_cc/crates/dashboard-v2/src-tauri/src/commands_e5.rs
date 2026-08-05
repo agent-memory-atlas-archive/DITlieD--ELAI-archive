@@ -372,6 +372,7 @@ pub async fn memory_forget(
                 actor: H33_ACTOR.to_owned(),
                 session_id: H33_SESSION_ID.to_owned(),
                 created_at_ms: now_ms,
+                seat_id: String::new(),
             });
             match ssb
                 .write_payload(H33_ACTOR, 0, payload, vec![])
@@ -426,6 +427,7 @@ pub async fn memory_pin(
                 actor: H33_ACTOR.to_owned(),
                 session_id: H33_SESSION_ID.to_owned(),
                 created_at_ms: now_ms,
+                seat_id: String::new(),
             });
             match ssb
                 .write_payload(H33_ACTOR, 0, payload, vec![])

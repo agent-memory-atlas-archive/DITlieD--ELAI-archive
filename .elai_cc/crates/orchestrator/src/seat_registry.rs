@@ -49,6 +49,9 @@ pub struct SeatCaps {
     pub daily_usd_cap_micros: Option<u64>,
     /// Optional monthly spend ceiling in USD micros.
     pub monthly_usd_cap_micros: Option<u64>,
+    /// Optional per-seat trust tier tag (C-48): `"T0"`|`"T1"`|`"T2"`|`"T3"`,
+    /// or `None` when absent.
+    pub trust_tier: Option<String>,
 }
 
 impl Default for SeatCaps {
@@ -58,6 +61,7 @@ impl Default for SeatCaps {
             concurrency_cap: 4,
             daily_usd_cap_micros: None,
             monthly_usd_cap_micros: None,
+            trust_tier: None,
         }
     }
 }
@@ -185,6 +189,8 @@ struct SeatCapsToml {
     daily_usd_cap_micros: Option<u64>,
     #[serde(default)]
     monthly_usd_cap_micros: Option<u64>,
+    #[serde(default)]
+    trust_tier: Option<String>,
 }
 
 impl From<SeatCapsToml> for SeatCaps {
@@ -195,6 +201,7 @@ impl From<SeatCapsToml> for SeatCaps {
             concurrency_cap: t.concurrency_cap.unwrap_or(d.concurrency_cap),
             daily_usd_cap_micros: t.daily_usd_cap_micros,
             monthly_usd_cap_micros: t.monthly_usd_cap_micros,
+            trust_tier: t.trust_tier,
         }
     }
 }
@@ -323,7 +330,7 @@ impl SeatRegistry {
 
     /// Resolve an identity to a seat id, falling back to `"local"` when the
     /// identity is unknown but a local seat exists.
-    fn resolve_seat_id(&self, identity: &str) -> String {
+    pub fn resolve_seat_id(&self, identity: &str) -> String {
         if self.seats.contains_key(identity) {
             identity.to_string()
         } else if self.seats.contains_key(LOCAL_SEAT_ID) {
@@ -331,6 +338,19 @@ impl SeatRegistry {
         } else {
             identity.to_string()
         }
+    }
+
+    /// Look up the [`SeatCaps`] for the seat resolved from `identity`.
+    /// Returns `None` if no matching seat exists (and no local fallback).
+    pub fn caps_for(&self, identity: &str) -> Option<&SeatCaps> {
+        let seat_id = self.resolve_seat_id(identity);
+        self.seats.get(&seat_id).map(|e| &e.caps)
+    }
+
+    /// Return the per-seat trust tier tag (C-48) for `identity`, or `None` if
+    /// the seat has no `trust_tier` set (or is unknown).
+    pub fn trust_tier_tag_for(&self, identity: &str) -> Option<&str> {
+        self.caps_for(identity).and_then(|c| c.trust_tier.as_deref())
     }
 }
 
@@ -359,6 +379,7 @@ mod tests {
                     concurrency_cap: 4,
                     daily_usd_cap_micros: None,
                     monthly_usd_cap_micros: None,
+                    trust_tier: None,
                 },
                 now,
             ),
@@ -371,6 +392,7 @@ mod tests {
                     concurrency_cap: 4,
                     daily_usd_cap_micros: None,
                     monthly_usd_cap_micros: None,
+                    trust_tier: None,
                 },
                 now,
             ),
@@ -404,6 +426,7 @@ mod tests {
                     concurrency_cap: 1,
                     daily_usd_cap_micros: None,
                     monthly_usd_cap_micros: None,
+                    trust_tier: None,
                 },
                 now,
             ),
@@ -434,6 +457,7 @@ mod tests {
                     concurrency_cap: 4,
                     daily_usd_cap_micros: Some(1_000_000),
                     monthly_usd_cap_micros: None,
+                    trust_tier: None,
                 },
                 now,
             ),
@@ -490,6 +514,7 @@ mod tests {
                     concurrency_cap: 4,
                     daily_usd_cap_micros: Some(1_000_000),
                     monthly_usd_cap_micros: None,
+                    trust_tier: None,
                 },
                 now,
             ),
@@ -503,5 +528,21 @@ mod tests {
             SeatAdmitDecision::Deny { .. } => {}
             other => panic!("expected Deny, got {other:?}"),
         }
+    }
+
+    // J-59 residual-A: per-seat trust_tier loads from seats.toml.
+    #[test]
+    fn trust_tier_tag_loaded_and_absent() {
+        let path = std::env::temp_dir().join("elai_j59_trust_tier_seats.toml");
+        std::fs::write(
+            &path,
+            "[seats.low]\ntrust_tier = \"T3\"\n\n[seats.high]\nweight = 2\n",
+        )
+        .unwrap();
+        let reg = SeatRegistry::load_from_path(&path).expect("parse ok");
+        assert_eq!(reg.trust_tier_tag_for("low"), Some("T3"));
+        // Absent trust_tier field => None.
+        assert_eq!(reg.trust_tier_tag_for("high"), None);
+        let _ = std::fs::remove_file(&path);
     }
 }

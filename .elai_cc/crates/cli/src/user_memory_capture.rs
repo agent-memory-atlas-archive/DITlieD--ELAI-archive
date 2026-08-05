@@ -36,6 +36,7 @@ use elai_memory::{
     classify, dispatch_one, DefenseVerdict, DispatchContext, DispatchOp, ExtractedFact, FactStore,
     FactType, Provenance, Scope, TrustTier,
 };
+use elai_orchestrator::seat_registry::SeatRegistry;
 use elai_orchestrator::ssb::{
     MemoryGuardEventKind, MemoryGuardEventPayload, Ssb, SsbConfig, SsbPayload,
     UserDecisionEventKind, UserDecisionSupersededPayload,
@@ -221,6 +222,23 @@ pub(crate) fn capture_remember_with_clock(
     let facts_path = mem_dir.join("memory_facts.sqlite");
     let mut facts = FactStore::open(&facts_path)?;
 
+    // J-59 residual-B2: per-seat TrustTier on the write path. Load the SeatRegistry
+    // (ELAI_SEATS_TOML env override, else <project_root>/seats.toml; missing file =>
+    // single_local) and map the seat's trust_tier tag to a TrustTier. Unknown/None
+    // keeps the T0UserDirect default (user-direct capture is the highest-trust path).
+    let seats_path = std::env::var("ELAI_SEATS_TOML")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| project_root.join("seats.toml"));
+    let registry = SeatRegistry::load_from_path(&seats_path)
+        .unwrap_or_else(|_| SeatRegistry::single_local());
+    let trust_tier = match registry.trust_tier_tag_for(seat_id) {
+        Some("T0") => TrustTier::T0UserDirect,
+        Some("T1") => TrustTier::T1CodebaseDerived,
+        Some("T2") => TrustTier::T2WebSourced,
+        Some("T3") => TrustTier::T3ModelEmitted,
+        _ => TrustTier::T0UserDirect,
+    };
+
     let now_ms: u128 = clock.now_ms();
     let ctx = DispatchContext {
         user_id: DEFAULT_USER_ID.to_string(),
@@ -228,7 +246,7 @@ pub(crate) fn capture_remember_with_clock(
         project_id: None,
         scope: Scope::Global,
         provenance: Provenance::user_direct(DEFAULT_SCOPE_TAG),
-        trust_tier: TrustTier::T0UserDirect,
+        trust_tier,
         initial_trust_score: INITIAL_TRUST_SCORE,
         now_ms,
     };

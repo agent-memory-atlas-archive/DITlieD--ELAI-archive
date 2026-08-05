@@ -20,9 +20,8 @@ use elai_core::clock::OsClock;
 use elai_core::paths::{memory_facts_db_path, sessions_dir_path};
 use elai_memory::{classify, DefenseVerdict, ExtractedFact, FactStore, FactType, MemoryFact, Provenance, Scope, TrustTier};
 use elai_orchestrator::memory_guard::{MemoryGuardVerdict, MemoryWriteScanner};
-use elai_orchestrator::ssb::{
-    MemoryGovernanceEventPayload, MemoryGovernanceKind, SsbPayload,
-};
+use elai_orchestrator::ssb::{MemoryGovernanceKind, SsbPayload};
+use elai_orchestrator::user_memory_firewall::memory_isolation_payload;
 use elai_orchestrator::{Ssb, SsbConfig};
 use serde_json::json;
 
@@ -73,13 +72,12 @@ async fn emit_governance_beacon(
         );
         return;
     };
-    let payload = SsbPayload::MemoryGovernanceEvent(MemoryGovernanceEventPayload {
-        fact_id: fact_id.to_owned(),
-        kind,
-        actor: CLI_ACTOR.to_owned(),
-        session_id: CLI_SESSION_ID.to_owned(),
-        created_at_ms: now_ms,
-    });
+    let seat_id = std::env::var("ELAI_SEAT_IDENTITY").unwrap_or_default();
+    let mut payload =
+        memory_isolation_payload(kind, &seat_id, CLI_ACTOR, CLI_SESSION_ID, now_ms);
+    if let SsbPayload::MemoryGovernanceEvent(ref mut p) = payload {
+        p.fact_id = fact_id.to_owned();
+    }
     if let Err(e) = ssb
         .write_payload("cli.memory", 0, payload, vec![])
         .await

@@ -55,6 +55,7 @@ fn make_fact(fact_id: &str, key: &str, trust_score: f32) -> MemoryFact {
     MemoryFact {
         fact_id: fact_id.into(),
         user_id: TEST_USER.into(),
+        seat_id: "seat-h33-contract".into(),
         project_id: Some("proj-h33".into()),
         scope: Scope::Project,
         fact_type: FactType::Preference,
@@ -132,6 +133,7 @@ async fn real_forgotten_governance_row_lands_and_round_trips() {
         actor: "cli".into(),
         session_id: "h33-contract-session".into(),
         created_at_ms: 1_700_000_000_000,
+        seat_id: "seat-h33-contract".into(),
     });
 
     let seq = ssb

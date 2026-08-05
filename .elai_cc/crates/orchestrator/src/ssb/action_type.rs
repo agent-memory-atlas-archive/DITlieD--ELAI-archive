@@ -3897,7 +3897,7 @@ pub enum SsbActionType {
     /// H-33 (SCHEMA_VERSION 211): memory governance event (forget/pin/unpin).
     /// Emitted by `elai memory forget|pin|unpin` and the dashboard
     /// memory_forget/memory_pin Tauri commands.
-    /// 3-arm kind discriminator carried in [`MemoryGovernanceEventPayload`].
+    /// 6-arm kind discriminator carried in [`MemoryGovernanceEventPayload`].
     MemoryGovernanceEvent,
     /// H-34 (SCHEMA_VERSION 212): deferred MCP schema resolve on the live STDIO
     /// lane. Emitted by `mcp_glue::RuntimeMcpState::call_tool` on cache-miss when

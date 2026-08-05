@@ -7929,6 +7929,7 @@ use crate::gate::RiskLevel;
                 actor: "cli".into(),
                 session_id: "s-h33-test".into(),
                 created_at_ms: 1_700_000_000_000,
+                seat_id: "seat-h33-test".into(),
             }),
             // H-34 (SCHEMA_VERSION 212): McpToolDeferred flat beacon. 1 new entry.
             SsbPayload::McpToolDeferred(McpToolDeferredPayload {
