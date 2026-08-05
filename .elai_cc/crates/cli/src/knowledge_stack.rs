@@ -28,7 +28,7 @@ use elai_knowledge::vector::indexer::VectorIndexer;
 use elai_knowledge::vector::TEXT_VEC_DIM;
 use elai_knowledge::startup::{startup_readiness_check, StartupConfig};
 use elai_knowledge::degradation::DegradationCascade;
-use elai_knowledge::reranker::{CrossEncoderReranker, RerankerConfig};
+use elai_knowledge::reranker::{CrossEncoderReranker, ReRankerModel, RerankerConfig};
 use elai_knowledge::splade::{SpladeExpander, SpladeConfig};
 use elai_knowledge::index_version::{check_and_upgrade, LogNotifier};
 
@@ -433,22 +433,48 @@ fn attach_vector_indexer_and_cache(
 
 /// Attach a cross-encoder reranker to the pipeline (graceful degradation).
 /// E-17 SP2: uses `RerankerConfig::with_project_root` for absolute paths.
+/// J-72: prefer the distilled scoring head when its ONNX artifact is staged
+/// (`.elai_cc/models/onnx/scoring-head-distilled.onnx`); otherwise fall back
+/// to the MsMarcoMiniLmL12 default. Missing artifact degrades gracefully.
 fn attach_reranker(
     mut pipeline: QueryPipeline,
     models_dir: &Path,
     ssb: &Option<Arc<elai_orchestrator::Ssb>>,
     clock: &Arc<dyn ClockProvider>,
 ) -> QueryPipeline {
+    let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let ce_model_path = models_dir.join("onnx").join("cross-encoder-l12.onnx");
     let ce_tok_path = models_dir.join("onnx").join("tokenizer.json");
-    if !ce_model_path.exists() || !ce_tok_path.exists() {
+    // J-72: the distilled head has its own ONNX file; proceed when EITHER the
+    // L-12 model or the distilled head is staged (tokenizer is shared).
+    let distilled_path_project = project_root.join(".elai_cc/models/onnx/scoring-head-distilled.onnx");
+    let distilled_path_models = models_dir.join("onnx").join("scoring-head-distilled.onnx");
+    let distilled_staged = distilled_path_project.exists() || distilled_path_models.exists();
+    let ms_marco_staged = ce_model_path.exists();
+    if (!ms_marco_staged && !distilled_staged) || !ce_tok_path.exists() {
         return pipeline;
     }
     // E-17 SP2 (SP1 carryover): switched from `..RerankerConfig::default()`
     // (relative PathBufs) to `RerankerConfig::with_project_root`.
-    let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut ce_config = RerankerConfig::with_project_root(&project_root);
-    ce_config.model_path = ce_model_path;
+    // J-72: prefer-if-staged — select ScoringHeadDistilled when the ONNX
+    // artifact is present under the project root or models dir; else keep
+    // the MsMarcoMiniLmL12 default.
+    let mut ce_config = if distilled_staged {
+        RerankerConfig::with_project_root_and_variant(&project_root, ReRankerModel::ScoringHeadDistilled)
+    } else {
+        RerankerConfig::with_project_root(&project_root)
+    };
+    // Resolve the model path for the selected variant. The distilled head
+    // uses its own ONNX file; the default keeps the L-12 path.
+    if distilled_staged {
+        ce_config.model_path = if distilled_path_models.exists() {
+            distilled_path_models
+        } else {
+            distilled_path_project
+        };
+    } else {
+        ce_config.model_path = ce_model_path;
+    }
     ce_config.tokenizer_path = ce_tok_path;
     // C-1: install SsbRerankerNotifier when an Ssb writer is available.
     let reranker_notifier: Arc<dyn elai_knowledge::reranker::SsbNotifier> = match ssb.as_ref() {

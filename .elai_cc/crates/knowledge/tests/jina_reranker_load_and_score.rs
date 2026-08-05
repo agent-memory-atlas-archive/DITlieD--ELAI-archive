@@ -68,6 +68,22 @@ fn bge_v2_m3_load_returns_err_when_file_missing() {
 }
 
 #[test]
+fn scoring_head_distilled_load_returns_err_when_file_missing() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = RerankerConfig::with_project_root_and_variant(
+        tmp.path(),
+        ReRankerModel::ScoringHeadDistilled,
+    );
+    let mut reranker =
+        CrossEncoderReranker::with_ssb(cfg, Arc::new(OsClock), Arc::new(DropSsbNotifier));
+    let result = reranker.load();
+    assert!(
+        matches!(result, Err(RerankerError::ModelLoad(_))),
+        "ScoringHeadDistilled load with unstaged ONNX must return Err(ModelLoad); got {result:?}"
+    );
+}
+
+#[test]
 fn variant_path_mapping_is_deterministic_across_trials() {
     // Replays the reranker.rs:1101 "std-dev < 1e-6" pattern but for the
     // deterministic enum->string mapping (no ONNX inference required).
@@ -75,6 +91,7 @@ fn variant_path_mapping_is_deterministic_across_trials() {
         ReRankerModel::JinaV3,
         ReRankerModel::BgeV2M3,
         ReRankerModel::MsMarcoMiniLmL12,
+        ReRankerModel::ScoringHeadDistilled,
     ] {
         let baseline_str = variant.as_str().to_string();
         let baseline_file = variant.onnx_filename().to_string();

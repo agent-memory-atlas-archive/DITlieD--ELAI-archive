@@ -40,6 +40,11 @@ pub enum ReRankerModel {
     /// cross-encoder/ms-marco-MiniLM-L-12-v2 — legacy default, model staged.
     /// Filename: `models/onnx/cross-encoder-l12.onnx`.
     MsMarcoMiniLmL12,
+    /// J-72 distilled scoring head (~2M-param ONNX) trained out-of-band.
+    /// Filename when staged: `models/onnx/scoring-head-distilled.onnx`.
+    /// Prefer-if-staged via knowledge_stack::attach_reranker; never default
+    /// until ops stages the artifact (same pattern as Jina/BGE).
+    ScoringHeadDistilled,
 }
 
 impl Default for ReRankerModel {
@@ -75,6 +80,7 @@ impl ReRankerModel {
             Self::JinaV3 => "jina-rerank-v3",
             Self::BgeV2M3 => "bge-reranker-v2-m3",
             Self::MsMarcoMiniLmL12 => "ms-marco-minilm-l12",
+            Self::ScoringHeadDistilled => "scoring-head-distilled",
         }
     }
 
@@ -84,6 +90,7 @@ impl ReRankerModel {
             Self::JinaV3 => "jina-rerank-v3.onnx",
             Self::BgeV2M3 => "bge-reranker-v2-m3.onnx",
             Self::MsMarcoMiniLmL12 => "cross-encoder-l12.onnx",
+            Self::ScoringHeadDistilled => "scoring-head-distilled.onnx",
         }
     }
 }
