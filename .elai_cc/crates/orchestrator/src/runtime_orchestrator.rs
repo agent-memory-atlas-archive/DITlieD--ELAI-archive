@@ -48,6 +48,7 @@ use crate::local_serving::{
     DecideInput, LocalServingDecision, LocalServingRouter, TierResidencySnapshot, TierState,
 };
 use crate::role_predict::{predict_next_role, tier_allows_prewarm, VramTier};
+use crate::seat_registry::{SeatAdmitDecision, SeatRegistry};
 use crate::role_prompt::{
     build_role_prompt, default_voice_toml_path, load_voice_anchor_from_toml, VoiceAnchor,
 };
@@ -179,13 +180,35 @@ pub struct RuntimeOrchestrator {
     /// J-48: per-tier residency tracker (warm/cold + inflight count).
     /// Drives the `LocalServingRouter::decide()` pre-step in `try_complete`.
     tier_residency: RwLock<TierResidencySnapshot>,
+    /// J-49: per-seat admission registry (fair-share / concurrency / spend).
+    /// Drives the seat-admit pre-filter in `try_complete` BEFORE the J-48
+    /// serving decision. Default [`SeatRegistry::single_local`] = one
+    /// permissive "local" seat = always Admit (pre-J-49 behavior).
+    seat_registry: RwLock<SeatRegistry>,
+    /// J-49: the `UsageTurnEvent.identity` key for this orchestrator
+    /// instance. Multi-seat callers override via [`Self::with_seat_identity`].
+    seat_identity: String,
 }
 
 impl RuntimeOrchestrator {
     /// Build a fresh orchestrator from the given config. Does not
     /// instantiate any adapter — they are created lazily on first use.
+    ///
+    /// J-49: the seat registry is loaded from the path in `ELAI_SEATS_TOML`
+    /// when set (degrading to `single_local` on parse/IO failure), else
+    /// `single_local`. The seat identity is taken from `ELAI_SEAT_IDENTITY`
+    /// when set, else the implicit `"local"` seat. The env-loaded values are
+    /// applied via [`Self::with_seat_registry`] / [`Self::with_seat_identity`]
+    /// so the env-driven path and the builder path share the same wiring.
     #[must_use]
     pub fn new(config: RuntimeConfig) -> Self {
+        let seat_registry = match std::env::var_os("ELAI_SEATS_TOML") {
+            Some(p) => SeatRegistry::load_from_path(std::path::Path::new(&p))
+                .unwrap_or_else(|_| SeatRegistry::single_local()),
+            None => SeatRegistry::single_local(),
+        };
+        let seat_identity = std::env::var("ELAI_SEAT_IDENTITY")
+            .unwrap_or_else(|_| crate::seat_registry::LOCAL_SEAT_ID.to_string());
         Self {
             config: RwLock::new(config),
             adapters: RwLock::new(BTreeMap::new()),
@@ -193,7 +216,11 @@ impl RuntimeOrchestrator {
             ssb: None,
             turn_lock: RwLock::new(None),
             tier_residency: RwLock::new(TierResidencySnapshot::new()),
+            seat_registry: RwLock::new(SeatRegistry::single_local()),
+            seat_identity: crate::seat_registry::LOCAL_SEAT_ID.to_string(),
         }
+        .with_seat_registry(seat_registry)
+        .with_seat_identity(seat_identity)
     }
 
     /// E-3 sub-phase 4B — attach an SSB writer so `try_complete` can
@@ -205,6 +232,26 @@ impl RuntimeOrchestrator {
     #[must_use]
     pub fn with_ssb(mut self, ssb: Arc<Ssb>) -> Self {
         self.ssb = Some(ssb);
+        self
+    }
+
+    /// J-49: replace the default single-local seat registry with a
+    /// multi-seat registry (loaded from `seats.toml` or constructed
+    /// programmatically). The registry drives the per-seat admission
+    /// pre-filter in `try_complete`.
+    #[must_use]
+    pub fn with_seat_registry(mut self, reg: SeatRegistry) -> Self {
+        self.seat_registry = RwLock::new(reg);
+        self
+    }
+
+    /// J-49: set the seat identity (the `UsageTurnEvent.identity` key)
+    /// this orchestrator instance speaks as. Multi-seat callers use this
+    /// so the admission registry can apply per-seat caps. Default
+    /// `"local"`.
+    #[must_use]
+    pub fn with_seat_identity(mut self, id: impl Into<String>) -> Self {
+        self.seat_identity = id.into();
         self
     }
 
@@ -346,6 +393,15 @@ impl RuntimeOrchestrator {
         }
     }
 
+    /// J-49: release the seat's concurrency slot after the chain walk
+    /// completes (success or failure). Paired with the `admit` call in
+    /// `try_complete`. Only called when the seat was Admitted (Deny
+    /// never increments inflight; Queued never increments inflight).
+    async fn release_seat(&self) {
+        let mut guard = self.seat_registry.write().await;
+        guard.release(&self.seat_identity);
+    }
+
     /// Drive a `complete` call for `role` with full fallback. On each
     /// attempt that fails with `Unavailable` / `NotImplemented` /
     /// `HealthTimeout` / `Network`, the chain advances. Returns the
@@ -390,6 +446,43 @@ impl RuntimeOrchestrator {
                     });
                 }
             }
+        }
+
+        // J-49: per-seat admission pre-filter (fair-share / concurrency /
+        // spend). Runs BEFORE the J-48 serving decision so a denied/queued
+        // seat never reaches the local serving router. Absent multi-seat
+        // data = single "local" seat = always Admit (pre-J-49 behavior).
+        // est_cost_micros is 0 here because the real cost is not known
+        // until after a backend succeeds; spend caps therefore apply to
+        // the turn count / concurrency dimension, not a pre-priced estimate.
+        let seat_decision = {
+            let mut seats = self.seat_registry.write().await;
+            seats.admit(&self.seat_identity, 0)
+        };
+        let seat_admitted = matches!(seat_decision, SeatAdmitDecision::Admit);
+        let seat_block_reason: Option<String> = match &seat_decision {
+            SeatAdmitDecision::Admit => None,
+            SeatAdmitDecision::Deny { reason } => Some(reason.clone()),
+            SeatAdmitDecision::Queued { reason } => Some(reason.clone()),
+        };
+
+        // J-49: on Deny, return a clear error carrying the seat identity +
+        // reason. No new error variant is needed — InvalidConfig covers
+        // "admission refused" with a descriptive message (the orchestrator
+        // has no dedicated "admission refused" arm, and the task forbids
+        // inventing one). On Queued, fall through to J-48 with
+        // seat_blocked forcing skip_local (same effect as AdmitQueued:
+        // skip local backends, try cloud chain if any).
+        if let SeatAdmitDecision::Deny { reason } = &seat_decision {
+            let msg = format!(
+                "seat admission denied for seat '{}': {reason}",
+                self.seat_identity
+            );
+            // Release the inflight slot that admit did NOT increment (Deny
+            // never increments inflight), so the registry stays balanced.
+            // (release is a no-op when inflight is 0 — safe.)
+            self.seat_registry.write().await.release(&self.seat_identity);
+            return Err(RuntimeOrchestratorError::InvalidConfig { msg });
         }
 
         // J-48: local serving tier router pre-step. Before the fallback
@@ -471,7 +564,40 @@ impl RuntimeOrchestrator {
                         _ => String::new(),
                     },
                     session_id: Some(ssb.session_id().to_owned()),
-                    details_json: serving_decision.details_json(),
+                    details_json: {
+                        // J-49: when the seat pre-filter did not Admit,
+                        // augment the RouteDecisionEvent details_json with
+                        // seat_id + seat_admit + reason so the audit row
+                        // carries the seat dimension (prefer-reuse, net 0
+                        // SSB — no new variant).
+                        let mut base = serving_decision.details_json();
+                        if let Some(reason) = &seat_block_reason {
+                            let seat_admit = if seat_admitted {
+                                "admit"
+                            } else if matches!(seat_decision, SeatAdmitDecision::Queued { .. }) {
+                                "queued"
+                            } else {
+                                "deny"
+                            };
+                            let seat_obj = serde_json::json!({
+                                "seat_id": self.seat_identity,
+                                "seat_admit": seat_admit,
+                                "reason": reason,
+                                "known_seats": self.seat_registry.read().await.seat_ids(),
+                            });
+                            // Merge seat_obj into the base object.
+                            if let serde_json::Value::Object(ref mut map) = base {
+                                if let serde_json::Value::Object(seat_map) = seat_obj {
+                                    for (k, v) in seat_map {
+                                        map.insert(k, v);
+                                    }
+                                }
+                            }
+                            base
+                        } else {
+                            base
+                        }
+                    },
                     ts_ms: now_ms(),
                 };
                 if let Err(e) = ssb
@@ -496,12 +622,14 @@ impl RuntimeOrchestrator {
         // AdmitQueued, and Wait skip local backends so the decision is
         // not discarded. ServeLocal and HibernateThenServe proceed with
         // the full chain (residency was already bumped above).
+        // J-49: a Queued seat also forces skip_local (same effect as
+        // AdmitQueued — skip local backends, try cloud chain if any).
         let skip_local = matches!(
             &serving_decision,
             LocalServingDecision::SpillToCloud { .. }
                 | LocalServingDecision::AdmitQueued { .. }
                 | LocalServingDecision::Wait
-        );
+        ) || !seat_admitted;
         let chain: Vec<RuntimeBackend> = if skip_local {
             if let LocalServingDecision::SpillToCloud { ref reason } = serving_decision {
                 info!(
@@ -891,6 +1019,9 @@ impl RuntimeOrchestrator {
                     if let Some(tier) = served_tier {
                         self.release_tier_inflight(tier).await;
                     }
+                    if seat_admitted {
+                        self.release_seat().await;
+                    }
                     return Ok(CompleteOutcome {
                         response,
                         used_backend: backend,
@@ -930,6 +1061,9 @@ impl RuntimeOrchestrator {
                         if let Some(tier) = served_tier {
                             self.release_tier_inflight(tier).await;
                         }
+                        if seat_admitted {
+                            self.release_seat().await;
+                        }
                         return Err(RuntimeOrchestratorError::AllBackendsFailed { tried });
                     }
                     continue;
@@ -954,6 +1088,9 @@ impl RuntimeOrchestrator {
         });
         if let Some(tier) = served_tier {
             self.release_tier_inflight(tier).await;
+        }
+        if seat_admitted {
+            self.release_seat().await;
         }
         Err(RuntimeOrchestratorError::AllBackendsFailed { tried })
     }

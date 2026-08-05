@@ -1454,6 +1454,12 @@ pub mod empire;
 // before the local fallback chain.
 pub mod local_serving;
 
+// J-49 Slice-1: multi-seat admission registry (weighted token-bucket
+// fair-share + per-seat concurrency caps + optional daily/monthly USD spend
+// ceilings). Slice-2 wires this into runtime_orchestrator's turn admission.
+pub mod seat_registry;
+pub use seat_registry::{SeatAdmitDecision, SeatCaps, SeatRegistry, SeatRegistryError};
+
 // I-11: typed, versioned BeliefState for cross-model / cross-tier handoffs.
 // Replaces raw session-history passthrough on the cloud escalation path.
 // Wired into task_runner (adaptive_reduce + evaluate_handoff production callers).
