@@ -1,4 +1,5 @@
 use crate::ReadinessStatus;
+use std::path::PathBuf;
 
 pub mod cache;
 pub mod circuit_breaker;
@@ -53,6 +54,106 @@ pub const TEXT_VEC_DIM: usize = 384;
 /// instruction; the DOCUMENT / indexing path (embed_code) must NOT.
 pub const CODE_RANK_EMBED_QUERY_PREFIX: &str =
     "Represent this query for searching relevant code: ";
+
+// ---------------------------------------------------------------------------
+// J-72: prefer-if-staged code embedder ONNX path resolver.
+//
+// The 768d code-embedder slot has three candidates, in priority order:
+//   1. adapted-encoder  (J-72 in-domain fine-tune; prefer-if-staged)
+//   2. coderankembed    (J-18 primary; 768d)
+//   3. graphcodebert    (legacy fallback; 768d)
+// All three share CODE_VEC_DIM=768 so the HNSW geometry / DualVector
+// invariant is undisturbed. The resolver is pure (Path existence only);
+// it does NOT load ONNX or change CURRENT_INDEX_VERSION.
+// ---------------------------------------------------------------------------
+
+/// J-72: staged in-domain adapted encoder ONNX filename (exact-dim 768;
+/// same geometry as CodeRankEmbed).
+pub const ADAPTED_ENCODER_ONNX: &str = "adapted-encoder.onnx";
+/// J-72: adapted-encoder tokenizer filename. The fine-tune does not change
+/// the tokenizer, so CodeRankEmbed's tokenizer is an acceptable substitute
+/// when this file is absent.
+pub const ADAPTED_ENCODER_TOKENIZER: &str = "adapted-encoder-tokenizer.json";
+pub const CODERANKEMBED_ONNX: &str = "coderankembed.onnx";
+pub const CODERANKEMBED_TOKENIZER: &str = "coderankembed-tokenizer.json";
+pub const GRAPHCODEBERT_ONNX: &str = "graphcodebert.onnx";
+pub const GRAPHCODEBERT_TOKENIZER: &str = "graphcodebert-tokenizer.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeEmbedderVariant {
+    /// J-72 prefer-if-staged in-domain fine-tuned encoder (768d).
+    AdaptedEncoder,
+    /// J-18 CodeRankEmbed primary code slot (768d).
+    CodeRankEmbed,
+    /// Legacy GraphCodeBERT fallback (768d).
+    GraphCodeBert,
+}
+
+impl CodeEmbedderVariant {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AdaptedEncoder => "adapted-encoder",
+            Self::CodeRankEmbed => "coderankembed",
+            Self::GraphCodeBert => "graphcodebert",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeOnnxPaths {
+    pub model_path: PathBuf,
+    pub tokenizer_path: PathBuf,
+    pub variant: CodeEmbedderVariant,
+}
+
+/// Prefer-if-staged resolution for the 768d code embedder slot.
+///
+/// Order:
+///   1. `adapted-encoder.onnx` + (`adapted-encoder-tokenizer.json` OR
+///      `coderankembed-tokenizer.json`) -> AdaptedEncoder. Prefer the
+///      adapted tokenizer when present; else reuse the CodeRankEmbed
+///      tokenizer (same base family; the fine-tune does not change the
+///      tokenizer).
+///   2. `coderankembed.onnx` + `coderankembed-tokenizer.json` -> CodeRankEmbed.
+///   3. `graphcodebert.onnx` + `graphcodebert-tokenizer.json` -> GraphCodeBert.
+///   4. Else `None`.
+///
+/// `models_onnx_dir` is the directory that contains the `.onnx` files
+/// (e.g. `models_dir.join("onnx")`). Only Path existence is checked; no
+/// ONNX load occurs here. `output_dim` stays `CODE_VEC_DIM` (768) for every
+/// variant; callers pass 768 to `OrtSession::new`.
+pub fn resolve_code_onnx_paths(models_onnx_dir: &std::path::Path) -> Option<CodeOnnxPaths> {
+    let adapted_model = models_onnx_dir.join(ADAPTED_ENCODER_ONNX);
+    let adapted_tok = models_onnx_dir.join(ADAPTED_ENCODER_TOKENIZER);
+    let coderank_model = models_onnx_dir.join(CODERANKEMBED_ONNX);
+    let coderank_tok = models_onnx_dir.join(CODERANKEMBED_TOKENIZER);
+    let graphcodebert_model = models_onnx_dir.join(GRAPHCODEBERT_ONNX);
+    let graphcodebert_tok = models_onnx_dir.join(GRAPHCODEBERT_TOKENIZER);
+
+    if adapted_model.exists() && (adapted_tok.exists() || coderank_tok.exists()) {
+        let tokenizer_path = if adapted_tok.exists() { adapted_tok } else { coderank_tok };
+        return Some(CodeOnnxPaths {
+            model_path: adapted_model,
+            tokenizer_path,
+            variant: CodeEmbedderVariant::AdaptedEncoder,
+        });
+    }
+    if coderank_model.exists() && coderank_tok.exists() {
+        return Some(CodeOnnxPaths {
+            model_path: coderank_model,
+            tokenizer_path: coderank_tok,
+            variant: CodeEmbedderVariant::CodeRankEmbed,
+        });
+    }
+    if graphcodebert_model.exists() && graphcodebert_tok.exists() {
+        return Some(CodeOnnxPaths {
+            model_path: graphcodebert_model,
+            tokenizer_path: graphcodebert_tok,
+            variant: CodeEmbedderVariant::GraphCodeBert,
+        });
+    }
+    None
+}
 
 #[derive(Debug, Clone)]
 pub struct DualVector {
@@ -736,5 +837,103 @@ mod tests {
             crate::index_version::CURRENT_INDEX_VERSION, 3,
             "CURRENT_INDEX_VERSION must be 3 after the CodeRankEmbed swap"
         );
+    }
+
+    // --- J-72 prefer-if-staged code embedder resolver tests ---
+
+    fn touch(dir: &std::path::Path, name: &str) {
+        let p = dir.join(name);
+        std::fs::write(&p, b"").expect("touch test file");
+    }
+
+    #[test]
+    fn resolve_prefers_adapted_encoder_when_staged() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let onnx_dir = tmp.path().join("onnx");
+        std::fs::create_dir_all(&onnx_dir).unwrap();
+        touch(&onnx_dir, ADAPTED_ENCODER_ONNX);
+        touch(&onnx_dir, CODERANKEMBED_TOKENIZER);
+        // Full coderankembed pair present too — adapted must still win.
+        touch(&onnx_dir, CODERANKEMBED_ONNX);
+
+        let paths = resolve_code_onnx_paths(&onnx_dir).expect("should resolve");
+        assert_eq!(paths.variant, CodeEmbedderVariant::AdaptedEncoder);
+        assert!(
+            paths.model_path.ends_with(ADAPTED_ENCODER_ONNX),
+            "model_path should end with adapted-encoder.onnx"
+        );
+        assert!(
+            paths.tokenizer_path.ends_with(CODERANKEMBED_TOKENIZER),
+            "should reuse coderankembed tokenizer when adapted tokenizer absent"
+        );
+    }
+
+    #[test]
+    fn resolve_prefers_adapted_tokenizer_when_present() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let onnx_dir = tmp.path().join("onnx");
+        std::fs::create_dir_all(&onnx_dir).unwrap();
+        touch(&onnx_dir, ADAPTED_ENCODER_ONNX);
+        touch(&onnx_dir, ADAPTED_ENCODER_TOKENIZER);
+        touch(&onnx_dir, CODERANKEMBED_TOKENIZER);
+
+        let paths = resolve_code_onnx_paths(&onnx_dir).expect("should resolve");
+        assert_eq!(paths.variant, CodeEmbedderVariant::AdaptedEncoder);
+        assert!(
+            paths.tokenizer_path.ends_with(ADAPTED_ENCODER_TOKENIZER),
+            "should prefer adapted tokenizer when present"
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_coderankembed_when_adapted_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let onnx_dir = tmp.path().join("onnx");
+        std::fs::create_dir_all(&onnx_dir).unwrap();
+        touch(&onnx_dir, CODERANKEMBED_ONNX);
+        touch(&onnx_dir, CODERANKEMBED_TOKENIZER);
+
+        let paths = resolve_code_onnx_paths(&onnx_dir).expect("should resolve");
+        assert_eq!(paths.variant, CodeEmbedderVariant::CodeRankEmbed);
+        assert!(paths.model_path.ends_with(CODERANKEMBED_ONNX));
+    }
+
+    #[test]
+    fn resolve_falls_back_to_graphcodebert_when_primary_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let onnx_dir = tmp.path().join("onnx");
+        std::fs::create_dir_all(&onnx_dir).unwrap();
+        touch(&onnx_dir, GRAPHCODEBERT_ONNX);
+        touch(&onnx_dir, GRAPHCODEBERT_TOKENIZER);
+
+        let paths = resolve_code_onnx_paths(&onnx_dir).expect("should resolve");
+        assert_eq!(paths.variant, CodeEmbedderVariant::GraphCodeBert);
+        assert!(paths.model_path.ends_with(GRAPHCODEBERT_ONNX));
+    }
+
+    #[test]
+    fn resolve_none_when_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let onnx_dir = tmp.path().join("onnx");
+        std::fs::create_dir_all(&onnx_dir).unwrap();
+        assert!(resolve_code_onnx_paths(&onnx_dir).is_none());
+    }
+
+    #[test]
+    fn resolve_none_when_adapted_model_present_but_no_tokenizer() {
+        // adapted-encoder.onnx present but neither adapted nor coderankembed
+        // tokenizer exists -> adapted rejected; no other pair -> None.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let onnx_dir = tmp.path().join("onnx");
+        std::fs::create_dir_all(&onnx_dir).unwrap();
+        touch(&onnx_dir, ADAPTED_ENCODER_ONNX);
+        assert!(resolve_code_onnx_paths(&onnx_dir).is_none());
+    }
+
+    #[test]
+    fn code_vec_dim_stays_768_for_adapted_encoder_slot() {
+        // J-72 geometry contract: the adapted encoder is exact-dim 768,
+        // same as CodeRankEmbed. CODE_VEC_DIM must NOT change.
+        assert_eq!(CODE_VEC_DIM, 768);
     }
 }

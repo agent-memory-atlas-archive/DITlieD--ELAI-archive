@@ -26,6 +26,7 @@ use elai_knowledge::vector::OrtVectorModule;
 use elai_knowledge::vector::ort_session::OrtSession;
 use elai_knowledge::vector::indexer::VectorIndexer;
 use elai_knowledge::vector::TEXT_VEC_DIM;
+use elai_knowledge::vector::{resolve_code_onnx_paths, CodeEmbedderVariant};
 use elai_knowledge::startup::{startup_readiness_check, StartupConfig};
 use elai_knowledge::degradation::DegradationCascade;
 use elai_knowledge::reranker::{CrossEncoderReranker, ReRankerModel, RerankerConfig};
@@ -192,32 +193,39 @@ fn build_base_pipeline(
         // C-8 Task #8: standalone CodeRankEmbed ONNX session for the A-RAG
         // semantic_search dot-product path (loaded only behind the gate above).
         // J-18: swapped graphcodebert -> coderankembed (768d unchanged).
-        // S6b: coderankembed.onnx is staged out-of-band (models/ gitignored);
-        // when absent, fall back to the legacy graphcodebert.onnx so the live
-        // code-vec lane does not regress to TextOnly. output_dim stays 768.
-        let code_model_path = models_dir.join("onnx").join("coderankembed.onnx");
-        let code_tok_path = models_dir.join("onnx").join("coderankembed-tokenizer.json");
-        let legacy_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
-        let legacy_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
-        let (model_path, tok_path, using_legacy) = if code_model_path.exists() && code_tok_path.exists() {
-            (code_model_path, code_tok_path, false)
-        } else if legacy_model_path.exists() && legacy_tok_path.exists() {
-            eprintln!(
-                "warn: coderankembed.onnx absent; falling back to legacy graphcodebert.onnx for arag.semantic_search"
-            );
-            (legacy_model_path, legacy_tok_path, true)
-        } else {
-            (code_model_path, code_tok_path, false)
-        };
-        let _ = using_legacy;
-        match OrtSession::new(&model_path, &tok_path, 512, 768) {
-            Ok(sess) => {
-                arag = arag.with_embedder(Arc::new(sess));
+        // J-72: prefer-if-staged adapted-encoder.onnx over coderankembed.onnx
+        // (same 768d geometry); fall back to coderankembed, then legacy
+        // graphcodebert. output_dim stays 768.
+        let onnx_dir = models_dir.join("onnx");
+        match resolve_code_onnx_paths(&onnx_dir) {
+            Some(paths) => {
+                if paths.variant == CodeEmbedderVariant::AdaptedEncoder {
+                    eprintln!(
+                        "info: using adapted-encoder.onnx for code embedder (J-72 prefer-if-staged)"
+                    );
+                }
+                if paths.variant == CodeEmbedderVariant::GraphCodeBert {
+                    eprintln!(
+                        "warn: coderankembed.onnx absent; falling back to legacy graphcodebert.onnx for arag.semantic_search"
+                    );
+                }
+                match OrtSession::new(&paths.model_path, &paths.tokenizer_path, 512, 768) {
+                    Ok(sess) => {
+                        arag = arag.with_embedder(Arc::new(sess));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "warn: arag.semantic_search ONNX embedder not loaded: {e}; \
+                             falling back to embedding-norm proxy"
+                        );
+                    }
+                }
             }
-            Err(e) => {
+            None => {
                 eprintln!(
-                    "warn: arag.semantic_search ONNX embedder not loaded: {e}; \
-                     falling back to embedding-norm proxy"
+                    "warn: no code embedder ONNX pair found in {}; \
+                     arag.semantic_search falling back to embedding-norm proxy",
+                    onnx_dir.display()
                 );
             }
         }
@@ -281,35 +289,45 @@ fn attach_vector_module(
 
     if let Some(text_sess) = text_sess {
         if code_vec_enabled {
-            // Code-vec opt-in: load CodeRankEmbed and install the dual-model
-            // module so the secondary code index can be populated.
+            // Code-vec opt-in: load the 768d code embedder and install the
+            // dual-model module so the secondary code index can be populated.
             // J-18: swapped graphcodebert -> coderankembed (768d unchanged).
-            // S6b: coderankembed.onnx is staged out-of-band (models/ gitignored);
-            // when absent, fall back to legacy graphcodebert.onnx so the live
-            // code-vec lane does not regress to TextOnly. output_dim stays 768.
-            let code_model_path = models_dir.join("onnx").join("coderankembed.onnx");
-            let code_tok_path = models_dir.join("onnx").join("coderankembed-tokenizer.json");
-            let legacy_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
-            let legacy_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
-            let (model_path, tok_path) = if code_model_path.exists() && code_tok_path.exists() {
-                (code_model_path, code_tok_path)
-            } else if legacy_model_path.exists() && legacy_tok_path.exists() {
-                eprintln!(
-                    "warn: coderankembed.onnx absent; falling back to legacy graphcodebert.onnx for vector code-vec lane"
-                );
-                (legacy_model_path, legacy_tok_path)
-            } else {
-                (code_model_path, code_tok_path)
-            };
-            match OrtSession::new(&model_path, &tok_path, 512, 768) {
-                Ok(code_sess) => {
-                    let vm = OrtVectorModule::new(code_sess, text_sess);
-                    pipeline.vector_module = Some(Box::new(vm));
+            // J-72: prefer-if-staged adapted-encoder.onnx over coderankembed.onnx
+            // (same 768d geometry); fall back to coderankembed, then legacy
+            // graphcodebert. output_dim stays 768.
+            let onnx_dir = models_dir.join("onnx");
+            match resolve_code_onnx_paths(&onnx_dir) {
+                Some(paths) => {
+                    if paths.variant == CodeEmbedderVariant::AdaptedEncoder {
+                        eprintln!(
+                            "info: using adapted-encoder.onnx for code embedder (J-72 prefer-if-staged)"
+                        );
+                    }
+                    if paths.variant == CodeEmbedderVariant::GraphCodeBert {
+                        eprintln!(
+                            "warn: coderankembed.onnx absent; falling back to legacy graphcodebert.onnx for vector code-vec lane"
+                        );
+                    }
+                    match OrtSession::new(&paths.model_path, &paths.tokenizer_path, 512, 768) {
+                        Ok(code_sess) => {
+                            let vm = OrtVectorModule::new(code_sess, text_sess);
+                            pipeline.vector_module = Some(Box::new(vm));
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "warn: vector code model not loaded ({e}); \
+                                 installing text-only vector module"
+                            );
+                            pipeline.vector_module =
+                                Some(Box::new(TextOnlyVectorModule { text_session: text_sess }));
+                        }
+                    }
                 }
-                Err(e) => {
+                None => {
                     eprintln!(
-                        "warn: vector code model not loaded ({e}); \
-                         installing text-only vector module"
+                        "warn: no code embedder ONNX pair found in {}; \
+                         installing text-only vector module",
+                        onnx_dir.display()
                     );
                     pipeline.vector_module =
                         Some(Box::new(TextOnlyVectorModule { text_session: text_sess }));
