@@ -307,3 +307,12 @@ pub(crate) fn run_bench_retrieval_adapt(
     // delta over a gold set. Deterministic. Never LLM-judge.
     crate::bench_retrieval_adapt::run(gold, k, baseline_ranks, adapted_ranks, out, json)
 }
+
+
+pub(crate) fn run_bench_rrf_ablate(
+    gold: std::path::PathBuf, k: u32, full_ranks: Option<std::path::PathBuf>,
+    drop_pagerank_ranks: Option<std::path::PathBuf>, drop_second_dense_ranks: Option<std::path::PathBuf>,
+    nav_only_graph_ranks: Option<std::path::PathBuf>, out: Option<std::path::PathBuf>, json: bool,
+) -> anyhow::Result<()> {
+    crate::bench_rrf_ablate::run(gold, k, full_ranks, drop_pagerank_ranks, drop_second_dense_ranks, nav_only_graph_ranks, out, json)
+}

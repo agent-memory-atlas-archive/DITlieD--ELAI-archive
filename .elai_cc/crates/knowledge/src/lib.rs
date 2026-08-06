@@ -45,6 +45,7 @@ pub mod gold_set;
 // Measures baseline vs adapted slot delta over a gold set. Pure std + serde;
 // no elai_orchestrator dep (CLI layer owns I/O + ranks loading).
 pub mod retrieval_adapt;
+pub mod rrf_ablation;
 // J-73 Slice A: Tier-1 retrieval-abstention pure module (OBSERVE-ONLY).
 pub mod retrieval_abstention;
 // E-42 Tier-A: tree-sitter grammar tier metadata (parallel to LanguageRegistry).

@@ -1313,6 +1313,17 @@ pub(crate) enum CliAction {
         out: Option<PathBuf>,
         json: bool,
     },
+    /// J-75: deterministic measure-first RRF component ablation report.
+    BenchRrfAblate {
+        gold: PathBuf,
+        k: u32,
+        full_ranks: Option<PathBuf>,
+        drop_pagerank_ranks: Option<PathBuf>,
+        drop_second_dense_ranks: Option<PathBuf>,
+        nav_only_graph_ranks: Option<PathBuf>,
+        out: Option<PathBuf>,
+        json: bool,
+    },
     /// J-77 I11: `elai bench perception-faithfulness [--fixture PATH] [--json]
     /// [--enforce]` — 6-metric perception-faithfulness fixture harness.
     /// Drives the REAL `run_perception_faithfulness_on_fixture` orchestrator

@@ -472,6 +472,8 @@ mod bench_steering_vs_prompt;
 // J-72 slice D: `elai bench retrieval-adapt` — Tier-1 MRR/Recall harness for
 // baseline vs adapted slot delta over a gold set. Deterministic. No LLM judge.
 mod bench_retrieval_adapt;
+// J-75: RRF component ablation report harness.
+mod bench_rrf_ablate;
 // J-77 I11: `elai bench perception-faithfulness` — 6-metric fixture harness
 // (fuse_detections + filter_ghost_regions). Thin fixture-only bench, no SSB.
 mod bench_perception_faithfulness;
@@ -1667,6 +1669,9 @@ fn run() -> Result<(), anyhow::Error> {
         // J-77 I11: `elai bench perception-faithfulness` — 6-metric fixture
         // harness (fuse_detections + filter_ghost_regions). Thin fixture-only
         // bench, no SSB. --enforce exits non-zero on metric fail.
+        CliAction::BenchRrfAblate { gold, k, full_ranks, drop_pagerank_ranks, drop_second_dense_ranks, nav_only_graph_ranks, out, json } => {
+            bench_cmd::run_bench_rrf_ablate(gold, k, full_ranks, drop_pagerank_ranks, drop_second_dense_ranks, nav_only_graph_ranks, out, json)?;
+        }
         CliAction::BenchPerceptionFaithfulness {
             fixture,
             json,

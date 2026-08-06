@@ -586,6 +586,10 @@ impl QueryPipeline {
         // Pre-query validation (Phase 1I.3).
         QueryValidator::validate(query)?;
 
+        // J-75 ablation gates are operator-only and default to the full stack.
+        let ablation_flags = crate::rrf_ablation::ablation_flags_from_env();
+        let _full_stack_default = crate::rrf_ablation::production_defaults_are_full_stack();
+
         let resolved_tier = tier.resolve(query);
         tracing::debug!(
             requested_tier = %tier,
@@ -857,7 +861,8 @@ impl QueryPipeline {
         // Only runs when VectorIndexer.has_code_index() is true (ELAI_CODE_VEC=1).
         // Produces a separate "code_vector" stage consumed by rrf_rerank — the
         // 3-ranker RRF path confirmed working by query_trace.rs:264-281 test fixture.
-        if use_vector {
+        if use_vector && !ablation_flags.drop_second_dense {
+            // J-75 ablation: ELAI_ABLATION_DROP_SECOND_DENSE
             if let (Some(vm), Some(indexer)) = (&self.vector_module, &self.vector_indexer) {
                 if code_vec_gate(self.code_vec_config.enabled, indexer.has_code_index()) {
                     let code_vector_start = self.clock.now();
@@ -961,7 +966,8 @@ impl QueryPipeline {
         // empty-graph / FAST paths, which compute_overlay tolerates.
         let mut pagerank_scores: Vec<(usize, f64)> = Vec::new();
         let pagerank_start = self.clock.now();
-        let snapshot: Arc<DkgSnapshot> = if use_vector {
+        let snapshot: Arc<DkgSnapshot> = if use_vector && !ablation_flags.drop_pagerank {
+            // J-75 ablation: ELAI_ABLATION_DROP_PAGERANK
             // retrieval-mem-fixes FIX #2a/#2b: resolve the snapshot to rank over.
             // Prefer the pre-built cached snapshot (FIX #2b — one build per
             // stack, not per query). Otherwise build per-query from the engine,
@@ -1235,7 +1241,8 @@ impl QueryPipeline {
         // as the 5th input list. Plan-mandated weight = 0.9 (named
         // const RRF_SYMBOL_GRAPH_VEC_WEIGHT). See
         // `workflow/reasoning/E-40-tranche-B2-decisions.md`.
-        if symbol_graph_5th_rrf_enabled_from_env() {
+        if symbol_graph_5th_rrf_enabled_from_env() && !ablation_flags.nav_only_graph {
+            // J-75 ablation: ELAI_ABLATION_NAV_ONLY_GRAPH demotes graph from RRF ranking
             if let Some(ref adapter) = self.symbol_graph_adapter {
                 let sg_start = self.clock.now();
                 let project_root = std::path::Path::new(".");

@@ -115,12 +115,15 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "retrieval-adapt" {
         return parse_bench_retrieval_adapt_args(&rest[1..]);
     }
+    if sub == "rrf-ablate" {
+        return parse_bench_rrf_ablate_args(&rest[1..]);
+    }
     if sub == "perception-faithfulness" {
         return parse_bench_perception_faithfulness_args(&rest[1..]);
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt' | 'retrieval-adapt' | 'perception-faithfulness')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt' | 'retrieval-adapt' | 'rrf-ablate' | 'perception-faithfulness')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -2100,6 +2103,53 @@ fn parse_bench_retrieval_adapt_args(rest: &[String]) -> Result<crate::args::CliA
         out: out.map(std::path::PathBuf::from),
         json,
     })
+}
+
+/// J-75 — parse `elai bench rrf-ablate --gold PATH [--k N]` and optional rank maps.
+fn parse_bench_rrf_ablate_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut gold: Option<PathBuf> = None;
+    let mut k: u32 = 5;
+    let mut full_ranks = None;
+    let mut drop_pagerank_ranks = None;
+    let mut drop_second_dense_ranks = None;
+    let mut nav_only_graph_ranks = None;
+    let mut out = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--gold" => { gold = Some(PathBuf::from(rest.get(i + 1).ok_or_else(|| "missing value for --gold".to_string())?)); i += 2; }
+            flag if flag.starts_with("--gold=") => { gold = Some(PathBuf::from(&flag[7..])); i += 1; }
+            "--k" => { let v = rest.get(i + 1).ok_or_else(|| "missing value for --k".to_string())?; k = v.parse().map_err(|e| format!("invalid --k {v:?}: {e}"))?; i += 2; }
+            flag if flag.starts_with("--k=") => { k = flag[4..].parse().map_err(|e| format!("invalid --k {:?}: {e}", &flag[4..]))?; i += 1; }
+            "--full-ranks" | "--drop-pagerank-ranks" | "--drop-second-dense-ranks" | "--nav-only-graph-ranks" | "--out" => {
+                let v = PathBuf::from(rest.get(i + 1).ok_or_else(|| format!("missing value for {}", rest[i]))?);
+                match rest[i].as_str() { "--full-ranks" => full_ranks=Some(v), "--drop-pagerank-ranks" => drop_pagerank_ranks=Some(v), "--drop-second-dense-ranks" => drop_second_dense_ranks=Some(v), "--nav-only-graph-ranks" => nav_only_graph_ranks=Some(v), _ => out=Some(v) }; i += 2;
+            }
+            flag if flag.starts_with("--full-ranks=") => { full_ranks=Some(PathBuf::from(&flag[13..])); i += 1; }
+            flag if flag.starts_with("--drop-pagerank-ranks=") => { drop_pagerank_ranks=Some(PathBuf::from(&flag[22..])); i += 1; }
+            flag if flag.starts_with("--drop-second-dense-ranks=") => { drop_second_dense_ranks=Some(PathBuf::from(&flag[26..])); i += 1; }
+            flag if flag.starts_with("--nav-only-graph-ranks=") => { nav_only_graph_ranks=Some(PathBuf::from(&flag[23..])); i += 1; }
+            flag if flag.starts_with("--out=") => { out=Some(PathBuf::from(&flag[6..])); i += 1; }
+            "--json" => { json=true; i += 1; }
+            other => return Err(format!("unknown `bench rrf-ablate` argument: {other}")),
+        }
+    }
+    let gold = gold.ok_or_else(|| "`bench rrf-ablate` requires --gold <PATH>".to_string())?;
+    if k == 0 { return Err("--k must be >= 1".to_string()); }
+    Ok(crate::args::CliAction::BenchRrfAblate { gold, k, full_ranks, drop_pagerank_ranks, drop_second_dense_ranks, nav_only_graph_ranks, out, json })
+}
+
+#[cfg(test)]
+mod rrf_ablate_parse_tests {
+    use super::*;
+    #[test]
+    fn happy_path_defaults_k() {
+        let a = parse_bench_subcommand_args(&["rrf-ablate".into(), "--gold".into(), "g.jsonl".into()]).unwrap();
+        match a { crate::args::CliAction::BenchRrfAblate { k, gold, .. } => { assert_eq!(k, 5); assert_eq!(gold, PathBuf::from("g.jsonl")); }, _ => panic!("wrong action") }
+    }
+    #[test]
+    fn missing_gold_errors() { assert!(parse_bench_subcommand_args(&["rrf-ablate".into()]).unwrap_err().contains("requires --gold")); }
 }
 
 // ---------------------------------------------------------------------------
