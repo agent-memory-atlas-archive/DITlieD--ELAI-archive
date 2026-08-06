@@ -70,5 +70,16 @@ pub fn run_retrieval_loop(input: RetrievalLoopInput) -> RetrievalLoopOutput {
         }
     }
 
+    // J-76 C6: cap + head/tail place (lost-in-the-middle). No curve at this
+    // seam yet => conservative DEFAULT cap. When a profile knee is later
+    // threaded, swap in retrieval_chunk_cap(Some(knee)).
+    let cap = crate::retrieval_chunk_placement::retrieval_chunk_cap(None);
+    search_results = crate::retrieval_chunk_placement::cap_and_place_retrieval_chunks(
+        search_results,
+        cap,
+        |r| r.score,
+        |r| r.chunk_id.as_str(),
+    );
+
     RetrievalLoopOutput { sufficiency, search_results }
 }

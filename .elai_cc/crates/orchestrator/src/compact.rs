@@ -1,3 +1,13 @@
+//! J-76 C7: RLM-style `_compact_history` local recipe.
+//!
+//! Local-lane compaction preserves intermediate numerics in the deterministic
+//! summary (regex-extracted numbers/metrics; never free-form LLM re-summarize).
+//! The compacted shape is `[frozen system head + initial task context cue +
+//! summary + continue]`, built by `compact_session`. Cloud lane is unchanged
+//! (HD-2: no LLM re-summarize on cache prefix); the numerics bullet is gated
+//! by `CompactionConfig::preserve_intermediate_numerics` (default false).
+
+use crate::compact_history::extract_intermediate_numerics_from_messages;
 use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};
 
 const COMPACT_CONTINUATION_PREAMBLE: &str =
@@ -10,6 +20,10 @@ const COMPACT_DIRECT_RESUME_INSTRUCTION: &str = "Continue the conversation from 
 pub struct CompactionConfig {
     pub preserve_recent_messages: usize,
     pub max_estimated_tokens: usize,
+    /// J-76 C7: when true (Local regime), `summarize_messages` preserves
+    /// intermediate numerics in the summary. Default `false` keeps Cloud /
+    /// legacy callers identical.
+    pub preserve_intermediate_numerics: bool,
 }
 
 impl Default for CompactionConfig {
@@ -17,6 +31,7 @@ impl Default for CompactionConfig {
         Self {
             preserve_recent_messages: 4,
             max_estimated_tokens: 10_000,
+            preserve_intermediate_numerics: false,
         }
     }
 }
@@ -132,8 +147,10 @@ pub fn compact_session(session: &Session, config: CompactionConfig) -> Compactio
         .saturating_sub(config.preserve_recent_messages);
     let removed = &session.messages[start..keep_from.max(start)];
     let preserved = session.messages[keep_from.max(start)..].to_vec();
-    let summary =
-        merge_compact_summaries(existing_summary.as_deref(), &summarize_messages(removed));
+    let summary = merge_compact_summaries(
+        existing_summary.as_deref(),
+        &summarize_messages(removed, config.preserve_intermediate_numerics),
+    );
     let formatted_summary = format_compact_summary(&summary);
     let continuation = get_compact_continuation_message(&summary, true, !preserved.is_empty());
 
@@ -168,7 +185,7 @@ fn compacted_summary_prefix_len(session: &Session) -> usize {
     )
 }
 
-fn summarize_messages(messages: &[ConversationMessage]) -> String {
+fn summarize_messages(messages: &[ConversationMessage], preserve_numerics: bool) -> String {
     let user_messages = messages
         .iter()
         .filter(|message| message.role == MessageRole::User)
@@ -251,6 +268,14 @@ fn summarize_messages(messages: &[ConversationMessage]) -> String {
             .join(" | ");
         lines.push(format!("  - {role}: {content}"));
     }
+
+    if preserve_numerics {
+        let numerics = extract_intermediate_numerics_from_messages(messages);
+        if !numerics.is_empty() {
+            lines.push(format!("- Intermediate numerics: {}.", numerics.join(", ")));
+        }
+    }
+
     lines.push("</summary>".to_string());
     lines.join("\n")
 }
@@ -653,8 +678,8 @@ pub fn check_lossless_compaction<R: crate::ssb::SsbReader>(
 mod tests {
     use super::{
         check_lossless_compaction, collect_key_files, compact_session, estimate_session_tokens,
-        format_compact_summary, get_compact_continuation_message, infer_pending_work,
-        should_compact, CompactionConfig, LosslessCompactionCheck,
+        format_compact_summary, get_compact_continuation_message,
+        infer_pending_work, should_compact, CompactionConfig, LosslessCompactionCheck,
     };
     use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};
 
@@ -699,6 +724,7 @@ mod tests {
             CompactionConfig {
                 preserve_recent_messages: 2,
                 max_estimated_tokens: 1,
+                ..CompactionConfig::default()
             },
         );
 
@@ -718,6 +744,7 @@ mod tests {
             CompactionConfig {
                 preserve_recent_messages: 2,
                 max_estimated_tokens: 1,
+                ..CompactionConfig::default()
             }
         ));
         assert!(
@@ -741,6 +768,7 @@ mod tests {
         let config = CompactionConfig {
             preserve_recent_messages: 2,
             max_estimated_tokens: 1,
+            ..CompactionConfig::default()
         };
 
         let first = compact_session(&initial_session, config);
@@ -803,6 +831,7 @@ mod tests {
             CompactionConfig {
                 preserve_recent_messages: 2,
                 max_estimated_tokens: 1,
+                ..CompactionConfig::default()
             }
         ));
     }
@@ -868,6 +897,7 @@ mod tests {
             CompactionConfig {
                 preserve_recent_messages: 2,
                 max_estimated_tokens: 1,
+                ..CompactionConfig::default()
             },
         );
 
@@ -896,6 +926,74 @@ mod tests {
                 ContentBlock::Text { text } if text.contains("Summary:")
             ),
             "continuation summary must contain the summary"
+        );
+    }
+
+    #[test]
+    fn compact_session_with_numerics_flag_includes_intermediate_line() {
+        let mut session = Session::new();
+        session.messages = vec![
+            ConversationMessage::user_text("one ".repeat(200)),
+            ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: "measured 92.7 t/s and 100% coverage".to_string(),
+            }]),
+            ConversationMessage::tool_result("1", "bash", "ok ".repeat(200), false),
+            ConversationMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![ContentBlock::Text {
+                    text: "recent".to_string(),
+                }],
+                usage: None,
+            },
+        ];
+
+        let result = compact_session(
+            &session,
+            CompactionConfig {
+                preserve_recent_messages: 2,
+                max_estimated_tokens: 1,
+                preserve_intermediate_numerics: true,
+            },
+        );
+
+        assert!(
+            result.formatted_summary.contains("Intermediate numerics:"),
+            "flag true must include the numerics bullet: {}",
+            result.formatted_summary
+        );
+        assert!(result.formatted_summary.contains("92.7 t/s"));
+    }
+
+    #[test]
+    fn compact_session_without_numerics_flag_omits_intermediate_line() {
+        let mut session = Session::new();
+        session.messages = vec![
+            ConversationMessage::user_text("one ".repeat(200)),
+            ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: "measured 92.7 t/s and 100% coverage".to_string(),
+            }]),
+            ConversationMessage::tool_result("1", "bash", "ok ".repeat(200), false),
+            ConversationMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![ContentBlock::Text {
+                    text: "recent".to_string(),
+                }],
+                usage: None,
+            },
+        ];
+
+        let result = compact_session(
+            &session,
+            CompactionConfig {
+                preserve_recent_messages: 2,
+                max_estimated_tokens: 1,
+                preserve_intermediate_numerics: false,
+            },
+        );
+        assert!(
+            !result.formatted_summary.contains("Intermediate numerics:"),
+            "flag false must NOT include the numerics bullet (cloud parity): {}",
+            result.formatted_summary
         );
     }
 }

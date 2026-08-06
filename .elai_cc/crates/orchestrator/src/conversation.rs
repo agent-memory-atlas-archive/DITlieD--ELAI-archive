@@ -8,7 +8,7 @@ use crate::architecture::approval_fatigue_guard::{
     approval_fatigue_guard_enabled, ApprovalFatigueGuard, ApprovalFatigueVerdict, ApprovalKind,
 };
 use crate::context_policy::{
-    effective_context_window, pressure_level, regime_policy, PressureLevel,
+    effective_context_window, pressure_level, regime_policy, ContextPolicy, PressureLevel,
 };
 use crate::context_budget::{
     preassess_observation_size, ContextBudget, ExecutionMode, PreassessMode,
@@ -970,6 +970,7 @@ where
             &self.session,
             CompactionConfig {
                 max_estimated_tokens: 0,
+                preserve_intermediate_numerics: matches!(policy, ContextPolicy::Local),
                 ..CompactionConfig::default()
             },
         );
@@ -1931,6 +1932,7 @@ mod tests {
         let result = runtime.compact(CompactionConfig {
             preserve_recent_messages: 2,
             max_estimated_tokens: 1,
+            ..CompactionConfig::default()
         });
         assert!(result.summary.contains("Conversation summary"));
         assert_eq!(

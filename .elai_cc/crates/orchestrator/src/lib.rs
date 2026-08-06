@@ -174,6 +174,11 @@ pub mod context_sufficiency;
 // J-38 Unit 3: agentic retrieval loop wiring (compute_context_sufficiency +
 // check_round_limit + QueryPipeline::hybrid_search + expand_with_graph_neighbors).
 pub mod retrieval_loop;
+// J-76 C6: chunk-count cap + head/tail placement (split from context_calibration).
+pub mod retrieval_chunk_placement;
+pub use retrieval_chunk_placement::{
+    cap_and_place_retrieval_chunks, retrieval_chunk_cap, DEFAULT_RETRIEVAL_CHUNK_CAP,
+};
 // J-34: empirical context calibration — per-model fill-degradation curve,
 // knee detection, artifact store keyed by ModelIdentity::identity_key.
 // Consumed by context_budget::recalibrate_budget_with_calibration (leg 2)
@@ -239,6 +244,8 @@ pub mod privacy_redactor;
 pub mod redaction;
 pub mod branch_lock;
 mod compact;
+// J-76 C7: intermediate-numerics extraction helpers (split from compact).
+pub mod compact_history;
 mod conversation;
 pub mod evidence;
 // B-28 E-1 added the focus_tunnel namespace (FIM prompt assembler + DIFF
