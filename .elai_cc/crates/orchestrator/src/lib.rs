@@ -34,6 +34,8 @@ pub mod mast;
 pub mod mast_inloop_supervisor;
 // J-93 LEG-B: tool-keyed external-effect compensation journal for rewind.
 pub mod compensation_registry;
+// J-93 LEG-D: deterministic per-step GRC grounding observation.
+pub mod per_step_source_check;
 // E-29 Tier-B: agentic-observability subtree.
 //   * mast_classify -- post-run MAST classifier reusing
 //     crate::mast::{MastMode, finding_to_mast_mode}.

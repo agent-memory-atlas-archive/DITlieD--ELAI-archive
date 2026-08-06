@@ -169,6 +169,14 @@ impl BeliefState {
         session_id: u64,
         ts_ms: i64,
     ) -> Result<(), BeliefStateError> {
+        if crate::per_step_source_check::per_step_source_check_enabled() {
+            for constraint in &self.constraints {
+                let trimmed = constraint.trim();
+                if trimmed.contains(':') {
+                    crate::per_step_source_check::observe_step_grounding(Some(trimmed), trimmed, None);
+                }
+            }
+        }
         let payload = SsbPayload::BeliefStateEvent(BeliefStateEventPayload {
             kind: BeliefStateEventKind::Condensed,
             schema_version: self.version,

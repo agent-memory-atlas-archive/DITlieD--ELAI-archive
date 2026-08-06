@@ -2417,3 +2417,12 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-93"
 smoke_test        = "crates/memory/src/persist_provenance.rs::j93_persist_provenance_tests::unlabeled_is_untrusted_when_flag_on"
+
+# J-93 LEG-D: per-step SOURCE_CHECK on GRC grounding tags (default-OFF; OBSERVE-ONLY first)
+[[flag]]
+name              = "ELAI_PER_STEP_SOURCE_CHECK_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-93"
+smoke_test        = "crates/orchestrator/src/per_step_source_check.rs::j93_per_step_source_check_tests::training_only_abstains"

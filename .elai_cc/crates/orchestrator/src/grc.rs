@@ -126,7 +126,11 @@ impl PipelineGrc {
     /// Called by agent reasoning loops. Returns the step result including
     /// remaining budget and any grounding warnings.
     pub fn think(&mut self, step: ThinkStep) -> Result<ThinkResult, PipelineGrcError> {
-        self.engine.think(step).map_err(PipelineGrcError::Engine)
+        let grounding = step.grounding.clone();
+        let content = step.content.clone();
+        let result = self.engine.think(step).map_err(PipelineGrcError::Engine)?;
+        crate::per_step_source_check::observe_step_grounding(grounding.as_deref(), &content, None);
+        Ok(result)
     }
 
     // -----------------------------------------------------------------------
