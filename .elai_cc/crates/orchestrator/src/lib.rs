@@ -1018,6 +1018,7 @@ pub mod planning_decomposition;
 // docs/thefinalglance/D-plan/D-10_mode_routing_predicate.md.
 pub mod claim;
 pub mod grounding_mode;
+pub mod grounding_router_calibration;
 pub mod orch_context;
 // D-11 — Constructive-checker registry (Mode A operational substrate).
 // Lives next to `claim` + `grounding_mode` so the routing predicate
@@ -2275,6 +2276,12 @@ pub use locked_keys_auditor::{
 // symbol is L3-locked via the locked_keys_registry; the agent cannot edit it.
 pub use claim::{Claim, ClaimType, EvidenceKind, EvidenceRef};
 pub use grounding_mode::{select_grounding_mode, GroundingMode};
+pub use grounding_router_calibration::{
+    apply_grounding_calibration, calibrate_grounding_router, clear_grounding_router_calibration,
+    current_grounding_calibration, install_grounding_router_calibration,
+    GroundingCalibrationSample, GroundingRouterCalibration, DISAGREE_TIGHTEN_THRESHOLD,
+    MIN_SAMPLES_FOR_TIGHTEN,
+};
 pub use orch_context::{OrchContext, OrchPhase, OrchUserRole};
 // D-11 — Constructive-checker registry public surface. The
 // Mode A constructive grading path dispatches claims through

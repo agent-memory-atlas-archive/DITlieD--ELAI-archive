@@ -2272,6 +2272,16 @@ pub async fn route_claim<E: ClaimRoutedEmitter + ?Sized>(
     now_ms: i64,
 ) -> (GroundingMode, EmissionGuard) {
     let mode = select_grounding_mode(claim, ctx);
+    let mode = {
+        // J-94 T3-A: optional offline calibration tightening (process-wide install).
+        let cal = crate::grounding_router_calibration::current_grounding_calibration();
+        match cal.as_ref() {
+            Some(c) => crate::grounding_router_calibration::apply_grounding_calibration(
+                mode, claim.claim_type, c,
+            ),
+            None => mode,
+        }
+    };
     let payload = ClaimRoutedPayload {
         claim_id: claim.claim_id.clone(),
         claim_type: claim.claim_type.as_str().to_string(),
