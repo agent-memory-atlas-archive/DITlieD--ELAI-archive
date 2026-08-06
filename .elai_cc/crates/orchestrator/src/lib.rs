@@ -36,6 +36,8 @@ pub mod mast_inloop_supervisor;
 pub mod compensation_registry;
 // J-93 LEG-D: deterministic per-step GRC grounding observation.
 pub mod per_step_source_check;
+// J-93 LEG-E: preference vs capability drift via dropped-constraint diff.
+pub mod dropped_constraint_diff;
 // E-29 Tier-B: agentic-observability subtree.
 //   * mast_classify -- post-run MAST classifier reusing
 //     crate::mast::{MastMode, finding_to_mast_mode}.

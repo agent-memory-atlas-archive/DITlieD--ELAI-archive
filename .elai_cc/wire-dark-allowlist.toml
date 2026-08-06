@@ -2426,3 +2426,13 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-93"
 smoke_test        = "crates/orchestrator/src/per_step_source_check.rs::j93_per_step_source_check_tests::training_only_abstains"
+
+
+# J-93 LEG-E: preference vs capability drift via dropped-constraint diff (default-OFF; OBSERVE-ONLY first)
+[[flag]]
+name              = "ELAI_DROPPED_CONSTRAINT_DIFF_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-93"
+smoke_test        = "crates/orchestrator/src/dropped_constraint_diff.rs::j93_dropped_constraint_diff_tests::privacy_drop_is_preference_drift"

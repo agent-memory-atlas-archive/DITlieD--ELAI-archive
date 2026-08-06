@@ -8917,6 +8917,10 @@ async fn drive_task(
                 } else {
                     last_ssb_event_ms = now_ms;
                 }
+                let _drift_kind = crate::dropped_constraint_diff::observe_on_goal_drift(
+                    &original_task_tokens_text,
+                    &task_summary,
+                );
             }
             crate::anti_spiral_extended::DriftVerdict::Red => {
                 let payload = SsbPayload::GoalDriftBlock(crate::ssb::GoalDriftBlockPayload {
@@ -8937,6 +8941,10 @@ async fn drive_task(
                 } else {
                     last_ssb_event_ms = now_ms;
                 }
+                let _drift_kind = crate::dropped_constraint_diff::observe_on_goal_drift(
+                    &original_task_tokens_text,
+                    &task_summary,
+                );
             }
         }
 
