@@ -13,11 +13,20 @@
 // CliMcpDispatch rows. See scripts/ci_mcp_parity_check.py:9.
 
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 use super::{Dispatch, DispatchRequest, DispatchResult};
+use crate::mast_inloop_supervisor::{
+    gate_outcome_for, mast_inloop_supervisor_enabled, InloopGateOutcome, InloopSupervisor,
+};
 use crate::ssb::{
     BashRedirectedKind, BashRedirectedPayload, McpToolCalledPayload, Ssb, SsbPayload,
 };
+
+/// J-93 LEG-A: process-wide in-loop MAST supervisor. Initialized with an
+/// empty stated-plan tool set (FM-2.6 mismatch checking is skipped until a
+/// plan is supplied; this seam observes the live tool-call stream only).
+static INLOOP_SUPERVISOR: OnceLock<Mutex<InloopSupervisor>> = OnceLock::new();
 
 /// Closure-based tool runner. The CLI wiring constructs one wrapping
 /// `elai_tools::execute_tool` and passes it to `InProcessDispatch::new`.
@@ -90,6 +99,28 @@ impl InProcessDispatch {
         });
         if let Err(e) = result {
             tracing::warn!(error = %e, "in_process_dispatch: ssb emit failed");
+        } else {
+            // J-93 LEG-A: observe the tool call through the in-loop MAST
+            // supervisor (always, even when the flag is OFF). Warn only when
+            // the flag is ON and a finding fires; the tool call always
+            // continues (OBSERVE-ONLY, never hard-abort).
+            let supervisor = INLOOP_SUPERVISOR
+                .get_or_init(|| Mutex::new(InloopSupervisor::new(Vec::new())));
+            if let Ok(mut state) = supervisor.lock() {
+                if let Some(finding) = state.observe_tool_call(tool_name, "mcp_tool_called") {
+                    if mast_inloop_supervisor_enabled()
+                        && matches!(gate_outcome_for(&finding), InloopGateOutcome::Warned)
+                    {
+                        tracing::warn!(
+                            tool = %finding.tool_name,
+                            action_type = %finding.action_type,
+                            repetition_count = finding.repetition_count,
+                            mode = ?finding.mode,
+                            "J-93 in-loop MAST finding (observe-only; tool call continues)"
+                        );
+                    }
+                }
+            }
         }
     }
 

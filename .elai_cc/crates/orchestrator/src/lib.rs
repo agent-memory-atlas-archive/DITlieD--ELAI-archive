@@ -30,6 +30,8 @@ pub mod model_family;
 // documented in workflow/reasoning/E-6-decisions.md DECISION-1 +
 // gotchas.md E6_CITATION_2406_12624_ID_COLLISION.
 pub mod mast;
+// J-93 LEG-A: deterministic default-OFF OBSERVE-ONLY in-loop MAST supervisor.
+pub mod mast_inloop_supervisor;
 // E-29 Tier-B: agentic-observability subtree.
 //   * mast_classify -- post-run MAST classifier reusing
 //     crate::mast::{MastMode, finding_to_mast_mode}.

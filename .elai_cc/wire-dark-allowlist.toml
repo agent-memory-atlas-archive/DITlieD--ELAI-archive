@@ -2390,3 +2390,12 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-92"
 smoke_test        = "crates/orchestrator/src/orchestrator_dispatch_tokens.rs::j92_dispatch_token_tests::mint_and_consume_happy_path"
+
+# J-93 LEG-A: in-loop MAST semantic supervisor (default-OFF kill_switch; OBSERVE-ONLY first)
+[[flag]]
+name              = "ELAI_MAST_INLOOP_SUPERVISOR_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-93"
+smoke_test        = "crates/orchestrator/src/mast_inloop_supervisor.rs::j93_mast_inloop_tests::repetition_fires_at_threshold"
