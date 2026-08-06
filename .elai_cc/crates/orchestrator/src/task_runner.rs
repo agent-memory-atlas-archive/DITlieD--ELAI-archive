@@ -6866,13 +6866,47 @@ async fn drive_task(
         )
         .await
         {
-            Ok(framed) => {
+            Ok(mut framed) => {
                 info!(
                     seq,
                     project_class = %framed.project_class.as_snake_case(),
                     rounds = framed.critic_rounds.len(),
                     "task_runner: idea-framing completed"
                 );
+                // J-79: signal-triggered grill interlace (Tier-1).
+                if let Some(offer) =
+                    crate::grill_interlace::maybe_offer_grill_on_critic_block(writer, &framed)
+                        .await
+                {
+                    info!(seq, %offer, "task_runner: J-79 grill offer (consent required; not auto-run)");
+                    emit_finding(writer, "info", "grill_offer", &offer).await;
+                }
+                // J-79 G1 RETURN closed loop: artifacts + clear B-40 blocks + C-29 pairs.
+                if let Some(effect) = crate::grill_interlace::apply_grill_return_path(
+                    writer,
+                    &framing_session_dir,
+                    Some(&mut framed),
+                )
+                .await
+                {
+                    info!(
+                        seq,
+                        pairs = effect.pairs_len,
+                        blocks_cleared = effect.blocks_cleared,
+                        converged = framed.is_converged(),
+                        "task_runner: J-79 grill return applied (closed-loop)"
+                    );
+                    emit_finding(
+                        writer,
+                        "info",
+                        "grill_return",
+                        &format!(
+                            "grill return applied: pairs={} blocks_cleared={} converged={}",
+                            effect.pairs_len, effect.blocks_cleared, framed.is_converged()
+                        ),
+                    )
+                    .await;
+                }
             }
             Err(e) => {
                 warn!(seq, error = %e, "task_runner: idea-framing failed (non-fatal)");
@@ -7256,9 +7290,17 @@ async fn drive_task(
                     None
                 };
 
+            // J-79: feed grill-return IntentPairs into C-29 IntentPairsGate when present.
+            let grill_session = std::path::PathBuf::from("workflow")
+                .join("sessions")
+                .join(format!("task_seq_{seq}"));
+            let grill_pairs =
+                crate::grill_interlace::load_intent_pairs_for_gate(&grill_session);
             let ctx = crate::evidence::TransitionContext {
                 ungrounded_claims: Some(grounding.ungrounded.clone()),
                 ambiguity_score: ambiguity_score_opt,
+                intent_pairs: grill_pairs,
+                min_intent_pairs: 3,
                 ..crate::evidence::TransitionContext::default()
             };
             let gates = crate::evidence::gates_for_transition(

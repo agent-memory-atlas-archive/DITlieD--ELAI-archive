@@ -140,6 +140,8 @@ pub mod sandbox_policy;
 pub mod front_door;
 // J-32 slice-C: IntentRouted SSB-emit helper (mirrors auth_broker_emit pattern).
 pub mod front_door_emit;
+// J-79: signal-triggered grill interlace (Tier-1 OBSERVE + consent-gated OFFER).
+pub mod grill_interlace;
 pub mod bsp;
 mod bash;
 pub mod checkpoint;
