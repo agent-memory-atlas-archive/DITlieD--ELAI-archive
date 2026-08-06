@@ -420,6 +420,20 @@
       "gate": "none",
       "lane_tag_required": true,
       "ledger": null
+    },
+    {
+      "id": "perception-faithfulness",
+      "name": "J-77 I11 6-metric perception faithfulness (fixture)",
+      "kind": "fixture",
+      "provenance": "J-77 I11",
+      "proof_spine": null,
+      "runner": "elai bench perception-faithfulness",
+      "runner_patterns": ["perception_faithfulness"],
+      "artifact_dir": ".elai_cc/benchmarks/perception_faithfulness",
+      "artifact_patterns": ["*.json"],
+      "gate": "fixture",
+      "lane_tag_required": false,
+      "ledger": null
     }
   ]
 }

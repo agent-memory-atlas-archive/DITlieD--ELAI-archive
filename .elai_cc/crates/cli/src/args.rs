@@ -1313,6 +1313,17 @@ pub(crate) enum CliAction {
         out: Option<PathBuf>,
         json: bool,
     },
+    /// J-77 I11: `elai bench perception-faithfulness [--fixture PATH] [--json]
+    /// [--enforce]` — 6-metric perception-faithfulness fixture harness.
+    /// Drives the REAL `run_perception_faithfulness_on_fixture` orchestrator
+    /// runner (fuse_detections + filter_ghost_regions). Writes a timestamped
+    /// JSON report under `benchmarks/perception_faithfulness/`. No SSB beacon
+    /// (fixture-only thin bench). `--enforce` exits non-zero on metric fail.
+    BenchPerceptionFaithfulness {
+        fixture: PathBuf,
+        json: bool,
+        enforce: bool,
+    },
     // E-30: `elai incident record --title <TITLE> --date <DATE> --url <URL>
     //        [--id <ID>]` — store an incident postmortem entry in the SSB
     //        and emit IncidentRecordCreated so the dashboard can surface it.

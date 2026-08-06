@@ -115,9 +115,12 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "retrieval-adapt" {
         return parse_bench_retrieval_adapt_args(&rest[1..]);
     }
+    if sub == "perception-faithfulness" {
+        return parse_bench_perception_faithfulness_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt' | 'retrieval-adapt')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt' | 'retrieval-adapt' | 'perception-faithfulness')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -2096,6 +2099,58 @@ fn parse_bench_retrieval_adapt_args(rest: &[String]) -> Result<crate::args::CliA
         adapted_ranks: adapted_ranks.map(std::path::PathBuf::from),
         out: out.map(std::path::PathBuf::from),
         json,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// J-77 I11: `elai bench perception-faithfulness [--fixture PATH] [--json]
+//   [--enforce]`
+// ---------------------------------------------------------------------------
+
+/// J-77 I11 — parse `elai bench perception-faithfulness [--fixture PATH]
+/// [--json] [--enforce]`. Hand-rolled per the CLAUDE.md "no new clap dep"
+/// rule. `--fixture` defaults to
+/// `.elai_cc/data/perception/fixtures/j77_6metric_fixture.json` (resolved
+/// at runtime relative to CWD). `--enforce` exits non-zero on metric fail.
+fn parse_bench_perception_faithfulness_args(
+    rest: &[String],
+) -> Result<crate::args::CliAction, String> {
+    let mut fixture: Option<String> = None;
+    let mut json: bool = false;
+    let mut enforce: bool = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--fixture" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --fixture".to_string())?;
+                fixture = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--fixture=") => {
+                fixture = Some(flag["--fixture=".len()..].to_string());
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--enforce" => {
+                enforce = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `bench perception-faithfulness` argument: {other}"
+                ));
+            }
+        }
+    }
+    Ok(crate::args::CliAction::BenchPerceptionFaithfulness {
+        fixture: fixture.map(std::path::PathBuf::from).unwrap_or_default(),
+        json,
+        enforce,
     })
 }
 

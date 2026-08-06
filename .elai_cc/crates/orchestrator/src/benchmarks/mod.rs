@@ -152,3 +152,8 @@ pub mod model_refresh_runner;
 // boundary (maintainability-review.md). Internal to gate_tax_runner's
 // composition; not re-exported at the benchmarks:: level.
 pub(crate) mod gate_tax_audit_leg;
+// J-77 I11: 6-metric perception-faithfulness done-gate harness (Tier-1).
+// Scores perception pipeline outputs (fuse_detections + filter_ghost_regions)
+// against a labelled fixture using six deterministic, model-free metrics.
+// CLI owns the production caller via `elai bench perception-faithfulness`.
+pub mod perception_faithfulness_runner;

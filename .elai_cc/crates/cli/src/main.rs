@@ -472,6 +472,9 @@ mod bench_steering_vs_prompt;
 // J-72 slice D: `elai bench retrieval-adapt` — Tier-1 MRR/Recall harness for
 // baseline vs adapted slot delta over a gold set. Deterministic. No LLM judge.
 mod bench_retrieval_adapt;
+// J-77 I11: `elai bench perception-faithfulness` — 6-metric fixture harness
+// (fuse_detections + filter_ghost_regions). Thin fixture-only bench, no SSB.
+mod bench_perception_faithfulness;
 mod bench_ssb_poll;
 // I-32: `elai role-ab-probe` -- role-contract A/B evidence harness. Fixture-driven;
 // no live LLM. Emits RoleContractApplied(AbDelta) SSB rows. Handler below.
@@ -1660,6 +1663,16 @@ fn run() -> Result<(), anyhow::Error> {
                 out,
                 json,
             )?;
+        }
+        // J-77 I11: `elai bench perception-faithfulness` — 6-metric fixture
+        // harness (fuse_detections + filter_ghost_regions). Thin fixture-only
+        // bench, no SSB. --enforce exits non-zero on metric fail.
+        CliAction::BenchPerceptionFaithfulness {
+            fixture,
+            json,
+            enforce,
+        } => {
+            bench_perception_faithfulness::run(fixture, json, enforce)?;
         }
         // I-32: `elai role-ab-probe [--seed N]` — role-contract A/B harness.
         // Loads fixtures from crates/contracts/tests/fixtures/role_contracts/,

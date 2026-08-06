@@ -1,0 +1,28 @@
+{
+  "id": "j77-6metric-v1",
+  "description": "J-77 I11 labelled fixture for the 6-metric perception faithfulness harness. Clean exact-match OCR regions + one near-duplicate for fusion + one VLM ghost. Harness PASSES as shipped.",
+  "ground_truth": {
+    "regions": [
+      {"label": "OK", "bbox": [10, 10, 100, 40], "kind": "text"},
+      {"label": "Cancel", "bbox": [150, 10, 250, 40], "kind": "text"},
+      {"label": "Submit", "bbox": [300, 10, 400, 40], "kind": "text"}
+    ],
+    "count": 3
+  },
+  "predicted": {
+    "raw_detections": [
+      {"label": "OK", "bbox": [10, 10, 100, 40], "source": "Ocr", "confidence": 1.0},
+      {"label": "OK", "bbox": [12, 12, 102, 42], "source": "Ocr", "confidence": 0.95},
+      {"label": "Cancel", "bbox": [150, 10, 250, 40], "source": "Ocr", "confidence": 1.0},
+      {"label": "Submit", "bbox": [300, 10, 400, 40], "source": "Ocr", "confidence": 1.0}
+    ],
+    "vlm_claims": [
+      {"label": "HALLUCINATED", "bbox": [500, 500, 600, 600], "source": "Vlm", "confidence": 0.4}
+    ]
+  },
+  "qa": {
+    "blind_llm_score": 0.85,
+    "ocr_only_baseline_score": 0.55
+  },
+  "thresholds_note": "thresholds live in Rust constants, not this file"
+}
