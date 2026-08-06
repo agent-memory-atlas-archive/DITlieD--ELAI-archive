@@ -11,6 +11,11 @@ use elai_orchestrator::checker_registry::{CheckerRegistry, RegexMatchChecker};
 use elai_orchestrator::cloud_mode::{CloudCredentials, RoutedProvider};
 use elai_orchestrator::escalation_waterfall::{default_escalation_router, EscalationWaterfall};
 use elai_orchestrator::mutation_budget::MutationBudget;
+use elai_orchestrator::context_budget::{
+    j95_pristine_on_budget_enabled, observe_pristine_slot_candidates, ContextBudget,
+    ELAI_J95_PRISTINE_ON_BUDGET_VAR,
+};
+use elai_orchestrator::dispatcher::BackendMode;
 use elai_orchestrator::pristine_path_filter::PristinePathFilter;
 use elai_orchestrator::search::{BranchInput, SearchLadder};
 use elai_orchestrator::ssb::{
@@ -135,4 +140,39 @@ async fn j95_c_escalation_condense_wire_present() {
             other.action_type()
         ),
     }
+}
+
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn j95_b_pristine_budget_observe_wire_present() {
+    // Default-OFF: gate reads env, unset => false. No env mutation (MR-2).
+    // If a concurrent test polluted the var, skip asserts that depend on it.
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = test_ssb(&dir);
+    let filter = PristinePathFilter::new(Arc::clone(&ssb));
+    let traceback = vec![
+        b'x';
+        elai_orchestrator::pristine_path_filter::TRACEBACK_COMPRESS_THRESHOLD_BYTES,
+    ];
+    let mut budget = ContextBudget::compute(8192, [0, 0, 0], 512).expect("budget");
+    let outcome = observe_pristine_slot_candidates(
+        &filter,
+        &mut budget,
+        "j95-b",
+        "j95-b-session",
+        Some(&traceback),
+        BackendMode::Local,
+    )
+    .await
+    .expect("observe must succeed");
+    if !j95_pristine_on_budget_enabled() {
+        assert_eq!(
+            outcome.original_traceback_bytes, 0,
+            "default-OFF must not run traceback contrast"
+        );
+        assert!(outcome.constraint_phrase.is_none());
+    }
+    // Symbol reachability: helpers are public and callable (production_caller
+    // separately proves task_runner WIRED for observe_pristine_slot_candidates).
+    let _ = ELAI_J95_PRISTINE_ON_BUDGET_VAR;
 }

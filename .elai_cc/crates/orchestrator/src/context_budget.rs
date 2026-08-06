@@ -1403,6 +1403,41 @@ pub struct CacheBreakpoint {
     pub valid: bool,
 }
 
+/// Default-OFF gate for J-95 LEG B observe-only pristine accounting at budget assembly.
+pub const ELAI_J95_PRISTINE_ON_BUDGET_VAR: &str = "ELAI_J95_PRISTINE_ON_BUDGET";
+
+/// Returns whether J-95 pristine would-exclude observation is enabled.
+pub fn j95_pristine_on_budget_enabled() -> bool {
+    std::env::var(ELAI_J95_PRISTINE_ON_BUDGET_VAR)
+        .map(|value| value == "1")
+        .unwrap_or(false)
+}
+
+/// J-95 LEG B observe-only composition at the context-budget seam.
+/// Emits I-5 ContextPruned accounting via PristinePathFilter; never hard-strips slots.
+pub async fn observe_pristine_slot_candidates(
+    filter: &crate::pristine_path_filter::PristinePathFilter,
+    budget: &mut ContextBudget,
+    branch_id: &str,
+    session_id: &str,
+    failed_burst_bytes: Option<&[u8]>,
+    mode: crate::dispatcher::BackendMode,
+) -> Result<
+    crate::pristine_path_filter::BuildBranchContextOutcome,
+    crate::pristine_path_filter::PristineFilterError,
+> {
+    if !j95_pristine_on_budget_enabled() {
+        return Ok(crate::pristine_path_filter::BuildBranchContextOutcome {
+            excluded_bytes: 0,
+            original_traceback_bytes: 0,
+            constraint_phrase: None,
+        });
+    }
+    filter
+        .build_branch_context(budget, branch_id, session_id, &[], failed_burst_bytes, mode)
+        .await
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextBudget {
     pub model_max_context: usize,

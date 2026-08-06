@@ -2453,3 +2453,11 @@ owner             = "maintainer"
 expiry_date       = "2026-10-01"
 promotion_plan_id = "J-95-promotion"
 smoke_test        = "crates/contracts/tests/j95_context_activation_contract.rs::j95_c_escalation_condense_wire_present"
+# J-95 LEG-B: observe-only pristine would-exclude at budget assembly (default-OFF).
+[[flag]]
+name              = "ELAI_J95_PRISTINE_ON_BUDGET"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-01"
+promotion_plan_id = "J-95-promotion"
+smoke_test        = "crates/contracts/tests/j95_context_activation_contract.rs::j95_b_pristine_budget_observe_wire_present"

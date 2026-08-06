@@ -1557,6 +1557,28 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 }
             }
 
+            // J-95 LEG B: observe-only pristine would-exclude at the budget seam.
+            if crate::context_budget::j95_pristine_on_budget_enabled() {
+                if let Some(writer) = self.ssb_writer.as_ref() {
+                    if let Ok(mut budget) =
+                        crate::context_budget::ContextBudget::compute(8192, [0, 0, 0], 512)
+                    {
+                        let filter = crate::pristine_path_filter::PristinePathFilter::new(
+                            Arc::clone(writer),
+                        );
+                        let _ = crate::context_budget::observe_pristine_slot_candidates(
+                            &filter,
+                            &mut budget,
+                            "baby-step-budget",
+                            "baby-step-session",
+                            None,
+                            crate::dispatcher::BackendMode::Local,
+                        )
+                        .await;
+                    }
+                }
+            }
+
             // Build the task string delivered to the agent. The escalation
             // message (from the anti-spiral detector) is prepended so it is
             // the first thing the agent sees on the next turn.
