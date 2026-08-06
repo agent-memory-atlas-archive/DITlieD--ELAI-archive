@@ -2444,3 +2444,12 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-93"
 smoke_test        = "crates/orchestrator/src/derive_outcome_labels.rs::j93_derive_outcome_labels_tests::block_then_clean_ship_is_false_positive"
+
+# J-95 LEG-A: adaptive relevance reduction before lossy auto-compaction (default-OFF).
+[[flag]]
+name              = "ELAI_J95_ADAPTIVE_REDUCE_ON_COMPACT"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-10-01"
+promotion_plan_id = "J-95-promotion"
+smoke_test        = "crates/contracts/tests/j95_context_activation_contract.rs::j95_c_escalation_condense_wire_present"

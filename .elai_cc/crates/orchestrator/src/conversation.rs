@@ -35,6 +35,15 @@ use crate::usage::{TokenUsage, UsageTracker};
 
 const DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD: u32 = 100_000;
 const AUTO_COMPACTION_THRESHOLD_ENV_VAR: &str = "CLAUDE_CODE_AUTO_COMPACT_INPUT_TOKENS";
+pub const ELAI_J95_ADAPTIVE_REDUCE_ON_COMPACT_VAR: &str =
+    "ELAI_J95_ADAPTIVE_REDUCE_ON_COMPACT";
+
+/// Default OFF. Set to "1" to enable adaptive reduction before auto-compaction.
+pub fn j95_adaptive_reduce_on_compact_enabled() -> bool {
+    std::env::var(ELAI_J95_ADAPTIVE_REDUCE_ON_COMPACT_VAR)
+        .map(|value| value == "1")
+        .unwrap_or(false)
+}
 
 /// Fully assembled request payload sent to the upstream model client.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -945,6 +954,30 @@ where
         // usable, which is well above the legacy 100k floor for cloud windows).
         if input_tokens < self.auto_compaction_input_tokens_threshold {
             return None;
+        }
+
+        // J-95: prefer relevance-based adaptive reduction before lossy
+        // compaction. This opt-in path is best-effort and never blocks a turn.
+        if j95_adaptive_reduce_on_compact_enabled() {
+            if let (Some(budget), Some(ssb)) =
+                (self.context_budget.as_mut(), self.ssb_writer.clone())
+            {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    if let Err(e) = rt.block_on(budget.adaptive_reduce(
+                        0.5,
+                        ExecutionMode::Interactive,
+                        &ssb,
+                    )) {
+                        tracing::warn!(
+                            context_budget.adaptive_reduce_err = %e,
+                            "adaptive_reduce failed before auto-compaction (non-fatal)"
+                        );
+                    }
+                }
+            }
         }
 
         // BLOCK-3 fix: run the cheapest-first compaction ladder in the
