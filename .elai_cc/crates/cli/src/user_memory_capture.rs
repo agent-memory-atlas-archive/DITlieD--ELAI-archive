@@ -34,7 +34,7 @@ use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::{memory_dir_path, sessions_dir_path};
 use elai_memory::{
     classify, dispatch_one, DefenseVerdict, DispatchContext, DispatchOp, ExtractedFact, FactStore,
-    FactType, Provenance, Scope, TrustTier,
+    FactType, Provenance, Scope, TrustTier, persist_provenance, G1TrustLabel,
 };
 use elai_orchestrator::seat_registry::SeatRegistry;
 use elai_orchestrator::ssb::{
@@ -254,6 +254,11 @@ pub(crate) fn capture_remember_with_clock(
     // STEP 3: dispatch. ADD (no prior row) or UPDATE-via-supersede (contradicting decision on the
     // same key soft-closes the prior row; DELETE never issued).
     let op = dispatch_one(&mut facts, &candidate, &ctx)?;
+    match &op {
+        DispatchOp::Add { fact_id } => persist_provenance(&facts, fact_id, G1TrustLabel::Trusted)?,
+        DispatchOp::Update { new_fact_id, .. } => persist_provenance(&facts, new_fact_id, G1TrustLabel::Trusted)?,
+        _ => {}
+    }
 
     // STEP 4: emit the off-agent SSB row from the DispatchOp.
     let (outcome, payload) = op_to_outcome_and_payload(&op, &candidate);

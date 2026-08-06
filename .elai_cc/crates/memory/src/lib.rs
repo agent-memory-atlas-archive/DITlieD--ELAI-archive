@@ -75,6 +75,7 @@ pub mod semantic_contradiction;
 // J-21 Step 1 — commit-aware semantic validation (extends H-32's
 // existence-only check with commit+AST identity re-derivation).
 pub mod semantic_validation;
+pub mod persist_provenance;
 pub mod retrieval;
 pub mod store;
 pub mod tools;
@@ -151,3 +152,6 @@ pub use activation_decay::{
     ActivationScore, DEFAULT_ACTIVATION_RETENTION_THRESHOLD, DEFAULT_MAX_AGE_GUARDRAIL_MS,
     USE_HALF_LIFE_MS, VALIDATION_HALF_LIFE_MS,
 };
+
+// J-93 LEG-C persisted G-1 trust labels.
+pub use persist_provenance::{capability_gate_on_retrieved_taint, flag_enabled, persist_provenance, resolve_retrieved_taint, G1TrustLabel, ELAI_MEMORY_TAINT_PERSIST_ENABLE};

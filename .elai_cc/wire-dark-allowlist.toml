@@ -2408,3 +2408,12 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-93"
 smoke_test        = "crates/orchestrator/src/compensation_registry.rs::j93_compensation_registry_tests::non_invertible_always_surfaced"
+
+# J-93 LEG-C: persisted G-1 trust labels (default-OFF kill switch)
+[[flag]]
+name              = "ELAI_MEMORY_TAINT_PERSIST_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-93"
+smoke_test        = "crates/memory/src/persist_provenance.rs::j93_persist_provenance_tests::unlabeled_is_untrusted_when_flag_on"

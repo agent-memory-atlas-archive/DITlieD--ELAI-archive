@@ -85,6 +85,7 @@ impl FactStore {
         let _ = conn.execute_batch(
             "ALTER TABLE memory_facts ADD COLUMN seat_id TEXT NOT NULL DEFAULT 'local';"
         );
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS memory_fact_g1_taint (fact_id TEXT PRIMARY KEY, g1_trust TEXT NOT NULL);")?;
         Ok(Self { conn })
     }
 
@@ -101,7 +102,25 @@ impl FactStore {
         let _ = conn.execute_batch(
             "ALTER TABLE memory_facts ADD COLUMN seat_id TEXT NOT NULL DEFAULT 'local';"
         );
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS memory_fact_g1_taint (fact_id TEXT PRIMARY KEY, g1_trust TEXT NOT NULL);")?;
         Ok(Self { conn })
+    }
+
+    /// Persist a G-1 memory taint label in the side table.
+    pub fn persist_g1_taint(&self, fact_id: &str, label: &str) -> Result<(), MemoryError> {
+        self.conn.execute(
+            "INSERT INTO memory_fact_g1_taint (fact_id, g1_trust) VALUES (?1, ?2) ON CONFLICT(fact_id) DO UPDATE SET g1_trust=excluded.g1_trust",
+            params![fact_id, label],
+        )?;
+        Ok(())
+    }
+
+    /// Read a persisted G-1 memory taint label, if present.
+    pub fn g1_taint(&self, fact_id: &str) -> Result<Option<String>, MemoryError> {
+        self.conn
+            .query_row("SELECT g1_trust FROM memory_fact_g1_taint WHERE fact_id = ?1", params![fact_id], |row| row.get(0))
+            .optional()
+            .map_err(MemoryError::from)
     }
 
     /// Insert a new `MemoryFact` row. Validates invariants first; the SQL

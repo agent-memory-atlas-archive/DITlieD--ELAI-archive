@@ -1307,6 +1307,7 @@ pub(crate) fn assemble_user_memory_section(
     use elai_core::paths::memory_dir_path;
     use elai_memory::{
         get_authorized_facts, get_relevant_facts, FactStore, FactType, NullSemanticValidator,
+        resolve_retrieved_taint, capability_gate_on_retrieved_taint, G1TrustLabel,
         NullValidator, RetrievalFilter, ValidationScope,
     };
 
@@ -1379,6 +1380,15 @@ pub(crate) fn assemble_user_memory_section(
                     .and_then(serde_json::Value::as_str)
                     .or_else(|| fact.value.get("subject").and_then(serde_json::Value::as_str))
                     .unwrap_or(&fact.key);
+                if let Ok(Some(label)) = resolve_retrieved_taint(&store, &fact.fact_id) {
+                    let trust = match capability_gate_on_retrieved_taint(label) {
+                        G1TrustLabel::Trusted => elai_safety::provenance::TrustLevel::Trusted,
+                        G1TrustLabel::Recallable => elai_safety::provenance::TrustLevel::Recallable,
+                        G1TrustLabel::Untrusted => elai_safety::provenance::TrustLevel::Untrusted,
+                    };
+                    let provenance = elai_safety::provenance::Provenance::from_memory_retrieved(&fact.fact_id, trust);
+                    elai_safety::taint_flow::tainted_context().register(detail, provenance);
+                }
                 lines.push(format!("  - {detail}"));
             }
         }
@@ -1476,6 +1486,15 @@ pub(crate) fn assemble_user_memory_section(
                         .and_then(serde_json::Value::as_str)
                         .or_else(|| fact.value.get("subject").and_then(serde_json::Value::as_str))
                         .unwrap_or(&fact.key);
+                    if let Ok(Some(label)) = resolve_retrieved_taint(&store, &fact.fact_id) {
+                        let trust = match capability_gate_on_retrieved_taint(label) {
+                            G1TrustLabel::Trusted => elai_safety::provenance::TrustLevel::Trusted,
+                            G1TrustLabel::Recallable => elai_safety::provenance::TrustLevel::Recallable,
+                            G1TrustLabel::Untrusted => elai_safety::provenance::TrustLevel::Untrusted,
+                        };
+                        let provenance = elai_safety::provenance::Provenance::from_memory_retrieved(&fact.fact_id, trust);
+                        elai_safety::taint_flow::tainted_context().register(detail, provenance);
+                    }
                     lines.push(format!("  - {detail}"));
                 }
             }

@@ -134,6 +134,11 @@ pub struct Provenance {
 }
 
 impl Provenance {
+    /// J-93 LEG-C: memory-retrieved fact with restored trust.
+    pub fn from_memory_retrieved(source_key: impl Into<String>, trust: TrustLevel) -> Self {
+        Self { source: TextSource::Memory { source_key: source_key.into() }, trust }
+    }
+
     pub fn user_prompt() -> Self {
         Self { source: TextSource::UserPrompt, trust: TrustLevel::Trusted }
     }

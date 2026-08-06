@@ -29,6 +29,7 @@ impl DigestSection {
             Self::LiveResources => "LIVE RESOURCES",
             Self::Decisions => "DECISIONS",
             Self::Notes => "NOTES",
+            Self::MemoryTaint => "MEMORY TAINT",
         }
     }
 
@@ -46,6 +47,7 @@ impl DigestSection {
             Self::LiveResources => 1000,
             Self::Decisions => 3000,
             Self::Notes => 800,
+            Self::MemoryTaint => 800,
         }
     }
 

@@ -89,7 +89,7 @@ pub fn author_topic_digest(
         .query_session_stream_asc(session_id)
         .context("query_session_stream_asc")?;
 
-    let (decisions, files_touched) = extract_digest_facts(&entries);
+    let (decisions, files_touched, memory_fact_ids) = extract_digest_facts(&entries);
 
     let slug = derive_slug(session_id, &decisions);
     let handoffs_dir = cwd.join("workflow").join("handoffs");
@@ -104,6 +104,8 @@ pub fn author_topic_digest(
         &decisions,
         &files_touched,
         &prior_discovery_titles,
+        &memory_fact_ids,
+        cwd,
     );
     let estimated_tokens = (digest_body.len() / CHARS_PER_TOKEN).min(MAX_DIGEST_TOKENS) as u32;
 
@@ -230,6 +232,7 @@ pub struct BudgetedReadResult {
 // `crate::DigestSection` / `handoff_digest::DigestSection` paths working.
 
 mod digest_section;
+mod memory_taint;
 pub use digest_section::{
     DedupVerdict, extract_discovery_titles, render_digest_sections,
     validate_discoveries_dedup,
@@ -262,6 +265,8 @@ pub enum DigestSection {
     LiveResources,
     Decisions,
     Notes,
+    /// J-93 LEG-C: persisted memory trust labels.
+    MemoryTaint,
 }
 
 /// Read `digest_text` into a skeleton + budgeted bodies, preserving every
@@ -472,7 +477,7 @@ fn truncate_to_char_boundary(s: &mut String, max_chars: usize) {
 /// Decisions come from `InterventionRequest` rows (the `description` field
 /// is the human-readable decision text).  Files come from `FileWrite` rows
 /// (`path` field).  All other rows are ignored.
-fn extract_digest_facts(entries: &[SsbEntry]) -> (Vec<String>, Vec<String>) {
+fn extract_digest_facts(entries: &[SsbEntry]) -> (Vec<String>, Vec<String>, Vec<String>) {
     use crate::ssb::SsbPayload;
 
     let mut decisions: Vec<String> = Vec::new();
@@ -510,7 +515,7 @@ fn extract_digest_facts(entries: &[SsbEntry]) -> (Vec<String>, Vec<String>) {
         }
     }
 
-    (decisions, files)
+    (decisions, files, memory_taint::extract_fact_ids(entries))
 }
 
 /// Derive a stable kebab-slug from the session's first decision text, falling
@@ -602,6 +607,8 @@ fn build_digest_body(
     decisions: &[String],
     files: &[String],
     prior_discovery_titles: &std::collections::HashSet<String>,
+    memory_fact_ids: &[String],
+    cwd: &Path,
 ) -> String {
     let date = chrono_date_utc();
 
@@ -668,6 +675,10 @@ fn build_digest_body(
     if verdict.has_duplicates && !verdict.duplicates.is_empty() {
         let dropped = verdict.duplicates.len();
         sections.push((DigestSection::Notes, format!("dedup dropped {dropped} prior titles\n")));
+    }
+
+    if let Some(body) = memory_taint::section_body(memory_fact_ids, cwd) {
+        sections.push((DigestSection::MemoryTaint, body));
     }
 
     let rendered = render_digest_sections(&sections);
@@ -927,7 +938,7 @@ mod tests {
 
     #[test]
     fn test_extract_digest_facts_empty() {
-        let (decisions, files) = extract_digest_facts(&[]);
+        let (decisions, files, memory_facts) = extract_digest_facts(&[]);
         assert!(decisions.is_empty());
         assert!(files.is_empty());
     }
@@ -935,7 +946,7 @@ mod tests {
     #[test]
     fn test_build_digest_body_no_data() {
         let prior = std::collections::HashSet::new();
-        let body = build_digest_body("test-session", "test-slug", &[], &[], &prior);
+        let body = build_digest_body("test-session", "test-slug", &[], &[], &prior, &[], Path::new("."));
         assert!(body.contains("no InterventionRequest rows"));
         assert!(body.contains("no FileWrite rows"));
         assert!(body.len() / CHARS_PER_TOKEN <= MAX_DIGEST_TOKENS);
@@ -951,7 +962,7 @@ mod tests {
     #[test]
     fn test_build_digest_body_uses_typed_sections() {
         let prior = std::collections::HashSet::new();
-        let body = build_digest_body("s1", "slug1", &["decide A".to_string()], &["f.rs".to_string()], &prior);
+        let body = build_digest_body("s1", "slug1", &["decide A".to_string()], &["f.rs".to_string()], &prior, &[], Path::new("."));
         assert!(body.contains("INTENT\n"));
         assert!(body.contains("NEXT ACTION\n"));
         assert!(body.contains("DECISIONS\n- decide A"));
