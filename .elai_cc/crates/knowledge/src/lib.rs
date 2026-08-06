@@ -81,6 +81,7 @@ pub mod project_intelligence;
 pub mod project_profile;
 // E-17 SP2 task 5: heuristic query-class classifier (Layer A).
 pub mod query_class;
+pub mod query_modality;
 pub mod query_expansion;
 pub mod query_trace;
 pub mod query_validator;
@@ -335,6 +336,7 @@ pub trait KnowledgeEngine {
 }
 
 // Re-export DkgEngine and language registry types at crate root for convenience.
+pub use query_modality::{classify_query_modality, channel_enabled, ChannelSubset, QueryModality, RetrievalChannel};
 pub use dkg::DkgEngine;
 pub use dkg::{LanguageRegistry, LanguageRegistryStatus, GrammarLoadError};
 // B-30 Pass C: re-export ImportResolver trait so external tests can use it.

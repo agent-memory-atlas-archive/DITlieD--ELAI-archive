@@ -16,6 +16,7 @@ use crate::knowledge_ssb_sink::{
     QueryTraceEvent, RrfComponentWeightsEvent, RrfQualityGateFiredEvent,
 };
 use crate::query_class::{classify, has_code_symbol_signal};
+use crate::query_modality::{channel_enabled, RetrievalChannel};
 use crate::query_expansion::{self, ExpansionStrategy};
 use crate::QueryTier;
 
@@ -660,6 +661,22 @@ impl QueryPipeline {
             // would short-circuit here (never an active return in Tier-1).
         }
 
+        // J-94 T3-B: deterministically select retrieval channels before fusion.
+        // The stage is intentionally observable even when a narrow subset is selected.
+        let modality = crate::query_modality::classify_query_modality(query);
+        stages.push(PipelineStage {
+            stage: "query_modality".to_string(),
+            results: vec![RetrievalResult {
+                chunk_id: "query_modality".to_string(),
+                snippet: format!("{:?}:{:?}", modality.modality, modality.channels),
+                score: 0.0,
+                tool_used: "query_modality".to_string(),
+            }],
+            latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
+        });
+
         // C-8 Task #9: per-stage latency measurement via injected ClockProvider.
         // Each stage marks `start = self.clock.now()` before work and computes
         // `self.clock.elapsed_since(start).as_millis() as u64` at push time. No
@@ -758,17 +775,19 @@ impl QueryPipeline {
         let bm25_start = self.clock.now();
         let mut bm25_seen: HashSet<String> = HashSet::new();
         let mut bm25_results: Vec<RetrievalResult> = Vec::new();
-        for eq in &expansion_texts {
-            let hits = self.bm25.query(eq, 10).unwrap_or_default();
-            for h in hits {
-                let chunk_id = format!("{}:{}-{}", h.path, h.line_start, h.line_end);
-                if bm25_seen.insert(chunk_id.clone()) {
-                    bm25_results.push(RetrievalResult {
-                        chunk_id,
-                        snippet: h.snippet,
-                        score: h.score as f64,
-                        tool_used: "bm25".to_string(),
-                    });
+        if channel_enabled(&modality, RetrievalChannel::Bm25) {
+            for eq in &expansion_texts {
+                let hits = self.bm25.query(eq, 10).unwrap_or_default();
+                for h in hits {
+                    let chunk_id = format!("{}:{}-{}", h.path, h.line_start, h.line_end);
+                    if bm25_seen.insert(chunk_id.clone()) {
+                        bm25_results.push(RetrievalResult {
+                            chunk_id,
+                            snippet: h.snippet,
+                            score: h.score as f64,
+                            tool_used: "bm25".to_string(),
+                        });
+                    }
                 }
             }
         }
@@ -782,7 +801,7 @@ impl QueryPipeline {
 
         // Stage 1: vector (STANDARD + DEEP only).
         let vector_start = self.clock.now();
-        if use_vector {
+        if use_vector && channel_enabled(&modality, RetrievalChannel::Dense) {
             // B-4 DEEP-tier MRR fix: always include original query as anchor signal.
             // HyDE hypothesis may be off-domain (sidecar degraded); dropping original
             // query entirely caused MRR regression (DEEP 0.206 vs STANDARD 0.575).
@@ -861,7 +880,7 @@ impl QueryPipeline {
         // Only runs when VectorIndexer.has_code_index() is true (ELAI_CODE_VEC=1).
         // Produces a separate "code_vector" stage consumed by rrf_rerank — the
         // 3-ranker RRF path confirmed working by query_trace.rs:264-281 test fixture.
-        if use_vector && !ablation_flags.drop_second_dense {
+        if use_vector && channel_enabled(&modality, RetrievalChannel::Dense) && !ablation_flags.drop_second_dense {
             // J-75 ablation: ELAI_ABLATION_DROP_SECOND_DENSE
             if let (Some(vm), Some(indexer)) = (&self.vector_module, &self.vector_indexer) {
                 if code_vec_gate(self.code_vec_config.enabled, indexer.has_code_index()) {
@@ -966,7 +985,7 @@ impl QueryPipeline {
         // empty-graph / FAST paths, which compute_overlay tolerates.
         let mut pagerank_scores: Vec<(usize, f64)> = Vec::new();
         let pagerank_start = self.clock.now();
-        let snapshot: Arc<DkgSnapshot> = if use_vector && !ablation_flags.drop_pagerank {
+        let snapshot: Arc<DkgSnapshot> = if use_vector && channel_enabled(&modality, RetrievalChannel::Graph) && !ablation_flags.drop_pagerank {
             // J-75 ablation: ELAI_ABLATION_DROP_PAGERANK
             // retrieval-mem-fixes FIX #2a/#2b: resolve the snapshot to rank over.
             // Prefer the pre-built cached snapshot (FIX #2b — one build per
@@ -1119,7 +1138,7 @@ impl QueryPipeline {
         let catrag_start = self.clock.now();
         let mut catrag_results: Vec<RetrievalResult> = Vec::new();
         let mut catrag_error: Option<String> = None;
-        if use_vector {
+        if use_vector && channel_enabled(&modality, RetrievalChannel::Graph) {
             match self.catrag.compute_overlay(query, &snapshot, &pagerank_scores) {
                 Ok(overlay) => {
                     // Rank reset-distribution entries by weight (descending) and
