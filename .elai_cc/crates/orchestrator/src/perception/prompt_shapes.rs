@@ -50,3 +50,72 @@ pub const MOAI_CITATION: &str =
 pub fn moai_citation() -> &'static str {
     MOAI_CITATION
 }
+
+// J-77 I10 — demote the "instruction BEFORE image" assertion to unverified
+// folklore. J-1 leg-3 asserted it as settled; the report found NO strong
+// benchmark evidence it universally improves faithfulness. The current
+// default content order remains `InstructionThenImage` as a HEURISTIC ONLY;
+// the kept lever is the VR-2 schema constraint (`apply_schema_v2`), not the
+// ordering. Measure if ordering matters before promoting it.
+
+/// Status claim for the "instruction BEFORE image" content ordering.
+///
+/// J-77 I10: demoted from a settled assertion to `UnverifiedFolklore`. The
+/// default content order remains `InstructionThenImage` as a heuristic only;
+/// the VR-2 schema constraint (`apply_schema_v2`) is the kept lever. If a
+/// `Settled` variant is added later, it MUST NOT be the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstructionImageOrderClaim {
+    /// The "instruction BEFORE image" ordering is unverified folklore. It is
+    /// the current default content order as a heuristic only, NOT a proven
+    /// faithfulness improvement. Measure if it matters before promoting.
+    UnverifiedFolklore,
+}
+
+/// Default status claim for the instruction/image content ordering
+/// (`UnverifiedFolklore`).
+pub const DEFAULT_INSTRUCTION_IMAGE_ORDER_CLAIM: InstructionImageOrderClaim =
+    InstructionImageOrderClaim::UnverifiedFolklore;
+
+/// Return the current status claim for the instruction/image content
+/// ordering. J-77 I10: returns `UnverifiedFolklore` (the default).
+#[must_use]
+pub fn instruction_image_order_claim() -> InstructionImageOrderClaim {
+    DEFAULT_INSTRUCTION_IMAGE_ORDER_CLAIM
+}
+
+/// Stable string label for the current instruction/image ordering claim.
+/// J-77 I10: returns `"unverified_folklore"`. Consumed by the production
+/// SSB emit site at `production_agent_rpc.rs` ScaffoldEmitted detail JSON.
+#[must_use]
+pub fn instruction_image_order_label() -> &'static str {
+    match instruction_image_order_claim() {
+        InstructionImageOrderClaim::UnverifiedFolklore => "unverified_folklore",
+    }
+}
+
+#[cfg(test)]
+mod j77_i10_tests {
+    use super::*;
+
+    #[test]
+    fn claim_is_unverified_folklore() {
+        assert_eq!(
+            instruction_image_order_claim(),
+            InstructionImageOrderClaim::UnverifiedFolklore
+        );
+    }
+
+    #[test]
+    fn label_is_exactly_unverified_folklore() {
+        assert_eq!(instruction_image_order_label(), "unverified_folklore");
+    }
+
+    #[test]
+    fn default_claim_is_unverified_folklore() {
+        assert_eq!(
+            DEFAULT_INSTRUCTION_IMAGE_ORDER_CLAIM,
+            InstructionImageOrderClaim::UnverifiedFolklore
+        );
+    }
+}

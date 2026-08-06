@@ -2037,6 +2037,8 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                                     "tile_px": tile_px,
                                     "tile_overlap": tile_overlap,
                                     "owner_tile_probed": _owner_probe.is_some(),
+                                    "instruction_image_order_claim":
+                                        perception::instruction_image_order_label(),
                                 }),
                             )
                             .await;

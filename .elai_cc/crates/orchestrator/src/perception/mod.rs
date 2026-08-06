@@ -56,6 +56,11 @@ pub use layout_graph::{
     check_layout_consistency, emit_layout_graph, LayoutConsistencyReport, LayoutGraph,
 };
 pub use transform_ledger::{filter_consistent_boxes, TransformLedger, TransformOp};
+// J-77 I10: demoted instruction-before-image ordering claim.
+pub use prompt_shapes::{
+    instruction_image_order_claim, instruction_image_order_label,
+    InstructionImageOrderClaim, DEFAULT_INSTRUCTION_IMAGE_ORDER_CLAIM,
+};
 
 /// Environment-variable name that gates production dispatch through the
 /// perception gateway. Wire-dark default: the scaffold + router are

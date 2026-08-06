@@ -2,11 +2,17 @@
 //!
 //! Source plan: `docs/thefinalglance/J-plan/J-1_perception_gateway.md`
 //! (lines 61-64). Call 1 = describe-literal-elements to structured JSON
-//! (temp 0, 0-1000 normalized coords, instruction BEFORE image). Call 2 =
-//! the task model reasons over description+image. Scaffold fires ONLY on
-//! image-bearing dispatches; injected AFTER the last cache breakpoint
+//! (temp 0, 0-1000 normalized coords). Call 2 = the task model reasons
+//! over description+image. Scaffold fires ONLY on image-bearing
+//! dispatches; injected AFTER the last cache breakpoint
 //! (HD-2 — never busts the byte-stable prefix; the prompt passed to
 //! `handle_infer_request` is the post-assembly volatile tail).
+//!
+//! J-77 I10: the "instruction BEFORE image" content ordering is
+//! UNVERIFIED FOLKLORE, not settled fact. The current default content
+//! order remains `InstructionThenImage` as a HEURISTIC ONLY; measure if
+//! it matters before promoting. The VR-2 schema constraint
+//! (`apply_schema_v2`) is the kept lever.
 //!
 //! T2 ships the two-call STRUCTURE + the wiring at
 //! `production_agent_rpc.rs::handle_infer_request`. The actual VLM calls
@@ -277,10 +283,14 @@ pub fn scaffold_with_call1(
         };
     }
     // T2 skeleton — the two-call flow STRUCTURE is in place (call-1
-    // describe-literal-elements at temp 0, 0-1000 normalized coords,
-    // instruction-before-image; call-2 task model reasons over
-    // description+image). T5 replaces this DegradedPassthrough arm with
-    // the live sidecar calls. Never a silent fallthrough (plan stub_ban).
+    // describe-literal-elements at temp 0, 0-1000 normalized coords;
+    // call-2 task model reasons over description+image). The default
+    // content order is InstructionThenImage as a HEURISTIC ONLY —
+    // J-77 I10: "instruction BEFORE image" is unverified folklore, not
+    // settled fact; measure if it matters. The VR-2 schema constraint
+    // (`apply_schema_v2`) is the kept lever. T5 replaces this
+    // DegradedPassthrough arm with the live sidecar calls. Never a
+    // silent fallthrough (plan stub_ban).
     Ok(ScaffoldResult {
         outcome: ScaffoldOutcome::DegradedPassthrough,
         literal_elements: Vec::new(),
