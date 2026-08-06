@@ -26,11 +26,10 @@ use elai_orchestrator::SsbReader;
 use rustc_hash::FxHashMap;
 use tempfile::TempDir;
 
-// WIRE-DARK[E-39]: abort_task_on_cap_breach (per-role variant) has no
-// production caller in task_runner.rs yet (OPTION B deferred disjoint
-// slice). Same wiring gap as spend_cap_mid_task_abort. Resolves when the
-// call is added to drive_task cloud-dispatch branch. See E-39-decisions.md.
-#[ignore]
+// WIRED[J-81]: abort_task_on_cap_breach (per-role variant) now has
+// production callers in task_runner.rs — the preclassify site (~line
+// 7040) and the mid-loop baby-step site (~line 9185). See
+// j81_supervision_hardening_contract.rs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn contract_per_role_cap_enforcement_ssb_roundtrip() {
     // 1. Drive the real abort logic with auditor over its cap.

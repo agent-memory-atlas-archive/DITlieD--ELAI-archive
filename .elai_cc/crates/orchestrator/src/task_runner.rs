@@ -391,6 +391,9 @@ pub enum TaskRunnerError {
     #[error("empty decomposition: no concepts produced for task")]
     EmptyDecomposition,
 
+    #[error("task aborted by spend cap: {reason}")]
+    SpendCapAborted { reason: String },
+
     #[error("cursor I/O error at {path}: {source}")]
     CursorIo {
         path: String,
@@ -7016,6 +7019,65 @@ async fn drive_task(
                 COST_ROUTER_DEFAULT_BUDGET_USD,
             )
             .await;
+
+            // E-39: deterministically refuse the current cloud step when a
+            // configured hard cap is already breached. The cloud abort helper
+            // owns precedence and reason selection; this seam only supplies
+            // the current spend snapshot available before client construction.
+            let max_spend_per_task_cents = std::env::var("ELAI_MAX_SPEND_PER_TASK_CENTS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            let layered_caps = resolved
+                .cloud_router
+                .as_ref()
+                .and_then(|router| router.config().spend_cap_daily_usd)
+                .map(|daily_usd| crate::cost::cloud_abort::LayeredCapsConfig {
+                    hard_cutoff_usd_cents: (daily_usd * 100.0).max(0.0) as u64,
+                    ..Default::default()
+                })
+                .unwrap_or_default();
+            let abort_decision = crate::cost::cloud_abort::abort_task_on_cap_breach(
+                &crate::cost::cloud_abort::AbortCtx {
+                    task_spend_usd_cents: 0,
+                    max_spend_per_task_cents,
+                    task_spend_by_role: FxHashMap::default(),
+                    active_role: Some(crate::cost::CostRoleBucket::Executor),
+                    day_spend_usd_cents: 0,
+                    per_role_caps: crate::cost::cloud_abort::PerRoleCapsConfig::default(),
+                    layered_caps,
+                    velocity_breach_present: false,
+                },
+            );
+            if let crate::cost::cloud_abort::AbortDecision::Abort {
+                reason,
+                spent_usd_cents,
+                cap_usd_cents,
+                ..
+            } = abort_decision
+            {
+                let payload = SsbPayload::CostTokenEvent(crate::ssb::CostTokenEventPayload {
+                    kind: crate::ssb::CostEventKind::TaskAbortedBySpendCap,
+                    session_id: None,
+                    task_id: Some(format!("task_seq_{seq}")),
+                    details_json: serde_json::json!({
+                        "spent_usd_cents": spent_usd_cents,
+                        "cap_usd_cents": cap_usd_cents,
+                        "reason": reason.as_str(),
+                        "last_action_type": "cloud_dispatch",
+                    }),
+                    ts_ms: i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX),
+                });
+                if let Err(error) = writer
+                    .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+                    .await
+                {
+                    tracing::warn!(seq, %error, "task_runner: spend-cap abort SSB write failed (non-fatal)");
+                }
+                return Err(TaskRunnerError::SpendCapAborted {
+                    reason: reason.as_str().to_string(),
+                });
+            }
         }
         // patch-R2: switched from sync from_env() -> async from_env_async() so
         // an expired saved OAuth (expiresAt elapsed OR null + refresh_token
@@ -9094,6 +9156,83 @@ async fn drive_task(
                     None
                 }
             };
+
+            // J-81 Bug 2: mid-loop cap breach check using the LIVE spend
+            // snapshot (day_usd from SsbViewer). The preclassify site above
+            // (~line 7046) passes day_spend_usd_cents: 0 because no snapshot
+            // is available there yet; this site has the real ledger value.
+            // On Abort: set hook_pre_blocked = true and emit a
+            // CostTokenEvent (mirrors the preclassify abort emission at
+            // ~line 7059) so the step is refused and the dashboard sees the
+            // spend-cap abort row. Gated on cost_token_economics_enabled()
+            // to match the preclassify seam.
+            if crate::cost::cost_token_economics_enabled() {
+                if let Some(snap) = spend_snapshot {
+                    let max_spend_per_task_cents = std::env::var("ELAI_MAX_SPEND_PER_TASK_CENTS")
+                        .ok()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    let layered_caps = resolved
+                        .cloud_router
+                        .as_ref()
+                        .and_then(|router| router.config().spend_cap_daily_usd)
+                        .map(|daily_usd| crate::cost::cloud_abort::LayeredCapsConfig {
+                            hard_cutoff_usd_cents: (daily_usd * 100.0).max(0.0) as u64,
+                            ..Default::default()
+                        })
+                        .unwrap_or_default();
+                    let mid_abort = crate::cost::cloud_abort::abort_task_on_cap_breach(
+                        &crate::cost::cloud_abort::AbortCtx {
+                            task_spend_usd_cents: 0,
+                            max_spend_per_task_cents,
+                            task_spend_by_role: FxHashMap::default(),
+                            active_role: Some(crate::cost::CostRoleBucket::Executor),
+                            day_spend_usd_cents: (snap.day_usd * 100.0).max(0.0) as u64,
+                            per_role_caps: crate::cost::cloud_abort::PerRoleCapsConfig::default(),
+                            layered_caps,
+                            velocity_breach_present: false,
+                        },
+                    );
+                    if let crate::cost::cloud_abort::AbortDecision::Abort {
+                        reason,
+                        spent_usd_cents,
+                        cap_usd_cents,
+                        ..
+                    } = mid_abort
+                    {
+                        hook_pre_blocked = true;
+                        let abort_payload = SsbPayload::CostTokenEvent(
+                            crate::ssb::CostTokenEventPayload {
+                                kind: crate::ssb::CostEventKind::TaskAbortedBySpendCap,
+                                session_id: None,
+                                task_id: Some(format!("baby_step_{}", bs_id.0)),
+                                details_json: serde_json::json!({
+                                    "spent_usd_cents": spent_usd_cents,
+                                    "cap_usd_cents": cap_usd_cents,
+                                    "reason": reason.as_str(),
+                                    "last_action_type": "baby_step_mid_loop",
+                                }),
+                                ts_ms: now_ms,
+                            },
+                        );
+                        if let Err(error) = writer
+                            .write_payload(
+                                RUNNER_AGENT_ID,
+                                RUNNER_SUPERSTEP,
+                                abort_payload,
+                                Vec::new(),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                baby_step = bs_id.0,
+                                %error,
+                                "task_runner: mid-loop spend-cap abort SSB write failed (non-fatal)"
+                            );
+                        }
+                    }
+                }
+            }
 
             // C-5 Task 6 — COST_ESTIMATE row emit. Pulled from the resolved
             // backend_config.model since we don't carry a PlanSkeleton at
