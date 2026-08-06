@@ -1634,6 +1634,8 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::HarnessInterventionEvent(HarnessInterventionKind::ActionGateBlocked),
     // J-54 UNIT8: FreePoolEvent (Pattern-2 flat; 3-arm Kind in payload).
     SsbActionType::FreePoolEvent,
+    // J-73 Slice C: RetrievalAbstained (Pattern-2 flat; 3-arm Kind in payload).
+    SsbActionType::RetrievalAbstained,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

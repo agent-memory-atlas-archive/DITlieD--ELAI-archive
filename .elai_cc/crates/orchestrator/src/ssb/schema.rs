@@ -5566,7 +5566,9 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- J-12: HarnessInterventionEvent Pattern-2.
         'harness_intervention_event',
         -- J-54 UNIT8: FreePoolEvent Pattern-2 flat; 3-arm Kind in payload.
-        'free_pool_event'
+        'free_pool_event',
+        -- J-73 Slice C: RetrievalAbstained Pattern-2 flat; 3-arm Kind in payload.
+        'retrieval_abstained'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

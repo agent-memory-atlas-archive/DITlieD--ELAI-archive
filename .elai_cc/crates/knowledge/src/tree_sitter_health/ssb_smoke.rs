@@ -14,8 +14,8 @@ use crate::dkg::DkgEngine;
 use crate::knowledge_ssb_sink::{
     DeepPoolCappedEvent, DkgRebuildCompleteEvent, DkgRebuildStartedEvent, HydeQueryEvent,
     HydeSkippedCodeQueryEvent, KnowledgeSsbSink, PagerankRunEvent, QueryTraceEvent,
-    RrfComponentWeightsEvent, RrfQualityGateFiredEvent, TreeSitterGrammarEvent,
-    TreeSitterGrammarEventKind, VectorCacheHitRateEvent,
+    RetrievalAbstainedEvent, RrfComponentWeightsEvent, RrfQualityGateFiredEvent,
+    TreeSitterGrammarEvent, TreeSitterGrammarEventKind, VectorCacheHitRateEvent,
 };
 
 /// In-process recording sink. Accumulates all `TreeSitterGrammarEvent` rows
@@ -56,6 +56,7 @@ impl KnowledgeSsbSink for RecordingSink {
             .expect("recording sink lock")
             .push(event);
     }
+    fn emit_retrieval_abstained(&self, _event: RetrievalAbstainedEvent) {}
 }
 
 /// E-42 wiring smoke: drives DkgEngine::build_graph with ELAI_TREE_SITTER_GRAMMARS_ENABLE=1

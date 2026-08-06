@@ -617,6 +617,45 @@ impl QueryPipeline {
 
         let mut stages = Vec::with_capacity(10);
 
+        // J-73 Slice B: retrieval-abstention gate (OBSERVE-ONLY, GD-4).
+        // Evaluated after resolved_tier is known and before the first real
+        // retrieval stage. Emits a `retrieval_abstained` SSB row + a journal
+        // stage so dashboards can see the gate verdict per query. The cascade
+        // ALWAYS continues (enforce_skip is false while OBSERVE_ONLY=true);
+        // no early return is permitted.
+        let gate = crate::retrieval_abstention::should_retrieve_for_query(query);
+        let query_hash = format!("{}", blake3::hash(query.as_bytes()).to_hex())[..16].to_string();
+        self.ssb_sink
+            .emit_retrieval_abstained(crate::knowledge_ssb_sink::RetrievalAbstainedEvent {
+                kind_str: match gate.kind {
+                    crate::retrieval_abstention::RetrievalGateKind::WouldSkip => "would_skip".into(),
+                    crate::retrieval_abstention::RetrievalGateKind::WouldProceed => {
+                        "would_proceed".into()
+                    }
+                },
+                score: gate.score,
+                threshold: gate.threshold,
+                task_type: match gate.task_type {
+                    crate::retrieval_abstention::RetrievalTaskType::Function => "function".into(),
+                    crate::retrieval_abstention::RetrievalTaskType::LineApi => "line_api".into(),
+                    crate::retrieval_abstention::RetrievalTaskType::Other => "other".into(),
+                },
+                observe_only: gate.observe_only,
+                query_hash,
+            });
+        stages.push(PipelineStage {
+            stage: "retrieval_abstention".to_string(),
+            results: vec![],
+            latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
+        });
+        if crate::retrieval_abstention::enforce_skip(&gate) {
+            // Tier-1 OBSERVE_ONLY: unreachable while
+            // RETRIEVAL_ABSTENTION_OBSERVE_ONLY=true. Future enforce path
+            // would short-circuit here (never an active return in Tier-1).
+        }
+
         // C-8 Task #9: per-stage latency measurement via injected ClockProvider.
         // Each stage marks `start = self.clock.now()` before work and computes
         // `self.clock.elapsed_since(start).as_millis() as u64` at push time. No
@@ -2361,5 +2400,22 @@ mod tests {
         assert!(src.contains("use_vector"), "pipeline must gate vector by tier");
         assert!(src.contains("use_reranker"), "pipeline must gate reranker by tier");
         assert!(src.contains("resolved_tier"), "pipeline must resolve AUTO tier");
+    }
+
+    #[test]
+    fn retrieval_abstention_stage_present_in_pipeline() {
+        // J-73 Slice B: query_with_tier must emit a `retrieval_abstention`
+        // journal stage (OBSERVE-ONLY, cascade still runs).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let pipeline = make_pipeline(bm25);
+
+        let stages = pipeline.query_with_tier("main", QueryTier::Fast).expect("query");
+        let abstention = stages
+            .iter()
+            .find(|s| s.stage == "retrieval_abstention")
+            .expect("retrieval_abstention stage must be present");
+        assert!(abstention.results.is_empty(), "observe-only stage carries no results");
+        assert!(abstention.error.is_none(), "gate stage must not error");
     }
 }

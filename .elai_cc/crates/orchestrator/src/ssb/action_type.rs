@@ -4878,6 +4878,9 @@ pub enum SsbActionType {
     /// J-54 UNIT8: free-pool rotation / backoff / trust-downgrade.
     /// Pattern-2 single-variant; 3-arm FreePoolEventKind rides in payload.
     FreePoolEvent,
+    /// J-73 Slice C: retrieval abstained event. Pattern-2 single-variant;
+    /// 3-arm RetrievalAbstainedKind rides in payload.
+    RetrievalAbstained,
 }
 
 impl SsbActionType {
@@ -5844,6 +5847,7 @@ impl SsbActionType {
             Self::SystemContractEvent(_) => "system_contract_event",
             Self::HarnessInterventionEvent(_) => "harness_intervention_event",
             Self::FreePoolEvent => "free_pool_event",
+            Self::RetrievalAbstained => "retrieval_abstained",
         }
     }
 }
@@ -6748,6 +6752,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
             HarnessInterventionKind::ActionGateBlocked,
         )),
         "free_pool_event" => Ok(SsbActionType::FreePoolEvent),
+        "retrieval_abstained" => Ok(SsbActionType::RetrievalAbstained),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

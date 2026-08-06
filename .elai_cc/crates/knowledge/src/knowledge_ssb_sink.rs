@@ -197,6 +197,28 @@ pub struct TreeSitterGrammarEvent {
     pub detail: Option<String>,
 }
 
+/// J-73 Slice C: retrieval abstained event emitted by the knowledge
+/// retrieval path when a retrieval score is evaluated against a threshold
+/// and the cascade either skips (score cleared T) or proceeds (score below
+/// T). `kind_str` is a snake-case label (`"would_skip"`, `"would_proceed"`,
+/// or other for override) that the orchestrator adapter maps onto the SSB
+/// `RetrievalAbstainedKind` discriminator.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetrievalAbstainedEvent {
+    /// Snake-case kind label mapped by the adapter to RetrievalAbstainedKind.
+    pub kind_str: String,
+    /// Retrieval score that was evaluated against the threshold.
+    pub score: f64,
+    /// Threshold T the score was compared against.
+    pub threshold: f64,
+    /// Task type label for the retrieval attempt.
+    pub task_type: String,
+    /// Whether observe-only mode was active.
+    pub observe_only: bool,
+    /// Blake3 hex prefix of the query bytes.
+    pub query_hash: String,
+}
+
 /// C-1 knowledge-side SSB sink.
 ///
 /// Implementations forward typed events to the orchestrator's
@@ -240,6 +262,10 @@ pub trait KnowledgeSsbSink: Send + Sync {
     /// `ELAI_TREE_SITTER_GRAMMARS_ENABLE=1` at the call site; the sink
     /// itself is unconditional.
     fn emit_tree_sitter_grammar_event(&self, event: TreeSitterGrammarEvent);
+    /// J-73 Slice C: emitted by the knowledge retrieval path when a
+    /// retrieval score is evaluated against a threshold and the cascade
+    /// either skips or proceeds.
+    fn emit_retrieval_abstained(&self, event: RetrievalAbstainedEvent);
 }
 
 /// Default no-op sink used in tests and when SSB is not configured.
@@ -258,6 +284,7 @@ impl KnowledgeSsbSink for NoopKnowledgeSsbSink {
     fn emit_dkg_rebuild_started(&self, _event: DkgRebuildStartedEvent) {}
     fn emit_dkg_rebuild_complete(&self, _event: DkgRebuildCompleteEvent) {}
     fn emit_tree_sitter_grammar_event(&self, _event: TreeSitterGrammarEvent) {}
+    fn emit_retrieval_abstained(&self, _event: RetrievalAbstainedEvent) {}
 }
 
 /// Convenience constructor for the default no-op sink.
@@ -310,6 +337,7 @@ mod tests {
         fn emit_dkg_rebuild_started(&self, _event: DkgRebuildStartedEvent) {}
         fn emit_dkg_rebuild_complete(&self, _event: DkgRebuildCompleteEvent) {}
         fn emit_tree_sitter_grammar_event(&self, _event: TreeSitterGrammarEvent) {}
+        fn emit_retrieval_abstained(&self, _event: RetrievalAbstainedEvent) {}
     }
 
     #[test]

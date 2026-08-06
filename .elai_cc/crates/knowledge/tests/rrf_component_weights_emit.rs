@@ -86,6 +86,11 @@ impl KnowledgeSsbSink for RecordingSink {
         _: elai_knowledge::knowledge_ssb_sink::TreeSitterGrammarEvent,
     ) {
     }
+    fn emit_retrieval_abstained(
+        &self,
+        _: elai_knowledge::knowledge_ssb_sink::RetrievalAbstainedEvent,
+    ) {
+    }
 }
 
 #[test]

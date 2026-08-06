@@ -3985,6 +3985,9 @@ pub enum SsbPayload {
     /// J-54 UNIT8: free-pool rotation / backoff / trust-downgrade.
     /// Pattern-2 single-variant; 3-arm FreePoolEventKind rides in payload.
     FreePoolEvent(FreePoolEventPayload),
+    /// J-73 Slice C: retrieval abstained event. Pattern-2 single-variant;
+    /// 3-arm RetrievalAbstainedKind rides in payload.
+    RetrievalAbstained(RetrievalAbstainedPayload),
 }
 
 impl SsbPayload {
@@ -4828,6 +4831,7 @@ impl SsbPayload {
             Self::HarnessInterventionEvent(ref p) =>
                 SsbActionType::HarnessInterventionEvent(p.kind),
             Self::FreePoolEvent(_) => SsbActionType::FreePoolEvent,
+            Self::RetrievalAbstained(_) => SsbActionType::RetrievalAbstained,
         }
     }
 }
@@ -21696,6 +21700,43 @@ pub enum FreePoolEventKind {
 pub struct FreePoolEventPayload {
     /// Fire-point discriminator. See [`FreePoolEventKind`].
     pub kind: FreePoolEventKind,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+// J-73 Slice C: RetrievalAbstained substrate (gated skip / gated proceed / override)
+
+/// J-73 Slice C -- 3-arm discriminator carried by [`RetrievalAbstainedPayload::kind`].
+/// Pattern-2 payload-field convention (mirrors FreePoolEventKind).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalAbstainedKind {
+    /// Score cleared T — would skip cascade if enforce on.
+    GatedSkip,
+    /// Score below T — cascade proceeds.
+    GatedProceed,
+    /// Explicit override path (reserved; Tier-1 may not emit).
+    AbstainOverride,
+}
+
+/// J-73 Slice C -- payload for [`SsbActionType::RetrievalAbstained`].
+///
+/// Pattern-2 single-variant; 3-arm Kind rides in `kind`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetrievalAbstainedPayload {
+    /// Fire-point discriminator. See [`RetrievalAbstainedKind`].
+    pub kind: RetrievalAbstainedKind,
+    /// Retrieval score that was evaluated against the threshold.
+    pub score: f64,
+    /// Threshold T the score was compared against.
+    pub threshold: f64,
+    /// Task type label for the retrieval attempt.
+    pub task_type: String,
+    /// Whether observe-only mode was active.
+    pub observe_only: bool,
+    /// Blake3 hex prefix of the query bytes.
+    pub query_hash: String,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
 }

@@ -17,14 +17,15 @@ use std::sync::Arc;
 use elai_knowledge::knowledge_ssb_sink::{
     DeepPoolCappedEvent, DkgRebuildCompleteEvent, DkgRebuildStartedEvent, HydeQueryEvent,
     HydeSkippedCodeQueryEvent, KnowledgeSsbSink, PagerankRunEvent, QueryTraceEvent,
-    RrfComponentWeightsEvent, RrfQualityGateFiredEvent, TreeSitterGrammarEvent,
-    TreeSitterGrammarEventKind, VectorCacheHitRateEvent,
+    RetrievalAbstainedEvent, RrfComponentWeightsEvent, RrfQualityGateFiredEvent,
+    TreeSitterGrammarEvent, TreeSitterGrammarEventKind, VectorCacheHitRateEvent,
 };
 use tracing::warn;
 
 use crate::ssb::{
     DeepPoolCappedPayload, DkgRebuildCompletePayload, DkgRebuildStartedPayload, HydeQueryPayload,
-    HydeSkippedCodeQueryPayload, PagerankRunPayload, QueryTracePayload, RrfComponentWeightsPayload,
+    HydeSkippedCodeQueryPayload, PagerankRunPayload, QueryTracePayload,
+    RetrievalAbstainedKind, RetrievalAbstainedPayload, RrfComponentWeightsPayload,
     RrfQualityGateFiredPayload, Ssb, SsbPayload, TreeSitterGrammarEventKind as SsbTsKind,
     TreeSitterGrammarEventPayload, VectorCacheHitRatePayload,
 };
@@ -202,6 +203,28 @@ impl KnowledgeSsbSink for OrchestratorKnowledgeSsbSink {
             kind: ssb_kind,
             file: event.language_id.clone(),
             details_json,
+            ts_ms,
+        });
+        self.dispatch_payload(payload);
+    }
+
+    fn emit_retrieval_abstained(&self, event: RetrievalAbstainedEvent) {
+        let kind = match event.kind_str.as_str() {
+            "would_skip" => RetrievalAbstainedKind::GatedSkip,
+            "would_proceed" => RetrievalAbstainedKind::GatedProceed,
+            _ => RetrievalAbstainedKind::AbstainOverride,
+        };
+        let ts_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        let payload = SsbPayload::RetrievalAbstained(RetrievalAbstainedPayload {
+            kind,
+            score: event.score,
+            threshold: event.threshold,
+            task_type: event.task_type,
+            observe_only: event.observe_only,
+            query_hash: event.query_hash,
             ts_ms,
         });
         self.dispatch_payload(payload);

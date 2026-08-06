@@ -39,8 +39,8 @@ use elai_knowledge::dkg::DkgEngine;
 use elai_knowledge::knowledge_ssb_sink::{
     DeepPoolCappedEvent, DkgRebuildCompleteEvent, DkgRebuildStartedEvent, HydeQueryEvent,
     HydeSkippedCodeQueryEvent, KnowledgeSsbSink, PagerankRunEvent, QueryTraceEvent,
-    RrfComponentWeightsEvent, RrfQualityGateFiredEvent, TreeSitterGrammarEvent,
-    VectorCacheHitRateEvent,
+    RetrievalAbstainedEvent, RrfComponentWeightsEvent, RrfQualityGateFiredEvent,
+    TreeSitterGrammarEvent, VectorCacheHitRateEvent,
 };
 use elai_knowledge::pagerank::{compute_repo_map, DkgSnapshot, PageRankConfig};
 use elai_knowledge::pipeline::QueryPipeline;
@@ -91,6 +91,7 @@ impl KnowledgeSsbSink for RecordingSink {
             .push(event);
     }
     fn emit_tree_sitter_grammar_event(&self, _event: TreeSitterGrammarEvent) {}
+    fn emit_retrieval_abstained(&self, _event: RetrievalAbstainedEvent) {}
 }
 
 // ---------------------------------------------------------------------------
