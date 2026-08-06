@@ -131,6 +131,11 @@ impl elai_knowledge::degradation::SsbNotifier for SsbDegradationNotifier {
                 },
                 None => (String::new(), String::new(), event.detail.clone()),
             };
+        let reason = if elai_orchestrator::stamp_context_incomplete(&new_mode).is_some() {
+            format!("{reason}; context-incomplete raise_audit_strictness=1")
+        } else {
+            reason
+        };
         let payload = elai_orchestrator::ssb::SsbPayload::KnowledgeDegradation(
             elai_orchestrator::ssb::KnowledgeDegradationPayload {
                 component: event.stage.to_owned(),

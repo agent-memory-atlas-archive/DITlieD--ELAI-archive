@@ -191,6 +191,9 @@ pub mod cost;
 pub mod context_budget;
 // J-38 Unit 1: deterministic context-sufficiency gate.
 pub mod context_sufficiency;
+// J-94 T3-C: honest marker for degraded retrieval context.
+pub mod context_incomplete;
+pub use context_incomplete::{stamp_context_incomplete, ContextIncompleteMarker};
 // J-38 Unit 3: agentic retrieval loop wiring (compute_context_sufficiency +
 // check_round_limit + QueryPipeline::hybrid_search + expand_with_graph_neighbors).
 pub mod retrieval_loop;
