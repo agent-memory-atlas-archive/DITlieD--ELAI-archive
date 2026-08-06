@@ -177,16 +177,10 @@ impl PlaybookCurator {
             }
 
             // Build MetricsSnapshot from rules DB aggregate.
+            // J-93 LEG-F: non-LLM labels from outcome records (default-OFF → zeros).
+            // Records stay empty until journal completeness (J-87) fills them.
             let metrics = compute_metrics_snapshot(&conn, rule_id).unwrap_or_else(|_| {
-                elai_rules::lifecycle::MetricsSnapshot {
-                    true_positives: 0,
-                    false_positives: 0,
-                    causal_catches: 0,
-                    spurious_catches: 0,
-                    false_positive_rate: 0.0,
-                    true_positive_rate: 0.0,
-                    counterfactual_causal_rate: None,
-                }
+                crate::derive_outcome_labels::observe_labels_for_rule(rule_id, &[])
             });
 
             // Regression check: count prior ValidationRun SSB rows with regression_count > 0.
@@ -296,16 +290,9 @@ impl PlaybookCurator {
         // Demotion sweep: check ACTIVE rules for FPR above retirement threshold.
         let active_ids = list_rules_by_status(&conn, "ACTIVE")?;
         for rule_id in &active_ids {
+            // J-93 LEG-F: retain the DB aggregate; derive labels only as the zero fallback.
             let metrics = compute_metrics_snapshot(&conn, rule_id).unwrap_or_else(|_| {
-                elai_rules::lifecycle::MetricsSnapshot {
-                    true_positives: 0,
-                    false_positives: 0,
-                    causal_catches: 0,
-                    spurious_catches: 0,
-                    false_positive_rate: 0.0,
-                    true_positive_rate: 0.0,
-                    counterfactual_causal_rate: None,
-                }
+                crate::derive_outcome_labels::observe_labels_for_rule(rule_id, &[])
             });
             if metrics.false_positive_rate >= FPR_RETIRE_THRESHOLD {
                 let reason = format!(

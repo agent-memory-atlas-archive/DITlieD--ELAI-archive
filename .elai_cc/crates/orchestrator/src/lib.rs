@@ -38,6 +38,8 @@ pub mod compensation_registry;
 pub mod per_step_source_check;
 // J-93 LEG-E: preference vs capability drift via dropped-constraint diff.
 pub mod dropped_constraint_diff;
+// J-93 LEG-F: non-LLM outcome labels for rule-lifecycle fpr/tpr.
+pub mod derive_outcome_labels;
 // E-29 Tier-B: agentic-observability subtree.
 //   * mast_classify -- post-run MAST classifier reusing
 //     crate::mast::{MastMode, finding_to_mast_mode}.

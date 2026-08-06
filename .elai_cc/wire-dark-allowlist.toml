@@ -2436,3 +2436,11 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-93"
 smoke_test        = "crates/orchestrator/src/dropped_constraint_diff.rs::j93_dropped_constraint_diff_tests::privacy_drop_is_preference_drift"
+# J-93 LEG-F: non-LLM ground-truth labels from SSB outcome stream (default-OFF; OBSERVE-ONLY first)
+[[flag]]
+name              = "ELAI_DERIVE_OUTCOME_LABELS_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-93"
+smoke_test        = "crates/orchestrator/src/derive_outcome_labels.rs::j93_derive_outcome_labels_tests::block_then_clean_ship_is_false_positive"
