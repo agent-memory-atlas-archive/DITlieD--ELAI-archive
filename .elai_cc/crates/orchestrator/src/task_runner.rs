@@ -7486,6 +7486,20 @@ async fn drive_task(
         }
     }
 
+    // J-89 L1: observe-only spec-bundle coverage + advisory jury (default OFF).
+    if let Some((_bundle, report, jury)) =
+        crate::spec_bundle::evaluate_objective_observe_only(&task.task)
+    {
+        tracing::info!(
+            seq,
+            coverage_ok = report.ok,
+            missing = ?report.missing,
+            jury_escalated = jury.escalated,
+            challenges = jury.challenges_survived,
+            "J-89 L1: spec_bundle observe-only evaluation"
+        );
+    }
+
     // H-37: plan-approval gate at the PLANNING -> TESTING_FIRST boundary.
     // This is the conceptual transition point -- decomposition is complete,
     // grounding sweep has passed, execution has not yet started.

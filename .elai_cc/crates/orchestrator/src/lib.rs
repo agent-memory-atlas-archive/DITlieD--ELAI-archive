@@ -106,6 +106,9 @@ pub mod briefing;
 pub mod auditor_mode;
 pub mod deterministic_audit_gate;
 pub mod machine_view;
+// J-89 L1: observe-only typed objective spec bundle.
+pub mod spec_bundle;
+pub use spec_bundle::{evaluate_objective_observe_only, SpecBundle};
 pub mod deterministic_auditor;
 pub mod grc;
 pub mod anti_spiral;

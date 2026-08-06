@@ -2363,3 +2363,12 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-88"
 smoke_test        = "crates/orchestrator/src/machine_view.rs::j88_machine_view_tests::binary_verdict_ignores_finding_message_prose"
+
+# J-89 L1: objective spec-bundle coverage + advisory jury (default-OFF; observe-only)
+[[flag]]
+name              = "ELAI_SPEC_BUNDLE_GATE_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-89"
+smoke_test        = "crates/orchestrator/src/spec_bundle.rs::j89_spec_bundle_tests::evaluate_on_when_flag_set"
