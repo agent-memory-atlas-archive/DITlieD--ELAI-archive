@@ -501,6 +501,8 @@ pub enum SsbActionType {
     /// Carries a [`ProjectClassClassifiedPayload`] with the snake_case class
     /// name + matched_pattern hint (None for `Other`).
     ProjectClassClassified,
+    /// E-11 Task 8: advisory emitted when a brief matches a known demo-vs-deploy chasm.
+    ScopeCeilingAdvisory,
     /// B-40 (SCHEMA_VERSION 41): emitted by
     /// [`crate::idea_framing::run_critic_loop`] at the end of each round
     /// (1..=3). Carries a [`CriticRoundCompletePayload`] with round_index
@@ -5028,6 +5030,7 @@ impl SsbActionType {
             // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
             Self::IdeaFramingStarted => "idea_framing_started",
             Self::ProjectClassClassified => "project_class_classified",
+            Self::ScopeCeilingAdvisory => "scope_ceiling_advisory",
             Self::CriticRoundComplete => "critic_round_complete",
             Self::IdeaFramed => "idea_framed",
             Self::TradeoffCardEmitted => "tradeoff_card_emitted",
@@ -6013,6 +6016,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
         "idea_framing_started" => Ok(SsbActionType::IdeaFramingStarted),
         "project_class_classified" => Ok(SsbActionType::ProjectClassClassified),
+        "scope_ceiling_advisory" => Ok(SsbActionType::ScopeCeilingAdvisory),
         "critic_round_complete" => Ok(SsbActionType::CriticRoundComplete),
         "idea_framed" => Ok(SsbActionType::IdeaFramed),
         "tradeoff_card_emitted" => Ok(SsbActionType::TradeoffCardEmitted),

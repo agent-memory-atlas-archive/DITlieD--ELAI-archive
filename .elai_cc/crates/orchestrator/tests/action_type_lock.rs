@@ -914,6 +914,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::SymbolGraphUpdated => (),
         SsbActionType::IdeaFramingStarted => (),
         SsbActionType::ProjectClassClassified => (),
+        SsbActionType::ScopeCeilingAdvisory => (),
         SsbActionType::CriticRoundComplete => (),
         SsbActionType::IdeaFramed => (),
         SsbActionType::TradeoffCardEmitted => (),

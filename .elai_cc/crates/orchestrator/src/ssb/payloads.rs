@@ -1534,6 +1534,15 @@ pub struct ProjectClassClassifiedPayload {
     pub matched_pattern: Option<String>,
 }
 
+/// E-11 Task 8: advisory describing a known demo-vs-deploy scope ceiling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeCeilingAdvisoryPayload {
+    pub class: String,
+    pub postmortem_url: String,
+    pub triggered_by: String,
+}
+
 /// B-40 (SCHEMA_VERSION 41) — payload for [`SsbActionType::CriticRoundComplete`].
 ///
 /// Emitted at the end of each [`crate::idea_framing::run_critic_loop`] round.
@@ -2806,6 +2815,7 @@ pub enum SsbPayload {
     // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
     IdeaFramingStarted(IdeaFramingStartedPayload),
     ProjectClassClassified(ProjectClassClassifiedPayload),
+    ScopeCeilingAdvisory(ScopeCeilingAdvisoryPayload),
     CriticRoundComplete(CriticRoundCompletePayload),
     IdeaFramed(IdeaFramedPayload),
     TradeoffCardEmitted(TradeoffCardEmittedPayload),
@@ -4139,6 +4149,7 @@ impl SsbPayload {
             // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
             Self::IdeaFramingStarted(_) => SsbActionType::IdeaFramingStarted,
             Self::ProjectClassClassified(_) => SsbActionType::ProjectClassClassified,
+            Self::ScopeCeilingAdvisory(_) => SsbActionType::ScopeCeilingAdvisory,
             Self::CriticRoundComplete(_) => SsbActionType::CriticRoundComplete,
             Self::IdeaFramed(_) => SsbActionType::IdeaFramed,
             Self::TradeoffCardEmitted(_) => SsbActionType::TradeoffCardEmitted,

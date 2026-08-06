@@ -50,13 +50,45 @@ use crate::critique::lenses::{LensSet, RiskLevel};
 use crate::research_tree::{ResearchTree, ResearchTreeError};
 use crate::ssb::{
     CriticRoundCompletePayload, IdeaFramedPayload, IdeaFramingStartedPayload,
-    ProjectClassClassifiedPayload, Ssb, SsbActionType, SsbPayload, SsbWriteRequest,
+    ProjectClassClassifiedPayload, ScopeCeilingAdvisoryPayload, Ssb, SsbActionType,
+    SsbPayload, SsbWriteRequest,
     TradeoffCardEmittedPayload,
 };
 
 // ===========================================================================
 // Constants
 // ===========================================================================
+// E-11 Task 8: surveyed demo-vs-deploy chasms that warrant an advisory.
+#[derive(Debug, Clone, Copy)]
+pub struct KnownDemoVsDeployChasm {
+    pub trigger_substrings: &'static [&'static str],
+    pub class: &'static str,
+    pub postmortem_url: &'static str,
+}
+
+pub const KNOWN_DEMO_VS_DEPLOY_CHASMS: &[KnownDemoVsDeployChasm] = &[
+    KnownDemoVsDeployChasm {
+        trigger_substrings: &["replit agent 3", "external api auth", "external-api-auth"],
+        class: "replit_agent_3_external_api_auth",
+        postmortem_url: "https://www.replit.com/blog/agent-3",
+    },
+    KnownDemoVsDeployChasm {
+        trigger_substrings: &["devin", "ambiguous greenfield", "mid-scope change", "mid-scope-change"],
+        class: "devin_ambiguous_greenfield_mid_scope_change",
+        postmortem_url: "https://www.cognition.ai/blog/devin",
+    },
+    KnownDemoVsDeployChasm {
+        trigger_substrings: &["escape.tech", "escape tech", "secret leak", "secret-leak"],
+        class: "escape_tech_secret_leak",
+        postmortem_url: "https://escape.tech/blog/1-400-apps-1-400-vulnerabilities/",
+    },
+    KnownDemoVsDeployChasm {
+        trigger_substrings: &["cognition", "junior at execution", "ambiguity end-to-end"],
+        class: "cognition_junior_at_execution",
+        postmortem_url: "https://www.cognition.ai/blog/devin",
+    },
+];
+
 
 /// Maximum critic rounds before BLOCK. RefineBench arXiv:2511.22173 reports
 /// diminishing returns past round 2; 3 gives one safety margin without
@@ -1147,6 +1179,27 @@ pub async fn frame_idea(
             payload,
         )
         .await;
+    }
+
+    // Advisory only: this does not affect classification, FSM state, or return flow.
+    if let Some(chasm) = KNOWN_DEMO_VS_DEPLOY_CHASMS.iter().find(|chasm| {
+        let brief = trimmed.to_ascii_lowercase();
+        chasm.trigger_substrings.iter().any(|trigger| brief.contains(trigger))
+    }) {
+        if let Some(writer) = ssb {
+            let payload = SsbPayload::ScopeCeilingAdvisory(ScopeCeilingAdvisoryPayload {
+                class: chasm.class.to_owned(),
+                postmortem_url: chasm.postmortem_url.to_owned(),
+                triggered_by: trimmed.to_owned(),
+            });
+            let _ = write_ssb_row(
+                writer,
+                SsbActionType::ScopeCeilingAdvisory,
+                FRAMER_AGENT_ID,
+                payload,
+            )
+            .await;
+        }
     }
 
     // Research dispatch

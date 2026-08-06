@@ -14,7 +14,7 @@ use elai_orchestrator::idea_framing::{
     ClassPreset, CriticCategory, CriticFinding, CriticRound, FramedIdea, KeyDecision,
     ProjectClass, ResearchPresets, ResearchStream, ResearchSummary, Severity, SourceTier,
     Tradeoff, TradeoffCard, ALL_CRITIC_CATEGORIES, ALL_PROJECT_CLASSES, MAX_CRITIC_ROUNDS,
-    NUM_CRITIC_CATEGORIES,
+    NUM_CRITIC_CATEGORIES, frame_idea,
 };
 
 // ---------------------------------------------------------------------------
@@ -486,4 +486,44 @@ fn key_decision_construction() {
     };
     let s = toml::to_string(&kd).expect("encode");
     let _back: KeyDecision = toml::from_str(&s).expect("decode");
+}
+
+
+#[tokio::test(flavor = "current_thread")]
+async fn emits_scope_ceiling_advisory_on_trigger() {
+    use elai_core::clock::OsClock;
+    use elai_orchestrator::ssb::{Ssb, SsbConfig};
+    use elai_orchestrator::ssb_viewer::SsbViewer;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn run(prompt: &str) -> Vec<elai_orchestrator::ssb_viewer::SsbActionDetail> {
+        let dir = TempDir::new().expect("tempdir");
+        let db = dir.path().join("ssb.db");
+        let ssb = Arc::new(Ssb::new(SsbConfig {
+            db_path: db.clone(),
+            pool_size: Some(1),
+            project_id: "test-project".into(),
+            session_id: "test-session".into(),
+        }, Arc::new(OsClock)).expect("ssb init"));
+        frame_idea(
+            prompt,
+            &ResearchPresets::new(),
+            dir.path(),
+            "test-session",
+            Some(&ssb),
+            Arc::new(OsClock),
+        ).await.expect("frame idea");
+        let viewer = SsbViewer::open(&db).expect("viewer");
+        viewer.recent_rows_of_type("scope_ceiling_advisory", 32).expect("rows")
+    }
+
+    let positive = run("Build a Replit Agent 3 project with external API auth").await;
+    assert_eq!(positive.len(), 1, "triggered brief must emit one advisory row");
+    let payload: serde_json::Value = positive[0].payload_json.clone();
+    assert_eq!(payload["class"], "replit_agent_3_external_api_auth");
+    assert!(payload["triggered_by"].as_str().is_some());
+
+    let negative = run("Build a private calculator with local arithmetic only").await;
+    assert!(negative.is_empty(), "control brief must emit no advisory row");
 }

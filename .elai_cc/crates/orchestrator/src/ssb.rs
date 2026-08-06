@@ -1638,6 +1638,7 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::RetrievalAbstained,
     // J-78: ContextAccessSpec (Pattern-2 flat; 3-arm Kind in payload).
     SsbActionType::ContextAccessSpec,
+    SsbActionType::ScopeCeilingAdvisory,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

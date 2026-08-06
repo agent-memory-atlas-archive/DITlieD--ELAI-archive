@@ -468,6 +468,7 @@ sandbox_backend_selected
 sandbox_observation
 schema_version_mismatch
 scip_refresh_completed
+scope_ceiling_advisory
 scope_freeze_ratified
 scope_freeze_violated
 sdpa_backend_pinned

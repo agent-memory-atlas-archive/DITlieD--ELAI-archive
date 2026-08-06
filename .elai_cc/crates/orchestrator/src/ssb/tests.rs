@@ -851,6 +851,13 @@ use crate::gate::RiskLevel;
                     matched_pattern: None,
                 },
             ),
+            SsbActionType::ScopeCeilingAdvisory => SsbPayload::ScopeCeilingAdvisory(
+                ScopeCeilingAdvisoryPayload {
+                    class: "demo_vs_deploy".into(),
+                    postmortem_url: "https://example.invalid/postmortem".into(),
+                    triggered_by: "test trigger".into(),
+                },
+            ),
             SsbActionType::CriticRoundComplete => SsbPayload::CriticRoundComplete(
                 CriticRoundCompletePayload {
                     session_id: "s".into(),
