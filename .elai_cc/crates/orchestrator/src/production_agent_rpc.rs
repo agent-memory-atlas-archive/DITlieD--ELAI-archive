@@ -1986,6 +1986,38 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                                 &result.literal_elements,
                                 seed,
                             );
+                            // J-77 S5 (I3): fuse kept detections into
+                            // block-level regions (deterministic merge +
+                            // duplicate drop).
+                            let fused = perception::fuse_detections(
+                                &prebind.kept,
+                                &perception::FusionConfig::default(),
+                            );
+                            // J-77 S5 (I4): transform ledger — canonical
+                            // 1000x1000 frame; record identity + scale so
+                            // filter_consistent_boxes reprojects and rejects
+                            // degenerate boxes.
+                            let mut ledger = perception::TransformLedger::new(1000, 1000);
+                            ledger.record(perception::TransformOp::identity());
+                            let (consistent, n_rej) =
+                                perception::filter_consistent_boxes(&ledger, &fused.regions);
+                            // J-77 S5 (I7): emit layout graph + consistency
+                            // check over the consistent regions.
+                            let g = perception::emit_layout_graph(&consistent);
+                            let report = perception::check_layout_consistency(&g);
+                            // J-77 S5 (I1/I2): sweet-spot tile fields for
+                            // the active model key (claude is the production
+                            // default).
+                            let tile_px = perception::sweet_spot::tile_px("claude")
+                                .unwrap_or(0);
+                            let tile_overlap = perception::sweet_spot::tile_overlap("claude");
+                            // Owner-tile policy probe (I1/I2): center-ownership
+                            // over empty tile set is None until tiler ships.
+                            let _owner_probe = perception::sweet_spot::owner_tile_index(
+                                [0, 0, 1, 1],
+                                &[],
+                                tile_px,
+                            );
                             emit_perception_scaffold_event(
                                 self.ssb.as_ref(),
                                 &self.clock,
@@ -1997,6 +2029,14 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                                     "call1_temperature": result.call1_temperature,
                                     "kept_len": prebind.kept.len(),
                                     "unverified_len": prebind.unverified.len(),
+                                    "fused_regions": fused.regions.len(),
+                                    "duplicate_drops": fused.duplicate_drops,
+                                    "consistent_regions": consistent.len(),
+                                    "transform_rejected": n_rej,
+                                    "layout_ok": report.ok,
+                                    "tile_px": tile_px,
+                                    "tile_overlap": tile_overlap,
+                                    "owner_tile_probed": _owner_probe.is_some(),
                                 }),
                             )
                             .await;

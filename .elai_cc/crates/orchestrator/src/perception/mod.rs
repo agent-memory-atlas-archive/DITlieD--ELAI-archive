@@ -27,11 +27,14 @@
 //! covers every emit / dispatch site in this module; no per-fn env var.
 
 pub mod citation_prebind_regions;
+pub mod fusion;
+pub mod layout_graph;
 pub mod preprocess;
 pub mod prompt_shapes;
 pub mod router;
 pub mod scaffold;
 pub mod sweet_spot;
+pub mod transform_ledger;
 pub mod vision_ladder;
 
 // Re-exports — the dispatch seam imports these directly.
@@ -48,6 +51,11 @@ pub use router::{
     classify_prompt, route, route_outcome, RouteOutcome, RouterDecision, RouterInput, RouterType,
     MICRO_TEXT_CONFIDENCE_FLOOR, MULTI_IMAGE_MIN_COUNT,
 };
+pub use fusion::{fuse_detections, FusionConfig, FusionResult};
+pub use layout_graph::{
+    check_layout_consistency, emit_layout_graph, LayoutConsistencyReport, LayoutGraph,
+};
+pub use transform_ledger::{filter_consistent_boxes, TransformLedger, TransformOp};
 
 /// Environment-variable name that gates production dispatch through the
 /// perception gateway. Wire-dark default: the scaffold + router are

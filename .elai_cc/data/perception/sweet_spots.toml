@@ -6,23 +6,38 @@
 # longest_side_px: resize sweet-spot edge in pixels (unused when native_res = true).
 # native_res: when true, the model receives images at native resolution
 #   (no resize); longest_side_px is informational only.
+#
+# J-77 S5 (I1/I2) — optional tiling fields:
+# tile_px: tile edge in pixels (0 = no tiling / whole-image passthrough).
+# tile_overlap: fraction in [0.0, 1.0] (default 0.125 = 12.5%).
+#   HONEST CAVEAT: 12.5% is a config default, NOT a literature-settled
+#   optimum. Re-verify on model swaps; tune per-model if measured deltas
+#   warrant (G-10 canary is the runtime sibling).
 
 [[sweet_spot]]
 model_key = "claude"
 longest_side_px = 1568
 native_res = false
+tile_px = 0
+tile_overlap = 0.125
 
 [[sweet_spot]]
 model_key = "gpt"
 longest_side_px = 2048
 native_res = false
+tile_px = 0
+tile_overlap = 0.125
 
 [[sweet_spot]]
 model_key = "qwen_vl"
 longest_side_px = 1280
 native_res = false
+tile_px = 0
+tile_overlap = 0.125
 
 [[sweet_spot]]
 model_key = "gemini"
 longest_side_px = 0
 native_res = true
+tile_px = 0
+tile_overlap = 0.125

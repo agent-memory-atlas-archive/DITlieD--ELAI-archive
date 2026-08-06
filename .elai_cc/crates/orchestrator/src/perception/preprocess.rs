@@ -77,10 +77,17 @@ pub struct PreprocessSpec {
     /// Tile overlap fraction in `[0.0, 1.0]`. 0.0 = no tiling (single
     /// image); >0.0 = overlapping tiles + a global thumbnail for dense
     /// UIs. T5 wires the sidecar tiler; the Rust side records the spec.
+    /// J-77 S5: the default is sourced from `sweet_spot::tile_overlap`
+    /// (12.5% config default — NOT literature-settled).
     pub tile_overlap: f32,
     /// When true, attach a global thumbnail alongside the (optionally
     /// tiled) full-resolution image(s). Mirrors the SRC-3 dense-UI recipe.
     pub thumbnail: bool,
+    /// J-77 S5 (I1/I2) — tile edge in pixels. `0` means no tiling
+    /// (whole-image passthrough). Sourced from `sweet_spot::tile_px`
+    /// for the target model; the sidecar tiler (T5) consumes this when
+    /// building the tile grid.
+    pub tile_px: u32,
 }
 
 impl Default for PreprocessSpec {
@@ -90,6 +97,7 @@ impl Default for PreprocessSpec {
             jpeg_q85: true,
             tile_overlap: 0.0,
             thumbnail: false,
+            tile_px: 0,
         }
     }
 }
@@ -174,6 +182,22 @@ pub fn preprocess(spec: &PreprocessSpec, image_bytes: &[u8]) -> Result<Preproces
     // downscale fallthrough — plan stub_ban).
     let longest_side_px = spec.target_model.sweet_spot_longest_side_px();
     let native_res = super::sweet_spot::native_res(spec.target_model.as_key()).unwrap_or(false);
+    // J-77 S5 (I1/I2) — source tile_px + tile_overlap from the sweet-spot
+    // table for the target model. When the spec carries 0 (the default),
+    // fall back to the table value; when the spec carries a non-zero
+    // override, honor it. tile_overlap always sources from the table
+    // (the 12.5% config default) unless the caller overrode it.
+    let tile_px = if spec.tile_px != 0 {
+        spec.tile_px
+    } else {
+        super::sweet_spot::tile_px(spec.target_model.as_key()).unwrap_or(0)
+    };
+    let tile_overlap = if spec.tile_overlap != 0.0 {
+        spec.tile_overlap
+    } else {
+        super::sweet_spot::tile_overlap(spec.target_model.as_key())
+    };
+    let _ = (tile_px, tile_overlap);
     Ok(PreprocessResult {
         outcome: PreprocessOutcome::DegradedPassthrough,
         conditioned_bytes: image_bytes.to_vec(),
