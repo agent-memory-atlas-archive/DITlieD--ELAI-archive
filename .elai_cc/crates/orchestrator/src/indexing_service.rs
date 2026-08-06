@@ -22,7 +22,7 @@ use elai_knowledge::metadata::{
     self, IndexingStatus, MetadataError, ProjectMetadata, ProjectMetadataStore,
     DEFAULT_BATCH_SIZE, METADATA_DB_FILENAME, METADATA_SCHEMA_VERSION,
 };
-use elai_knowledge::{DkgEngine, KnowledgeError};
+use elai_knowledge::{DkgEngine, KnowledgeError, ObservedCallEdge, EDGE_OBSERVED_CALLS};
 
 use crate::ssb::{
     ArtifactsIndexedPayload, IndexCancelPayload, IndexCheckpointPayload, IndexResumePayload,
@@ -335,6 +335,35 @@ pub struct IndexingService {
     /// cold-start contract checks) leave this as `None` — the post-build
     /// walkback then becomes a no-op so existing call sites are unaffected.
     ssb_writer: Option<Arc<Ssb>>,
+}
+
+fn load_runtime_observed_edges(indexes_dir: &Path) -> Vec<ObservedCallEdge> {
+    let enabled = std::env::var("ELAI_RUNTIME_DKG_EDGES_ENABLE")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if !enabled {
+        return Vec::new();
+    }
+    let path = indexes_dir.join("runtime_edges.json");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "failed to read runtime-observed edges");
+            return Vec::new();
+        }
+    };
+    #[derive(serde::Deserialize)]
+    struct RuntimeEdges {
+        edges: Vec<ObservedCallEdge>,
+    }
+    match serde_json::from_str::<RuntimeEdges>(&contents) {
+        Ok(payload) => payload.edges,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "failed to parse runtime-observed edges");
+            Vec::new()
+        }
+    }
 }
 
 impl IndexingService {
@@ -750,6 +779,19 @@ impl IndexingService {
             edges = graph.edge_count,
             "DKG graph built"
         );
+        let runtime_edges = load_runtime_observed_edges(&self.indexes_dir);
+        if !runtime_edges.is_empty() {
+            match dkg.ingest_observed_edges(&runtime_edges) {
+                Ok(stats) => tracing::info!(
+                    edges_inserted = stats.edges_inserted,
+                    edges_already_present = stats.edges_already_present,
+                    edges_unresolved = stats.edges_unresolved,
+                    edge_kind = EDGE_OBSERVED_CALLS,
+                    "J-88 E2: runtime-observed call edges ingested"
+                ),
+                Err(error) => tracing::warn!(error = %error, "J-88 E2: runtime-observed edge ingest failed (non-fatal)"),
+            }
+        }
         // B-4: capture failed-file count before dropping the engine.
         let dkg_files_failed: u64 = u64::try_from(
             dkg.failed_files().map(|v| v.len()).unwrap_or(0),

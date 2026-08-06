@@ -1,3 +1,6 @@
+pub mod observed_edges;
+pub use observed_edges::{EdgeProvenance, ObservedCallEdge, ObservedEdgeIngestStats, EDGE_OBSERVED_CALLS};
+
 pub mod language_registry;
 pub use language_registry::{LanguageRegistry, LanguageRegistryStatus, GrammarLoadError};
 
@@ -72,6 +75,16 @@ CREATE INDEX IF NOT EXISTS idx_nodes_kind   ON dkg_nodes(kind);
 CREATE INDEX IF NOT EXISTS idx_files_status ON dkg_files(parse_status);
 CREATE INDEX IF NOT EXISTS idx_data_flow_source ON dkg_data_flow(source_node_id);
 CREATE INDEX IF NOT EXISTS idx_data_flow_target ON dkg_data_flow(target_node_id);
+CREATE TABLE IF NOT EXISTS dkg_observed_edge_provenance (
+    source_id          INTEGER NOT NULL REFERENCES dkg_nodes ON DELETE CASCADE,
+    target_id          INTEGER NOT NULL REFERENCES dkg_nodes ON DELETE CASCADE,
+    provenance_source  TEXT    NOT NULL,
+    source_seq         INTEGER,
+    observed_at        INTEGER NOT NULL,
+    PRIMARY KEY (source_id, target_id, provenance_source, source_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_observed_prov_source ON dkg_observed_edge_provenance(source_id);
+CREATE INDEX IF NOT EXISTS idx_observed_prov_target ON dkg_observed_edge_provenance(target_id);
 ";
 
 // ---------------------------------------------------------------------------

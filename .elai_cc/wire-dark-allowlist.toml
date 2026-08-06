@@ -2345,3 +2345,21 @@ owner             = "maintainer"
 expiry_date       = "2026-10-25"
 promotion_plan_id = "J-64"
 smoke_test        = "crates/providers/src/runtime/acp_transport.rs::tests::with_spawn_injects_custom_spawn"
+
+# J-88 E2: runtime-observed DKG edges (default-OFF kill_switch; OBSERVE-ONLY first)
+[[flag]]
+name              = "ELAI_RUNTIME_DKG_EDGES_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-88"
+smoke_test        = "crates/knowledge/src/dkg/observed_edges.rs::j88_observed_edges_tests::ingest_observed_edge_widens_cone"
+
+# J-88 E3: machine-derived-first audit lane (default-OFF kill_switch)
+[[flag]]
+name              = "ELAI_MACHINE_AUDIT_LANE_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-88"
+smoke_test        = "crates/orchestrator/src/machine_view.rs::j88_machine_view_tests::binary_verdict_ignores_finding_message_prose"

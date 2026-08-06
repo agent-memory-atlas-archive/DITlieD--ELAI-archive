@@ -165,6 +165,21 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
         );
         let auditor = DeterministicAuditor::new(config);
         let result = auditor.run_all(&changed);
+        let result = if crate::machine_view::machine_audit_lane_enabled() {
+            let view = crate::machine_view::project_from_audit_result(&result);
+            if let Err(error) = crate::machine_view::validate_no_source(&view) {
+                tracing::error!(error = %error, "J-88 E3: machine_view source contract violated");
+                let mut adjusted = result.clone();
+                adjusted.passed = false;
+                adjusted
+            } else {
+                let mut adjusted = result.clone();
+                adjusted.passed = crate::machine_view::binary_passed(&view);
+                adjusted
+            }
+        } else {
+            result
+        };
 
         // K-5: compute a deterministic risk-signal vector from the changed
         // files + project profile, select the observe-only GateIntensity tier,

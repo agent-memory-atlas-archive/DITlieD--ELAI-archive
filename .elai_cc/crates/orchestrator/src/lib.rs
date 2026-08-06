@@ -105,6 +105,7 @@ pub mod briefing;
 // workflow/reasoning/B-41-decisions.md.
 pub mod auditor_mode;
 pub mod deterministic_audit_gate;
+pub mod machine_view;
 pub mod deterministic_auditor;
 pub mod grc;
 pub mod anti_spiral;
@@ -1806,6 +1807,10 @@ pub use deterministic_audit_gate::{
 pub use deterministic_auditor::{
     CheckKind, DeterministicAuditResult, DeterministicAuditor, DeterministicAuditorConfig,
     DeterministicFinding, DeterministicSeverity,
+};
+pub use machine_view::{
+    binary_passed, machine_audit_lane_enabled, project_from_audit_result, validate_no_source,
+    MachineView, MachineViewError, ELAI_MACHINE_AUDIT_LANE_ENABLE_ENV,
 };
 pub use agent_pool::{
     default_grc_config, role_default_allowed_paths, AgentHandle, AgentMessage, AgentPool,

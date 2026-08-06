@@ -378,3 +378,6 @@ pub use project_intelligence::{
 pub use conventions::{
     extract_conventions, ConventionStats, CorpusView, CONVENTIONS_SCHEMA_VERSION,
 };
+
+// J-88 E2: runtime-observed DKG edge API.
+pub use dkg::{EdgeProvenance, ObservedCallEdge, ObservedEdgeIngestStats, EDGE_OBSERVED_CALLS};
