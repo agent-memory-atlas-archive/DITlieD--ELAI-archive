@@ -72,14 +72,58 @@ pub enum ScaffoldOutcome {
     TypedRefusal,
 }
 
+/// I6: which detector path produced this element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ElementSource {
+    Ocr,
+    Layout,
+    Detector,
+    Vlm,
+    Merged,
+}
+
+impl Default for ElementSource {
+    fn default() -> Self {
+        Self::Ocr
+    }
+}
+
 /// One literal element emitted by the describe-literal-elements call.
 /// `bbox` is in normalized `[0, SCAFFOLD_COORD_NORMALIZATION_MAX]` coords
 /// (SRC-3 mechanism 4: 0-1000 normalized coords).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// I6: `source` / `confidence` carry per-element provenance. Deterministic
+/// construct paths use `ElementSource::Ocr` (or `Merged`) with confidence
+/// 1.0; VLM-guessed fields tend lower. `#[serde(default)]` on both fields
+/// keeps old JSON (label + bbox only) deserializable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiteralElement {
     pub label: String,
     /// `[x0, y0, x1, y1]` in `[0, SCAFFOLD_COORD_NORMALIZATION_MAX]`.
     pub bbox: [u32; 4],
+    /// I6: which detector path produced this element.
+    #[serde(default)]
+    pub source: ElementSource,
+    /// I6: 0.0..=1.0 confidence; VLM-guessed fields tend lower.
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
+}
+
+/// Default confidence for deterministic construct paths (1.0).
+fn default_confidence() -> f32 {
+    1.0
+}
+
+impl Default for LiteralElement {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            bbox: [0, 0, 0, 0],
+            source: ElementSource::default(),
+            confidence: 1.0,
+        }
+    }
 }
 
 /// Result of the scaffold step.

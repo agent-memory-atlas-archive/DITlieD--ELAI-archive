@@ -26,6 +26,7 @@
 //! before default-ON). The single env-var gate [`perception_gateway_enabled`]
 //! covers every emit / dispatch site in this module; no per-fn env var.
 
+pub mod citation_prebind_regions;
 pub mod preprocess;
 pub mod prompt_shapes;
 pub mod router;
@@ -36,8 +37,12 @@ pub mod vision_ladder;
 // Re-exports — the dispatch seam imports these directly.
 pub use scaffold::{
     apply_schema_v2, coords_within_schema_v2, elements_pass_schema_v2, prompt_carries_image,
-    scaffold, scaffold_with_call1, LiteralElement, SchemaV2Verdict, ScaffoldInput,
+    scaffold, scaffold_with_call1, ElementSource, LiteralElement, SchemaV2Verdict, ScaffoldInput,
     ScaffoldOutcome, ScaffoldResult,
+};
+pub use citation_prebind_regions::{
+    check_region_claims, filter_ghost_regions, freeze_region_anchors, prebind_regions,
+    regions_to_ranked, RegionPrebindOutcome,
 };
 pub use router::{
     classify_prompt, route, route_outcome, RouteOutcome, RouterDecision, RouterInput, RouterType,

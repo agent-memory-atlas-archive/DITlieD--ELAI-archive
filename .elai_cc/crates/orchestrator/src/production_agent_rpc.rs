@@ -1974,6 +1974,18 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                 match perception::scaffold(&scaffold_input) {
                     Ok(result) => match result.outcome {
                         perception::ScaffoldOutcome::ScaffoldEmitted => {
+                            // J-77 S5 (I5): citation-prebind over perception
+                            // regions. Freeze non-Vlm elements as the closed
+                            // set; route VLM ghost regions to unverified.
+                            // TD-3: counts never from VLM.
+                            let seed = std::env::var("ELAI_SEED")
+                                .ok()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0u64);
+                            let prebind = perception::filter_ghost_regions(
+                                &result.literal_elements,
+                                seed,
+                            );
                             emit_perception_scaffold_event(
                                 self.ssb.as_ref(),
                                 &self.clock,
@@ -1983,6 +1995,8 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                                     "schema": "v2",
                                     "literal_element_count": result.literal_elements.len(),
                                     "call1_temperature": result.call1_temperature,
+                                    "kept_len": prebind.kept.len(),
+                                    "unverified_len": prebind.unverified.len(),
                                 }),
                             )
                             .await;
