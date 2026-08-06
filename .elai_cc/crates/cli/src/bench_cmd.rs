@@ -294,3 +294,16 @@ pub(crate) fn run_critic_report(output: Option<String>) -> anyhow::Result<()> {
     // (RUNPOD-PENDING).
     crate::critic_report::run(output)
 }
+
+pub(crate) fn run_bench_retrieval_adapt(
+    gold: std::path::PathBuf,
+    k: u32,
+    baseline_ranks: Option<std::path::PathBuf>,
+    adapted_ranks: Option<std::path::PathBuf>,
+    out: Option<std::path::PathBuf>,
+    json: bool,
+) -> anyhow::Result<()> {
+    // J-72 slice D: Tier-1 MRR/Recall harness for baseline vs adapted slot
+    // delta over a gold set. Deterministic. Never LLM-judge.
+    crate::bench_retrieval_adapt::run(gold, k, baseline_ranks, adapted_ranks, out, json)
+}

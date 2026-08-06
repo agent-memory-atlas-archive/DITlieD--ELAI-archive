@@ -469,6 +469,9 @@ mod bench_governance;
 // without live inference. Wiring-enforcement R1 entry point for I-35.
 mod bench_sequence_probe;
 mod bench_steering_vs_prompt;
+// J-72 slice D: `elai bench retrieval-adapt` — Tier-1 MRR/Recall harness for
+// baseline vs adapted slot delta over a gold set. Deterministic. No LLM judge.
+mod bench_retrieval_adapt;
 mod bench_ssb_poll;
 // I-32: `elai role-ab-probe` -- role-contract A/B evidence harness. Fixture-driven;
 // no live LLM. Emits RoleContractApplied(AbDelta) SSB rows. Handler below.
@@ -1638,6 +1641,25 @@ fn run() -> Result<(), anyhow::Error> {
         // SteeringEffectMeasured SSB row, writes TOML report.
         CliAction::BenchSteeringVsPrompt { task, seed, json } => {
             bench_steering_vs_prompt::run(task, seed, json)?;
+        }
+        // J-72 slice D: `elai bench retrieval-adapt` — Tier-1 MRR/Recall
+        // harness for baseline vs adapted slot delta over a gold set.
+        CliAction::BenchRetrievalAdapt {
+            gold,
+            k,
+            baseline_ranks,
+            adapted_ranks,
+            out,
+            json,
+        } => {
+            bench_cmd::run_bench_retrieval_adapt(
+                gold,
+                k,
+                baseline_ranks,
+                adapted_ranks,
+                out,
+                json,
+            )?;
         }
         // I-32: `elai role-ab-probe [--seed N]` — role-contract A/B harness.
         // Loads fixtures from crates/contracts/tests/fixtures/role_contracts/,

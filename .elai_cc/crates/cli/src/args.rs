@@ -1301,6 +1301,18 @@ pub(crate) enum CliAction {
         seed: u64,
         json: bool,
     },
+    /// J-72 slice D: `elai bench retrieval-adapt --gold <path> [--k <N>]
+    /// [--baseline-ranks <json>] [--adapted-ranks <json>] [--out <report.json>]
+    /// [--json]` — Tier-1 MRR/Recall harness for baseline vs adapted slot
+    /// delta over a gold set. Deterministic. Never LLM-judge.
+    BenchRetrievalAdapt {
+        gold: PathBuf,
+        k: u32,
+        baseline_ranks: Option<PathBuf>,
+        adapted_ranks: Option<PathBuf>,
+        out: Option<PathBuf>,
+        json: bool,
+    },
     // E-30: `elai incident record --title <TITLE> --date <DATE> --url <URL>
     //        [--id <ID>]` — store an incident postmortem entry in the SSB
     //        and emit IncidentRecordCreated so the dashboard can surface it.

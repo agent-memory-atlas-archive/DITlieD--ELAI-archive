@@ -112,9 +112,12 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "steering-vs-prompt" {
         return parse_bench_steering_vs_prompt_args(&rest[1..]);
     }
+    if sub == "retrieval-adapt" {
+        return parse_bench_retrieval_adapt_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt' | 'retrieval-adapt')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -1989,4 +1992,152 @@ fn parse_bench_steering_vs_prompt_args(
         seed,
         json,
     })
+}
+
+// ---------------------------------------------------------------------------
+// J-72 slice D: `elai bench retrieval-adapt --gold <path> [--k <N>]
+//   [--baseline-ranks <json>] [--adapted-ranks <json>] [--out <report.json>]
+//   [--json]`
+// ---------------------------------------------------------------------------
+
+/// J-72 slice D — parse `elai bench retrieval-adapt --gold <path> [--k <N>]
+/// [--baseline-ranks <json>] [--adapted-ranks <json>] [--out <report.json>]
+/// [--json]`. Hand-rolled per the CLAUDE.md "no new clap dep" rule.
+/// `--gold` is required; `--k` defaults to 10.
+fn parse_bench_retrieval_adapt_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut gold: Option<String> = None;
+    let mut k: u32 = 10;
+    let mut baseline_ranks: Option<String> = None;
+    let mut adapted_ranks: Option<String> = None;
+    let mut out: Option<String> = None;
+    let mut json: bool = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--gold" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --gold".to_string())?;
+                gold = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--gold=") => {
+                gold = Some(flag["--gold=".len()..].to_string());
+                i += 1;
+            }
+            "--k" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --k".to_string())?;
+                k = value
+                    .parse::<u32>()
+                    .map_err(|e| format!("invalid --k value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--k=") => {
+                let raw = &flag["--k=".len()..];
+                k = raw
+                    .parse::<u32>()
+                    .map_err(|e| format!("invalid --k value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--baseline-ranks" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --baseline-ranks".to_string())?;
+                baseline_ranks = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--baseline-ranks=") => {
+                baseline_ranks = Some(flag["--baseline-ranks=".len()..].to_string());
+                i += 1;
+            }
+            "--adapted-ranks" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --adapted-ranks".to_string())?;
+                adapted_ranks = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--adapted-ranks=") => {
+                adapted_ranks = Some(flag["--adapted-ranks=".len()..].to_string());
+                i += 1;
+            }
+            "--out" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --out".to_string())?;
+                out = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--out=") => {
+                out = Some(flag["--out=".len()..].to_string());
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench retrieval-adapt` argument: {other}"));
+            }
+        }
+    }
+    let gold = gold
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "`bench retrieval-adapt` requires --gold <PATH>".to_string())?;
+    if k == 0 {
+        return Err("--k must be >= 1".to_string());
+    }
+    Ok(crate::args::CliAction::BenchRetrievalAdapt {
+        gold,
+        k,
+        baseline_ranks: baseline_ranks.map(std::path::PathBuf::from),
+        adapted_ranks: adapted_ranks.map(std::path::PathBuf::from),
+        out: out.map(std::path::PathBuf::from),
+        json,
+    })
+}
+
+#[cfg(test)]
+mod retrieval_adapt_parse_tests {
+    use super::*;
+
+    #[test]
+    fn parse_retrieval_adapt_happy_path() {
+        let args: Vec<String> = vec![
+            "retrieval-adapt".into(),
+            "--gold".into(),
+            "gold.jsonl".into(),
+            "--k".into(),
+            "5".into(),
+            "--json".into(),
+        ];
+        let action = parse_bench_subcommand_args(&args).unwrap();
+        match action {
+            crate::args::CliAction::BenchRetrievalAdapt {
+                gold,
+                k,
+                baseline_ranks,
+                adapted_ranks,
+                out,
+                json,
+            } => {
+                assert_eq!(gold, std::path::PathBuf::from("gold.jsonl"));
+                assert_eq!(k, 5);
+                assert!(baseline_ranks.is_none());
+                assert!(adapted_ranks.is_none());
+                assert!(out.is_none());
+                assert!(json);
+            }
+            other => panic!("expected BenchRetrievalAdapt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_retrieval_adapt_missing_gold_errors() {
+        let args: Vec<String> = vec!["retrieval-adapt".into(), "--k".into(), "5".into()];
+        let err = parse_bench_subcommand_args(&args).unwrap_err();
+        assert!(err.contains("requires --gold"), "err={err}");
+    }
 }
