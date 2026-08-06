@@ -316,3 +316,10 @@ pub(crate) fn run_bench_rrf_ablate(
 ) -> anyhow::Result<()> {
     crate::bench_rrf_ablate::run(gold, k, full_ranks, drop_pagerank_ranks, drop_second_dense_ranks, nav_only_graph_ranks, out, json)
 }
+
+
+pub(crate) fn run_bench_tool_output(
+    corpus: Option<std::path::PathBuf>, seed: u64, json: bool, out: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    crate::bench_tool_output::run(corpus, seed, json, out)
+}

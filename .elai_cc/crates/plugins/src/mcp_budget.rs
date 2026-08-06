@@ -14,6 +14,27 @@ use tracing::debug;
 /// Default per-server token budget for `tools/list` responses.
 pub const DEFAULT_BUDGET_TOKENS: u32 = 5_000;
 
+/// Default output budget for a single tool result (chars/4 heuristic).
+pub const DEFAULT_OUTPUT_BUDGET_TOKENS: u32 = 8_000;
+
+/// Enforce a deterministic character-based budget on one tool result.
+pub fn enforce_output_budget(output: &str, budget_tokens: u32) -> (String, u32) {
+    let estimated = estimate_tokens(output);
+    if estimated <= budget_tokens {
+        return (output.to_string(), estimated);
+    }
+    let limit = (budget_tokens as usize).saturating_mul(4);
+    let notice = "\n[tool output truncated to token budget]";
+    let keep = limit.saturating_sub(notice.len());
+    let mut end = keep.min(output.len());
+    while end > 0 && !output.is_char_boundary(end) { end -= 1; }
+    let mut compacted = output[..end].to_string();
+    compacted.push_str(notice);
+    let kept_tokens = estimate_tokens(&compacted);
+    (compacted, kept_tokens)
+}
+
+
 /// A single tool entry with its priority rank.
 #[derive(Debug, Clone)]
 pub struct BudgetedTool {

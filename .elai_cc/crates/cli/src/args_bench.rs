@@ -115,6 +115,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "retrieval-adapt" {
         return parse_bench_retrieval_adapt_args(&rest[1..]);
     }
+    if sub == "tool-output" {
+        return parse_bench_tool_output_args(&rest[1..]);
+    }
     if sub == "rrf-ablate" {
         return parse_bench_rrf_ablate_args(&rest[1..]);
     }
@@ -123,7 +126,7 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt' | 'retrieval-adapt' | 'rrf-ablate' | 'perception-faithfulness')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt' | 'retrieval-adapt' | 'rrf-ablate' | 'tool-output' | 'perception-faithfulness')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -2106,6 +2109,28 @@ fn parse_bench_retrieval_adapt_args(rest: &[String]) -> Result<crate::args::CliA
 }
 
 /// J-75 — parse `elai bench rrf-ablate --gold PATH [--k N]` and optional rank maps.
+
+fn parse_bench_tool_output_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut corpus = None;
+    let mut seed: u64 = 1234;
+    let mut json = false;
+    let mut out = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--corpus" => { corpus = Some(PathBuf::from(rest.get(i + 1).ok_or_else(|| "missing value for --corpus".to_string())?)); i += 2; }
+            flag if flag.starts_with("--corpus=") => { corpus = Some(PathBuf::from(&flag[9..])); i += 1; }
+            "--seed" => { let v = rest.get(i + 1).ok_or_else(|| "missing value for --seed".to_string())?; seed = v.parse().map_err(|e| format!("invalid --seed {v:?}: {e}"))?; i += 2; }
+            flag if flag.starts_with("--seed=") => { seed = flag[7..].parse().map_err(|e| format!("invalid --seed {:?}: {e}", &flag[7..]))?; i += 1; }
+            "--out" => { out = Some(PathBuf::from(rest.get(i + 1).ok_or_else(|| "missing value for --out".to_string())?)); i += 2; }
+            flag if flag.starts_with("--out=") => { out = Some(PathBuf::from(&flag[6..])); i += 1; }
+            "--json" => { json = true; i += 1; }
+            other => return Err(format!("unknown `bench tool-output` argument: {other}")),
+        }
+    }
+    Ok(crate::args::CliAction::BenchToolOutput { corpus, seed, json, out })
+}
+
 fn parse_bench_rrf_ablate_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
     let mut gold: Option<PathBuf> = None;
     let mut k: u32 = 5;

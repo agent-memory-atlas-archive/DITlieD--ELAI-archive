@@ -752,6 +752,13 @@ pub async fn run_agent_session(
                             &transformed_str,
                             &[],
                         );
+                        // J-82 measure-first: optional token-efficient emission (default OFF).
+                        let annotated = if crate::token_emit::format_emit_enabled() {
+                            crate::token_emit::maybe_compact_tool_output(&annotated)
+                        } else { annotated };
+                        let annotated = if crate::token_emit::protected_span_enabled()
+                            && !crate::token_emit::looks_like_code(&annotated)
+                        { crate::token_emit::strip_prose_fillers(&annotated) } else { annotated };
                         annotated.into_bytes()
                     } else {
                         out

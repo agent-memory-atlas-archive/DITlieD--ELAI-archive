@@ -1324,6 +1324,13 @@ pub(crate) enum CliAction {
         out: Option<PathBuf>,
         json: bool,
     },
+    /// J-82: deterministic tool-output token emission benchmark.
+    BenchToolOutput {
+        corpus: Option<PathBuf>,
+        seed: u64,
+        json: bool,
+        out: Option<PathBuf>,
+    },
     /// J-77 I11: `elai bench perception-faithfulness [--fixture PATH] [--json]
     /// [--enforce]` — 6-metric perception-faithfulness fixture harness.
     /// Drives the REAL `run_perception_faithfulness_on_fixture` orchestrator

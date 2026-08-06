@@ -127,7 +127,7 @@ pub use mcp_schema_pin::{
     PinStatus, RugPullVerdict, SchemaPinError, ToolDef, ToolDescDiff, ToolDescEntry,
 };
 #[cfg(feature = "mcp")]
-pub use mcp_budget::{BudgetedTool, EnforceReport, TokenBudget, DEFAULT_BUDGET_TOKENS, enforce, estimate_tokens};
+pub use mcp_budget::{BudgetedTool, EnforceReport, TokenBudget, DEFAULT_BUDGET_TOKENS, DEFAULT_OUTPUT_BUDGET_TOKENS, enforce_output_budget, enforce, estimate_tokens};
 #[cfg(feature = "mcp")]
 pub use llm_guard::{GuardDecision, GuardError, LlmGuardConfig};
 
