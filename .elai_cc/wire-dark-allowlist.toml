@@ -2399,3 +2399,12 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-93"
 smoke_test        = "crates/orchestrator/src/mast_inloop_supervisor.rs::j93_mast_inloop_tests::repetition_fires_at_threshold"
+
+# J-93 LEG-B: compensation registry for H-35 external rewind (default-OFF kill_switch)
+[[flag]]
+name              = "ELAI_COMPENSATION_REGISTRY_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-93"
+smoke_test        = "crates/orchestrator/src/compensation_registry.rs::j93_compensation_registry_tests::non_invertible_always_surfaced"

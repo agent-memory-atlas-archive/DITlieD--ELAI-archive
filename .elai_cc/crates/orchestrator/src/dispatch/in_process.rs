@@ -121,6 +121,11 @@ impl InProcessDispatch {
                     }
                 }
             }
+            elai_orchestrator::compensation_registry::record_tool_side_effect(
+                tool_name,
+                "mcp_tool_called",
+                None,
+            );
         }
     }
 

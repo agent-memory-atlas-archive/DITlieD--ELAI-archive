@@ -27,6 +27,7 @@ use std::sync::Arc;
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::{compact_session, CompactionConfig};
+use elai_orchestrator::compensation_registry::CompensationDisposition;
 use elai_orchestrator::observability::replay::{
     ssb_resume_from, ReplayOutcome, ReplayPatch,
 };
@@ -228,6 +229,22 @@ async fn run_rewind_inner(
                     "rewind: code-restore predicate error at seq {target_seq}: {e}"
                 ));
             }
+        }
+    }
+
+    // Plan/apply external-effect compensations after state restore and before the beacon.
+    let compensation_plan = elai_orchestrator::compensation_registry::plan_and_apply_for_rewind();
+    for entry in &compensation_plan {
+        match entry.disposition {
+            CompensationDisposition::SurfacedToHuman => println!(
+                "[rewind] non-invertible external effect surfaced (RV-4): tool={} summary={}",
+                entry.record.tool_name, entry.record.summary
+            ),
+            CompensationDisposition::Applied => println!(
+                "[rewind] compensation applied/journaled: tool={} recipe={:?}",
+                entry.record.tool_name, entry.record.recipe
+            ),
+            CompensationDisposition::Observed => {}
         }
     }
 
