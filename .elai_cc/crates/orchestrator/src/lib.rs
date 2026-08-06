@@ -263,6 +263,8 @@ pub mod evidence;
 // and per-mode execution wrappers — see focus_tunnel/mod.rs.
 pub mod focus_tunnel;
 pub mod fsm;
+pub mod orchestrator_dispatch_tokens;
+pub use orchestrator_dispatch_tokens::{CapabilityToken, DispatchAction, DispatchGateOutcome, DispatchPhase, DispatchTokenError, consume_for_action, mint_on_evidence, orchestrator_fsm_tokens_enabled, refuse_illegal_transition};
 pub mod gate;
 pub mod gate_intensity;
 // H-38 — cost-confirmation gate predicate for TaskStop / pod_stop.

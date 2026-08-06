@@ -2381,3 +2381,12 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-91"
 smoke_test        = "crates/orchestrator/src/rra_reexecute.rs::j91_reexecute_tests::export_cassette_roundtrip_and_reexecute_t0"
+
+# J-92: orchestrator FSM dispatch capability tokens (default-OFF kill_switch; OBSERVE-ONLY first)
+[[flag]]
+name              = "ELAI_ORCHESTRATOR_FSM_TOKENS_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-92"
+smoke_test        = "crates/orchestrator/src/orchestrator_dispatch_tokens.rs::j92_dispatch_token_tests::mint_and_consume_happy_path"

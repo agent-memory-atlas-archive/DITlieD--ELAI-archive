@@ -1312,6 +1312,12 @@ pub async fn frame_idea_with_fsm(
                 warn!(error = %e, "frame_idea_with_fsm: exit_framing_to_planning failed after convergence");
                 IdeaFramingError::FsmTransition(e.to_string())
             })?;
+            // J-92: after framing -> PLANNING, arm dispatch ParallelBatch substate so
+            // recon can mint capability tokens before file_write (flag-gated no-op path
+            // still runs; enter always sets substate marker).
+            if let Err(e) = fsm.enter_dispatch_parallel_batch().await {
+                warn!(error = %e, "J-92 enter_dispatch_parallel_batch after framing (non-fatal)");
+            }
             info!(
                 session_id = session_id,
                 phase_label = phase_label,

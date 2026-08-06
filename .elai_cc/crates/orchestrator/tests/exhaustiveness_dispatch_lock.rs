@@ -68,6 +68,10 @@ const ALL_FSM_SUBSTATES: &[FsmSubstate] = &[
     FsmSubstate::Tdd,
     FsmSubstate::DarwinianGenerationEvaluating,
     FsmSubstate::Adversary,
+    FsmSubstate::DispatchParallelBatch,
+    FsmSubstate::DispatchExecuting,
+    FsmSubstate::DispatchAuditing,
+    FsmSubstate::DispatchMemorizing,
 ];
 
 /// Every `SkillEventPhase` variant in declaration order (ssb.rs ~:21235).
@@ -98,6 +102,10 @@ fn fsm_substate_match_guard(v: FsmSubstate) {
         FsmSubstate::Tdd => (),
         FsmSubstate::DarwinianGenerationEvaluating => (),
         FsmSubstate::Adversary => (),
+        FsmSubstate::DispatchParallelBatch => (),
+        FsmSubstate::DispatchExecuting => (),
+        FsmSubstate::DispatchAuditing => (),
+        FsmSubstate::DispatchMemorizing => (),
     }
 }
 

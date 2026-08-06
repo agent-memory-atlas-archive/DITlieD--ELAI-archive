@@ -170,6 +170,10 @@ pub enum FsmSubstate {
     /// invocation only — no Edit/Write/Bash. Grounding: arXiv:2507.02778
     /// (64.5% blind-spot rate) + arXiv:2503.13657 MAST FC3.
     Adversary,
+    DispatchParallelBatch,
+    DispatchExecuting,
+    DispatchAuditing,
+    DispatchMemorizing,
 }
 
 impl FsmSubstate {
@@ -182,6 +186,10 @@ impl FsmSubstate {
             FsmSubstate::DarwinianGenerationEvaluating => "darwinian_generation_evaluating",
             // E-6: cross-family adversary probe substate.
             FsmSubstate::Adversary => "adversary",
+            FsmSubstate::DispatchParallelBatch => "dispatch_parallel_batch",
+            FsmSubstate::DispatchExecuting => "dispatch_executing",
+            FsmSubstate::DispatchAuditing => "dispatch_auditing",
+            FsmSubstate::DispatchMemorizing => "dispatch_memorizing",
         }
     }
 }
@@ -1472,6 +1480,25 @@ impl Fsm {
     ///     first is a contract violation.
     ///   * Top-level transition errors propagate from
     ///     [`Self::transition_with_metrics`] (only when source==Idle).
+    /// Enter an orchestrator dispatch phase without changing top-level state.
+    pub async fn enter_dispatch_parallel_batch(&self) -> Result<(), FsmError> { self.enter_dispatch_substate(FsmSubstate::DispatchParallelBatch).await }
+    // WIRE-DARK[J-92]: residual enter helpers; ParallelBatch is production-wired via idea_framing. Promote with full orchestrate phase machine.
+    pub async fn enter_dispatch_executing(&self) -> Result<(), FsmError> { self.enter_dispatch_substate(FsmSubstate::DispatchExecuting).await }
+    // WIRE-DARK[J-92]: residual enter helpers; ParallelBatch is production-wired via idea_framing. Promote with full orchestrate phase machine.
+    pub async fn enter_dispatch_auditing(&self) -> Result<(), FsmError> { self.enter_dispatch_substate(FsmSubstate::DispatchAuditing).await }
+    // WIRE-DARK[J-92]: residual enter helpers; ParallelBatch is production-wired via idea_framing. Promote with full orchestrate phase machine.
+    pub async fn enter_dispatch_memorizing(&self) -> Result<(), FsmError> { self.enter_dispatch_substate(FsmSubstate::DispatchMemorizing).await }
+
+    async fn enter_dispatch_substate(&self, substate: FsmSubstate) -> Result<(), FsmError> {
+        let mut guard = self.inner.try_lock().map_err(|_| FsmError::TransitionConflict)?;
+        guard.substate = Some(substate);
+        if let Some(ref path) = guard.persist_path {
+            let persisted = PersistedFsmState { state: guard.state, phase_label: guard.phase_label.clone(), token_budget: guard.token_budget, replan_log: guard.replan_log.clone(), transition_history: guard.transition_history.clone(), substate: guard.substate };
+            persist_state(path, &persisted).await?;
+        }
+        Ok(())
+    }
+
     pub async fn exit_framing_to_planning(
         &self,
         phase_label: &str,

@@ -17,8 +17,9 @@
 //! `run_gates` delegation when a supervisor is installed, so exactly one gate
 //! path fires per operation (the double-gate hazard the contract test pins).
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_safety::blast_radius::{check_egress_host, check_fs_target, resolve_host_std};
@@ -287,6 +288,11 @@ pub struct InProcessSupervisor {
     /// which is called by the hook dispatcher after each completed dispatch cycle.
     /// Shared via `Arc<Mutex<VecDeque<HistoryEntry>>>` inside [`HistoryBuffer`].
     history: HistoryBuffer,
+    /// J-92: stored dispatch capability tokens, keyed by phase. Populated by
+    /// `record_dispatch_evidence`; consumed by `execute_directive` on the
+    /// `file_write` path when the kill-switch is ON. An empty map means no
+    /// prior-phase evidence was recorded — the file_write is Discarded.
+    dispatch_tokens: Mutex<HashMap<crate::orchestrator_dispatch_tokens::DispatchPhase, crate::orchestrator_dispatch_tokens::CapabilityToken>>,
 }
 
 impl std::fmt::Debug for InProcessSupervisor {
@@ -320,6 +326,7 @@ impl InProcessSupervisor {
             role_contract_store: None,
             sequence_rules: None,
             history: HistoryBuffer::new(),
+            dispatch_tokens: Mutex::new(HashMap::new()),
         }
     }
 
@@ -380,6 +387,22 @@ impl InProcessSupervisor {
     #[must_use]
     pub fn history_buffer(&self) -> HistoryBuffer {
         self.history.clone()
+    }
+
+    /// J-92: record prior-phase dispatch evidence by minting a capability token
+    /// and storing it for later consumption by `execute_directive`. This is the
+    /// production mint call site — a prior phase calls this with its evidence id
+    /// (e.g. a batch completion digest), and the `file_write` path later
+    /// consumes the stored token to prove the prior phase ran.
+    pub fn record_dispatch_evidence(
+        &self,
+        phase: crate::orchestrator_dispatch_tokens::DispatchPhase,
+        evidence_id: &str,
+    ) -> Result<(), crate::orchestrator_dispatch_tokens::DispatchTokenError> {
+        let token = crate::orchestrator_dispatch_tokens::mint_on_evidence(phase, evidence_id)?;
+        let mut map = self.dispatch_tokens.lock().expect("dispatch_tokens mutex poisoned");
+        map.insert(phase, token);
+        Ok(())
     }
 
     /// Run the E-30 argv gate for a shell directive. Pushes a Block finding on
@@ -502,6 +525,52 @@ impl InProcessSupervisor {
         OpFut: std::future::Future<Output = Result<(), String>>,
         CompFut: std::future::Future<Output = ()>,
     {
+        // J-92: the supervisor is the production dispatch-token seam. File writes
+        // require a stored capability token for ParallelBatch when the kill-switch
+        // is ON; default-off records an observe-only illegal-transition outcome
+        // and continues the legacy execution path.
+        if directive.tool_name == "file_write" {
+            if !crate::orchestrator_dispatch_tokens::orchestrator_fsm_tokens_enabled() {
+                let _ = crate::orchestrator_dispatch_tokens::refuse_illegal_transition(
+                    crate::orchestrator_dispatch_tokens::DispatchAction::EditPlanScope,
+                    "no prior-phase evidence check (observe)",
+                );
+                // Flag OFF: observe-only, continue legacy path.
+            } else {
+                let token = {
+                    let mut map = self
+                        .dispatch_tokens
+                        .lock()
+                        .expect("dispatch_tokens mutex poisoned");
+                    map.remove(
+                        &crate::orchestrator_dispatch_tokens::DispatchPhase::ParallelBatch,
+                    )
+                };
+                match token {
+                    None => {
+                        let _ = crate::orchestrator_dispatch_tokens::refuse_illegal_transition(
+                            crate::orchestrator_dispatch_tokens::DispatchAction::EditPlanScope,
+                            "missing ParallelBatch token",
+                        );
+                        self.emit_row(&directive, DirectiveOutcome::Discarded).await?;
+                        return Ok(DirectiveOutcome::Discarded);
+                    }
+                    Some(t) => {
+                        if crate::orchestrator_dispatch_tokens::consume_for_action(
+                            &t,
+                            crate::orchestrator_dispatch_tokens::DispatchPhase::ParallelBatch,
+                            crate::orchestrator_dispatch_tokens::DispatchAction::EditPlanScope,
+                        )
+                        .is_err()
+                        {
+                            self.emit_row(&directive, DirectiveOutcome::Discarded).await?;
+                            return Ok(DirectiveOutcome::Discarded);
+                        }
+                    }
+                }
+            }
+        }
+
         // Gate FIRST. A blocked directive is Discarded and the side effect
         // never runs (fail-closed: the generator cannot reach the sink).
         let gate = self.run_gates(&directive);
@@ -513,6 +582,20 @@ impl InProcessSupervisor {
         // Gates passed: run the side effect.
         match op().await {
             Ok(()) => {
+                // J-92: successful recon tools mint ParallelBatch evidence for later
+                // file_write consume.
+                if crate::orchestrator_dispatch_tokens::orchestrator_fsm_tokens_enabled()
+                    && matches!(
+                        directive.tool_name.as_str(),
+                        "Read" | "grep" | "Glob" | "context_compile" | "context-compiler"
+                    )
+                    && !directive.intent_id.trim().is_empty()
+                {
+                    let _ = self.record_dispatch_evidence(
+                        crate::orchestrator_dispatch_tokens::DispatchPhase::ParallelBatch,
+                        &directive.intent_id,
+                    );
+                }
                 self.emit_row(&directive, DirectiveOutcome::Executed).await?;
                 Ok(DirectiveOutcome::Executed)
             }
@@ -772,5 +855,54 @@ mod tests {
         );
         let outcome = sup.run_gates(&d);
         assert!(outcome.blocked, "out-of-root path must block via G-3 fs-escape");
+    }
+
+    #[tokio::test]
+    async fn <REDACTED_TOKEN>() {
+        // Kill-switch ON + no record_dispatch_evidence => file_write must be Discarded.
+        std::env::set_var(
+            crate::orchestrator_dispatch_tokens::ELAI_ORCHESTRATOR_FSM_TOKENS_ENABLE,
+            "1",
+        );
+        let sup = InProcessSupervisor::new("/tmp/j92-root");
+        let d = Directive::new(
+            "file_write",
+            serde_json::json!({ "source": "fn main() {}" }),
+            "intent-j92",
+            "agent-test",
+        );
+        let outcome = sup
+            .execute_directive(d, || async { Ok(()) }, || async {})
+            .await
+            .unwrap();
+        assert_eq!(outcome, DirectiveOutcome::Discarded);
+        std::env::remove_var(crate::orchestrator_dispatch_tokens::ELAI_ORCHESTRATOR_FSM_TOKENS_ENABLE);
+    }
+
+    #[tokio::test]
+    async fn <REDACTED_TOKEN>() {
+        // Kill-switch ON + record_dispatch_evidence => file_write must be Executed.
+        std::env::set_var(
+            crate::orchestrator_dispatch_tokens::ELAI_ORCHESTRATOR_FSM_TOKENS_ENABLE,
+            "1",
+        );
+        let sup = InProcessSupervisor::new("/tmp/j92-root");
+        sup.record_dispatch_evidence(
+            crate::orchestrator_dispatch_tokens::DispatchPhase::ParallelBatch,
+            "batch-complete-evidence",
+        )
+        .unwrap();
+        let d = Directive::new(
+            "file_write",
+            serde_json::json!({ "source": "fn main() {}" }),
+            "intent-j92",
+            "agent-test",
+        );
+        let outcome = sup
+            .execute_directive(d, || async { Ok(()) }, || async {})
+            .await
+            .unwrap();
+        assert_eq!(outcome, DirectiveOutcome::Executed);
+        std::env::remove_var(crate::orchestrator_dispatch_tokens::ELAI_ORCHESTRATOR_FSM_TOKENS_ENABLE);
     }
 }
