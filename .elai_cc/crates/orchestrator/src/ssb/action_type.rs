@@ -4881,6 +4881,9 @@ pub enum SsbActionType {
     /// J-73 Slice C: retrieval abstained event. Pattern-2 single-variant;
     /// 3-arm RetrievalAbstainedKind rides in payload.
     RetrievalAbstained,
+    /// J-78: context-access spec event. Pattern-2 single-variant;
+    /// 3-arm ContextAccessSpecKind rides in payload.
+    ContextAccessSpec,
 }
 
 impl SsbActionType {
@@ -5848,6 +5851,7 @@ impl SsbActionType {
             Self::HarnessInterventionEvent(_) => "harness_intervention_event",
             Self::FreePoolEvent => "free_pool_event",
             Self::RetrievalAbstained => "retrieval_abstained",
+            Self::ContextAccessSpec => "context_access_spec",
         }
     }
 }
@@ -6753,6 +6757,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         )),
         "free_pool_event" => Ok(SsbActionType::FreePoolEvent),
         "retrieval_abstained" => Ok(SsbActionType::RetrievalAbstained),
+        "context_access_spec" => Ok(SsbActionType::ContextAccessSpec),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

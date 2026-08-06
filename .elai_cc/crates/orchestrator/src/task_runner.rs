@@ -1524,6 +1524,36 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
             // clock produces deterministic latency values.
             let start = self.clock.now();
 
+            // J-78: OBSERVE-ONLY context-access spec. Compute the AccessSpec
+            // for this agent's role and emit a SpecDeclared SSB row BEFORE
+            // context injection. Tier-1 is observe-only (observe_only=true);
+            // out-of-spec reads are flagged but NOT hard-enforced. The spec
+            // composes the H-31 firewall (user_memory_firewall) — it does not
+            // re-author the match. When no SSB writer is installed the emit
+            // is silently skipped (test/legacy paths).
+            if let Some(writer) = self.ssb_writer.as_ref() {
+                let spec = crate::access_spec::compute_access_spec_for_agent_role(self.role);
+                crate::access_spec::emit_context_access_spec_declared(
+                    writer,
+                    &spec,
+                    true,
+                    &self.clock,
+                )
+                .await;
+                // OBSERVE-ONLY: if this role's spec denies user_memory but the
+                // dispatch path would inject it, flag the out-of-spec read.
+                // This is observe-only — no hard-enforce (no SpecEnforced emit).
+                if crate::access_spec::flag_out_of_spec_read(&spec, "user_memory") {
+                    crate::access_spec::emit_out_of_spec_read_flagged(
+                        writer,
+                        &spec,
+                        "user_memory",
+                        &self.clock,
+                    )
+                    .await;
+                }
+            }
+
             // Build the task string delivered to the agent. The escalation
             // message (from the anti-spiral detector) is prepended so it is
             // the first thing the agent sees on the next turn.

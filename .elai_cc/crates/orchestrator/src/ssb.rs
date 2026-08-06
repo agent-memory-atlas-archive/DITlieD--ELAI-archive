@@ -1636,6 +1636,8 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::FreePoolEvent,
     // J-73 Slice C: RetrievalAbstained (Pattern-2 flat; 3-arm Kind in payload).
     SsbActionType::RetrievalAbstained,
+    // J-78: ContextAccessSpec (Pattern-2 flat; 3-arm Kind in payload).
+    SsbActionType::ContextAccessSpec,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

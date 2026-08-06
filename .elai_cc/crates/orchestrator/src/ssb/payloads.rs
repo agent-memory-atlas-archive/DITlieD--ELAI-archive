@@ -3988,6 +3988,9 @@ pub enum SsbPayload {
     /// J-73 Slice C: retrieval abstained event. Pattern-2 single-variant;
     /// 3-arm RetrievalAbstainedKind rides in payload.
     RetrievalAbstained(RetrievalAbstainedPayload),
+    /// J-78: context-access spec event. Pattern-2 single-variant;
+    /// 3-arm ContextAccessSpecKind rides in payload.
+    ContextAccessSpec(ContextAccessSpecPayload),
 }
 
 impl SsbPayload {
@@ -4832,6 +4835,7 @@ impl SsbPayload {
                 SsbActionType::HarnessInterventionEvent(p.kind),
             Self::FreePoolEvent(_) => SsbActionType::FreePoolEvent,
             Self::RetrievalAbstained(_) => SsbActionType::RetrievalAbstained,
+            Self::ContextAccessSpec(_) => SsbActionType::ContextAccessSpec,
         }
     }
 }
@@ -21737,6 +21741,45 @@ pub struct RetrievalAbstainedPayload {
     pub observe_only: bool,
     /// Blake3 hex prefix of the query bytes.
     pub query_hash: String,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+
+// J-78: ContextAccessSpec substrate (spec declared / out-of-spec flagged / spec enforced)
+
+/// J-78 -- 3-arm discriminator carried by [`ContextAccessSpecPayload::kind`].
+/// Pattern-2 payload-field convention (mirrors RetrievalAbstainedKind).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextAccessSpecKind {
+    /// Access spec was declared for a role before context injection.
+    SpecDeclared,
+    /// A read was requested that is not in the declared spec (OBSERVE-ONLY flag).
+    OutOfSpecReadFlagged,
+    /// Spec was hard-enforced (reserved; Tier-1 does NOT emit this).
+    SpecEnforced,
+}
+
+/// J-78 -- payload for [`SsbActionType::ContextAccessSpec`].
+///
+/// Pattern-2 single-variant; 3-arm Kind rides in `kind`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextAccessSpecPayload {
+    /// Fire-point discriminator. See [`ContextAccessSpecKind`].
+    pub kind: ContextAccessSpecKind,
+    /// Agent role label for this spec.
+    pub role: String,
+    /// SSB row ids the role is allowed to read (Tier-1: empty — reserved).
+    pub allowed_ssb_row_ids: Vec<String>,
+    /// Sibling output ids the role is allowed to read (Tier-1: empty — reserved).
+    pub allowed_sibling_output_ids: Vec<String>,
+    /// Memory namespaces the role is allowed to read.
+    pub allowed_memory_namespaces: Vec<String>,
+    /// Whether observe-only mode was active (Tier-1: always true).
+    pub observe_only: bool,
+    /// Out-of-spec reads that were flagged (populated on OutOfSpecReadFlagged).
+    pub out_of_spec_flagged: Vec<String>,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
 }

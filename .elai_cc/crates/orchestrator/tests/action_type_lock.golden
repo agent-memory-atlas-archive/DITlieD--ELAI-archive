@@ -119,6 +119,7 @@ conformal_tau_computed
 conformal_validation_completed
 consensus_reevaluated_with_counter
 constraints_injected
+context_access_spec
 context_budget_computed
 context_calibration_event
 context_pruned

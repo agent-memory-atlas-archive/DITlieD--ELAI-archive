@@ -7,6 +7,10 @@ pub mod agent_role_dispatcher;
 // reviewer/auditor/critic/adversary role gets ZERO user-memory. Consumed by the CLI prompt-
 // assembly path (report_fns::build_system_prompt) and the user_memory_capture producer.
 pub mod user_memory_firewall;
+// J-78: context-access spec -- OBSERVE-ONLY declarative access spec composing
+// the H-31 firewall. Emitted as SsbActionType::ContextAccessSpec before context
+// injection at the baby-step executor dispatch site.
+pub mod access_spec;
 // I-13: Stage-2 write-time memory guard (aho-corasick invisible-Unicode +
 // confusable-shell scan). Composes the Stage-1 classify() gate in
 // elai_memory::defense. Gated behind ELAI_MEMORY_GUARD_ENABLE (default-OFF).

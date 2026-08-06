@@ -3930,6 +3930,17 @@ use crate::gate::RiskLevel;
                     query_hash: "deadbeef".into(),
                     ts_ms: 0,
                 }),
+            SsbActionType::ContextAccessSpec =>
+                SsbPayload::ContextAccessSpec(ContextAccessSpecPayload {
+                    kind: ContextAccessSpecKind::SpecDeclared,
+                    role: "Executor".into(),
+                    allowed_ssb_row_ids: Vec::new(),
+                    allowed_sibling_output_ids: Vec::new(),
+                    allowed_memory_namespaces: vec!["user_memory".into()],
+                    observe_only: true,
+                    out_of_spec_flagged: Vec::new(),
+                    ts_ms: 0,
+                }),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
             // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
             // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload
@@ -8739,6 +8750,17 @@ use crate::gate::RiskLevel;
                 query_hash: "deadbeef".into(),
                 ts_ms: 1_700_000_000_000,
             }),
+            // J-78: ContextAccessSpec flat variant. 1 new entry.
+            SsbPayload::ContextAccessSpec(ContextAccessSpecPayload {
+                kind: ContextAccessSpecKind::SpecDeclared,
+                role: "Executor".into(),
+                allowed_ssb_row_ids: Vec::new(),
+                allowed_sibling_output_ids: Vec::new(),
+                allowed_memory_namespaces: vec!["user_memory".into()],
+                observe_only: true,
+                out_of_spec_flagged: Vec::new(),
+                ts_ms: 1_700_000_000_000,
+            }),
         ]
     }
 
@@ -8750,8 +8772,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            497,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained",
+            498,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

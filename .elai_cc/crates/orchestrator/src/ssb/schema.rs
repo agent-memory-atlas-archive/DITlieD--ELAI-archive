@@ -5568,7 +5568,9 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- J-54 UNIT8: FreePoolEvent Pattern-2 flat; 3-arm Kind in payload.
         'free_pool_event',
         -- J-73 Slice C: RetrievalAbstained Pattern-2 flat; 3-arm Kind in payload.
-        'retrieval_abstained'
+        'retrieval_abstained',
+        -- J-78: ContextAccessSpec Pattern-2 flat; 3-arm Kind in payload.
+        'context_access_spec'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
