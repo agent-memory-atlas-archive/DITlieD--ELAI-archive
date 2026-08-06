@@ -85,6 +85,7 @@ mod freeze_cmd;
 // Reproducible-Run Artifact viewer + offline verifier. Wraps
 // elai_orchestrator::rra. See workflow/reasoning/G-2-decisions.md.
 mod rra_cmd;
+mod rra_reexecute_cmd;
 // J-14 S6b: `emit_j14_verify_repro_pack_events` split from rra_cmd.rs (MR-1).
 mod rra_verify_emit;
 // I-40: `elai rra verify <path>` — rra-spec-v1 spec-conformance checker.

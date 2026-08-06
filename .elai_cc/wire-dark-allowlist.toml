@@ -2372,3 +2372,12 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-89"
 smoke_test        = "crates/orchestrator/src/spec_bundle.rs::j89_spec_bundle_tests::evaluate_on_when_flag_set"
+
+# J-91: re-executable RRA (default-OFF kill_switch; cassette-only re-exec)
+[[flag]]
+name              = "ELAI_REEXECUTE_RRA_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-91"
+smoke_test        = "crates/orchestrator/src/rra_reexecute.rs::j91_reexecute_tests::export_cassette_roundtrip_and_reexecute_t0"

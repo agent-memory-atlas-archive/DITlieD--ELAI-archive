@@ -423,6 +423,7 @@ pub mod recovery_recipes;
 pub mod rra;
 pub mod rra_emit;
 pub mod rra_export;
+pub mod rra_reexecute;
 pub mod rra_tiers;
 pub mod stack_hash;
 // G-8 (SCHEMA_VERSION 213): signed in-toto v1 provenance attestation. Re-expresses

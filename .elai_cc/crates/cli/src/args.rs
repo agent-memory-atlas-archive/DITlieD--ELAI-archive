@@ -2227,6 +2227,11 @@ pub(crate) enum RraAction {
     /// `FixtureExtracted`). The `adapter` string is a passthrough label for
     /// J-91 (may be the empty string today).
     ExportFixture { bundle: PathBuf, adapter: String },
+    /// J-91 — `elai rra re-execute --cassette <path> [--tier T0|T1|T2]` —
+    /// cassette-only offline re-execution. Reads a `.fixture` cassette,
+    /// decodes the bundled RunArtifact, verifies it, and prints the
+    /// re-execution verdict. Default-OFF behind `ELAI_REEXECUTE_RRA_ENABLE`.
+    ReExecute { cassette: PathBuf, tier: String },
 }
 
 /// J-14 — CLI-side tier selector for `elai replay --verify --tier <t>`.
@@ -5768,8 +5773,56 @@ pub(crate) fn parse_rra_subcommand_args(
                 output_format,
             })
         }
+        // J-91 — `elai rra re-execute --cassette <path> [--tier T0|T1|T2]`:
+        // cassette-only offline re-execution. `--cassette` is required;
+        // `--tier` defaults to T0.
+        "re-execute" => {
+            let mut cassette: Option<PathBuf> = None;
+            let mut tier = String::from("T0");
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--cassette" => {
+                        i += 1;
+                        cassette = Some(PathBuf::from(
+                            rest.get(i).ok_or_else(|| {
+                                "`rra re-execute --cassette` requires a value".to_string()
+                            })?,
+                        ));
+                    }
+                    "--tier" => {
+                        i += 1;
+                        let val = rest.get(i).ok_or_else(|| {
+                            "`rra re-execute --tier` requires a value (T0|T1|T2)".to_string()
+                        })?;
+                        let upper = val.to_ascii_uppercase();
+                        match upper.as_str() {
+                            "T0" | "T1" | "T2" => tier = upper,
+                            _ => {
+                                return Err(format!(
+                                    "`rra re-execute --tier` must be T0, T1, or T2 (got {val})"
+                                ));
+                            }
+                        }
+                    }
+                    other => {
+                        return Err(format!(
+                            "unexpected argument after `rra re-execute`: {other}"
+                        ));
+                    }
+                }
+                i += 1;
+            }
+            let cassette = cassette.ok_or_else(|| {
+                "`rra re-execute` requires `--cassette <path>`".to_string()
+            })?;
+            Ok(CliAction::Rra {
+                action: RraAction::ReExecute { cassette, tier },
+                output_format,
+            })
+        }
         other => Err(format!(
-            "unknown `rra` sub-action `{other}`; expected: show <path> | verify <path> | export-fixture <bundle> [--adapter <name>]"
+            "unknown `rra` sub-action `{other}`; expected: show <path> | verify <path> | export-fixture <bundle> [--adapter <name>] | re-execute --cassette <path> [--tier T0|T1|T2]"
         )),
     }
 }

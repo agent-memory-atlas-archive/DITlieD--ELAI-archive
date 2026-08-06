@@ -59,6 +59,14 @@ pub use crate::rra_export::{
     export_fixture, export_fixture_with_clock, ExportFixtureResult, FixtureCassette,
     FixtureCassetteKey,
 };
+// J-91: re-export the cassette-only re-execution public surface from
+// rra_reexecute so existing CLI imports
+// (`elai_orchestrator::rra::{re_execute_rra, PinnedEnv, ReExecuteVerdict, ...}`)
+// resolve after the split.
+pub use crate::rra_reexecute::{
+    export_cassette, pin_environment, re_execute_rra, re_execute_rra_checked,
+    reexecute_rra_enabled, ELAI_REEXECUTE_RRA_ENABLE_ENV, PinnedEnv, ReExecuteVerdict,
+};
 
 /// `.rra` bundle format version. Bump only on an incompatible bundle-schema
 /// change (the dependents G-3/G-5/G-8/G-9/G-10 read this format).

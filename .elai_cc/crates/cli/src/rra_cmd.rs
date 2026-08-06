@@ -39,7 +39,6 @@ use crate::args::{
     CliOutputFormat, GoldenDemoMode, RerunDemoMode, ReplayAction, ReplayVerifyTier,
     ResultManifestDemoMode, RraAction,
 };
-
 /// H-23 — session id for the re-run hash-equality fixture session.
 const RERUN_SESSION_ID: &str = "elai-rerun-equality-fixture";
 
@@ -97,9 +96,14 @@ pub(crate) fn run_rra(action: RraAction, output_format: CliOutputFormat) -> Resu
         RraAction::ExportFixture { bundle, adapter } => {
             run_export_fixture(&bundle, &adapter, output_format)
         }
+        // J-91 — `elai rra re-execute --cassette <path> [--tier T0|T1|T2]`:
+        // cassette-only offline re-execution. Default-OFF behind
+        // `ELAI_REEXECUTE_RRA_ENABLE`.
+        RraAction::ReExecute { cassette, tier } => {
+            crate::rra_reexecute_cmd::run_re_execute(&cassette, &tier, output_format)
+        }
     }
 }
-
 /// J-14 — `elai rra export-fixture` handler. Drives
 /// [`elai_orchestrator::rra::export_fixture`], prints the key fields + the
 /// fixture path on success, and exits nonzero on failure (mirrors
@@ -150,7 +154,6 @@ fn run_export_fixture(
     Ok(())
 }
 
-/// `elai replay <sub>` dispatcher invoked by main.rs.
 pub(crate) fn run_replay(
     action: ReplayAction,
     output_format: CliOutputFormat,
@@ -226,7 +229,6 @@ fn render_show_text(art: &RunArtifact) {
     // `elai run` bundle; the full stream is always available via --output json.
     render_event_stream(art);
 }
-
 /// I-40 Step 5 — render the action-stream event rows in the text viewer.
 ///
 /// Each event row shows its append-only seq, SSB action_type wire tag, and
