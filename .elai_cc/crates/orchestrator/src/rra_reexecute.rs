@@ -223,7 +223,7 @@ pub fn re_execute_rra_checked(
     //    tier_effective always "T0" for this unit.
     let tier_upper = tier_requested.to_ascii_uppercase();
     if tier_upper == "T1" || tier_upper == "T2" {
-        downgrades.push("non_batch_invariant_or_unproven".to_owned());
+        downgrades.push(crate::attention_determinism_tier::ATTENTION_NOT_BATCH_INVARIANT_REASON.to_owned());
     }
 
     // 8. If pinned.oci_digest empty: downgrade env_pin_incomplete_oci.
@@ -392,7 +392,7 @@ mod j91_reexecute_tests {
         assert_eq!(verdict.tier_effective, "T0");
         assert_eq!(verdict.tier_requested, "T1");
         assert!(
-            verdict.downgrades.contains(&"non_batch_invariant_or_unproven".to_owned()),
+            verdict.downgrades.contains(&crate::attention_determinism_tier::ATTENTION_NOT_BATCH_INVARIANT_REASON.to_owned()),
             "T1 request should downgrade non_batch_invariant_or_unproven: {:?}",
             verdict.downgrades
         );

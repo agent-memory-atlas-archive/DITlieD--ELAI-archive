@@ -329,12 +329,30 @@ fn grade_tier(art: &RunArtifact, tier_requested: TierVerdictLabel) -> TierVerdic
         // downgraded to T0 with a recorded reason. Later slices wire the
         // token-stream blake3 equality (T1) once J-13's path is threaded
         // through verify.
-        (Some(_da), L::TokenFaithful) => TierVerdict::Downgraded {
-            downgrade: TierDowngrade {
-                from: L::TokenFaithful,
-                to: L::ActionFaithful,
-                reason: "token-stream blake3 equality not yet wired in verify leg".to_owned(),
-            },
+        (Some(da), L::TokenFaithful) => {
+            use crate::attention_determinism_tier::{
+                attention_batch_invariant_from_controls, attention_determinism_tier,
+                AttentionDeterminismTier,
+            };
+            match attention_determinism_tier(
+                attention_batch_invariant_from_controls(&da.env_controls),
+            ) {
+                AttentionDeterminismTier::T0Forced { reason } => TierVerdict::Downgraded {
+                    downgrade: TierDowngrade {
+                        from: L::TokenFaithful,
+                        to: L::ActionFaithful,
+                        reason: reason.to_owned(),
+                    },
+                },
+                AttentionDeterminismTier::T1Eligible => TierVerdict::Downgraded {
+                    downgrade: TierDowngrade {
+                        from: L::TokenFaithful,
+                        to: L::ActionFaithful,
+                        reason: "token-stream blake3 equality not yet wired in verify leg"
+                            .to_owned(),
+                    },
+                },
+            }
         },
         (Some(_da), L::ScoreFaithful) => TierVerdict::Downgraded {
             downgrade: TierDowngrade {
@@ -492,9 +510,9 @@ mod j14_tiered_verify_tests {
             Some(TierVerdict::Downgraded { downgrade }) => {
                 assert_eq!(downgrade.from, TierVerdictLabel::TokenFaithful);
                 assert_eq!(downgrade.to, TierVerdictLabel::ActionFaithful);
-                assert!(
-                    !downgrade.reason.is_empty(),
-                    "downgrade reason must be non-empty (never silent)"
+                assert_eq!(
+                    downgrade.reason,
+                    crate::attention_determinism_tier::ATTENTION_NOT_BATCH_INVARIANT_REASON
                 );
             }
             other => panic!("expected Downgraded, got {:?}", other),

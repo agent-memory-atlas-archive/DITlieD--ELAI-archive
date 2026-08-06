@@ -439,6 +439,7 @@ pub mod rra;
 pub mod rra_emit;
 pub mod rra_export;
 pub mod rra_reexecute;
+pub mod attention_determinism_tier;
 pub mod rra_tiers;
 pub mod stack_hash;
 // G-8 (SCHEMA_VERSION 213): signed in-toto v1 provenance attestation. Re-expresses
@@ -2181,6 +2182,11 @@ pub use review_anchor::{
 // rra_cmd / run_subcommand emit + dashboard-v2 commands_g2.rs + contract tests
 // can build / write / verify a .rra without reaching into `orchestrator::rra`
 // internals.
+pub use attention_determinism_tier::{
+    attention_batch_invariant_from_controls, attention_determinism_tier,
+    AttentionDeterminismTier, ATTENTION_BATCH_INVARIANT_FLAG,
+    ATTENTION_NOT_BATCH_INVARIANT_REASON,
+};
 pub use rra::{
     build_rra, canonical_objective_bytes, compute_root, read_rra, verify_artifact,
     verify_artifact_with_objective, verify_rra, write_rra,
