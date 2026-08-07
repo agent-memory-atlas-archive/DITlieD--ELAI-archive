@@ -1,4 +1,4 @@
-.//! Honest labeling for degraded retrieval context.
+//! Honest labeling for degraded retrieval context.
 
 /// Marker attached when retrieval is operating below the full hybrid mode.
 #[derive(Debug, Clone, PartialEq, Eq)]

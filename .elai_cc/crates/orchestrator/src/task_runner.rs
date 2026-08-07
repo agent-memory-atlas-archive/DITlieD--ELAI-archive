@@ -5613,6 +5613,7 @@ async fn run_parallel_phases_via_bsp(
         .as_ref()
         .map(|cp| cp.scratch_dir.clone())
         .unwrap_or_else(|| PathBuf::from("."));
+    let mut shared_workspace_pool: Option<crate::sandbox::WorktreePoolImpl> = None;
 
     for concept in &decomposition.concepts {
         for phase in &concept.phases {
@@ -5668,8 +5669,14 @@ async fn run_parallel_phases_via_bsp(
                 &scratch_root,
             ) {
                 Ok(toplevel) => {
-                    let pool = crate::sandbox::WorktreePoolImpl::new(toplevel, &session_id)
-                        .with_ssb(Arc::clone(writer));
+                    let pool = shared_workspace_pool
+                        .clone()
+                        .unwrap_or_else(|| {
+                            let created = crate::sandbox::WorktreePoolImpl::new(toplevel, &session_id)
+                                .with_ssb(Arc::clone(writer));
+                            shared_workspace_pool = Some(created.clone());
+                            created
+                        });
                     let mut branches = Vec::with_capacity(node_specs.len());
                     let mut spawn_failed = false;
                     for node in &node_specs {
@@ -5789,9 +5796,10 @@ async fn run_parallel_phases_via_bsp(
             // retry on the Windows handle race; a leaked scratch worktree is
             // logged, never fatal. `None` when workspace isolation was not wired
             // for this phase (toplevel-resolve or spawn failed earlier).
-            if let Some(pool) = &workspace {
-                pool.prune().await;
-            }
+            // Keep the pool alive across phases so an identical node id can
+            // warm-reuse its worktree on the next phase. Final teardown is owned
+            // by the task drive rather than each phase.
+            let _ = &workspace;
         }
     }
 }

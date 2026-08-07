@@ -1,4 +1,4 @@
-.//! J-93 LEG-F — non-LLM ground-truth labels from the SSB outcome stream.
+//! J-93 LEG-F — non-LLM ground-truth labels from the SSB outcome stream.
 //! Deterministic. No LLM. OBSERVE-ONLY under kill-switch.
 
 /// Env kill-switch. Default OFF.

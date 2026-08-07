@@ -858,7 +858,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn <REDACTED_TOKEN>() {
+    async fn file_write_discarded_when_killswitch_on_without_evidence() {
         // Kill-switch ON + no record_dispatch_evidence => file_write must be Discarded.
         std::env::set_var(
             crate::orchestrator_dispatch_tokens::ELAI_ORCHESTRATOR_FSM_TOKENS_ENABLE,
@@ -880,7 +880,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn <REDACTED_TOKEN>() {
+    async fn file_write_executed_when_killswitch_on_with_evidence() {
         // Kill-switch ON + record_dispatch_evidence => file_write must be Executed.
         std::env::set_var(
             crate::orchestrator_dispatch_tokens::ELAI_ORCHESTRATOR_FSM_TOKENS_ENABLE,

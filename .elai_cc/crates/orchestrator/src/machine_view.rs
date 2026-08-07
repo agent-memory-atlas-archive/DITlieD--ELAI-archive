@@ -113,7 +113,7 @@ mod j88_machine_view_tests {
     #[test]
     fn project_drops_finding_messages() {
         let view = project_from_audit_result(&result(
-            "fn safe_delete() { std::fs::remove_dir_all("/"); }",
+            "fn safe_delete() { std::fs::remove_dir_all(\"/\"); }",
             DeterministicSeverity::Block,
         ));
         let rendered = format!("{view:?}");

@@ -331,6 +331,52 @@ impl BranchWorkspace for WorktreePoolImpl {
     ) -> Result<BranchRoot, BranchWorkspaceError> {
         let root = self.scratch_base.join(branch_id);
 
+        // Heal vanished idle entries before selecting a warm root. The pool mutex is
+        // held only while cloning/removing paths; no await occurs under this guard.
+        let reusable = {
+            let mut pool = self.pool.lock().await;
+            pool.retain(|_, candidate| candidate.is_dir());
+            pool.get(branch_id).cloned()
+        };
+
+        let mut reused = false;
+        if let Some(existing) = reusable {
+            // Never hand an unknown-state worktree to a new phase. Detach at the
+            // current HEAD and remove ignored/untracked files, without reset-hard.
+            let checkout = Command::new("git")
+                .arg("checkout")
+                .arg("--detach")
+                .arg("HEAD")
+                .current_dir(&existing)
+                .output();
+            let clean = checkout.as_ref().ok().filter(|o| o.status.success()).is_some()
+                .then(|| Command::new("git").arg("clean").arg("-fdx").current_dir(&existing).output());
+            if clean.as_ref().and_then(|r| r.as_ref().ok()).is_some_and(|o| o.status.success()) {
+                reused = true;
+            } else {
+                let mut pool = self.pool.lock().await;
+                pool.remove(branch_id);
+                let _ = Command::new("git")
+                    .arg("worktree").arg("remove").arg("--force").arg(&existing)
+                    .current_dir(&self.toplevel).output();
+            }
+            if reused {
+                let payload = SsbPayload::BranchWorkspaceEvent(BranchWorkspaceEventPayload {
+                    kind: BranchWorkspaceEventKind::Spawned,
+                    branch_id: branch_id.to_owned(),
+                    session_id: session_id.to_owned(),
+                    worktree_root_blake3: worktree_root_blake3(existing.as_path()),
+                    conflict_path: None,
+                });
+                let seq = match &self.ssb {
+                    Some(ssb) => ssb.write_payload(WORKSPACE_EMITTER_AGENT_ID, self.superstep, payload, vec![])
+                        .await.map_err(|e| BranchWorkspaceError::Ssb(e.to_string()))?,
+                    None => self.pool.lock().await.len() as i64,
+                };
+                return Ok(BranchRoot { branch_id: branch_id.to_owned(), root: existing, seq });
+            }
+        }
+
         // Ensure the scratch base exists. mkdir -p semantics; failure is fatal
         // (we cannot isolate a branch without its root) and surfaced as Io.
         if let Some(parent) = root.parent() {

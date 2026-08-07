@@ -8,8 +8,8 @@ fn sorted(v: &Value) -> Value {
     match v {
         Value::Object(m) => {
             let mut out = Map::new();
-            let sorted: BTreeMap<_, _> = m.iter().map(|(k, v)| (k, v)).collect();
-            for (k, child) in sorted { out.insert(k.clone(), sorted(child)); }
+            let sorted_entries: BTreeMap<_, _> = m.iter().map(|(k, v)| (k, v)).collect();
+            for (k, child) in sorted_entries { out.insert(k.clone(), sorted(child)); }
             Value::Object(out)
         }
         Value::Array(a) => Value::Array(a.iter().map(sorted).collect()),
