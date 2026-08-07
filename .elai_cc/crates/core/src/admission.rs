@@ -61,17 +61,17 @@ pub fn scan_instruction_surface(text: &str) -> AdmissionVerdict {
     }
 
     let lowercase = text.to_lowercase();
-    let directive_parts = vec![
-        ["ignore", "previous", "instructions"],
-        ["ignore", "all", "gates"],
-        ["ignore", "all", "rules"],
-        ["disregard", "the", "above"],
-        ["forget", "instructions"],
-        ["new", "instructions"],
-        ["you", "are", "now"],
+    let directive_parts: &[&[&str]] = &[
+        &["ignore", "previous", "instructions"],
+        &["ignore", "all", "gates"],
+        &["ignore", "all", "rules"],
+        &["disregard", "the", "above"],
+        &["forget", "instructions"],
+        &["new", "instructions"],
+        &["you", "are", "now"],
     ];
     if directive_parts
-        .into_iter()
+        .iter()
         .map(|parts| parts.join(" "))
         .any(|phrase| lowercase.contains(&phrase))
     {
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects nameless_frontmatter() {
+    fn rejects_nameless_frontmatter() {
         let fence = ["-", "-", "-"].concat();
         let verdict = scan_instruction_surface(&format!("{fence}\ntitle: x\n{fence}\n"));
         assert!(has_rule(&verdict, AdmissionRule::InvalidFrontmatter));

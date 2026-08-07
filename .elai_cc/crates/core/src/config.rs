@@ -35,7 +35,7 @@ pub struct ConfigEntry {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmissionScanRow {
     pub path: PathBuf,
     pub content_hash: String,
