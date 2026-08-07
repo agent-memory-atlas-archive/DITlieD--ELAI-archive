@@ -1,4 +1,5 @@
 mod bootstrap;
+pub mod admission;
 pub mod bounded_string;
 pub mod clock;
 pub mod config;
@@ -22,7 +23,7 @@ pub mod vram_tier;
 
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use config::{
-    ConfigEntry, ConfigError, ConfigLoader, ConfigSource, McpConfigCollection,
+    AdmissionScanRow, ConfigEntry, ConfigError, ConfigLoader, ConfigSource, McpConfigCollection,
     McpManagedProxyServerConfig, McpOAuthConfig, McpRemoteServerConfig, McpSdkServerConfig,
     McpServerConfig, McpStdioServerConfig, McpTransport, McpWebSocketServerConfig, OAuthConfig,
     ResolvedPermissionMode, RuntimeConfig, RuntimeFeatureConfig, RuntimeHookConfig,
