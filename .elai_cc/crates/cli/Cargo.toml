@@ -19,6 +19,7 @@ futures-util = "0.3"
 # and knowledge on the same blake3 version (CLAUDE.md anti-stale: never
 # blake2/sha2 for non-RFC uses).
 blake3 = "1.8"
+rmp-serde = "1.3"
 crossterm = "0.28"
 elai-core = { path = "../core" }
 # J-26 S5: eval-corpus ingest CLI verb — workspace-internal path dep

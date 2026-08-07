@@ -85,6 +85,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "context-fill" {
         return parse_bench_context_fill_args(&rest[1..]);
     }
+    if sub == "longcot" {
+        return parse_bench_longcot_args(&rest[1..]);
+    }
     if sub == "positional-probe" {
         return parse_bench_positional_probe_args(&rest[1..]);
     }
@@ -126,7 +129,7 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'steering-vs-prompt' | 'retrieval-adapt' | 'rrf-ablate' | 'tool-output' | 'perception-faithfulness')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'longcot' | 'steering-vs-prompt' | 'retrieval-adapt' | 'rrf-ablate' | 'tool-output' | 'perception-faithfulness')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -1558,6 +1561,56 @@ fn parse_bench_context_fill_args(rest: &[String]) -> Result<crate::args::CliActi
         .map(std::path::PathBuf::from)
         .ok_or_else(|| "`bench context-fill` requires --suite <PATH>".to_string())?;
     Ok(crate::args::CliAction::BenchContextFill { suite, seeds, json })
+}
+
+// J-107: `elai bench longcot --suite <PATH> [--seeds <u32>] [--json]`
+fn parse_bench_longcot_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut suite: Option<String> = None;
+    let mut seeds: u32 = 0; // 0 = use config's seed_count
+    let mut json: bool = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--suite" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --suite".to_string())?;
+                suite = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--suite=") => {
+                suite = Some(flag["--suite=".len()..].to_string());
+                i += 1;
+            }
+            "--seeds" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --seeds".to_string())?;
+                seeds = value
+                    .parse::<u32>()
+                    .map_err(|e| format!("invalid --seeds value '{value}': {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--seeds=") => {
+                let raw = &flag["--seeds=".len()..];
+                seeds = raw
+                    .parse::<u32>()
+                    .map_err(|e| format!("invalid --seeds value '{raw}': {e}"))?;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench longcot` argument: {other}"));
+            }
+        }
+    }
+    let suite = suite
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "`bench longcot` requires --suite <PATH>".to_string())?;
+    Ok(crate::args::CliAction::BenchLongcot { suite, seeds, json })
 }
 
 // J-34 leg-3: `elai bench positional-probe --suite <PATH> [--seeds <u32>] [--json]`

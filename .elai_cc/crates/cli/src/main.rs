@@ -424,6 +424,7 @@ mod bench_convergence;
 // CalibrationArtifactStore::insert_with_ssb (slice-2 seam). Live per-model
 // inference leg deferred (WIRE-DARK[J-34.leg1-live]).
 mod bench_context_fill;
+mod bench_longcot;
 mod bench_positional_probe;
 // K-18a (PS-5 observe arm): `elai bench case-reuse [--suite fixture] [--seed N]
 // [--json]` — recurrence-hit-rate over the shipped BM25 retrieval stack. Drives
@@ -1587,6 +1588,10 @@ fn run() -> Result<(), anyhow::Error> {
         // leg deferred (WIRE-DARK[J-34.leg1-live]). Exits 0/1.
         CliAction::BenchContextFill { suite, seeds, json } => {
             bench_context_fill::run(suite, seeds, json)?;
+        }
+        // J-107: LongCoT two-arm fixture benchmark.
+        CliAction::BenchLongcot { suite, seeds, json } => {
+            bench_longcot::run(suite, seeds, json)?;
         }
         // J-34 leg-3: positional-value curve fixture harness. Builds a
         // PositionalValueCurve at depth fractions 0.0/0.25/0.5/0.75/1.0,

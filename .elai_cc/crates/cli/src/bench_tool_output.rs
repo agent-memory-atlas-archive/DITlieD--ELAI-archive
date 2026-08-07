@@ -5,7 +5,7 @@ fn builtin_fixture() -> String {
     let mut object = serde_json::Map::new();
     for i in 0..96 {
         object.insert(format!("record_{i:03}"), serde_json::json!({
-            "id": i, "status": "ok", "payload": format!("deterministic payload {i} "+"x".repeat(48))
+            "id": i, "status": "ok", "payload": format!("deterministic payload {i} {}", "x".repeat(48))
         }));
     }
     let json = serde_json::Value::Object(object).to_string();

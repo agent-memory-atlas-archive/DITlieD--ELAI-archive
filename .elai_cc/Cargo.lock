@@ -1497,6 +1497,7 @@ dependencies = [
  "futures-util",
  "pulldown-cmark",
  "reqwest 0.12.28",
+ "rmp-serde",
  "rusqlite",
  "rustc-hash",
  "rustyline",

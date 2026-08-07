@@ -5349,6 +5349,7 @@ mod tests {
             CompactionConfig {
                 preserve_recent_messages: 2,
                 max_estimated_tokens: 1,
+                preserve_intermediate_numerics: false,
             },
         )
         .expect("slash command should be handled");
