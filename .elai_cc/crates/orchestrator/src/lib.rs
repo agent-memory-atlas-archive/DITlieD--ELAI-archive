@@ -358,6 +358,7 @@ pub mod decision_governance;
 // Mount points: task_runner.rs post-PhaseComplete (Completion) and
 // post-emit_autonomous_decision for RequestHuman (NeedsInput).
 pub mod notify_dispatch;
+pub mod voice;
 // F-1 VibeGate: compound security evaluator + secret regex patterns.
 // vibegate_secrets is a private impl module (regex set); vibegate is the
 // public surface wired into hook_dispatcher::InProcessHookDispatcher.

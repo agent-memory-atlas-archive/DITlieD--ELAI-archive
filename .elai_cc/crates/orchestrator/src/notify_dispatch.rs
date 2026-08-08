@@ -1,4 +1,4 @@
-//! H-36 -- NotificationDispatcher: completion / needs-input dev-event alerts.
+//! H-36/J-112 -- NotificationDispatcher: completion / needs-input dev-event alerts.
 //!
 //! Fires a terminal-escape (OSC 9 / BEL) and an optional OS notification when a
 //! task COMPLETES (PhaseComplete) or NEEDS INPUT (AutonomyDecision::RequestHuman).
@@ -12,6 +12,8 @@
 //!
 //! OS notification is gated by `ELAI_NOTIFY_ENABLE` (default-OFF kill_switch;
 //! see wire-dark-allowlist.toml). Terminal escape and SSB row fire unconditionally.
+//! Spoken rendering is gated by `ELAI_VOICE_ENABLE` (default-OFF); it renders via
+//! `voice::spoken_render`; TTS dispatch is a later slice.
 //!
 //! personal_agent_risk FAIL-CLOSED: exactly two code-defined trigger kinds
 //! (Completion, NeedsInput). No per-user thresholds, no learned preferences, no
@@ -31,6 +33,7 @@ use tracing::{info, warn};
 use elai_core::clock::{ClockProvider, OsClock};
 
 use crate::ssb::{AgentNotificationEmittedPayload, AgentNotificationKind, Ssb, SsbPayload};
+use crate::voice::spoken_render::render_spoken;
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -58,6 +61,8 @@ pub struct NotificationDispatcher {
     /// Whether to spawn the OS-level notification binary (ELAI_NOTIFY_ENABLE).
     /// Terminal escape and SSB row always fire; this only gates the platform spawn.
     os_enabled: bool,
+    /// Whether deterministic spoken rendering is enabled (ELAI_VOICE_ENABLE).
+    voice_enabled: bool,
     /// Clock for ts_ms field in the SSB payload. Injected for test determinism.
     clock: Arc<dyn ClockProvider>,
 }
@@ -66,6 +71,7 @@ impl std::fmt::Debug for NotificationDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotificationDispatcher")
             .field("os_enabled", &self.os_enabled)
+            .field("voice_enabled", &self.voice_enabled)
             .finish_non_exhaustive()
     }
 }
@@ -76,6 +82,7 @@ impl NotificationDispatcher {
     pub fn from_env() -> Self {
         Self {
             os_enabled: env_truthy("ELAI_NOTIFY_ENABLE"),
+            voice_enabled: env_truthy("ELAI_VOICE_ENABLE"),
             clock: Arc::new(OsClock),
         }
     }
@@ -152,6 +159,19 @@ impl NotificationDispatcher {
                 spawned,
                 "notify_dispatch: OS notification dispatch"
             );
+        }
+
+        // --- Spoken rendering -----------------------------------------------
+        // Bit 2 records deterministic rendering; TTS transport is a later slice.
+        if self.voice_enabled {
+            surfaces_attempted |= 0b100;
+            let spoken_text = render_spoken(ssb_kind, session_id, now_ms);
+            info!(
+                kind = ?ssb_kind,
+                spoken_text = %spoken_text,
+                "notify_dispatch: spoken target rendered"
+            );
+            surfaces_succeeded |= 0b100;
         }
 
         // --- SSB row (off-agent artifact, R1/R4) ----------------------------
