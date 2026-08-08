@@ -984,6 +984,21 @@ smoke_test        = "crates/orchestrator/src/runtime_orchestrator.rs::try_comple
 # promotion_plan_id = "E-8"
 # smoke_test        = "python/elai_optimizer/tests/test_optimizer_admit_lifecycle.py"
 
+# D-7 Slice 1: ELAI_PROMPT_OPTIMIZER_ENABLE live row. The Rust CLI
+# optimize_cmd.rs now reads the Python optimizer envelope, runs the
+# admit_optimized_template gate (hash + LPO + lift + canary), and
+# extends OptimizeRunReport with admitted/admission_error/
+# content_blake3/optimization_run_id. The smoke_test drives the clean
+# envelope admit path end-to-end (hash round-trip + LPO + lift pass).
+# promotion_plan_id = D-7 (cross-domain canary closure).
+[[flag]]
+name              = "ELAI_PROMPT_OPTIMIZER_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "D-7"
+smoke_test        = "crates/cli/src/optimize_cmd.rs::tests::admit_clean_envelope_ok"
+
 # E-9: eval benchmark runners. Const eval_cmd.rs:49 ENV_GATE; 11 Python bench runs
 # RUNPOD-pending.
 [[flag]]
