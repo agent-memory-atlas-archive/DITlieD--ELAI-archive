@@ -41,7 +41,8 @@ use std::sync::Arc;
 
 use elai_core::clock::{ClockProvider, OsClock};
 
-use crate::belief_state::{BeliefState, TriedApproach};
+use crate::belief_state::{AtomKind, BeliefState, CriticalAtom, TriedApproach};
+use crate::handoff_faithfulness::enforce_belief_handoff_faithfulness;
 use crate::cloud_mode::{
     CloudConfig, CloudCredentials, CloudModeError, CloudModeRouter, ExecMode, RoutedProvider,
 };
@@ -111,6 +112,9 @@ pub enum EscalationWaterfallError {
     /// The H-7 cloud routing seam refused the escalation hop.
     #[error("cloud route refused: {0}")]
     Route(#[from] CloudModeError),
+    /// The condensed handoff omitted a required critical atom.
+    #[error("handoff faithfulness gate refused: {0} missing atoms")]
+    Faithfulness(usize),
     /// An `EscalationCascade` SSB receipt write failed.
     #[error("escalation-cascade SSB write failed: {0}")]
     Ssb(#[from] SsbError),
@@ -236,14 +240,27 @@ impl EscalationWaterfall {
                 token_cost: 0,
             })
             .collect();
-        Ok(BeliefState::new(
+        let atoms: Vec<CriticalAtom> = failed_because
+            .iter()
+            .filter(|reason| !reason.is_empty())
+            .map(|reason| CriticalAtom {
+                kind: AtomKind::BugLocation,
+                value: reason.clone(),
+                must_preserve: true,
+            })
+            .collect();
+        let constraints = failed_because.clone();
+        let belief = BeliefState::new(
             tried,
             failed_because,
             Vec::new(),
-            Vec::new(),
+            constraints,
             Vec::new(),
             0,
-        ))
+        ).with_critical_atoms(atoms);
+        enforce_belief_handoff_faithfulness(&belief)
+            .map_err(|error| EscalationWaterfallError::Faithfulness(error.missing.len()))?;
+        Ok(belief)
     }
 
     /// Emit one `EscalationCascade` lifecycle row (best-effort observability: a

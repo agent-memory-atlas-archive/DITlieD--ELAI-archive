@@ -7,7 +7,7 @@
 //!
 //! Schema:
 //!   BeliefState { version, tried, failed_because, current_ast_state,
-//!                 constraints, dkg_entities, token_delta }
+//!                 constraints, dkg_entities, token_delta, critical_atoms }
 //!   Version mismatch on decode -> BeliefStateVersionMismatch (fail-closed).
 //!   Serialization: rmp_serde (MessagePack, already in orchestrator Cargo.toml).
 //!   Hash: blake3 only (CLAUDE.md Anti-Stale-Training).
@@ -56,6 +56,30 @@ pub enum BeliefStateError {
 
 /// One tried approach, carried in the handoff payload so the receiving model
 /// does not repeat a known-failed path.
+/// Kind of a decision-relevant atom the handoff must preserve (TD-3: orchestrator sets these).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AtomKind {
+    FilePath,
+    Symbol,
+    TestName,
+    LineSpan,
+    BugLocation,
+    SafetyConstraint,
+    Other,
+}
+
+/// One critical atom for the handoff-faithfulness gate (K-12 R2).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CriticalAtom {
+    pub kind: AtomKind,
+    /// Exact string that must appear in the projected context when must_preserve.
+    pub value: String,
+    /// When true the faithfulness gate refuses a projection that drops this value.
+    /// LLM never sets this (TD-3) — only orchestrator / structured sources.
+    pub must_preserve: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TriedApproach {
     /// Short label for the approach (e.g. "async trait + spawn").
@@ -88,6 +112,9 @@ pub struct BeliefState {
     pub dkg_entities: Vec<i64>,
     /// Tokens saved by `adaptive_reduce` before encoding (for the HonestyDelta ledger).
     pub token_delta: u32,
+    /// K-12 R2: critical atoms for the handoff-faithfulness gate.
+    #[serde(default)]
+    pub critical_atoms: Vec<CriticalAtom>,
 }
 
 impl BeliefState {
@@ -110,7 +137,14 @@ impl BeliefState {
             constraints,
             dkg_entities,
             token_delta,
+            critical_atoms: Vec::new(),
         }
+    }
+
+    /// Set the critical atoms carried by this belief state.
+    pub fn with_critical_atoms(mut self, atoms: Vec<CriticalAtom>) -> Self {
+        self.critical_atoms = atoms;
+        self
     }
 
     /// Serialize to MessagePack bytes.
