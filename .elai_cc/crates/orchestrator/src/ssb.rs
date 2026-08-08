@@ -1290,6 +1290,8 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::GrammarGateEvent(GrammarGateEventKind::CranePassed),
     // I-38 (SCHEMA_VERSION 235, 2026-06-12): QdeltaMeasured -- flat beacon. 543 -> 544.
     SsbActionType::QdeltaMeasured,
+    // I-16: KvCacheTuned flat beacon.
+    SsbActionType::KvCacheTuned,
     // I-43 (SCHEMA_VERSION 236, 2026-06-12): ClaimScopeMeasured -- Pattern-2 single-variant
     // 3-arm ClaimScopeMeasuredKind. PilotDelta representative in this lock array. 544 -> 545.
     SsbActionType::ClaimScopeMeasured(ClaimScopeMeasuredKind::PilotDelta),

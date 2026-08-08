@@ -5162,6 +5162,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- Emitted by cli::bench_qdelta::run_inner after floor_check passes.
         -- Default-ON via bench entrypoint; no ELAI_*_ENABLE gate.
         'qdelta_measured',
+        -- I-16: KV-cache tuning dry-run flat beacon.
+        'kv_cache_tuned',
         -- I-43 (SCHEMA_VERSION 236): ClaimScopeMeasured -- reproducibility-claim scoper kill-gate.
         -- Pattern-2 single-variant 3-arm ClaimScopeMeasuredKind: PilotDelta / CrossLaneDivergence / ClaimScoped.
         -- Emitted by cli::bench_claim_scope::run_inner. Default-ON; no ELAI_*_ENABLE gate.

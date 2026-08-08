@@ -3684,6 +3684,8 @@ pub enum SsbPayload {
     /// I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate flat beacon.
     /// Mirrors [`SafetyDeltaMeasured`] shape. TOTAL_VARIANTS 543 -> 544.
     QdeltaMeasured(QdeltaMeasuredPayload),
+    /// I-16: KV-cache tuning dry-run result.
+    KvCacheTuned(KvCacheTunedPayload),
     /// I-43 (SCHEMA_VERSION 236): reproducibility-claim scoper + kill-gate.
     /// Pattern-2 single-variant 3-arm [`ClaimScopeMeasuredKind`]:
     /// - `PilotDelta`: reduced-N pilot signal + reviewer-reaching-rate trap detector.
@@ -4751,6 +4753,7 @@ impl SsbPayload {
             Self::ObjectiveSealed(_) => SsbActionType::ObjectiveSealed(ObjectiveSealedKind::Sealed),
             Self::GrammarGateEvent(_) => SsbActionType::GrammarGateEvent(GrammarGateEventKind::CranePassed),
             Self::QdeltaMeasured(_) => SsbActionType::QdeltaMeasured,
+            Self::KvCacheTuned(_) => SsbActionType::KvCacheTuned,
             Self::ClaimScopeMeasured(_) => SsbActionType::ClaimScopeMeasured(ClaimScopeMeasuredKind::PilotDelta),
             Self::CacheEconomicsEvent(_) => SsbActionType::CacheEconomicsEvent(CacheEconomicsEventKind::TtlPlanned),
             Self::TrajectoryAborted(_) => SsbActionType::TrajectoryAborted(TrajectoryAbortedKind::Voluntary),
@@ -16464,6 +16467,17 @@ pub struct QdeltaMeasuredPayload {
     pub corpus_blake3: String,
     /// `true` = Tier-1 fixture only; live-model leg is deferred (D-026).
     pub runpod_pending: bool,
+}
+
+/// I-16: flat KV-cache tuning beacon.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KvCacheTunedPayload {
+    pub vram_gb: Option<f64>,
+    pub tok_s: Option<f64>,
+    pub fixture_pass_rate: f64,
+    pub config_hash: String,
+    pub adopt_decision: String,
 }
 
 /// I-43: discriminator arm for [`ClaimScopeMeasuredPayload`].

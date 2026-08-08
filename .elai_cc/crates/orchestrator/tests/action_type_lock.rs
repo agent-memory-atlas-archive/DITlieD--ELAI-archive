@@ -1476,6 +1476,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::GrammarGateEvent(_) => (),
         // I-38 (SCHEMA_VERSION 235): QdeltaMeasured flat beacon.
         SsbActionType::QdeltaMeasured => (),
+        SsbActionType::KvCacheTuned => (),
         // I-43 (SCHEMA_VERSION 236): ClaimScopeMeasured Pattern-2 3-arm claim-scoper kill-gate.
         SsbActionType::ClaimScopeMeasured(_) => (),
         // I-10 (SCHEMA_VERSION 237): CacheEconomicsEvent Pattern-2 3-arm cache-economics guard.

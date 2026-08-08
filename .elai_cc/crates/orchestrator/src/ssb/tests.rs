@@ -8198,6 +8198,14 @@ use crate::gate::RiskLevel;
                 corpus_blake3: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".into(),
                 runpod_pending: true,
             }),
+            // I-16: KvCacheTuned flat beacon.
+            SsbPayload::KvCacheTuned(KvCacheTunedPayload {
+                vram_gb: None,
+                tok_s: None,
+                fixture_pass_rate: 1.0,
+                config_hash: "abcdef0123456789".into(),
+                adopt_decision: "DryRun".into(),
+            }),
             // I-43 (SCHEMA_VERSION 236): ClaimScopeMeasured Pattern-2 3-arm. 3 new entries.
             SsbPayload::ClaimScopeMeasured(ClaimScopeMeasuredPayload {
                 kind: ClaimScopeMeasuredKind::PilotDelta,

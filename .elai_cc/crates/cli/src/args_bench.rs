@@ -91,6 +91,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "positional-probe" {
         return parse_bench_positional_probe_args(&rest[1..]);
     }
+    if sub == "kv-tune" {
+        return parse_bench_kv_tune_args(&rest[1..]);
+    }
     if sub == "qdelta" {
         return parse_bench_qdelta_args(&rest[1..]);
     }
@@ -129,7 +132,7 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'longcot' | 'steering-vs-prompt' | 'retrieval-adapt' | 'rrf-ablate' | 'tool-output' | 'perception-faithfulness')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'kv-tune' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'longcot' | 'steering-vs-prompt' | 'retrieval-adapt' | 'rrf-ablate' | 'tool-output' | 'perception-faithfulness')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -1678,6 +1681,19 @@ fn validate_bool_arg(name: &str, value: &str) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 // I-38: `elai bench qdelta --config <PATH> [--seed <u64>] [--json]`
 // ---------------------------------------------------------------------------
+
+fn parse_bench_kv_tune_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut dry_run = false; let mut emit_ssb = false; let mut json = false;
+    for arg in rest {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            "--emit-ssb" => emit_ssb = true,
+            "--json" => json = true,
+            other => return Err(format!("unknown `bench kv-tune` argument: {other}")),
+        }
+    }
+    Ok(crate::args::CliAction::BenchKvTune { dry_run, emit_ssb, json })
+}
 
 fn parse_bench_qdelta_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
     let mut config: Option<String> = None;

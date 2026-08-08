@@ -453,6 +453,7 @@ mod bench_gate_tax;
 // (seed_count>=5, paired=true). Emits 1 QdeltaMeasured SSB flat beacon per
 // clean run. Live-model leg deferred (D-026).
 mod bench_qdelta;
+mod bench_kv_tune;
 // C-37: `elai bench snowballing` — Structure Snowballing harness CLI driver.
 mod bench_snowballing;
 // I-43 (SCHEMA_VERSION 236): `elai bench claim-scope [--suite <SUITE>] [--seed <u64>]`
@@ -1608,7 +1609,10 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::BenchQdelta { config, seed, json } => {
             bench_qdelta::run(config, seed, json)?;
         }
-        // C-37: Structure Snowballing harness. Constrained-decoding 5-class
+
+        CliAction::BenchKvTune { dry_run, emit_ssb, json } => {
+            bench_kv_tune::run(dry_run, emit_ssb, json)?;
+        }        // C-37: Structure Snowballing harness. Constrained-decoding 5-class
         // Reflector replication. Exits 0/1.
         CliAction::BenchSnowballing {
             pool,

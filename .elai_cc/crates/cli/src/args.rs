@@ -1231,7 +1231,8 @@ pub(crate) enum CliAction {
         seeds: u32,
         json: bool,
     },
-    // J-34 leg-3: `elai bench positional-probe --suite <PATH> [--seeds <u32>] [--json]`
+
+    BenchKvTune { dry_run: bool, emit_ssb: bool, json: bool },    // J-34 leg-3: `elai bench positional-probe --suite <PATH> [--seeds <u32>] [--json]`
     // Positional-value curve fixture harness. Fills a PositionalValueCurve at
     // depth fractions 0.0 / 0.25 / 0.5 / 0.75 / 1.0. Scores deterministically
     // by gate verdicts (never LLM-judged). Emits ONE

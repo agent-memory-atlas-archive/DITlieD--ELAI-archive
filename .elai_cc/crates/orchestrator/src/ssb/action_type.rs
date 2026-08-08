@@ -4160,6 +4160,8 @@ pub enum SsbActionType {
     /// Emitted by `cli::bench_qdelta::run_inner` after `floor_check` passes.
     /// TOTAL_VARIANTS 543 -> 544.
     QdeltaMeasured,
+    /// I-16: KV-cache tuning dry-run result.
+    KvCacheTuned,
     /// I-43 (SCHEMA_VERSION 236): reproducibility-claim scoper + kill-gate.
     /// Pattern-2 single-variant 3-arm [`ClaimScopeMeasuredKind`]:
     /// - `PilotDelta`: reduced-N gate-ON vs gate-OFF pilot signal + trap-detector.
@@ -5733,6 +5735,7 @@ impl SsbActionType {
             Self::GrammarGateEvent(_) => "grammar_gate_event",
             // I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate flat beacon.
             Self::QdeltaMeasured => "qdelta_measured",
+            Self::KvCacheTuned => "kv_cache_tuned",
             // I-43 (SCHEMA_VERSION 236): claim-scoper kill-gate (3-arm Pattern-2).
             Self::ClaimScopeMeasured(_) => "claim_scope_measured",
             // I-10 (SCHEMA_VERSION 237): cache economics event (3-arm Pattern-2).
@@ -6605,6 +6608,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "objective_sealed"       => Ok(SsbActionType::ObjectiveSealed(ObjectiveSealedKind::Sealed)),
         "grammar_gate_event"     => Ok(SsbActionType::GrammarGateEvent(GrammarGateEventKind::CranePassed)),
         "qdelta_measured"        => Ok(SsbActionType::QdeltaMeasured),
+        "kv_cache_tuned"        => Ok(SsbActionType::KvCacheTuned),
         "claim_scope_measured"   => Ok(SsbActionType::ClaimScopeMeasured(ClaimScopeMeasuredKind::PilotDelta)),
         "cache_economics_event"  => Ok(SsbActionType::CacheEconomicsEvent(CacheEconomicsEventKind::TtlPlanned)),
         "trajectory_aborted"          => Ok(SsbActionType::TrajectoryAborted(TrajectoryAbortedKind::Voluntary)),
