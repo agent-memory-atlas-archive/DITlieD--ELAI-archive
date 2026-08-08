@@ -62,3 +62,81 @@ fn cheap_classify_and_env_gate_serial() {
         CostProfileVerdict::Cheap
     );
 }
+
+
+use std::sync::Arc;
+use tempfile::TempDir;
+use elai_core::clock::{ClockProvider, OsClock};
+use elai_orchestrator::ssb::{Ssb, SsbConfig};
+use elai_orchestrator::trial_ledger::TrialLedger;
+use elai_orchestrator::routing::{
+    artifact_config_hash, configured_artifact_path, register_router_promotion,
+    resolve_router_artifact, RouterArtifactVerdict,
+};
+
+fn router_test_ssb(dir: &TempDir) -> Arc<Ssb> {
+    Arc::new(
+        Ssb::new(
+            SsbConfig {
+                db_path: dir.path().join("ssb.db"),
+                pool_size: Some(2),
+                project_id: "i25-router".into(),
+                session_id: "i25-router-session".into(),
+            },
+            Arc::new(OsClock),
+        )
+        .expect("ssb"),
+    )
+}
+
+#[test]
+fn artifact_is_blocked_without_ledger_win() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("router_model.toml");
+    let bytes = br#"[model]
+kind = "logistic"
+"#;
+    std::fs::write(&path, bytes).expect("artifact");
+    let ledger = TrialLedger::open(&dir.path().join("ssb.db"), "i25").expect("ledger");
+    match resolve_router_artifact(&ledger, &path) {
+        RouterArtifactVerdict::PromotionBlocked { config_hash, reason } => {
+            assert_eq!(config_hash, artifact_config_hash(bytes));
+            assert_eq!(reason, "no_ledger_win");
+        }
+        RouterArtifactVerdict::Loaded { path, .. } => panic!("unblocked path: {path:?}"),
+        other => panic!("unexpected verdict: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn artifact_loads_only_after_promotion_registration() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("router_model.toml");
+    let bytes = br#"[model]
+kind = "logistic"
+"#;
+    std::fs::write(&path, bytes).expect("artifact");
+    let ssb = router_test_ssb(&dir);
+    let ledger = TrialLedger::open(&dir.path().join("ssb.db"), ssb.session_id()).expect("ledger");
+    // HARD: must be Arc<dyn ClockProvider>, not Arc<OsClock>
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    register_router_promotion(&ledger, &ssb, &clock, bytes, 17)
+        .await
+        .expect("promotion registration");
+    match resolve_router_artifact(&ledger, &path) {
+        RouterArtifactVerdict::Loaded {
+            path: loaded,
+            config_hash,
+        } => {
+            assert_eq!(loaded, path);
+            assert_eq!(config_hash, artifact_config_hash(bytes));
+        }
+        other => panic!("expected loaded artifact, got {other:?}"),
+    }
+}
+
+#[test]
+fn artifact_path_is_disabled_when_env_unset() {
+    std::env::remove_var("ELAI_ROUTER_ARTIFACT_PATH");
+    assert!(configured_artifact_path().is_none());
+}

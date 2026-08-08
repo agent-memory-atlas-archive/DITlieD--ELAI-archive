@@ -50,6 +50,7 @@ pub mod cost_profile;
 pub mod difficulty;
 pub mod invariants;
 pub mod policy;
+pub mod router_artifact;
 pub mod selective;
 
 pub use difficulty::{
@@ -60,3 +61,6 @@ pub use policy::{RoutingPolicy, RoutingPolicyToml};
 pub use selective::{Primitive, SelectiveDelegator};
 
 pub use cost_profile::{cost_profiler_enabled, CostProfileVerdict, CostProfiler, ENV_COST_PROFILER_ENABLE};
+
+
+pub use router_artifact::{artifact_config_hash, artifact_data_window, configured_artifact_path, resolve_router_artifact, register_router_promotion, RouterArtifactVerdict, ENV_ROUTER_ARTIFACT_PATH, ROUTER_OBJECTIVE};

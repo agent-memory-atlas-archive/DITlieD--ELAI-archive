@@ -4682,6 +4682,97 @@ async fn run_cost_router_preclassify(
             tracing::warn!(seq, %error, "task_runner: cost-profile route event write failed");
         }
     }
+    // I-25 Slice 3: only expose a configured router after the H-17 ledger
+    // confirms the exact artifact bytes. This is observability-only here; the
+    // existing E-39 decision remains unchanged.
+    if let Some(path) = crate::routing::configured_artifact_path() {
+        match crate::trial_ledger::TrialLedger::open(writer.db_path(), writer.session_id()) {
+            Ok(ledger) => {
+                if std::env::var("ELAI_ROUTER_PROMOTE")
+                    .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false)
+                {
+                    match std::fs::read(&path) {
+                        Ok(artifact_bytes) => {
+                            let seed = std::env::var("ELAI_SEED")
+                                .ok()
+                                .and_then(|value| value.parse::<i64>().ok())
+                                .unwrap_or(0);
+                            let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+                            if let Err(error) = crate::routing::register_router_promotion(
+                                &ledger,
+                                writer,
+                                &clock,
+                                &artifact_bytes,
+                                seed,
+                            )
+                            .await
+                            {
+                                tracing::warn!(seq, %error, "task_runner: router promotion registration failed");
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(seq, %error, path = %path.display(), "task_runner: router promotion artifact read failed");
+                        }
+                    }
+                }
+                match crate::routing::resolve_router_artifact(&ledger, &path) {
+                    crate::routing::RouterArtifactVerdict::Loaded { path, config_hash } => {
+                        let reason = "ledger_gated_router_loaded";
+                        let details_json = serde_json::json!({
+                            "reason": reason,
+                            "config_hash": config_hash,
+                            "path": path,
+                            "predicted_lane": "local",
+                        });
+                        let payload = crate::ssb::SsbPayload::RouteDecisionEvent(
+                            crate::ssb::RouteDecisionEventPayload {
+                                kind: crate::ssb::RouteDecisionEventKind::LocalRouteKept,
+                                route: "local".to_string(),
+                                score: 1.0,
+                                ms: 0,
+                                reason: reason.to_string(),
+                                session_id: None,
+                                details_json,
+                                ts_ms: OsClock.now_ms().try_into().unwrap_or(0),
+                            },
+                        );
+                        if let Err(error) = writer.write_payload("router_artifact", 0, payload, Vec::new()).await {
+                            tracing::warn!(seq, %error, "task_runner: router artifact event write failed");
+                        }
+                    }
+                    crate::routing::RouterArtifactVerdict::PromotionBlocked { config_hash, reason } => {
+                        let details_json = serde_json::json!({
+                            "reason": reason,
+                            "config_hash": config_hash,
+                            "loaded": false,
+                        });
+                        let payload = crate::ssb::SsbPayload::RouteDecisionEvent(
+                            crate::ssb::RouteDecisionEventPayload {
+                                kind: crate::ssb::RouteDecisionEventKind::LocalRouteKept,
+                                route: "local".to_string(),
+                                score: 0.0,
+                                ms: 0,
+                                reason: "promotion_blocked".to_string(),
+                                session_id: None,
+                                details_json,
+                                ts_ms: OsClock.now_ms().try_into().unwrap_or(0),
+                            },
+                        );
+                        if let Err(error) = writer.write_payload("router_artifact", 0, payload, Vec::new()).await {
+                            tracing::warn!(seq, %error, "task_runner: router promotion event write failed");
+                        }
+                    }
+                    crate::routing::RouterArtifactVerdict::Invalid { reason } => {
+                        tracing::warn!(seq, %reason, "task_runner: router artifact invalid");
+                    }
+                    crate::routing::RouterArtifactVerdict::Disabled => {}
+                }
+            }
+            Err(error) => tracing::warn!(seq, %error, "task_runner: trial ledger open failed for router artifact"),
+        }
+    }
+
     let classifier = TaskDifficultyClassifier::new();
     let difficulty = classifier.classify(task_text);
     let criticality = Criticality::Medium;

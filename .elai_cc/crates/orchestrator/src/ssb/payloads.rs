@@ -18836,13 +18836,13 @@ pub struct MucocoSkipReasonPayload {
 /// SQL CREATE for the strategy_trials auxiliary table used by H-17 TrialLedger.
 pub const CREATE_STRATEGY_TRIALS_TABLE: &str = "\
 CREATE TABLE IF NOT EXISTS strategy_trials (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    objective   TEXT    NOT NULL,
-    data_window TEXT    NOT NULL,
-    config_hash TEXT    NOT NULL,
-    seed        INTEGER NOT NULL,
-    created_at  INTEGER NOT NULL,
-    UNIQUE(objective, data_window, config_hash, seed)
+    trial_id       TEXT    PRIMARY KEY,
+    objective      TEXT    NOT NULL,
+    data_window    TEXT    NOT NULL,
+    config_hash    TEXT    NOT NULL,
+    seed           INTEGER NOT NULL,
+    created_at_ms  INTEGER NOT NULL,
+    session_id     TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_strategy_trials_obj ON strategy_trials(objective, data_window);
 ";
