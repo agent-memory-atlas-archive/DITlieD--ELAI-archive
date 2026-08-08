@@ -14030,7 +14030,12 @@ async fn dispatch_dag_credit(
     let Some(outcome) = outcome else {
         return;
     };
-    let payloads = crate::dag_credit::DagCreditAssigner::run(outcome);
+    let mut payloads = crate::dag_credit::DagCreditAssigner::run(outcome);
+    // Full sealed-RRA pairing lands when a seal hook is available; this seam is currently unsealed.
+    payloads.extend(crate::dag_credit::DpoPairExtractor::run(
+        outcome,
+        &crate::dag_credit::DpoProvenance { rra_sealed: false },
+    ));
     if payloads.is_empty() {
         return;
     }

@@ -54,7 +54,7 @@ mod ladder;
 pub mod score;
 
 pub use ladder::{
-    search_ladder_enabled, BranchInput, RankedBranch, SearchLadder, SearchLadderError,
+    search_ladder_enabled, BranchInput, PrunedBranch, RankedBranch, SearchLadder, SearchLadderError,
     SearchLadderOutcome, BEST_OF_N_DEFAULT_WIDTH, ELAI_SEARCH_LADDER_ENABLE_ENV,
 };
 pub use score::{

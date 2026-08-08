@@ -37,6 +37,47 @@ impl DagCreditAssigner {
     }
 }
 
+
+/// Provenance required before extracting a preference pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DpoProvenance {
+    pub rra_sealed: bool,
+}
+
+/// Deterministic DPO pair extractor; vetoed branches never receive an L2 score.
+pub struct DpoPairExtractor;
+
+impl DpoPairExtractor {
+    /// Extract one negative pruned sibling only when the RRA artifact is sealed.
+    pub fn run(
+        outcome: &SearchLadderOutcome,
+        prov: &DpoProvenance,
+    ) -> Vec<DagCreditAssignedPayload> {
+        if !prov.rra_sealed {
+            return Vec::new();
+        }
+        let Some(winner) = outcome.winner.as_ref() else {
+            return Vec::new();
+        };
+        let Some(pruned) = outcome.pruned.iter().max_by(|a, b| {
+            a.progress_score
+                .total_cmp(&b.progress_score)
+                .then(b.verdict.branch_id.cmp(&a.verdict.branch_id))
+        }) else {
+            return Vec::new();
+        };
+        vec![DagCreditAssignedPayload {
+            kind: DagCreditAssignedKind::DpoPairExtracted,
+            branch_id: pruned.verdict.branch_id.clone(),
+            credit_score: pruned.progress_score,
+            winner_score: winner.verdict.score,
+            sibling_score: 0.0,
+            ranked_position: 0,
+            ts_ms: 0,
+        }]
+    }
+}
+
 /// Production emit path (same fn the task_runner dispatcher calls).
 pub async fn emit_dag_credit_to_ssb(
     ssb: &Ssb,

@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::dag_credit::{
-    dag_credit_enabled, emit_dag_credit_to_ssb, DagCreditAssigner,
+    dag_credit_enabled, emit_dag_credit_to_ssb, DagCreditAssigner, DpoPairExtractor,
+    DpoProvenance,
 };
-use elai_orchestrator::search::{RankedBranch, SearchLadderOutcome};
+use elai_orchestrator::search::{PrunedBranch, RankedBranch, SearchLadderOutcome};
 use elai_orchestrator::ssb::{
     decode_ssb_payload, ssb_action_type_from_str_public, DagCreditAssignedKind,
     SsbActionType, SsbConfig, SsbPayload, SCHEMA_VERSION_PUBLIC, TriLayerVerdictKind,
@@ -65,6 +66,7 @@ fn credit_formula_unit() {
     let outcome = SearchLadderOutcome {
         winner: Some(winner),
         pruned_count: 0,
+        pruned: vec![],
         escalated: false,
         ranked: vec![ranked_branch("winner", 0.9), sibling],
     };
@@ -78,6 +80,59 @@ fn credit_formula_unit() {
     assert_eq!(payloads[0].winner_score, 0.9);
     assert_eq!(payloads[0].sibling_score, 0.4);
     assert_eq!(payloads[0].ranked_position, 1);
+}
+
+fn pruned_branch(branch_id: &str, progress_score: f64) -> PrunedBranch {
+    PrunedBranch {
+        verdict: VerdictRow {
+            branch_id: branch_id.into(),
+            verdict: TriLayerVerdictKind::HardVeto,
+            score: 0.0,
+            gate: None,
+            l2_call_count: 0,
+        },
+        progress_score,
+    }
+}
+
+fn dpo_outcome(pruned: Vec<PrunedBranch>) -> SearchLadderOutcome {
+    SearchLadderOutcome {
+        winner: Some(ranked_branch("winner", 0.9)),
+        pruned_count: pruned.len(),
+        pruned,
+        escalated: false,
+        ranked: vec![ranked_branch("winner", 0.9)],
+    }
+}
+
+#[test]
+fn dpo_sealed_winner_and_pruned_yields_one_pair() {
+    let outcome = dpo_outcome(vec![pruned_branch("negative", 0.7)]);
+    let payloads = DpoPairExtractor::run(&outcome, &DpoProvenance { rra_sealed: true });
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].kind, DagCreditAssignedKind::DpoPairExtracted);
+    assert_eq!(payloads[0].branch_id, "negative");
+    assert_eq!(payloads[0].credit_score, 0.7);
+    assert_eq!(payloads[0].winner_score, 0.9);
+    assert_eq!(payloads[0].sibling_score, 0.0);
+}
+
+#[test]
+fn dpo_unsealed_yields_zero() {
+    let outcome = dpo_outcome(vec![pruned_branch("negative", 0.7)]);
+    assert!(DpoPairExtractor::run(&outcome, &DpoProvenance { rra_sealed: false }).is_empty());
+}
+
+#[test]
+fn dpo_selects_highest_progress_among_pruned() {
+    let outcome = dpo_outcome(vec![
+        pruned_branch("low", 0.2),
+        pruned_branch("high", 0.8),
+    ]);
+    let payloads = DpoPairExtractor::run(&outcome, &DpoProvenance { rra_sealed: true });
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].branch_id, "high");
+    assert_eq!(payloads[0].credit_score, 0.8);
 }
 
 #[test]

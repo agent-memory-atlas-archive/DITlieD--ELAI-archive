@@ -86,6 +86,15 @@ pub struct RankedBranch {
     pub progress_score: f64,
 }
 
+/// A branch dropped from selection, retaining its pre-prune progress receipt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrunedBranch {
+    /// The real hard-veto or quarantine verdict receipt.
+    pub verdict: VerdictRow,
+    /// Rank-3 progress preserved from the input before pruning.
+    pub progress_score: f64,
+}
+
 /// The result of one best-of-N run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchLadderOutcome {
@@ -94,6 +103,8 @@ pub struct SearchLadderOutcome {
     pub winner: Option<RankedBranch>,
     /// Count of candidates dropped (hard-veto or flake-quarantine).
     pub pruned_count: usize,
+    /// The branches dropped from selection, in candidate iteration order.
+    pub pruned: Vec<PrunedBranch>,
     /// Whether the survivor set tripped L3 disagreement escalation (I-17).
     pub escalated: bool,
     /// The survivor set, ranked best-first (empty when all pruned).
@@ -178,6 +189,7 @@ impl SearchLadder {
     ) -> Result<SearchLadderOutcome, SearchLadderError> {
         let mut survivors: Vec<RankedBranch> = Vec::with_capacity(candidates.len());
         let mut pruned_count = 0usize;
+        let mut pruned = Vec::new();
 
         for input in candidates {
             // Step 1: rebuild the pristine per-branch context (I-5 — closes the
@@ -190,6 +202,10 @@ impl SearchLadder {
             // Step 3: DROP vetoed (ID-4 terminal) or flake-quarantined branches.
             if self.is_pruned(&verdict) {
                 pruned_count += 1;
+                pruned.push(PrunedBranch {
+                    verdict: verdict.clone(),
+                    progress_score: input.progress_score,
+                });
                 self.emit(SearchNodeEventKind::Pruned, &verdict, 0.0, 0.0).await;
                 continue;
             }
@@ -210,7 +226,7 @@ impl SearchLadder {
             });
         }
 
-        self.finish(survivors, pruned_count).await
+        self.finish(survivors, pruned).await
     }
 
     /// Sort the survivor set best-first, L3-escalate it, and emit the winner's
@@ -218,13 +234,15 @@ impl SearchLadder {
     async fn finish(
         &self,
         mut survivors: Vec<RankedBranch>,
-        pruned_count: usize,
+        pruned: Vec<PrunedBranch>,
     ) -> Result<SearchLadderOutcome, SearchLadderError> {
+        let pruned_count = pruned.len();
         if survivors.is_empty() {
             self.emit_collapsed(pruned_count).await;
             return Ok(SearchLadderOutcome {
                 winner: None,
                 pruned_count,
+                pruned,
                 escalated: false,
                 ranked: Vec::new(),
             });
@@ -250,6 +268,7 @@ impl SearchLadder {
         Ok(SearchLadderOutcome {
             winner: Some(winner),
             pruned_count,
+            pruned,
             escalated,
             ranked: survivors,
         })
