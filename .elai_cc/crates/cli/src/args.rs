@@ -501,6 +501,13 @@ pub(crate) enum CliAction {
         action: RraAction,
         output_format: CliOutputFormat,
     },
+    /// I-30 Slice 1b: `elai dataset export-sft --rra-dir <p> --out-dir <p>`
+    /// — SFT exhaust from sealed RRA bundles. Driver at
+    /// crates/cli/src/dataset_cmd.rs.
+    Dataset {
+        action: DatasetAction,
+        output_format: CliOutputFormat,
+    },
     /// G-2: `elai replay --verify <path>` — verify a `.rra` offline.
     /// Recomputes the blake3 root (tamper check) + re-derives every event
     /// content hash (divergence check) and prints the [`ReplayVerdict`]
@@ -2240,6 +2247,17 @@ pub(crate) enum RraAction {
     ReExecute { cassette: PathBuf, tier: String },
 }
 
+/// I-30 Slice 1b — `elai dataset <sub>` sub-verb. Bundled with the parent
+/// `Dataset` variant so the dispatcher can match a single arm (mirrors
+/// `RraAction`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DatasetAction {
+    /// `elai dataset export-sft --rra-dir <p> --out-dir <p>` — walk a
+    /// directory of sealed `.rra` files, emit `SftExhaustEvent` SSB rows,
+    /// and write JSONL records to `out_dir`.
+    ExportSft { rra_dir: PathBuf, out_dir: PathBuf },
+}
+
 /// J-14 — CLI-side tier selector for `elai replay --verify --tier <t>`.
 /// Maps 1:1 to [`elai_orchestrator::rra::TierVerdictLabel`]. Kept as a
 /// distinct CLI-layer enum so the parser does not depend on the
@@ -3284,6 +3302,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // G-2 — `elai rra show <path>`. Reproducible-Run Artifact viewer;
         // handler at crates/cli/src/rra_cmd.rs.
         "rra" => parse_rra_subcommand_args(&rest[1..], output_format),
+        // I-30 Slice 1b — `elai dataset export-sft --rra-dir <p> --out-dir <p>`.
+        // SFT exhaust from sealed RRA bundles; handler at
+        // crates/cli/src/dataset_cmd.rs.
+        "dataset" => parse_dataset_subcommand_args(&rest[1..], output_format),
         // J-2 — local Tier-1 read-only MCP control plane (stdio only).
         "mcp-serve" => parse_mcp_serve_subcommand_args(&rest[1..], output_format),
         // G-2 — `elai replay --verify <path>`. Offline .rra verifier;
@@ -5829,6 +5851,64 @@ pub(crate) fn parse_rra_subcommand_args(
         }
         other => Err(format!(
             "unknown `rra` sub-action `{other}`; expected: show <path> | verify <path> | export-fixture <bundle> [--adapter <name>] | re-execute --cassette <path> [--tier T0|T1|T2]"
+        )),
+    }
+}
+
+/// I-30 Slice 1b — parse `elai dataset <sub>`. Grammar:
+///   `elai dataset export-sft --rra-dir <p> --out-dir <p>`
+pub(crate) fn parse_dataset_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .ok_or_else(|| "missing `dataset` sub-action; expected: export-sft --rra-dir <p> --out-dir <p>".to_string())?
+        .as_str();
+    match sub {
+        "export-sft" => {
+            let mut rra_dir: Option<PathBuf> = None;
+            let mut out_dir: Option<PathBuf> = None;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--rra-dir" => {
+                        i += 1;
+                        rra_dir = Some(PathBuf::from(
+                            rest.get(i).ok_or_else(|| {
+                                "`dataset export-sft --rra-dir` requires a value".to_string()
+                            })?,
+                        ));
+                    }
+                    "--out-dir" => {
+                        i += 1;
+                        out_dir = Some(PathBuf::from(
+                            rest.get(i).ok_or_else(|| {
+                                "`dataset export-sft --out-dir` requires a value".to_string()
+                            })?,
+                        ));
+                    }
+                    other => {
+                        return Err(format!(
+                            "unexpected argument after `dataset export-sft`: {other}"
+                        ));
+                    }
+                }
+                i += 1;
+            }
+            let rra_dir = rra_dir.ok_or_else(|| {
+                "`dataset export-sft` requires `--rra-dir <p>`".to_string()
+            })?;
+            let out_dir = out_dir.ok_or_else(|| {
+                "`dataset export-sft` requires `--out-dir <p>`".to_string()
+            })?;
+            Ok(CliAction::Dataset {
+                action: DatasetAction::ExportSft { rra_dir, out_dir },
+                output_format,
+            })
+        }
+        other => Err(format!(
+            "unknown `dataset` sub-action `{other}`; expected: export-sft --rra-dir <p> --out-dir <p>"
         )),
     }
 }

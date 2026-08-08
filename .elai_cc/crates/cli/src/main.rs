@@ -85,6 +85,10 @@ mod freeze_cmd;
 // Reproducible-Run Artifact viewer + offline verifier. Wraps
 // elai_orchestrator::rra. See workflow/reasoning/G-2-decisions.md.
 mod rra_cmd;
+// I-30 Slice 1b: `elai dataset export-sft` — SFT exhaust from sealed RRA
+// bundles. Wraps elai_orchestrator::rra + ssb::SftExhaustEvent.
+mod dataset_cmd;
+mod sft_exhaust;
 mod rra_reexecute_cmd;
 // J-14 S6b: `emit_j14_verify_repro_pack_events` split from rra_cmd.rs (MR-1).
 mod rra_verify_emit;
@@ -799,6 +803,11 @@ fn run() -> Result<(), anyhow::Error> {
         // G-2 — `elai rra show <path>`. Reproducible-Run Artifact viewer.
         CliAction::Rra { action, output_format } => {
             rra_cmd::run_rra(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // I-30 Slice 1b — `elai dataset export-sft --rra-dir <p> --out-dir <p>`.
+        // SFT exhaust from sealed RRA bundles.
+        CliAction::Dataset { action, output_format } => {
+            dataset_cmd::run_dataset(action, output_format).map_err(|e| anyhow::anyhow!(e))?
         }
         // J-2 — local Tier-1 read-only MCP control-plane server over stdio.
         CliAction::McpServe { output_format } => {
