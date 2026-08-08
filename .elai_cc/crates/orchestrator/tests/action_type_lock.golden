@@ -487,6 +487,7 @@ selective_delegation_decision
 selective_delegation_escalated
 session_archived
 session_rewound
+sft_exhaust_event
 sglang_backend_registered
 shortcoder_compression
 sim_real_parity

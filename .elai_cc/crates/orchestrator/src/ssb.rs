@@ -1642,6 +1642,8 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::ContextAccessSpec,
     SsbActionType::ScopeCeilingAdvisory,
     SsbActionType::DagCreditAssigned,
+    // I-30 Slice 1a: SFT exhaust event (Pattern-2 flat; 3-arm Kind in payload).
+    SsbActionType::SftExhaustEvent,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

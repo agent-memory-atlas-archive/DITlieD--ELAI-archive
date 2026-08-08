@@ -4005,6 +4005,9 @@ pub enum SsbPayload {
     ContextAccessSpec(ContextAccessSpecPayload),
     /// I-28 Slice 1 deterministic branch-grain credit row.
     DagCreditAssigned(DagCreditAssignedPayload),
+    /// I-30 Slice 1a: SFT exhaust event. Pattern-2 flat variant;
+    /// 3-arm SftExhaustEventKind rides in the payload.
+    SftExhaustEvent(SftExhaustEventPayload),
 }
 
 impl SsbPayload {
@@ -4853,6 +4856,7 @@ impl SsbPayload {
             Self::RetrievalAbstained(_) => SsbActionType::RetrievalAbstained,
             Self::ContextAccessSpec(_) => SsbActionType::ContextAccessSpec,
             Self::DagCreditAssigned(_) => SsbActionType::DagCreditAssigned,
+            Self::SftExhaustEvent(_) => SsbActionType::SftExhaustEvent,
         }
     }
 }
@@ -21830,5 +21834,42 @@ pub struct DagCreditAssignedPayload {
     pub winner_score: f64,
     pub sibling_score: f64,
     pub ranked_position: usize,
+    pub ts_ms: i64,
+}
+
+/// I-30 Slice 1a: SFT exhaust event Kind discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SftExhaustEventKind {
+    PathExtracted,
+    NegativePaired,
+    DatasetSealed,
+}
+
+impl SftExhaustEventKind {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PathExtracted => "path_extracted",
+            Self::NegativePaired => "negative_paired",
+            Self::DatasetSealed => "dataset_sealed",
+        }
+    }
+}
+
+/// I-30 Slice 1a payload for [`SsbActionType::SftExhaustEvent`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SftExhaustEventPayload {
+    pub kind: SftExhaustEventKind,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy_or_rra_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_verified_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     pub ts_ms: i64,
 }

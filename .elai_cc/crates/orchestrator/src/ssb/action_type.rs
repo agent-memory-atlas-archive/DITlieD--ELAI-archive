@@ -4890,6 +4890,9 @@ pub enum SsbActionType {
     ContextAccessSpec,
     /// I-28 Slice 1: deterministic branch-grain DAG credit assignment.
     DagCreditAssigned,
+    /// I-30 Slice 1a: SFT exhaust event (flat variant; 3-arm
+    /// SftExhaustEventKind rides in the payload).
+    SftExhaustEvent,
 }
 
 impl SsbActionType {
@@ -5861,6 +5864,8 @@ impl SsbActionType {
             Self::RetrievalAbstained => "retrieval_abstained",
             Self::ContextAccessSpec => "context_access_spec",
             Self::DagCreditAssigned => "dag_credit_assigned",
+            // I-30 Slice 1a: SFT exhaust event (flat; Kind in payload).
+            Self::SftExhaustEvent => "sft_exhaust_event",
         }
     }
 }
@@ -6770,6 +6775,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "retrieval_abstained" => Ok(SsbActionType::RetrievalAbstained),
         "context_access_spec" => Ok(SsbActionType::ContextAccessSpec),
         "dag_credit_assigned" => Ok(SsbActionType::DagCreditAssigned),
+        // I-30 Slice 1a: SFT exhaust event (flat; Kind in payload).
+        "sft_exhaust_event" => Ok(SsbActionType::SftExhaustEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

@@ -1594,6 +1594,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // J-78: ContextAccessSpec flat variant, Pattern-2 single-variant.
         SsbActionType::ContextAccessSpec => (),
         SsbActionType::DagCreditAssigned => (),
+        // I-30 Slice 1a: SftExhaustEvent flat variant, Pattern-2 single-variant.
+        SsbActionType::SftExhaustEvent => (),
     }
 }
 

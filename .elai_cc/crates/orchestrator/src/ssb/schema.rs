@@ -5572,7 +5572,10 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- J-73 Slice C: RetrievalAbstained Pattern-2 flat; 3-arm Kind in payload.
         'retrieval_abstained',
         -- J-78: ContextAccessSpec Pattern-2 flat; 3-arm Kind in payload.
-        'context_access_spec'
+        'context_access_spec',
+        -- I-30 Slice 1a: SFT exhaust event. Pattern-2 flat; 3-arm
+        -- SftExhaustEventKind rides in the payload.
+        'sft_exhaust_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
