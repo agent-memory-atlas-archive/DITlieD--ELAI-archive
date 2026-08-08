@@ -875,6 +875,7 @@ pub mod verifier_stack;
 // emit SearchNodeEvent rows. Default-OFF via ELAI_SEARCH_LADDER_ENABLE (GD-4
 // measured-first-win). Production hook: task_runner::dispatch_search_ladder.
 pub mod search;
+pub mod dag_credit;
 // E-45: host-side cross-language drift detector. Diffs Rust orchestrator
 // boundary structs against the Python sidecar + Tauri TS mirror per the
 // pair registry loaded from `.elai_cc/cross-lang-pairs.toml`. Producer

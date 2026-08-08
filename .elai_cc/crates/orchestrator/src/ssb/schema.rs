@@ -3450,7 +3450,7 @@ CREATE TABLE IF NOT EXISTS ssb (
         --                             workflow/sessions/{sid}/idea-framing/
         -- tradeoff_card_emitted    -- one row when TradeoffCard is surfaced
         --                             to the dashboard for user response
-        'idea_framing_started', 'project_class_classified', 'scope_ceiling_advisory',
+        'idea_framing_started', 'project_class_classified', 'scope_ceiling_advisory', 'dag_credit_assigned',
         'critic_round_complete', 'idea_framed', 'tradeoff_card_emitted',
         -- B-34 (SCHEMA_VERSION 42): entry-point detection + artifact pipeline beacons.
         -- entry_points_detected -- one row per entry_points tool call; carries project_id,

@@ -1593,6 +1593,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::RetrievalAbstained => (),
         // J-78: ContextAccessSpec flat variant, Pattern-2 single-variant.
         SsbActionType::ContextAccessSpec => (),
+        SsbActionType::DagCreditAssigned => (),
     }
 }
 

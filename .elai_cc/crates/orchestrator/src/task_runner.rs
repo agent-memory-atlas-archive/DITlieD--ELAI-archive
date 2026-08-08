@@ -12493,7 +12493,8 @@ async fn drive_task(
     // promotion plan I-4-promotion). Mirrors the I-17 / D-11 toggle. See
     // dispatch_search_ladder + crate::search + verifier_stack +
     // docs/thefinalglance/I-plan/I-4_evidence_ranked_search_ladder.md.
-    dispatch_search_ladder(writer, seq, &task.project_id, resolved).await;
+    let ladder_outcome = dispatch_search_ladder(writer, seq, &task.project_id, resolved).await;
+    dispatch_dag_credit(writer, seq, &task.project_id, resolved, ladder_outcome.as_ref()).await;
     // I-7 closure: post-task cascading escalation waterfall dispatch (Wave-4).
     // ADDITIVE, NOT a replacement for the linear retry loop. The waterfall fans out
     // K local branches (the I-4 ladder, composing I-2 isolation + I-17 tri-layer),
@@ -13913,7 +13914,7 @@ async fn dispatch_search_ladder(
     seq: i64,
     project_id: &str,
     resolved: &ResolvedConfig,
-) {
+) -> Option<crate::search::SearchLadderOutcome> {
     use crate::search::{search_ladder_enabled, BranchInput, SearchLadder};
     use crate::verifier_stack::{Branch, FlakeQuarantineLedger, TriLayerStack};
 
@@ -13924,7 +13925,7 @@ async fn dispatch_search_ladder(
             project_id,
             "task_runner::dispatch_search_ladder: ELAI_SEARCH_LADDER_ENABLE not set; skipping"
         );
-        return;
+        return None;
     }
     // Gate 2: the D-11 checker runtime must be plumbed (the tri-layer L1 axis
     // reuses its registry — GD-1 compose, no second registry).
@@ -13934,7 +13935,7 @@ async fn dispatch_search_ladder(
             project_id,
             "task_runner::dispatch_search_ladder: checker_runtime not plumbed; skipping"
         );
-        return;
+        return None;
     };
 
     // Build the tri-layer stack from the shipped substrate (MIRROR
@@ -13980,20 +13981,73 @@ async fn dispatch_search_ladder(
         .run_best_of_n(&candidates, &session_id, crate::dispatcher::BackendMode::Local)
         .await
     {
-        Ok(outcome) => tracing::debug!(
+        Ok(outcome) => {
+            tracing::debug!(
+                seq,
+                project_id,
+                pruned = outcome.pruned_count,
+                escalated = outcome.escalated,
+                winner = outcome.winner.as_ref().map(|w| w.verdict.branch_id.as_str()),
+                "task_runner::dispatch_search_ladder: best-of-N ladder ran"
+            );
+            Some(outcome)
+        }
+        Err(e) => {
+            tracing::warn!(
+                seq,
+                project_id,
+                error = %e,
+                "task_runner::dispatch_search_ladder: run_best_of_n failed (non-fatal)"
+            );
+            None
+        }
+    }
+}
+
+async fn dispatch_dag_credit(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    project_id: &str,
+    resolved: &ResolvedConfig,
+    outcome: Option<&crate::search::SearchLadderOutcome>,
+) {
+    if !crate::dag_credit::dag_credit_enabled() {
+        tracing::debug!(
             seq,
             project_id,
-            pruned = outcome.pruned_count,
-            escalated = outcome.escalated,
-            winner = outcome.winner.as_ref().map(|w| w.verdict.branch_id.as_str()),
-            "task_runner::dispatch_search_ladder: best-of-N ladder ran"
-        ),
-        Err(e) => tracing::warn!(
+            "task_runner::dispatch_dag_credit: ELAI_DAG_CREDIT_ENABLE not set; skipping"
+        );
+        return;
+    }
+    if resolved.checker_runtime.is_none() {
+        tracing::debug!(
             seq,
             project_id,
-            error = %e,
-            "task_runner::dispatch_search_ladder: run_best_of_n failed (non-fatal)"
-        ),
+            "task_runner::dispatch_dag_credit: checker_runtime not plumbed; skipping"
+        );
+        return;
+    }
+    let Some(outcome) = outcome else {
+        return;
+    };
+    let payloads = crate::dag_credit::DagCreditAssigner::run(outcome);
+    if payloads.is_empty() {
+        return;
+    }
+    if let Err(error) = crate::dag_credit::emit_dag_credit_to_ssb(
+        writer,
+        &format!("task-runner-{seq}"),
+        seq,
+        payloads,
+    )
+    .await
+    {
+        tracing::warn!(
+            seq,
+            project_id,
+            %error,
+            "task_runner::dispatch_dag_credit: SSB write failed (non-fatal)"
+        );
     }
 }
 

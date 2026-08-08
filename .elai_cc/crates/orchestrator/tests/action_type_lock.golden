@@ -149,6 +149,7 @@ cross_lang_drift_detected
 cross_lang_pair_scanned
 csq_evaluated
 dafny_verify_completed
+dag_credit_assigned
 dag_repair_escalated
 dag_repair_round
 daira_trace

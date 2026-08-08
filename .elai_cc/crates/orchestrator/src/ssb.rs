@@ -1641,6 +1641,7 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // J-78: ContextAccessSpec (Pattern-2 flat; 3-arm Kind in payload).
     SsbActionType::ContextAccessSpec,
     SsbActionType::ScopeCeilingAdvisory,
+    SsbActionType::DagCreditAssigned,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

@@ -4003,6 +4003,8 @@ pub enum SsbPayload {
     /// J-78: context-access spec event. Pattern-2 single-variant;
     /// 3-arm ContextAccessSpecKind rides in payload.
     ContextAccessSpec(ContextAccessSpecPayload),
+    /// I-28 Slice 1 deterministic branch-grain credit row.
+    DagCreditAssigned(DagCreditAssignedPayload),
 }
 
 impl SsbPayload {
@@ -4850,6 +4852,7 @@ impl SsbPayload {
             Self::FreePoolEvent(_) => SsbActionType::FreePoolEvent,
             Self::RetrievalAbstained(_) => SsbActionType::RetrievalAbstained,
             Self::ContextAccessSpec(_) => SsbActionType::ContextAccessSpec,
+            Self::DagCreditAssigned(_) => SsbActionType::DagCreditAssigned,
         }
     }
 }
@@ -21806,5 +21809,26 @@ pub struct ContextAccessSpecPayload {
     /// Out-of-spec reads that were flagged (populated on OutOfSpecReadFlagged).
     pub out_of_spec_flagged: Vec<String>,
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
+}
+/// I-28 Slice 1 discriminator for deterministic DAG credit rows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DagCreditAssignedKind {
+    CreditWalk,
+    DpoPairExtracted,
+    ChunkDemoted,
+}
+
+/// I-28 Slice 1 flat payload. Later arms are reserved for subsequent slices.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DagCreditAssignedPayload {
+    pub kind: DagCreditAssignedKind,
+    pub branch_id: String,
+    pub credit_score: f64,
+    pub winner_score: f64,
+    pub sibling_score: f64,
+    pub ranked_position: usize,
     pub ts_ms: i64,
 }

@@ -4888,6 +4888,8 @@ pub enum SsbActionType {
     /// J-78: context-access spec event. Pattern-2 single-variant;
     /// 3-arm ContextAccessSpecKind rides in payload.
     ContextAccessSpec,
+    /// I-28 Slice 1: deterministic branch-grain DAG credit assignment.
+    DagCreditAssigned,
 }
 
 impl SsbActionType {
@@ -5858,6 +5860,7 @@ impl SsbActionType {
             Self::FreePoolEvent => "free_pool_event",
             Self::RetrievalAbstained => "retrieval_abstained",
             Self::ContextAccessSpec => "context_access_spec",
+            Self::DagCreditAssigned => "dag_credit_assigned",
         }
     }
 }
@@ -6766,6 +6769,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "free_pool_event" => Ok(SsbActionType::FreePoolEvent),
         "retrieval_abstained" => Ok(SsbActionType::RetrievalAbstained),
         "context_access_spec" => Ok(SsbActionType::ContextAccessSpec),
+        "dag_credit_assigned" => Ok(SsbActionType::DagCreditAssigned),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
