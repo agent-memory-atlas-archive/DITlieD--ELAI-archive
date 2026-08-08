@@ -17,8 +17,10 @@ use crate::behavior_steering_ssb::emit_behavior_steering_event;
 use crate::ssb::BehaviorSteeringKind;
 use crate::dispatcher::BackendMode;
 use crate::compact::{
-    compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
+    compact_session, estimate_session_tokens, CompactionConfig,
+    CompactionResult,
 };
+use crate::lossless_compaction_gate::enforce_lossless_compaction;
 use crate::compaction_ladder::{
     compaction_ladder_enabled, run_compaction_ladder, CompactionLadder, LadderEventEmitter,
     NullEmitter,
@@ -856,6 +858,21 @@ where
 
     #[must_use]
     pub fn compact(&self, config: CompactionConfig) -> CompactionResult {
+        if enforce_lossless_compaction(
+            &self.session,
+            config,
+            None,
+            self.ssb_writer.as_deref(),
+        )
+        .is_err()
+        {
+            return CompactionResult {
+                summary: String::new(),
+                formatted_summary: String::new(),
+                compacted_session: self.session.clone(),
+                removed_message_count: 0,
+            };
+        }
         compact_session(&self.session, config)
     }
 
@@ -999,14 +1016,25 @@ where
             );
         }
 
-        let result = compact_session(
+        let compaction_config = CompactionConfig {
+            max_estimated_tokens: 0,
+            preserve_intermediate_numerics: matches!(policy, ContextPolicy::Local),
+            ..CompactionConfig::default()
+        };
+        if enforce_lossless_compaction(
             &self.session,
-            CompactionConfig {
-                max_estimated_tokens: 0,
-                preserve_intermediate_numerics: matches!(policy, ContextPolicy::Local),
-                ..CompactionConfig::default()
-            },
-        );
+            compaction_config,
+            None,
+            self.ssb_writer.as_deref(),
+        )
+        .is_err()
+        {
+            tracing::error!(
+                "auto-compaction skipped because lossless recovery could not be proven"
+            );
+            return None;
+        }
+        let result = compact_session(&self.session, compaction_config);
 
         if result.removed_message_count == 0 {
             return None;

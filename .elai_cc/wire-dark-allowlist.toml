@@ -2461,3 +2461,11 @@ owner             = "maintainer"
 expiry_date       = "2026-10-01"
 promotion_plan_id = "J-95-promotion"
 smoke_test        = "crates/contracts/tests/j95_context_activation_contract.rs::j95_b_pristine_budget_observe_wire_present"
+
+[[flag]]
+name              = "ELAI_LOSSLESS_GATE_DISABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-31"
+promotion_plan_id = "K-12"
+smoke_test        = "crates/orchestrator/src/lossless_compaction_gate.rs::lossless_gate_kill_switch_observes"

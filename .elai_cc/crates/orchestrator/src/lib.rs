@@ -267,6 +267,7 @@ pub mod privacy_redactor;
 pub mod redaction;
 pub mod branch_lock;
 mod compact;
+pub mod lossless_compaction_gate;
 // J-76 C7: intermediate-numerics extraction helpers (split from compact).
 pub mod compact_history;
 mod conversation;

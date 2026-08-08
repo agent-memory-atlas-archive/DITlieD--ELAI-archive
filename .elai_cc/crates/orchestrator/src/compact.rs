@@ -587,7 +587,7 @@ pub struct LosslessCompactionCheck {
 ///
 /// Fail-closed (R2): if the DAG is unavailable or SSB lookup fails for a
 /// stubbed message, that message is counted as unrecoverable.
-pub fn check_lossless_compaction<R: crate::ssb::SsbReader>(
+pub fn check_lossless_compaction<R: crate::ssb::SsbReader + ?Sized>(
     session: &Session,
     config: CompactionConfig,
     snap_id: Option<&str>,
@@ -677,12 +677,11 @@ pub fn check_lossless_compaction<R: crate::ssb::SsbReader>(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_lossless_compaction, collect_key_files, compact_session, estimate_session_tokens,
-        format_compact_summary, get_compact_continuation_message,
+        check_lossless_compaction, collect_key_files, compact_session,
+        estimate_session_tokens, format_compact_summary, get_compact_continuation_message,
         infer_pending_work, should_compact, CompactionConfig, LosslessCompactionCheck,
     };
     use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};
-
     #[test]
     fn formats_compact_summary_like_upstream() {
         let summary = "<analysis>scratch</analysis>\n<summary>Kept work</summary>";
