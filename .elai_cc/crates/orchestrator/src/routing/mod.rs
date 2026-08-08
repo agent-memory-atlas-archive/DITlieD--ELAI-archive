@@ -46,6 +46,7 @@
 //! CLAUDE.md anti-stale-training (BTreeMap-for-iteration) rule.
 
 pub mod budget_controller;
+pub mod cost_profile;
 pub mod difficulty;
 pub mod invariants;
 pub mod policy;
@@ -57,3 +58,5 @@ pub use difficulty::{
 pub use invariants::{InvariantError, ALPHA_MAX, ALPHA_MIN, S_MAX_CAP};
 pub use policy::{RoutingPolicy, RoutingPolicyToml};
 pub use selective::{Primitive, SelectiveDelegator};
+
+pub use cost_profile::{cost_profiler_enabled, CostProfileVerdict, CostProfiler, ENV_COST_PROFILER_ENABLE};

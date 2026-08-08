@@ -4644,6 +4644,44 @@ async fn run_cost_router_preclassify(
     // criticality = Medium (the standard ELAI baby-step tier per the plan's
     // Criticality taxonomy); the plan's "no all-Opus default" stub_ban holds
     // because Medium criticality never routes Opus in the decision matrix.
+    let profiler_enabled = crate::routing::cost_profiler_enabled();
+    let profile = if profiler_enabled {
+        Some(crate::routing::CostProfiler::new().classify(task_text))
+    } else {
+        None
+    };
+    // Expensive shapes are pre-routed toward the cloud/deep lane; E-39 still runs for its audit row.
+    if let Some(crate::routing::CostProfileVerdict::Expensive {
+        fingerprint,
+        feature_vec,
+    }) = profile.as_ref()
+    {
+        let reason = "cost_profile_expensive_shape";
+        let details_json = serde_json::json!({
+            "reason": reason,
+            "predicted_lane": "cloud",
+            "feature_vec": feature_vec,
+            "fingerprint": fingerprint,
+        });
+        let route_payload = crate::ssb::SsbPayload::RouteDecisionEvent(
+            crate::ssb::RouteDecisionEventPayload {
+                kind: crate::ssb::RouteDecisionEventKind::CloudRouteChosen,
+                route: "cloud".to_string(),
+                score: 1.0,
+                ms: 0,
+                reason: reason.to_string(),
+                session_id: None,
+                details_json,
+                ts_ms: OsClock.now_ms().try_into().unwrap_or(0),
+            },
+        );
+        if let Err(error) = writer
+            .write_payload("cost_profiler", 0, route_payload, Vec::new())
+            .await
+        {
+            tracing::warn!(seq, %error, "task_runner: cost-profile route event write failed");
+        }
+    }
     let classifier = TaskDifficultyClassifier::new();
     let difficulty = classifier.classify(task_text);
     let criticality = Criticality::Medium;
