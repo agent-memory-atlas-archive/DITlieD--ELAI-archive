@@ -1532,6 +1532,16 @@ promotion_plan_id = "H-36"
 smoke_test        = "crates/contracts/tests/h36_notification_contract.rs::h36_f4_notify_enable_env_gate_controls_os_dispatch"
 notes             = "Gates the OS-notification process spawn (notify-send / osascript / powershell Add-Type). Terminal escape (OSC 9 + BEL) and agent_notification_emitted SSB row fire UNCONDITIONALLY regardless of this gate. kill_switch posture: CI must not pop toasts; set ELAI_NOTIFY_ENABLE=1 in developer env to enable focus-independent OS notifications. Fail-toward-escape-only: absent = no OS notification spawn, BEL still fires, SSB row still writes."
 
+
+[[flag]]
+name              = "ELAI_VOICE_ENABLE"
+type              = "kill_switch"
+owner             = "maintainer"
+expiry_date       = "2026-12-07"
+promotion_plan_id = "J-112"
+smoke_test        = "crates/contracts/tests/j112_spoken_render_contract.rs"
+notes             = "Gates the spoken-render target on NotificationDispatcher (J-112). When ON: each agent_notification_emitted row is rendered via voice::spoken_render::render_spoken (deterministic, seeded variants); TTS dispatch is a later slice. Default-OFF (R9, wave-owned). Fail-toward-escape-only: absent = no spoken target; terminal escape + OS notification + SSB row fire per their own gates unchanged. The spoken target sets surfaces bit 2."
+
 [[flag]]
 name              = "ELAI_PLAN_APPROVAL_GATE_ENABLE"
 type              = "kill_switch"
