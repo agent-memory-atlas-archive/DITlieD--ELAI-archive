@@ -460,6 +460,8 @@ mod bench_qdelta;
 mod bench_kv_tune;
 // C-37: `elai bench snowballing` — Structure Snowballing harness CLI driver.
 mod bench_snowballing;
+// E-31: `elai bench leaderboard` — coding-model leaderboard JSONL driver.
+mod bench_leaderboard;
 // I-43 (SCHEMA_VERSION 236): `elai bench claim-scope [--suite <SUITE>] [--seed <u64>]`
 // Reproducibility-claim scoper + cheap pre-falsification kill-gate. Runs pilot
 // (reduced-N gate-ON vs gate-OFF + reviewer-reaching trap detector) + divergence
@@ -1643,6 +1645,14 @@ fn run() -> Result<(), anyhow::Error> {
                 output,
                 python_bin,
             )?;
+        }
+        CliAction::BenchLeaderboard {
+            suite,
+            fixture,
+            session_id,
+            python_bin,
+        } => {
+            bench_leaderboard::run(suite, fixture, session_id, python_bin)?;
         }
         // I-43 (SCHEMA_VERSION 236): `elai bench claim-scope` — claim scoper kill-gate.
         // Fixture leg only; live-model leg deferred (D-026). Emits 3 ClaimScopeMeasured

@@ -100,6 +100,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "snowballing" {
         return parse_bench_snowballing_args(&rest[1..]);
     }
+    if sub == "leaderboard" {
+        return parse_bench_leaderboard_args(&rest[1..]);
+    }
     if sub == "claim-scope" {
         return parse_bench_claim_scope_args(&rest[1..]);
     }
@@ -2344,4 +2347,56 @@ mod retrieval_adapt_parse_tests {
         let err = parse_bench_subcommand_args(&args).unwrap_err();
         assert!(err.contains("requires --gold"), "err={err}");
     }
+}
+
+
+fn parse_bench_leaderboard_args(rest: &[String]) -> Result<crate::args::CliAction, String> {
+    let mut suite: Option<String> = None;
+    let mut fixture: Option<String> = None;
+    let mut session_id: Option<String> = None;
+    let mut python_bin: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--suite" => {
+                suite = Some(rest.get(i + 1).ok_or_else(|| "missing value for --suite".to_string())?.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--suite=") => {
+                suite = Some(flag["--suite=".len()..].to_string());
+                i += 1;
+            }
+            "--fixture" => {
+                fixture = Some(rest.get(i + 1).ok_or_else(|| "missing value for --fixture".to_string())?.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--fixture=") => {
+                fixture = Some(flag["--fixture=".len()..].to_string());
+                i += 1;
+            }
+            "--session-id" => {
+                session_id = Some(rest.get(i + 1).ok_or_else(|| "missing value for --session-id".to_string())?.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--session-id=") => {
+                session_id = Some(flag["--session-id=".len()..].to_string());
+                i += 1;
+            }
+            "--python-bin" => {
+                python_bin = Some(rest.get(i + 1).ok_or_else(|| "missing value for --python-bin".to_string())?.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--python-bin=") => {
+                python_bin = Some(flag["--python-bin=".len()..].to_string());
+                i += 1;
+            }
+            other => return Err(format!("unknown `bench leaderboard` argument: {other}")),
+        }
+    }
+    Ok(crate::args::CliAction::BenchLeaderboard {
+        suite,
+        fixture,
+        session_id,
+        python_bin,
+    })
 }

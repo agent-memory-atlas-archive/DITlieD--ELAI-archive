@@ -1273,6 +1273,12 @@ pub(crate) enum CliAction {
         output: String,
         python_bin: Option<String>,
     },
+    BenchLeaderboard {
+        suite: Option<String>,
+        fixture: Option<String>,
+        session_id: Option<String>,
+        python_bin: Option<String>,
+    },
     // I-43: `elai bench claim-scope [--suite <fixture>] [--seed <u64>] [--json]`
     // Reproducibility-claim scoper + cheap pre-falsification kill-gate.
     // Runs pilot (gate-ON vs gate-OFF, reviewer-reaching trap detector) and
