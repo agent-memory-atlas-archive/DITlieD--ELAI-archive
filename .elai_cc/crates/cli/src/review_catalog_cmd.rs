@@ -45,6 +45,12 @@ pub(crate) fn run_catalog_cmd(
                 "rows": rows,
                 "eligible_tool_count": report.eligible_tool_count,
                 "missing_tool_count": report.missing_tool_count,
+                "invoked": report.invoked.iter().map(|o| serde_json::json!({
+                    "tool": &o.tool,
+                    "finding_count": o.finding_count,
+                    "exit_code": o.exit_code,
+                })).collect::<Vec<_>>(),
+                "total_finding_count": report.total_finding_count,
             }))?);
         }
         CliOutputFormat::Text | CliOutputFormat::Toml => {
@@ -55,7 +61,11 @@ pub(crate) fn run_catalog_cmd(
                     println!("TOOL_MISSING tool={} binary={}", row.row.tool, row.row.invoke_cmd[0]);
                 }
             }
+            for outcome in &report.invoked {
+                println!("GATE_INVOKED tool={} findings={} exit_code={}", outcome.tool, outcome.finding_count, outcome.exit_code.map_or_else(|| "none".to_string(), |code| code.to_string()));
+            }
             println!("catalog summary: eligible={} missing={}", report.eligible_tool_count, report.missing_tool_count);
+            println!("catalog verdict: total_findings={} invoked={}", report.total_finding_count, report.invoked.len());
         }
     }
     // Catalog verdicts are observe-only; missing tools are findings, not blocks.
@@ -168,8 +178,10 @@ license = "MIT"
             .collect();
         std::env::set_current_dir(&prev_cwd).expect("restore cwd");
 
-        assert_eq!(payloads.len(), 3, "catalog dispatcher emits two tool rows and one aggregate row");
-        let aggregates: Vec<_> = payloads.iter().filter(|p| p.tool.is_none()).collect();
+        use ReviewGateCatalogEventKind::CatalogBuilt;
+        let built: Vec<_> = payloads.iter().filter(|p| p.kind == CatalogBuilt).collect();
+        assert_eq!(built.len(), 3, "catalog dispatcher emits two tool rows and one aggregate row");
+        let aggregates: Vec<_> = built.iter().filter(|p| p.tool.is_none()).collect();
         assert_eq!(aggregates.len(), 1, "catalog emits exactly one aggregate row");
         let aggregate = aggregates[0];
         assert_eq!(aggregate.eligible_tool_count, Some(1), "aggregate counts the eligible shell tool");
@@ -178,7 +190,7 @@ license = "MIT"
         assert_eq!(aggregate.refusal_reason, None, "aggregate has no refusal reason");
         assert_eq!(aggregate.language.as_deref(), Some("python"), "aggregate preserves requested language");
 
-        let missing = payloads.iter().find(|p| p.tool.as_deref() == Some("elai-nonexistent-tool-j23"))
+        let missing = built.iter().find(|p| p.tool.as_deref() == Some("elai-nonexistent-tool-j23"))
             .expect("missing-tool row is emitted");
         assert_eq!(missing.verdict.as_deref(), Some("tool_missing"), "missing tool records tool_missing verdict");
         assert_eq!(missing.refusal_reason.as_deref(), Some("tool_missing"), "missing tool records refusal reason");
@@ -186,13 +198,121 @@ license = "MIT"
         assert_eq!(missing.parser_fn.as_deref(), Some("json"), "missing tool preserves parser function");
         assert!(!missing.sarif, "missing tool row is not SARIF");
 
-        let shell = payloads.iter().find(|p| p.tool.as_deref() == Some("posix-shell"))
+        let shell = built.iter().find(|p| p.tool.as_deref() == Some("posix-shell"))
             .expect("shell row is emitted");
         assert_eq!(shell.verdict.as_deref(), Some("eligible"), "installed shell records eligible verdict");
         assert_eq!(shell.refusal_reason, None, "installed shell has no refusal reason");
         assert_eq!(shell.tool_version.as_deref(), Some(shell_version), "shell preserves fixture version");
         assert_eq!(shell.parser_fn.as_deref(), Some("exit_code"), "shell preserves parser function");
-        assert!(payloads.iter().all(|p| p.kind == ReviewGateCatalogEventKind::CatalogBuilt), "every catalog row is CatalogBuilt");
+        assert!(built.iter().all(|p| p.kind == ReviewGateCatalogEventKind::CatalogBuilt));
+    }
+
+
+    #[cfg(unix)]
+    fn catalog_payloads(root: &Path) -> Vec<elai_orchestrator::ssb::ReviewGateCatalogEventPayload> {
+        use elai_orchestrator::ssb::SsbReader;
+
+        let cfg = SsbConfig {
+            db_path: sessions_dir_path(root).join("ssb.db"),
+            pool_size: None,
+            project_id: elai_core::project_id_from_path(root),
+            session_id: CATALOG_SESSION_ID.to_string(),
+        };
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build Tokio runtime for SSB read-back");
+        let rows = rt.block_on(async move {
+            let ssb = Ssb::new(cfg, clock).expect("open emitted SSB");
+            ssb.query_by_session(CATALOG_SESSION_ID).expect("read emitted rows")
+        });
+        rows.iter()
+            .map(|row| match rmp_serde::from_slice::<SsbPayload>(&row.payload).expect("decode row") {
+                SsbPayload::ReviewGateCatalogEvent(payload) => payload,
+                other => panic!("expected ReviewGateCatalogEvent payload, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_review_catalog_arm_emits_gate_invoked_and_clean_verdict() {
+        let _cwd = CWD_LOCK.lock().expect("cwd lock");
+        let dir = tempfile::TempDir::new().expect("temporary project root");
+        let root = dir.path();
+        let prev_cwd = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(root).expect("set cwd");
+        let fixture_path = root.join("j23-catalog.toml");
+        std::fs::write(&fixture_path, r#"[[tool]]
+language = "python"
+tool = "posix-shell-clean"
+version = "0.0.1"
+invoke_cmd = ["sh", "-c", "true"]
+parser_fn = "exit_code"
+license = "MIT"
+"#).expect("write catalog fixture");
+
+        run_review(ReviewAction::Catalog {
+            language: Some("python".to_string()),
+            catalog_path: Some(fixture_path),
+        }, CliOutputFormat::Text).expect("the catalog arm must run");
+        let payloads = catalog_payloads(root);
+        std::env::set_current_dir(&prev_cwd).expect("restore cwd");
+
+        let invoked: Vec<_> = payloads.iter().filter(|p| p.kind == elai_orchestrator::ssb::ReviewGateCatalogEventKind::GateInvoked).collect();
+        assert_eq!(invoked.len(), 1, "one eligible tool emits one GateInvoked row");
+        let invocation = invoked[0];
+        assert_eq!(invocation.tool.as_deref(), Some("posix-shell-clean"));
+        assert_eq!(invocation.finding_count, Some(0));
+        assert_eq!(invocation.verdict.as_deref(), Some("invoked"));
+        assert_eq!(invocation.refusal_reason, None);
+        assert_eq!(invocation.parser_fn.as_deref(), Some("exit_code"));
+        assert_eq!(invocation.tool_version.as_deref(), Some("0.0.1"));
+
+        let verdicts: Vec<_> = payloads.iter().filter(|p| p.kind == elai_orchestrator::ssb::ReviewGateCatalogEventKind::VerdictEmitted).collect();
+        assert_eq!(verdicts.len(), 1, "a clean catalog run emits one verdict row");
+        let verdict = verdicts[0];
+        assert_eq!(verdict.verdict.as_deref(), Some("clean"), "a clean run must emit a row and must not turn a passing tool into a phantom finding; silence would make no findings identical to the gate never running");
+        assert_eq!(verdict.finding_count, Some(0));
+        assert_eq!(verdict.tool, None);
+        assert_eq!(verdict.eligible_tool_count, Some(1));
+        assert_eq!(verdict.missing_tool_count, Some(0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_review_catalog_arm_emits_warn_verdict_for_json_findings() {
+        let _cwd = CWD_LOCK.lock().expect("cwd lock");
+        let dir = tempfile::TempDir::new().expect("temporary project root");
+        let root = dir.path();
+        let prev_cwd = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(root).expect("set cwd");
+        let fixture_path = root.join("j23-catalog.toml");
+        std::fs::write(&fixture_path, r#"[[tool]]
+language = "python"
+tool = "posix-shell-json"
+version = "0.0.2"
+invoke_cmd = ["sh", "-c", "printf '[{\"id\":1},{\"id\":2}]'"]
+parser_fn = "json"
+license = "MIT"
+"#).expect("write catalog fixture");
+
+        run_review(ReviewAction::Catalog {
+            language: Some("python".to_string()),
+            catalog_path: Some(fixture_path),
+        }, CliOutputFormat::Text).expect("the catalog arm must run");
+        let payloads = catalog_payloads(root);
+        std::env::set_current_dir(&prev_cwd).expect("restore cwd");
+
+        let invoked: Vec<_> = payloads.iter().filter(|p| p.kind == elai_orchestrator::ssb::ReviewGateCatalogEventKind::GateInvoked).collect();
+        assert_eq!(invoked.len(), 1, "one eligible tool emits one GateInvoked row");
+        assert_eq!(invoked[0].finding_count, Some(2));
+        assert_eq!(invoked[0].parser_fn.as_deref(), Some("json"));
+        let verdicts: Vec<_> = payloads.iter().filter(|p| p.kind == elai_orchestrator::ssb::ReviewGateCatalogEventKind::VerdictEmitted).collect();
+        assert_eq!(verdicts.len(), 1, "a findings catalog run emits one verdict row");
+        assert_eq!(verdicts[0].verdict.as_deref(), Some("warn"));
+        assert_eq!(verdicts[0].finding_count, Some(2));
     }
 
     #[test]
