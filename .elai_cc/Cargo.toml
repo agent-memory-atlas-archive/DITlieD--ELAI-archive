@@ -46,6 +46,7 @@ members = [
     # tools + the runner that loads, validates and probes it. Consumed by
     # `elai review --catalog`.
     "crates/arch_gate",
+    "crates/sarif_ingest",
 ]
 
 [workspace.package]

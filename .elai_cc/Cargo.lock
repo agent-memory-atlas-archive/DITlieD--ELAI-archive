@@ -1480,6 +1480,7 @@ name = "elai-arch-gate"
 version = "0.1.0"
 dependencies = [
  "elai-orchestrator",
+ "elai-sarif-ingest",
  "serde",
  "serde_json",
  "tempfile",
@@ -1853,6 +1854,15 @@ dependencies = [
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
+]
+
+[[package]]
+name = "elai-sarif-ingest"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

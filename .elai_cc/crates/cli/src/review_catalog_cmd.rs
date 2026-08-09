@@ -315,6 +315,94 @@ license = "MIT"
         assert_eq!(verdicts[0].finding_count, Some(2));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_review_catalog_arm_ingests_sarif_and_warns() {
+        use elai_orchestrator::ssb::ReviewGateCatalogEventKind;
+
+        let _cwd = CWD_LOCK.lock().expect("cwd lock");
+        let dir = tempfile::TempDir::new().expect("temporary project root");
+        let root = dir.path();
+        let prev_cwd = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(root).expect("set cwd");
+
+        let sarif_path = root.join("fixture.sarif");
+        std::fs::write(
+            &sarif_path,
+            r#"{
+  "version": "2.1.0",
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [{
+    "tool": {"driver": {"name": "semgrep"}},
+    "results": [
+      {
+        "ruleId": "python.lang.security.audit",
+        "level": "warning",
+        "message": {"text": "unsafe operation"},
+        "locations": [{"physicalLocation": {"artifactLocation": {"uri": "app.py"}, "region": {"startLine": 7}}}]
+      },
+      {"message": {"text": "another finding"}}
+    ]
+  }]
+}"#,
+        )
+        .expect("write SARIF fixture");
+
+        let catalog_path = root.join("j23-sarif-catalog.toml");
+        std::fs::write(
+            &catalog_path,
+            format!(
+                r#"[[tool]]
+language = "python"
+tool = "sarif-fixture"
+version = "0.0.3"
+invoke_cmd = ["cat", "{}"]
+parser_fn = "exit_code"
+sarif = true
+license = "MIT"
+"#,
+                sarif_path.display()
+            ),
+        )
+        .expect("write SARIF catalog fixture");
+
+        let action = ReviewAction::Catalog {
+            language: Some("python".to_string()),
+            catalog_path: Some(catalog_path.clone()),
+        };
+        run_review(action, CliOutputFormat::Text).expect("the catalog arm must run");
+        let payloads = catalog_payloads(root);
+        std::env::set_current_dir(&prev_cwd).expect("restore cwd");
+
+        let sarif_rows: Vec<_> = payloads
+            .iter()
+            .filter(|p| p.kind == ReviewGateCatalogEventKind::SarifIngested)
+            .collect();
+        assert_eq!(sarif_rows.len(), 1, "a SARIF row proves the production parser is not dark");
+        let sarif = sarif_rows[0];
+        assert_eq!(sarif.finding_count, Some(2), "two findings prove production parsed SARIF rather than the zero-result exit-code parser");
+        assert!(sarif.sarif, "the ingested row must identify the SARIF path");
+        assert_eq!(sarif.tool.as_deref(), Some("sarif-fixture"));
+        assert_eq!(sarif.tool_version.as_deref(), Some("0.0.3"));
+        assert_eq!(sarif.verdict.as_deref(), Some("sarif_ingested"));
+
+        let invoked: Vec<_> = payloads
+            .iter()
+            .filter(|p| p.kind == ReviewGateCatalogEventKind::GateInvoked)
+            .collect();
+        assert_eq!(invoked.len(), 1, "one eligible SARIF tool emits one GateInvoked row");
+        assert_eq!(invoked[0].finding_count, Some(2), "the gate receives SARIF's two findings instead of the exit-code parser's zero");
+        assert_eq!(invoked[0].verdict.as_deref(), Some("invoked"));
+
+        let verdicts: Vec<_> = payloads
+            .iter()
+            .filter(|p| p.kind == ReviewGateCatalogEventKind::VerdictEmitted)
+            .collect();
+        assert_eq!(verdicts.len(), 1, "the SARIF run emits exactly one final verdict row");
+        assert_eq!(verdicts[0].verdict.as_deref(), Some("warn"), "two SARIF findings make the final verdict warn");
+        assert_eq!(verdicts[0].finding_count, Some(2), "the final verdict preserves the two SARIF findings");
+    }
+
     #[test]
     fn parse_review_rejects_both_and_neither_sub_actions() {
         let both = crate::args::parse_review_subcommand_args(

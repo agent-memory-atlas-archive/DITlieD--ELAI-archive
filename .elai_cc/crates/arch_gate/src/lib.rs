@@ -39,6 +39,8 @@ pub enum ArchGateError {
     ToolSpawn { tool: String, source: std::io::Error },
     #[error("tool output parse {tool} ({parser_fn}): {reason}")]
     ToolOutputParse { tool: String, parser_fn: &'static str, reason: String },
+    #[error("SARIF parse {tool}: {reason}")]
+    SarifParse { tool: String, reason: String },
     #[error("SSB write {kind}: {reason}")]
     SsbWrite {
         kind: &'static str,
@@ -97,6 +99,9 @@ pub struct InvokeOutcome {
     pub finding_count: u64,
     /// Raw process exit code; None when the process was killed by a signal.
     pub exit_code: Option<i32>,
+    /// `Some(n)` when the row was SARIF-parsed, so `finding_count` came from the SARIF
+    /// document rather than from `parser_fn`. `None` for a non-SARIF row.
+    pub sarif_finding_count: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +185,15 @@ pub fn invoke_row(row: &CatalogRow) -> Result<InvokeOutcome, ArchGateError> {
             source,
         })?;
     let exit_code = output.status.code();
-    let finding_count = match row.parser_fn {
+    // For a SARIF row the SARIF document is the finding source, so parser_fn is not consulted, including text_regex.
+    let (finding_count, sarif_finding_count) = if row.sarif {
+        let report = elai_sarif_ingest::parse_sarif(&output.stdout).map_err(|e| {
+            ArchGateError::SarifParse { tool: row.tool.clone(), reason: e.to_string() }
+        })?;
+        let n = report.finding_count();
+        (n, Some(n))
+    } else {
+        (match row.parser_fn {
         ParserFn::ExitCode => u64::from(!output.status.success()),
         ParserFn::Json => {
             let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|e| {
@@ -225,8 +238,9 @@ pub fn invoke_row(row: &CatalogRow) -> Result<InvokeOutcome, ArchGateError> {
                 reason: "text_regex parsing is not implemented (J-23 slice 2 covers json and exit_code only)".into(),
             });
         }
+        }, None)
     };
-    Ok(InvokeOutcome { tool: row.tool.clone(), finding_count, exit_code })
+    Ok(InvokeOutcome { tool: row.tool.clone(), finding_count, exit_code, sarif_finding_count })
 }
 
 pub async fn run_catalog(
@@ -293,6 +307,29 @@ pub async fn run_catalog(
                     invoked_count += 1;
                     total_findings += outcome.finding_count;
                     let finding_count = outcome.finding_count;
+                    if let Some(n) = outcome.sarif_finding_count {
+                        let payload = SsbPayload::ReviewGateCatalogEvent(ReviewGateCatalogEventPayload {
+                            kind: ReviewGateCatalogEventKind::SarifIngested,
+                            catalog_path: path.to_string_lossy().into(),
+                            language: Some(row.language.clone()),
+                            tool: Some(row.tool.clone()),
+                            tool_version: Some(row.version.clone()),
+                            parser_fn: Some(row.parser_fn.as_str().into()),
+                            sarif: true,
+                            eligible_tool_count: None,
+                            missing_tool_count: None,
+                            finding_count: Some(n),
+                            verdict: Some("sarif_ingested".into()),
+                            refusal_reason: None,
+                            ts_ms: now_ms,
+                        });
+                        ssb.write_payload("cli:review-catalog", 0, payload, Vec::new())
+                            .await
+                            .map_err(|e| ArchGateError::SsbWrite {
+                                kind: "sarif_ingested_row",
+                                reason: e.to_string(),
+                            })?;
+                    }
                     invoked.push(outcome);
                     (Some(finding_count), "invoked", None)
                 }
@@ -567,6 +604,51 @@ mod tests {
         let result = invoke_row(&row);
         assert!(matches!(result, Err(ArchGateError::ToolOutputParse { .. })),
             "unparseable JSON must be a typed error, never an Ok zero-finding result");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invoke_row_sarif_row_counts_sarif_results() {
+        let d = tempdir().unwrap();
+        let report = d.path().join("report.sarif");
+        fs::write(
+            &report,
+            r#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fixture"}},"results":[{"ruleId":"R1","level":"warning","message":{"text":"first"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/lib.rs"},"region":{"startLine":7}}}]},{"message":{"text":"second"}}]}]}"#,
+        )
+        .unwrap();
+        let row = CatalogRow {
+            language: "test".into(),
+            tool: "fixture".into(),
+            version: "1".into(),
+            invoke_cmd: vec!["cat".into(), report.to_string_lossy().into_owned()],
+            parser_fn: ParserFn::ExitCode,
+            sarif: true,
+            license: "MIT".into(),
+            staleness_flag: false,
+        };
+        let outcome = invoke_row(&row).unwrap();
+        assert_eq!(outcome.finding_count, 2, "count must come from the SARIF document, not exit code (which was 0 and would mean zero findings)");
+        assert_eq!(outcome.sarif_finding_count, Some(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invoke_row_sarif_row_rejects_unparseable_document() {
+        let d = tempdir().unwrap();
+        let report = d.path().join("report.sarif");
+        fs::write(&report, r#"{"version":"2.2.0","runs":[]}"#).unwrap();
+        let row = CatalogRow {
+            language: "test".into(),
+            tool: "fixture".into(),
+            version: "1".into(),
+            invoke_cmd: vec!["cat".into(), report.to_string_lossy().into_owned()],
+            parser_fn: ParserFn::ExitCode,
+            sarif: true,
+            license: "MIT".into(),
+            staleness_flag: false,
+        };
+        let result = invoke_row(&row);
+        assert!(matches!(result, Err(ArchGateError::SarifParse { .. })), "an unreadable SARIF report must never read as clean");
     }
 
     #[test]
