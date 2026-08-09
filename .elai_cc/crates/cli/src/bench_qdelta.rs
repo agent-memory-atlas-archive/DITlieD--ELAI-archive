@@ -34,45 +34,34 @@
 //!
 //! # No `.unwrap()` / `.expect()` in non-test paths.
 //! # blake3 only for all content hashing.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::benchmarks::arc_agi2_runner::{ARCAGI2Runner, VecARCSsbEmitter};
 use elai_orchestrator::ssb::{QdeltaMeasuredPayload, SsbReader as _};
 use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
 /// Number of bootstrap resamples used for the 95% CI.
 /// Mirrors safedelta_runner::BOOTSTRAP_N_RESAMPLES (500 at Tier-1).
 const BOOTSTRAP_N_RESAMPLES: usize = 500;
-
 /// Fraction for the lower tail of a two-sided 95% CI.
 const CI_LOWER_TAIL: f64 = 0.025;
-
 /// Fraction for the upper tail of a two-sided 95% CI.
 const CI_UPPER_TAIL: f64 = 0.975;
-
 /// Minimum seed count required by the statistical floor.
 const FLOOR_MIN_SEED_COUNT: u32 = 5;
-
 /// Bench session id embedded in every SSB row this bench emits.
 const BENCH_SESSION_ID: &str = "cli-bench-qdelta";
-
 /// Agent id label for SSB rows (mirrors bench_safedelta pattern).
 const BENCH_AGENT_ID: &str = "cli:bench-qdelta";
-
 // ---------------------------------------------------------------------------
 // Config (read from TOML)
 // ---------------------------------------------------------------------------
-
 /// One task row in the QDELTA fixture.
 /// `on_defective`: did gates-ON produce a defective diff on this task?
 /// `off_defective`: did gates-OFF produce a defective diff on this task?
@@ -80,8 +69,11 @@ const BENCH_AGENT_ID: &str = "cli:bench-qdelta";
 pub struct QdeltaTaskRow {
     pub on_defective: bool,
     pub off_defective: bool,
+    #[serde(default)]
+    pub on_quality_violation: Option<bool>,
+    #[serde(default)]
+    pub off_quality_violation: Option<bool>,
 }
-
 /// QDELTA run configuration (read from TOML at bench invocation time).
 ///
 /// Fields enforce the statistical floor at parse time via `floor_check()`.
@@ -119,11 +111,9 @@ pub struct QdeltaConfig {
     /// Per-task paired observations. Each row has on_defective + off_defective.
     pub tasks: Vec<QdeltaTaskRow>,
 }
-
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
-
 #[derive(Debug, Error)]
 pub enum BenchQdeltaError {
     /// Statistical floor violated: run config rejected before any compute.
@@ -139,6 +129,9 @@ pub enum BenchQdeltaError {
          (DD5/anti-floor-fake)"
     )]
     DegenerateCorpus { on_rate: f64, off_rate: f64 },
+    /// A quality arm row is missing a recorded checker verdict.
+    #[error("qdelta quality cell missing for row index {row_index}")]
+    QualityCellMissing { row_index: usize },
     /// Config file could not be read or parsed.
     #[error("qdelta could not read config at {path}: {source_msg}")]
     ConfigRead { path: String, source_msg: String },
@@ -172,11 +165,9 @@ pub enum BenchQdeltaError {
     #[error("qdelta contamination probe failed: {source_msg}")]
     ContaminationProbe { source_msg: String },
 }
-
 // ---------------------------------------------------------------------------
 // Statistical floor enforcement
 // ---------------------------------------------------------------------------
-
 /// Validate the statistical floor invariants. Returns `Err(FloorViolation)` if
 /// `seed_count < FLOOR_MIN_SEED_COUNT` OR `paired == false`. Called at
 /// `run_inner()` entry — no compute (bootstrap CI or SSB emit) runs before this.
@@ -189,7 +180,6 @@ pub fn floor_check(config: &QdeltaConfig) -> Result<(), BenchQdeltaError> {
     }
     Ok(())
 }
-
 // ---------------------------------------------------------------------------
 // D-20 contamination probe (STEP 5 — wired into QdeltaConfig)
 // ---------------------------------------------------------------------------
@@ -316,6 +306,11 @@ mod bench_qdelta_methodology;
 pub use bench_qdelta_methodology::generate_methodology_doc;
 pub(crate) use bench_qdelta_methodology::write_methodology_doc;
 
+#[path = "bench_qdelta_quality.rs"]
+mod bench_qdelta_quality;
+
+pub use bench_qdelta_quality::{arm_label, quality_cells};
+
 // ---------------------------------------------------------------------------
 // CLI entry
 // ---------------------------------------------------------------------------
@@ -325,8 +320,8 @@ pub(crate) use bench_qdelta_methodology::write_methodology_doc;
 ///
 /// Returns `Ok(())` on a clean run (rc=0). On a handled error it prints a
 /// `QDELTA ABORT:` line to stderr and calls `std::process::exit(1)`.
-pub(crate) fn run(config: PathBuf, seed: u64, json: bool) -> anyhow::Result<()> {
-    match run_inner(config, seed, json) {
+pub(crate) fn run(config: PathBuf, seed: u64, json: bool, quality: bool) -> anyhow::Result<()> {
+    match run_inner(config, seed, json, quality) {
         Ok(()) => Ok(()),
         Err(e) => {
             eprintln!("QDELTA ABORT: {e}");
@@ -337,7 +332,7 @@ pub(crate) fn run(config: PathBuf, seed: u64, json: bool) -> anyhow::Result<()> 
 
 /// Core — validates floor, computes delta + CI from fixture, writes JSON,
 /// emits SSB beacon. Public so integration tests can drive without process exit.
-pub fn run_inner(config_path: PathBuf, seed: u64, json: bool) -> Result<(), BenchQdeltaError> {
+pub fn run_inner(config_path: PathBuf, seed: u64, json: bool, quality: bool) -> Result<(), BenchQdeltaError> {
     // 1. Read and parse the TOML config.
     let config_bytes = fs::read(&config_path).map_err(|e| BenchQdeltaError::ConfigRead {
         path: config_path.display().to_string(),
@@ -364,9 +359,17 @@ pub fn run_inner(config_path: PathBuf, seed: u64, json: bool) -> Result<(), Benc
         config.contamination_probe_result = verdict;
     }
 
-    // 3. Build paired bool vectors from task rows.
-    let on_cells: Vec<bool> = config.tasks.iter().map(|t| t.on_defective).collect();
-    let off_cells: Vec<bool> = config.tasks.iter().map(|t| t.off_defective).collect();
+    // 3. Build paired bool vectors from the selected arm.
+    let (on_cells, off_cells) = if quality {
+        config.suite.push_str("#quality");
+        quality_cells(&config)?
+    } else {
+        (
+            config.tasks.iter().map(|t| t.on_defective).collect(),
+            config.tasks.iter().map(|t| t.off_defective).collect(),
+        )
+    };
+    let arm = arm_label(quality);
 
     let n = on_cells.len();
     let on_defective_rate = if n > 0 {
@@ -398,7 +401,7 @@ pub fn run_inner(config_path: PathBuf, seed: u64, json: bool) -> Result<(), Benc
     let project_root = std::env::current_dir().map_err(|e| BenchQdeltaError::Cwd {
         source_msg: e.to_string(),
     })?;
-    let report_path = write_json_report(&project_root, &config, on_defective_rate, off_defective_rate, delta, ci_low, ci_high, seed, &corpus_blake3)?;
+    let report_path = write_json_report(&project_root, &config, on_defective_rate, off_defective_rate, delta, ci_low, ci_high, seed, &corpus_blake3, arm)?;
 
     // 6b. Write the human-readable methodology doc as a sidecar artifact
     // (STEP 2 of I-38: machine-readable config -> human-readable methodology).
@@ -430,9 +433,10 @@ pub fn run_inner(config_path: PathBuf, seed: u64, json: bool) -> Result<(), Benc
 
     // 8. Summary line.
     println!(
-        "QDELTA suite={} n_tasks={} seed_count={} paired={} on_rate={:.4} off_rate={:.4} \
+        "QDELTA arm={} suite={} n_tasks={} seed_count={} paired={} on_rate={:.4} off_rate={:.4} \
          delta={:.4} ci_low={:.4} ci_high={:.4} dollar_per_task={:.6} \
          contamination={} corpus_blake3={} runpod_pending=true report={}",
+        arm,
         config.suite,
         n,
         config.seed_count,
@@ -473,6 +477,7 @@ fn write_json_report(
     ci_high: f64,
     seed: u64,
     corpus_blake3: &str,
+    arm: &str,
 ) -> Result<PathBuf, BenchQdeltaError> {
     let report_dir = project_root.join("benchmarks").join("qdelta");
     fs::create_dir_all(&report_dir).map_err(|e| BenchQdeltaError::ReportDir {
@@ -503,6 +508,7 @@ fn write_json_report(
         "seed": seed,
         "runpod_pending": true,
         "methodology": generate_methodology_doc(config),
+        "arm": arm,
     });
     let body = serde_json::to_string_pretty(&report).map_err(|e| BenchQdeltaError::Serialise {
         source_msg: e.to_string(),
@@ -855,11 +861,11 @@ off_defective = true
             contamination_probe_result: "not_run".into(),
             contamination_probe_dataset: None,
             tasks: vec![
-                QdeltaTaskRow { on_defective: true, off_defective: true },
-                QdeltaTaskRow { on_defective: false, off_defective: false },
-                QdeltaTaskRow { on_defective: true, off_defective: true },
-                QdeltaTaskRow { on_defective: false, off_defective: false },
-                QdeltaTaskRow { on_defective: true, off_defective: true },
+                QdeltaTaskRow { on_defective: true, off_defective: true, on_quality_violation: None, off_quality_violation: None },
+                QdeltaTaskRow { on_defective: false, off_defective: false, on_quality_violation: None, off_quality_violation: None },
+                QdeltaTaskRow { on_defective: true, off_defective: true, on_quality_violation: None, off_quality_violation: None },
+                QdeltaTaskRow { on_defective: false, off_defective: false, on_quality_violation: None, off_quality_violation: None },
+                QdeltaTaskRow { on_defective: true, off_defective: true, on_quality_violation: None, off_quality_violation: None },
             ],
         };
         // floor_check passes; compute manually to confirm delta==0

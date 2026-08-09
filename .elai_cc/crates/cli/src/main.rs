@@ -1615,8 +1615,8 @@ fn run() -> Result<(), anyhow::Error> {
         // I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate fixture harness.
         // Statistical floor mechanically enforced (seed_count>=5, paired=true).
         // Emits 1 QdeltaMeasured SSB flat beacon. Live-model leg deferred (D-026).
-        CliAction::BenchQdelta { config, seed, json } => {
-            bench_qdelta::run(config, seed, json)?;
+        CliAction::BenchQdelta { config, seed, json, quality } => {
+            bench_qdelta::run(config, seed, json, quality)?;
         }
 
         CliAction::BenchKvTune { dry_run, emit_ssb, json } => {

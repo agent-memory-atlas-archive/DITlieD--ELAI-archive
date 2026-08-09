@@ -1699,6 +1699,7 @@ fn parse_bench_qdelta_args(rest: &[String]) -> Result<crate::args::CliAction, St
     let mut config: Option<String> = None;
     let mut seed: u64 = 42;
     let mut json: bool = false;
+    let mut quality: bool = false;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -1733,6 +1734,10 @@ fn parse_bench_qdelta_args(rest: &[String]) -> Result<crate::args::CliAction, St
                 json = true;
                 i += 1;
             }
+            "--quality" => {
+                quality = true;
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `bench qdelta` argument: {other}"));
             }
@@ -1741,7 +1746,7 @@ fn parse_bench_qdelta_args(rest: &[String]) -> Result<crate::args::CliAction, St
     let config = config
         .map(std::path::PathBuf::from)
         .ok_or_else(|| "`bench qdelta` requires --config <PATH>".to_string())?;
-    Ok(crate::args::CliAction::BenchQdelta { config, seed, json })
+    Ok(crate::args::CliAction::BenchQdelta { config, seed, json, quality })
 }
 
 // ---------------------------------------------------------------------------

@@ -180,3 +180,82 @@ fn maintainability_floor_warns_rust_soft_loosening() {
             && finding.verdict == HookVerdictKind::Block
     }));
 }
+
+
+#[test]
+fn qdelta_quality_arm_reads_quality_cells_not_defect_cells() {
+    use elai_cli::bench_qdelta::{quality_cells, QdeltaConfig, QdeltaTaskRow};
+    let config = QdeltaConfig {
+        suite: "quality".into(), model_id: "fixture".into(), seed_count: 5,
+        paired: true, dollar_per_task: 0.0, contamination_probe_result: "not_run".into(),
+        contamination_probe_dataset: None,
+        tasks: vec![
+            QdeltaTaskRow { on_defective: false, off_defective: true, on_quality_violation: Some(true), off_quality_violation: Some(false) },
+            QdeltaTaskRow { on_defective: true, off_defective: false, on_quality_violation: Some(false), off_quality_violation: Some(true) },
+        ],
+    };
+    let cells = quality_cells(&config).expect("quality cells");
+    assert_eq!(cells, (vec![true, false], vec![false, true]));
+    assert_ne!(cells, (vec![false, true], vec![true, false]));
+}
+
+#[test]
+fn qdelta_quality_arm_missing_cell_names_row() {
+    use elai_cli::bench_qdelta::{quality_cells, BenchQdeltaError, QdeltaConfig, QdeltaTaskRow};
+    let config = QdeltaConfig {
+        suite: "quality".into(), model_id: "fixture".into(), seed_count: 5,
+        paired: true, dollar_per_task: 0.0, contamination_probe_result: "not_run".into(),
+        contamination_probe_dataset: None,
+        tasks: vec![
+            QdeltaTaskRow { on_defective: false, off_defective: true, on_quality_violation: Some(true), off_quality_violation: Some(false) },
+            QdeltaTaskRow { on_defective: false, off_defective: true, on_quality_violation: None, off_quality_violation: Some(true) },
+        ],
+    };
+    assert!(matches!(quality_cells(&config), Err(BenchQdeltaError::QualityCellMissing { row_index: 1 })));
+}
+
+#[test]
+fn qdelta_quality_arm_label_is_stable() {
+    use elai_cli::bench_qdelta::arm_label;
+    assert_eq!(arm_label(true), "quality");
+    assert_eq!(arm_label(false), "defect");
+}
+
+#[test]
+fn qdelta_quality_run_inner_writes_quality_report() {
+    // This test alone changes the process-global current directory; it restores it before returning.
+    use elai_cli::bench_qdelta::{run_inner, QdeltaConfig, QdeltaTaskRow};
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let fixture = tmp.path().join("qdelta.toml");
+    let config = QdeltaConfig {
+        suite: "quality_fixture".into(), model_id: "fixture".into(), seed_count: 5,
+        paired: true, dollar_per_task: 0.0, contamination_probe_result: "not_run".into(),
+        contamination_probe_dataset: None,
+        tasks: vec![
+            QdeltaTaskRow { on_defective: false, off_defective: true, on_quality_violation: Some(true), off_quality_violation: Some(true) },
+            QdeltaTaskRow { on_defective: true, off_defective: false, on_quality_violation: Some(true), off_quality_violation: Some(false) },
+            QdeltaTaskRow { on_defective: false, off_defective: false, on_quality_violation: Some(false), off_quality_violation: Some(true) },
+            QdeltaTaskRow { on_defective: true, off_defective: true, on_quality_violation: Some(true), off_quality_violation: Some(false) },
+            QdeltaTaskRow { on_defective: false, off_defective: true, on_quality_violation: Some(false), off_quality_violation: Some(false) },
+        ],
+    };
+    std::fs::write(&fixture, toml::to_string(&config).expect("toml")).expect("fixture");
+    let previous = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(tmp.path()).expect("set cwd");
+    let result = run_inner(fixture, 42, false, true);
+    let report = std::fs::read_dir(tmp.path().join("benchmarks/qdelta")).expect("report dir")
+        .filter_map(|entry| entry.ok())
+        .find(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("qdelta-") && name.ends_with(".json")
+        })
+        .expect("qdelta-*.json report not found");
+    let body = std::fs::read_to_string(report.path()).expect("report body");
+    std::env::set_current_dir(previous).expect("restore cwd");
+    result.expect("quality run");
+    assert!(body.contains("\"arm\": \"quality\""));
+    assert!(body.contains("quality_fixture#quality"));
+    assert!(body.contains("\"on_defective_rate\": 0.6"));
+    assert!(!body.contains("\"on_defective_rate\": 0.4"));
+}

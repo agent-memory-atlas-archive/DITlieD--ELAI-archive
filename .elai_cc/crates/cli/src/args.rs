@@ -1259,6 +1259,7 @@ pub(crate) enum CliAction {
         config: std::path::PathBuf,
         seed: u64,
         json: bool,
+        quality: bool,
     },
     // C-37: `elai bench snowballing --pool A|B --output <PATH>` — Structure
     // Snowballing harness. Constrained-decoding 5-class Reflector replication.
