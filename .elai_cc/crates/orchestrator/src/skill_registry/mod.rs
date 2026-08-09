@@ -27,7 +27,7 @@ pub mod manifest;
 pub mod ranker;
 pub mod scoring;
 
-pub use admission::admitted_skills;
+pub use admission::{admitted_skills, scan_skill_dir, SkillDirFinding};
 pub use discovery::{find_skills, parse_skill_frontmatter_extended, DiscoveryRoot};
 pub use eval::{eval_skill_routing, EvalResult, SkillEvalQuery};
 pub use manifest::{FrontmatterFields, SkillManifest, SkillOrigin};

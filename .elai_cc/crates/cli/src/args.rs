@@ -2515,6 +2515,8 @@ pub(crate) enum SkillsAction {
     /// `elai skills list` -- enumerate SKILL.md files via the C-41
     /// SkillRegistry walker.
     List,
+    /// `elai skills add <source> [--dry-run]` -- admit and install a skill directory.
+    Add { source: String, dry_run: bool },
     /// `elai skills eval [--skill <name>] [--dry-run]` -- run the
     /// lexical-match precision/recall harness against each skill's
     /// eval/positive.jsonl + eval/negative.jsonl.

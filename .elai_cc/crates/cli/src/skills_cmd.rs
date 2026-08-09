@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
-use elai_orchestrator::skill_registry::{find_skills, DiscoveryRoot, SkillOrigin};
+use elai_orchestrator::skill_registry::{
+    find_skills, scan_skill_dir, DiscoveryRoot, SkillOrigin,
+};
 use elai_orchestrator::skill_telemetry::{
     self, build_invoked_payload, SkillOutcome, TriggerMethod,
 };
@@ -32,6 +34,7 @@ use crate::args::{CliOutputFormat, SkillsAction};
 pub(crate) fn run(action: SkillsAction, output_format: CliOutputFormat) -> Result<(), String> {
     match action {
         SkillsAction::List => run_list(output_format),
+        SkillsAction::Add { source, dry_run } => run_add(&source, dry_run, output_format),
         SkillsAction::Eval { skill, dry_run } => run_eval(skill.as_deref(), dry_run, output_format),
         SkillsAction::Publish { target, dry_run } => run_publish(target, dry_run, output_format),
         // E-22 (SCHEMA_VERSION 170): normalised SKILL.md export with
@@ -50,6 +53,98 @@ pub(crate) fn run(action: SkillsAction, output_format: CliOutputFormat) -> Resul
             run_playbook_export(out_path, emit_ssb, output_format)
         }
     }
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AddOutcome {
+    Installed { destination: PathBuf, file_count: usize },
+    AdmittedDryRun { destination: PathBuf, file_count: usize },
+}
+
+fn run_add(source: &str, dry_run: bool, output_format: CliOutputFormat) -> Result<(), String> {
+    let destination_root = project_root().join(".elai_cc").join("skills");
+    let outcome = add_skill_at(Path::new(source), &destination_root, dry_run)?;
+    match output_format {
+        CliOutputFormat::Json => {
+            let (status, destination, file_count) = match &outcome {
+                AddOutcome::Installed { destination, file_count } => ("installed", destination, file_count),
+                AddOutcome::AdmittedDryRun { destination, file_count } => ("admitted-but-not-installed", destination, file_count),
+            };
+            println!("{{\"status\":\"{status}\",\"destination\":\"{}\",\"file_count\":{file_count}}}", destination.display());
+        }
+        _ => match outcome {
+            AddOutcome::Installed { destination, file_count } => {
+                println!("installed skill at {} ({file_count} files)", destination.display());
+            }
+            AddOutcome::AdmittedDryRun { destination, file_count } => {
+                println!("admitted-but-not-installed: {} ({file_count} files)", destination.display());
+            }
+        },
+    }
+    Ok(())
+}
+
+fn add_skill_at(source: &Path, dest_root: &Path, dry_run: bool) -> Result<AddOutcome, String> {
+    if !source.is_dir() {
+        return Err(format!("skill source is not an existing directory: {}", source.display()));
+    }
+    let skill_file = source.join("SKILL.md");
+    if !skill_file.is_file() {
+        return Err(format!("skill source has no top-level SKILL.md: {}", source.display()));
+    }
+    let findings = scan_skill_dir(source);
+    if !findings.is_empty() {
+        let details = findings
+            .iter()
+            .map(|finding| format!("{}: {:?}", finding.file.display(), finding.findings))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!("skill admission refused: {details}"));
+    }
+    let name = source
+        .file_name()
+        .ok_or_else(|| format!("skill source has no directory name: {}", source.display()))?;
+    let destination = dest_root.join(name);
+    if destination.exists() {
+        return Err(format!("skill destination already exists: {}", destination.display()));
+    }
+    let file_count = count_files(source)?;
+    if dry_run {
+        return Ok(AddOutcome::AdmittedDryRun { destination, file_count });
+    }
+    copy_tree(source, &destination)?;
+    Ok(AddOutcome::Installed { destination, file_count })
+}
+
+fn count_files(path: &Path) -> Result<usize, String> {
+    let mut count = 0;
+    for entry in fs::read_dir(path).map_err(|error| format!("could not read {}: {error}", path.display()))? {
+        let entry = entry.map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+        let entry_path = entry.path();
+        if entry.file_type().map_err(|error| format!("could not inspect {}: {error}", entry_path.display()))?.is_dir() {
+            count += count_files(&entry_path)?;
+        } else if entry.file_type().map_err(|error| format!("could not inspect {}: {error}", entry_path.display()))?.is_file() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|error| format!("could not create {}: {error}", destination.display()))?;
+    for entry in fs::read_dir(source).map_err(|error| format!("could not read {}: {error}", source.display()))? {
+        let entry = entry.map_err(|error| format!("could not inspect {}: {error}", source.display()))?;
+        let from = entry.path();
+        let to = destination.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|error| format!("could not inspect {}: {error}", from.display()))?;
+        if file_type.is_dir() {
+            copy_tree(&from, &to)?;
+        } else if file_type.is_file() {
+            fs::copy(&from, &to).map_err(|error| format!("could not copy {}: {error}", from.display()))?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1168,4 +1263,49 @@ mod tests {
         let custom_pos = norm.find("custom_field:").expect("custom present");
         assert!(desc_pos < custom_pos, "canonical keys must precede unknowns");
     }
+
+    fn write_clean_skill(root: &Path) {
+        fs::write(root.join("SKILL.md"), "---\nname: clean\n---\nplain").expect("write");
+    }
+
+    #[test]
+    fn add_clean_skill_installs_tree() {
+        let source = tempfile::tempdir().expect("tempdir");
+        let destination_root = tempfile::tempdir().expect("tempdir");
+        write_clean_skill(source.path());
+        let outcome = add_skill_at(source.path(), destination_root.path(), false).expect("install");
+        assert!(matches!(outcome, AddOutcome::Installed { .. }));
+        assert!(destination_root.path().join(source.path().file_name().expect("name")).join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn add_refuses_nested_payload_without_copying() {
+        let source = tempfile::tempdir().expect("tempdir");
+        let destination_root = tempfile::tempdir().expect("tempdir");
+        write_clean_skill(source.path());
+        let nested = source.path().join("tests");
+        fs::create_dir(&nested).expect("mkdir");
+        let hidden = char::from_u32(0x200B).expect("zero-width character");
+        fs::write(nested.join("fixture.txt"), format!("a{hidden}b")).expect("write");
+        assert!(add_skill_at(source.path(), destination_root.path(), false).is_err());
+        assert!(!destination_root.path().join(source.path().file_name().expect("name")).exists());
+    }
+
+    #[test]
+    fn add_dry_run_does_not_install() {
+        let source = tempfile::tempdir().expect("tempdir");
+        let destination_root = tempfile::tempdir().expect("tempdir");
+        write_clean_skill(source.path());
+        let outcome = add_skill_at(source.path(), destination_root.path(), true).expect("dry run");
+        assert!(matches!(outcome, AddOutcome::AdmittedDryRun { .. }));
+        assert!(!destination_root.path().join(source.path().file_name().expect("name")).exists());
+    }
+
+    #[test]
+    fn add_requires_skill_file() {
+        let source = tempfile::tempdir().expect("tempdir");
+        let destination_root = tempfile::tempdir().expect("tempdir");
+        assert!(add_skill_at(source.path(), destination_root.path(), false).is_err());
+    }
+
 }

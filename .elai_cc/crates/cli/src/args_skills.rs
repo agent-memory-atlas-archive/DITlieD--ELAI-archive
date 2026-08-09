@@ -8,6 +8,7 @@ use crate::args::{CliAction, CheckpointSub, CliOutputFormat, SkillsAction};
 
 /// E-43 -- parse `elai skills <sub>` arguments. Three sub-actions:
 ///   `elai skills list`
+///   `elai skills add <source> [--dry-run]`
 ///   `elai skills eval [--skill <name>] [--dry-run]`
 ///   `elai skills publish --target <claude|codex|gemini> [--dry-run]`
 pub(crate) fn parse_skills_subcommand_args(
@@ -16,13 +17,38 @@ pub(crate) fn parse_skills_subcommand_args(
 ) -> Result<CliAction, String> {
     let sub = rest
         .first()
-        .ok_or_else(|| "missing `skills` sub-action; expected: list, eval, publish".to_string())?
+        .ok_or_else(|| "missing `skills` sub-action; expected: list, add, eval, publish".to_string())?
         .as_str();
     match sub {
         "list" => Ok(CliAction::SkillsManagement {
             action: SkillsAction::List,
             output_format,
         }),
+        "add" => {
+            let mut source: Option<String> = None;
+            let mut dry_run = false;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--dry-run" => {
+                        dry_run = true;
+                        i += 1;
+                    }
+                    value if !value.starts_with('-') && source.is_none() => {
+                        source = Some(value.to_string());
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!("unknown `skills add` argument: {other}"));
+                    }
+                }
+            }
+            let source = source.ok_or_else(|| "missing source for `skills add`; expected a directory path".to_string())?;
+            Ok(CliAction::SkillsManagement {
+                action: SkillsAction::Add { source, dry_run },
+                output_format,
+            })
+        }
         "eval" => {
             let mut skill: Option<String> = None;
             let mut dry_run = false;
