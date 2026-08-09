@@ -124,6 +124,7 @@ impl ProjectRuleSeeder {
 
         // Lint tool rules (spec section 6, rows 4-5).
         Self::lint_rules(&profile.lint_tools, &mut rules);
+        Self::solid_proxy_rules(&mut rules);
 
         // Insert into DB, skipping duplicates.
         let now = clock
@@ -336,6 +337,50 @@ impl ProjectRuleSeeder {
                 });
             }
             _ => {}
+        }
+    }
+
+    /// Add the fixed SOLID proxy rows to the measured rule lifecycle.
+    ///
+    /// The verdict owner is the frozen checker `.elai_cc/tools/solid_proxy_check.py`,
+    /// run by the auditor step. These rows do not add detection, and the Rust rule
+    /// engine never evaluates them. The engine's live rule set comes from
+    /// `load_seed_rules` reading `data/rules/*.toml`
+    /// (`crates/cli/src/report_fns.rs:1511`, called at
+    /// `crates/cli/src/runtime_builder.rs:244`). The DB read-back
+    /// `lifecycle::fetch_all_active_rules` (`crates/rules/src/lifecycle.rs:317`)
+    /// has ZERO production callers today, so `predicate_json` on these rows is
+    /// never compiled and never evaluated.
+    ///
+    /// What these rows do add is the measured lifecycle: a durable per-rule sample
+    /// ledger, fail-closed promotion gates, and severity that flips by DATA instead
+    /// of by hand-editing a frozen checker. Nothing yet writes `rule_metrics` rows
+    /// for these rule ids in production, so the promotion path is exercised by
+    /// contract fixtures only.
+    fn solid_proxy_rules(out: &mut Vec<SeedRule>) {
+        for (rule_id, metric_name, proxy, severity) in [
+            ("C-MAINTAINABILITY-SRP", "solid_proxy_srp_findings", "SRP god-object", "BLOCK"),
+            ("C-MAINTAINABILITY-DIP", "solid_proxy_dip_findings", "DIP concrete-dependency", "WARN"),
+            ("C-MAINTAINABILITY-ISP", "solid_proxy_isp_findings", "ISP fat-interface", "WARN"),
+        ] {
+            let predicate_json = serde_json::json!({
+                "type": "metric_gate",
+                "metric_name": metric_name,
+                "operator": "eq",
+                "threshold": 0.0,
+                "source": "tool_output"
+            })
+            .to_string();
+            out.push(SeedRule {
+                rule_id: rule_id.to_owned(),
+                domain: "engineering".to_owned(),
+                tier: SEEDED_TIER,
+                title: format!("{proxy} verdict from the solid proxy checker"),
+                description: format!("The solid proxy checker produces the {proxy} verdict."),
+                predicate_json,
+                phase_mask: EXECUTING_AUDITING_MASK,
+                severity: severity.to_owned(),
+            });
         }
     }
 

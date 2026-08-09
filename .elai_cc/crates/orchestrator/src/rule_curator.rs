@@ -121,7 +121,46 @@ impl PlaybookCurator {
         ArcClock(Arc::clone(&self.clock))
     }
 
-    /// Run one promotion-tick sweep over all PROPOSED rules.
+    /// Sweep rows born at SHADOW; metric gates inside `transition_to_active` are the only bound,
+    /// and a rule with no `rule_metrics` rows cannot promote.
+    async fn promote_shadow_rules(
+        &self,
+        conn: &Connection,
+        ssb: &Arc<Ssb>,
+    ) -> Result<(), CuratorError> {
+        // Promotion sweep for rows born at SHADOW (the seeder inserts at SHADOW).
+        let shadow_ids = list_rules_by_status(conn, "SHADOW")?;
+        for rule_id in &shadow_ids {
+            let metrics = compute_metrics_snapshot(conn, rule_id).unwrap_or_else(|_| {
+                crate::derive_outcome_labels::observe_labels_for_rule(rule_id, &[])
+            });
+            if let Err(e) = transition_to_active(conn, rule_id, &metrics, false, &self.arc_clock()) {
+                tracing::debug!(rule_id = %rule_id, error = %e, "shadow row not promotable this tick");
+                continue;
+            }
+            let outcome_rows = query_outcome_rows_for_rule(ssb, rule_id);
+            let evidence_count = u32::try_from(outcome_rows.len()).unwrap_or(u32::MAX);
+            let lift = compute_lift_estimate(&metrics);
+            let payload = PlaybookEventPayload {
+                rule_id: rule_id.clone(),
+                kind: PlaybookEventKind::Promoted,
+                outcome_row_ids: outcome_rows,
+                lift: Some(lift),
+                regression_count: 0,
+                evidence_count,
+                ts_ms: self.now_ms(),
+            };
+            if let Err(e) = ssb
+                .write_payload("rule_curator", 0, SsbPayload::PlaybookEvent(payload), vec![])
+                .await
+            {
+                tracing::warn!(rule_id = %rule_id, error = %e, "PlaybookEvent(Promoted) emit failed");
+            }
+        }
+        Ok(())
+    }
+
+    /// Run one promotion-tick sweep over PROPOSED rules, then SHADOW rules, and demote stale ACTIVE rules.
     ///
     /// For each PROPOSED rule:
     ///   1. Count SSB rows with file_path = rule_id (evidence links).
@@ -286,6 +325,8 @@ impl PlaybookCurator {
                 tracing::warn!(rule_id = %rule_id, error = %e, "PlaybookEvent(Promoted) emit failed");
             }
         }
+
+        self.promote_shadow_rules(&conn, ssb).await?;
 
         // Demotion sweep: check ACTIVE rules for FPR above retirement threshold.
         let active_ids = list_rules_by_status(&conn, "ACTIVE")?;
