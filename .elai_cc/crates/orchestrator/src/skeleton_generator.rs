@@ -24,7 +24,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use elai_core::file_plan::{FilePlan, FunctionSpec};
+use elai_core::file_plan::{FilePlan, FunctionSpec, MAX_DISTINCT_CONCERNS_PER_FILE};
 
 use crate::mini_critic::{MiniCritic, MiniCriticLanguage, MiniCriticResult, MiniCriticVerdict};
 use crate::ssb::{
@@ -72,6 +72,9 @@ pub struct SkeletonSpec {
     /// fill prompt has direct access to the signature when it builds the
     /// per-blank prompt.
     pub functions: Vec<FunctionSpec>,
+    /// Whether responsibility-budget observation found an over-budget file.
+    #[serde(default)]
+    pub responsibility_budget_exceeded: bool,
 }
 
 /// One filled blank — body string + the [`MiniCritic`] verdict observed
@@ -222,6 +225,7 @@ impl SkeletonGenerator {
             blanks,
             skeleton_text: buf,
             functions: functions.to_vec(),
+            responsibility_budget_exceeded: false,
         })
     }
 
@@ -233,6 +237,11 @@ impl SkeletonGenerator {
         &self,
         plan: &FilePlan,
     ) -> Result<Vec<SkeletonSpec>, SkeletonError> {
+        // Production-reachable observe-only rung: task_runner reaches this
+        // hook before fill generation. This declaration proxy is not a call
+        // graph; the authoritative SOLID verdict remains auditor-owned in
+        // frozen `.elai_cc/tools/solid_proxy_check.py`.
+        let observed_budget_exceeded = observe_responsibility_budgets(plan);
         let mut out = Vec::new();
         for spec in &plan.new_files {
             if spec.functions.is_empty() {
@@ -243,6 +252,10 @@ impl SkeletonGenerator {
                 spec.language.clone(),
                 &spec.functions,
             )?);
+            if let Some(skeleton) = out.last_mut() {
+                skeleton.responsibility_budget_exceeded = observed_budget_exceeded
+                    .contains(&spec.path);
+            }
         }
         for spec in &plan.modified_files {
             if spec.functions.is_empty() {
@@ -253,6 +266,10 @@ impl SkeletonGenerator {
                 spec.language.clone(),
                 &spec.functions,
             )?);
+            if let Some(skeleton) = out.last_mut() {
+                skeleton.responsibility_budget_exceeded = observed_budget_exceeded
+                    .contains(&spec.path);
+            }
         }
         Ok(out)
     }
@@ -331,6 +348,29 @@ impl SkeletonGenerator {
         })?;
         Ok(buffer.spec.file_path.clone())
     }
+}
+
+fn observe_responsibility_budgets(plan: &FilePlan) -> std::collections::BTreeSet<PathBuf> {
+    let mut exceeded = std::collections::BTreeSet::new();
+    for spec in &plan.new_files {
+        let distinct = spec
+            .functions
+            .iter()
+            .map(|f| (f.name.as_str(), f.signature.as_str()))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        if distinct > spec.max_distinct_concerns as usize {
+            exceeded.insert(spec.path.clone());
+            tracing::warn!(
+                file = %spec.path.display(),
+                declared_budget = spec.max_distinct_concerns,
+                observed_distinct_concerns = distinct,
+                absolute_cap = MAX_DISTINCT_CONCERNS_PER_FILE,
+                "file_plan responsibility budget exceeded (observe-only)"
+            );
+        }
+    }
+    exceeded
 }
 
 fn indent_body(body: &str, prefix: &str) -> String {
@@ -500,6 +540,7 @@ mod tests {
                 blanks: vec![],
                 skeleton_text: String::new(),
                 functions: vec![],
+                responsibility_budget_exceeded: false,
             },
             fills: vec![],
             completeness_ratio: 0.0,

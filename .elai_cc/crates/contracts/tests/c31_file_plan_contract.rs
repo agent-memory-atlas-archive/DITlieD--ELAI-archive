@@ -93,6 +93,7 @@ fn file_plan_types_compile() {
         path: PathBuf::from("src/lib.rs"),
         language: "rust".into(),
         max_lines: 200,
+        max_distinct_concerns: 16,
         functions: vec![fn_spec.clone()],
     };
     let mod_spec = FileModSpec {
@@ -122,6 +123,7 @@ fn file_plan_json_round_trip() {
             path: PathBuf::from("src/repo.rs"),
             language: "rust".into(),
             max_lines: 150,
+        max_distinct_concerns: 16,
             functions: vec![FunctionSpec {
                 name: "save".into(),
                 signature: "fn save(&self) -> Result<()>".into(),
@@ -152,6 +154,7 @@ fn validate_accepts_within_limits() {
             path: PathBuf::from("a.rs"),
             language: "rust".into(),
             max_lines: 100,
+        max_distinct_concerns: 16,
             functions: vec![],
         }],
         modified_files: vec![],
@@ -167,6 +170,7 @@ fn validate_rejects_over_limit() {
             path: PathBuf::from("big.rs"),
             language: "rust".into(),
             max_lines: 500,
+        max_distinct_concerns: 16,
             functions: vec![],
         }],
         modified_files: vec![],
@@ -194,6 +198,7 @@ fn validate_rejects_over_function_count() {
             path: PathBuf::from("crowded.rs"),
             language: "rust".into(),
             max_lines: 100,
+        max_distinct_concerns: 16,
             functions: funcs,
         }],
         modified_files: vec![],
@@ -241,6 +246,7 @@ fn baby_step_spec_file_plan_populated() {
             path: PathBuf::from("src/main.rs"),
             language: "rust".into(),
             max_lines: 200,
+        max_distinct_concerns: 16,
             functions: vec![],
         }],
         modified_files: vec![],
@@ -349,6 +355,7 @@ fn t2_check3_fires_on_excess_functions() {
             path: PathBuf::from("src/lib.rs"),
             language: "rust".into(),
             max_lines: 200,
+        max_distinct_concerns: 16,
             functions: vec![
                 FunctionSpec { name: "a".into(), signature: "fn a()".into(), max_body_lines: 5 },
                 FunctionSpec { name: "b".into(), signature: "fn b()".into(), max_body_lines: 5 },
@@ -393,6 +400,7 @@ fn t2_check3_slack_of_two_accepted() {
             path: PathBuf::from("src/lib.rs"),
             language: "rust".into(),
             max_lines: 200,
+        max_distinct_concerns: 16,
             functions: vec![
                 FunctionSpec { name: "a".into(), signature: "fn a()".into(), max_body_lines: 5 },
                 FunctionSpec { name: "b".into(), signature: "fn b()".into(), max_body_lines: 5 },

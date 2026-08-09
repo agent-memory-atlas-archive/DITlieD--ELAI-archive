@@ -60,3 +60,65 @@ fn named_thresholds_are_positive_and_used_by_contract() {
     assert!(GOD_OBJECT_MIN_FUNCTION_ITEMS > 0);
     assert!(GOD_OBJECT_MIN_BODY_LINES > 0);
 }
+
+
+#[test]
+fn l11_validate_rejects_over_budget_declaration()  {
+    use elai_core::file_plan::{FilePlan, FilePlanError, FileSpec, MAX_DISTINCT_CONCERNS_PER_FILE};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    let plan = FilePlan {
+        new_files: vec![FileSpec {
+            path: PathBuf::from("src/concern-heavy.rs"), language: "rust".into(),
+            max_lines: 100, max_distinct_concerns: MAX_DISTINCT_CONCERNS_PER_FILE + 1,
+            functions: vec![],
+        }], modified_files: vec![], version: FilePlan::CURRENT_VERSION,
+    };
+    assert!(matches!(plan.validate(&BTreeMap::new()),
+        Err(FilePlanError::DistinctConcernBudgetExceeded { limit: MAX_DISTINCT_CONCERNS_PER_FILE, .. })));
+}
+
+#[test]
+fn l11_legacy_file_plan_defaults_responsibility_budget()  {
+    use elai_core::file_plan::{FilePlan, DEFAULT_MAX_DISTINCT_CONCERNS};
+    use std::collections::BTreeMap;
+    let plan: FilePlan = serde_json::from_str(r#"{
+        "new_files":[{"path":"src/legacy.rs","language":"rust","max_lines":100,"functions":[]}],
+        "modified_files":[],"version":1
+    }"#).expect("legacy FilePlan JSON");
+    assert_eq!(plan.new_files[0].max_distinct_concerns, DEFAULT_MAX_DISTINCT_CONCERNS);
+    assert!(plan.validate(&BTreeMap::new()).is_ok());
+}
+
+
+#[test]
+fn l11_observes_budget_without_changing_skeleton()  {
+    use elai_core::file_plan::{FilePlan, FileSpec};
+    use elai_orchestrator::SkeletonGenerator;
+    use std::path::PathBuf;
+    let plan = FilePlan {
+        new_files: vec![FileSpec {
+            path: PathBuf::from("src/many-concerns.rs"), language: "rust".into(),
+            max_lines: 100, max_distinct_concerns: 1,
+            functions: vec![elai_core::file_plan::FunctionSpec {
+                name: "one".into(), signature: "fn one()".into(), max_body_lines: 10,
+            }, elai_core::file_plan::FunctionSpec {
+                name: "two".into(), signature: "fn two()".into(), max_body_lines: 10,
+            }],
+        }], modified_files: vec![], version: FilePlan::CURRENT_VERSION,
+    };
+    let generated = SkeletonGenerator::default().generate_from_file_plan(&plan)
+        .expect("observe-only budget must not block generation");
+    assert_eq!(generated.len(), 1);
+    assert_eq!(generated[0].blanks.len(), plan.new_files[0].functions.len());
+    assert!(generated[0].responsibility_budget_exceeded);
+
+    let mut in_budget = plan.clone();
+    in_budget.new_files[0].max_distinct_concerns = 2;
+    let in_budget_generated = SkeletonGenerator::default()
+        .generate_from_file_plan(&in_budget)
+        .expect("in-budget observation must not block generation");
+    assert_eq!(in_budget_generated.len(), 1);
+    assert!(!in_budget_generated[0].responsibility_budget_exceeded);
+    assert_eq!(generated[0].skeleton_text, in_budget_generated[0].skeleton_text);
+}

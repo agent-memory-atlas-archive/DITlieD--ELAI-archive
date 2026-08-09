@@ -34,6 +34,22 @@ pub const MAX_FUNCTIONS_PER_FILE: u8 = 20;
 /// Matches the spec section 3.2 "default" row.
 pub const DEFAULT_LANGUAGE_HARD_BLOCK: u16 = 400;
 
+/// Absolute declaration cap for per-file responsibility concerns.
+///
+/// PROVISIONAL seed only; the I-38 QDELTA `--quality` arm replaces this
+/// paper threshold with measured evidence.
+pub const MAX_DISTINCT_CONCERNS_PER_FILE: u8 = 32;
+
+/// Generous legacy-compatible default for a FileSpec responsibility budget.
+///
+/// PROVISIONAL seed only; the I-38 QDELTA `--quality` arm replaces this
+/// paper threshold with measured evidence.
+pub const DEFAULT_MAX_DISTINCT_CONCERNS: u8 = 16;
+
+fn default_max_distinct_concerns() -> u8 {
+    DEFAULT_MAX_DISTINCT_CONCERNS
+}
+
 // ---------------------------------------------------------------------------
 // Per-file function spec — sized to keep BabyStepSpec payloads small.
 // ---------------------------------------------------------------------------
@@ -56,6 +72,8 @@ pub struct FileSpec {
     pub path: PathBuf,
     pub language: String,
     pub max_lines: u16,
+    #[serde(default = "default_max_distinct_concerns")]
+    pub max_distinct_concerns: u8,
     #[serde(default)]
     pub functions: Vec<FunctionSpec>,
 }
@@ -138,6 +156,16 @@ pub enum FilePlanError {
         limit: u8,
         got: u8,
     },
+    /// A FileSpec declares a responsibility budget above the absolute cap.
+    /// `FilePlan::validate` has no production caller today, so this arm is
+    /// currently test-reachable only; the uncovered mutation is deleting the
+    /// declaration-check arm while the suite remains green.
+    #[error("file '{file}' responsibility budget {got} exceeds cap {limit}")]
+    DistinctConcernBudgetExceeded {
+        file: PathBuf,
+        limit: u8,
+        got: u8,
+    },
 }
 
 impl FilePlan {
@@ -159,6 +187,7 @@ impl FilePlan {
                 });
             }
             check_function_count(&spec.path, spec.functions.len())?;
+            check_concern_budget(&spec.path, spec.max_distinct_concerns)?;
         }
         for spec in &self.modified_files {
             let limit = lookup_limit(limits, &spec.language);
@@ -181,6 +210,17 @@ fn lookup_limit(limits: &LanguageLimitsMap, language: &str) -> u16 {
         .get(language)
         .copied()
         .unwrap_or(DEFAULT_LANGUAGE_HARD_BLOCK)
+}
+
+fn check_concern_budget(file: &PathBuf, budget: u8) -> Result<(), FilePlanError> {
+    if budget > MAX_DISTINCT_CONCERNS_PER_FILE {
+        return Err(FilePlanError::DistinctConcernBudgetExceeded {
+            file: file.clone(),
+            limit: MAX_DISTINCT_CONCERNS_PER_FILE,
+            got: budget,
+        });
+    }
+    Ok(())
 }
 
 fn check_function_count(file: &PathBuf, count: usize) -> Result<(), FilePlanError> {
@@ -222,6 +262,7 @@ mod tests {
                 path: PathBuf::from("a.rs"),
                 language: "rust".into(),
                 max_lines: 100,
+        max_distinct_concerns: 16,
                 functions: vec![],
             }],
             modified_files: vec![],
@@ -237,6 +278,7 @@ mod tests {
                 path: PathBuf::from("big.rs"),
                 language: "rust".into(),
                 max_lines: 500,
+        max_distinct_concerns: 16,
                 functions: vec![],
             }],
             modified_files: vec![],
@@ -253,6 +295,7 @@ mod tests {
                 path: PathBuf::from("a.exotic"),
                 language: "klingon".into(),
                 max_lines: 401, // exceeds DEFAULT_LANGUAGE_HARD_BLOCK 400
+                max_distinct_concerns: 16,
                 functions: vec![],
             }],
             modified_files: vec![],
@@ -276,6 +319,7 @@ mod tests {
                 path: PathBuf::from("crowded.rs"),
                 language: "rust".into(),
                 max_lines: 100,
+        max_distinct_concerns: 16,
                 functions: funcs,
             }],
             modified_files: vec![],
@@ -307,6 +351,7 @@ mod tests {
                 path: PathBuf::from("a.rs"),
                 language: "rust".into(),
                 max_lines: 100,
+        max_distinct_concerns: 16,
                 functions: vec![FunctionSpec {
                     name: "main".into(),
                     signature: "fn main() -> ()".into(),
