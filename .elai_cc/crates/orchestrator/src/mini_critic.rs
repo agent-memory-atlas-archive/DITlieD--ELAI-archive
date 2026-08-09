@@ -124,6 +124,21 @@ impl MiniCriticLanguage {
 /// contract test asserts against the constant instead of a magic literal.
 pub const MIN_BODY_LINES: usize = 3;
 
+/// Provisional seed for the syntactic god-object callee threshold. This seed is
+/// PROVISIONAL and is replaced by the I-38 QDELTA `--quality` arm measurement
+/// in a later slice.
+pub const GOD_OBJECT_MIN_DISTINCT_CALLEES: usize = 8;
+
+/// Provisional seed for the syntactic god-object function-item threshold. This
+/// seed is PROVISIONAL and is replaced by the I-38 QDELTA `--quality` arm
+/// measurement in a later slice.
+pub const GOD_OBJECT_MIN_FUNCTION_ITEMS: usize = 3;
+
+/// Provisional seed for the syntactic god-object body-line threshold. This seed
+/// is PROVISIONAL and is replaced by the I-38 QDELTA `--quality` arm measurement
+/// in a later slice.
+pub const GOD_OBJECT_MIN_BODY_LINES: usize = 40;
+
 /// MiniCritic — runs lazy-pattern + line-count + optional tree-sitter checks
 /// on a candidate fill body. The struct is cheap; the per-call cost is one
 /// regex sweep plus an optional tree-sitter parse.
@@ -201,6 +216,21 @@ impl MiniCritic {
             }
         }
 
+        // (d) Syntactic god-object proxy. WARN is intentionally the ceiling.
+        let (callees, function_items, lines) = self.god_object_signals(body);
+        if callees >= GOD_OBJECT_MIN_DISTINCT_CALLEES
+            && (function_items >= GOD_OBJECT_MIN_FUNCTION_ITEMS
+                || lines >= GOD_OBJECT_MIN_BODY_LINES)
+        {
+            return MiniCriticResult {
+                blank_id,
+                verdict: MiniCriticVerdict::Warn,
+                reason: format!(
+                    "metric_god_object:callees={callees}:function_items={function_items}:lines={lines}"
+                ),
+            };
+        }
+
         MiniCriticResult {
             blank_id,
             verdict: MiniCriticVerdict::Pass,
@@ -219,6 +249,61 @@ impl MiniCritic {
             }
         }
         None
+    }
+
+    /// Return `(distinct callees, function items, lines)` for one fill body.
+    /// This is a SYNTACTIC proxy over one fill body, NOT a call graph. It is a
+    /// generation-time SELF-CORRECTION signal that makes StructuralRetry
+    /// re-roll, while the authoritative SOLID verdict stays auditor-owned in
+    /// the frozen `.elai_cc/tools/solid_proxy_check.py`. The fill is not in
+    /// `elai.map` yet, which is why the audit-time checker is a separate layer.
+    fn god_object_signals(&self, body: &str) -> (usize, usize, usize) {
+        const KEYWORDS: &[&str] = &[
+            "if", "else", "for", "while", "match", "loop", "fn", "def", "return",
+            "in", "let", "use", "pub", "struct", "impl", "unsafe",
+        ];
+        let bytes = body.as_bytes();
+        let mut tokens: Vec<(usize, usize)> = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+                let start = i;
+                i += 1;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                {
+                    i += 1;
+                }
+                tokens.push((start, i));
+            } else {
+                i += 1;
+            }
+        }
+
+        let mut distinct_callees = std::collections::HashSet::new();
+        let mut function_items = 0;
+        for (index, &(start, end)) in tokens.iter().enumerate() {
+            let token = &body[start..end];
+            if token == "fn" || token == "def" {
+                function_items += 1;
+            }
+            if KEYWORDS.contains(&token) {
+                continue;
+            }
+            let mut next = end;
+            while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                next += 1;
+            }
+            if next >= bytes.len() || bytes[next] != b'(' {
+                continue;
+            }
+            let preceded_by_definition = index > 0
+                && matches!(&body[tokens[index - 1].0..tokens[index - 1].1], "fn" | "def");
+            if !preceded_by_definition {
+                distinct_callees.insert(token.to_owned());
+            }
+        }
+        (distinct_callees.len(), function_items, body.lines().count())
     }
 
     /// Run check (c). Wraps the body in a per-language probe shell, parses
