@@ -19,6 +19,7 @@ use elai_orchestrator::indexing_service::IndexingService;
 
 use elai_knowledge::DkgEngine;
 use elai_knowledge::pipeline::QueryPipeline;
+use elai_knowledge::vector::indexer::CodeVecConfig;
 use elai_knowledge::bm25::Bm25Index;
 use elai_knowledge::catrag::{CatRag, CatRagConfig};
 use elai_knowledge::arag::{AragOrchestrator, AragConfig};
@@ -278,6 +279,7 @@ fn attach_vector_module(
     let code_vec_enabled = std::env::var("ELAI_CODE_VEC")
         .map(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    pipeline = pipeline.with_code_vec_config(CodeVecConfig { enabled: code_vec_enabled });
 
     let text_sess = match OrtSession::new(&text_model_path, &text_tok_path, 512, 384) {
         Ok(s) => Some(s),
@@ -341,7 +343,7 @@ fn attach_vector_module(
     }
 
     if pipeline.vector_module.is_some() {
-        pipeline = attach_vector_indexer_and_cache(pipeline, project_root, ssb);
+        pipeline = attach_vector_indexer_and_cache(pipeline, project_root, ssb, code_vec_enabled);
     }
 
     pipeline
@@ -386,6 +388,7 @@ fn attach_vector_indexer_and_cache(
     mut pipeline: QueryPipeline,
     project_root: &Path,
     ssb: &Option<Arc<elai_orchestrator::Ssb>>,
+    code_vec_enabled: bool,
 ) -> QueryPipeline {
     // Initialize vector indexer.
     let index_path = core_vectors_db_path(project_root);
@@ -404,10 +407,7 @@ fn attach_vector_indexer_and_cache(
         VectorIndexer::new(TEXT_VEC_DIM)
     };
 
-    // B-4: enable code_vec secondary index when opt-in env flag set.
-    let code_vec_enabled = std::env::var("ELAI_CODE_VEC")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    // B-4: enable code_vec secondary index when opt-in env flag is set.
     if code_vec_enabled {
         indexer.enable_code_index();
         eprintln!(
@@ -944,4 +944,43 @@ fn spawn_playbook_curator(
             }
         }
     });
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static CODE_VEC_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct CodeVecEnvReset;
+    impl Drop for CodeVecEnvReset {
+        fn drop(&mut self) { std::env::remove_var("ELAI_CODE_VEC"); }
+    }
+
+    #[test]
+    fn attach_vector_module_records_code_vec_setting_without_models() {
+        let _lock = CODE_VEC_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _env_reset = CodeVecEnvReset;
+        let models_dir = tempfile::tempdir().unwrap();
+        let project_root = tempfile::tempdir().unwrap();
+        let make_pipeline = |project_id| QueryPipeline::new(
+            Bm25Index::new(project_root.path(), project_id).unwrap(),
+            CatRag::new(CatRagConfig::default()),
+            AragOrchestrator::new(AragConfig::default()),
+        );
+
+        std::env::remove_var("ELAI_CODE_VEC");
+        let disabled_pipeline = attach_vector_module(
+            make_pipeline("code-vec-test-disabled"), project_root.path(), models_dir.path(), &None,
+        );
+        assert!(!disabled_pipeline.code_vec_enabled());
+
+        std::env::set_var("ELAI_CODE_VEC", "1");
+        let enabled_pipeline = attach_vector_module(
+            make_pipeline("code-vec-test-enabled"), project_root.path(), models_dir.path(), &None,
+        );
+        assert!(enabled_pipeline.code_vec_enabled());
+    }
 }
