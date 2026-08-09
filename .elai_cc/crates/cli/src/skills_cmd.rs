@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::skill_registry::{
-    find_skills, scan_skill_dir, DiscoveryRoot, SkillOrigin,
+    admitted_skills, find_skills, scan_skill_dir, DiscoveryRoot, SkillOrigin,
 };
 use elai_orchestrator::skill_telemetry::{
     self, build_invoked_payload, SkillOutcome, TriggerMethod,
@@ -340,11 +340,37 @@ fn run_publish(
     output_format: CliOutputFormat,
 ) -> Result<(), String> {
     let target = PublishTarget::parse(&target)?;
-    let manifests = find_skills(&skills_roots())
-        .map_err(|e| format!("skills publish discovery failed: {e}"))?;
+    let dist_root = project_root().join("dist").join(target.as_str()).join("skills");
+    let report = publish_skills_at(target, &skills_roots(), &dist_root, dry_run)?;
+    match output_format {
+        CliOutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into());
+            println!("{json}");
+        }
+        _ => {
+            println!("publish target: {}", report.target);
+            println!("emitted {} files", report.emitted.len());
+            for p in &report.emitted { println!("  {}", p.display()); }
+            if !report.warnings.is_empty() {
+                println!("warnings ({}):", report.warnings.len());
+                for w in &report.warnings { println!("  {w}"); }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn publish_skills_at(
+    target: PublishTarget,
+    roots: &[DiscoveryRoot],
+    dist_root: &Path,
+    dry_run: bool,
+) -> Result<PublishReport, String> {
+    let manifests = admitted_skills(
+        find_skills(roots).map_err(|e| format!("skills publish discovery failed: {e}"))?,
+    );
     let mut emitted: Vec<PathBuf> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    let dist_root = project_root().join("dist").join(target.as_str()).join("skills");
     for m in &manifests {
         let body = match fs::read_to_string(&m.file_path) {
             Ok(s) => s,
@@ -374,14 +400,7 @@ fn run_publish(
                 warnings.push(format!("codex meta skip {}: cannot create {}: {e}", m.name, codex_meta_dir.display()));
             } else {
                 let meta_file = codex_meta_dir.join("openai.yaml");
-                let meta_body = format!(
-                    "# E-43 publish stub (Codex)
-name: {}
-version: {}
-elai_origin: skills_dir
-",
-                    m.name, m.version
-                );
+                let meta_body = format!("# E-43 publish stub (Codex)\nname: {}\nversion: {}\nelai_origin: skills_dir\n", m.name, m.version);
                 if let Err(e) = fs::write(&meta_file, meta_body.as_bytes()) {
                     warnings.push(format!("codex meta skip {}: cannot write {}: {e}", m.name, meta_file.display()));
                 } else {
@@ -390,28 +409,7 @@ elai_origin: skills_dir
             }
         }
     }
-
-    let report = PublishReport {
-        target: target.as_str().to_owned(),
-        emitted,
-        warnings,
-    };
-    match output_format {
-        CliOutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into());
-            println!("{json}");
-        }
-        _ => {
-            println!("publish target: {}", report.target);
-            println!("emitted {} files", report.emitted.len());
-            for p in &report.emitted { println!("  {}", p.display()); }
-            if !report.warnings.is_empty() {
-                println!("warnings ({}):", report.warnings.len());
-                for w in &report.warnings { println!("  {w}"); }
-            }
-        }
-    }
-    Ok(())
+    Ok(PublishReport { target: target.as_str().to_owned(), emitted, warnings })
 }
 
 fn load_eval_jsonl(path: &Path) -> Result<Vec<EvalCase>, String> {
@@ -567,12 +565,43 @@ pub fn run_export_with_emitter(
     emitter: &dyn SkillExportNormalizedEmitter,
 ) -> Result<(), String> {
     let target = PublishTarget::parse(&target)?;
-    let manifests = find_skills(&skills_roots())
-        .map_err(|e| format!("skills export discovery failed: {e}"))?;
+    let dist_root = project_root().join("dist").join(target.as_str()).join("skills");
+    let report = export_skills_at(target, &skills_roots(), &dist_root, dry_run, emitter)?;
+    match output_format {
+        CliOutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into());
+            println!("{json}");
+        }
+        _ => {
+            println!("export target: {}", report.target);
+            println!("exported {} files", report.exported.len());
+            for p in &report.exported { println!("  {}", p.display()); }
+            if !report.drift.is_empty() {
+                println!("drift detected on {} skills:", report.drift.len());
+                for d in &report.drift { println!("  {d}"); }
+            }
+            if !report.warnings.is_empty() {
+                println!("warnings ({}):", report.warnings.len());
+                for w in &report.warnings { println!("  {w}"); }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn export_skills_at(
+    target: PublishTarget,
+    roots: &[DiscoveryRoot],
+    dist_root: &Path,
+    dry_run: bool,
+    emitter: &dyn SkillExportNormalizedEmitter,
+) -> Result<ExportReport, String> {
+    let manifests = admitted_skills(
+        find_skills(roots).map_err(|e| format!("skills export discovery failed: {e}"))?,
+    );
     let mut exported: Vec<PathBuf> = Vec::new();
     let mut drift: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    let dist_root = project_root().join("dist").join(target.as_str()).join("skills");
     let trending_enabled = github_trending_enabled();
 
     for m in &manifests {
@@ -649,38 +678,12 @@ pub fn run_export_with_emitter(
         exported.push(dest_file);
     }
 
-    let report = ExportReport {
+    Ok(ExportReport {
         target: target.as_str().to_owned(),
         exported,
         drift,
         warnings,
-    };
-    match output_format {
-        CliOutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into());
-            println!("{json}");
-        }
-        _ => {
-            println!("export target: {}", report.target);
-            println!("exported {} files", report.exported.len());
-            for p in &report.exported {
-                println!("  {}", p.display());
-            }
-            if !report.drift.is_empty() {
-                println!("drift detected on {} skills:", report.drift.len());
-                for d in &report.drift {
-                    println!("  {d}");
-                }
-            }
-            if !report.warnings.is_empty() {
-                println!("warnings ({}):", report.warnings.len());
-                for w in &report.warnings {
-                    println!("  {w}");
-                }
-            }
-        }
-    }
-    Ok(())
+    })
 }
 
 /// E-22 -- normalise a SKILL.md body. Frontmatter (between leading
@@ -1266,6 +1269,52 @@ mod tests {
 
     fn write_clean_skill(root: &Path) {
         fs::write(root.join("SKILL.md"), "---\nname: clean\n---\nplain").expect("write");
+    }
+
+    fn write_discovery_skill(root: &Path, name: &str, body: &str) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).expect("mkdir skill");
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test skill\n---\n{body}"),
+        )
+        .expect("write skill");
+    }
+
+    #[test]
+    fn publish_filters_hostile_skill_before_copy() {
+        let source = tempfile::tempdir().expect("tempdir");
+        let dist = tempfile::tempdir().expect("tempdir");
+        let hidden = char::from_u32(0x200B).expect("zero-width character");
+        write_discovery_skill(source.path(), "clean", "plain body");
+        write_discovery_skill(source.path(), "hostile", &format!("a{hidden}b"));
+        let roots = vec![DiscoveryRoot::skills_dir(source.path())];
+        let report = publish_skills_at(PublishTarget::Claude, &roots, dist.path(), false)
+            .expect("publish");
+        assert!(dist.path().join("clean/SKILL.md").exists());
+        assert!(!dist.path().join("hostile").exists());
+        assert!(!report.emitted.iter().any(|path| path.ends_with("hostile/SKILL.md")));
+    }
+
+    #[test]
+    fn export_filters_hostile_skill_before_copy() {
+        let source = tempfile::tempdir().expect("tempdir");
+        let dist = tempfile::tempdir().expect("tempdir");
+        let hidden = char::from_u32(0x200B).expect("zero-width character");
+        write_discovery_skill(source.path(), "clean", "plain body");
+        write_discovery_skill(source.path(), "hostile", &format!("a{hidden}b"));
+        let roots = vec![DiscoveryRoot::skills_dir(source.path())];
+        let report = export_skills_at(
+            PublishTarget::Claude,
+            &roots,
+            dist.path(),
+            false,
+            &NoopSkillExportNormalizedEmitter,
+        )
+        .expect("export");
+        assert!(dist.path().join("clean/SKILL.md").exists());
+        assert!(!dist.path().join("hostile").exists());
+        assert!(!report.exported.iter().any(|path| path.ends_with("hostile/SKILL.md")));
     }
 
     #[test]
