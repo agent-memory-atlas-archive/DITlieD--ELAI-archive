@@ -1559,6 +1559,32 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::BenchCaseReuse { suite, seed, json } => {
             bench_cmd::run_bench_case_reuse(suite, seed, json)?;
         }
+        // N-1: measurement-spine index. Probes each indexed bench family's CLI route.
+        CliAction::BenchIndex { json } => {
+            let dark = elai_orchestrator::measurement_spine::dark_families(|family| {
+                !matches!(
+                    crate::args_bench::parse_bench_subcommand_args(&[family.to_string()]),
+                    Err(ref msg) if msg.starts_with("unknown `bench` sub-command")
+                )
+            });
+            if json {
+                let entries: Vec<_> = elai_orchestrator::measurement_spine::spine_entries()
+                    .iter()
+                    .map(|entry| serde_json::json!({
+                        "bench_family": entry.bench_family,
+                        "cli_action": entry.cli_action,
+                        "profile_sinks": entry.profile_sinks,
+                        "status": if dark.contains(&entry.bench_family) { "DARK" } else { "LIVE" },
+                    }))
+                    .collect();
+                println!("{}", serde_json::json!({ "entries": entries, "dark": dark }));
+            } else {
+                print!("{}", elai_orchestrator::measurement_spine::render_spine_table(&dark));
+            }
+            if !dark.is_empty() {
+                std::process::exit(1);
+            }
+        }
         // K-2: hybrid-vs-force-cloud routing economics over deterministic
         // UsageTurnEvent fixture rows. Emits RoutingEconomicsMeasured + RRA.
         CliAction::BenchRoutingEconomics { seed, json, force_cloud_everything } => {

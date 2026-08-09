@@ -1104,6 +1104,13 @@ pub(crate) enum CliAction {
         /// Print the full report JSON to stdout.
         json: bool,
     },
+    /// N-1: `elai bench index [--json]`. Prints the measurement-spine index —
+    /// every bench family whose measurement lands in a `ModelCapabilityProfile`
+    /// sink — and exits 1 when an indexed family's CLI route has gone dark.
+    BenchIndex {
+        /// Emit the index as JSON instead of the text table.
+        json: bool,
+    },
     /// K-2: `elai bench routing-economics [--seed <u64>] [--json]
     /// [--force-cloud-everything]`. Compares the shipped hybrid routing policy
     /// with a force-cloud control over deterministic UsageTurnEvent fixture rows,

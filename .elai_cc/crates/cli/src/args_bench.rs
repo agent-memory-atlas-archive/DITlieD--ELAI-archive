@@ -61,6 +61,9 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "case-reuse" {
         return parse_bench_case_reuse_args(&rest[1..]);
     }
+    if sub == "index" {
+        return parse_bench_index_args(&rest[1..]);
+    }
     if sub == "routing-economics" {
         return parse_bench_routing_economics_args(&rest[1..]);
     }
@@ -135,7 +138,7 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'kv-tune' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'longcot' | 'steering-vs-prompt' | 'retrieval-adapt' | 'rrf-ablate' | 'tool-output' | 'perception-faithfulness')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper' | 'seccodeplt' | 'error-amplification' | 'safedelta' | 'case-reuse' | 'routing-economics' | 'model-refresh' | 'gate-tax' | 'staleness' | 'mcp-schema-budget' | 'crane' | 'convergence' | 'context-fill' | 'positional-probe' | 'qdelta' | 'kv-tune' | 'snowballing' | 'claim-scope' | 'governance-probe' | 'sequence-probe' | 'hallucination-delta' | 'local-lane-e2e' | 'longcot' | 'steering-vs-prompt' | 'retrieval-adapt' | 'rrf-ablate' | 'tool-output' | 'perception-faithfulness' | 'index')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -1193,6 +1196,17 @@ fn parse_bench_local_lane_e2e_args(rest: &[String]) -> Result<CliAction, String>
 /// Mirrors the `parse_bench_safedelta_args` grammar. Only the `fixture` suite is
 /// runnable today (the real-journal `journal` suite is F-2 deferred, rejected at
 /// the handler boundary). Default suite is `fixture`; default seed is 0.
+fn parse_bench_index_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut json = false;
+    for argument in rest {
+        match argument.as_str() {
+            "--json" => json = true,
+            other => return Err(format!("unknown `bench index` argument: {other}")),
+        }
+    }
+    Ok(CliAction::BenchIndex { json })
+}
+
 fn parse_bench_case_reuse_args(rest: &[String]) -> Result<CliAction, String> {
     let mut suite: Option<String> = None;
     let mut seed: u64 = 0;

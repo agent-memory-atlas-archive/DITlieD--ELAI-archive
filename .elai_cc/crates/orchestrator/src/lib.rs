@@ -1113,6 +1113,7 @@ pub mod metamorphic_testing;
 // MetamorphicRelation::PropertyBased). Extracted from metamorphic_testing.rs
 // to keep that file under the 1000-line maintainability boundary; registered
 // behind the existing RelationLibrary dispatch (GD-1, no new dispatch layer).
+pub mod measurement_spine;
 pub mod metamorphic_pbt;
 // I-20 (Track 15 KEYSTONE) — budgeted mutation scheduler: diff-cone selector
 // + Wilson-CI adaptive sampler + early-stop + SurvivorDirective emitter +
