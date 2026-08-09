@@ -19,24 +19,53 @@
 //!
 //! No #[ignore] / stubs / placeholder assertions.
 
+use std::sync::Arc;
+
 use elai_orchestrator::rra::{
     build_rra, canonical_objective_bytes, compute_root, read_rra, verify_artifact_with_objective,
     verify_rra, write_rra, GuaranteeLevel, ReplayVerdict, RunArtifact, RRA_COMPRESSION_DEFERRED,
 };
 use elai_orchestrator::determinism::{DeterminismConfig, HardwareClass};
+use elai_orchestrator::ssb::{
+    IdeaFramingStartedPayload, SsbActionType, SsbEntry, SsbPayload,
+};
 use tempfile::TempDir;
 
 /// Build a minimal faithful artifact from an EMPTY stream (no SSB needed). An
 /// empty stream is a valid run with no recorded rows; the bundle still seals a
 /// root and verifies.
-fn empty_stream_artifact(seed: u64) -> RunArtifact {
-    let pins = DeterminismConfig {
+fn test_pins(seed: u64) -> DeterminismConfig {
+    DeterminismConfig {
         hardware_class: HardwareClass::Cpu,
         seed,
         blake3_cache_prefix: [0u8; 8],
         system_fingerprint_pin: Some("cpu-pin".to_string()),
-    };
-    build_rra("g2-replay-session", &[], &pins)
+    }
+}
+
+fn empty_stream_artifact(seed: u64) -> RunArtifact {
+    build_rra("g2-replay-session", &[], &test_pins(seed))
+}
+
+fn stream_with_objective(task_text: &str) -> Vec<SsbEntry> {
+    let payload = SsbPayload::IdeaFramingStarted(IdeaFramingStartedPayload {
+        session_id: "g2-replay-session".to_owned(),
+        prompt: task_text.to_owned(),
+        started_at_ms: 1_700_000_000_000,
+    });
+    let payload_bytes: Arc<[u8]> = rmp_serde::to_vec_named(&payload)
+        .expect("msgpack encode")
+        .into();
+    vec![SsbEntry {
+        seq: 1,
+        project_id: "test-project".to_owned(),
+        session_id: "g2-replay-session".to_owned(),
+        agent_id: "cli:run".to_owned(),
+        superstep: 0,
+        action_type: SsbActionType::IdeaFramingStarted,
+        payload: payload_bytes,
+        created_at: 1_700_000_000_000,
+    }]
 }
 
 // ---------------------------------------------------------------------------
@@ -120,24 +149,25 @@ fn single_flipped_byte_on_disk_returns_tampered() {
 
 #[test]
 fn objective_hash_mismatch_fires_for_stale_objective() {
-    // Build a clean artifact and inject an objective_hash (simulates a run that
-    // started with a specific objective text). We use canonical_objective_bytes
-    // to produce the sealed hash exactly as build_rra would, then recompute
-    // root_blake3 so the tamper check passes cleanly.
-    let mut art = empty_stream_artifact(99);
     let original_text = "implement a sqlite cache layer";
-    art.objective_hash = Some(canonical_objective_bytes(original_text));
-    // Recompute root so the tamper check still passes (the field changed).
-    art.root_blake3 = compute_root(&art).expect("recompute root after objective injection");
+    let art = build_rra(
+        "g2-replay-session",
+        &stream_with_objective(original_text),
+        &test_pins(99),
+    );
+    assert!(art.objective_hash.is_some());
+    assert_eq!(
+        art.objective_hash.as_deref(),
+        Some(canonical_objective_bytes(original_text).as_str())
+    );
 
-    // Tamper check must pass (we properly recomputed the root).
     let different_text = "implement a redis cache layer";
     let verdict = verify_artifact_with_objective(&art, Some(different_text))
         .expect("verify_artifact_with_objective must not error");
 
     assert!(
         matches!(verdict, ReplayVerdict::ObjectiveHashMismatch { .. }),
-        "a stale objective must yield ObjectiveHashMismatch; got {verdict:?}"
+        "an honestly built artifact must yield ObjectiveHashMismatch, not be shadowed by a StackHashMismatch; got {verdict:?}"
     );
 
     // Cross-check: same text as sealing -> Verified.
@@ -148,6 +178,41 @@ fn objective_hash_mismatch_fires_for_stale_objective() {
         ReplayVerdict::Verified,
         "matching objective must still verify; got {clean_verdict:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (b3) post-seal objective swaps are tamper, not stale-objective mismatch
+//
+// The I-18 stack check deliberately runs before the I-45 objective check. A
+// post-seal field swap therefore remains tamper on the RESULT layer even when
+// the bundle root is recomputed.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn post_seal_objective_swap_is_classified_as_tamper_not_staleness() {
+    let original_text = "implement a sqlite cache layer";
+    let mut art = build_rra(
+        "g2-replay-session",
+        &stream_with_objective(original_text),
+        &test_pins(99),
+    );
+    let swapped_text = "implement a redis cache layer";
+    art.objective_hash = Some(canonical_objective_bytes(swapped_text));
+    art.root_blake3 = compute_root(&art).expect("recompute root after objective swap");
+
+    let verdict = verify_artifact_with_objective(&art, Some(original_text))
+        .expect("verify_artifact_with_objective must not error");
+    match verdict {
+        ReplayVerdict::StackHashMismatch { layer, .. } => {
+            assert_eq!(
+                layer, "result",
+                "a post-seal objective swap must be reported as tamper on the RESULT layer even when the bundle root was recomputed"
+            );
+        }
+        other => panic!(
+            "a post-seal objective swap must be reported as tamper on the RESULT layer even when the bundle root was recomputed; got {other:?}"
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
