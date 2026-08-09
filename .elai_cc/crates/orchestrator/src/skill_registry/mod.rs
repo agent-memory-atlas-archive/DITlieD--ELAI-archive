@@ -20,12 +20,14 @@
 //! LOCALLY AUTHORED and labeled as such in the per-file headers. Do NOT
 //! claim paper-grounded for the wire shape — only for the motivation.
 
+pub mod admission;
 pub mod discovery;
 pub mod eval;
 pub mod manifest;
 pub mod ranker;
 pub mod scoring;
 
+pub use admission::admitted_skills;
 pub use discovery::{find_skills, parse_skill_frontmatter_extended, DiscoveryRoot};
 pub use eval::{eval_skill_routing, EvalResult, SkillEvalQuery};
 pub use manifest::{FrontmatterFields, SkillManifest, SkillOrigin};

@@ -4477,6 +4477,7 @@ async fn run_experience_distill_post_execute_hook(
 ///
 /// Walks the application-skill discovery roots (`.elai_cc/skills/` by default,
 /// with optional `ELAI_APPLICATION_SKILLS_DIR` override), runs the deterministic
+/// Applies the deterministic admission scan before ranking, then runs the
 /// `top_k_skills` ranker against the task text, and emits a single
 /// `SkillTriggered` SSB row when the top-1 score is at or above
 /// `SKILL_CONFIDENCE_THRESHOLD`.
@@ -4498,7 +4499,7 @@ async fn run_application_skill_preclassify(
     project_dir: Option<&Path>,
 ) {
     use crate::skill_registry::{
-        find_skills, score_skill_for_context, skill_name_hash, top_k_skills, DiscoveryRoot,
+        admitted_skills, find_skills, score_skill_for_context, skill_name_hash, top_k_skills, DiscoveryRoot,
         SkillContext, SKILL_CONFIDENCE_THRESHOLD,
     };
 
@@ -4531,6 +4532,7 @@ async fn run_application_skill_preclassify(
             return;
         }
     };
+    let manifests = admitted_skills(manifests);
     if manifests.is_empty() {
         // Early-return on empty registry: nothing to route, no SSB row.
         return;
@@ -24756,6 +24758,39 @@ mod tests {
             .expect("in-memory rules.db");
         let shared = Arc::new(std::sync::Mutex::new(conn));
         Arc::new(SqliteInterrogationStore::new(shared))
+    }
+
+    async fn run_application_skill_fixture(body: &str) -> usize {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skill_dir = tmp.path().join(".elai_cc").join("skills").join("matched");
+        std::fs::create_dir_all(&skill_dir).expect("create skill fixture");
+        std::fs::write(skill_dir.join("SKILL.md"), body).expect("write skill fixture");
+        let ssb = ssb_for_test(&tmp, "application-skill-admission");
+
+        super::run_application_skill_preclassify(
+            &ssb,
+            1,
+            "please build this",
+            Some(tmp.path()),
+        )
+        .await;
+        ssb.query_by_type(SsbActionType::SkillTriggered)
+            .expect("query SkillTriggered")
+            .len()
+    }
+
+    #[tokio::test]
+    async fn application_skill_admission_keeps_benign_match() {
+        let body = "---\nname: matched\ntriggers: build\n---\nshort body\n";
+        assert_eq!(run_application_skill_fixture(body).await, 1);
+    }
+
+    #[tokio::test]
+    async fn application_skill_admission_drops_obfuscated_match() {
+        let body = "---\nname: matched\ntriggers: build\n---\nshort body\n";
+        let hidden = char::from_u32(0x200B).expect("zero-width character");
+        let quarantined = format!("{body}a{hidden}b\n");
+        assert_eq!(run_application_skill_fixture(&quarantined).await, 0);
     }
 
     fn ssb_for_test(tmp: &tempfile::TempDir, session: &str) -> Arc<Ssb> {
