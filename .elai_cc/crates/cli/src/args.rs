@@ -2493,6 +2493,18 @@ pub(crate) enum ReviewAction {
         demo_anchor: bool,
         /// H-52 broken-arm flag (R2 proof). Default: false.
         trust_model_line: bool,
+    },    /// `elai review --catalog [--lang <language>] [--catalog-path <file>]`
+    /// — J-23 Tier-2 arch-gate. Loads the per-language external-tool catalog,
+    /// probes each tool binary, and emits `review_gate_catalog_event` rows.
+    /// Verdicts are observe-only: this arm never blocks.
+    ///
+    /// * `language` — keep only catalog rows for that target language.
+    ///   `None` probes every row.
+    /// * `catalog_path` — override the catalog TOML. `None` resolves
+    ///   `arch_gate::DEFAULT_CATALOG_RELPATH` under the project root.
+    Catalog {
+        language: Option<String>,
+        catalog_path: Option<std::path::PathBuf>,
     },
 }
 
@@ -6175,16 +6187,18 @@ pub(crate) fn parse_replay_subcommand_args(
 ///   `elai review --cockpit [--session <id>] [--base <ref>]
 ///                [--demo-anchor] [--trust-model-line-numbers]`
 ///
-/// `--cockpit` is mandatory (it is the only sub-action today; a future
-/// `--summary` / `--export` lands as a sibling flag). `--session` / `--base`
-/// are optional. `--demo-anchor` drives the H-52 W-1 seeded-fixture trigger.
-/// `--trust-model-line-numbers` drives the broken-arm R2 proof. Unknown flags
-/// are a hard error (fail-closed parse).
+/// Exactly one of `--cockpit` / `--catalog` is required; `--catalog` is the
+/// sibling sub-action. `--lang` and `--catalog-path` belong to `--catalog`;
+/// `--session`, `--base`, `--demo-anchor` and `--trust-model-line-numbers` belong
+/// to `--cockpit`. Unknown flags are a hard error (fail-closed parse).
 pub(crate) fn parse_review_subcommand_args(
     rest: &[String],
     output_format: CliOutputFormat,
 ) -> Result<CliAction, String> {
     let mut cockpit = false;
+    let mut catalog = false;
+    let mut lang: Option<String> = None;
+    let mut catalog_path: Option<std::path::PathBuf> = None;
     let mut session: Option<String> = None;
     let mut base: Option<String> = None;
     let mut demo_anchor = false;
@@ -6194,6 +6208,28 @@ pub(crate) fn parse_review_subcommand_args(
         match rest[i].as_str() {
             "--cockpit" => {
                 cockpit = true;
+                i += 1;
+            }
+            "--catalog" => {
+                catalog = true;
+                i += 1;
+            }
+            "--lang" => {
+                let value = rest.get(i + 1).ok_or_else(|| "missing value for `--lang`".to_string())?;
+                lang = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--lang=") => {
+                lang = Some(flag["--lang=".len()..].to_string());
+                i += 1;
+            }
+            "--catalog-path" => {
+                let value = rest.get(i + 1).ok_or_else(|| "missing value for `--catalog-path`".to_string())?;
+                catalog_path = Some(std::path::PathBuf::from(value));
+                i += 2;
+            }
+            flag if flag.starts_with("--catalog-path=") => {
+                catalog_path = Some(std::path::PathBuf::from(&flag["--catalog-path=".len()..]));
                 i += 1;
             }
             "--session" => {
@@ -6238,18 +6274,26 @@ pub(crate) fn parse_review_subcommand_args(
             }
         }
     }
-    if !cockpit {
-        return Err(
-            "`review` requires `--cockpit` (the reviewer-cockpit DSR producer)".to_string(),
-        );
+    if cockpit && catalog {
+        return Err("`review` accepts exactly one of `--cockpit` / `--catalog`, not both".to_string());
     }
+    if !cockpit && !catalog {
+        return Err("`review` requires exactly one of `--cockpit` (reviewer-cockpit DSR) or `--catalog` (J-23 arch-gate catalog)".to_string());
+    }
+    if catalog {
+        if session.is_some() { return Err("`--session` belongs to `--cockpit`".to_string()); }
+        if base.is_some() { return Err("`--base` belongs to `--cockpit`".to_string()); }
+        if demo_anchor { return Err("`--demo-anchor` belongs to `--cockpit`".to_string()); }
+        if trust_model_line { return Err("`--trust-model-line-numbers` belongs to `--cockpit`".to_string()); }
+        return Ok(CliAction::Review {
+            action: ReviewAction::Catalog { language: lang, catalog_path },
+            output_format,
+        });
+    }
+    if lang.is_some() { return Err("`--lang` belongs to `--catalog`".to_string()); }
+    if catalog_path.is_some() { return Err("`--catalog-path` belongs to `--catalog`".to_string()); }
     Ok(CliAction::Review {
-        action: ReviewAction::Cockpit {
-            session,
-            base,
-            demo_anchor,
-            trust_model_line,
-        },
+        action: ReviewAction::Cockpit { session, base, demo_anchor, trust_model_line },
         output_format,
     })
 }

@@ -444,6 +444,7 @@ researcher_net_egress_blocked
 result_manifest_verified
 retention_raw_inputs_purged
 retrieval_abstained
+review_gate_catalog_event
 review_surface_scored
 reward_ladder_event
 reward_tampering

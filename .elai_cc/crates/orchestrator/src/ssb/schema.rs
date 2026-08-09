@@ -5577,7 +5577,10 @@ CREATE TABLE IF NOT EXISTS ssb (
         'context_access_spec',
         -- I-30 Slice 1a: SFT exhaust event. Pattern-2 flat; 3-arm
         -- SftExhaustEventKind rides in the payload.
-        'sft_exhaust_event'
+        'sft_exhaust_event',
+        -- J-23: review-gate catalog event. Pattern-2 flat; 4-arm
+        -- ReviewGateCatalogEventKind rides in the payload.
+        'review_gate_catalog_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

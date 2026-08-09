@@ -117,6 +117,7 @@ mod rewind_cmd;
 // Composes E-25 edit_checkpoints (GD-1) + SessionDag HEAD + H-35 SessionRewound.
 mod timetravel_cmd;
 mod review_cmd;
+mod review_catalog_cmd;
 // H-53: `elai prebind [--demo-prebind] [--allow-freeform-citations]` — citation
 // pre-binding + constrained synthesis on the /research|/ask answer path.
 // W-1 seeded-fixture trigger emits CitationAnchorsBound SSB row (off-agent

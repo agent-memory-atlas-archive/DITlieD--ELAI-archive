@@ -4895,6 +4895,9 @@ pub enum SsbActionType {
     /// I-30 Slice 1a: SFT exhaust event (flat variant; 3-arm
     /// SftExhaustEventKind rides in the payload).
     SftExhaustEvent,
+    /// J-23: review-gate catalog event (flat variant; 4-arm
+    /// ReviewGateCatalogEventKind rides in the payload).
+    ReviewGateCatalogEvent,
 }
 
 impl SsbActionType {
@@ -5869,6 +5872,7 @@ impl SsbActionType {
             Self::DagCreditAssigned => "dag_credit_assigned",
             // I-30 Slice 1a: SFT exhaust event (flat; Kind in payload).
             Self::SftExhaustEvent => "sft_exhaust_event",
+            Self::ReviewGateCatalogEvent => "review_gate_catalog_event",
         }
     }
 }
@@ -6781,6 +6785,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "dag_credit_assigned" => Ok(SsbActionType::DagCreditAssigned),
         // I-30 Slice 1a: SFT exhaust event (flat; Kind in payload).
         "sft_exhaust_event" => Ok(SsbActionType::SftExhaustEvent),
+        "review_gate_catalog_event" => Ok(SsbActionType::ReviewGateCatalogEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

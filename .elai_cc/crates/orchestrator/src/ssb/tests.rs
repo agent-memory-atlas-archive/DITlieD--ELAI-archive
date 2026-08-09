@@ -8208,6 +8208,22 @@ use crate::gate::RiskLevel;
                 replication_threshold: 0.5, severity_threshold: 0.9,
                 constrained_accuracy_ceiling: 0.8, runpod_pending: true,
             }),
+            // J-23: ReviewGateCatalogEvent Pattern-2 flat beacon.
+            SsbPayload::ReviewGateCatalogEvent(ReviewGateCatalogEventPayload {
+                kind: ReviewGateCatalogEventKind::CatalogBuilt,
+                catalog_path: "crates/arch_gate/arch_gate.toml".into(),
+                language: Some("python".into()),
+                tool: Some("ruff".into()),
+                tool_version: Some("0.6.9".into()),
+                parser_fn: Some("json".into()),
+                sarif: false,
+                eligible_tool_count: Some(1),
+                missing_tool_count: Some(0),
+                finding_count: None,
+                verdict: Some("clean".into()),
+                refusal_reason: None,
+                ts_ms: 0,
+            }),
             // I-16: KvCacheTuned flat beacon.
             SsbPayload::KvCacheTuned(KvCacheTunedPayload {
                 vram_gb: None,
@@ -8797,8 +8813,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            499,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured",
+            500,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured + 1 J-23 ReviewGateCatalogEvent",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

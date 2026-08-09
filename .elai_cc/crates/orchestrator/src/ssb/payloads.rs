@@ -4010,6 +4010,9 @@ pub enum SsbPayload {
     /// I-30 Slice 1a: SFT exhaust event. Pattern-2 flat variant;
     /// 3-arm SftExhaustEventKind rides in the payload.
     SftExhaustEvent(SftExhaustEventPayload),
+    /// J-23: review-gate catalog event.
+    /// 4-arm ReviewGateCatalogEventKind rides in the payload.
+    ReviewGateCatalogEvent(ReviewGateCatalogEventPayload),
 }
 
 impl SsbPayload {
@@ -4860,6 +4863,7 @@ impl SsbPayload {
             Self::ContextAccessSpec(_) => SsbActionType::ContextAccessSpec,
             Self::DagCreditAssigned(_) => SsbActionType::DagCreditAssigned,
             Self::SftExhaustEvent(_) => SsbActionType::SftExhaustEvent,
+            Self::ReviewGateCatalogEvent(_) => SsbActionType::ReviewGateCatalogEvent,
         }
     }
 }
@@ -21917,5 +21921,55 @@ pub struct SftExhaustEventPayload {
     pub provenance_verified_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    pub ts_ms: i64,
+}
+
+/// J-23: review-gate catalog event Kind discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewGateCatalogEventKind {
+    CatalogBuilt,
+    GateInvoked,
+    SarifIngested,
+    VerdictEmitted,
+}
+
+impl ReviewGateCatalogEventKind {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CatalogBuilt => "catalog_built",
+            Self::GateInvoked => "gate_invoked",
+            Self::SarifIngested => "sarif_ingested",
+            Self::VerdictEmitted => "verdict_emitted",
+        }
+    }
+}
+
+/// J-23 payload for [`SsbActionType::ReviewGateCatalogEvent`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewGateCatalogEventPayload {
+    pub kind: ReviewGateCatalogEventKind,
+    pub catalog_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser_fn: Option<String>,
+    pub sarif: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eligible_tool_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_tool_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finding_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal_reason: Option<String>,
     pub ts_ms: i64,
 }

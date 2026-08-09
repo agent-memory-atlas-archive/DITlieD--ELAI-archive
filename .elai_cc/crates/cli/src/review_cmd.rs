@@ -60,6 +60,9 @@ pub(crate) fn run_review(
     output_format: CliOutputFormat,
 ) -> anyhow::Result<()> {
     match action {
+        ReviewAction::Catalog { language, catalog_path } => {
+            crate::review_catalog_cmd::run_catalog_cmd(language, catalog_path, output_format)
+        }
         ReviewAction::Cockpit {
             session,
             base,
@@ -824,6 +827,7 @@ fn render_cockpit_text(
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {

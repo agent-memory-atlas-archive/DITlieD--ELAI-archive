@@ -1598,6 +1598,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::DagCreditAssigned => (),
         // I-30 Slice 1a: SftExhaustEvent flat variant, Pattern-2 single-variant.
         SsbActionType::SftExhaustEvent => (),
+        // J-23: ReviewGateCatalogEvent flat variant, Pattern-2 single-variant.
+        SsbActionType::ReviewGateCatalogEvent => (),
     }
 }
 

@@ -42,6 +42,10 @@ members = [
     # All 4 direct deps (syn 2 / quote 1 / proc-macro2 1 / darling 0.20)
     # already transitively resolved in Cargo.lock -- zero lock churn.
     "crates/plugins_macros",
+    # J-23: Tier-2 arch-gate. TOML catalog of external per-language analysis
+    # tools + the runner that loads, validates and probes it. Consumed by
+    # `elai review --catalog`.
+    "crates/arch_gate",
 ]
 
 [workspace.package]
