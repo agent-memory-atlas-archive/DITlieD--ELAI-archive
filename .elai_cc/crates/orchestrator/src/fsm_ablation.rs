@@ -72,6 +72,11 @@ pub async fn run_fsm_ablation(
     )
     .await?;
 
+    // A decision row from the stub report is a fabricated measurement; the dashboard renders it as a verdict.
+    if report.runpod_pending {
+        return Ok((report, Vec::new()));
+    }
+
     let baseline_score = report.full_pipeline.pass_rate;
     let challenger_score = report.single_agent_wait.pass_rate;
     let baseline_vec = vec![baseline_score; 30];
@@ -131,6 +136,10 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::ssb::{SsbActionType, SsbConfig, SsbReader};
+    use elai_core::clock::SeededClock;
+    use std::sync::Arc;
+    use tempfile::TempDir;
     use super::*;
 
     #[test]
@@ -145,4 +154,22 @@ mod tests {
         let b = build_run_id_prefix("agent-1", 42);
         assert_eq!(a, b);
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_report_writes_no_decision_row() {
+        let dir = TempDir::new().expect("tempdir");
+        let config = SsbConfig {
+            db_path: dir.path().join("test_ssb.db"),
+            pool_size: Some(2),
+            project_id: "test-project".into(),
+            session_id: "test-session".into(),
+        };
+        let clock = Arc::new(SeededClock::new()) as Arc<dyn elai_core::clock::ClockProvider>;
+        let ssb = Arc::new(Ssb::new(config, clock).expect("ssb init"));
+        let _ = run_fsm_ablation(&ssb, "test-agent", 0, "fixture", 30).await.expect("run");
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let entries = ssb.query_by_type(SsbActionType::CriticDecisionEvent)
+            .expect("query_by_type");
+        assert_eq!(entries.len(), 0, "pending report must not emit a decision row");
+    }
+
 }

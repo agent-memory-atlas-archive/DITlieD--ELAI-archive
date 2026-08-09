@@ -40,6 +40,10 @@ pub async fn run_rag_challenger(
         mrr: 0.0,
         runpod_pending: true,
     };
+    // A decision row from the stub report is a fabricated measurement; the dashboard renders it as a verdict.
+    if challenger.runpod_pending {
+        return Ok(challenger);
+    }
     let challenger_mrr = challenger.mrr;
     let baseline_vec = vec![baseline_mrr; 30];
     let challenger_vec = vec![challenger_mrr; 30];
@@ -86,6 +90,11 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::ssb::{SsbActionType, SsbConfig, SsbReader};
+    use elai_core::clock::SeededClock;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use super::*;
     #[test]
     fn three_layer_rag_runpod_pending() {
         let r = super::ThreeLayerRag {
@@ -97,4 +106,22 @@ mod tests {
         };
         assert!(r.runpod_pending);
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_report_writes_no_decision_row() {
+        let dir = TempDir::new().expect("tempdir");
+        let config = SsbConfig {
+            db_path: dir.path().join("test_ssb.db"),
+            pool_size: Some(2),
+            project_id: "test-project".into(),
+            session_id: "test-session".into(),
+        };
+        let clock = Arc::new(SeededClock::new()) as Arc<dyn elai_core::clock::ClockProvider>;
+        let ssb = Arc::new(Ssb::new(config, clock).expect("ssb init"));
+        let _ = run_rag_challenger(&ssb, "test-agent", 0, 0.0).await.expect("run");
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let entries = ssb.query_by_type(SsbActionType::CriticDecisionEvent)
+            .expect("query_by_type");
+        assert_eq!(entries.len(), 0, "pending report must not emit a decision row");
+    }
+
 }
