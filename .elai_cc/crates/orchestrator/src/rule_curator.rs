@@ -123,21 +123,27 @@ impl PlaybookCurator {
 
     /// Sweep rows born at SHADOW; metric gates inside `transition_to_active` are the only bound,
     /// and a rule with no `rule_metrics` rows cannot promote.
-    async fn promote_shadow_rules(
-        &self,
-        conn: &Connection,
-        ssb: &Arc<Ssb>,
-    ) -> Result<(), CuratorError> {
-        // Promotion sweep for rows born at SHADOW (the seeder inserts at SHADOW).
-        let shadow_ids = list_rules_by_status(conn, "SHADOW")?;
+    async fn promote_shadow_rules(&self, ssb: &Arc<Ssb>) -> Result<(), CuratorError> {
+        // Keep the rules connection confined to the synchronous read/transition phase.
+        let shadow_ids = {
+            let conn = self.open_rules_conn()?;
+            list_rules_by_status(&conn, "SHADOW")?
+        };
         for rule_id in &shadow_ids {
-            let metrics = compute_metrics_snapshot(conn, rule_id).unwrap_or_else(|_| {
-                crate::derive_outcome_labels::observe_labels_for_rule(rule_id, &[])
-            });
-            if let Err(e) = transition_to_active(conn, rule_id, &metrics, false, &self.arc_clock()) {
-                tracing::debug!(rule_id = %rule_id, error = %e, "shadow row not promotable this tick");
+            let Some(metrics) = ({
+                let conn = self.open_rules_conn()?;
+                let metrics = compute_metrics_snapshot(&conn, rule_id).unwrap_or_else(|_| {
+                    crate::derive_outcome_labels::observe_labels_for_rule(rule_id, &[])
+                });
+                if let Err(e) = transition_to_active(&conn, rule_id, &metrics, false, &self.arc_clock()) {
+                    tracing::debug!(rule_id = %rule_id, error = %e, "shadow row not promotable this tick");
+                    None
+                } else {
+                    Some(metrics)
+                }
+            }) else {
                 continue;
-            }
+            };
             let outcome_rows = query_outcome_rows_for_rule(ssb, rule_id);
             let evidence_count = u32::try_from(outcome_rows.len()).unwrap_or(u32::MAX);
             let lift = compute_lift_estimate(&metrics);
@@ -172,37 +178,30 @@ impl PlaybookCurator {
     ///
     /// Also scans ACTIVE rules for stale FPR and demotes them to RETIRED.
     pub async fn run_promotion_tick(&self, ssb: &Arc<Ssb>) -> Result<(), CuratorError> {
-        let conn = self.open_rules_conn()?;
-
-        // Collect PROPOSED rules.
-        let proposed_ids = list_rules_by_status(&conn, "PROPOSED")?;
+        let proposed_ids = {
+            let conn = self.open_rules_conn()?;
+            list_rules_by_status(&conn, "PROPOSED")?
+        };
 
         for rule_id in &proposed_ids {
             let outcome_rows = query_outcome_rows_for_rule(ssb, rule_id);
             let evidence_count = outcome_rows.len() as u32;
 
             if evidence_count < MIN_EVIDENCE_COUNT {
-                // Insufficient evidence: emit ValidationRun beacon and skip.
-                // J-12 H6: fold intervention failure classification into the
-                // emitted payload so classify_intervention_failure +
-                // regression_check are production-reachable (D-030). Empty
-                // signals => p4_residual_reasoning (offline intake tag for I-12).
                 use crate::intervention::{
-                    classify_intervention_failure, regression_check, FailureSignals,
-                    ProposedUpdate,
+                    classify_intervention_failure, regression_check, FailureSignals, ProposedUpdate,
                 };
                 let signals = FailureSignals::default();
                 let class = classify_intervention_failure(&signals);
                 let reg = regression_check(&[] as &[ProposedUpdate]);
                 let mut row_ids = outcome_rows;
                 row_ids.push(failclass_tag(&class));
-                let reg_count = reg.rejected.len() as u32;
                 let payload = PlaybookEventPayload {
                     rule_id: rule_id.clone(),
                     kind: PlaybookEventKind::ValidationRun,
                     outcome_row_ids: row_ids,
                     lift: None,
-                    regression_count: reg_count,
+                    regression_count: reg.rejected.len() as u32,
                     evidence_count,
                     ts_ms: self.now_ms(),
                 };
@@ -215,25 +214,48 @@ impl PlaybookCurator {
                 continue;
             }
 
-            // Build MetricsSnapshot from rules DB aggregate.
-            // J-93 LEG-F: non-LLM labels from outcome records (default-OFF → zeros).
-            // Records stay empty until journal completeness (J-87) fills them.
-            let metrics = compute_metrics_snapshot(&conn, rule_id).unwrap_or_else(|_| {
-                crate::derive_outcome_labels::observe_labels_for_rule(rule_id, &[])
-            });
-
-            // Regression check: count prior ValidationRun SSB rows with regression_count > 0.
-            // No MutationRunner shell-out (GOTCHA: MutationRunner shells to cargo-mutants).
-            let regression_count = count_regressions_for_rule(ssb, rule_id);
-
-            if regression_count > 0 {
-                // J-12 H6: fold intervention failure classification into the
-                // emitted payload (D-030). Map C-28 regression gate pressure
-                // onto trajectory degeneration signals so the branch produces a
-                // non-p4 class from real tick state (regression_count > 0).
+            let Some(metrics) = ({
+                let conn = self.open_rules_conn()?;
+                let metrics = compute_metrics_snapshot(&conn, rule_id).unwrap_or_else(|_| {
+                    crate::derive_outcome_labels::observe_labels_for_rule(rule_id, &[])
+                });
+                let regression_count = count_regressions_for_rule(ssb, rule_id);
+                if regression_count > 0 {
+                    None
+                } else {
+                    let contract_count = count_contract_tests(&conn, rule_id);
+                    let all_pass = contract_count >= MIN_CONTRACT_TESTS;
+                    if let Err(e) = transition_to_candidate(
+                        &conn, rule_id, contract_count, all_pass, &self.arc_clock(),
+                    ) {
+                        tracing::warn!(rule_id = %rule_id, error = %e, "transition_to_candidate failed; skipping rule");
+                        None
+                    } else {
+                        let approver = Approver::SecondAuditor {
+                            auditor_id: "rule_curator".to_owned(),
+                        };
+                        if let Err(e) = transition_to_shadow(&conn, rule_id, &approver, &self.arc_clock()) {
+                            tracing::warn!(rule_id = %rule_id, error = %e, "transition_to_shadow failed; skipping rule");
+                            None
+                        } else if let Err(e) = transition_to_active(
+                            &conn, rule_id, &metrics, false, &self.arc_clock(),
+                        ) {
+                            tracing::warn!(rule_id = %rule_id, error = %e, "transition_to_active failed; skipping rule");
+                            None
+                        } else {
+                            Some((metrics, regression_count))
+                        }
+                    }
+                }
+            }) else {
+                // A regression is reported asynchronously below; other transition failures are skipped.
+                let regression_count = count_regressions_for_rule(ssb, rule_id);
+                if regression_count == 0 {
+                    continue;
+                }
                 use crate::intervention::{
                     classify_intervention_failure, regression_check, FailureSignals,
-                    InterventionFailureClass, ProposedUpdate,
+                    ProposedUpdate,
                 };
                 let signals = FailureSignals {
                     stall: true,
@@ -250,13 +272,12 @@ impl PlaybookCurator {
                 let reg = regression_check(&proposals);
                 let mut row_ids = outcome_rows;
                 row_ids.push(failclass_tag(&class));
-                let reg_bump = reg.rejected.len() as u32;
                 let payload = PlaybookEventPayload {
                     rule_id: rule_id.clone(),
                     kind: PlaybookEventKind::ValidationRun,
                     outcome_row_ids: row_ids,
                     lift: None,
-                    regression_count: regression_count + reg_bump,
+                    regression_count: regression_count + reg.rejected.len() as u32,
                     evidence_count,
                     ts_ms: self.now_ms(),
                 };
@@ -267,54 +288,14 @@ impl PlaybookCurator {
                     tracing::warn!(rule_id = %rule_id, error = %e, "PlaybookEvent(ValidationRun/regression) emit failed");
                 }
                 continue;
-            }
-
-            // Count contract tests (CANDIDATE gate requires MIN_CONTRACT_TESTS = 3).
-            let contract_count = count_contract_tests(&conn, rule_id);
-            let all_pass = contract_count >= MIN_CONTRACT_TESTS;
-
-            // Walk the full Phase-3F chain: PROPOSED -> CANDIDATE -> SHADOW -> ACTIVE.
-            if let Err(e) = transition_to_candidate(
-                &conn,
-                rule_id,
-                contract_count,
-                all_pass,
-                &self.arc_clock(),
-            ) {
-                tracing::warn!(rule_id = %rule_id, error = %e, "transition_to_candidate failed; skipping rule");
-                continue;
-            }
-
-            // CANDIDATE -> SHADOW: use SecondAuditor approver (no circular-trust risk).
-            let approver = Approver::SecondAuditor {
-                auditor_id: "rule_curator".to_owned(),
             };
-            if let Err(e) = transition_to_shadow(&conn, rule_id, &approver, &self.arc_clock()) {
-                tracing::warn!(rule_id = %rule_id, error = %e, "transition_to_shadow failed; skipping rule");
-                continue;
-            }
 
-            // SHADOW -> ACTIVE: apply metric gates (FPR/TPR/CCR thresholds).
-            let safety_regression = false;
-            if let Err(e) = transition_to_active(
-                &conn,
-                rule_id,
-                &metrics,
-                safety_regression,
-                &self.arc_clock(),
-            ) {
-                tracing::warn!(rule_id = %rule_id, error = %e, "transition_to_active failed; skipping rule");
-                continue;
-            }
-
-            // All transitions succeeded: emit PlaybookEvent{Promoted}.
-            let lift = compute_lift_estimate(&metrics);
             let payload = PlaybookEventPayload {
                 rule_id: rule_id.clone(),
                 kind: PlaybookEventKind::Promoted,
                 outcome_row_ids: outcome_rows,
-                lift: Some(lift),
-                regression_count: 0,
+                lift: Some(compute_lift_estimate(&metrics.0)),
+                regression_count: metrics.1,
                 evidence_count,
                 ts_ms: self.now_ms(),
             };
@@ -326,30 +307,37 @@ impl PlaybookCurator {
             }
         }
 
-        self.promote_shadow_rules(&conn, ssb).await?;
+        self.promote_shadow_rules(ssb).await?;
 
-        // Demotion sweep: check ACTIVE rules for FPR above retirement threshold.
-        let active_ids = list_rules_by_status(&conn, "ACTIVE")?;
+        let active_ids = {
+            let conn = self.open_rules_conn()?;
+            list_rules_by_status(&conn, "ACTIVE")?
+        };
         for rule_id in &active_ids {
-            // J-93 LEG-F: retain the DB aggregate; derive labels only as the zero fallback.
-            let metrics = compute_metrics_snapshot(&conn, rule_id).unwrap_or_else(|_| {
-                crate::derive_outcome_labels::observe_labels_for_rule(rule_id, &[])
-            });
-            if metrics.false_positive_rate >= FPR_RETIRE_THRESHOLD {
-                let reason = format!(
-                    "fpr={:.3} exceeded retire threshold {:.3}",
-                    metrics.false_positive_rate, FPR_RETIRE_THRESHOLD
-                );
-                if let Err(e) = transition_to_retired(
-                    &conn,
-                    rule_id,
-                    &reason,
-                    false,
-                    &self.arc_clock(),
-                ) {
+            let demotion = {
+                let conn = self.open_rules_conn()?;
+                let metrics = compute_metrics_snapshot(&conn, rule_id).unwrap_or_else(|_| {
+                    crate::derive_outcome_labels::observe_labels_for_rule(rule_id, &[])
+                });
+                if metrics.false_positive_rate >= FPR_RETIRE_THRESHOLD {
+                    let reason = format!(
+                        "fpr={:.3} exceeded retire threshold {:.3}",
+                        metrics.false_positive_rate, FPR_RETIRE_THRESHOLD
+                    );
+                    transition_to_retired(&conn, rule_id, &reason, false, &self.arc_clock())
+                        .map(|_| Some(()))
+                } else {
+                    Ok(None)
+                }
+            };
+            let was_demoted = match demotion {
+                Ok(value) => value.is_some(),
+                Err(e) => {
                     tracing::warn!(rule_id = %rule_id, error = %e, "transition_to_retired failed during demotion sweep");
                     continue;
                 }
+            };
+            if was_demoted {
                 let payload = PlaybookEventPayload {
                     rule_id: rule_id.clone(),
                     kind: PlaybookEventKind::Demoted,
@@ -367,7 +355,6 @@ impl PlaybookCurator {
                 }
             }
         }
-
         Ok(())
     }
 
@@ -382,8 +369,10 @@ impl PlaybookCurator {
         out_path: &Path,
         emit_ssb: bool,
     ) -> Result<ExportReport, CuratorError> {
-        let conn = self.open_rules_conn()?;
-        let active_ids = list_rules_by_status(&conn, "ACTIVE")?;
+        let active_ids = {
+            let conn = self.open_rules_conn()?;
+            list_rules_by_status(&conn, "ACTIVE")?
+        };
 
         let mut block = String::new();
         block.push_str("<!-- ELAI Playbook Export: verified ACTIVE rules -->\n");
