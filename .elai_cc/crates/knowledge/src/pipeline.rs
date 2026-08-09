@@ -291,6 +291,13 @@ impl QueryPipeline {
         self
     }
 
+    /// Returns the code-vector activation decision. This is the single read
+    /// point for that decision, and the gate at the retrieval stage is its
+    /// production caller.
+    pub fn code_vec_enabled(&self) -> bool {
+        self.code_vec_config.enabled
+    }
+
     /// Cold-wiring (s-81344): builder-style installer for the DEEP-tier RRF
     /// reranker config (pool cap / floor / k / weights). The default mirrors
     /// the shipped constants, so omitting this is a behaviour-preserving no-op.
@@ -883,7 +890,7 @@ impl QueryPipeline {
         if use_vector && channel_enabled(&modality, RetrievalChannel::Dense) && !ablation_flags.drop_second_dense {
             // J-75 ablation: ELAI_ABLATION_DROP_SECOND_DENSE
             if let (Some(vm), Some(indexer)) = (&self.vector_module, &self.vector_indexer) {
-                if code_vec_gate(self.code_vec_config.enabled, indexer.has_code_index()) {
+                if code_vec_gate(self.code_vec_enabled(), indexer.has_code_index()) {
                     let code_vector_start = self.clock.now();
                     let mut code_seen: HashSet<String> = HashSet::new();
                     let mut code_results: Vec<RetrievalResult> = Vec::new();
@@ -1873,6 +1880,23 @@ mod tests {
     // -------------------------------------------------------------------
     // 1G.5 tests
     // -------------------------------------------------------------------
+
+    #[test]
+    fn code_vec_enabled_defaults_to_true() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pipeline = make_pipeline(make_empty_bm25(tmp.path()));
+
+        assert!(pipeline.code_vec_enabled());
+    }
+
+    #[test]
+    fn code_vec_enabled_reflects_configured_value() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pipeline = make_pipeline(make_empty_bm25(tmp.path()))
+            .with_code_vec_config(CodeVecConfig { enabled: false });
+
+        assert!(!pipeline.code_vec_enabled());
+    }
 
     #[test]
     fn readiness_check_no_cross_encoder_bm25_ok_returns_ready() {
