@@ -152,7 +152,7 @@ async fn j95_b_pristine_budget_observe_wire_present() {
     let filter = PristinePathFilter::new(Arc::clone(&ssb));
     let traceback = vec![
         b'x';
-        elai_orchestrator::pristine_path_filter::TRACEBACK_COMPRESS_THRESHOLD_BYTES,
+        elai_orchestrator::pristine_path_filter::TRACEBACK_COMPRESS_THRESHOLD_BYTES
     ];
     let mut budget = ContextBudget::compute(8192, [0, 0, 0], 512).expect("budget");
     let outcome = observe_pristine_slot_candidates(

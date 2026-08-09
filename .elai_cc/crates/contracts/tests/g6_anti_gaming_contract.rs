@@ -122,6 +122,9 @@ fn all_secure_corpus_is_rejected_as_degenerate() {
         Err(SafeDeltaError::Runner(e)) => {
             panic!("unexpected runner error (corpus is malformed?): {e}");
         }
+        Err(SafeDeltaError::LaneUnreachable(_)) => {
+            panic!("fixture run reached the live lane; this is a fixture wiring bug, not a corpus bug");
+        }
     }
 }
 

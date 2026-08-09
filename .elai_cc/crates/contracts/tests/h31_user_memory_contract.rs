@@ -72,6 +72,7 @@ fn test_ssb(dir: &TempDir, project_id: &str) -> Arc<Ssb> {
 fn ctx(now_ms: u128) -> DispatchContext {
     DispatchContext {
         user_id: TEST_USER.into(),
+        seat_id: "local".into(),
         project_id: None,
         scope: Scope::Global,
         provenance: Provenance::user_direct("test"),

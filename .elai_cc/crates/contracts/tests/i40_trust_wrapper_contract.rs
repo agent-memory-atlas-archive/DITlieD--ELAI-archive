@@ -628,6 +628,7 @@ fn rra_verify_rejects_malformed_bundle() {
         stack_hash: None,
         sampling_seed: None,
         determinism_applied: None,
+        non_reproducible: false,
         root_blake3: "deadbeef1234abcd".to_string(), // C3 pass (non-empty)
     };
 

@@ -282,7 +282,10 @@ async fn flipped_event_payload_returns_divergence_at_first_mismatch() {
             first_mismatch_event,
             expected_blake3,
             got_blake3,
+            first_divergence,
         } => {
+            // rra.rs:310-329 documents None for T0 action-stream divergence.
+            assert!(first_divergence.is_none());
             assert_eq!(
                 first_mismatch_event, target_seq,
                 "divergence must name the first (flipped) event's seq"

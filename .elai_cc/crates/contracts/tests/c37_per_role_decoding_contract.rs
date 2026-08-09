@@ -29,8 +29,8 @@
 //!   * `SCHEMA_VERSION_PUBLIC >= 106` (C-37 bumped 105 -> 106).
 
 use elai_orchestrator::ssb::{
-    ssb_action_type_from_str_public, PerRoleDecodingAppliedPayload, SsbActionType,
-    SCHEMA_VERSION_PUBLIC,
+    ssb_action_type_from_str_public, PerRoleDecodingAppliedPayload, SnowballingMeasuredPayload,
+    SsbActionType, SCHEMA_VERSION_PUBLIC,
 };
 use elai_providers::{
     default_decoding_for, paper_decoding_params_for, PaperRole, RoleDecoding,
@@ -202,4 +202,86 @@ fn c37_schema_version_bumped_to_at_least_106() {
         SCHEMA_VERSION_PUBLIC >= 106,
         "SCHEMA_VERSION_PUBLIC must be >= 106 after C-37; got {SCHEMA_VERSION_PUBLIC}"
     );
+}
+
+
+// ---------------------------------------------------------------------------
+// F5 — measurement-only paper-row boundary and orthogonal role taxonomies.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn c37_paper_row_four_is_the_reflection_row_the_bench_reads() {
+    let row = PER_ROLE_DECODING_PARAMS_PAPER[3];
+    assert_eq!(row.0, PaperRole::Reflection, "bench_snowballing.rs emit site consumes the Reflection row");
+    assert_eq!(row.1, 0.1, "bench_snowballing.rs emit site consumer temperature");
+    assert_eq!(row.2, 1024, "bench_snowballing.rs emit site consumer max_new_tokens");
+    assert!(row.3, "bench_snowballing.rs emit site consumer constrained flag");
+
+    let lookup = paper_decoding_params_for(PaperRole::Reflection);
+    assert_eq!(lookup.temperature, row.1, "bench_snowballing.rs emit site lookup temperature");
+    assert_eq!(lookup.max_new_tokens, row.2, "bench_snowballing.rs emit site lookup max_new_tokens");
+    assert_eq!(lookup.constrained, row.3, "bench_snowballing.rs emit site lookup constrained flag");
+}
+
+#[test]
+fn c37_snowballing_payload_echoes_the_paper_row_without_conversion() {
+    let params = paper_decoding_params_for(PaperRole::Reflection);
+    let payload = SnowballingMeasuredPayload {
+        pool: "contract".into(),
+        n_questions: 4,
+        reflector_mode: "reflection".into(),
+        model: "contract-model".into(),
+        temperature: f64::from(params.temperature),
+        max_new_tokens: params.max_new_tokens,
+        constrained: params.constrained,
+        accuracy: 0.75,
+        formatting_fraction: 1.0,
+        retrieval_focus_count: 0,
+        bridge_failure_count: 0,
+        hallucination_count: 0,
+        inference_error_count: 0,
+        formatting_mismatch_count: 0,
+        replication_threshold: 0.8,
+        severity_threshold: 0.5,
+        constrained_accuracy_ceiling: 0.9,
+        runpod_pending: true,
+    };
+    let row = PER_ROLE_DECODING_PARAMS_PAPER[3];
+    assert_eq!(payload.temperature, f64::from(row.1));
+    assert_eq!(payload.max_new_tokens, row.2);
+    assert_eq!(payload.constrained, row.3);
+}
+
+#[test]
+fn c37_paper_roles_do_not_unify_with_the_wire_policy_roles() {
+    // The taxonomies are intentionally orthogonal: bridging the other three
+    // labels would silently unify meanings, so this is the tripwire.
+    assert_eq!(RoleDecoding::from_snake_case(PaperRole::Planner.as_str()), None);
+    assert_eq!(RoleDecoding::from_snake_case(PaperRole::Coder.as_str()), None);
+    assert_eq!(RoleDecoding::from_snake_case(PaperRole::Critic.as_str()), Some(RoleDecoding::Critic));
+    assert_eq!(RoleDecoding::from_snake_case(PaperRole::Reflection.as_str()), None);
+}
+
+struct ConversionProbe<T>(core::marker::PhantomData<T>);
+trait NoConversionFallback {
+    fn has_conversion(&self) -> bool;
+}
+impl<T> NoConversionFallback for ConversionProbe<T> {
+    fn has_conversion(&self) -> bool {
+        false
+    }
+}
+impl<T: Into<RoleDecoding>> ConversionProbe<T> {
+    fn has_conversion(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn c37_no_conversion_impl_between_the_two_role_taxonomies() {
+    // Inherent-impl priority selects the bounded method when Into exists;
+    // false today means no PaperRole -> RoleDecoding conversion exists, while
+    // true would signal that someone has added that bridge.
+    let probe = ConversionProbe::<PaperRole>(core::marker::PhantomData);
+    assert!(!probe.has_conversion());
 }

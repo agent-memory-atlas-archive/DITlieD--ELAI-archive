@@ -99,10 +99,11 @@ fn single_flipped_byte_on_disk_returns_tampered() {
                  not divergence (check 2)"
             )
         }
-        ReplayVerdict::ObjectiveHashMismatch { .. }
+        ReplayVerdict::StackHashMismatch { .. }
+        | ReplayVerdict::ObjectiveHashMismatch { .. }
         | ReplayVerdict::ObjectiveUnchecked { .. } => {
             panic!(
-                "corrupted root_blake3 reached objective check with tamper \
+                "corrupted root_blake3 reached a later check with tamper or divergence \
                  detection bypassed -- fail-open hazard (checks out of order)"
             )
         }

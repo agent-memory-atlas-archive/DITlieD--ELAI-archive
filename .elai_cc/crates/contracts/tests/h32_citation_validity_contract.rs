@@ -56,6 +56,7 @@ fn make_tier_a_fact(key: &str, evidence: Vec<String>) -> MemoryFact {
     MemoryFact {
         fact_id: format!("fact-h32-{key}"),
         user_id: TEST_USER.into(),
+        seat_id: "local".into(),
         project_id: Some("proj-h32".into()),
         scope: Scope::Project,
         fact_type: FactType::DomainKnowledge,

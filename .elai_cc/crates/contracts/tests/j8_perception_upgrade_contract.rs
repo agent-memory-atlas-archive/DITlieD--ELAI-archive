@@ -29,7 +29,7 @@ use elai_orchestrator::perception::preprocess::{preprocess, PreprocessSpec, Targ
 use elai_orchestrator::perception::sweet_spot;
 use elai_orchestrator::perception::{
     apply_schema_v2, coords_within_schema_v2, elements_pass_schema_v2, scaffold_with_call1,
-    LiteralElement, SchemaV2Verdict, ScaffoldInput, ScaffoldOutcome,
+    ElementSource, LiteralElement, SchemaV2Verdict, ScaffoldInput, ScaffoldOutcome,
 };
 use elai_orchestrator::perception::router::{
     route_outcome, RouterDecision, RouterInput, RouterType, DEFAULT_COUNTING_THRESHOLD,
@@ -168,6 +168,8 @@ fn make_element(label: &str, bbox: [u32; 4]) -> LiteralElement {
     LiteralElement {
         label: label.to_string(),
         bbox,
+        source: ElementSource::default(),
+        confidence: 1.0,
     }
 }
 

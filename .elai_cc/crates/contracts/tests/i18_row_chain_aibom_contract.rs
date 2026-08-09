@@ -269,6 +269,9 @@ fn i18_f6_build_attestation_aibom_entry_non_empty() {
         objective_hash: None,
         chain_prev_hash: None,
         stack_hash: None,
+        sampling_seed: None,
+        determinism_applied: None,
+        non_reproducible: false,
         root_blake3: "0000000000000000".into(),
     };
 

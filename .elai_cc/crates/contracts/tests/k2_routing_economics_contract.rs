@@ -5,7 +5,7 @@ use std::sync::Arc;
 use elai_core::clock::ClockProvider;
 use elai_core::SeededClock;
 use elai_orchestrator::benchmarks::routing_economics_runner::{
-    compose_routing_economics, run_routing_economics, RunnerStatus,
+    compose_routing_economics, run_routing_economics, RowSource, RunnerStatus,
     LIVE_COST_UNAVAILABLE,
 };
 use elai_orchestrator::ssb::{
@@ -57,7 +57,7 @@ fn payload_from_report(
 
 #[test]
 fn hybrid_offloads_strictly_more_than_force_cloud() {
-    let report = run_routing_economics(42, false).expect("runner");
+    let report = run_routing_economics(42, false, RowSource::Fixture).expect("runner");
     assert!(
         report.hybrid.percent_offloaded
             > report.force_cloud_everything.percent_offloaded,
@@ -73,7 +73,7 @@ fn hybrid_offloads_strictly_more_than_force_cloud() {
 
 #[test]
 fn unfunded_live_lane_reports_runner_present_without_fabricated_cost() {
-    let report = run_routing_economics(7, false).expect("runner");
+    let report = run_routing_economics(7, false, RowSource::Fixture).expect("runner");
     assert_eq!(report.runner_status, RunnerStatus::RunnerPresent);
     assert_eq!(report.fixture_status, RunnerStatus::Measured);
     assert_eq!(report.live_cost, LIVE_COST_UNAVAILABLE);
@@ -92,8 +92,8 @@ fn same_seed_report_is_byte_identical() {
 
 #[test]
 fn force_cloud_flag_selects_the_control_without_changing_the_comparison() {
-    let hybrid_selected = run_routing_economics(99, false).expect("hybrid selected");
-    let cloud_selected = run_routing_economics(99, true).expect("cloud selected");
+    let hybrid_selected = run_routing_economics(99, false, RowSource::Fixture).expect("hybrid selected");
+    let cloud_selected = run_routing_economics(99, true, RowSource::Fixture).expect("cloud selected");
     assert_eq!(hybrid_selected.selected_arm, "hybrid");
     assert_eq!(cloud_selected.selected_arm, "force_cloud_everything");
     assert_eq!(hybrid_selected.hybrid, cloud_selected.hybrid);
@@ -112,7 +112,7 @@ fn routing_economics_beacon_is_queryable_and_recomputable() {
         SsbActionType::RoutingEconomicsMeasured
     );
 
-    let report = run_routing_economics(2026, false).expect("runner");
+    let report = run_routing_economics(2026, false, RowSource::Fixture).expect("runner");
     let payload = payload_from_report(&report);
     let dir = tempfile::TempDir::new().expect("tempdir");
     let cfg = SsbConfig {
@@ -146,7 +146,7 @@ fn routing_economics_beacon_is_queryable_and_recomputable() {
         assert_eq!(decoded, SsbPayload::RoutingEconomicsMeasured(payload));
     });
 
-    let recomputed = run_routing_economics(report.seed, false).expect("recompute");
+    let recomputed = run_routing_economics(report.seed, false, RowSource::Fixture).expect("recompute");
     let report_bytes = serde_json::to_vec(&report).expect("serialize report");
     let recomputed_bytes = serde_json::to_vec(&recomputed).expect("serialize recomputed");
     assert_eq!(report_bytes, recomputed_bytes);

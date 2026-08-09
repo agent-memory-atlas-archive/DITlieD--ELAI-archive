@@ -331,6 +331,7 @@ fn perception_gateway_with_spec_carries_preprocess_spec() {
     let spec = PreprocessSpec {
         target_model: TargetModel::Gpt,
         jpeg_q85: false,
+        tile_px: 0,
         tile_overlap: 0.25,
         thumbnail: true,
     };

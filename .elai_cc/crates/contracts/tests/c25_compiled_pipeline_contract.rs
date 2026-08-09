@@ -452,6 +452,7 @@ async fn build_with_compiled_executor_returns_hit_on_cache_match() {
         use_count: 5,
         first_try_success_rate: 0.95,
         compilation_eligible: true,
+        flow_fingerprint: None,
     };
     let dir = TempDir::new().expect("tempdir");
     let store_path = dir.path().join("compiled.msgpack");
