@@ -25,6 +25,9 @@ class _SolidProxyCheckContract(unittest.TestCase):
     def _map(self, rows, name="elai.map"):
         path = self.dir / name
         path.write_text(_map_text(rows), encoding="utf-8")
+        for row in rows:
+            if len(row) >= 3 and ":" in row[2]:
+                self._src(row[2].rsplit(":", 1)[0], "source\n")
         return path
 
     def _src(self, rel, text):
@@ -146,7 +149,81 @@ class _SolidProxyCheckContract(unittest.TestCase):
         self.assertIn("lines=201", srp_ok[0]["message"])
         r_bad = _run(["--map", str(mp), "--files", "src/god.rs", "--json", "--root", "/nonexistent"])
         payload_bad = json.loads(r_bad.stdout)
-        self.assertIn("src/god.rs", payload_bad["unreadable_files"])
+        self.assertEqual(payload_bad["unreadable_files"], [])
+
+    def test_11_map_base_matches_workflow_and_map_relative_names(self):
+        rows = [("DEF_STRUCT", "God", "crates/x/big.rs:1", "", "", "struct God")]
+        rows += [("TYPE_REF", f"God::m{i}", "src/caller.rs:1", "", "", f"God::m{i}")
+                 for i in range(11)]
+        rows += [("DEF_METHOD", f"God::m{i}", "crates/x/big.rs:10", "", "", f"fn m{i}")
+                 for i in range(11)]
+        map_path = self.dir / ".claude" / "tools" / "elai.map"
+        map_path.parent.mkdir(parents=True)
+        map_path.write_text(_map_text(rows), encoding="utf-8")
+        source = self.dir / ".elai_cc" / "crates" / "x" / "big.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text("\n".join(f"line {i}" for i in range(201)) + "\n", encoding="utf-8")
+
+        common = ["--map", str(map_path), "--json", "--root", str(self.dir)]
+        workflow = _run([*common, "--files", ".elai_cc/crates/x/big.rs"])
+        map_relative = _run([*common, "--files", "crates/x/big.rs"])
+        self.assertEqual(workflow.returncode, 1, (workflow.returncode, workflow.stdout, workflow.stderr))
+        self.assertEqual(map_relative.returncode, 1, (map_relative.returncode, map_relative.stdout, map_relative.stderr))
+        workflow_payload = json.loads(workflow.stdout)
+        map_relative_payload = json.loads(map_relative.stdout)
+        self.assertTrue(workflow_payload["findings"])
+        self.assertEqual(workflow_payload["findings"], map_relative_payload["findings"])
+
+    def _equivalence_fixture(self):
+        rows = [("DEF_STRUCT", "God", "crates/x/big.rs:1", "", "", "struct God")]
+        rows += [("TYPE_REF", f"God::m{i}", "src/caller.rs:1", "", "", f"God::m{i}") for i in range(11)]
+        rows += [("DEF_METHOD", f"God::m{i}", "crates/x/big.rs:10", "", "", f"fn m{i}") for i in range(11)]
+        mp = self._map(rows)
+        self._src("crates/x/big.rs", "\n".join(f"line {i}" for i in range(201)) + "\n")
+        return mp
+
+    def test_12_flat_layout_finding(self):
+        mp = self._equivalence_fixture()
+        r = _run(["--map", str(mp), "--files", "crates/x/big.rs", "--json", "--root", str(self.dir)])
+        self.assertEqual(r.returncode, 1, (r.returncode, r.stdout, r.stderr))
+        self.assertTrue(json.loads(r.stdout)["findings"])
+
+    def test_13_unresolvable_file_is_residue(self):
+        mp = self._map([("DEF_STRUCT", "Known", "src/known.rs:1", "", "", "struct Known")])
+        r = _run(["--map", str(mp), "--files", "no/such/file.rs", "--json", "--root", str(self.dir)])
+        self.assertEqual(r.returncode, 0, (r.returncode, r.stdout, r.stderr))
+        payload = json.loads(r.stdout)
+        self.assertIn("no/such/file.rs", payload["residue"])
+        self.assertEqual(payload["findings"], [])
+
+    def test_14_wrong_base_is_scan_config_error(self):
+        mp = self._map([("DEF_STRUCT", "Known", "src/known.rs:1", "", "", "struct Known")])
+        (self.dir / "src/known.rs").unlink()
+        r = _run(["--map", str(mp), "--map-base", str(self.dir / "wrong"), "--files", "src/known.rs", "--json"])
+        self.assertEqual(r.returncode, 2, (r.returncode, r.stdout, r.stderr))
+        self.assertIn("map base", r.stderr)
+        self.assertIn("wrong", r.stderr)
+
+    def test_15_existing_file_with_zero_map_rows_is_error(self):
+        mp = self._map([("DEF_STRUCT", "Known", "src/known.rs:1", "", "", "struct Known")])
+        self._src("src/other.rs", "source\n")
+        r = _run(["--map", str(mp), "--files", "src/other.rs", "--root", str(self.dir)])
+        self.assertEqual(r.returncode, 2, (r.returncode, r.stdout, r.stderr))
+        self.assertIn("src/other.rs", r.stderr)
+        self.assertIn("zero map rows", r.stderr)
+
+    def test_16_explicit_map_base_controls_resolution(self):
+        mp = self._map([("DEF_STRUCT", "Known", "src/known.rs:1", "", "", "struct Known")])
+        good = _run(["--map", str(mp), "--map-base", str(self.dir), "--files", "src/known.rs", "--json"])
+        self.assertEqual(good.returncode, 0, (good.returncode, good.stdout, good.stderr))
+        bad = _run(["--map", str(mp), "--map-base", str(self.dir / "wrong"), "--files", "src/known.rs"])
+        self.assertEqual(bad.returncode, 2, (bad.returncode, bad.stdout, bad.stderr))
+
+    def test_17_map_relative_flat_finding(self):
+        mp = self._map([("DEF_STRUCT", "Known", "src/known.rs:1", "", "", "struct Known")])
+        r = _run(["--map", str(mp), "--files", "src/known.rs", "--json", "--root", str(self.dir)])
+        self.assertEqual(r.returncode, 0, (r.returncode, r.stdout, r.stderr))
+        self.assertEqual(json.loads(r.stdout)["findings"], [])
 
 
 if __name__ == "__main__":
