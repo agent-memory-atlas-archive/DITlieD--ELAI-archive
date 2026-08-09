@@ -51,6 +51,14 @@ pub const VIBESEC_SECRET_CATEGORY: &str = "vibesec_secret";
 /// `category` field on [`HookFinding`] for a code-vuln block.
 pub const VIBESEC_CODE_VULN_CATEGORY: &str = "vibesec_code_vuln";
 
+/// `category` field on [`HookFinding`] for the maintainability write-time floor.
+pub const MAINTAINABILITY_FLOOR_CATEGORY: &str = "maintainability_floor";
+
+/// Maximum file size mirrored from `.claude/tools/maintainability_check.py:63`.
+/// The Python checker remains the audit-time authority for the real MR-1
+/// boundary-crossing rule; this write-time floor can only see candidate text.
+pub const MAX_FILE_LINES: usize = 1000;
+
 /// F-1 Task 6 (W-2) — the ONLY VibeGate env var: a kill-switch, default OFF
 /// (unset). VibeGate enforcement AND `VibeGateBlocked` / `SecurityRuleBlocked`
 /// SSB emission are ON by default in production; setting this to a truthy value
@@ -138,6 +146,9 @@ pub fn evaluate_vibegate(tool_name: &str, source: &str, file_path: &str) -> Vec<
 
     // --- Axis 2: code-vuln rules ---
     run_code_vuln_axis(tool_name, source, file_path, &mut findings);
+
+    // --- Axis 3: maintainability write-time floor ---
+    run_maintainability_floor_axis(source, file_path, &mut findings);
 
     findings
 }
@@ -273,6 +284,98 @@ fn run_code_vuln_axis(
             });
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Maintainability write-time floor
+// ---------------------------------------------------------------------------
+
+/// Apply the regex-subset of MR-1/MR-2 available on the PreToolUse path.
+///
+/// This is intentionally not a parser and does not claim complete coverage.
+/// The audit-time Python checker is the load-bearing backstop: only it sees
+/// the pre-edit size needed to issue the real MR-1 boundary-crossing verdict.
+/// Consequently an over-limit candidate is WARN-only here, never BLOCK, to
+/// avoid blocking every edit to an already-large file. SOLID is not a
+/// write-time check (OQ-2).
+fn run_maintainability_floor_axis(
+    source: &str,
+    file_path: &str,
+    out: &mut Vec<HookFinding>,
+) {
+    let language = detect_language_label(file_path);
+    if source.lines().count() > MAX_FILE_LINES {
+        out.push(HookFinding {
+            tier: HookTier::T1,
+            verdict: HookVerdictKind::Warn,
+            rule_id: Some("maintainability-mr1-size".to_string()),
+            category: MAINTAINABILITY_FLOOR_CATEGORY.to_string(),
+            message: format!(
+                "maintainability_floor: candidate exceeds {} lines in {}",
+                MAX_FILE_LINES, file_path
+            ),
+            fix_template: None,
+        });
+    }
+
+    let (block_hit, warn_hit) = match language {
+        "typescript" => (
+            source.contains("as any")
+                || source.contains("as unknown")
+                || source.contains("@ts-ignore"),
+            source.contains(": any") || has_typescript_numeric_assertion(source),
+        ),
+        "rust" => (has_rust_token(source, "unsafe"), has_rust_softening(source)),
+        _ => (false, false),
+    };
+
+    if block_hit {
+        out.push(HookFinding {
+            tier: HookTier::T1,
+            verdict: HookVerdictKind::Block,
+            rule_id: Some("maintainability-mr2-escape-hatch".to_string()),
+            category: MAINTAINABILITY_FLOOR_CATEGORY.to_string(),
+            message: format!(
+                "maintainability_floor: MR-2 escape hatch detected in {}",
+                file_path
+            ),
+            fix_template: None,
+        });
+    } else if warn_hit {
+        out.push(HookFinding {
+            tier: HookTier::T1,
+            verdict: HookVerdictKind::Warn,
+            rule_id: Some("maintainability-mr2-softening".to_string()),
+            category: MAINTAINABILITY_FLOOR_CATEGORY.to_string(),
+            message: format!(
+                "maintainability_floor: MR-2 soft loosening detected in {}",
+                file_path
+            ),
+            fix_template: None,
+        });
+    }
+}
+
+fn has_typescript_numeric_assertion(source: &str) -> bool {
+    source.split_whitespace().any(|part| {
+        let token = part.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        token == "as"
+    }) && ["number", "bigint"].iter().any(|ty| {
+        source.contains(&format!("as {ty}"))
+    })
+}
+
+fn has_rust_token(source: &str, wanted: &str) -> bool {
+    source.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|token| token == wanted)
+}
+
+fn has_rust_softening(source: &str) -> bool {
+    source.contains("allow(") || source.contains(" as u8") || source.contains(" as u16")
+        || source.contains(" as u32") || source.contains(" as u64")
+        || source.contains(" as usize") || source.contains(" as i8")
+        || source.contains(" as i16") || source.contains(" as i32")
+        || source.contains(" as i64") || source.contains(" as isize")
 }
 
 // ---------------------------------------------------------------------------

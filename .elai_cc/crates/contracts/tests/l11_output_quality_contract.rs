@@ -122,3 +122,61 @@ fn l11_observes_budget_without_changing_skeleton()  {
     assert!(!in_budget_generated[0].responsibility_budget_exceeded);
     assert_eq!(generated[0].skeleton_text, in_budget_generated[0].skeleton_text);
 }
+
+#[test]
+fn maintainability_floor_warns_overlong_candidate_without_blocking() {
+    use elai_orchestrator::hook_dispatcher::HookVerdictKind;
+    use elai_orchestrator::vibegate::{
+        evaluate_vibegate, MAINTAINABILITY_FLOOR_CATEGORY, MAX_FILE_LINES,
+    };
+    let source = std::iter::repeat("let value = 1;")
+        .take(MAX_FILE_LINES + 1)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let findings = evaluate_vibegate("Write", &source, "src/large.rs");
+    let quality: Vec<_> = findings
+        .iter()
+        .filter(|finding| finding.category == MAINTAINABILITY_FLOOR_CATEGORY)
+        .collect();
+    assert!(quality.iter().any(|finding| finding.verdict == HookVerdictKind::Warn));
+    assert!(!quality.iter().any(|finding| finding.verdict == HookVerdictKind::Block));
+}
+
+#[test]
+fn maintainability_floor_clean_short_candidate_is_silent() {
+    use elai_orchestrator::vibegate::{evaluate_vibegate, MAINTAINABILITY_FLOOR_CATEGORY};
+    let findings = evaluate_vibegate("Write", "fn clean() -> i32 { 1 }", "src/clean.rs");
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.category == MAINTAINABILITY_FLOOR_CATEGORY));
+}
+
+#[test]
+fn maintainability_floor_blocks_typescript_any_escape_hatch() {
+    use elai_orchestrator::hook_dispatcher::HookVerdictKind;
+    use elai_orchestrator::vibegate::{
+        evaluate_vibegate, MAINTAINABILITY_FLOOR_CATEGORY,
+    };
+    let findings = evaluate_vibegate("Write", "const value = input as any;", "src/app.ts");
+    assert!(findings.iter().any(|finding| {
+        finding.category == MAINTAINABILITY_FLOOR_CATEGORY
+            && finding.verdict == HookVerdictKind::Block
+    }));
+}
+
+#[test]
+fn maintainability_floor_warns_rust_soft_loosening() {
+    use elai_orchestrator::hook_dispatcher::HookVerdictKind;
+    use elai_orchestrator::vibegate::{
+        evaluate_vibegate, MAINTAINABILITY_FLOOR_CATEGORY,
+    };
+    let findings = evaluate_vibegate("Write", "#[allow(dead_code)]\nfn helper() {}", "src/lib.rs");
+    assert!(findings.iter().any(|finding| {
+        finding.category == MAINTAINABILITY_FLOOR_CATEGORY
+            && finding.verdict == HookVerdictKind::Warn
+    }));
+    assert!(!findings.iter().any(|finding| {
+        finding.category == MAINTAINABILITY_FLOOR_CATEGORY
+            && finding.verdict == HookVerdictKind::Block
+    }));
+}
