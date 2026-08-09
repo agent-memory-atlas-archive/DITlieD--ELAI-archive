@@ -93,7 +93,7 @@ mod tests {
     use super::*;
     #[test]
     fn report_records_degraded_ablation() {
-        let triple = GoldTriple { id: "q1".into(), query: "query".into(), positive: "good".into(), hard_negatives: vec!["bad".into()], source: "test" };
+        let triple = GoldTriple { id: "q1".into(), query: "query".into(), positive: "good".into(), hard_negatives: vec!["bad".into()], source: "test".into() };
         let mut ranks = HashMap::new();
         ranks.insert("full".into(), Some(HashMap::from([("q1".into(), vec!["good".into(), "bad".into()])] )));
         ranks.insert("drop-pagerank".into(), Some(HashMap::from([("q1".into(), vec!["bad".into(), "good".into()])] )));
