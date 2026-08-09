@@ -499,6 +499,7 @@ skill_system_event
 skill_triggered
 snapshot_evicted
 snapshot_uniqueness_regenerated
+snowballing_measured
 spiral_detected
 spotlight_breached
 spotlight_wrapped

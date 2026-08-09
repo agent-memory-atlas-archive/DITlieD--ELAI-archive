@@ -678,6 +678,7 @@ use elai_orchestrator::ssb::{BashRedirectedKind, BeliefStateEventKind, BranchWor
 // beacon. Mirrors SafetyDeltaMeasured shape. Emitted by cli::bench_qdelta::run_inner after
 // floor_check passes (seed_count>=5, paired=true). +1 I-38 (QdeltaMeasured). 543 -> 544.
 //
+// C-37: SnowballingMeasured flat beacon; +1 variant.
 // I-43 (SCHEMA_VERSION 236, 2026-06-12): ClaimScopeMeasured -- reproducibility-claim scoper
 // kill-gate. Pattern-2 single-variant 3-arm ClaimScopeMeasuredKind: PilotDelta /
 // CrossLaneDivergence / ClaimScoped. Emitted by cli::bench_claim_scope::run_inner.
@@ -1476,6 +1477,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::GrammarGateEvent(_) => (),
         // I-38 (SCHEMA_VERSION 235): QdeltaMeasured flat beacon.
         SsbActionType::QdeltaMeasured => (),
+        SsbActionType::SnowballingMeasured => (),
         SsbActionType::KvCacheTuned => (),
         // I-43 (SCHEMA_VERSION 236): ClaimScopeMeasured Pattern-2 3-arm claim-scoper kill-gate.
         SsbActionType::ClaimScopeMeasured(_) => (),

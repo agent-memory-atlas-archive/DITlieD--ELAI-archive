@@ -3684,6 +3684,8 @@ pub enum SsbPayload {
     /// I-38 (SCHEMA_VERSION 235): QDELTA defective-diff rate flat beacon.
     /// Mirrors [`SafetyDeltaMeasured`] shape. TOTAL_VARIANTS 543 -> 544.
     QdeltaMeasured(QdeltaMeasuredPayload),
+    /// C-37 snowballing harness summary measurement.
+    SnowballingMeasured(SnowballingMeasuredPayload),
     /// I-16: KV-cache tuning dry-run result.
     KvCacheTuned(KvCacheTunedPayload),
     /// I-43 (SCHEMA_VERSION 236): reproducibility-claim scoper + kill-gate.
@@ -4758,6 +4760,7 @@ impl SsbPayload {
             Self::ObjectiveSealed(_) => SsbActionType::ObjectiveSealed(ObjectiveSealedKind::Sealed),
             Self::GrammarGateEvent(_) => SsbActionType::GrammarGateEvent(GrammarGateEventKind::CranePassed),
             Self::QdeltaMeasured(_) => SsbActionType::QdeltaMeasured,
+            Self::SnowballingMeasured(_) => SsbActionType::SnowballingMeasured,
             Self::KvCacheTuned(_) => SsbActionType::KvCacheTuned,
             Self::ClaimScopeMeasured(_) => SsbActionType::ClaimScopeMeasured(ClaimScopeMeasuredKind::PilotDelta),
             Self::CacheEconomicsEvent(_) => SsbActionType::CacheEconomicsEvent(CacheEconomicsEventKind::TtlPlanned),
@@ -16475,6 +16478,49 @@ pub struct QdeltaMeasuredPayload {
     /// `true` = Tier-1 fixture only; live-model leg is deferred (D-026).
     pub runpod_pending: bool,
 }
+
+/// C-37 snowballing harness summary measurement.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnowballingMeasuredPayload {
+    /// Pool label.
+    pub pool: String,
+    /// Number of questions.
+    pub n_questions: u32,
+    /// Reflector mode.
+    pub reflector_mode: String,
+    /// Model label.
+    pub model: String,
+    /// Decoding temperature.
+    pub temperature: f64,
+    /// Maximum generated tokens.
+    pub max_new_tokens: u32,
+    /// Whether constrained decoding was used.
+    pub constrained: bool,
+    /// Accuracy fraction.
+    pub accuracy: f64,
+    /// Formatting fraction.
+    pub formatting_fraction: f64,
+    /// Retrieval-focus failures.
+    pub retrieval_focus_count: u32,
+    /// Bridge failures.
+    pub bridge_failure_count: u32,
+    /// Hallucinations.
+    pub hallucination_count: u32,
+    /// Inference errors.
+    pub inference_error_count: u32,
+    /// Formatting mismatches.
+    pub formatting_mismatch_count: u32,
+    /// Replication threshold.
+    pub replication_threshold: f64,
+    /// Severity threshold.
+    pub severity_threshold: f64,
+    /// Constrained accuracy ceiling.
+    pub constrained_accuracy_ceiling: f64,
+    /// Whether RunPod execution remains pending.
+    pub runpod_pending: bool,
+}
+
 
 /// I-16: flat KV-cache tuning beacon.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

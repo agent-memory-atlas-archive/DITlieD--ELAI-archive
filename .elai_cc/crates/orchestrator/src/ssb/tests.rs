@@ -8198,6 +8198,16 @@ use crate::gate::RiskLevel;
                 corpus_blake3: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".into(),
                 runpod_pending: true,
             }),
+            // C-37: SnowballingMeasured flat beacon.
+            SsbPayload::SnowballingMeasured(SnowballingMeasuredPayload {
+                pool: "A".into(), n_questions: 5, reflector_mode: "outlines".into(),
+                model: "fixture-model".into(), temperature: 0.1, max_new_tokens: 1024,
+                constrained: true, accuracy: 0.4, formatting_fraction: 0.2,
+                retrieval_focus_count: 1, bridge_failure_count: 1, hallucination_count: 1,
+                inference_error_count: 1, formatting_mismatch_count: 1,
+                replication_threshold: 0.5, severity_threshold: 0.9,
+                constrained_accuracy_ceiling: 0.8, runpod_pending: true,
+            }),
             // I-16: KvCacheTuned flat beacon.
             SsbPayload::KvCacheTuned(KvCacheTunedPayload {
                 vram_gb: None,
@@ -8787,8 +8797,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            498,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec",
+            499,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

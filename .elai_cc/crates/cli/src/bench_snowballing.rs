@@ -16,10 +16,9 @@
 //!             pattern of bench_prmbench / bench_mode_routing siblings),
 //!             shells out to the Python module via `python -m`, and
 //!             surfaces the run's summary JSON.
-//! ssb row   : `SsbActionType::PerRoleDecodingApplied` is emitted by
-//!             `agent_pool::spawn` (orthogonal to this driver); a future
-//!             follow-up wires a `SnowballingBenchRunCompleted` row when
-//!             RunPod inference lands.
+//! ssb row   : this driver parses the harness summary and emits one
+//!             `SnowballingMeasured` row. `PerRoleDecodingApplied` has no
+//!             production emit site at HEAD.
 //!
 //! # Exit codes
 //!
@@ -44,6 +43,14 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+use elai_core::paths::sessions_dir_path;
+use elai_orchestrator::ssb::SnowballingMeasuredPayload;
+use elai_orchestrator::{Ssb, SsbConfig, SsbPayload};
+use serde::Deserialize;
 
 use thiserror::Error;
 
@@ -68,6 +75,12 @@ pub enum BenchSnowballingError {
     /// The Python module exited with a non-zero status.
     #[error("snowballing harness exited with status {code:?}: {stderr_tail}")]
     HarnessFailed { code: Option<i32>, stderr_tail: String },
+    /// Harness stdout was not the promised summary JSON object.
+    #[error("snowballing harness summary JSON did not parse: {source_msg}")]
+    SummaryParse { source_msg: String },
+    /// SSB emission failed after a successful harness run.
+    #[error("snowballing SSB emission failed: {source_msg}")]
+    SsbEmit { source_msg: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +100,38 @@ pub(crate) fn run(
     output: String,
     python_bin: Option<String>,
 ) -> anyhow::Result<()> {
-    let validated = match validate_args(
+    let project_root = std::env::current_dir().map_err(|e| anyhow::anyhow!("snowballing cwd: {e}"))?;
+    match run_at(
+        &project_root,
+        pool,
+        n_samples,
+        model,
+        max_trials,
+        reflector_mode,
+        sidecar_url,
+        output,
+        python_bin,
+    ) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            eprintln!("SNOWBALLING ABORT: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_at(
+    project_root: &Path,
+    pool: String,
+    n_samples: Option<i64>,
+    model: Option<String>,
+    max_trials: Option<i64>,
+    reflector_mode: Option<String>,
+    sidecar_url: Option<String>,
+    output: String,
+    python_bin: Option<String>,
+) -> anyhow::Result<()> {
+    let validated = validate_args(
         &pool,
         n_samples,
         model.as_deref(),
@@ -95,24 +139,9 @@ pub(crate) fn run(
         reflector_mode.as_deref(),
         sidecar_url.as_deref(),
         &output,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("SNOWBALLING ABORT: {e}");
-            std::process::exit(1);
-        }
-    };
-
+    )?;
     let py = python_bin.unwrap_or_else(|| "python".to_owned());
-
-    let outcome = invoke_harness(&py, &validated);
-    match outcome {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            eprintln!("SNOWBALLING ABORT: {e}");
-            std::process::exit(1);
-        }
-    }
+    invoke_harness(&py, &validated, project_root).map_err(anyhow::Error::new)
 }
 
 // ---------------------------------------------------------------------------
@@ -172,9 +201,19 @@ pub fn validate_args(
 // Python harness invocation.
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Deserialize)]
+struct SnowballingSummary {
+    pool: String, n_questions: u32, reflector_mode: String, model: String,
+    accuracy: f64, formatting_fraction: f64,
+    error_distribution: HashMap<String, u32>,
+    replication_threshold: f64, severity_threshold: f64,
+    constrained_accuracy_ceiling: f64,
+}
+
 fn invoke_harness(
     python_bin: &str,
     args: &ValidatedArgs,
+    project_root: &Path,
 ) -> Result<(), BenchSnowballingError> {
     let mut cmd = Command::new(python_bin);
     cmd.arg("-m")
@@ -230,13 +269,49 @@ fn invoke_harness(
         });
     }
 
-    // Pass-through: write the summary JSON to stdout and the per-question
-    // progress lines to stderr (the harness streams them already).
+    let summary: SnowballingSummary = serde_json::from_str(stdout.trim()).map_err(|e| {
+        BenchSnowballingError::SummaryParse { source_msg: e.to_string() }
+    })?;
+    let params = elai_providers::decoding::paper_decoding_params_for(
+        elai_providers::decoding::PaperRole::Reflection,
+    );
+    let payload = SnowballingMeasuredPayload {
+        pool: summary.pool, n_questions: summary.n_questions,
+        reflector_mode: summary.reflector_mode, model: summary.model,
+        temperature: f64::from(params.temperature), max_new_tokens: params.max_new_tokens,
+        constrained: params.constrained, accuracy: summary.accuracy,
+        formatting_fraction: summary.formatting_fraction,
+        retrieval_focus_count: *summary.error_distribution.get("RETRIEVAL_FOCUS").unwrap_or(&0),
+        bridge_failure_count: *summary.error_distribution.get("BRIDGE_FAILURE").unwrap_or(&0),
+        hallucination_count: *summary.error_distribution.get("HALLUCINATION").unwrap_or(&0),
+        inference_error_count: *summary.error_distribution.get("INFERENCE_ERROR").unwrap_or(&0),
+        formatting_mismatch_count: *summary.error_distribution.get("FORMATTING_MISMATCH").unwrap_or(&0),
+        replication_threshold: summary.replication_threshold,
+        severity_threshold: summary.severity_threshold,
+        constrained_accuracy_ceiling: summary.constrained_accuracy_ceiling,
+        runpod_pending: true,
+    };
+    emit_beacon(project_root, &payload)?;
+    // Pass-through: write the summary JSON to stdout and progress to stderr.
     print!("{stdout}");
     if !stderr.trim().is_empty() {
         eprintln!("{stderr}");
     }
     Ok(())
+}
+
+fn emit_beacon(project_root: &Path, payload: &SnowballingMeasuredPayload) -> Result<(), BenchSnowballingError> {
+    let db_path = sessions_dir_path(project_root).join("ssb.db");
+    if let Some(parent) = db_path.parent() { fs::create_dir_all(parent).map_err(|e| BenchSnowballingError::SsbEmit { source_msg: e.to_string() })?; }
+    let cfg = SsbConfig { db_path, pool_size: None, project_id: "default".into(), session_id: "cli-bench-snowballing".into() };
+    let clock: std::sync::Arc<dyn elai_core::clock::ClockProvider> = std::sync::Arc::new(elai_core::OsClock);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| BenchSnowballingError::SsbEmit { source_msg: e.to_string() })?;
+    let payload = payload.clone();
+    rt.block_on(async move {
+        let ssb = Ssb::new(cfg, clock).map_err(|e| BenchSnowballingError::SsbEmit { source_msg: e.to_string() })?;
+        ssb.write_payload("cli:bench-snowballing", 0, SsbPayload::SnowballingMeasured(payload), Vec::new()).await.map_err(|e| BenchSnowballingError::SsbEmit { source_msg: e.to_string() })?;
+        Ok::<(), BenchSnowballingError>(())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -351,4 +426,75 @@ mod tests {
         assert_eq!(v.reflector_mode, "outlines");
         assert_eq!(v.model, "Qwen/Qwen2.5-Coder-7B-Instruct-abliterated");
     }
+    #[cfg(unix)]
+    #[test]
+    fn run_at_emits_snowballing_row_from_harness_summary() {
+        use elai_orchestrator::ssb::SsbReader;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().expect("temporary project root");
+        let stub = dir.path().join("python-stub");
+        std::fs::write(
+            &stub,
+            r#"#!/bin/sh
+printf '%s\n' '{"pool":"B","n_questions":7,"reflector_mode":"schema_hint","model":"fixture-model","accuracy":0.4,"formatting_fraction":0.2,"error_distribution":{"RETRIEVAL_FOCUS":2,"HALLUCINATION":3},"replication_threshold":0.5,"severity_threshold":0.9,"constrained_accuracy_ceiling":0.6}'
+"#,
+        )
+        .expect("write Python stub");
+        let mut permissions = std::fs::metadata(&stub).expect("stub metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&stub, permissions).expect("make Python stub executable");
+
+        let output = dir.path().join("summary.jsonl");
+        run_at(
+            dir.path(),
+            "B".to_owned(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            output.to_string_lossy().into_owned(),
+            Some(stub.to_string_lossy().into_owned()),
+        )
+        .expect("stub harness should emit an SSB row");
+
+        let db_path = sessions_dir_path(dir.path()).join("ssb.db");
+        let cfg = SsbConfig {
+            db_path,
+            pool_size: None,
+            project_id: "default".into(),
+            session_id: "cli-bench-snowballing".into(),
+        };
+        let clock: std::sync::Arc<dyn elai_core::clock::ClockProvider> =
+            std::sync::Arc::new(elai_core::OsClock);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build Tokio runtime for SSB read-back");
+        let rows = rt.block_on(async move {
+            let ssb = Ssb::new(cfg, clock).expect("open emitted SSB");
+            ssb.query_by_session("cli-bench-snowballing")
+                .expect("read emitted SSB row")
+        });
+        assert_eq!(rows.len(), 1);
+        let payload: SsbPayload = rmp_serde::from_slice(&rows[0].payload).expect("decode row");
+        let SsbPayload::SnowballingMeasured(payload) = payload else {
+            panic!("expected SnowballingMeasured payload");
+        };
+        assert_eq!(payload.pool, "B");
+        assert_eq!(payload.n_questions, 7);
+        assert_eq!(payload.retrieval_focus_count, 2);
+        assert_eq!(payload.hallucination_count, 3);
+        assert_eq!(payload.bridge_failure_count, 0);
+        assert_eq!(payload.inference_error_count, 0);
+        assert_eq!(payload.formatting_mismatch_count, 0);
+        let params = elai_providers::decoding::paper_decoding_params_for(
+            elai_providers::decoding::PaperRole::Reflection,
+        );
+        assert_eq!(payload.temperature, f64::from(params.temperature));
+        assert_eq!(payload.max_new_tokens, params.max_new_tokens);
+        assert_eq!(payload.constrained, params.constrained);
+    }
+
 }
