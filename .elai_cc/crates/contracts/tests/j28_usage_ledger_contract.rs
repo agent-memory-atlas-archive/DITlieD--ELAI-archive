@@ -18,10 +18,15 @@
 //!       most-recent row (closes audit finding C-2); `None + None` stays
 //!       `None`, never a fabricated `Some(0)`.
 
+use std::sync::Arc;
+
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::cloud_mode::SpendAccumulator;
 use elai_orchestrator::ssb::{
-    UsageLane, UsageSemanticsTag, UsageTurnEventKind, UsageTurnEventPayload,
+    Ssb, SsbConfig, SsbPayload, UsageLane, UsageSemanticsTag, UsageTurnEventKind,
+    UsageTurnEventPayload,
 };
+use elai_orchestrator::SsbViewer;
 use elai_orchestrator::usage_ledger::{
     resolve_turn_usage, rollup_usage_turns, sum_optional_micros, NormalizedUsage,
 };
@@ -158,4 +163,74 @@ fn normalized_usage_lane_and_semantics_are_distinct_per_lane() {
         cloud.semantics_tag, local.semantics_tag,
         "cloud (SuffixOnly) and local (FullPrompt) semantics must never collapse to one tag"
     );
+}
+
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn usage_turn_events_reads_back_written_rows() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let db_path = dir.path().join("j28-usage.db");
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    let ssb = Ssb::new(
+        SsbConfig {
+            db_path: db_path.clone(),
+            pool_size: Some(2),
+            project_id: "j28-contract".into(),
+            session_id: "s-j28-contract".into(),
+        },
+        clock,
+    )
+    .expect("ssb init");
+
+    let first = fixture_row(
+        UsageLane::Cloud,
+        "claude-sonnet-4-6",
+        111,
+        22,
+        3_000,
+        UsageTurnEventKind::TurnRecorded,
+    );
+    let second = fixture_row(
+        UsageLane::Local,
+        "local-sidecar",
+        333,
+        44,
+        0,
+        UsageTurnEventKind::TurnRecorded,
+    );
+    ssb.write_payload(
+        "j28-contract",
+        1,
+        SsbPayload::UsageTurnEvent(first),
+        Vec::new(),
+    )
+    .await
+    .expect("first usage row");
+    ssb.write_payload(
+        "j28-contract",
+        2,
+        SsbPayload::UsageTurnEvent(second),
+        Vec::new(),
+    )
+    .await
+    .expect("second usage row");
+
+    let viewer = SsbViewer::open(&db_path).expect("viewer");
+    let rows = viewer.usage_turn_events(16).expect("usage rows");
+    assert_eq!(rows.len(), 2, "both written usage rows must be readable");
+    assert!(rows.iter().any(|row| {
+        row.lane == UsageLane::Cloud
+            && row.model == "claude-sonnet-4-6"
+            && row.input_tokens == 111
+            && row.output_tokens == 22
+    }));
+    assert!(rows.iter().any(|row| {
+        row.lane == UsageLane::Local
+            && row.model == "local-sidecar"
+            && row.input_tokens == 333
+            && row.output_tokens == 44
+    }));
+
+    let rollup = rollup_usage_turns(&rows);
+    assert!(!rollup.is_empty(), "read-back rows must produce usage output");
 }

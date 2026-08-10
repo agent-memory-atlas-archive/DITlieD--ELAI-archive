@@ -1745,7 +1745,7 @@ impl SsbViewer {
     /// J-28 T5/T8 -- read back `UsageTurnEvent` rows for `elai usage`'s
     /// grouped rollup (`crate::usage_ledger::rollup_usage_turns`). Reuses
     /// [`Self::recent_rows_of_type`] (GD-1: no duplicate SQL query) and
-    /// re-types each row's JSON payload back into
+    /// unwraps the externally tagged JSON payload before re-typing it as
     /// [`UsageTurnEventPayload`]; a row that fails to re-type is skipped
     /// and warn-logged (the underlying decode failure is already
     /// warn-logged by `recent_rows_of_type`).
@@ -1756,7 +1756,13 @@ impl SsbViewer {
         let rows = self.recent_rows_of_type(SsbActionType::UsageTurnEvent.as_sql_str(), limit)?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            match serde_json::from_value::<UsageTurnEventPayload>(row.payload_json) {
+            // Rows are externally tagged because SsbPayload is a plain-derive enum.
+            let raw = row
+                .payload_json
+                .get("UsageTurnEvent")
+                .cloned()
+                .unwrap_or_else(|| row.payload_json.clone());
+            match serde_json::from_value::<UsageTurnEventPayload>(raw) {
                 Ok(payload) => out.push(payload),
                 Err(e) => {
                     tracing::warn!(
