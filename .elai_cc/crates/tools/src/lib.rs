@@ -67,6 +67,7 @@ use elai_orchestrator::{
     context_budget::ModelTier,
     mcp_tool_bridge::McpToolRegistry,
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
+    subagent_evidence_gate::{evaluate_subagent_return, EvidenceVerdict},
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
     worker_boot::{WorkerReadySnapshot, WorkerRegistry},
@@ -3995,7 +3996,16 @@ fn run_agent_job(job: &AgentJob) -> Result<(), String> {
         .run_turn(job.prompt.clone(), None)
         .map_err(|error| error.to_string())?;
     let final_text = final_assistant_text(&summary);
-    persist_agent_terminal_state(&job.manifest, "completed", Some(final_text.as_str()), None)
+    // J-52 T1: a sub-agent DONE is accepted only with a verified evidence receipt.
+    let evidence_root = agent_store_dir()?;
+    match evaluate_subagent_return(&final_text, &evidence_root) {
+        EvidenceVerdict::Blocked { reason } => {
+            persist_agent_terminal_state(&job.manifest, "blocked", None, Some(reason))
+        }
+        EvidenceVerdict::Present { .. } | EvidenceVerdict::Disabled => {
+            persist_agent_terminal_state(&job.manifest, "completed", Some(final_text.as_str()), None)
+        }
+    }
 }
 
 fn build_agent_runtime(

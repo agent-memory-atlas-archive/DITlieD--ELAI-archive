@@ -2664,3 +2664,4 @@ pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub mod token_emit;
+pub mod subagent_evidence_gate;
