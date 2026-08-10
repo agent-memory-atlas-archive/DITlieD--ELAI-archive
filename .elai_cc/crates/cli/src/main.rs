@@ -552,6 +552,7 @@ mod runtime_cmd;
 // (tokio current-thread runtime, 5s health probe timeout, fail-closed
 // store on Unavailable). Handler at crates/cli/src/providers_cmd.rs.
 mod providers_cmd;
+mod rule_cmd;
 mod providers_byok_ssb;
 // D-2: `elai ppm health` — three-step PPM sidecar health probe
 // (TCP -> /health -> canary /v1/ppm/score). Sync entrypoint owning a
@@ -749,6 +750,7 @@ fn run() -> Result<(), anyhow::Error> {
             // stale). Text table or --json; no network, no GPU.
             LiveCli::print_providers_status(backend, output_format)?;
         }
+        CliAction::RuleList { output_format } => rule_cmd::print_rule_list(output_format)?,
         CliAction::Skills { args, output_format } => LiveCli::print_skills(args.as_deref(), output_format)?,
         CliAction::PrintSystemPrompt { cwd, date, output_format } => print_system_prompt(cwd, date, output_format)?,
         CliAction::Version { output_format } => print_version(output_format)?,

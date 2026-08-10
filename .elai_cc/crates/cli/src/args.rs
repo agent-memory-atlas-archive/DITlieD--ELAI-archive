@@ -125,6 +125,9 @@ pub(crate) enum CliAction {
         backend: Option<String>,
         output_format: CliOutputFormat,
     },
+    RuleList {
+        output_format: CliOutputFormat,
+    },
     Skills {
         args: Option<String>,
         output_format: CliOutputFormat,
@@ -3254,6 +3257,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // can extend parse_providers_subcommand_args. Handler at
         // crates/cli/src/providers_cmd.rs.
         "providers" => parse_providers_subcommand_args(&rest[1..], output_format),
+        "rule" => parse_rule_subcommand_args(&rest[1..], output_format),
         "skills" => Ok(CliAction::Skills {
             args: join_optional_args(&rest[1..]),
             output_format,
@@ -4351,6 +4355,29 @@ fn parse_wiring_coverage_subcommand_args(
     })
 }
 
+/// Parse the read-only `elai rule list` surface.
+pub(crate) fn parse_rule_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    match rest.first().map(String::as_str) {
+        Some("list") => {
+            let mut format = output_format;
+            for argument in &rest[1..] {
+                match argument.as_str() {
+                    "--json" => format = CliOutputFormat::Json,
+                    other => return Err(format!("unknown `rule list` argument: {other}")),
+                }
+            }
+            Ok(CliAction::RuleList { output_format: format })
+        }
+        Some(sub) => Err(format!(
+            "unknown `rule` sub-command: '{sub}' (expected 'list')"
+        )),
+        None => Err("missing `rule` sub-command (expected 'list')".to_string()),
+    }
+}
+
 /// D-8 — parse `elai archive verify [--path PATH] [--json] [--fail-fast]`.
 ///
 /// Only one sub-verb is currently supported (`verify`). Other archive
@@ -4364,6 +4391,7 @@ fn parse_wiring_coverage_subcommand_args(
 /// `--flag value` and `--flag=value` forms. Validation of the backend
 /// name / key requirement lives in the handler (providers_cmd.rs) so
 /// this layer stays free of any providers/orchestrator type dependency.
+
 pub(crate) fn parse_providers_subcommand_args(
     rest: &[String],
     output_format: CliOutputFormat,
