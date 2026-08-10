@@ -988,7 +988,7 @@ where
         &self,
         config: CompactionConfig,
         freeze: crate::context_projection::FreezeState,
-    ) -> Vec<ConversationMessage> {
+    ) -> crate::context_projection::View {
         let mut projection_session = self.session.clone();
         if let Some(compaction) = self.session.compaction.as_ref() {
             let continuation = crate::compact::get_compact_continuation_message(
@@ -1008,7 +1008,7 @@ where
         let log = crate::context_projection::TranscriptLog::from_session(&projection_session);
         crate::context_projection::fold(
             &log, &config, regime_policy(self.context_backend_mode), &freeze,
-        ).messages
+        )
     }
 
     fn freeze_gated_view_messages(&mut self) -> Vec<ConversationMessage> {
@@ -1032,8 +1032,9 @@ where
             crate::context_projection::FreezeDecision::Reuse => {
                 if let Some(epoch) = self.freeze_epoch.as_mut() {
                     epoch.reuse_count = epoch.reuse_count.saturating_add(1);
-                    let freeze = epoch.freeze;
-                    self.project_with_freeze(config, freeze)
+                    let mut projected = epoch.projected_prefix.clone();
+                    projected.extend(self.session.messages[epoch.tail_start..].to_vec());
+                    projected
                 } else {
                     self.session.messages.clone()
                 }
@@ -1046,7 +1047,12 @@ where
                     .get(boundary_index)
                     .map(crate::context_projection::boundary_fingerprint)
                     .unwrap_or([0u8; 8]);
-                let previous_epoch = self.freeze_epoch.map_or(0, |epoch| epoch.epoch);
+                let previous_epoch = self.freeze_epoch.as_ref().map_or(0, |epoch| epoch.epoch);
+                let view = self.project_with_freeze(config, freeze);
+                let prefix_len = freeze.frozen_head_len.min(view.messages.len()).saturating_add(1).min(view.messages.len());
+                let projected_prefix = view.messages[..prefix_len].to_vec();
+                let inserted_compaction_continuation = usize::from(self.session.compaction.is_some());
+                let tail_start = view.tail_start.saturating_sub(inserted_compaction_continuation);
                 self.freeze_epoch = Some(crate::context_projection::FreezeEpoch {
                     freeze,
                     boundary_hash,
@@ -1054,6 +1060,8 @@ where
                     epoch: previous_epoch.saturating_add(1),
                     reuse_count: 0,
                     policy,
+                    projected_prefix,
+                    tail_start,
                 });
                 if let Some(ssb) = self.ssb_writer.clone() {
                     let payload = crate::ssb::CacheEconomicsEventPayload::prefix_recomputed(
@@ -1079,7 +1087,7 @@ where
                     let _ = handle.join();
                 }
                 tracing::debug!(?cause, epoch = self.freeze_epoch_number(), "freeze prefix recomputed");
-                self.project_with_freeze(config, freeze)
+                view.messages
             }
         }
     }
@@ -1089,7 +1097,7 @@ where
     }
 
     pub(crate) fn freeze_epoch_number(&self) -> u32 {
-        self.freeze_epoch.map_or(0, |epoch| epoch.epoch)
+        self.freeze_epoch.as_ref().map_or(0, |epoch| epoch.epoch)
     }
 
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
@@ -2609,6 +2617,26 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         let frozen_head_len = runtime.freeze_epoch.as_ref().expect("freeze epoch").freeze.frozen_head_len;
         // The frozen head is stable on a Reuse turn; the continuation is not yet, and full prefix-byte stability belongs to the append-tail slice (L-17 slice 2).
         assert_eq!(second[..frozen_head_len], third[..frozen_head_len]);
+    }
+
+    #[test]
+    fn run_turn_reuse_keeps_the_entire_cached_prefix_byte_stable() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(), RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(), PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        ).with_auto_compaction_input_tokens_threshold(1);
+        runtime.run_turn("warm-up", None).expect("warm-up turn");
+        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        let first = seen.borrow()[1].clone();
+        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Reuse));
+        let second = seen.borrow()[2].clone();
+        let frozen_head_len = runtime.freeze_epoch.as_ref().expect("freeze epoch").freeze.frozen_head_len;
+        let prefix_len = frozen_head_len + 1;
+        assert_eq!(first[..prefix_len], second[..prefix_len], "frozen prefix content must be byte-stable");
+        assert_eq!(message_text(second.last().expect("tail message")), "second freeze");
     }
 
     #[test]

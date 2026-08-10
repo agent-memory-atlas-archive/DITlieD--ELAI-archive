@@ -26,7 +26,7 @@ pub struct FreezeState {
 }
 
 /// Persistent per-turn record used to decide whether the frozen prefix can be reused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FreezeEpoch {
     pub freeze: FreezeState,
     pub boundary_hash: [u8; 8],
@@ -34,6 +34,8 @@ pub struct FreezeEpoch {
     pub epoch: u32,
     pub reuse_count: u32,
     pub policy: ContextPolicy,
+    pub projected_prefix: Vec<ConversationMessage>,
+    pub tail_start: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +110,7 @@ pub struct View {
     pub summary: String,
     pub removed_message_count: usize,
     pub log_len: usize,
+    pub tail_start: usize,
 }
 
 const ELAI_CONTEXT_PROJECTION_DISABLE_VAR: &str = "ELAI_CONTEXT_PROJECTION_DISABLE";
@@ -174,6 +177,7 @@ pub fn fold(
         summary,
         removed_message_count: removed.len(),
         log_len: log.len(),
+        tail_start: end,
     }
 }
 
@@ -212,6 +216,8 @@ mod tests {
             epoch: 1,
             reuse_count: 0,
             policy: ContextPolicy::Local,
+            projected_prefix: Vec::new(),
+            tail_start: 0,
         };
         let log = TranscriptLog::from_session(&session);
         assert_eq!(
@@ -231,6 +237,8 @@ mod tests {
             epoch: 1,
             reuse_count: 0,
             policy: ContextPolicy::Local,
+            projected_prefix: Vec::new(),
+            tail_start: 0,
         };
         let before = log.messages().len();
         let first = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local);
