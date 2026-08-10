@@ -1367,6 +1367,13 @@ impl LiveCli {
         // 85% threshold, fire create_handoff (B-9 T2) instead of a bare trim. The
         // create_handoff path runs the same 3-pass trim under the hood and persists
         // a tagged "handoff" snapshot for /continue.
+        // L-16 CC-1: the append-only transcript is ground truth. The DAG snapshot and the
+        // SSB archive still run, but the trimmed content is NOT written back into
+        // session.messages: ConversationRuntime::provider_view_messages projects the log
+        // for the provider on every turn. The legacy rewrite stays reachable under
+        // ELAI_CONTEXT_PROJECTION_DISABLE as the documented rollback.
+        let legacy_transcript_rewrite =
+            elai_orchestrator::context_projection::projection_disabled();
         if let Some(dag) = &self.session_dag {
             let estimated_tokens: usize = session.messages.iter().map(|m| {
                 m.blocks.iter().map(|b| match b {
@@ -1452,56 +1459,60 @@ impl LiveCli {
                             use elai_orchestrator::SsbReader as _;
                             if matches!(backend_mode, BackendMode::Local) {
                                 // LOCAL: do NOT call recover_stubs.
-                                let snap_view = dag.load_snapshot(&snap.snap_id)
-                                    .map(|(_, m)| m)
-                                    .unwrap_or_default();
-                                for (i, tm) in snap_view.iter().enumerate() {
-                                    if i >= session.messages.len() {
-                                        break;
+                                if legacy_transcript_rewrite {
+                                    let snap_view = dag.load_snapshot(&snap.snap_id)
+                                        .map(|(_, m)| m)
+                                        .unwrap_or_default();
+                                    for (i, tm) in snap_view.iter().enumerate() {
+                                        if i >= session.messages.len() {
+                                            break;
+                                        }
+                                        let text = if tm.is_stubbed {
+                                            "[stubbed — content archived in SSB]".to_owned()
+                                        } else {
+                                            String::from_utf8_lossy(&tm.content).into_owned()
+                                        };
+                                        session.messages[i] = ConversationMessage {
+                                            role: session.messages[i].role,
+                                            blocks: vec![ContentBlock::Text { text }],
+                                            usage: None,
+                                        };
                                     }
-                                    let text = if tm.is_stubbed {
-                                        "[stubbed — content archived in SSB]".to_owned()
-                                    } else {
-                                        String::from_utf8_lossy(&tm.content).into_owned()
-                                    };
-                                    session.messages[i] = ConversationMessage {
-                                        role: session.messages[i].role,
-                                        blocks: vec![ContentBlock::Text { text }],
-                                        usage: None,
-                                    };
                                 }
                             } else {
                                 // CLOUD / API: recover all stubs (cache-stable
                                 // prefix behaviour, unchanged from pre-H-50).
-                                let recovered = dag.recover_stubs(
-                                    &snap.snap_id,
-                                    ssb_ref.as_ref(),
-                                );
-                                let trimmed = match recovered {
-                                    Ok(msgs) => msgs,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "recover_stubs failed (falling back to placeholder): {e}"
-                                        );
-                                        dag.load_snapshot(&snap.snap_id)
-                                            .map(|(_, m)| m)
-                                            .unwrap_or_default()
-                                    }
-                                };
-                                for (i, tm) in trimmed.iter().enumerate() {
-                                    if i >= session.messages.len() {
-                                        break;
-                                    }
-                                    let text = if tm.is_stubbed {
-                                        "[stubbed — content archived in SSB]".to_owned()
-                                    } else {
-                                        String::from_utf8_lossy(&tm.content).into_owned()
+                                if legacy_transcript_rewrite {
+                                    let recovered = dag.recover_stubs(
+                                        &snap.snap_id,
+                                        ssb_ref.as_ref(),
+                                    );
+                                    let trimmed = match recovered {
+                                        Ok(msgs) => msgs,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "recover_stubs failed (falling back to placeholder): {e}"
+                                            );
+                                            dag.load_snapshot(&snap.snap_id)
+                                                .map(|(_, m)| m)
+                                                .unwrap_or_default()
+                                        }
                                     };
-                                    session.messages[i] = ConversationMessage {
-                                        role: session.messages[i].role,
-                                        blocks: vec![ContentBlock::Text { text }],
-                                        usage: None,
-                                    };
+                                    for (i, tm) in trimmed.iter().enumerate() {
+                                        if i >= session.messages.len() {
+                                            break;
+                                        }
+                                        let text = if tm.is_stubbed {
+                                            "[stubbed — content archived in SSB]".to_owned()
+                                        } else {
+                                            String::from_utf8_lossy(&tm.content).into_owned()
+                                        };
+                                        session.messages[i] = ConversationMessage {
+                                            role: session.messages[i].role,
+                                            blocks: vec![ContentBlock::Text { text }],
+                                            usage: None,
+                                        };
+                                    }
                                 }
                             }
                         }
@@ -1510,15 +1521,17 @@ impl LiveCli {
                 } else {
                     match dag.trim_context(&trimmed_msgs, config, &valid_ssb_seqs) {
                         Ok(trimmed) => {
-                            for (i, tm) in trimmed.iter().enumerate() {
-                                if tm.is_stubbed && i < session.messages.len() {
-                                    session.messages[i] = ConversationMessage {
-                                        role: session.messages[i].role,
-                                        blocks: vec![ContentBlock::Text {
-                                            text: "[stubbed — content archived in SSB]".to_owned(),
-                                        }],
-                                        usage: None,
-                                    };
+                            if legacy_transcript_rewrite {
+                                for (i, tm) in trimmed.iter().enumerate() {
+                                    if tm.is_stubbed && i < session.messages.len() {
+                                        session.messages[i] = ConversationMessage {
+                                            role: session.messages[i].role,
+                                            blocks: vec![ContentBlock::Text {
+                                                text: "[stubbed — content archived in SSB]".to_owned(),
+                                            }],
+                                            usage: None,
+                                        };
+                                    }
                                 }
                             }
                         }
