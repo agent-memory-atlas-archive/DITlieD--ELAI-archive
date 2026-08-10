@@ -15,7 +15,9 @@ pub struct LosslessCompactionError {
     pub check: LosslessCompactionCheck,
 }
 
-/// Fail-closed gate over [`check_lossless_compaction`]. Default ON; DISABLE=1 observes.
+/// Fail-closed where recoverability is checkable; observe-only where archival is absent.
+/// L-18 re-points the check at the view, after which the gate returns to unconditional
+/// fail-close.
 pub fn enforce_lossless_compaction<R: crate::ssb::SsbReader + ?Sized>(
     session: &Session,
     config: CompactionConfig,
@@ -32,7 +34,15 @@ pub fn enforce_lossless_compaction<R: crate::ssb::SsbReader + ?Sized>(
         }
         return Ok(());
     }
+    let archival_available = snap_id.is_some() && ssb.is_some();
     if check.is_safe {
+        Ok(())
+    } else if !archival_available {
+        tracing::warn!(
+            unrecoverable_count = check.unrecoverable_count,
+            to_be_dropped = check.to_be_dropped,
+            "recoverability cannot be verified because no snapshot or SSB reader was supplied, so compaction proceeds"
+        );
         Ok(())
     } else {
         tracing::error!(
@@ -53,10 +63,47 @@ mod tests {
 
     static LOSSLESS_GATE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    #[test]
-    fn lossless_gate_refuses_unrecoverable_compaction() {
-        let _lock = LOSSLESS_GATE_ENV_LOCK.lock().unwrap();
-        std::env::remove_var("ELAI_LOSSLESS_GATE_DISABLE");
+    struct EmptySsbReader;
+
+    impl crate::ssb::SsbReader for EmptySsbReader {
+        fn query_by_session(&self, _session_id: &str) -> Result<Vec<crate::ssb::SsbEntry>, crate::ssb::SsbError> {
+            Ok(vec![])
+        }
+        fn query_by_file(&self, _file_paths: &[&str]) -> Result<Vec<crate::ssb::SsbEntry>, crate::ssb::SsbError> {
+            Ok(vec![])
+        }
+        fn query_by_type(&self, _action_type: crate::ssb::SsbActionType) -> Result<Vec<crate::ssb::SsbEntry>, crate::ssb::SsbError> {
+            Ok(vec![])
+        }
+        fn query_by_superstep(&self, _superstep: i64) -> Result<Vec<crate::ssb::SsbEntry>, crate::ssb::SsbError> {
+            Ok(vec![])
+        }
+        fn query_conflict(
+            &self,
+            _file_paths: &[&str],
+            _session_id: &str,
+            _superstep: i64,
+        ) -> Result<Vec<String>, crate::ssb::SsbError> {
+            Ok(vec![])
+        }
+        fn last_seq(&self) -> Result<Option<i64>, crate::ssb::SsbError> {
+            Ok(None)
+        }
+        fn query_by_seq(&self, _seq: i64) -> Result<Option<crate::ssb::SsbEntry>, crate::ssb::SsbError> {
+            Ok(None)
+        }
+        fn query_reasoning_trace(&self, _agent_id: &str) -> Result<Vec<crate::ssb::SsbEntry>, crate::ssb::SsbError> {
+            Ok(vec![])
+        }
+        fn query_phase_complete(&self, _phase_id: &str) -> Result<Vec<crate::ssb::SsbEntry>, crate::ssb::SsbError> {
+            Ok(vec![])
+        }
+        fn query_isolation_metrics(&self) -> Result<Vec<crate::ssb::SsbEntry>, crate::ssb::SsbError> {
+            Ok(vec![])
+        }
+    }
+
+    fn unrecoverable_fixture() -> (Session, CompactionConfig) {
         let mut session = Session::new();
         session.messages = vec![
             ConversationMessage::user_text("old"),
@@ -67,13 +114,30 @@ mod tests {
             max_estimated_tokens: 0,
             preserve_intermediate_numerics: false,
         };
+        (session, config)
+    }
+
+    #[test]
+    fn lossless_gate_observes_when_archival_is_absent() {
+        let _lock = LOSSLESS_GATE_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ELAI_LOSSLESS_GATE_DISABLE");
+        let (session, config) = unrecoverable_fixture();
         assert!(enforce_lossless_compaction(
             &session,
             config,
             None,
             None::<&dyn crate::ssb::SsbReader>,
         )
-        .is_err());
+        .is_ok());
+    }
+
+    #[test]
+    fn lossless_gate_refuses_unarchived_drop_when_archival_exists() {
+        let _lock = LOSSLESS_GATE_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ELAI_LOSSLESS_GATE_DISABLE");
+        let (session, config) = unrecoverable_fixture();
+        let stub = EmptySsbReader;
+        assert!(enforce_lossless_compaction(&session, config, Some("snap-test"), Some(&stub)).is_err());
     }
 
     #[test]
