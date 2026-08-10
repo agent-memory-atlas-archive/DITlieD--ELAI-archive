@@ -1020,6 +1020,10 @@ pub const TOOL_CANVAS_SCREENSHOT: &str = "canvas_screenshot";
 /// ELAI_CANVAS_SPAWN_ENABLE (default: text-unless-confidence-clears per GD-4).
 pub const TOOL_CANVAS_SPAWN_VIEW: &str = "canvas_spawn_view";
 
+pub const TOOL_CANVAS_BIND_NODE: &str = "canvas_bind_node";
+pub const TOOL_CANVAS_DECLARE_EDGE: &str = "canvas_declare_edge";
+pub const TOOL_CANVAS_SET_DISPLAY: &str = "canvas_set_display";
+
 // ---------------------------------------------------------------------------
 // I-8: acknowledge_infeasible tool (aletheia voluntary abort)
 // ---------------------------------------------------------------------------
@@ -1126,6 +1130,42 @@ pub struct CanvasSpawnViewResponse {
 // build_tool_catalog() for the 3-arm pattern to round-trip correctly.
 // All structs postcard-serializable for the convert->dispatch arms.
 // ---------------------------------------------------------------------------
+
+/// Request for `canvas_bind_node`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasBindNodeRequest {
+    pub node_id: String,
+    pub binding_kind: String,
+    pub binding_ref: String,
+    pub display: String,
+    pub col: i64,
+    pub row: i64,
+    pub mode: String,
+}
+
+/// Request for `canvas_declare_edge`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasDeclareEdgeRequest {
+    pub producer_node: String,
+    pub consumer_node: String,
+    pub produces: String,
+    pub consumes: String,
+    pub reachable_from: String,
+    pub observable_effect: String,
+    pub mode: String,
+}
+
+/// Request for `canvas_set_display`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasSetDisplayRequest {
+    pub node_id: String,
+    pub binding_kind: String,
+    pub binding_ref: String,
+    pub display: String,
+    pub col: i64,
+    pub row: i64,
+    pub mode: String,
+}
 
 /// Request for `canvas_create_node` — create a new node on the active canvas.
 /// NOTE: Optional fields use `#[serde(default)]` only (no skip_serializing_if)
@@ -1395,5 +1435,8 @@ mod e35_tests {
         assert_eq!(TOOL_CANVAS_FORK, "canvas_fork");
         assert_eq!(TOOL_CANVAS_RENDER_DIAGRAM, "canvas_render_diagram");
         assert_eq!(TOOL_CANVAS_SCREENSHOT, "canvas_screenshot");
+        assert_eq!(TOOL_CANVAS_BIND_NODE, "canvas_bind_node");
+        assert_eq!(TOOL_CANVAS_DECLARE_EDGE, "canvas_declare_edge");
+        assert_eq!(TOOL_CANVAS_SET_DISPLAY, "canvas_set_display");
     }
 }

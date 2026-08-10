@@ -43,6 +43,7 @@ use elai_ipc_types::{
     TOOL_CHECKPOINT_DIFF, TOOL_CHECKPOINT_REWIND, TOOL_CHECKPOINT_SAVE, TOOL_TRACE_QUERY,
     TOOL_CANVAS_ANNOTATE, TOOL_CANVAS_CONNECT, TOOL_CANVAS_CREATE_NODE, TOOL_CANVAS_FORK,
     TOOL_CANVAS_RENDER_DIAGRAM, TOOL_CANVAS_SCREENSHOT, TOOL_CANVAS_SPAWN_VIEW,
+    TOOL_CANVAS_BIND_NODE, TOOL_CANVAS_DECLARE_EDGE, TOOL_CANVAS_SET_DISPLAY,
     TOOL_CANVAS_UPDATE_NODE,
     TOOL_CLASSIFY, TOOL_COMPILE_CHECK, TOOL_DKG_CALLERS, TOOL_DKG_DATA_FLOW, TOOL_DKG_DEPENDENTS,
     TOOL_DKG_SUBGRAPH, TOOL_EDIT, TOOL_ENTRY_POINTS, TOOL_FILE_READ, TOOL_GIT_BRANCH,
@@ -284,7 +285,7 @@ async fn contract_handle_infer_request_publishes_ten_tool_catalog() {
 
     assert_eq!(
         tools.len(),
-        36,
+        39,
         "I-54 catalog must publish exactly 36 tools \
          (R3 6-tool baseline + 4 symbol_* + 4 dkg_* + 2 E-40 DSL + 7 H-13 canvas_* + 1 H-15 canvas_spawn_view \
          + 1 I-8 acknowledge_infeasible + 1 I-13 trace_query + 4 I-53 recipe/archive/json tools \
@@ -323,6 +324,9 @@ async fn contract_handle_infer_request_publishes_ten_tool_catalog() {
         TOOL_CANVAS_FORK,
         TOOL_CANVAS_RENDER_DIAGRAM,
         TOOL_CANVAS_SCREENSHOT,
+        TOOL_CANVAS_BIND_NODE,
+        TOOL_CANVAS_DECLARE_EDGE,
+        TOOL_CANVAS_SET_DISPLAY,
         // H-15: spawn_view reply-channel tool.
         TOOL_CANVAS_SPAWN_VIEW,
         // I-8: aletheia voluntary abort (acknowledge_infeasible).

@@ -114,8 +114,13 @@ pub fn get_system_canvas(
     let rows = viewer.recent_rows_of_type(action, limit)?;
     let mut canvas = SystemCanvas::default();
     for row in rows {
-        let payload: SystemContractEventPayload =
-            match serde_json::from_value(row.payload_json.clone()) {
+        // Rows are externally tagged because SsbPayload is a plain-derive enum (ssb_viewer.rs:1709).
+        let raw = row
+            .payload_json
+            .get("SystemContractEvent")
+            .cloned()
+            .unwrap_or_else(|| row.payload_json.clone());
+        let payload: SystemContractEventPayload = match serde_json::from_value(raw) {
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!(

@@ -176,6 +176,9 @@ impl ToolCategory {
             "canvas_screenshot" => ToolCategory::Canvas,
             // H-15: spawn_view reply-channel verb.
             "canvas_spawn_view" => ToolCategory::Canvas,
+            "canvas_bind_node" => ToolCategory::Canvas,
+            "canvas_declare_edge" => ToolCategory::Canvas,
+            "canvas_set_display" => ToolCategory::Canvas,
 
             // FSM internal
             "fsm_get_state" => ToolCategory::FsmInternal,

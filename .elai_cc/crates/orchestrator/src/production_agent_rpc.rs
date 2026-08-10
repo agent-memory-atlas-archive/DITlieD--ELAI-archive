@@ -27,12 +27,12 @@ use elai_core::tool_dispatcher::{
 };
 use elai_ipc_types::{
     EntryPointsRequest, ExportGraphMermaidRequest, IndexArtifactsRequest, ListArtifactsRequest,
-    CanvasAnnotateRequest, CanvasConnectRequest, CanvasCreateNodeRequest, CanvasForkRequest,
+    CanvasAnnotateRequest, CanvasBindNodeRequest, CanvasDeclareEdgeRequest, CanvasSetDisplayRequest, CanvasConnectRequest, CanvasCreateNodeRequest, CanvasForkRequest,
     CanvasRenderDiagramRequest, CanvasScreenshotRequest, CanvasSpawnViewRequest,
     CanvasSpawnViewResponse, CanvasUpdateNodeRequest, RemoveArtifactsRequest,
     SearchArtifactsRequest,
     SymbolContextRequest, SymbolDataflowImpactRequest, SymbolDslQueryRequest, SymbolFlowRequest,
-    SymbolImpactRequest, SymbolListRequest, TOOL_CANVAS_ANNOTATE, TOOL_CANVAS_CONNECT,
+    SymbolImpactRequest, SymbolListRequest, TOOL_CANVAS_ANNOTATE, TOOL_CANVAS_BIND_NODE, TOOL_CANVAS_DECLARE_EDGE, TOOL_CANVAS_SET_DISPLAY, TOOL_CANVAS_CONNECT,
     TOOL_CANVAS_CREATE_NODE, TOOL_CANVAS_FORK, TOOL_CANVAS_RENDER_DIAGRAM,
     TOOL_CANVAS_SCREENSHOT, TOOL_CANVAS_SPAWN_VIEW, TOOL_CANVAS_UPDATE_NODE, TOOL_CLASSIFY,
     TOOL_COMPILE_CHECK,
@@ -1372,6 +1372,34 @@ impl ProductionAgentRpcServer {
             cache_control: None,
         };
 
+        // J-31: system-mode composition canvas write tools.
+        let canvas_bind_node = ToolDefinition {
+            name: TOOL_CANVAS_BIND_NODE.to_string(),
+            description: Some("Bind a system node to a production resource.".to_string()),
+            input_schema: serde_json::json!({"type":"object","properties": {
+                "node_id":{"type":"string"}, "binding_kind":{"type":"string"}, "binding_ref":{"type":"string"},
+                "display":{"type":"string"}, "col":{"type":"integer"}, "row":{"type":"integer"}, "mode":{"type":"string"}
+            }, "required":["node_id","binding_kind","binding_ref","display","col","row","mode"]}),
+            cache_control: None,
+        };
+        let canvas_declare_edge = ToolDefinition {
+            name: TOOL_CANVAS_DECLARE_EDGE.to_string(),
+            description: Some("Declare a contract edge between system nodes.".to_string()),
+            input_schema: serde_json::json!({"type":"object","properties": {
+                "producer_node":{"type":"string"}, "consumer_node":{"type":"string"}, "produces":{"type":"string"},
+                "consumes":{"type":"string"}, "reachable_from":{"type":"string"}, "observable_effect":{"type":"string"}, "mode":{"type":"string"}
+            }, "required":["producer_node","consumer_node","produces","consumes","reachable_from","observable_effect","mode"]}),
+            cache_control: None,
+        };
+        let canvas_set_display = ToolDefinition {
+            name: TOOL_CANVAS_SET_DISPLAY.to_string(),
+            description: Some("Update a system node display and restate its binding.".to_string()),
+            input_schema: serde_json::json!({"type":"object","properties": {
+                "node_id":{"type":"string"}, "binding_kind":{"type":"string"}, "binding_ref":{"type":"string"}, "display":{"type":"string"}, "col":{"type":"integer"}, "row":{"type":"integer"}, "mode":{"type":"string"}
+            }, "required":["node_id","binding_kind","binding_ref","display","col","row","mode"]}),
+            cache_control: None,
+        };
+
         // H-15: spawn_view reply-channel verb (1 tool).
         let canvas_spawn_view = ToolDefinition {
             name: TOOL_CANVAS_SPAWN_VIEW.to_string(),
@@ -1791,7 +1819,7 @@ impl ProductionAgentRpcServer {
             canvas_create_node, canvas_connect, canvas_update_node, canvas_annotate,
             canvas_fork, canvas_render_diagram, canvas_screenshot,
             // H-15: spawn_view reply-channel verb. 1 tool.
-            canvas_spawn_view,
+            canvas_spawn_view, canvas_bind_node, canvas_declare_edge, canvas_set_display,
             // I-8: voluntary abort verb.
             acknowledge_infeasible,
             // I-13: on-demand line-range expansion tool.
@@ -2462,6 +2490,31 @@ fn convert_json_input_to_postcard(tool_id: &str, input: Value) -> Result<Vec<u8>
                 format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
             })
         }
+        TOOL_CANVAS_BIND_NODE => {
+            let req: CanvasBindNodeRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_CANVAS_DECLARE_EDGE => {
+            let req: CanvasDeclareEdgeRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_CANVAS_SET_DISPLAY => {
+            let req: CanvasSetDisplayRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+
         // H-15: spawn_view reply-channel verb.
         TOOL_CANVAS_SPAWN_VIEW => {
             let req: CanvasSpawnViewRequest = serde_json::from_value(input).map_err(|e| {
@@ -3887,6 +3940,49 @@ pub(crate) async fn translate_tool_request(
                 .map_err(|e| format!("tool {tool_id}: {e}"))?;
             serde_json::to_vec(&resp)
                 .map_err(|e| format!("tool {tool_id}: serialise response error: {e}"))
+        }
+
+        TOOL_CANVAS_BIND_NODE | TOOL_CANVAS_DECLARE_EDGE | TOOL_CANVAS_SET_DISPLAY => {
+            let committed = crate::capability_flow::commit_minimal_set(
+                "canvas_op_dispatch", &[crate::tool_filter::ToolCategory::Canvas], 0,
+            );
+            crate::capability_flow::check_against_commitment(&committed, tool_id)
+                .map_err(|denial| {
+                    format!("tool {tool_id}: blocked by CommittedToolSet: {denial:?}")
+                })?;
+            match tool_id {
+                TOOL_CANVAS_BIND_NODE => {
+                    let req: CanvasBindNodeRequest = postcard::from_bytes(arguments)
+                        .map_err(|e| format!("tool {tool_id}: postcard decode error: {e}"))?;
+                    crate::canvas_dispatcher::check_mode_allowed(tool_id, &req.mode, &req.mode, &[crate::canvas_dispatcher::SYSTEM_NAMESPACE])
+                        .map_err(|e| format!("tool {tool_id}: {e}"))?;
+                    if let Some(ssb_ref) = ssb {
+                        crate::system_contract_event::emit_system_contract_event(ssb_ref, crate::ssb::SystemContractEventKind::NodeBound, &req.node_id, &req.binding_kind, &req.binding_ref, "declared", serde_json::json!({"display": req.display, "col": req.col, "row": req.row}));
+                    }
+                    let resp = serde_json::json!({"op_id":"system-bind-node", "kind":"node_bound", "node_id":req.node_id, "mode":req.mode});
+                    serde_json::to_vec(&resp).map_err(|e| format!("tool {tool_id}: serialise response error: {e}"))
+                }
+                TOOL_CANVAS_DECLARE_EDGE => {
+                    let req: CanvasDeclareEdgeRequest = postcard::from_bytes(arguments)
+                        .map_err(|e| format!("tool {tool_id}: postcard decode error: {e}"))?;
+                    crate::canvas_dispatcher::check_mode_allowed(tool_id, &req.mode, &req.mode, &[crate::canvas_dispatcher::SYSTEM_NAMESPACE])
+                        .map_err(|e| format!("tool {tool_id}: {e}"))?;
+                    let verdict = crate::system_canvas::derive_edge_verdict(crate::system_canvas::EdgeVerdictInputs { has_producer_and_consumer: !req.producer_node.is_empty() && !req.consumer_node.is_empty(), has_evidence_row: false, checker_mismatch: false });
+                    let verdict_str = serde_json::to_value(verdict)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "declared".to_owned());
+                    if let Some(ssb_ref) = ssb { crate::system_contract_event::emit_system_contract_event(ssb_ref, crate::ssb::SystemContractEventKind::EdgeDeclared, &req.producer_node, "", "", &verdict_str, serde_json::json!({"producer_node":req.producer_node,"consumer_node":req.consumer_node,"produces":req.produces,"consumes":req.consumes,"reachable_from":req.reachable_from,"observable_effect":req.observable_effect})); }
+                    let resp = serde_json::json!({"op_id":"system-declare-edge", "kind":"edge_declared", "node_id":req.producer_node, "mode":req.mode}); serde_json::to_vec(&resp).map_err(|e| format!("tool {tool_id}: serialise response error: {e}"))
+                }
+                TOOL_CANVAS_SET_DISPLAY => {
+                    let req: CanvasSetDisplayRequest = postcard::from_bytes(arguments).map_err(|e| format!("tool {tool_id}: postcard decode error: {e}"))?;
+                    crate::canvas_dispatcher::check_mode_allowed(tool_id, &req.mode, &req.mode, &[crate::canvas_dispatcher::SYSTEM_NAMESPACE]).map_err(|e| format!("tool {tool_id}: {e}"))?;
+                    if let Some(ssb_ref) = ssb { crate::system_contract_event::emit_system_contract_event(ssb_ref, crate::ssb::SystemContractEventKind::NodeBound, &req.node_id, &req.binding_kind, &req.binding_ref, "declared", serde_json::json!({"display": req.display, "col": req.col, "row": req.row})); }
+                    let resp = serde_json::json!({"op_id":"system-set-display", "kind":"node_bound", "node_id":req.node_id, "mode":req.mode}); serde_json::to_vec(&resp).map_err(|e| format!("tool {tool_id}: serialise response error: {e}"))
+                }
+                _ => unreachable!(),
+            }
         }
 
         // H-15: spawn_view reply-channel verb.

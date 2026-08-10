@@ -48,6 +48,8 @@ const ARCH_NAMESPACE: &str = "arch";
 /// This const replaces the magic string "design" that would otherwise scatter
 /// across check_mode_allowed call sites when design tools are added.
 pub const DESIGN_NAMESPACE: &str = "design";
+/// Namespace for system composition canvas operations.
+pub const SYSTEM_NAMESPACE: &str = "system";
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -340,7 +342,7 @@ fn decode_and_validate(
 ///
 /// Rationale: a "design.*" op while mode="code" is a hallucinated mode —
 /// surface it as a blocked op with a reason, not a silent no-op.
-fn check_mode_allowed(
+pub(crate) fn check_mode_allowed(
     tool_id: &str,
     request_mode: &str,
     current_mode: &str,
@@ -628,4 +630,11 @@ mod tests {
         // either flood the SSB or starve the badge.
         assert_eq!(USAGE_BADGE_EMIT_MIN_GAP_MS, 2_000);
     }
+    #[test]
+    fn system_namespace_is_recognized_by_check_mode_allowed() {
+        assert!(check_mode_allowed("bind", "system", "system", &[SYSTEM_NAMESPACE]).is_ok());
+        assert!(check_mode_allowed("bind", "system", "design", &[SYSTEM_NAMESPACE]).is_err());
+        assert!(check_mode_allowed("bind", "design", "design", &[SYSTEM_NAMESPACE]).is_err());
+    }
+
 }
