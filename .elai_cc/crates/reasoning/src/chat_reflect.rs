@@ -36,6 +36,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::distill::{admit_distillate, build_distill_prompt, build_reseed_prompt, distill_threshold, DistillateVerdict};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -57,11 +59,21 @@ pub const REFINE_CAP: u32 = 3;
 /// the pipeline -- it is an observability beacon only.
 pub const REFLECT_BUDGET_SOFT_WARN_PCT: u8 = 85;
 
+/// Percentage of [`ChatReflectConfig::budget_cap_tokens`] of accumulated AUDITOR
+/// tokens that triggers a distill-reset of the refine loop. 75 mirrors the trim
+/// fraction the context policy already uses for the local lane; it is restated
+/// as a literal because `reasoning` does not depend on `orchestrator`.
+pub const REFLECT_DISTILL_RESET_TRIGGER_PCT: u8 = 75;
+
+/// Char ceiling for an admitted distillate.
+pub const REFLECT_DISTILLATE_MAX_CHARS: u32 = 1_200;
+
 /// Per-stage token caps. Sum (with N_CANDIDATES reasoner calls) stays under
 /// the 20K production budget cited in `project_qwen3b_baseline.md`.
 const MAX_TRIAGE_TOKENS: u32 = 256;
 const MAX_REASONER_TOKENS: u32 = 2048;
 const MAX_AUDITOR_TOKENS: u32 = 1024;
+const MAX_DISTILL_TOKENS: u32 = 256;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -200,6 +212,11 @@ pub struct ChatReflectConfig {
     /// to `0` to disable the soft-warn (it never fires when
     /// `soft_cap = 0`).
     pub budget_soft_warn_pct: u8,
+    /// Percentage threshold for distill-reset. Range `[0, 100]`; larger values
+    /// collapse via `min(100)` at use-time. `0` disables the trigger.
+    pub distill_reset_trigger_pct: u8,
+    /// Maximum character count accepted for a distillate.
+    pub distillate_max_chars: u32,
 }
 
 impl Default for ChatReflectConfig {
@@ -213,6 +230,8 @@ impl Default for ChatReflectConfig {
             max_refine_iterations: REFINE_CAP,
             // Tranche B-6 quad B-39: 85% (`REFLECT_BUDGET_SOFT_WARN_PCT`).
             budget_soft_warn_pct: REFLECT_BUDGET_SOFT_WARN_PCT,
+            distill_reset_trigger_pct: REFLECT_DISTILL_RESET_TRIGGER_PCT,
+            distillate_max_chars: REFLECT_DISTILLATE_MAX_CHARS,
         }
     }
 }
@@ -440,8 +459,42 @@ impl ChatReflectPipeline {
         let mut iter: u32 = 0;
         while iter < extra_passes {
             let prev_best = best_index;
-            let refine_prompt =
-                build_refine_prompt(user_input, class, &candidates, prev_best, &rationale);
+            let threshold = distill_threshold(
+                self.config.budget_cap_tokens,
+                self.config.distill_reset_trigger_pct,
+            );
+            let armed = self.config.distill_reset_trigger_pct > 0
+                && threshold > 0
+                && auditor_tokens >= threshold;
+            let refine_prompt = if !armed {
+                build_refine_prompt(user_input, class, &candidates, prev_best, &rationale)
+            } else {
+                let distill_prompt = build_distill_prompt(user_input, class, prev_best, &rationale);
+                let mut distill_raw = client.complete(&distill_prompt, MAX_DISTILL_TOKENS).await?;
+                auditor_tokens = auditor_tokens.saturating_add(approx_tokens(&distill_raw));
+                let mut verdict = admit_distillate(
+                    &rationale,
+                    &distill_raw,
+                    usize::try_from(self.config.distillate_max_chars).unwrap_or(usize::MAX),
+                );
+                if !matches!(verdict, DistillateVerdict::Admitted) {
+                    tracing::warn!(target: "reasoning::chat_reflect", ?verdict, turn_id = %turn_id, "distillate rejected");
+                    distill_raw = client.complete(&distill_prompt, MAX_DISTILL_TOKENS).await?;
+                    auditor_tokens = auditor_tokens.saturating_add(approx_tokens(&distill_raw));
+                    verdict = admit_distillate(
+                        &rationale,
+                        &distill_raw,
+                        usize::try_from(self.config.distillate_max_chars).unwrap_or(usize::MAX),
+                    );
+                    if !matches!(verdict, DistillateVerdict::Admitted) {
+                        tracing::warn!(target: "reasoning::chat_reflect", ?verdict, turn_id = %turn_id, "distillate retry rejected");
+                    }
+                }
+                match verdict {
+                    DistillateVerdict::Admitted => build_reseed_prompt(user_input, class, &candidates, &distill_raw),
+                    _ => build_refine_prompt(user_input, class, &candidates, prev_best, &rationale),
+                }
+            };
             let raw = client
                 .complete(&refine_prompt, MAX_AUDITOR_TOKENS)
                 .await?;
@@ -827,6 +880,18 @@ mod tests {
         // RefineBench guided-mode (Table 3) shows t=2->t=3 captures 12-20pp;
         // t>=4 is diminishing. cap=3 is the documented choice.
         assert_eq!(REFINE_CAP, 3);
+    }
+
+    #[test]
+    fn default_distill_trigger_is_unreachable_at_shipped_caps() {
+        // Guarantee live /reason behaviour does not change before EXP-3 enables it.
+        let config = ChatReflectConfig::default();
+        let threshold = crate::distill::distill_threshold(
+            config.budget_cap_tokens,
+            config.distill_reset_trigger_pct,
+        );
+        let max_accumulation = REFINE_CAP.saturating_mul(MAX_AUDITOR_TOKENS);
+        assert!(threshold > max_accumulation);
     }
 
     #[test]

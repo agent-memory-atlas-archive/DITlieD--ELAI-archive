@@ -2,6 +2,7 @@ pub mod ambiguity;
 pub mod chat_memory_reflect;
 pub mod chat_reflect;
 pub mod config;
+pub mod distill;
 pub mod engine;
 pub mod layer_routing;
 // phase-3L Step 4 / M10: SYSTEM-prompt assembler that injects PI
@@ -35,6 +36,7 @@ pub use chat_reflect::{
     REFLECT_BUDGET_SOFT_WARN_PCT,
 };
 pub use config::{agent_grc_config_for_role, AgentGrcConfigLoader, TomlConfigLoader};
+pub use distill::{admit_distillate, DistillateVerdict};
 pub use engine::{
     extract_intrinsic_signals, BasicGrcEngine, ExtractedIntrinsicSignals, GrcEngine, InferenceOutput,
 };
