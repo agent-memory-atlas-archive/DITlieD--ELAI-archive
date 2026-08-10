@@ -56,6 +56,7 @@ pub(crate) mod report_fns;
 // separate `impl LiveCli` block. No re-export needed — the associated fn stays
 // on `LiveCli`, so the `Self::`/`LiveCli::` call paths resolve via the type.
 pub(crate) mod knowledge_stack;
+pub(crate) mod lsp_stdio_client;
 mod measure;
 mod pipeline_subcommand;
 mod template_ranking_cmd;

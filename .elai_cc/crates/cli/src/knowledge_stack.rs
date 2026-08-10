@@ -251,11 +251,15 @@ fn build_base_pipeline(
     }
 
     // C-1: install the typed knowledge SSB sink + session id.
+    // J-18 LEG2 slice 2: install the real rust-analyzer stdio client as the
+    // 6th-list LspChannelAdapter. Installing it changes nothing by itself;
+    // the fold-in stays gated by ELAI_LSP_CHANNEL_RRF_ENABLE.
     let pipeline_sink = make_ssb_knowledge_sink(ssb);
     QueryPipeline::new(bm25, catrag, arag)
         .with_ssb(pipeline_sink)
         .with_session_id(session_id.to_owned())
         .with_clock(clock.clone())
+        .with_lsp_channel_adapter(Arc::new(crate::lsp_stdio_client::LspStdioClient::new()))
 }
 
 /// Attempt to load ONNX vector embedding models and install the vector module,
@@ -984,3 +988,8 @@ mod tests {
         assert!(enabled_pipeline.code_vec_enabled());
     }
 }
+
+
+#[cfg(test)]
+#[path = "knowledge_stack_j18_tests.rs"]
+mod j18_leg2_install_tests;
