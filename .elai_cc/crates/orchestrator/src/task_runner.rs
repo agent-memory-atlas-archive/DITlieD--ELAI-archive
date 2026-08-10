@@ -1972,10 +1972,12 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 gw.remove_agent(&agent_id);
             }
 
-            // L-1: deterministic off-agent extraction over the terminal response.
-            let claim_set = crate::claim::extract_claims(
-                session_outcome.final_content.as_deref().unwrap_or(""),
-            );
+            // L-1 slice 2: resolve refs against the real workspace, not the null resolver.
+            let claim_text = session_outcome.final_content.as_deref().unwrap_or("");
+            let claim_set = match crate::claim::resolve::workspace_resolver() {
+                Some(resolver) => crate::claim::extract::extract_claims_with(claim_text, resolver),
+                None => crate::claim::extract::extract_claims(claim_text),
+            };
             tracing::info!(
                 agent_id = %agent_id,
                 claims = claim_set.len(),

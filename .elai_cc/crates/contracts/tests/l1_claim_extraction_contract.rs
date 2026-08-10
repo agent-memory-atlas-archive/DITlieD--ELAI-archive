@@ -1,4 +1,5 @@
 use elai_orchestrator::claim::extract::{extract_claims, extract_claims_with, ClaimKind, ClaimRefResolver, ClaimSet};
+use elai_orchestrator::claim::resolve::WorkspaceRefResolver;
 
 struct KnownPath;
 impl ClaimRefResolver for KnownPath { fn resolve_path(&self, raw: &str) -> bool { raw == "known.rs" } }
@@ -30,4 +31,47 @@ fn extractor_is_plain_synchronous_function() {
     // this proves the callable has no client, runtime, or handle parameter.
     let f: fn(&str) -> ClaimSet = extract_claims;
     assert!(f("").is_empty());
+}
+
+
+fn contract_scratch(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("elai-l1-contract-{}-{}", std::process::id(), name))
+}
+
+#[test]
+fn workspace_resolver_separates_real_from_fake_paths() {
+    let root = contract_scratch("paths");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("crates/demo")).unwrap();
+    std::fs::write(root.join("crates/demo/real.rs"), "").unwrap();
+    let resolver = WorkspaceRefResolver::new(&root);
+    let claims = extract_claims_with("`crates/demo/real.rs` `crates/demo/ghost.rs`", &resolver);
+    assert!(claims.claims()[0].refs[0].resolved);
+    assert!(!claims.claims()[1].refs[0].resolved);
+    assert_eq!(claims.unresolved_ref_count(), 1);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn workspace_resolver_refuses_path_traversal() {
+    let root = contract_scratch("traversal");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let resolver = WorkspaceRefResolver::new(&root);
+    let claims = extract_claims_with("`../../etc/passwd`", &resolver);
+    assert!(!claims.claims()[0].refs[0].resolved);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn workspace_resolver_reads_the_lockfile() {
+    let root = contract_scratch("lockfile");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\n").unwrap();
+    let resolver = WorkspaceRefResolver::new(&root);
+    let claims = extract_claims_with("`serde@1.0.0` `no-such-crate-zzz@1.0.0`", &resolver);
+    assert!(claims.claims()[0].refs[0].resolved);
+    assert!(!claims.claims()[1].refs[0].resolved);
+    let _ = std::fs::remove_dir_all(root);
 }
