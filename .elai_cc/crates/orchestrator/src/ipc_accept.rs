@@ -192,6 +192,8 @@ pub trait AgentRpcServer: Send + Sync {
 pub struct AgentSessionOutcome {
     pub final_state: AgentFinalState,
     pub frames_handled: u32,
+    /// L-1: terminal AgentResponse text held for off-agent claim extraction.
+    pub final_content: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -487,6 +489,7 @@ pub async fn run_agent_session(
                     reason: format!("session timeout after {timeout_ms}ms"),
                 },
                 frames_handled,
+                final_content: None,
             };
         }
 
@@ -499,6 +502,7 @@ pub async fn run_agent_session(
                         reason: format!("frame read error: {e}"),
                     },
                     frames_handled,
+                    final_content: None,
                 };
             }
             Err(_) => {
@@ -525,6 +529,7 @@ pub async fn run_agent_session(
                 return AgentSessionOutcome {
                     final_state: AgentFinalState::Failed { reason },
                     frames_handled,
+                    final_content: None,
                 };
             }
         };
@@ -541,10 +546,14 @@ pub async fn run_agent_session(
             FrameRouteResult::Response(inner) => {
                 // Terminal frame: agent finished its task.
                 tracing::info!(agent_id = %agent_id, "agent session complete (AgentResponse)");
-                let _ = inner; // response content logged if needed by caller
+                let final_content = match inner {
+                    IpcMessageType::AgentResponse { content, .. } => Some(content),
+                    _ => None,
+                };
                 return AgentSessionOutcome {
                     final_state: AgentFinalState::Passed,
                     frames_handled,
+                    final_content,
                 };
             }
 
@@ -602,6 +611,7 @@ pub async fn run_agent_session(
                             reason: format!("write InferResponse failed: {e}"),
                         },
                         frames_handled,
+                    final_content: None,
                     };
                 }
             }
@@ -776,6 +786,7 @@ pub async fn run_agent_session(
                             reason: format!("write ToolResult failed: {e}"),
                         },
                         frames_handled,
+                    final_content: None,
                     };
                 }
             }
@@ -798,6 +809,7 @@ pub async fn run_agent_session(
                             reason: format!("write BashResult failed: {e}"),
                         },
                         frames_handled,
+                    final_content: None,
                     };
                 }
             }
@@ -820,6 +832,7 @@ pub async fn run_agent_session(
                             reason: format!("write GroundingResult failed: {e}"),
                         },
                         frames_handled,
+                    final_content: None,
                     };
                 }
             }
@@ -836,6 +849,7 @@ pub async fn run_agent_session(
                         reason: format!("ReplanRequest: {reason} (severity={severity})"),
                     },
                     frames_handled,
+                    final_content: None,
                 };
             }
 
@@ -850,6 +864,7 @@ pub async fn run_agent_session(
                         reason: format!("rejected: {reason}"),
                     },
                     frames_handled,
+                    final_content: None,
                 };
             }
         }

@@ -1972,6 +1972,21 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 gw.remove_agent(&agent_id);
             }
 
+            // L-1: deterministic off-agent extraction over the terminal response.
+            let claim_set = crate::claim::extract_claims(
+                session_outcome.final_content.as_deref().unwrap_or(""),
+            );
+            tracing::info!(
+                agent_id = %agent_id,
+                claims = claim_set.len(),
+                unresolved_refs = claim_set.unresolved_ref_count(),
+                file_claims = claim_set.count_of_kind(crate::claim::extract::ClaimKind::File),
+                symbol_claims = claim_set.count_of_kind(crate::claim::extract::ClaimKind::Symbol),
+                dependency_claims =
+                    claim_set.count_of_kind(crate::claim::extract::ClaimKind::Dependency),
+                "L-1 typed claim extraction over agent response"
+            );
+
             // Map session outcome to baby-step outcome.
             let (outcome, session_err) = match session_outcome.final_state {
                 crate::ipc_accept::AgentFinalState::Passed => {
