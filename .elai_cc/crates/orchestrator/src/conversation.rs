@@ -216,6 +216,18 @@ pub struct ConversationRuntime<C, T> {
     projection_epoch: Option<CompactionConfig>,
 }
 
+/// L-16 CC-2: the projection budget an oversized log warrants on its own, with no
+/// prior compaction event. Pure in (log, mode): the threshold comes from the
+/// shipped H-50 regime table and the decision from the shipped compaction budget
+/// test, so no second budget policy is invented here.
+fn projection_epoch_for_log(session: &Session, mode: BackendMode) -> Option<CompactionConfig> {
+    let config = CompactionConfig {
+        max_estimated_tokens: crate::context_policy::trim_threshold_for_mode(mode) as usize,
+        ..CompactionConfig::default()
+    };
+    crate::compact::should_compact(session, config).then_some(config)
+}
+
 impl<C, T> ConversationRuntime<C, T>
 where
     C: ApiClient,
@@ -958,8 +970,14 @@ where
     /// L-16 CC-2: the provider-facing message array as a pure fold of the
     /// immutable transcript log, recomputed on every turn.
     fn provider_view_messages(&self) -> Vec<ConversationMessage> {
-        let Some(config) = self.projection_epoch else {
-            return self.session.messages.clone();
+        let config = match self.projection_epoch {
+            Some(config) => config,
+            // L-16: an oversized log is projected even when no compaction event ever
+            // fired. This is what lets the CLI trim path stop rewriting the transcript.
+            None => match projection_epoch_for_log(&self.session, self.context_backend_mode) {
+                Some(config) => config,
+                None => return self.session.messages.clone(),
+            },
         };
         if crate::context_projection::projection_disabled() {
             return self.session.messages.clone();
@@ -2507,6 +2525,61 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
             last.iter().any(|message| message_text(message).contains("Conversation summary")),
             "provider view must contain the compacted summary continuation"
         );
+    }
+
+    fn oversized_projection_session() -> Session {
+        let mut session = Session::new();
+        session
+            .messages
+            .push(crate::session::ConversationMessage::user_text("original-first"));
+        let filler = "x".repeat(4_000);
+        let threshold =
+            crate::context_policy::trim_threshold_for_mode(crate::dispatcher::BackendMode::Api)
+                as usize;
+        while crate::compact::estimate_session_tokens(&session) <= threshold {
+            session
+                .messages
+                .push(crate::session::ConversationMessage::user_text(&filler));
+            session
+                .messages
+                .push(crate::session::ConversationMessage::assistant(vec![
+                    ContentBlock::Text {
+                        text: filler.clone(),
+                    },
+                ]));
+        }
+        session
+    }
+
+    #[test]
+    fn oversized_log_is_projected_without_any_compaction_event() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let session = oversized_projection_session();
+        let log_len = session.messages.len();
+        let first_message = session.messages[0].clone();
+        let mut runtime = ConversationRuntime::new(
+            session,
+            RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(u32::MAX);
+
+        runtime.run_turn("first turn", None).expect("turn");
+
+        let requests = seen.borrow();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].len() < log_len);
+        assert!(requests[0]
+            .iter()
+            .any(|message| message_text(message).contains("Conversation summary")));
+        assert!(
+            runtime.session().messages.len() >= log_len,
+            "CC-1: the transcript log must never shrink"
+        );
+        assert_eq!(runtime.session().messages[0], first_message);
+        assert!(runtime.session().compaction.is_none());
     }
 
     #[test]
