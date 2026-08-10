@@ -752,7 +752,7 @@ fn run() -> Result<(), anyhow::Error> {
             LiveCli::print_providers_status(backend, output_format)?;
         }
         CliAction::RuleList { output_format, all } => rule_cmd::print_rule_list(output_format, all)?,
-        CliAction::Build { idea, plan_only, output_format } => build_cmd::run(&idea, plan_only, output_format)?,
+        CliAction::Build { idea, plan_only, output_dir, template, output_format } => build_cmd::run(&idea, plan_only, output_dir.as_deref(), template.as_deref(), output_format)?,
         CliAction::RuleAdd { rule_id, domain, tier, severity, title, description, predicate, output_format } => rule_cmd::add_rule(rule_id, domain, tier, severity, title, description, predicate, output_format)?,
         CliAction::Skills { args, output_format } => LiveCli::print_skills(args.as_deref(), output_format)?,
         CliAction::PrintSystemPrompt { cwd, date, output_format } => print_system_prompt(cwd, date, output_format)?,

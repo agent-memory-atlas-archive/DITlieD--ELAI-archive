@@ -73,7 +73,7 @@ use crate::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CliAction {
-    Build { idea: String, plan_only: bool, output_format: CliOutputFormat },
+    Build { idea: String, plan_only: bool, output_dir: Option<PathBuf>, template: Option<String>, output_format: CliOutputFormat },
     DumpManifests {
         output_format: CliOutputFormat,
     },
@@ -4375,24 +4375,41 @@ pub(crate) fn parse_build_subcommand_args(
 ) -> Result<CliAction, String> {
     let mut idea = None;
     let mut plan_only = false;
+    let mut output_dir = None;
+    let mut template = None;
     let mut format = output_format;
-
-    for argument in rest {
-        match argument.as_str() {
-            "--plan-only" => plan_only = true,
-            "--json" => format = CliOutputFormat::Json,
-            value if !value.starts_with('-') && idea.is_none() => idea = Some(value.to_string()),
-            value if !value.starts_with('-') => {
-                return Err(format!("unknown `build` argument: {value}"));
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--plan-only" => { plan_only = true; i += 1; }
+            "--json" => { format = CliOutputFormat::Json; i += 1; }
+            "--out" => {
+                let value = rest.get(i + 1).ok_or_else(|| "--out requires a directory path".to_string())?;
+                output_dir = Some(PathBuf::from(value)); i += 2;
             }
+            value if value.starts_with("--out=") => {
+                let path = &value[6..];
+                if path.is_empty() { return Err("--out requires a directory path".to_string()); }
+                output_dir = Some(PathBuf::from(path)); i += 1;
+            }
+            "--template" => {
+                let value = rest.get(i + 1).ok_or_else(|| "--template requires a template name".to_string())?;
+                template = Some(value.clone()); i += 2;
+            }
+            value if value.starts_with("--template=") => {
+                let name = &value[11..];
+                if name.is_empty() { return Err("--template requires a template name".to_string()); }
+                template = Some(name.to_string()); i += 1;
+            }
+            value if !value.starts_with('-') && idea.is_none() => { idea = Some(value.to_string()); i += 1; }
+            value if !value.starts_with('-') => return Err(format!("unknown `build` argument: {value}")),
             value => return Err(format!("unknown `build` argument: {value}")),
         }
     }
-
+    if !plan_only && output_dir.is_none() { return Err("generating `build` requires --out <dir>".to_string()); }
     Ok(CliAction::Build {
         idea: idea.ok_or_else(|| "build requires an <idea> argument".to_string())?,
-        plan_only,
-        output_format: format,
+        plan_only, output_dir, template, output_format: format,
     })
 }
 

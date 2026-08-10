@@ -45,12 +45,43 @@ fn build_plan_only_writes_nothing() {
 }
 
 #[test]
-fn build_without_plan_only_fails_closed() {
-    // Falsifies the production generating-arm refusal.
+fn build_without_out_names_out() {
     let cwd = temp_cwd();
     let output = run(cwd.path(), &["build", "an app"]);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("receipt"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--out"));
+}
+
+#[test]
+fn build_generates_app_and_receipt() {
+    let cwd = temp_cwd();
+    let output = run(cwd.path(), &["build", "a vanilla app", "--out", "app"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(cwd.path().join("app").read_dir().expect("app dir").next().is_some());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let receipt = stdout.lines().find_map(|line| line.strip_prefix("receipt: ")).expect("receipt line");
+    assert!(cwd.path().join(receipt).exists(), "receipt path: {receipt}");
+}
+
+#[test]
+fn build_refuses_non_empty_out_dir() {
+    let cwd = temp_cwd(); let app = cwd.path().join("app"); std::fs::create_dir(&app).expect("app dir");
+    let file = app.join("keep.txt"); std::fs::write(&file, b"keep").expect("file");
+    let output = run(cwd.path(), &["build", "an app", "--out", "app"]);
+    assert!(!output.status.success()); assert_eq!(std::fs::read(&file).expect("keep file"), b"keep");
+}
+
+#[test]
+fn build_unknown_template_errors() {
+    let cwd = temp_cwd(); let output = run(cwd.path(), &["build", "an app", "--out", "app", "--template", "nope"]);
+    assert!(!output.status.success()); assert!(String::from_utf8_lossy(&output.stderr).contains("nope"));
+}
+
+#[test]
+fn build_receipt_disabled_generates_nothing() {
+    let cwd = temp_cwd();
+    let output = Command::new(env!("CARGO_BIN_EXE_elai")).current_dir(cwd.path()).args(["build", "an app", "--out", "app"]).env("ELAI_WRAP_RRA_DISABLE", "1").output().expect("elai binary");
+    assert!(!output.status.success()); assert!(!cwd.path().join("app").exists());
 }
 
 #[test]

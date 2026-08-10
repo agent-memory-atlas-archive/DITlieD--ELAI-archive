@@ -664,6 +664,9 @@ pub mod skill_telemetry;
 // is enforced from day one. See workflow/reasoning/E-47-decisions.md.
 pub mod lora_ship_gate;
 pub mod ssb;
+
+// L-14: one-shot builder front door drives the shipped E-12 scaffold without a CLI dependency edge.
+pub use scaffold::{apply_template, default_build_vars, ScaffoldError};
 // J-28: token ledger -- usage unification. Rollup + estimator + T7
 // compaction-growth rule over `ssb::UsageTurnEventPayload` rows written at
 // the cloud (grounding_client.rs) + local (runtime_orchestrator.rs) emit
