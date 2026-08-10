@@ -15,6 +15,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use elai_core::clock::ClockProvider;
 use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
+use elai_reasoning::CheckpointOutcome;
 
 // E-25 (SCHEMA_VERSION 172) -- claude-code-architecture catalog payload
 // type used in `SsbPayload::ClaudeCodeArchitectureEvent`. The catalog enum
@@ -1249,6 +1250,41 @@ impl ReflectEventSink for Ssb {
                         soft_cap,
                         hard_cap,
                         pct,
+                        ts_ms: system_time_ms_i64(),
+                    }),
+                )
+            }
+            // J-42 T2: distill-reset checkpoint. Observe-only, no env gate --
+            // the plan ships this row default-ON because the reseed decision it
+            // records is already applied in-process.
+            ReflectEvent::ReasoningCheckpoint {
+                turn_id,
+                trigger,
+                distillate_tokens,
+                uncertainty_preserved,
+                pass_index,
+                outcome,
+            } => {
+                let kind = match outcome {
+                    CheckpointOutcome::ResetAndContinued => {
+                        ReasoningCheckpointEventKind::ResetAndContinued
+                    }
+                    CheckpointOutcome::DistillateRejected => {
+                        ReasoningCheckpointEventKind::DistillateRejected
+                    }
+                    CheckpointOutcome::EscalatedToCloud => {
+                        ReasoningCheckpointEventKind::EscalatedToCloud
+                    }
+                };
+                (
+                    SsbActionType::ReasoningCheckpointEvent(kind),
+                    SsbPayload::ReasoningCheckpointEvent(ReasoningCheckpointEventPayload {
+                        kind,
+                        turn_id_hash: blake3_label_prefix(&turn_id),
+                        trigger: trigger.as_wire_str().to_owned(),
+                        distillate_tokens,
+                        uncertainty_preserved,
+                        pass_index,
                         ts_ms: system_time_ms_i64(),
                     }),
                 )

@@ -4900,6 +4900,11 @@ pub enum SsbActionType {
     ReviewGateCatalogEvent,
     /// L-2: one auditable risk score row per non-empty ClaimSet.
     ClaimRiskScored,
+    /// J-42 T2: reasoning distill-reset checkpoint. Flat variant; the 3-arm
+    /// [`crate::ssb::ReasoningCheckpointEventKind`] discriminator rides inside
+    /// [`crate::ssb::ReasoningCheckpointEventPayload::kind`]. Emitted by the
+    /// `ReflectEventSink` bridge from the `chat_reflect` refine loop.
+    ReasoningCheckpointEvent(ReasoningCheckpointEventKind),
 }
 
 impl SsbActionType {
@@ -5876,6 +5881,8 @@ impl SsbActionType {
             Self::SftExhaustEvent => "sft_exhaust_event",
             Self::ReviewGateCatalogEvent => "review_gate_catalog_event",
             Self::ClaimRiskScored => "claim_risk_scored",
+            // J-42 T2: reasoning checkpoint. Flat variant, Kind rides in the payload.
+            Self::ReasoningCheckpointEvent(_) => "reasoning_checkpoint_event",
         }
     }
 }
@@ -6790,6 +6797,10 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "sft_exhaust_event" => Ok(SsbActionType::SftExhaustEvent),
         "review_gate_catalog_event" => Ok(SsbActionType::ReviewGateCatalogEvent),
         "claim_risk_scored" => Ok(SsbActionType::ClaimRiskScored),
+        // J-42 T2: reasoning checkpoint. Flat variant; Kind rides in the payload.
+        "reasoning_checkpoint_event" => Ok(SsbActionType::ReasoningCheckpointEvent(
+            ReasoningCheckpointEventKind::ResetAndContinued,
+        )),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

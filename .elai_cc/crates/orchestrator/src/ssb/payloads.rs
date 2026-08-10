@@ -4015,6 +4015,11 @@ pub enum SsbPayload {
     ReviewGateCatalogEvent(ReviewGateCatalogEventPayload),
     /// L-2: one row for the aggregate risk of a non-empty ClaimSet.
     ClaimRiskScored(ClaimRiskScoredPayload),
+    /// J-42 T2: reasoning distill-reset checkpoint. Flat variant; the 3-arm
+    /// [`ReasoningCheckpointEventKind`] discriminator rides inside the
+    /// payload. Emitted by the `ReflectEventSink` bridge when the
+    /// `chat_reflect` refine loop takes an armed distill-reset.
+    ReasoningCheckpointEvent(ReasoningCheckpointEventPayload),
 }
 
 impl SsbPayload {
@@ -4867,6 +4872,8 @@ impl SsbPayload {
             Self::SftExhaustEvent(_) => SsbActionType::SftExhaustEvent,
             Self::ReviewGateCatalogEvent(_) => SsbActionType::ReviewGateCatalogEvent,
             Self::ClaimRiskScored(_) => SsbActionType::ClaimRiskScored,
+            Self::ReasoningCheckpointEvent(ref p) =>
+                SsbActionType::ReasoningCheckpointEvent(p.kind),
         }
     }
 }
@@ -22015,4 +22022,62 @@ pub struct ClaimRiskScoredPayload {
     pub unresolved_ref_count: usize,
     pub claim_count: usize,
     pub claim_digests: Vec<[u8; 32]>,
+}
+
+
+// ---------------------------------------------------------------------------
+// J-42 T2: ReasoningCheckpointEvent substrate (observe-only checkpoint telemetry)
+// ---------------------------------------------------------------------------
+
+/// J-42 T2 -- 3-arm fire-point discriminator carried by
+/// [`ReasoningCheckpointEventPayload::kind`].
+/// - `ResetAndContinued`: the distillate passed admission and the refine pass
+///   reseeded from the pinned original question plus that distillate.
+/// - `DistillateRejected`: admission failed twice; the pass fell back to
+///   append-mode refinement.
+/// - `EscalatedToCloud`: reserved for the I-7 cascade seam; no caller selects
+///   it yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningCheckpointEventKind {
+    ResetAndContinued,
+    DistillateRejected,
+    EscalatedToCloud,
+}
+
+impl ReasoningCheckpointEventKind {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ResetAndContinued => "reset_and_continued",
+            Self::DistillateRejected => "distillate_rejected",
+            Self::EscalatedToCloud => "escalated_to_cloud",
+        }
+    }
+}
+
+/// J-42 T2 -- payload for [`SsbActionType::ReasoningCheckpointEvent`].
+/// One row per armed distill-reset checkpoint in the `chat_reflect` refine
+/// loop. Observe-only: the reseed decision is already applied in-process, so a
+/// dropped row is never a correctness failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningCheckpointEventPayload {
+    /// Outcome discriminator. See [`ReasoningCheckpointEventKind`].
+    pub kind: ReasoningCheckpointEventKind,
+    /// blake3-prefix u64 of the `turn_id` correlator (the raw turn_id stays
+    /// off the wire surface, matching `ReflectBudgetSoftWarnPayload`).
+    pub turn_id_hash: u64,
+    /// Snake-case label of what armed the checkpoint: `context_fill` or
+    /// `grc_budget`.
+    pub trigger: String,
+    /// Approximate token length of the admitted or rejected distillate.
+    pub distillate_tokens: u32,
+    /// False when admission rejected the distillate for stripping the
+    /// uncertainty present in the pre-reset trace (the arXiv:2603.24472 guard).
+    pub uncertainty_preserved: bool,
+    /// Zero-based refine-pass index the checkpoint fired on.
+    pub pass_index: u32,
+    /// Fire-point wall-clock (millis since UNIX_EPOCH).
+    pub ts_ms: i64,
 }

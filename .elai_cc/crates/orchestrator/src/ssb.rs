@@ -1649,6 +1649,10 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // J-23: review-gate catalog event (Pattern-2 flat; 4-arm Kind in payload).
     SsbActionType::ReviewGateCatalogEvent,
     SsbActionType::ClaimRiskScored,
+    // J-42 T2: reasoning distill-reset checkpoint. Pattern-2 flat variant; the
+    // 3-arm ReasoningCheckpointEventKind rides inside the payload. Emitted by
+    // the ReflectEventSink bridge from the chat_reflect refine loop.
+    SsbActionType::ReasoningCheckpointEvent(ReasoningCheckpointEventKind::ResetAndContinued),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

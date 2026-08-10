@@ -34,9 +34,11 @@ pub use chat_reflect::{
     REFINE_CAP,
     // Tranche B-6 quad B-39: 85% soft-warn threshold constant.
     REFLECT_BUDGET_SOFT_WARN_PCT,
+    // J-42 T1: distill-reset trigger + distillate ceiling defaults.
+    REFLECT_DISTILLATE_MAX_CHARS, REFLECT_DISTILL_RESET_TRIGGER_PCT,
 };
 pub use config::{agent_grc_config_for_role, AgentGrcConfigLoader, TomlConfigLoader};
-pub use distill::{admit_distillate, DistillateVerdict};
+pub use distill::{admit_distillate, CheckpointOutcome, CheckpointTrigger, DistillateVerdict};
 pub use engine::{
     extract_intrinsic_signals, BasicGrcEngine, ExtractedIntrinsicSignals, GrcEngine, InferenceOutput,
 };

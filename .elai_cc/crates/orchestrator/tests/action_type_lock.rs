@@ -1601,6 +1601,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // J-23: ReviewGateCatalogEvent flat variant, Pattern-2 single-variant.
         SsbActionType::ReviewGateCatalogEvent => (),
         SsbActionType::ClaimRiskScored => (),
+        // J-42 T2: ReasoningCheckpointEvent flat variant, Kind rides in the payload.
+        SsbActionType::ReasoningCheckpointEvent(_) => (),
     }
 }
 

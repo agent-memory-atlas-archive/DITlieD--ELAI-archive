@@ -15,6 +15,56 @@ pub enum DistillateVerdict {
     RejectedUncertaintyStripped,
 }
 
+/// What armed a distill-reset checkpoint. The deterministic trigger, never a
+/// model decision (J-42 plan line 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckpointTrigger {
+    /// Accumulated auditor tokens crossed the configured fraction of the
+    /// stage budget cap. The trigger the refine loop uses today.
+    ContextFill,
+    /// A GRC topic budget (`max_chars` / `max_calls`) neared exhaustion.
+    /// Reserved for the `checkpoint_and_reset` operator on `GrcEngine`,
+    /// which is a later tranche; no caller selects it yet.
+    GrcBudget,
+}
+
+impl CheckpointTrigger {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            Self::ContextFill => "context_fill",
+            Self::GrcBudget => "grc_budget",
+        }
+    }
+}
+
+/// What the harness did after the admission check ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckpointOutcome {
+    /// The distillate was admitted; the pass reseeded from the pinned
+    /// original question plus that distillate.
+    ResetAndContinued,
+    /// Admission failed twice; the pass fell back to append-mode refinement.
+    DistillateRejected,
+    /// The reasoning step escalated to a cloud lane instead of resetting.
+    /// Reserved for the I-7 cascade seam, which is a later tranche; no
+    /// caller selects it yet.
+    EscalatedToCloud,
+}
+
+impl CheckpointOutcome {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            Self::ResetAndContinued => "reset_and_continued",
+            Self::DistillateRejected => "distillate_rejected",
+            Self::EscalatedToCloud => "escalated_to_cloud",
+        }
+    }
+}
+
 /// Accumulated-token threshold that arms a distill-reset, as a fraction of the
 /// stage budget cap. `pct` above 100 collapses to 100; a `pct` of 0 disables the
 /// trigger by returning 0.
@@ -142,6 +192,23 @@ mod tests {
         assert_eq!(
             admit_distillate("The answer is clear.", "The answer is correct.", 100),
             DistillateVerdict::Admitted
+        );
+    }
+    #[test]
+    fn wire_labels_are_snake_case() {
+        assert_eq!(CheckpointTrigger::ContextFill.as_wire_str(), "context_fill");
+        assert_eq!(CheckpointTrigger::GrcBudget.as_wire_str(), "grc_budget");
+        assert_eq!(
+            CheckpointOutcome::ResetAndContinued.as_wire_str(),
+            "reset_and_continued"
+        );
+        assert_eq!(
+            CheckpointOutcome::DistillateRejected.as_wire_str(),
+            "distillate_rejected"
+        );
+        assert_eq!(
+            CheckpointOutcome::EscalatedToCloud.as_wire_str(),
+            "escalated_to_cloud"
         );
     }
 }

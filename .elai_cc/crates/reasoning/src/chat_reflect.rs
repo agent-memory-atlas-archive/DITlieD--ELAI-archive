@@ -36,7 +36,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::distill::{admit_distillate, build_distill_prompt, build_reseed_prompt, distill_threshold, DistillateVerdict};
+use crate::distill::{admit_distillate, build_distill_prompt, build_reseed_prompt, distill_threshold, CheckpointOutcome, CheckpointTrigger, DistillateVerdict};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -303,6 +303,16 @@ pub enum ReflectEvent {
         hard_cap: u32,
         pct: u8,
     },
+    /// J-42 T2 -- one checkpoint per armed distill-reset in the refine loop.
+    /// Observe-only telemetry; the reseed decision is already applied in-process.
+    ReasoningCheckpoint {
+        turn_id: String,
+        trigger: CheckpointTrigger,
+        distillate_tokens: u32,
+        uncertainty_preserved: bool,
+        pass_index: u32,
+        outcome: CheckpointOutcome,
+    },
 }
 
 /// Production sink writes to the SSB; mock sinks count events for tests.
@@ -490,6 +500,21 @@ impl ChatReflectPipeline {
                         tracing::warn!(target: "reasoning::chat_reflect", ?verdict, turn_id = %turn_id, "distillate retry rejected");
                     }
                 }
+                self.emit(ReflectEvent::ReasoningCheckpoint {
+                    turn_id: turn_id.to_string(),
+                    trigger: CheckpointTrigger::ContextFill,
+                    distillate_tokens: approx_tokens(&distill_raw),
+                    uncertainty_preserved: !matches!(
+                        verdict,
+                        DistillateVerdict::RejectedUncertaintyStripped
+                    ),
+                    pass_index: iter,
+                    outcome: if matches!(verdict, DistillateVerdict::Admitted) {
+                        CheckpointOutcome::ResetAndContinued
+                    } else {
+                        CheckpointOutcome::DistillateRejected
+                    },
+                });
                 match verdict {
                     DistillateVerdict::Admitted => build_reseed_prompt(user_input, class, &candidates, &distill_raw),
                     _ => build_refine_prompt(user_input, class, &candidates, prev_best, &rationale),
@@ -761,6 +786,7 @@ mod tests {
         refined: AtomicU32,
         // Tranche B-6 quad B-39: 85% soft-warn beacon counter.
         soft_warn: AtomicU32,
+        checkpoint: AtomicU32,
     }
 
     impl ReflectEventSink for CountingSink {
@@ -780,6 +806,9 @@ mod tests {
                 }
                 ReflectEvent::BudgetSoftWarn { .. } => {
                     self.soft_warn.fetch_add(1, Ordering::SeqCst);
+                }
+                ReflectEvent::ReasoningCheckpoint { .. } => {
+                    self.checkpoint.fetch_add(1, Ordering::SeqCst);
                 }
             }
         }

@@ -12,8 +12,10 @@
 use std::sync::Arc;
 
 use elai_reasoning::chat_reflect::{
-    ChatFuture, ChatInferenceClient, ChatReflectConfig, ChatReflectPipeline,
+    ChatFuture, ChatInferenceClient, ChatReflectConfig, ChatReflectPipeline, ReflectEvent,
+    ReflectEventSink,
 };
+use elai_reasoning::{CheckpointOutcome, CheckpointTrigger};
 
 struct CapturingClient {
     responses: std::sync::Mutex<Vec<String>>,
@@ -56,6 +58,48 @@ struct ArcClient(Arc<CapturingClient>);
 impl ChatInferenceClient for ArcClient {
     fn complete<'a>(&'a self, prompt: &'a str, max_tokens: u32) -> ChatFuture<'a, String> {
         self.0.complete(prompt, max_tokens)
+    }
+}
+
+#[derive(Default)]
+struct RecordingSink {
+    events: std::sync::Mutex<Vec<ReflectEvent>>,
+}
+
+impl ReflectEventSink for RecordingSink {
+    fn emit(&self, event: ReflectEvent) {
+        self.events.lock().expect("events lock poisoned").push(event);
+    }
+}
+
+/// One tuple per emitted checkpoint: (trigger, distillate_tokens,
+/// uncertainty_preserved, pass_index, outcome).
+type Checkpoint = (CheckpointTrigger, u32, bool, u32, CheckpointOutcome);
+
+impl RecordingSink {
+    fn checkpoints(&self) -> Vec<Checkpoint> {
+        self.events
+            .lock()
+            .expect("events lock poisoned")
+            .iter()
+            .filter_map(|event| match event {
+                ReflectEvent::ReasoningCheckpoint {
+                    trigger,
+                    distillate_tokens,
+                    uncertainty_preserved,
+                    pass_index,
+                    outcome,
+                    ..
+                } => Some((
+                    *trigger,
+                    *distillate_tokens,
+                    *uncertainty_preserved,
+                    *pass_index,
+                    *outcome,
+                )),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -134,4 +178,80 @@ async fn hedge_stripped_distillate_is_reasked_once_then_abandoned() {
     assert!(last.contains("Previous verdict:"));
     assert!(!last.contains("Candidate zero is correct."));
     assert!(!last.contains("Candidate zero is correct after review."));
+}
+
+
+#[tokio::test]
+async fn default_configuration_emits_no_checkpoint_event() {
+    // Companion to `default_configuration_never_distills`: the observable row
+    // is as inert as the behaviour until the EXP-3 measurement arms it.
+    let client = Arc::new(CapturingClient::new(responses(
+        "0|candidate zero is best",
+        &[],
+    )));
+    let sink = Arc::new(RecordingSink::default());
+    let pipeline = ChatReflectPipeline::new(
+        ChatReflectConfig::default(),
+        Some(sink.clone() as Arc<dyn ReflectEventSink>),
+    );
+    let arc_client = ArcClient(client.clone());
+    let output = pipeline
+        .run("j42-ckpt-default".into(), "A question.", &arc_client)
+        .await;
+
+    assert!(!output.skipped);
+    assert!(sink.checkpoints().is_empty());
+}
+
+#[tokio::test]
+async fn admitted_distillate_emits_one_reset_and_continued_checkpoint() {
+    let mut config = ChatReflectConfig::default();
+    config.budget_cap_tokens = 8;
+    config.distill_reset_trigger_pct = 75;
+    let client = Arc::new(CapturingClient::new(responses(
+        "0|candidate zero is best overall",
+        &["Trace compressed to essentials."],
+    )));
+    let sink = Arc::new(RecordingSink::default());
+    let pipeline =
+        ChatReflectPipeline::new(config, Some(sink.clone() as Arc<dyn ReflectEventSink>));
+    let arc_client = ArcClient(client.clone());
+    let output = pipeline
+        .run("j42-ckpt-admit".into(), "Explain the poisoned lock.", &arc_client)
+        .await;
+    let checkpoints = sink.checkpoints();
+
+    assert!(!output.skipped);
+    assert_eq!(checkpoints.len(), 1);
+    let (trigger, distillate_tokens, uncertainty_preserved, pass_index, outcome) = checkpoints[0];
+    assert_eq!(trigger, CheckpointTrigger::ContextFill);
+    assert!(distillate_tokens > 0);
+    assert!(uncertainty_preserved);
+    assert_eq!(pass_index, 0);
+    assert_eq!(outcome, CheckpointOutcome::ResetAndContinued);
+}
+
+#[tokio::test]
+async fn hedge_stripped_distillate_emits_a_rejected_checkpoint() {
+    let mut config = ChatReflectConfig::default();
+    config.budget_cap_tokens = 8;
+    config.distill_reset_trigger_pct = 75;
+    let client = Arc::new(CapturingClient::new(responses(
+        "0|maybe candidate zero, unverified",
+        &["Candidate zero is correct.", "Candidate zero is correct after review."],
+    )));
+    let sink = Arc::new(RecordingSink::default());
+    let pipeline =
+        ChatReflectPipeline::new(config, Some(sink.clone() as Arc<dyn ReflectEventSink>));
+    let arc_client = ArcClient(client.clone());
+    let output = pipeline
+        .run("j42-ckpt-reject".into(), "A question.", &arc_client)
+        .await;
+    let checkpoints = sink.checkpoints();
+
+    assert!(!output.skipped);
+    assert_eq!(checkpoints.len(), 1);
+    let (_, _, uncertainty_preserved, _, outcome) = checkpoints[0];
+    assert!(!uncertainty_preserved);
+    assert_eq!(outcome, CheckpointOutcome::DistillateRejected);
 }

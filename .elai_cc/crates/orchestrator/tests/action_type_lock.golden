@@ -419,6 +419,7 @@ qdelta_measured
 quant_backend_selected
 query_trace
 reasoning_budget_scaled
+reasoning_checkpoint_event
 reasoning_quality_probe
 reasoning_trace
 recovery_event

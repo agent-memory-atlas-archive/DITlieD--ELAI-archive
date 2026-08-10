@@ -5582,7 +5582,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- ReviewGateCatalogEventKind rides in the payload.
         -- L-2: claim risk aggregate observation. Pattern-2 flat; tier kind rides in payload.
         'claim_risk_scored',
-        'review_gate_catalog_event'
+        'review_gate_catalog_event',
+        -- J-42 T2: reasoning distill-reset checkpoint. Pattern-2 flat; 3-arm
+        -- ReasoningCheckpointEventKind rides in the payload. Emitted by the
+        -- ReflectEventSink bridge from the chat_reflect refine loop.
+        'reasoning_checkpoint_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

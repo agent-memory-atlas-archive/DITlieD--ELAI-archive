@@ -7231,6 +7231,10 @@ pub async fn start_chat_stream(
             // `REFLECT_BUDGET_SOFT_WARN_PCT` (85). Wire-dark unless
             // ELAI_B39_SOFTWARN_ENABLE=1 on the SSB sink.
             budget_soft_warn_pct: elai_reasoning::REFLECT_BUDGET_SOFT_WARN_PCT,
+            // J-42: shipped defaults keep the distill-reset path inert on this
+            // surface until the EXP-3 measurement arms it.
+            distill_reset_trigger_pct: elai_reasoning::REFLECT_DISTILL_RESET_TRIGGER_PCT,
+            distillate_max_chars: elai_reasoning::REFLECT_DISTILLATE_MAX_CHARS,
         };
         let pipeline = elai_reasoning::ChatReflectPipeline::new(config, Some(sink));
 

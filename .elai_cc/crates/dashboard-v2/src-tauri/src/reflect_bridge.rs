@@ -170,6 +170,23 @@ impl ReflectEventSink for TauriEventSink {
                 "hard_cap": hard_cap,
                 "pct": pct,
             }),
+            // J-42 T2: distill-reset checkpoint stage beacon.
+            ReflectEvent::ReasoningCheckpoint {
+                turn_id,
+                trigger,
+                distillate_tokens,
+                uncertainty_preserved,
+                pass_index,
+                outcome,
+            } => json!({
+                "stage": "reasoning_checkpoint",
+                "turn_id": turn_id,
+                "trigger": trigger.as_wire_str(),
+                "distillate_tokens": distillate_tokens,
+                "uncertainty_preserved": uncertainty_preserved,
+                "pass_index": pass_index,
+                "outcome": outcome.as_wire_str(),
+            }),
         };
         // Tag the stream_id on the payload so the singleton-channel
         // ReasoningDrawer can filter / clear on turn boundaries.
