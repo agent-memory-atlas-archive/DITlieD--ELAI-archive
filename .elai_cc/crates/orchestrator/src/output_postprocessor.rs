@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 use crate::context_budget::restore_output_formatting;
+use crate::role_contracts::OutputChannelClass;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -42,10 +43,21 @@ pub struct OutputConfig {
     /// Used by stage 4 when restore_formatting is true.
     #[serde(default)]
     pub restore_formatting_language: String,
+
+    /// J-106: which output channel this runtime's text belongs to. Serde default
+    /// is `Reasoning` — FAIL-CLOSED: a config file or constructor that does not
+    /// set it gets a gate that cannot fire, so a reasoning role is never
+    /// constrained by omission (HD-3).
+    #[serde(default = "default_channel_class")]
+    pub channel_class: OutputChannelClass,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_channel_class() -> OutputChannelClass {
+    OutputChannelClass::Reasoning
 }
 
 impl Default for OutputConfig {
@@ -56,6 +68,7 @@ impl Default for OutputConfig {
             max_response_tokens: 0,
             restore_formatting: false,
             restore_formatting_language: String::new(),
+            channel_class: OutputChannelClass::Reasoning,
         }
     }
 }
@@ -174,12 +187,35 @@ pub fn process(response: &str, config: &OutputConfig) -> String {
         text = restore_output_formatting(&text, lang);
     }
 
+    // Stage 5 (J-106): output meta-commentary gate. Runs ONLY for op-emission
+    // channels AND only when the promotion flag is on. Both guards are
+    // fail-closed: a Reasoning class or an unset flag returns the text
+    // byte-identical, so HD-3 ("reasoning roles are never constrained") holds
+    // structurally, not by convention. The banned-phrase table, bounded retry
+    // and work-log grammar are J-106's later EXECUTE tasks and fill this stage;
+    // WAVE-1 ships the guarded seam.
+    if config.channel_class == OutputChannelClass::OpEmission
+        && std::env::var("ELAI_OUTPUT_METACOMMENTARY_GATE_ENABLE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    {
+        text = apply_metacommentary_gate(&text);
+    }
+
     text
 }
 
 // ---------------------------------------------------------------------------
 // Stage implementations
 // ---------------------------------------------------------------------------
+
+/// J-106 stage-5 body. WAVE-1 is observe-only: it returns the text unchanged and
+/// exists so the guarded call site is real production wiring. The frozen
+/// banned-phrase table and the READ/FOUND/DECISION/ACTION/RESULT work-log grammar
+/// land in J-106's later EXECUTE tasks and replace this body.
+fn apply_metacommentary_gate(text: &str) -> String {
+    text.to_owned()
+}
 
 fn strip_emoji(text: &str) -> String {
     let re = emoji_regex();
@@ -253,6 +289,7 @@ mod tests {
             max_response_tokens: 0,
             restore_formatting: false,
             restore_formatting_language: String::new(),
+            channel_class: OutputChannelClass::Reasoning,
         }
     }
 
@@ -414,6 +451,7 @@ mod tests {
             max_response_tokens: 512,
             restore_formatting: false,
             restore_formatting_language: String::new(),
+            channel_class: OutputChannelClass::Reasoning,
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let parsed: OutputConfig = serde_json::from_str(&json).expect("deserialize");

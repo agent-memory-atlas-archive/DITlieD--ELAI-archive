@@ -2157,8 +2157,8 @@ pub use ssb::{
 // the i32 contract test can access RoleContract / RoleContractStore / apply_to_system_prompt
 // without reaching into the orchestrator internals.
 pub use role_contracts::{
-    agent_role_from_snake_case, apply_to_system_prompt, ApplyOutcome, RoleContract,
-    RoleContractStore,
+    agent_role_from_snake_case, apply_to_system_prompt, output_channel_class, ApplyOutcome,
+    OutputChannelClass, RoleContract, RoleContractStore,
 };
 // I-35: tool_sequence public surface. Re-exported so the i35 contract test and the
 // bench_sequence_probe_cmd.rs CLI driver can construct supervisors with sequence

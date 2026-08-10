@@ -245,6 +245,46 @@ pub fn agent_role_from_snake_case(s: &str) -> Option<AgentRole> {
     })
 }
 
+/// J-106 / HD-3: which output channel a role's text output belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OutputChannelClass {
+    /// Work-log / status emission. The J-106 output gate MAY apply here.
+    OpEmission,
+    /// Free-thinking output. The J-106 output gate MUST NEVER touch this.
+    Reasoning,
+}
+
+/// Exhaustive by design: adding an `AgentRole` variant refuses to compile until
+/// that variant is classified, so the HD-3 decision is forced and never defaulted.
+/// Doctrine for a new variant: when in doubt, `Reasoning`.
+///
+/// WAVE-1 op-emission set is `{Executor}` only — the one role whose output
+/// provably traverses the wired postprocessor seam (the live CLI turn is pinned
+/// to `AgentRole::Executor`). A role wrongly classed `Reasoning` makes the gate
+/// no-op (safe); a role wrongly classed `OpEmission` would constrain a reasoning
+/// role, which HD-3 forbids.
+pub fn output_channel_class(role: AgentRole) -> OutputChannelClass {
+    match role {
+        AgentRole::Executor => OutputChannelClass::OpEmission,
+        AgentRole::Auditor
+        | AgentRole::Researcher
+        | AgentRole::Designer
+        | AgentRole::PromptEngineer
+        | AgentRole::ContextCompiler
+        | AgentRole::MemoryWriter
+        | AgentRole::MediaValidator
+        | AgentRole::IdeaFramer
+        | AgentRole::IdeaCritic
+        | AgentRole::AuditorConcepts
+        | AgentRole::AuditorPhases
+        | AgentRole::AuditorSteps
+        | AgentRole::AuditorBabySteps
+        | AgentRole::AuditorBabyStepDetail
+        | AgentRole::AuditorProductionGrade
+        | AgentRole::InjectionClassifier => OutputChannelClass::Reasoning,
+    }
+}
+
 /// Apply the role contract to `sections` by replacing the narrative intro block.
 ///
 /// For RETAINED roles (Auditor, IdeaCritic, InjectionClassifier, Auditor* variants)

@@ -378,7 +378,15 @@ pub(crate) fn build_runtime_with_plugin_state(
     );
     runtime = runtime.with_context_backend_mode(backend);
     // A-30: wire OutputConfig from elai_cc.toml [output] section.
-    runtime = runtime.with_output_config(elai_config.output);
+    // J-106: classify the output channel before the config is installed. The
+    // live CLI runtime IS the executor turn — the same pin
+    // `report_fns::build_system_prompt` uses (AgentRole::Executor) — so its
+    // output is op-emission class. This is the production caller of
+    // `output_channel_class`; delete it and the classifier goes dark.
+    let mut output_config = elai_config.output;
+    output_config.channel_class =
+        elai_orchestrator::output_channel_class(elai_orchestrator::AgentRole::Executor);
+    runtime = runtime.with_output_config(output_config);
     if emit_output {
         runtime = runtime.with_hook_progress_reporter(Box::new(CliHookProgressReporter));
     }
