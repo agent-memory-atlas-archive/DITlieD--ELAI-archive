@@ -16654,6 +16654,8 @@ pub enum FreezePrefixRecomputeCause {
     HistoryRewound,
     /// The context policy changed.
     PolicyChanged,
+    /// The provider cache TTL expired while the session was idle.
+    ColdGapTtl,
 }
 
 /// I-10: SSB payload for prefix invariance + TTL tiering + cache-hit hard guard.

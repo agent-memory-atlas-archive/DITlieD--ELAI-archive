@@ -40,6 +40,9 @@ pub struct FreezeEpoch {
     /// `0` means the session had never been compacted. A compaction increments
     /// it (`session.rs:222-230`), which invalidates the prefix.
     pub compaction_generation: u32,
+    /// `Session::updated_at_ms` at the moment this prefix was projected, used
+    /// to measure the idle gap against the provider cache TTL.
+    pub computed_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +52,8 @@ pub enum RecomputeCause {
     BoundaryMismatch,
     HistoryRewound,
     PolicyChanged,
+    /// The provider cache went cold because the session sat idle past its TTL.
+    ColdGapTtl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +92,8 @@ pub fn evaluate_freeze(
     budget: &CompactionConfig,
     policy: ContextPolicy,
     compaction_generation: u32,
+    now_ms: u64,
+    ttl_ms: Option<u64>,
 ) -> FreezeDecision {
     let Some(state) = state else { return FreezeDecision::Recompute(RecomputeCause::FirstCall); };
     if log.len() < state.raw_log_len {
@@ -108,6 +115,12 @@ pub fn evaluate_freeze(
     // The compaction generation moved, so the frozen prefix is stale.
     if compaction_generation != state.compaction_generation {
         return FreezeDecision::Recompute(RecomputeCause::PolicyChanged);
+    }
+    // The provider cache went cold while the session sat idle, so reuse buys nothing.
+    if let Some(ttl_ms) = ttl_ms {
+        if now_ms.saturating_sub(state.computed_at_ms) > ttl_ms {
+            return FreezeDecision::Recompute(RecomputeCause::ColdGapTtl);
+        }
     }
     FreezeDecision::Reuse
 }
@@ -228,10 +241,11 @@ mod tests {
             projected_prefix: Vec::new(),
             tail_start: 0,
             compaction_generation: 0,
+            computed_at_ms: 0,
         };
         let log = TranscriptLog::from_session(&session);
         assert_eq!(
-            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0),
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0, 0, None),
             FreezeDecision::Recompute(RecomputeCause::HistoryRewound)
         );
     }
@@ -250,10 +264,11 @@ mod tests {
             projected_prefix: Vec::new(),
             tail_start: 0,
             compaction_generation: 0,
+            computed_at_ms: 0,
         };
         let before = log.messages().len();
-        let first = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0);
-        let second = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0);
+        let first = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0, 0, None);
+        let second = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0, 0, None);
         assert_eq!(first, second);
         assert_eq!(log.messages().len(), before);
     }
@@ -272,14 +287,46 @@ mod tests {
             projected_prefix: Vec::new(),
             tail_start: 0,
             compaction_generation: 1,
+            computed_at_ms: 0,
         };
         assert_eq!(
-            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 1),
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 1, 0, None),
             FreezeDecision::Reuse
         );
         assert_eq!(
-            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 2),
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 2, 0, None),
             FreezeDecision::Recompute(RecomputeCause::PolicyChanged)
+        );
+    }
+
+    #[test]
+    fn evaluate_freeze_recomputes_when_the_idle_gap_passes_the_ttl_freeze() {
+        let (session, budget, freeze) = inputs();
+        let log = TranscriptLog::from_session(&session);
+        let state = FreezeEpoch {
+            freeze,
+            boundary_hash: boundary_fingerprint(&session.messages[0]),
+            raw_log_len: log.len(),
+            epoch: 1,
+            reuse_count: 0,
+            policy: ContextPolicy::Local,
+            projected_prefix: Vec::new(),
+            tail_start: 0,
+            compaction_generation: 0,
+            computed_at_ms: 1_000_000,
+        };
+        let ttl_ms = 300;
+        assert_eq!(
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0, 1_000_000 + ttl_ms + 1, Some(ttl_ms)),
+            FreezeDecision::Recompute(RecomputeCause::ColdGapTtl)
+        );
+        assert_eq!(
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0, 1_000_000 + ttl_ms, Some(ttl_ms)),
+            FreezeDecision::Reuse
+        );
+        assert_eq!(
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0, 1_000_301, None),
+            FreezeDecision::Reuse
         );
     }
 

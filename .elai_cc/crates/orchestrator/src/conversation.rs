@@ -1026,8 +1026,16 @@ where
         let log = crate::context_projection::TranscriptLog::from_session(&self.session);
         let compaction_generation =
             self.session.compaction.as_ref().map_or(0, |value| value.count);
+        let now_ms = self.session.updated_at_ms;
+        let ttl_ms = crate::cache_economics::CacheEconomicsPlanner::plan_ttl(
+            crate::cache_economics::GapStats::default(),
+            policy,
+            false,
+        )
+        .ttl_secs()
+        .map(|secs| u64::from(secs) * 1000);
         let decision = crate::context_projection::evaluate_freeze(
-            self.freeze_epoch.as_ref(), &log, &config, policy, compaction_generation,
+            self.freeze_epoch.as_ref(), &log, &config, policy, compaction_generation, now_ms, ttl_ms,
         );
         self.last_freeze_decision = Some(decision);
         match decision {
@@ -1065,6 +1073,7 @@ where
                     projected_prefix,
                     tail_start,
                     compaction_generation,
+                    computed_at_ms: now_ms,
                 });
                 if let Some(ssb) = self.ssb_writer.clone() {
                     let payload = crate::ssb::CacheEconomicsEventPayload::prefix_recomputed(
@@ -2648,6 +2657,56 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         let prefix_len = frozen_head_len + 1;
         assert_eq!(first[..prefix_len], second[..prefix_len], "frozen prefix content must be byte-stable");
         assert_eq!(message_text(second.last().expect("tail message")), "second freeze");
+    }
+
+    #[test]
+    fn run_turn_recomputes_when_the_idle_gap_exceeds_the_ttl_freeze() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(), RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(), PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        ).with_auto_compaction_input_tokens_threshold(1);
+        runtime.run_turn("warm-up", None).expect("warm-up turn");
+        let mut runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
+        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        {
+            let epoch = runtime.freeze_epoch.as_mut().expect("freeze epoch");
+            let ttl_ms = u64::from(crate::cache_economics::TTL_SHORT_SECS) * 1000;
+            epoch.computed_at_ms = epoch.computed_at_ms.saturating_sub(ttl_ms + 1_000);
+        }
+        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Recompute(
+                crate::context_projection::RecomputeCause::ColdGapTtl,
+            ))
+        );
+    }
+
+    #[test]
+    fn run_turn_local_policy_never_cold_gaps_freeze() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(), RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(), PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(1)
+        .with_context_backend_mode(crate::dispatcher::BackendMode::Local);
+        runtime.run_turn("warm-up", None).expect("warm-up turn");
+        let mut runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
+        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        {
+            let epoch = runtime.freeze_epoch.as_mut().expect("freeze epoch");
+            let ttl_ms = u64::from(crate::cache_economics::TTL_SHORT_SECS) * 1000;
+            epoch.computed_at_ms = epoch.computed_at_ms.saturating_sub(ttl_ms + 1_000);
+        }
+        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Reuse)
+        );
     }
 
     #[test]

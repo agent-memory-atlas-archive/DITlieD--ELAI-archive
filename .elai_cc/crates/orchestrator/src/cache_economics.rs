@@ -518,6 +518,9 @@ impl CacheEconomicsEventPayload {
             crate::context_projection::RecomputeCause::PolicyChanged => {
                 crate::ssb::FreezePrefixRecomputeCause::PolicyChanged
             }
+            crate::context_projection::RecomputeCause::ColdGapTtl => {
+                crate::ssb::FreezePrefixRecomputeCause::ColdGapTtl
+            }
         };
         Self {
             kind: CacheEconomicsEventKind::PrefixRecomputed(cause),
