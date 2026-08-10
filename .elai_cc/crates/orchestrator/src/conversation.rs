@@ -1055,6 +1055,29 @@ where
                     reuse_count: 0,
                     policy,
                 });
+                if let Some(ssb) = self.ssb_writer.clone() {
+                    let payload = crate::ssb::CacheEconomicsEventPayload::prefix_recomputed(
+                        cause,
+                        boundary_hash,
+                        "conversation.freeze_prefix_recompute",
+                    );
+                    let handle = std::thread::spawn(move || {
+                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            let _ = rt.block_on(crate::cache_economics::emit_cache_economics_event(
+                                &ssb,
+                                "conversation.freeze_prefix_recompute",
+                                0,
+                                payload,
+                            ));
+                        }
+                    });
+                    // Join so the row is observable; one local SQLite write only on Recompute,
+                    // never on Reuse, after re-folding the transcript.
+                    let _ = handle.join();
+                }
                 tracing::debug!(?cause, epoch = self.freeze_epoch_number(), "freeze prefix recomputed");
                 self.project_with_freeze(config, freeze)
             }
@@ -2605,6 +2628,50 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         runtime.run_turn("second freeze", None).expect("second freeze turn");
         assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::BoundaryMismatch)));
         assert_eq!(runtime.freeze_epoch_number(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recompute_journals_typed_boundary_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = crate::ssb::SsbConfig {
+            db_path: dir.path().join(format!("ssb-{}.db", std::process::id())),
+            pool_size: Some(2),
+            project_id: "l17-slice2".to_string(),
+            session_id: "l17-slice2-session".to_string(),
+        };
+        let clock: std::sync::Arc<dyn elai_core::clock::ClockProvider> =
+            std::sync::Arc::new(elai_core::clock::OsClock);
+        let ssb = std::sync::Arc::new(crate::ssb::Ssb::new(cfg, clock).expect("ssb init"));
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(), RecordingApi { seen }, StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(1)
+        .with_ssb_writer(ssb.clone());
+        runtime.run_turn("warm-up", None).expect("warm-up turn");
+        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        runtime.session.messages[0] = crate::session::ConversationMessage::user_text("changed boundary");
+        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        let boundary_hash = runtime.freeze_epoch.as_ref().expect("freeze epoch").boundary_hash;
+        use crate::ssb::SsbReader;
+        let rows = ssb
+            .query_by_type(crate::ssb::SsbActionType::CacheEconomicsEvent(
+                crate::ssb::CacheEconomicsEventKind::TtlPlanned,
+            ))
+            .expect("query cache economics rows");
+        let found = rows.into_iter().filter_map(|row| {
+            let payload: crate::ssb::SsbPayload = rmp_serde::from_slice(&row.payload).ok()?;
+            match payload {
+                crate::ssb::SsbPayload::CacheEconomicsEvent(payload)
+                    if payload.kind
+                        == crate::ssb::CacheEconomicsEventKind::PrefixRecomputed(
+                            crate::ssb::FreezePrefixRecomputeCause::BoundaryMismatch,
+                        ) && payload.mutation_hash == boundary_hash => Some(()),
+                _ => None,
+            }
+        }).next();
+        assert!(found.is_some(), "typed BoundaryMismatch recompute row missing");
     }
 
     #[test]

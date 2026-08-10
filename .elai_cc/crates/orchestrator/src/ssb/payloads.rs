@@ -16621,7 +16621,7 @@ pub struct ClaimScopeMeasuredPayload {
 // I-10: CacheEconomicsEvent payload structs
 // ---------------------------------------------------------------------------
 
-/// I-10: 3-arm discriminator for [`CacheEconomicsEventPayload`].
+/// I-10 discriminator for [`CacheEconomicsEventPayload`].
 ///
 /// Mirrors [`crate::cache_economics::CacheEconomicsEventKind`] (same enum,
 /// kept in ssb.rs as the SSB wire type; cache_economics.rs re-exports via
@@ -16634,6 +16634,23 @@ pub enum CacheEconomicsEventKind {
     HitRateGuardTripped,
     /// Guard detected a prefix mutation; blake3 byte-range offset dumped.
     PrefixDiffDumped,
+    /// Conversation runtime recomputed the frozen prefix for the named cause.
+    PrefixRecomputed(FreezePrefixRecomputeCause),
+}
+
+/// Typed cause for a conversation freeze-prefix recomputation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum FreezePrefixRecomputeCause {
+    /// The first freeze projection was requested.
+    FirstCall,
+    /// The preserved tail exceeded its configured window.
+    TailOverflow,
+    /// The frozen boundary message changed.
+    BoundaryMismatch,
+    /// The retained history was rewound.
+    HistoryRewound,
+    /// The context policy changed.
+    PolicyChanged,
 }
 
 /// I-10: SSB payload for prefix invariance + TTL tiering + cache-hit hard guard.

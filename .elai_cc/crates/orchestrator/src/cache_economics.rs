@@ -495,6 +495,40 @@ impl CacheEconomicsEventPayload {
             ts_ms: now_ms(),
         }
     }
+
+    /// Journal an L-17 freeze recompute with a typed cause, not a string.
+    pub fn prefix_recomputed(
+        cause: crate::context_projection::RecomputeCause,
+        boundary_hash: [u8; 8],
+        call_class: &str,
+    ) -> Self {
+        let cause = match cause {
+            crate::context_projection::RecomputeCause::FirstCall => {
+                crate::ssb::FreezePrefixRecomputeCause::FirstCall
+            }
+            crate::context_projection::RecomputeCause::TailOverflow => {
+                crate::ssb::FreezePrefixRecomputeCause::TailOverflow
+            }
+            crate::context_projection::RecomputeCause::BoundaryMismatch => {
+                crate::ssb::FreezePrefixRecomputeCause::BoundaryMismatch
+            }
+            crate::context_projection::RecomputeCause::HistoryRewound => {
+                crate::ssb::FreezePrefixRecomputeCause::HistoryRewound
+            }
+            crate::context_projection::RecomputeCause::PolicyChanged => {
+                crate::ssb::FreezePrefixRecomputeCause::PolicyChanged
+            }
+        };
+        Self {
+            kind: CacheEconomicsEventKind::PrefixRecomputed(cause),
+            ttl_secs: None,
+            breakeven_reads: 0,
+            miss_rate: 0.0,
+            mutation_hash: boundary_hash,
+            call_class: call_class.to_string(),
+            ts_ms: now_ms(),
+        }
+    }
 }
 
 fn now_ms() -> i64 {
