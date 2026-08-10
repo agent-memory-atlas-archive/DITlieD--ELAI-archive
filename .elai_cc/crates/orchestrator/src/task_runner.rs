@@ -113,7 +113,7 @@ use crate::research_tree::{
 };
 use crate::ssb::{
     AbstentionScoredPayload, AntiSpiralHitPayload, AuditorRubberStampRejectedPayload,
-    BabyStepReadyPayload, ClaimConfidenceScoredPayload,
+    BabyStepReadyPayload, ClaimConfidenceScoredPayload, ClaimRiskScoredKind, ClaimRiskScoredPayload,
     CsqEvaluatedPayload, DkgQuerierSwappedPayload, DkgReadyPayload, EvidenceGateEvaluatedPayload,
     FindingPayload, GrcStepEmittedPayload, GroundingSweepResultPayload, IndexingProgressPayload,
     PhaseCompletePayload, PhaseNodeReadyPayload, PreviewAvailablePayload, ProviderSignalsPayload,
@@ -1997,6 +1997,35 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                     claim_set.count_of_kind(crate::claim::extract::ClaimKind::Dependency),
                 "L-1 typed claim extraction over agent response"
             );
+
+            // L-2: persist one aggregate row per non-empty ClaimSet for audit replay.
+            if !claim_set.is_empty() {
+                let kind = if risk_critical > 0 { ClaimRiskScoredKind::CriticalRisk }
+                    else if risk_high > 0 { ClaimRiskScoredKind::HighRisk }
+                    else if risk_medium > 0 { ClaimRiskScoredKind::MediumRisk }
+                    else { ClaimRiskScoredKind::LowRisk };
+                let mut predictors = Vec::new();
+                let mut consult = Vec::new();
+                for risk in &claim_risks {
+                    for signal in &risk.signals {
+                        if signal.fired && !predictors.contains(&signal.source) { predictors.push(signal.source); }
+                    }
+                    for predictor in &risk.consult {
+                        if !consult.contains(predictor) { consult.push(*predictor); }
+                    }
+                }
+                let payload = SsbPayload::ClaimRiskScored(ClaimRiskScoredPayload {
+                    kind, low_count: risk_low, medium_count: risk_medium, high_count: risk_high,
+                    critical_count: risk_critical, predictors, consult,
+                    unresolved_ref_count: claim_set.unresolved_ref_count(), claim_count: claim_set.len(),
+                    claim_digests: claim_risks.iter().map(|risk| risk.claim_digest).collect(),
+                });
+                if let Some(writer) = self.ssb_writer.as_ref() {
+                    if let Err(error) = writer.write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new()).await {
+                        tracing::warn!(%error, "task_runner::emit_claim_risk_scored: SSB write failed (non-fatal)");
+                    }
+                }
+            }
 
             // Map session outcome to baby-step outcome.
             let (outcome, session_err) = match session_outcome.final_state {

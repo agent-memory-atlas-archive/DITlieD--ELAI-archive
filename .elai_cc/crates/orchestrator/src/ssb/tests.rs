@@ -8224,6 +8224,11 @@ use crate::gate::RiskLevel;
                 refusal_reason: None,
                 ts_ms: 0,
             }),
+            SsbPayload::ClaimRiskScored(ClaimRiskScoredPayload {
+                kind: ClaimRiskScoredKind::MediumRisk, low_count: 0, medium_count: 1,
+                high_count: 0, critical_count: 0, predictors: vec![], consult: vec![],
+                unresolved_ref_count: 1, claim_count: 1, claim_digests: vec![[0; 32]],
+            }),
             // I-16: KvCacheTuned flat beacon.
             SsbPayload::KvCacheTuned(KvCacheTunedPayload {
                 vram_gb: None,
@@ -8813,8 +8818,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            500,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured + 1 J-23 ReviewGateCatalogEvent",
+            502,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured + 1 J-23 ReviewGateCatalogEvent + 1 I-16 KvCacheTuned (missing from the count since 91d3f150) + 1 L-2 ClaimRiskScored",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

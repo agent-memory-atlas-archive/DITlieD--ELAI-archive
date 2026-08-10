@@ -1600,6 +1600,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::SftExhaustEvent => (),
         // J-23: ReviewGateCatalogEvent flat variant, Pattern-2 single-variant.
         SsbActionType::ReviewGateCatalogEvent => (),
+        SsbActionType::ClaimRiskScored => (),
     }
 }
 

@@ -4898,6 +4898,8 @@ pub enum SsbActionType {
     /// J-23: review-gate catalog event (flat variant; 4-arm
     /// ReviewGateCatalogEventKind rides in the payload).
     ReviewGateCatalogEvent,
+    /// L-2: one auditable risk score row per non-empty ClaimSet.
+    ClaimRiskScored,
 }
 
 impl SsbActionType {
@@ -5873,6 +5875,7 @@ impl SsbActionType {
             // I-30 Slice 1a: SFT exhaust event (flat; Kind in payload).
             Self::SftExhaustEvent => "sft_exhaust_event",
             Self::ReviewGateCatalogEvent => "review_gate_catalog_event",
+            Self::ClaimRiskScored => "claim_risk_scored",
         }
     }
 }
@@ -6786,6 +6789,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         // I-30 Slice 1a: SFT exhaust event (flat; Kind in payload).
         "sft_exhaust_event" => Ok(SsbActionType::SftExhaustEvent),
         "review_gate_catalog_event" => Ok(SsbActionType::ReviewGateCatalogEvent),
+        "claim_risk_scored" => Ok(SsbActionType::ClaimRiskScored),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

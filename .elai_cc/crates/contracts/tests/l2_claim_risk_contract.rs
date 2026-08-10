@@ -82,7 +82,9 @@ use elai_orchestrator::ipc_gateway::IpcGateway;
 use elai_orchestrator::pipeline_tree_navigator::BabyStepOutcome;
 use elai_orchestrator::sandbox::SelfModificationLocks;
 use elai_orchestrator::task_runner::{AgentPoolBabyStepExecutor, BabyStepExecutionCtx, BabyStepExecutor};
+use elai_orchestrator::ssb::{ClaimRiskScoredKind, Ssb, SsbActionType, SsbConfig, SsbPayload, SsbReader};
 use elai_core::SeededRng;
+use elai_core::clock::OsClock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing_test::traced_test;
@@ -174,4 +176,75 @@ fn l2_cost_gate_consult_set_is_recorded_on_the_risk() {
     ]);
     let injected = score_claim_risk_with(&set(true), &[&expensive]);
     assert!(injected[0].consult.is_empty());
+}
+
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l2_executor_emits_claim_risk_scored_row() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_dir = tmp.path().join("ipc");
+    std::fs::create_dir_all(&socket_dir).expect("create socket_dir");
+    let pool = l2_make_pool();
+    let gateway = l2_make_gateway(&socket_dir);
+    let rpc_server = Arc::new(ScriptedAgentRpcServer::new("l2-stub-infer-response"));
+    let (path_tx, path_rx) = tokio::sync::oneshot::channel::<std::path::PathBuf>();
+
+    let stub_agent = tokio::spawn(async move {
+        let socket_path = path_rx.await.expect("path_rx: sender dropped");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        #[cfg(unix)]
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.expect("stub connect");
+        #[cfg(windows)]
+        let mut stream = {
+            let stem = socket_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "elai-ipc".to_string());
+            let pipe_name = format!(r"\\.\pipe\elai-{stem}");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+            loop {
+                match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+                    Ok(s) => break s,
+                    Err(_) if tokio::time::Instant::now() < deadline => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
+                    Err(e) => panic!("stub connect: {e}"),
+                }
+            }
+        };
+        let _request = l2_read_frame(&mut stream).await;
+        l2_write_frame(&mut stream, &elai_ipc_types::IpcMessageType::AgentResponse {
+            content: "The change fixes `src/l2_missing_claim_risk.rs`.".to_string(),
+            artifacts: Vec::new(),
+        }).await;
+    });
+
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+    let ssb = Arc::new(Ssb::new(SsbConfig {
+        db_path: tmp.path().join("l2-claim-risk-ssb.db"),
+        pool_size: Some(2),
+        project_id: "l2-claim-risk-contract".into(),
+        session_id: "l2-claim-risk-row".into(),
+    }, clock).expect("ssb open"));
+    let executor = AgentPoolBabyStepExecutor::new(
+        pool,
+        tmp.path().join("fake-agent-l2.exe"),
+        socket_dir,
+        gateway,
+        rpc_server as Arc<dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static>,
+    ).with_timeout_ms(10_000).with_socket_path_notifier(path_tx).with_ssb_writer(ssb.clone());
+    let result = executor.execute(BabyStepExecutionCtx {
+        baby_step_id: 1,
+        task_summary: "l2 claim risk seam".into(),
+        escalation_message: None,
+        mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
+    }).await;
+    assert!(matches!(result.outcome, BabyStepOutcome::Passed), "expected Passed, got: {:?}", result.outcome);
+    stub_agent.await.expect("stub agent task panicked");
+
+    let rows = ssb.query_by_type(SsbActionType::ClaimRiskScored).expect("query claim risk rows");
+    assert_eq!(rows.len(), 1);
+    let payload = rmp_serde::from_slice::<SsbPayload>(rows[0].payload.as_ref()).expect("decode claim risk payload");
+    let SsbPayload::ClaimRiskScored(payload) = payload else { panic!("wrong payload variant") };
+    assert_eq!(payload.kind, ClaimRiskScoredKind::MediumRisk);
+    assert!(payload.medium_count >= 1);
+    assert!(payload.unresolved_ref_count >= 1);
+    assert!(!payload.claim_digests.is_empty());
+    assert_eq!(payload.claim_digests.len(), payload.claim_count);
 }

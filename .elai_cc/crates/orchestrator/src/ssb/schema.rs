@@ -5580,6 +5580,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'sft_exhaust_event',
         -- J-23: review-gate catalog event. Pattern-2 flat; 4-arm
         -- ReviewGateCatalogEventKind rides in the payload.
+        -- L-2: claim risk aggregate observation. Pattern-2 flat; tier kind rides in payload.
+        'claim_risk_scored',
         'review_gate_catalog_event'
     )),
     payload     BLOB NOT NULL,

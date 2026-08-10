@@ -1648,6 +1648,7 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::SnowballingMeasured,
     // J-23: review-gate catalog event (Pattern-2 flat; 4-arm Kind in payload).
     SsbActionType::ReviewGateCatalogEvent,
+    SsbActionType::ClaimRiskScored,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

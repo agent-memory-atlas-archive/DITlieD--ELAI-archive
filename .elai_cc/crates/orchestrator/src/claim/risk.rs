@@ -1,16 +1,17 @@
 //! Deterministic claim-risk convergence fuse (L-2).
 
 use super::extract::{ClaimSet, ExtractedClaim};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RiskTier { Low, Medium, High, Critical }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PredictorKind {
     RefsUnresolved, RoundTrip, Oscillation, SemanticEntropy, Counterfactual, LogprobOptional,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PredictorSignal {
     pub source: PredictorKind,
     pub value: f64,
@@ -21,7 +22,7 @@ pub trait PredictorSource {
     fn signals(&self, claim: &ExtractedClaim) -> Vec<PredictorSignal>;
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClaimRisk {
     tier: RiskTier,
     pub signals: Vec<PredictorSignal>,

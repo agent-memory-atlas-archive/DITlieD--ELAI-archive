@@ -4013,6 +4013,8 @@ pub enum SsbPayload {
     /// J-23: review-gate catalog event.
     /// 4-arm ReviewGateCatalogEventKind rides in the payload.
     ReviewGateCatalogEvent(ReviewGateCatalogEventPayload),
+    /// L-2: one row for the aggregate risk of a non-empty ClaimSet.
+    ClaimRiskScored(ClaimRiskScoredPayload),
 }
 
 impl SsbPayload {
@@ -4864,6 +4866,7 @@ impl SsbPayload {
             Self::DagCreditAssigned(_) => SsbActionType::DagCreditAssigned,
             Self::SftExhaustEvent(_) => SsbActionType::SftExhaustEvent,
             Self::ReviewGateCatalogEvent(_) => SsbActionType::ReviewGateCatalogEvent,
+            Self::ClaimRiskScored(_) => SsbActionType::ClaimRiskScored,
         }
     }
 }
@@ -21989,4 +21992,25 @@ pub struct ReviewGateCatalogEventPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal_reason: Option<String>,
     pub ts_ms: i64,
+}
+
+/// L-2 aggregate risk tier for one scored ClaimSet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimRiskScoredKind { LowRisk, MediumRisk, HighRisk, CriticalRisk }
+
+/// L-2 auditable aggregate risk row; counts and digests permit recomputation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimRiskScoredPayload {
+    pub kind: ClaimRiskScoredKind,
+    pub low_count: usize,
+    pub medium_count: usize,
+    pub high_count: usize,
+    pub critical_count: usize,
+    pub predictors: Vec<crate::claim::risk::PredictorKind>,
+    pub consult: Vec<crate::claim::risk::PredictorKind>,
+    pub unresolved_ref_count: usize,
+    pub claim_count: usize,
+    pub claim_digests: Vec<[u8; 32]>,
 }
