@@ -553,6 +553,7 @@ mod runtime_cmd;
 // store on Unavailable). Handler at crates/cli/src/providers_cmd.rs.
 mod providers_cmd;
 mod rule_cmd;
+mod build_cmd;
 mod providers_byok_ssb;
 // D-2: `elai ppm health` — three-step PPM sidecar health probe
 // (TCP -> /health -> canary /v1/ppm/score). Sync entrypoint owning a
@@ -751,6 +752,7 @@ fn run() -> Result<(), anyhow::Error> {
             LiveCli::print_providers_status(backend, output_format)?;
         }
         CliAction::RuleList { output_format, all } => rule_cmd::print_rule_list(output_format, all)?,
+        CliAction::Build { idea, plan_only, output_format } => build_cmd::run(&idea, plan_only, output_format)?,
         CliAction::RuleAdd { rule_id, domain, tier, severity, title, description, predicate, output_format } => rule_cmd::add_rule(rule_id, domain, tier, severity, title, description, predicate, output_format)?,
         CliAction::Skills { args, output_format } => LiveCli::print_skills(args.as_deref(), output_format)?,
         CliAction::PrintSystemPrompt { cwd, date, output_format } => print_system_prompt(cwd, date, output_format)?,

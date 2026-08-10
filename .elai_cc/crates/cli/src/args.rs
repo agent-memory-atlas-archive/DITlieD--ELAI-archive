@@ -73,6 +73,7 @@ use crate::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CliAction {
+    Build { idea: String, plan_only: bool, output_format: CliOutputFormat },
     DumpManifests {
         output_format: CliOutputFormat,
     },
@@ -3269,6 +3270,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // crates/cli/src/providers_cmd.rs.
         "providers" => parse_providers_subcommand_args(&rest[1..], output_format),
         "rule" => parse_rule_subcommand_args(&rest[1..], output_format),
+        "build" => parse_build_subcommand_args(&rest[1..], output_format),
         "skills" => Ok(CliAction::Skills {
             args: join_optional_args(&rest[1..]),
             output_format,
@@ -4363,6 +4365,34 @@ fn parse_wiring_coverage_subcommand_args(
         manifest_path,
         diff_base,
         output_format,
+    })
+}
+
+/// Parse `elai build "<idea>" [--plan-only] [--json]`.
+pub(crate) fn parse_build_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut idea = None;
+    let mut plan_only = false;
+    let mut format = output_format;
+
+    for argument in rest {
+        match argument.as_str() {
+            "--plan-only" => plan_only = true,
+            "--json" => format = CliOutputFormat::Json,
+            value if !value.starts_with('-') && idea.is_none() => idea = Some(value.to_string()),
+            value if !value.starts_with('-') => {
+                return Err(format!("unknown `build` argument: {value}"));
+            }
+            value => return Err(format!("unknown `build` argument: {value}")),
+        }
+    }
+
+    Ok(CliAction::Build {
+        idea: idea.ok_or_else(|| "build requires an <idea> argument".to_string())?,
+        plan_only,
+        output_format: format,
     })
 }
 
