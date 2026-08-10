@@ -26,6 +26,14 @@ use serde::{Deserialize, Serialize};
 use crate::mast::{finding_to_mast_mode, MastMode};
 use crate::ssb_viewer::{SsbActionDetail, SsbViewer, SsbViewerError};
 
+/// Rows come back externally tagged because `SsbPayload` is a plain-derive
+/// enum: the top-level key is the variant name and the value is the inner
+/// payload. Navigate into it, falling back to the value itself so a bare
+/// payload (older rows, hand-built fixtures) still reads.
+fn inner_payload<'a>(row: &'a SsbActionDetail, variant: &str) -> &'a serde_json::Value {
+    row.payload_json.get(variant).unwrap_or(&row.payload_json)
+}
+
 /// One MAST-mode hit on a closed run. Carries the SSB row identifiers
 /// that drove the classification + a confidence in basis points (0..=10_000).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,8 +128,7 @@ pub fn classify_closed_run(
         if !row_belongs_to_session(row, session_id) {
             continue;
         }
-        let category = match row
-            .payload_json
+        let category = match inner_payload(row, "Finding")
             .get("category")
             .and_then(|v| v.as_str())
         {
@@ -147,8 +154,7 @@ pub fn classify_closed_run(
         if !row_belongs_to_session(row, session_id) {
             continue;
         }
-        let category = match row
-            .payload_json
+        let category = match inner_payload(row, "Finding")
             .get("category")
             .and_then(|v| v.as_str())
         {
@@ -178,18 +184,17 @@ pub fn classify_closed_run(
         .iter()
         .find(|r| row_belongs_to_session(r, session_id))
         .and_then(|r| {
-            r.payload_json
-                .get("outcome")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+            inner_payload(r, "TestOutcome")
+                .get("passed")
+                .and_then(|v| v.as_bool())
         });
-    if matches!(last_outcome.as_deref(), Some("PASS") | Some("pass")) {
+    if last_outcome == Some(true) {
         // Find any earlier failure-severity finding row.
         let failure_seqs: Vec<i64> = findings
             .iter()
             .filter(|r| row_belongs_to_session(r, session_id))
             .filter(|r| {
-                r.payload_json
+                inner_payload(r, "Finding")
                     .get("severity")
                     .and_then(|v| v.as_str())
                     .map(|s| matches!(s, "FAILURE" | "BLOCK" | "failure" | "block"))
@@ -217,7 +222,10 @@ pub fn classify_closed_run(
 /// to the payload JSON's `session_id` field when present, else accept
 /// the row (best-effort -- caller filters again downstream).
 fn row_belongs_to_session(row: &SsbActionDetail, session_id: &str) -> bool {
-    match row.payload_json.get("session_id").and_then(|v| v.as_str()) {
+    // Finding and TestOutcome payloads do not carry session_id, so absent stays permissive.
+    match inner_payload(row, "Finding")
+        .get("session_id")
+        .and_then(|v| v.as_str()) {
         Some(s) if s.is_empty() => true,
         Some(s) => s == session_id,
         None => true,
