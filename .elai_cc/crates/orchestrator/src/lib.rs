@@ -228,6 +228,7 @@ pub mod context_boundary;
 pub mod completion_gate;
 pub use completion_gate::{maybe_downgrade_passed, non_terminal_task_ids_for_agent};
 pub mod context_policy;
+pub mod context_projection;
 // I-14: deterministic context compression middleware (CACHE-INVARIANT ECONOMICS).
 // Tier-1 AstFold (tree-sitter body elision) + LspSlice (compiler-error slicing),
 // each journaled as a reversible ContextTransformReceipt SSB row (ID-3). Wired at
@@ -267,6 +268,7 @@ pub mod privacy_redactor;
 pub mod redaction;
 pub mod branch_lock;
 mod compact;
+pub(crate) mod compact_legacy;
 pub mod lossless_compaction_gate;
 pub mod handoff_faithfulness;
 // J-76 C7: intermediate-numerics extraction helpers (split from compact).

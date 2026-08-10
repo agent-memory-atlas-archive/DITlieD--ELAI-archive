@@ -123,55 +123,34 @@ pub fn compact_session(session: &Session, config: CompactionConfig) -> Compactio
         .first()
         .and_then(extract_existing_compacted_summary);
     let compacted_prefix_len = usize::from(existing_summary.is_some());
-
-    // J-36 frozen-head: preserve leading non-summary System messages
-    // (sys+rules+anchor head).
-    let frozen_len = crate::context_policy::frozen_head_system_prefix_len(
-        |i| {
-            session.messages.get(i).is_some_and(|m| m.role == MessageRole::System)
-        },
-        |i| {
-            session
-                .messages
-                .get(i)
-                .and_then(extract_existing_compacted_summary)
-                .is_some()
-        },
+    // Keep this computation in the production consumer: the freeze is an explicit
+    // input to the pure projection, and the contract audits this production hook.
+    let frozen_head_len = crate::context_policy::frozen_head_system_prefix_len(
+        |i| session.messages.get(i).is_some_and(|m| m.role == MessageRole::System),
+        |i| session.messages.get(i).and_then(extract_existing_compacted_summary).is_some(),
         session.messages.len(),
     );
-    let start = compacted_prefix_len.max(frozen_len);
+    let freeze = crate::context_projection::FreezeState {
+        frozen_head_len,
+        compacted_prefix_len,
+    };
 
-    let keep_from = session
-        .messages
-        .len()
-        .saturating_sub(config.preserve_recent_messages);
-    let removed = &session.messages[start..keep_from.max(start)];
-    let preserved = session.messages[keep_from.max(start)..].to_vec();
-    let summary = merge_compact_summaries(
-        existing_summary.as_deref(),
-        &summarize_messages(removed, config.preserve_intermediate_numerics),
-    );
-    let formatted_summary = format_compact_summary(&summary);
-    let continuation = get_compact_continuation_message(&summary, true, !preserved.is_empty());
+    if crate::context_projection::projection_disabled() {
+        return crate::compact_legacy::compact_session_legacy_mutate(session, config);
+    }
 
-    let mut compacted_messages: Vec<ConversationMessage> =
-        session.messages[..frozen_len].to_vec();
-    compacted_messages.push(ConversationMessage {
-        role: MessageRole::System,
-        blocks: vec![ContentBlock::Text { text: continuation }],
-        usage: None,
-    });
-    compacted_messages.extend(preserved);
-
+    let log = crate::context_projection::TranscriptLog::from_session(session);
+    let policy = crate::context_policy::regime_policy(crate::dispatcher::BackendMode::default());
+    let view = crate::context_projection::fold(&log, &config, policy, &freeze);
     let mut compacted_session = session.clone();
-    compacted_session.messages = compacted_messages;
-    compacted_session.record_compaction(summary.clone(), removed.len());
+    compacted_session.messages = view.messages;
+    compacted_session.record_compaction(view.summary.clone(), view.removed_message_count);
 
     CompactionResult {
-        summary,
-        formatted_summary,
+        formatted_summary: format_compact_summary(&view.summary),
+        summary: view.summary,
         compacted_session,
-        removed_message_count: removed.len(),
+        removed_message_count: view.removed_message_count,
     }
 }
 
@@ -185,7 +164,7 @@ fn compacted_summary_prefix_len(session: &Session) -> usize {
     )
 }
 
-fn summarize_messages(messages: &[ConversationMessage], preserve_numerics: bool) -> String {
+pub(crate) fn summarize_messages(messages: &[ConversationMessage], preserve_numerics: bool) -> String {
     let user_messages = messages
         .iter()
         .filter(|message| message.role == MessageRole::User)
@@ -280,7 +259,7 @@ fn summarize_messages(messages: &[ConversationMessage], preserve_numerics: bool)
     lines.join("\n")
 }
 
-fn merge_compact_summaries(existing_summary: Option<&str>, new_summary: &str) -> String {
+pub(crate) fn merge_compact_summaries(existing_summary: Option<&str>, new_summary: &str) -> String {
     let Some(existing_summary) = existing_summary else {
         return new_summary.to_string();
     };
@@ -492,7 +471,7 @@ fn collapse_blank_lines(content: &str) -> String {
     result
 }
 
-fn extract_existing_compacted_summary(message: &ConversationMessage) -> Option<String> {
+pub(crate) fn extract_existing_compacted_summary(message: &ConversationMessage) -> Option<String> {
     if message.role != MessageRole::System {
         return None;
     }
