@@ -209,6 +209,11 @@ pub struct ConversationRuntime<C, T> {
     /// [`Self::with_ssb_writer`]; default `None`.
     ssb_writer: Option<std::sync::Arc<crate::ssb::Ssb>>,
     context_budget: Option<ContextBudget>,
+    /// L-16 CC-2: the active projection epoch. `None` = no compaction has been
+    /// warranted yet and the provider-facing array is the verbatim log. `Some(cfg)`
+    /// = every later turn folds the whole immutable log at `cfg` instead of
+    /// rewriting `session.messages`.
+    projection_epoch: Option<CompactionConfig>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -278,6 +283,7 @@ where
             // across every existing constructor and test fixture.
             ssb_writer: None,
             context_budget: None,
+            projection_epoch: None,
         }
     }
 
@@ -520,7 +526,7 @@ where
 
             let request = ApiRequest {
                 system_prompt: self.system_prompt.clone(),
-                messages: self.session.messages.clone(),
+                messages: self.provider_view_messages(),
             };
             let events = match self.api_client.stream(request) {
                 Ok(events) => events,
@@ -949,6 +955,65 @@ where
         });
     }
 
+    /// L-16 CC-2: the provider-facing message array as a pure fold of the
+    /// immutable transcript log, recomputed on every turn.
+    fn provider_view_messages(&self) -> Vec<ConversationMessage> {
+        let Some(config) = self.projection_epoch else {
+            return self.session.messages.clone();
+        };
+        if crate::context_projection::projection_disabled() {
+            return self.session.messages.clone();
+        }
+        let frozen_head_len = crate::context_policy::frozen_head_system_prefix_len(
+            |i| {
+                self.session
+                    .messages
+                    .get(i)
+                    .is_some_and(|m| m.role == crate::session::MessageRole::System)
+            },
+            |i| self
+                .session
+                .messages
+                .get(i)
+                .and_then(crate::compact::extract_existing_compacted_summary)
+                .is_some(),
+            self.session.messages.len(),
+        );
+        // The append-only log has no physical summary message. Supply the
+        // prior epoch's summary in a temporary projection input, leaving the
+        // session log untouched while giving the fold the same continuation
+        // boundary as the legacy compactor.
+        let mut projection_session = self.session.clone();
+        let compacted_prefix_len = usize::from(self.session.compaction.is_some());
+        if let Some(compaction) = self.session.compaction.as_ref() {
+            let continuation = crate::compact::get_compact_continuation_message(
+                &compaction.summary,
+                true,
+                projection_session.messages.len() > frozen_head_len,
+            );
+            projection_session.messages.insert(
+                frozen_head_len.min(projection_session.messages.len()),
+                ConversationMessage {
+                    role: crate::session::MessageRole::System,
+                    blocks: vec![crate::session::ContentBlock::Text { text: continuation }],
+                    usage: None,
+                },
+            );
+        }
+        let freeze = crate::context_projection::FreezeState {
+            frozen_head_len,
+            compacted_prefix_len,
+        };
+        let log = crate::context_projection::TranscriptLog::from_session(&projection_session);
+        crate::context_projection::fold(
+            &log,
+            &config,
+            regime_policy(self.context_backend_mode),
+            &freeze,
+        )
+        .messages
+    }
+
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
         let input_tokens = self.usage_tracker.cumulative_usage().input_tokens;
         // J-25 T4: graded pressure ladder drives entry. The window and policy
@@ -1040,7 +1105,13 @@ where
             return None;
         }
 
-        self.session = result.compacted_session;
+        if crate::context_projection::projection_disabled() {
+            self.session = result.compacted_session;
+        } else {
+            self.projection_epoch = Some(compaction_config);
+            self.session
+                .record_compaction(result.summary, result.removed_message_count);
+        }
 
         // BLOCK-2 fix: emit a ContextReduction SSB row from the real local
         // trim path.  The ssb_writer is threaded in via with_ssb_writer;
@@ -2093,59 +2164,98 @@ mod tests {
     }
 
     #[test]
-    fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
-        struct SimpleApi;
-        impl ApiClient for SimpleApi {
-            fn stream(
-                &mut self,
-                _request: ApiRequest,
-            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
-                Ok(vec![
-                    AssistantEvent::TextDelta("done".to_string()),
-                    AssistantEvent::Usage(TokenUsage {
-                        input_tokens: 120_000,
-                        output_tokens: 4,
-                        cache_creation_input_tokens: 0,
-                        cache_read_input_tokens: 0,
-                    }),
-                    AssistantEvent::MessageStop,
-                ])
-            }
-        }
-
-        let mut session = Session::new();
-        session.messages = vec![
-            crate::session::ConversationMessage::user_text("one"),
-            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
-                text: "two".to_string(),
-            }]),
-            crate::session::ConversationMessage::user_text("three"),
-            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
-                text: "four".to_string(),
-            }]),
-        ];
-
-        let mut runtime = ConversationRuntime::new(
-            session,
-            SimpleApi,
-            StaticToolExecutor::new(),
-            PermissionPolicy::new(PermissionMode::DangerFullAccess),
-            vec!["system".to_string()],
-        )
-        .with_auto_compaction_input_tokens_threshold(100_000);
-
-        let summary = runtime
-            .run_turn("trigger", None)
-            .expect("turn should succeed");
-
-        assert_eq!(
-            summary.auto_compaction,
-            Some(AutoCompactionEvent {
-                removed_message_count: 2,
-            })
-        );
-        assert_eq!(runtime.session().messages[0].role, MessageRole::System);
+fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
+    // Records every provider request AND reports usage above the threshold,
+    // so the cumulative-input trigger fires exactly as it did on main.
+    struct RecordingHighUsageApi {
+        seen: std::rc::Rc<std::cell::RefCell<Vec<Vec<crate::session::ConversationMessage>>>>,
     }
+    impl ApiClient for RecordingHighUsageApi {
+        fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            self.seen.borrow_mut().push(request.messages);
+            Ok(vec![
+                AssistantEvent::TextDelta("done".to_string()),
+                AssistantEvent::Usage(TokenUsage {
+                    input_tokens: 120_000,
+                    output_tokens: 4,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                }),
+                AssistantEvent::MessageStop,
+            ])
+        }
+    }
+
+    let mut session = Session::new();
+    session.messages = vec![
+        crate::session::ConversationMessage::user_text("one"),
+        crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
+            text: "two".to_string(),
+        }]),
+        crate::session::ConversationMessage::user_text("three"),
+        crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
+            text: "four".to_string(),
+        }]),
+    ];
+
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut runtime = ConversationRuntime::new(
+        session,
+        RecordingHighUsageApi { seen: seen.clone() },
+        StaticToolExecutor::new(),
+        PermissionPolicy::new(PermissionMode::DangerFullAccess),
+        vec!["system".to_string()],
+    )
+    .with_auto_compaction_input_tokens_threshold(100_000);
+
+    let summary = runtime
+        .run_turn("trigger", None)
+        .expect("turn should succeed");
+
+    // UNCHANGED: auto-compaction still fires on the cumulative trigger and reports.
+    assert_eq!(
+        summary.auto_compaction,
+        Some(AutoCompactionEvent {
+            removed_message_count: 2,
+        })
+    );
+
+    // CC-1 (deliberate contract change, L-16 slice 2): the transcript log is
+    // immutable ground truth. The System summary is NOT written into the log;
+    // messages[0] stays the original User message. On main this assertion was
+    // `MessageRole::System` and pinned the destructive rewrite.
+    assert_eq!(runtime.session().messages[0].role, MessageRole::User);
+
+    // The compaction is still recorded on the session metadata (this is the
+    // durable record the projection's summary continuation is rebuilt from).
+    let recorded = runtime
+        .session()
+        .compaction
+        .as_ref()
+        .expect("compaction must be recorded on Session.compaction");
+    assert_eq!(recorded.removed_message_count, 2);
+
+    // RE-POINTED: the System summary now lives in the PROVIDER VIEW, recomputed
+    // per turn. The compacting turn's own request was built before compaction
+    // ran, so run a second turn and assert on what the provider actually received.
+    runtime
+        .run_turn("after compaction", None)
+        .expect("post-compaction turn should succeed");
+    let requests = seen.borrow();
+    let last = requests
+        .last()
+        .expect("recording API should see the post-compaction request");
+    assert_eq!(
+        last[0].role,
+        MessageRole::System,
+        "provider view must lead with the System compaction continuation"
+    );
+    assert!(
+        last.iter()
+            .any(|message| message_text(message).contains("Conversation summary")),
+        "provider view must carry the compacted summary continuation"
+    );
+}
 
     #[test]
     fn skips_auto_compaction_below_threshold() {
@@ -2316,4 +2426,171 @@ mod tests {
         // then
         assert_eq!(error.to_string(), "upstream failed");
     }
+
+    #[derive(Clone, Default)]
+    struct RecordingApi {
+        seen: std::rc::Rc<std::cell::RefCell<Vec<Vec<crate::session::ConversationMessage>>>>,
+    }
+
+    impl ApiClient for RecordingApi {
+        fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            self.seen.borrow_mut().push(request.messages);
+            Ok(vec![
+                AssistantEvent::TextDelta("done".to_string()),
+                AssistantEvent::Usage(TokenUsage {
+                    input_tokens: 120_000,
+                    output_tokens: 1,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                }),
+                AssistantEvent::MessageStop,
+            ])
+        }
+    }
+
+    fn projection_test_session() -> Session {
+        let mut session = Session::new();
+        session.messages = vec![
+            crate::session::ConversationMessage::user_text("original-first"),
+            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: "assistant-one".to_string(),
+            }]),
+            crate::session::ConversationMessage::user_text("user-two"),
+            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: "assistant-two".to_string(),
+            }]),
+            crate::session::ConversationMessage::user_text("user-three"),
+            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: "assistant-three".to_string(),
+            }]),
+        ];
+        session
+    }
+
+    fn message_text(message: &crate::session::ConversationMessage) -> String {
+        message
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn run_turn_sends_the_projected_view_not_the_raw_log() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let api = RecordingApi { seen: seen.clone() };
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(),
+            api,
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
+
+        runtime.run_turn("open epoch", None).expect("epoch-opening turn");
+        runtime
+            .run_turn("after epoch", None)
+            .expect("post-epoch turn");
+
+        let requests = seen.borrow();
+        let last = requests.last().expect("recording API should see the last request");
+        assert!(
+            last.len() < requests[0].len(),
+            "provider view must be shorter than the immutable transcript"
+        );
+        assert!(
+            last.iter().any(|message| message_text(message).contains("Conversation summary")),
+            "provider view must contain the compacted summary continuation"
+        );
+    }
+
+    #[test]
+    fn auto_compaction_never_shortens_the_transcript_log() {
+        let original = projection_test_session();
+        let first_message = original.messages[0].clone();
+        let before = original.messages.len();
+        let mut runtime = ConversationRuntime::new(
+            original,
+            RecordingApi::default(),
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
+
+        runtime.run_turn("trigger compaction", None).expect("turn");
+
+        assert!(runtime.session().messages.len() > before);
+        assert_eq!(runtime.session().messages[0], first_message);
+    }
+
+    #[test]
+    fn provider_view_includes_messages_appended_after_the_epoch() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(),
+            RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
+
+        runtime.run_turn("open epoch", None).expect("epoch-opening turn");
+        runtime
+            .run_turn("needle-after-epoch", None)
+            .expect("post-epoch turn");
+
+        let requests = seen.borrow();
+        let last = requests.last().expect("post-epoch request should be recorded");
+        assert!(
+            last.iter().any(|message| message_text(message).contains("needle-after-epoch")),
+            "freshly appended post-epoch user text must reach the provider"
+        );
+    }
+
+    #[test]
+    fn projection_disabled_keeps_the_legacy_mutating_path() {
+        crate::context_projection::set_projection_disabled_for_test(Some(true));
+
+        struct RecordingHighUsageApi;
+        impl ApiClient for RecordingHighUsageApi {
+            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                let _ = request;
+                Ok(vec![
+                    AssistantEvent::TextDelta("done".to_string()),
+                    AssistantEvent::Usage(TokenUsage {
+                        input_tokens: 120_000,
+                        output_tokens: 4,
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
+                    }),
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let session = projection_test_session();
+        let before = session.messages.len();
+        let mut runtime = ConversationRuntime::new(
+            session,
+            RecordingHighUsageApi,
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(100_000);
+        let turn_result = runtime.run_turn("legacy compaction", None);
+        let shortened = runtime.session().messages.len() < before;
+
+        crate::context_projection::set_projection_disabled_for_test(None);
+        turn_result.expect("turn");
+        assert!(shortened, "rollback mode should retain the legacy mutating path");
+    }
+
 }

@@ -36,8 +36,24 @@ pub struct View {
 
 const ELAI_CONTEXT_PROJECTION_DISABLE_VAR: &str = "ELAI_CONTEXT_PROJECTION_DISABLE";
 
+#[cfg(test)]
+thread_local! {
+    static PROJECTION_DISABLED_OVERRIDE: std::cell::Cell<Option<bool>> =
+        std::cell::Cell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn set_projection_disabled_for_test(value: Option<bool>) {
+    PROJECTION_DISABLED_OVERRIDE.with(|override_value| override_value.set(value));
+}
+
 /// Returns whether the legacy mutating rollback path is requested.
 pub fn projection_disabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = PROJECTION_DISABLED_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+
     std::env::var(ELAI_CONTEXT_PROJECTION_DISABLE_VAR)
         .map(|value| value == "1")
         .unwrap_or(false)
