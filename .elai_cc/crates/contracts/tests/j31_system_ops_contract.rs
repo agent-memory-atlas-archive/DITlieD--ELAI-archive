@@ -8,7 +8,9 @@ use elai_core::tool_dispatcher::{
     GitCommitRequest, IncrementalOutcome, IncrementalRequest, ToolDispatchError, ToolDispatcher,
     ValidateRequest, ValidationTierResult,
 };
-use elai_ipc_types::{CanvasBindNodeRequest, CanvasDeclareEdgeRequest};
+use elai_ipc_types::{
+    CanvasBindNodeRequest, CanvasDeclareEdgeRequest, CanvasSetDisplayRequest,
+};
 use elai_orchestrator::{
     production_agent_rpc::translate_tool_request_for_test,
     ssb::{Ssb, SsbConfig},
@@ -198,4 +200,176 @@ async fn bind_node_design_mode_is_rejected() {
     )
     .await;
     assert!(result.is_err(), "design-mode bind must be rejected");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn system_canvas_multi_node_and_edge_contract() {
+    let dir = TempDir::new().expect("tempdir");
+    let db_path = dir.path().join("contract_j31.db");
+    let sink = Arc::new(make_test_ssb(&dir));
+    let dispatcher = NoOpDispatcher;
+    let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+
+    for (node_id, display, binding_ref, col, row) in [
+        ("producer", "Producer", "p", 1, 1),
+        ("consumer", "Consumer", "c", 2, 2),
+        ("sink", "Sink", "s", 3, 3),
+    ] {
+        let bind = CanvasBindNodeRequest {
+            node_id: node_id.into(),
+            binding_kind: "contract".into(),
+            binding_ref: binding_ref.into(),
+            display: display.into(),
+            col,
+            row,
+            mode: "system".into(),
+        };
+        translate_tool_request_for_test(
+            elai_ipc_types::TOOL_CANVAS_BIND_NODE,
+            &postcard::to_allocvec(&bind).expect("encode bind"),
+            &dispatcher,
+            Some(&sink),
+            None,
+            &clock,
+        )
+        .await
+        .expect("bind");
+    }
+
+    wait_for_canvas(&db_path, |canvas| {
+        canvas.nodes.len() == 3
+            && ["producer", "consumer", "sink"]
+                .iter()
+                .all(|node_id| canvas.nodes.iter().any(|node| node.node_id == *node_id))
+    })
+    .await;
+
+    let set_display = CanvasSetDisplayRequest {
+        node_id: "producer".into(),
+        binding_kind: "contract".into(),
+        binding_ref: "p".into(),
+        display: "Producer (new display)".into(),
+        col: 1,
+        row: 1,
+        mode: "system".into(),
+    };
+    translate_tool_request_for_test(
+        elai_ipc_types::TOOL_CANVAS_SET_DISPLAY,
+        &postcard::to_allocvec(&set_display).expect("encode display"),
+        &dispatcher,
+        Some(&sink),
+        None,
+        &clock,
+    )
+    .await
+    .expect("set display");
+
+    wait_for_canvas(&db_path, |canvas| {
+        canvas.nodes.iter().any(|node| {
+            node.node_id == "producer" && node.display == "Producer (new display)"
+        })
+    })
+    .await;
+
+    let viewer = SsbViewer::open(&db_path).expect("viewer");
+    let canvas = elai_orchestrator::system_canvas::get_system_canvas(&viewer, 64)
+        .expect("canvas");
+    assert_eq!(canvas.nodes.len(), 3);
+    assert!(
+        ["producer", "consumer", "sink"]
+            .iter()
+            .all(|node_id| canvas.nodes.iter().any(|node| node.node_id == *node_id))
+    );
+    let producer = canvas
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "producer")
+        .expect("producer node");
+    assert_eq!(producer.display, "Producer (new display)");
+
+    for edge in [
+        CanvasDeclareEdgeRequest {
+            producer_node: "producer".into(),
+            consumer_node: "consumer".into(),
+            produces: "x".into(),
+            consumes: "x".into(),
+            reachable_from: "p".into(),
+            observable_effect: "e".into(),
+            mode: "system".into(),
+        },
+        CanvasDeclareEdgeRequest {
+            producer_node: "ghost".into(),
+            consumer_node: "sink".into(),
+            produces: "ghost-output".into(),
+            consumes: "ghost-input".into(),
+            reachable_from: "ghost".into(),
+            observable_effect: "ghost-effect".into(),
+            mode: "system".into(),
+        },
+    ] {
+        translate_tool_request_for_test(
+            elai_ipc_types::TOOL_CANVAS_DECLARE_EDGE,
+            &postcard::to_allocvec(&edge).expect("encode edge"),
+            &dispatcher,
+            Some(&sink),
+            None,
+            &clock,
+        )
+        .await
+        .expect("declare edge");
+    }
+
+    wait_for_canvas(&db_path, |canvas| {
+        canvas.edges.len() == 2
+            && canvas.edges.iter().any(|edge| {
+                edge.producer_node == "producer" && edge.consumer_node == "consumer"
+            })
+            && canvas.edges.iter().any(|edge| {
+                edge.producer_node == "ghost" && edge.consumer_node == "sink"
+            })
+    })
+    .await;
+
+    let viewer = SsbViewer::open(&db_path).expect("viewer");
+    let canvas = elai_orchestrator::system_canvas::get_system_canvas(&viewer, 64)
+        .expect("canvas");
+    assert_eq!(canvas.nodes.len(), 3);
+    assert!(
+        ["producer", "consumer", "sink"]
+            .iter()
+            .all(|node_id| canvas.nodes.iter().any(|node| node.node_id == *node_id))
+    );
+    let producer = canvas
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "producer")
+        .expect("producer node");
+    assert_eq!(producer.display, "Producer (new display)");
+
+    assert_eq!(canvas.edges.len(), 2);
+    assert!(canvas.edges.iter().any(|edge| {
+        edge.producer_node == "producer" && edge.consumer_node == "consumer"
+    }));
+    assert!(canvas.edges.iter().any(|edge| {
+        edge.producer_node == "ghost" && edge.consumer_node == "sink"
+    }));
+    for edge in &canvas.edges {
+        assert_eq!(
+            edge.verdict,
+            elai_orchestrator::system_canvas::SystemEdgeVerdict::Declared
+        );
+        assert_ne!(
+            edge.verdict,
+            elai_orchestrator::system_canvas::SystemEdgeVerdict::Verified
+        );
+    }
+
+    let action = elai_orchestrator::ssb::SsbActionType::SystemContractEvent(
+        elai_orchestrator::ssb::SystemContractEventKind::NodeBound,
+    )
+    .as_sql_str();
+    let rows = viewer
+        .recent_rows_of_type(action, 64)
+        .expect("node-bound rows");
+    assert!(rows.len() >= 3, "expected at least three node-bound rows, got {}", rows.len());
 }

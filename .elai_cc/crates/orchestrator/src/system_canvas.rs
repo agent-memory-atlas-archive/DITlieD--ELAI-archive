@@ -84,8 +84,6 @@ pub struct EdgeVerdictInputs {
     pub checker_mismatch: bool,
 }
 
-// WIRE-DARK[J-31]: caller is the Unit-3 auditor verdict tick
-// (canvas_dispatcher.rs SYSTEM_NAMESPACE handler) + Unit-4 Tauri refresh_system_verdicts cmd. Promotion: Units 3/4 of the J-31 plan.
 #[must_use]
 pub fn derive_edge_verdict(inputs: EdgeVerdictInputs) -> SystemEdgeVerdict {
     if inputs.checker_mismatch {
@@ -100,9 +98,6 @@ pub fn derive_edge_verdict(inputs: EdgeVerdictInputs) -> SystemEdgeVerdict {
     SystemEdgeVerdict::Declared
 }
 
-// WIRE-DARK[J-31]: caller is the Unit-4 Tauri command `get_system_canvas_cmd`
-// (crates/dashboard-v2/src-tauri/src/commands.rs, mirrors get_usage_rollup
-// at :5670). Promotion: Unit 4 of the J-31 plan (same plan, not a graveyard).
 pub fn get_system_canvas(
     viewer: &SsbViewer,
     limit: usize,
