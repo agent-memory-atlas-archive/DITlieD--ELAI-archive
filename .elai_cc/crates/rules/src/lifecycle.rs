@@ -340,6 +340,72 @@ pub fn fetch_all_active_rules(
     Ok(rules)
 }
 
+/// User-authored rule data accepted by the lifecycle insertion seam.
+#[derive(Debug, Clone)]
+pub struct UserRuleSpec {
+    pub rule_id: String,
+    pub domain: String,
+    pub tier: u8,
+    pub severity: String,
+    pub title: String,
+    pub description: String,
+    pub predicate_json: String,
+}
+
+/// Insert a new human-authored rule in the non-live PROPOSED state.
+pub fn insert_user_rule(
+    conn: &Connection,
+    spec: &UserRuleSpec,
+    clock: &impl ClockProvider,
+) -> Result<(), LifecycleError> {
+    crate::predicate::from_json(&spec.predicate_json)
+        .map_err(|e| LifecycleError::InvalidPredicate(e.to_string()))?;
+    match fetch_rule_record(conn, &spec.rule_id) {
+        Ok(_) => return Err(LifecycleError::RuleAlreadyExists { rule_id: spec.rule_id.clone() }),
+        Err(LifecycleError::RuleNotFound { .. }) => {}
+        Err(error) => return Err(error),
+    }
+    conn.execute(
+        "INSERT INTO rules (rule_id, domain, tier, status, title, description, predicate,          phase_mask, severity, mutable, created_at, promoted_at, version, source)          VALUES (?1, ?2, ?3, 'PROPOSED', ?4, ?5, ?6, 255, ?7, 1, ?8, NULL, 1, 'HUMAN')",
+        rusqlite::params![
+            spec.rule_id, spec.domain, spec.tier, spec.title, spec.description,
+            spec.predicate_json, spec.severity, epoch_secs(clock),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Compact row used by the all-status rule listing.
+#[derive(Debug, Clone)]
+pub struct UserRuleSummary {
+    pub rule_id: String,
+    pub domain: String,
+    pub tier: u8,
+    pub status: String,
+    pub severity: String,
+    pub title: String,
+    pub mutable: bool,
+}
+
+/// Fetch every rule, including non-live lifecycle states.
+pub fn fetch_all_rules(conn: &Connection) -> Result<Vec<UserRuleSummary>, LifecycleError> {
+    let mut stmt = conn.prepare(
+        "SELECT rule_id, domain, tier, status, severity, title, mutable FROM rules          ORDER BY tier ASC, rule_id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(UserRuleSummary {
+            rule_id: row.get(0)?,
+            domain: row.get(1)?,
+            tier: row.get(2)?,
+            status: row.get(3)?,
+            severity: row.get(4)?,
+            title: row.get(5)?,
+            mutable: row.get::<_, i32>(6)? != 0,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(LifecycleError::from)
+}
+
 /// Compute aggregated metrics for a rule across all metric windows.
 pub fn compute_metrics_snapshot(
     conn: &Connection,

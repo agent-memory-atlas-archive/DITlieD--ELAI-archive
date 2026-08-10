@@ -60,4 +60,10 @@ pub enum LifecycleError {
 
     #[error("unknown rule source in database: {0}")]
     UnknownSource(String),
+
+    #[error("rule already exists: {rule_id}")]
+    RuleAlreadyExists { rule_id: String },
+
+    #[error("invalid predicate: {0}")]
+    InvalidPredicate(String),
 }

@@ -49,3 +49,167 @@ fn rule_list_rejects_unknown_flag() {
     let output = run(dir.path(), &["rule", "list", "--bogus"]);
     assert!(!output.status.success());
 }
+
+
+#[test]
+fn add_then_list_all_shows_proposed_row() {
+    // Falsifies the args `add` arm, the main dispatch arm, insert_user_rule and
+    // fetch_all_rules together.
+    let dir = temp_cwd();
+    let output = run(
+        dir.path(),
+        &[
+            "rule",
+            "add",
+            "--id",
+            "l13-add-list",
+            "--domain",
+            "testing",
+            "--tier",
+            "2",
+            "--severity",
+            "WARN",
+            "--title",
+            "Test rule",
+            "--description",
+            "A test rule",
+            "--predicate",
+            r#"{"type":"grep_pattern","pattern":"TODO","context_lines":0,"file_context":null}"#,
+        ],
+    );
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let output = run(dir.path(), &["rule", "list", "--all", "--json"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid rule JSON");
+    let rules = value["rules"].as_array().expect("rules array");
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["rule_id"], "l13-add-list");
+    assert_eq!(rules[0]["status"], "PROPOSED");
+}
+
+#[test]
+fn added_rule_is_not_live() {
+    // Falsifies any change that inserts a user rule at ACTIVE or SHADOW instead
+    // of PROPOSED. A newly authored rule must not be live.
+    let dir = temp_cwd();
+    let output = run(
+        dir.path(),
+        &[
+            "rule",
+            "add",
+            "--id",
+            "l13-not-live",
+            "--domain",
+            "testing",
+            "--tier",
+            "1",
+            "--severity",
+            "INFO",
+            "--title",
+            "Not live",
+            "--description",
+            "A proposed rule",
+            "--predicate",
+            r#"{"type":"grep_pattern","pattern":"TODO","context_lines":0,"file_context":null}"#,
+        ],
+    );
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let output = run(dir.path(), &["rule", "list", "--json"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid rule JSON");
+    assert_eq!(value["rules"].as_array().expect("rules array").len(), 0);
+}
+
+#[test]
+fn duplicate_rule_id_is_rejected() {
+    // Falsifies the RuleAlreadyExists guard, which stops an existing immutable
+    // rule from being overwritten.
+    let dir = temp_cwd();
+    let args = [
+        "rule",
+        "add",
+        "--id",
+        "l13-duplicate",
+        "--domain",
+        "testing",
+        "--tier",
+        "3",
+        "--severity",
+        "BLOCK",
+        "--title",
+        "Duplicate",
+        "--description",
+        "Duplicate rule",
+        "--predicate",
+        r#"{"type":"grep_pattern","pattern":"TODO","context_lines":0,"file_context":null}"#,
+    ];
+    let first = run(dir.path(), &args);
+    assert!(first.status.success(), "stderr: {}", String::from_utf8_lossy(&first.stderr));
+    let second = run(dir.path(), &args);
+    assert!(!second.status.success());
+    assert!(String::from_utf8_lossy(&second.stderr).contains("l13-duplicate"));
+}
+
+#[test]
+fn invalid_predicate_writes_nothing() {
+    // Falsifies a reordering that would insert the row before validating the
+    // predicate.
+    let dir = temp_cwd();
+    let output = run(
+        dir.path(),
+        &[
+            "rule",
+            "add",
+            "--id",
+            "l13-invalid",
+            "--domain",
+            "testing",
+            "--tier",
+            "2",
+            "--severity",
+            "WARN",
+            "--title",
+            "Invalid",
+            "--description",
+            "Invalid predicate",
+            "--predicate",
+            r#"{"type":"nonsense"}"#,
+        ],
+    );
+    assert!(!output.status.success());
+
+    let output = run(dir.path(), &["rule", "list", "--all", "--json"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid rule JSON");
+    assert_eq!(value["rules"].as_array().expect("rules array").len(), 0);
+}
+
+#[test]
+fn tier_out_of_range_is_rejected() {
+    // Falsifies the parser range check.
+    let dir = temp_cwd();
+    let output = run(
+        dir.path(),
+        &[
+            "rule",
+            "add",
+            "--id",
+            "l13-tier-range",
+            "--domain",
+            "testing",
+            "--tier",
+            "9",
+            "--severity",
+            "INFO",
+            "--title",
+            "Bad tier",
+            "--description",
+            "Out of range",
+            "--predicate",
+            r#"{"type":"grep_pattern","pattern":"TODO","context_lines":0,"file_context":null}"#,
+        ],
+    );
+    assert!(!output.status.success());
+}

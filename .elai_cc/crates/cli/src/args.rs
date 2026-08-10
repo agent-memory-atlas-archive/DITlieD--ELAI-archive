@@ -127,6 +127,17 @@ pub(crate) enum CliAction {
     },
     RuleList {
         output_format: CliOutputFormat,
+        all: bool,
+    },
+    RuleAdd {
+        rule_id: String,
+        domain: String,
+        tier: u8,
+        severity: String,
+        title: String,
+        description: String,
+        predicate: String,
+        output_format: CliOutputFormat,
     },
     Skills {
         args: Option<String>,
@@ -4360,22 +4371,50 @@ pub(crate) fn parse_rule_subcommand_args(
     rest: &[String],
     output_format: CliOutputFormat,
 ) -> Result<CliAction, String> {
-    match rest.first().map(String::as_str) {
-        Some("list") => {
-            let mut format = output_format;
-            for argument in &rest[1..] {
-                match argument.as_str() {
-                    "--json" => format = CliOutputFormat::Json,
-                    other => return Err(format!("unknown `rule list` argument: {other}")),
-                }
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    if sub == "list" {
+        let mut format = output_format;
+        let mut all = false;
+        for argument in &rest[1..] {
+            match argument.as_str() {
+                "--json" => format = CliOutputFormat::Json,
+                "--all" => all = true,
+                other => return Err(format!("unknown `rule list` argument: {other}")),
             }
-            Ok(CliAction::RuleList { output_format: format })
         }
-        Some(sub) => Err(format!(
-            "unknown `rule` sub-command: '{sub}' (expected 'list')"
-        )),
-        None => Err("missing `rule` sub-command (expected 'list')".to_string()),
+        return Ok(CliAction::RuleList { output_format: format, all });
     }
+    if sub != "add" {
+        return Err(format!("unknown `rule` sub-command: '{sub}' (expected 'add' or 'list')"));
+    }
+    let mut id = None; let mut domain = None; let mut tier = None;
+    let mut severity = None; let mut title = None; let mut description = None; let mut predicate = None;
+    let mut format = output_format;
+    let mut i = 1;
+    while i < rest.len() {
+        let arg = &rest[i];
+        let (flag, inline) = arg.split_once('=').map_or((arg.as_str(), None), |(f,v)|(f,Some(v.to_string())));
+        let value = |inline: Option<String>, i: &mut usize| -> Result<String, String> {
+            inline.ok_or_else(|| format!("missing value for {flag}")).or_else(|_| {
+                let v = rest.get(*i + 1).ok_or_else(|| format!("missing value for {flag}"))?.clone();
+                *i += 1; Ok(v)
+            })
+        };
+        match flag {
+            "--json" if inline.is_none() => format = CliOutputFormat::Json,
+            "--id" => id = Some(value(inline, &mut i)?),
+            "--domain" => domain = Some(value(inline, &mut i)?),
+            "--tier" => { let v=value(inline,&mut i)?; let n=v.parse::<u8>().map_err(|_| "tier must be 1, 2, or 3".to_string())?; if !(1..=3).contains(&n) { return Err("tier must be 1, 2, or 3".into()); } tier=Some(n); },
+            "--severity" => { let v=value(inline,&mut i)?.to_uppercase(); if !matches!(v.as_str(),"BLOCK"|"WARN"|"INFO") { return Err("severity must be BLOCK, WARN, or INFO".into()); } severity=Some(v); },
+            "--title" => title=Some(value(inline,&mut i)?),
+            "--description" => description=Some(value(inline,&mut i)?),
+            "--predicate" => predicate=Some(value(inline,&mut i)?),
+            _ => return Err(format!("unknown `rule add` argument: {arg}")),
+        }
+        i += 1;
+    }
+    macro_rules! required { ($v:expr, $n:literal) => { $v.ok_or_else(|| format!("missing required flag --{}", $n))? }; }
+    Ok(CliAction::RuleAdd { rule_id: required!(id,"id"), domain: required!(domain,"domain"), tier: required!(tier,"tier"), severity: required!(severity,"severity"), title: required!(title,"title"), description: required!(description,"description"), predicate: required!(predicate,"predicate"), output_format: format })
 }
 
 /// D-8 — parse `elai archive verify [--path PATH] [--json] [--fail-fast]`.

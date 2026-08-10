@@ -750,7 +750,8 @@ fn run() -> Result<(), anyhow::Error> {
             // stale). Text table or --json; no network, no GPU.
             LiveCli::print_providers_status(backend, output_format)?;
         }
-        CliAction::RuleList { output_format } => rule_cmd::print_rule_list(output_format)?,
+        CliAction::RuleList { output_format, all } => rule_cmd::print_rule_list(output_format, all)?,
+        CliAction::RuleAdd { rule_id, domain, tier, severity, title, description, predicate, output_format } => rule_cmd::add_rule(rule_id, domain, tier, severity, title, description, predicate, output_format)?,
         CliAction::Skills { args, output_format } => LiveCli::print_skills(args.as_deref(), output_format)?,
         CliAction::PrintSystemPrompt { cwd, date, output_format } => print_system_prompt(cwd, date, output_format)?,
         CliAction::Version { output_format } => print_version(output_format)?,
