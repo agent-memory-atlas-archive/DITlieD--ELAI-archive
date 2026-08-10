@@ -66,4 +66,7 @@ pub enum LifecycleError {
 
     #[error("invalid predicate: {0}")]
     InvalidPredicate(String),
+
+    #[error("rule refused by admission scan: {0}")]
+    AdmissionRefused(String),
 }
