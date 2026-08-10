@@ -239,6 +239,12 @@ pub struct QueryPipeline {
     /// adapter is installed. See
     /// `workflow/reasoning/E-40-tranche-B2-decisions.md`.
     symbol_graph_adapter: Option<Arc<dyn crate::symbol_graph_adapter::SymbolGraphAdapter>>,
+    /// J-18 LEG2: optional cli-rooted LSP channel adapter for the 6th-list
+    /// (`lsp_channel`) RRF input. When `Some` and
+    /// [`crate::lsp_channel::ELAI_LSP_CHANNEL_RRF_ENABLE_ENV`] is on, the
+    /// pipeline calls `workspace_symbol` for the raw query and merges the
+    /// ranked symbol hits as a 6th RRF list. None by default.
+    lsp_channel_adapter: Option<Arc<dyn crate::lsp_channel::LspChannelAdapter>>,
     /// Cold-wiring (s-81344): config for the optional code_vector secondary
     /// index. Default `enabled = true` so the gate reduces to the existing
     /// `has_code_index()` check until the deferred cli loader splice
@@ -277,6 +283,7 @@ impl QueryPipeline {
             session_id: DEFAULT_SESSION_ID.to_owned(),
             clock: Arc::new(OsClock),
             symbol_graph_adapter: None,
+            lsp_channel_adapter: None,
             code_vec_config: CodeVecConfig::default(),
             deep_config: KnowledgeDeepConfig::default(),
         }
@@ -318,6 +325,20 @@ impl QueryPipeline {
         adapter: Arc<dyn crate::symbol_graph_adapter::SymbolGraphAdapter>,
     ) -> Self {
         self.symbol_graph_adapter = Some(adapter);
+        self
+    }
+
+    /// J-18 LEG2: builder-style installer for the optional cli-rooted
+    /// `LspChannelAdapter`. Production wiring lands in slice 2 at
+    /// `cli::knowledge_stack::build_local_knowledge_stack`. Installing the
+    /// adapter does not flip the behaviour on by itself — the 6th list is
+    /// still gated by `ELAI_LSP_CHANNEL_RRF_ENABLE`.
+    // WIRE-DARK[J-18]: slice-1 seam installer; the production caller is the slice-2 install at cli::knowledge_stack::build_local_knowledge_stack
+    pub fn with_lsp_channel_adapter(
+        mut self,
+        adapter: Arc<dyn crate::lsp_channel::LspChannelAdapter>,
+    ) -> Self {
+        self.lsp_channel_adapter = Some(adapter);
         self
     }
 
@@ -1303,6 +1324,47 @@ impl QueryPipeline {
                     latency_ms: self.clock.elapsed_since(sg_start).as_millis() as u64,
                     circuit_breaker_state: None,
                     error: sg_error,
+                });
+            }
+        }
+
+        // J-18 LEG2: 6th-list `lsp_channel` RRF input.
+        // Wire-dark until `ELAI_LSP_CHANNEL_RRF_ENABLE=1` AND an
+        // `LspChannelAdapter` has been installed via
+        // `with_lsp_channel_adapter(...)`. Best-effort: any adapter error
+        // degrades to an empty stage (the RRF accumulator iterates all
+        // stages uniformly, so an empty list is a no-op). Joins the pool
+        // alongside bm25 / vector / code_vector / splade / symbol_graph_vec.
+        if crate::lsp_channel::lsp_channel_rrf_enabled_from_env() {
+            if let Some(ref adapter) = self.lsp_channel_adapter {
+                let lsp_start = self.clock.now();
+                let project_root = std::path::Path::new(".");
+                let (lsp_results, lsp_error) =
+                    match adapter.workspace_symbol(query, project_root, 20) {
+                        Ok(hits) => {
+                            let results: Vec<RetrievalResult> = hits
+                                .iter()
+                                .enumerate()
+                                .map(|(i, hit)| RetrievalResult {
+                                    chunk_id: format!("{}:{}", hit.path, hit.line),
+                                    snippet: hit.symbol.clone(),
+                                    score: 1.0 / (1.0 + i as f64),
+                                    tool_used: "lsp_channel".to_string(),
+                                })
+                                .collect();
+                            (results, None)
+                        }
+                        Err(e) => {
+                            tracing::debug!("lsp_channel adapter error: {e}");
+                            (Vec::new(), Some(e.to_string()))
+                        }
+                    };
+                stages.push(PipelineStage {
+                    stage: "lsp_channel".to_string(),
+                    results: lsp_results,
+                    latency_ms: self.clock.elapsed_since(lsp_start).as_millis() as u64,
+                    circuit_breaker_state: None,
+                    error: lsp_error,
                 });
             }
         }

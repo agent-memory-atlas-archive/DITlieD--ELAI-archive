@@ -64,6 +64,7 @@ pub mod tree_sitter_health;
 pub mod hybrid_search_tool;
 pub mod hyde;
 pub mod knowledge_ssb_sink;
+pub mod lsp_channel;
 pub mod incremental_profile;
 pub mod index_manifest;
 pub mod index_version;
