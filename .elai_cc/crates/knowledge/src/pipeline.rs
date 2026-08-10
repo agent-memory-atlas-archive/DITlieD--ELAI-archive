@@ -329,11 +329,11 @@ impl QueryPipeline {
     }
 
     /// J-18 LEG2: builder-style installer for the optional cli-rooted
-    /// `LspChannelAdapter`. Production wiring lands in slice 2 at
-    /// `cli::knowledge_stack::build_local_knowledge_stack`. Installing the
+    /// `LspChannelAdapter`. The production caller is
+    /// `cli::knowledge_stack::build_base_pipeline`, which installs the
+    /// rust-analyzer stdio client. Installing the
     /// adapter does not flip the behaviour on by itself — the 6th list is
     /// still gated by `ELAI_LSP_CHANNEL_RRF_ENABLE`.
-    // WIRE-DARK[J-18]: slice-1 seam installer; the production caller is the slice-2 install at cli::knowledge_stack::build_local_knowledge_stack
     pub fn with_lsp_channel_adapter(
         mut self,
         adapter: Arc<dyn crate::lsp_channel::LspChannelAdapter>,
