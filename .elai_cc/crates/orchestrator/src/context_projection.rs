@@ -25,6 +25,82 @@ pub struct FreezeState {
     pub compacted_prefix_len: usize,
 }
 
+/// Persistent per-turn record used to decide whether the frozen prefix can be reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FreezeEpoch {
+    pub freeze: FreezeState,
+    pub boundary_hash: [u8; 8],
+    pub raw_log_len: usize,
+    pub epoch: u32,
+    pub reuse_count: u32,
+    pub policy: ContextPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecomputeCause {
+    FirstCall,
+    TailOverflow,
+    BoundaryMismatch,
+    HistoryRewound,
+    PolicyChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreezeDecision {
+    Reuse,
+    Recompute(RecomputeCause),
+}
+
+/// Fingerprint the role and textual payload of a boundary message.
+#[must_use]
+pub fn boundary_fingerprint(message: &ConversationMessage) -> [u8; 8] {
+    let role = match message.role {
+        MessageRole::System => 0u8,
+        MessageRole::User => 1,
+        MessageRole::Assistant => 2,
+        MessageRole::Tool => 3,
+    };
+    let text = message.blocks.iter().filter_map(|block| match block {
+        crate::session::ContentBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    }).collect::<String>();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&[role]);
+    hasher.update(&(text.len() as u64).to_le_bytes());
+    hasher.update(text.as_bytes());
+    let digest = hasher.finalize();
+    let mut result = [0u8; 8];
+    result.copy_from_slice(&digest.as_bytes()[..8]);
+    result
+}
+
+#[must_use]
+pub fn evaluate_freeze(
+    state: Option<&FreezeEpoch>,
+    log: &TranscriptLog<'_>,
+    budget: &CompactionConfig,
+    policy: ContextPolicy,
+) -> FreezeDecision {
+    let Some(state) = state else { return FreezeDecision::Recompute(RecomputeCause::FirstCall); };
+    if log.len() < state.raw_log_len {
+        return FreezeDecision::Recompute(RecomputeCause::HistoryRewound);
+    }
+    if policy != state.policy {
+        return FreezeDecision::Recompute(RecomputeCause::PolicyChanged);
+    }
+    let index = state.freeze.frozen_head_len.saturating_sub(1);
+    let Some(boundary) = log.messages().get(index) else {
+        return FreezeDecision::Recompute(RecomputeCause::HistoryRewound);
+    };
+    if boundary_fingerprint(boundary) != state.boundary_hash {
+        return FreezeDecision::Recompute(RecomputeCause::BoundaryMismatch);
+    }
+    if log.len() - state.raw_log_len > budget.preserve_recent_messages {
+        return FreezeDecision::Recompute(RecomputeCause::TailOverflow);
+    }
+    FreezeDecision::Reuse
+}
+
 /// The provider-facing view, returned by value without mutating the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
@@ -124,6 +200,43 @@ mod tests {
             usage: None,
         });
         (session, CompactionConfig { preserve_recent_messages: 1, max_estimated_tokens: 1, preserve_intermediate_numerics: false }, FreezeState { frozen_head_len: 1, compacted_prefix_len: 0 })
+    }
+
+    #[test]
+    fn evaluate_freeze_reports_history_rewound_when_the_log_shrinks_freeze() {
+        let (session, budget, freeze) = inputs();
+        let state = FreezeEpoch {
+            freeze,
+            boundary_hash: [0; 8],
+            raw_log_len: session.messages.len() + 1,
+            epoch: 1,
+            reuse_count: 0,
+            policy: ContextPolicy::Local,
+        };
+        let log = TranscriptLog::from_session(&session);
+        assert_eq!(
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local),
+            FreezeDecision::Recompute(RecomputeCause::HistoryRewound)
+        );
+    }
+
+    #[test]
+    fn evaluate_freeze_is_pure_freeze() {
+        let (session, budget, freeze) = inputs();
+        let log = TranscriptLog::from_session(&session);
+        let state = FreezeEpoch {
+            freeze,
+            boundary_hash: boundary_fingerprint(&session.messages[0]),
+            raw_log_len: log.len(),
+            epoch: 1,
+            reuse_count: 0,
+            policy: ContextPolicy::Local,
+        };
+        let before = log.messages().len();
+        let first = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local);
+        let second = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local);
+        assert_eq!(first, second);
+        assert_eq!(log.messages().len(), before);
     }
 
     #[test]

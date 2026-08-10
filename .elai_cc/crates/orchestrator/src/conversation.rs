@@ -214,6 +214,8 @@ pub struct ConversationRuntime<C, T> {
     /// = every later turn folds the whole immutable log at `cfg` instead of
     /// rewriting `session.messages`.
     projection_epoch: Option<CompactionConfig>,
+    freeze_epoch: Option<crate::context_projection::FreezeEpoch>,
+    last_freeze_decision: Option<crate::context_projection::FreezeDecision>,
 }
 
 /// L-16 CC-2: the projection budget an oversized log warrants on its own, with no
@@ -296,6 +298,8 @@ where
             ssb_writer: None,
             context_budget: None,
             projection_epoch: None,
+            freeze_epoch: None,
+            last_freeze_decision: None,
         }
     }
 
@@ -538,7 +542,7 @@ where
 
             let request = ApiRequest {
                 system_prompt: self.system_prompt.clone(),
-                messages: self.provider_view_messages(),
+                messages: self.freeze_gated_view_messages(),
             };
             let events = match self.api_client.stream(request) {
                 Ok(events) => events,
@@ -967,50 +971,33 @@ where
         });
     }
 
-    /// L-16 CC-2: the provider-facing message array as a pure fold of the
-    /// immutable transcript log, recomputed on every turn.
-    fn provider_view_messages(&self) -> Vec<ConversationMessage> {
-        let config = match self.projection_epoch {
-            Some(config) => config,
-            // L-16: an oversized log is projected even when no compaction event ever
-            // fired. This is what lets the CLI trim path stop rewriting the transcript.
-            None => match projection_epoch_for_log(&self.session, self.context_backend_mode) {
-                Some(config) => config,
-                None => return self.session.messages.clone(),
-            },
-        };
-        if crate::context_projection::projection_disabled() {
-            return self.session.messages.clone();
-        }
+    fn derive_freeze(&self, _config: CompactionConfig) -> crate::context_projection::FreezeState {
         let frozen_head_len = crate::context_policy::frozen_head_system_prefix_len(
-            |i| {
-                self.session
-                    .messages
-                    .get(i)
-                    .is_some_and(|m| m.role == crate::session::MessageRole::System)
-            },
-            |i| self
-                .session
-                .messages
-                .get(i)
-                .and_then(crate::compact::extract_existing_compacted_summary)
-                .is_some(),
+            |i| self.session.messages.get(i).is_some_and(|m| m.role == crate::session::MessageRole::System),
+            |i| self.session.messages.get(i)
+                .and_then(crate::compact::extract_existing_compacted_summary).is_some(),
             self.session.messages.len(),
         );
-        // The append-only log has no physical summary message. Supply the
-        // prior epoch's summary in a temporary projection input, leaving the
-        // session log untouched while giving the fold the same continuation
-        // boundary as the legacy compactor.
+        crate::context_projection::FreezeState {
+            frozen_head_len,
+            compacted_prefix_len: usize::from(self.session.compaction.is_some()),
+        }
+    }
+
+    fn project_with_freeze(
+        &self,
+        config: CompactionConfig,
+        freeze: crate::context_projection::FreezeState,
+    ) -> Vec<ConversationMessage> {
         let mut projection_session = self.session.clone();
-        let compacted_prefix_len = usize::from(self.session.compaction.is_some());
         if let Some(compaction) = self.session.compaction.as_ref() {
             let continuation = crate::compact::get_compact_continuation_message(
                 &compaction.summary,
                 true,
-                projection_session.messages.len() > frozen_head_len,
+                projection_session.messages.len() > freeze.frozen_head_len,
             );
             projection_session.messages.insert(
-                frozen_head_len.min(projection_session.messages.len()),
+                freeze.frozen_head_len.min(projection_session.messages.len()),
                 ConversationMessage {
                     role: crate::session::MessageRole::System,
                     blocks: vec![crate::session::ContentBlock::Text { text: continuation }],
@@ -1018,18 +1005,68 @@ where
                 },
             );
         }
-        let freeze = crate::context_projection::FreezeState {
-            frozen_head_len,
-            compacted_prefix_len,
-        };
         let log = crate::context_projection::TranscriptLog::from_session(&projection_session);
         crate::context_projection::fold(
-            &log,
-            &config,
-            regime_policy(self.context_backend_mode),
-            &freeze,
-        )
-        .messages
+            &log, &config, regime_policy(self.context_backend_mode), &freeze,
+        ).messages
+    }
+
+    fn freeze_gated_view_messages(&mut self) -> Vec<ConversationMessage> {
+        if crate::context_projection::projection_disabled() {
+            self.last_freeze_decision = None;
+            return self.session.messages.clone();
+        }
+        let Some(config) = self.projection_epoch.or_else(|| {
+            projection_epoch_for_log(&self.session, self.context_backend_mode)
+        }) else {
+            self.last_freeze_decision = None;
+            return self.session.messages.clone();
+        };
+        let policy = regime_policy(self.context_backend_mode);
+        let log = crate::context_projection::TranscriptLog::from_session(&self.session);
+        let decision = crate::context_projection::evaluate_freeze(
+            self.freeze_epoch.as_ref(), &log, &config, policy,
+        );
+        self.last_freeze_decision = Some(decision);
+        match decision {
+            crate::context_projection::FreezeDecision::Reuse => {
+                if let Some(epoch) = self.freeze_epoch.as_mut() {
+                    epoch.reuse_count = epoch.reuse_count.saturating_add(1);
+                    let freeze = epoch.freeze;
+                    self.project_with_freeze(config, freeze)
+                } else {
+                    self.session.messages.clone()
+                }
+            }
+            crate::context_projection::FreezeDecision::Recompute(cause) => {
+                let freeze = self.derive_freeze(config);
+                let boundary_index = freeze.frozen_head_len.saturating_sub(1);
+                let boundary_hash = log
+                    .messages()
+                    .get(boundary_index)
+                    .map(crate::context_projection::boundary_fingerprint)
+                    .unwrap_or([0u8; 8]);
+                let previous_epoch = self.freeze_epoch.map_or(0, |epoch| epoch.epoch);
+                self.freeze_epoch = Some(crate::context_projection::FreezeEpoch {
+                    freeze,
+                    boundary_hash,
+                    raw_log_len: log.len(),
+                    epoch: previous_epoch.saturating_add(1),
+                    reuse_count: 0,
+                    policy,
+                });
+                tracing::debug!(?cause, epoch = self.freeze_epoch_number(), "freeze prefix recomputed");
+                self.project_with_freeze(config, freeze)
+            }
+        }
+    }
+
+    pub(crate) fn last_freeze_decision(&self) -> Option<crate::context_projection::FreezeDecision> {
+        self.last_freeze_decision
+    }
+
+    pub(crate) fn freeze_epoch_number(&self) -> u32 {
+        self.freeze_epoch.map_or(0, |epoch| epoch.epoch)
     }
 
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
@@ -2525,6 +2562,103 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
             last.iter().any(|message| message_text(message).contains("Conversation summary")),
             "provider view must contain the compacted summary continuation"
         );
+    }
+
+    #[test]
+    fn run_turn_reuses_the_frozen_prefix_on_a_quiet_second_turn_freeze() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(), RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(), PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        ).with_auto_compaction_input_tokens_threshold(1);
+        runtime.run_turn("warm-up", None).expect("warm-up turn");
+        assert_eq!(runtime.last_freeze_decision(), None);
+        assert_eq!(runtime.freeze_epoch_number(), 0);
+        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::FirstCall)));
+        assert_eq!(runtime.freeze_epoch_number(), 1);
+        let second = seen.borrow()[1].clone();
+        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Reuse));
+        assert_eq!(runtime.freeze_epoch_number(), 1);
+        let third = seen.borrow()[2].clone();
+        let frozen_head_len = runtime.freeze_epoch.as_ref().expect("freeze epoch").freeze.frozen_head_len;
+        // The frozen head is stable on a Reuse turn; the continuation is not yet, and full prefix-byte stability belongs to the append-tail slice (L-17 slice 2).
+        assert_eq!(second[..frozen_head_len], third[..frozen_head_len]);
+    }
+
+    #[test]
+    fn run_turn_recomputes_when_the_boundary_message_changes_freeze() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(), RecordingApi { seen }, StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
+        ).with_auto_compaction_input_tokens_threshold(1);
+        runtime.run_turn("warm-up", None).expect("warm-up turn");
+        assert_eq!(runtime.last_freeze_decision(), None);
+        assert_eq!(runtime.freeze_epoch_number(), 0);
+        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::FirstCall)));
+        assert_eq!(runtime.freeze_epoch_number(), 1);
+        runtime.session.messages[0] = crate::session::ConversationMessage::user_text("changed boundary");
+        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::BoundaryMismatch)));
+        assert_eq!(runtime.freeze_epoch_number(), 2);
+    }
+
+    #[test]
+    fn run_turn_recomputes_when_the_regime_policy_changes_freeze() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(), RecordingApi { seen }, StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
+        ).with_auto_compaction_input_tokens_threshold(1);
+        runtime.run_turn("warm-up", None).expect("warm-up turn");
+        assert_eq!(runtime.last_freeze_decision(), None);
+        assert_eq!(runtime.freeze_epoch_number(), 0);
+        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::FirstCall)));
+        assert_eq!(runtime.freeze_epoch_number(), 1);
+        runtime = runtime.with_context_backend_mode(crate::dispatcher::BackendMode::Local);
+        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::PolicyChanged)));
+    }
+
+    #[test]
+    fn run_turn_recomputes_when_the_tail_outgrows_the_preserve_window_freeze() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(), RecordingApi { seen }, StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
+        ).with_auto_compaction_input_tokens_threshold(1);
+        runtime.run_turn("warm-up", None).expect("warm-up turn");
+        assert_eq!(runtime.last_freeze_decision(), None);
+        assert_eq!(runtime.freeze_epoch_number(), 0);
+        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::FirstCall)));
+        assert_eq!(runtime.freeze_epoch_number(), 1);
+        for index in 0..5 { runtime.session.messages.push(crate::session::ConversationMessage::user_text(format!("extra freeze {index}"))); }
+        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::TailOverflow)));
+    }
+
+    #[test]
+    fn projection_disable_rollback_keeps_the_raw_log_and_no_decision_freeze() {
+        crate::context_projection::set_projection_disabled_for_test(Some(true));
+        let original = projection_test_session();
+        let mut expected_request = original.messages.clone();
+        expected_request.push(crate::session::ConversationMessage::user_text("raw freeze"));
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            original, RecordingApi { seen: seen.clone() }, StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
+        ).with_auto_compaction_input_tokens_threshold(1);
+        runtime.run_turn("raw freeze", None).expect("turn");
+        let request = seen.borrow()[0].clone();
+        assert_eq!(request, expected_request);
+        assert_eq!(runtime.last_freeze_decision(), None);
+        crate::context_projection::set_projection_disabled_for_test(None);
     }
 
     fn oversized_projection_session() -> Session {
