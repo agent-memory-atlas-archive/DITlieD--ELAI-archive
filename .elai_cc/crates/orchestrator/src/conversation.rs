@@ -1024,8 +1024,10 @@ where
         };
         let policy = regime_policy(self.context_backend_mode);
         let log = crate::context_projection::TranscriptLog::from_session(&self.session);
+        let compaction_generation =
+            self.session.compaction.as_ref().map_or(0, |value| value.count);
         let decision = crate::context_projection::evaluate_freeze(
-            self.freeze_epoch.as_ref(), &log, &config, policy,
+            self.freeze_epoch.as_ref(), &log, &config, policy, compaction_generation,
         );
         self.last_freeze_decision = Some(decision);
         match decision {
@@ -1062,6 +1064,7 @@ where
                     policy,
                     projected_prefix,
                     tail_start,
+                    compaction_generation,
                 });
                 if let Some(ssb) = self.ssb_writer.clone() {
                     let payload = crate::ssb::CacheEconomicsEventPayload::prefix_recomputed(
@@ -2604,6 +2607,10 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
             vec!["system".to_string()],
         ).with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
+        // The warm-up turn's compaction is what opens the projection epoch. Raise the
+        // threshold now so no further compaction fires: a compaction invalidates the
+        // frozen prefix by design, so the turn under test must genuinely be quiet.
+        let mut runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
         assert_eq!(runtime.last_freeze_decision(), None);
         assert_eq!(runtime.freeze_epoch_number(), 0);
         runtime.run_turn("first freeze", None).expect("first freeze turn");
@@ -2628,6 +2635,10 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
             vec!["system".to_string()],
         ).with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
+        // The warm-up turn's compaction is what opens the projection epoch. Raise the
+        // threshold now so no further compaction fires: a compaction invalidates the
+        // frozen prefix by design, so the turn under test must genuinely be quiet.
+        let mut runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
         runtime.run_turn("first freeze", None).expect("first freeze turn");
         let first = seen.borrow()[1].clone();
         runtime.run_turn("second freeze", None).expect("second freeze turn");
@@ -2637,6 +2648,46 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         let prefix_len = frozen_head_len + 1;
         assert_eq!(first[..prefix_len], second[..prefix_len], "frozen prefix content must be byte-stable");
         assert_eq!(message_text(second.last().expect("tail message")), "second freeze");
+    }
+
+    #[test]
+    fn run_turn_recomputes_after_an_auto_compaction_moves_the_generation_freeze() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            projection_test_session(), RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        ).with_auto_compaction_input_tokens_threshold(1);
+        runtime.run_turn("warm-up", None).expect("warm-up turn");
+        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        let expected_count = runtime
+            .session
+            .compaction
+            .as_ref()
+            .expect("a compaction before the third turn")
+            .count;
+        assert!(
+            expected_count > 1,
+            "a second compaction must have fired before the third turn"
+        );
+        let second = seen.borrow()[1].clone();
+        runtime.run_turn("second freeze", None).expect("second freeze turn");
+
+        let third = seen.borrow()[2].clone();
+        let frozen_head_len = runtime.freeze_epoch.as_ref().expect("freeze epoch").freeze.frozen_head_len;
+        let prefix_len = frozen_head_len + 1;
+        assert_ne!(
+            second[..prefix_len],
+            third[..prefix_len],
+            "a compaction must invalidate the frozen prefix; the provider is still receiving the stale bytes"
+        );
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Recompute(
+                crate::context_projection::RecomputeCause::PolicyChanged,
+            ))
+        );
     }
 
     #[test]

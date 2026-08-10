@@ -36,6 +36,10 @@ pub struct FreezeEpoch {
     pub policy: ContextPolicy,
     pub projected_prefix: Vec<ConversationMessage>,
     pub tail_start: usize,
+    /// The `SessionCompaction` generation this prefix was projected against.
+    /// `0` means the session had never been compacted. A compaction increments
+    /// it (`session.rs:222-230`), which invalidates the prefix.
+    pub compaction_generation: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +86,7 @@ pub fn evaluate_freeze(
     log: &TranscriptLog<'_>,
     budget: &CompactionConfig,
     policy: ContextPolicy,
+    compaction_generation: u32,
 ) -> FreezeDecision {
     let Some(state) = state else { return FreezeDecision::Recompute(RecomputeCause::FirstCall); };
     if log.len() < state.raw_log_len {
@@ -99,6 +104,10 @@ pub fn evaluate_freeze(
     }
     if log.len() - state.raw_log_len > budget.preserve_recent_messages {
         return FreezeDecision::Recompute(RecomputeCause::TailOverflow);
+    }
+    // The compaction generation moved, so the frozen prefix is stale.
+    if compaction_generation != state.compaction_generation {
+        return FreezeDecision::Recompute(RecomputeCause::PolicyChanged);
     }
     FreezeDecision::Reuse
 }
@@ -218,10 +227,11 @@ mod tests {
             policy: ContextPolicy::Local,
             projected_prefix: Vec::new(),
             tail_start: 0,
+            compaction_generation: 0,
         };
         let log = TranscriptLog::from_session(&session);
         assert_eq!(
-            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local),
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0),
             FreezeDecision::Recompute(RecomputeCause::HistoryRewound)
         );
     }
@@ -239,12 +249,38 @@ mod tests {
             policy: ContextPolicy::Local,
             projected_prefix: Vec::new(),
             tail_start: 0,
+            compaction_generation: 0,
         };
         let before = log.messages().len();
-        let first = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local);
-        let second = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local);
+        let first = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0);
+        let second = evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 0);
         assert_eq!(first, second);
         assert_eq!(log.messages().len(), before);
+    }
+
+    #[test]
+    fn evaluate_freeze_recomputes_when_the_compaction_generation_moves_freeze() {
+        let (session, budget, freeze) = inputs();
+        let log = TranscriptLog::from_session(&session);
+        let state = FreezeEpoch {
+            freeze,
+            boundary_hash: boundary_fingerprint(&session.messages[0]),
+            raw_log_len: log.len(),
+            epoch: 1,
+            reuse_count: 0,
+            policy: ContextPolicy::Local,
+            projected_prefix: Vec::new(),
+            tail_start: 0,
+            compaction_generation: 1,
+        };
+        assert_eq!(
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 1),
+            FreezeDecision::Reuse
+        );
+        assert_eq!(
+            evaluate_freeze(Some(&state), &log, &budget, ContextPolicy::Local, 2),
+            FreezeDecision::Recompute(RecomputeCause::PolicyChanged)
+        );
     }
 
     #[test]
