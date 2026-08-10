@@ -303,4 +303,5 @@ mod tests {
 // Composed, never merged (plan L-1 GD-1).
 pub mod extract;
 pub mod resolve;
+pub mod risk;
 pub use extract::{extract_claims, ClaimKind, ClaimSet, ExtractedClaim};

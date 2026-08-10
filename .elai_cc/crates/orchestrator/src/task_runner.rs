@@ -1978,9 +1978,18 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 Some(resolver) => crate::claim::extract::extract_claims_with(claim_text, resolver),
                 None => crate::claim::extract::extract_claims(claim_text),
             };
+            let claim_risks = crate::claim::risk::score_claim_risk(&claim_set);
+            let risk_low = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Low).count();
+            let risk_medium = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Medium).count();
+            let risk_high = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::High).count();
+            let risk_critical = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Critical).count();
             tracing::info!(
                 agent_id = %agent_id,
                 claims = claim_set.len(),
+                risk_low,
+                risk_medium,
+                risk_high,
+                risk_critical,
                 unresolved_refs = claim_set.unresolved_ref_count(),
                 file_claims = claim_set.count_of_kind(crate::claim::extract::ClaimKind::File),
                 symbol_claims = claim_set.count_of_kind(crate::claim::extract::ClaimKind::Symbol),
