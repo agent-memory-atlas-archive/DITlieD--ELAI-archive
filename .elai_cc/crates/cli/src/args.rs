@@ -130,6 +130,11 @@ pub(crate) enum CliAction {
         output_format: CliOutputFormat,
         all: bool,
     },
+    RuleTest {
+        rule_id: String,
+        fixture: PathBuf,
+        output_format: CliOutputFormat,
+    },
     RuleAdd {
         rule_id: String,
         domain: String,
@@ -4431,8 +4436,25 @@ pub(crate) fn parse_rule_subcommand_args(
         }
         return Ok(CliAction::RuleList { output_format: format, all });
     }
+    if sub == "test" {
+        let mut positionals = Vec::new();
+        let mut format = output_format;
+        for argument in &rest[1..] {
+            match argument.as_str() {
+                "--json" => format = CliOutputFormat::Json,
+                other if !other.starts_with('-') => positionals.push(other.to_string()),
+                other => return Err(format!("unknown `rule test` argument: {other}")),
+            }
+        }
+        let rule_id = positionals.first().cloned().ok_or_else(|| "rule test requires a <rule-id> argument".to_string())?;
+        let fixture = positionals.get(1).cloned().ok_or_else(|| "rule test requires a <fixture-path> argument".to_string())?;
+        if positionals.len() > 2 {
+            return Err(format!("unknown `rule test` argument: {}", positionals[2]));
+        }
+        return Ok(CliAction::RuleTest { rule_id, fixture: PathBuf::from(fixture), output_format: format });
+    }
     if sub != "add" {
-        return Err(format!("unknown `rule` sub-command: '{sub}' (expected 'add' or 'list')"));
+        return Err(format!("unknown `rule` sub-command: '{sub}' (expected 'add', 'list' or 'test')"));
     }
     let mut id = None; let mut domain = None; let mut tier = None;
     let mut severity = None; let mut title = None; let mut description = None; let mut predicate = None;

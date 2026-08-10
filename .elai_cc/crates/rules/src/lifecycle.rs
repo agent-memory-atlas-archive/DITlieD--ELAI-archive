@@ -406,6 +406,41 @@ pub fn fetch_all_rules(conn: &Connection) -> Result<Vec<UserRuleSummary>, Lifecy
     rows.collect::<Result<Vec<_>, _>>().map_err(LifecycleError::from)
 }
 
+/// A stored rule with the predicate JSON the listing rows deliberately omit.
+#[derive(Debug, Clone)]
+pub struct RuleTestSubject {
+    pub rule_id: String,
+    pub domain: String,
+    pub tier: u8,
+    pub severity: String,
+    pub title: String,
+    pub predicate_json: String,
+    pub phase_mask: u32,
+    pub status: String,
+}
+
+/// Fetch one rule with its predicate JSON, for out-of-band evaluation by `elai rule test`.
+pub fn fetch_rule_for_test(
+    conn: &Connection,
+    rule_id: &str,
+) -> Result<RuleTestSubject, LifecycleError> {
+    conn.query_row(
+        "SELECT rule_id, domain, tier, severity, title, predicate, phase_mask, status FROM rules WHERE rule_id = ?1",
+        rusqlite::params![rule_id],
+        |row| {
+            Ok(RuleTestSubject {
+                rule_id: row.get(0)?, domain: row.get(1)?, tier: row.get(2)?,
+                severity: row.get(3)?, title: row.get(4)?, predicate_json: row.get(5)?,
+                phase_mask: row.get::<_, i64>(6)? as u32, status: row.get(7)?,
+            })
+        },
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => LifecycleError::RuleNotFound { rule_id: rule_id.to_string() },
+        other => LifecycleError::Sqlite(other),
+    })
+}
+
 /// Compute aggregated metrics for a rule across all metric windows.
 pub fn compute_metrics_snapshot(
     conn: &Connection,
@@ -758,6 +793,20 @@ mod tests {
         let conn = mem_db();
         let err = fetch_rule_record(&conn, "no_such_rule").unwrap_err();
         assert!(matches!(err, LifecycleError::RuleNotFound { .. }));
+    }
+
+    #[test]
+    fn fetch_rule_for_test_returns_predicate() {
+        let conn = mem_db();
+        let predicate = r#"{"type":"grep_pattern","pattern":"TODO","context_lines":0,"file_context":null}"#;
+        insert_user_rule(&conn, &UserRuleSpec {
+            rule_id: "test-subject".to_string(), domain: "testing".to_string(), tier: 1,
+            severity: "WARN".to_string(), title: "Test subject".to_string(),
+            description: "fixture".to_string(), predicate_json: predicate.to_string(),
+        }, &test_clock()).unwrap();
+        let subject = fetch_rule_for_test(&conn, "test-subject").unwrap();
+        assert_eq!(subject.predicate_json, predicate);
+        assert_eq!(subject.status, "PROPOSED");
     }
 
     // -- transition_to_candidate --

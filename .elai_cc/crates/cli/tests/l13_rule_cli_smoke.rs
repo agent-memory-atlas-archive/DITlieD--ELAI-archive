@@ -213,3 +213,64 @@ fn tier_out_of_range_is_rejected() {
     );
     assert!(!output.status.success());
 }
+
+
+fn add_grep_rule(cwd: &std::path::Path, id: &str) {
+    let output = run(cwd, &["rule", "add", "--id", id, "--domain", "testing", "--tier", "2", "--severity", "WARN", "--title", "Test rule", "--description", "A test rule", "--predicate", r#"{"type":"grep_pattern","pattern":"TODO","context_lines":0,"file_context":null}"#]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn rule_test_fires_on_matching_fixture() {
+    let dir = temp_cwd();
+    add_grep_rule(dir.path(), "l13-test-fires");
+    std::fs::write(dir.path().join("fixture.rs"), "// TODO\n").unwrap();
+    let output = run(dir.path(), &["rule", "test", "l13-test-fires", "fixture.rs", "--json"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["fired"], true);
+}
+
+#[test]
+fn rule_test_does_not_fire_on_clean_fixture() {
+    let dir = temp_cwd();
+    add_grep_rule(dir.path(), "l13-test-clean");
+    std::fs::write(dir.path().join("fixture.rs"), "fn main() {}\n").unwrap();
+    let output = run(dir.path(), &["rule", "test", "l13-test-clean", "fixture.rs", "--json"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["fired"], false);
+}
+
+#[test]
+fn rule_test_graph_reachability_without_index_refuses() {
+    let dir = temp_cwd();
+    let output = run(dir.path(), &["rule", "add", "--id", "l13-test-graph", "--domain", "testing", "--tier", "2", "--severity", "WARN", "--title", "Graph", "--description", "Graph rule", "--predicate", r#"{"type":"graph_reachability","source_pattern":"a","sink_pattern":"b","must_traverse":null,"must_not_exist":false,"max_depth":3,"edge_types":["calls"]}"#]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    std::fs::write(dir.path().join("fixture.rs"), "fn a() {}\n").unwrap();
+    let output = run(dir.path(), &["rule", "test", "l13-test-graph", "fixture.rs"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("GraphReachability"));
+    assert!(stderr.contains("elai index"));
+}
+
+#[test]
+fn rule_test_graph_reachability_with_unopenable_index_refuses() {
+    let dir = temp_cwd();
+    let output = run(dir.path(), &["rule", "add", "--id", "l13-test-graph-unopenable", "--domain", "testing", "--tier", "2", "--severity", "WARN", "--title", "Graph", "--description", "Graph rule", "--predicate", r#"{"type":"graph_reachability","source_pattern":"a","sink_pattern":"b","must_traverse":null,"must_not_exist":false,"max_depth":3,"edge_types":["calls"]}"#]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    std::fs::create_dir_all(dir.path().join(".elai_cc/indexes/dkg.db")).unwrap();
+    std::fs::write(dir.path().join("fixture.rs"), "fn a() {}\n").unwrap();
+    let output = run(dir.path(), &["rule", "test", "l13-test-graph-unopenable", "fixture.rs"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("GraphReachability"));
+}
+
+#[test]
+fn rule_test_unknown_rule_id_fails() {
+    let dir = temp_cwd();
+    std::fs::write(dir.path().join("fixture.rs"), "fn main() {}\n").unwrap();
+    let output = run(dir.path(), &["rule", "test", "no-such-rule", "fixture.rs"]);
+    assert!(!output.status.success());
+}
