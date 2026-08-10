@@ -17,6 +17,7 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const FSM_GET_STATE: &str = "fsm_get_state";
 const PLAN_STATUS: &str = "plan_status";
 const RRA_SHOW: &str = "rra_show";
+const BUILD_PLAN: &str = "build_plan";
 
 pub fn run_mcp_serve(_output_format: CliOutputFormat) -> Result<(), String> {
     let stdin = io::stdin();
@@ -140,6 +141,7 @@ fn dispatch_tool_call(params: &JsonValue) -> JsonValue {
                 "I-39 plan-state derivation is not exposed as a callable read-only API",
             ),
             RRA_SHOW => rra_show(&arguments),
+            BUILD_PLAN => build_plan(&arguments),
             _ => tool_error("AUTHZ_DENIED", "tool is not registered by the Tier-1 MCP server", json!({
                 "status": "denied",
                 "role": AUTHZ_ROLE,
@@ -208,6 +210,28 @@ fn rra_show(arguments: &JsonValue) -> JsonValue {
             "status": "error",
             "tool": RRA_SHOW,
             "path": path,
+        })),
+    }
+}
+
+fn build_plan(arguments: &JsonValue) -> JsonValue {
+    let Some(idea) = arguments.get("idea").and_then(JsonValue::as_str) else {
+        return tool_error("INVALID_ARGUMENTS", "build_plan requires a string `idea`", json!({
+            "status": "invalid_arguments",
+            "tool": BUILD_PLAN,
+        }));
+    };
+    match crate::build_cmd::resolve_build_plan(idea) {
+        Ok(plan) => match serde_json::to_value(plan) {
+            Ok(payload) => tool_success(payload),
+            Err(error) => tool_error("SERIALIZATION_ERROR", &error.to_string(), json!({
+                "status": "error",
+                "tool": BUILD_PLAN,
+            })),
+        },
+        Err(error) => tool_error("BUILD_PLAN_ERROR", &error.to_string(), json!({
+            "status": "error",
+            "tool": BUILD_PLAN,
         })),
     }
 }
@@ -290,6 +314,16 @@ fn tools_list_result() -> JsonValue {
                     "type": "object",
                     "properties": {"path": {"type": "string"}},
                     "required": ["path"],
+                    "additionalProperties": false,
+                }),
+            ),
+            tool_definition(
+                BUILD_PLAN,
+                "Resolve an idea into its project class and E-12 framework profile without generating anything.",
+                json!({
+                    "type": "object",
+                    "properties": {"idea": {"type": "string"}},
+                    "required": ["idea"],
                     "additionalProperties": false,
                 }),
             ),

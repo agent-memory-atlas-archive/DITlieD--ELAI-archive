@@ -39,6 +39,7 @@ tools = [
     "fsm_get_state",
     "plan_status",
     "rra_show",
+    "build_plan",
 ]
 # No ownership constraint — the planner reads any registered document.
 doc_owners = []

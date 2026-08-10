@@ -18,7 +18,7 @@ const BUILD_PROJECT_ID: &str = "elai-build";
 const BUILD_SESSION_ID: &str = "elai-build-oneshot";
 
 #[derive(Debug, Serialize)]
-struct BuildPlan {
+pub(crate) struct BuildPlan {
     idea: String,
     #[serde(rename = "class")]
     project_class: String,
@@ -42,12 +42,28 @@ struct BuildResult {
     plan_only: bool,
 }
 
+pub(crate) fn resolve_build_plan(idea: &str) -> anyhow::Result<BuildPlan> {
+    let class = classify_project_class(idea);
+    let project_root = std::env::current_dir()?;
+    let profile = get_framework_profile(Path::new(&project_root), class);
+    Ok(BuildPlan {
+        idea: idea.to_string(),
+        project_class: class.as_snake_case().to_string(),
+        profile: profile.name,
+        version_pin: profile.version_pin,
+        language: profile.language,
+        package_manager: profile.package_manager,
+        test_runner: profile.test_runner,
+        plan_only: true,
+    })
+}
+
 pub(crate) fn run(idea: &str, plan_only: bool, output_dir: Option<&Path>, template: Option<&str>, output_format: CliOutputFormat) -> anyhow::Result<()> {
     let class = classify_project_class(idea);
     let project_root = std::env::current_dir()?;
     let profile = get_framework_profile(Path::new(&project_root), class);
     if plan_only {
-        let plan = BuildPlan { idea: idea.to_string(), project_class: class.as_snake_case().to_string(), profile: profile.name, version_pin: profile.version_pin, language: profile.language, package_manager: profile.package_manager, test_runner: profile.test_runner, plan_only: true };
+        let plan = resolve_build_plan(idea)?;
         match output_format {
             CliOutputFormat::Json => println!("{}", serde_json::to_string(&plan)?),
             CliOutputFormat::Text | CliOutputFormat::Toml => {

@@ -159,7 +159,7 @@ fn j2_mcp_serve_is_read_only_deny_default_and_recovers_from_malformed_frames() {
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect();
-    assert_eq!(names, vec!["fsm_get_state", "plan_status", "rra_show"]);
+    assert_eq!(names, vec!["fsm_get_state", "plan_status", "rra_show", "build_plan"]);
     for tool in tools["result"]["tools"].as_array().expect("tools array") {
         assert_eq!(tool["annotations"]["readOnlyHint"], true);
         assert_eq!(tool["_meta"]["authz"]["role"], "planner");
@@ -203,4 +203,34 @@ fn j2_mcp_serve_is_read_only_deny_default_and_recovers_from_malformed_frames() {
         fsm_after_error["result"]["structuredContent"]["state"],
         "PLANNING"
     );
+}
+
+
+#[test]
+fn j2_mcp_serve_exposes_build_plan_read_only() {
+    let root = prepare_project_root();
+    let mut server = McpFixture::spawn(root.path());
+
+    server.request(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "j2-contract", "version": "1"}
+        }
+    }));
+
+    let result = server.request(&call_tool(2, "build_plan", json!({
+        "idea": "a todo list web app"
+    })));
+    assert_eq!(result["result"]["isError"], false);
+    assert_eq!(result["result"]["structuredContent"]["plan_only"], true);
+    assert!(result["result"]["structuredContent"]["profile"].as_str().is_some_and(|profile| !profile.is_empty()));
+    assert_eq!(result["result"]["structuredContent"]["idea"], "a todo list web app");
+
+    let invalid = server.request(&call_tool(3, "build_plan", json!({})));
+    assert_eq!(invalid["result"]["isError"], true);
+    assert_eq!(invalid["result"]["structuredContent"]["code"], "INVALID_ARGUMENTS");
 }
