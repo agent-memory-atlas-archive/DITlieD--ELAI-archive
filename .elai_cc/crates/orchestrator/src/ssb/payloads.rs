@@ -16039,6 +16039,10 @@ pub struct SkillLibraryEventPayload {
 ///   * `dropped_count`           -- number of queue records DROPPED-OLDEST due
 ///     to `QUARANTINE_QUEUE_CAPACITY` overflow at emit time (W-2 no silent
 ///     drop; 0 in the steady state).
+/// CLAIM-CLASS: a `fact_id` with the `claim:` prefix is an L-8 contradicted-claim
+/// quarantine. Its `staleness_ratio` is the constant `1.0`, not a measured decay
+/// ratio; `tick_ms` is the detection instant, not a decay tick; and demote/flag
+/// counts are always 0 for this class.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StalenessQuarantineBroadcastPayload {

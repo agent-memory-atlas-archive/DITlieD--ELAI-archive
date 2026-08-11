@@ -302,6 +302,7 @@ mod tests {
 // taxonomy above: D-10 types what a claim MEANS, `extract` types what it REFERS TO.
 // Composed, never merged (plan L-1 GD-1).
 pub mod extract;
+pub mod prune;
 pub mod resolve;
 pub mod risk;
 pub mod roundtrip;

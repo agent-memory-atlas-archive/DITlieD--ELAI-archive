@@ -121,6 +121,7 @@ use crate::ssb::{
     SsbReader, StepNodeReadyPayload, SupervisionEventPayload, TaskSubmittedPayload,
     TestIntegrityEventKind, TestIntegrityEventPayload, TestOutcomePayload, TrajectoryAbortedKind,
     TrajectoryAbortedPayload, VramTierDetectedPayload, WebResearchStepPayload,
+    StalenessQuarantineBroadcastPayload,
 };
 use crate::sandbox::BranchWorkspace;
 use crate::evidence::{AntiFabricationGate, EvidenceGate, IntegrationTestRowSummary, TransitionContext};
@@ -1333,6 +1334,10 @@ pub struct AgentPoolBabyStepExecutor<E: elai_core::EntropySource + Send + 'stati
     /// Wrapped in Mutex so execute(&self) can take the sender without &mut self.
     #[cfg(any(test, feature = "test-support"))]
     socket_path_notifier: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<PathBuf>>>,
+    /// Content keys asserted during earlier passes of this one executor instance.
+    /// This memory lasts for one task run and does not survive process restart; the
+    /// durable quarantine record is the SSB row.
+    seen_claim_keys: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
     /// E-15: opt-in Firecracker hot snapshot-restore pool. When `Some`, the
     /// executor calls `pool.spawn_from_snapshot()` before
     /// `launch_agent_process` so the agent process restores from a per-(agent_id,
@@ -1389,6 +1394,7 @@ impl<E: elai_core::EntropySource + Send + 'static> AgentPoolBabyStepExecutor<E> 
             socket_path_notifier: std::sync::Mutex::new(None),
             firecracker_pool: None,
             ssb_writer: None,
+            seen_claim_keys: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -2082,6 +2088,58 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 .await
                 {
                     tracing::warn!(%error, "task_runner: semantic-entropy receipt write failed (non-fatal)");
+                }
+            }
+
+            if !crate::claim::prune::quarantine_disabled() {
+                let current_keys: std::collections::HashSet<[u8; 32]> = claim_set
+                    .claims()
+                    .iter()
+                    .map(crate::claim::prune::content_key)
+                    .collect();
+                let prior_keys = match self.seen_claim_keys.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(_) => std::collections::HashSet::new(),
+                };
+                let contradicted = {
+                    let resolver: &dyn crate::claim::extract::ClaimRefResolver =
+                        match crate::claim::resolve::workspace_resolver() {
+                            Some(resolver) => resolver,
+                            None => &crate::claim::extract::UnresolvedResolver,
+                        };
+                    crate::claim::prune::detect_contradicted(&prior_keys, &claim_set, resolver)
+                };
+                if let Some(writer) = self.ssb_writer.as_ref() {
+                    for claim in contradicted {
+                        let fact_id = format!(
+                            "claim:{:.16}",
+                            blake3::Hash::from_bytes(claim.content_key).to_hex()
+                        );
+                        let tick_ms = self.clock.now_ms() as u64;
+                        let mut hasher = blake3::Hasher::new();
+                        hasher.update(fact_id.as_bytes());
+                        hasher.update(&tick_ms.to_le_bytes());
+                        let payload = SsbPayload::StalenessQuarantineBroadcast(
+                            StalenessQuarantineBroadcastPayload {
+                                fact_id,
+                                staleness_ratio: 1.0,
+                                dependents_demoted: 0,
+                                cosmos_artifacts_flagged: 0,
+                                tick_ms,
+                                broadcast_id: format!("{:.16}", hasher.finalize().to_hex()),
+                                dropped_count: 0,
+                            },
+                        );
+                        if let Err(error) = writer
+                            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+                            .await
+                        {
+                            tracing::warn!(%error, "task_runner: quarantine write failed (non-fatal)");
+                        }
+                    }
+                }
+                if let Ok(mut guard) = self.seen_claim_keys.lock() {
+                    guard.extend(current_keys);
                 }
             }
 
