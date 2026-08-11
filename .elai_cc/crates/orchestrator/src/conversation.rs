@@ -1006,9 +1006,17 @@ where
             );
         }
         let log = crate::context_projection::TranscriptLog::from_session(&projection_session);
-        crate::context_projection::fold(
+        let mut view = crate::context_projection::fold(
             &log, &config, regime_policy(self.context_backend_mode), &freeze,
-        )
+        );
+        let mode = self.context_backend_mode;
+        let level = pressure_level(
+            self.usage_tracker.cumulative_usage().input_tokens,
+            effective_context_window(mode),
+            regime_policy(mode),
+        );
+        crate::context_projection::append_recall_cards(&mut view, &log, &freeze, level);
+        view
     }
 
     fn freeze_gated_view_messages(&mut self) -> Vec<ConversationMessage> {
@@ -3003,6 +3011,37 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         crate::context_projection::set_projection_disabled_for_test(None);
         turn_result.expect("turn");
         assert!(shortened, "rollback mode should retain the legacy mutating path");
+    }
+
+
+    #[test]
+    fn l19_production_view_appends_recall_card_when_folded_path_resurfaces() {
+        let mut session = Session::new();
+        session.messages = vec![
+            crate::session::ConversationMessage {
+                role: MessageRole::System,
+                blocks: vec![ContentBlock::Text { text: "head".to_string() }],
+                usage: None,
+            },
+            crate::session::ConversationMessage::user_text("crates/orchestrator/src/session.rs zebrafish"),
+            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text { text: "middle".to_string() }]),
+            crate::session::ConversationMessage::user_text("tail crates/orchestrator/src/session.rs"),
+        ];
+        let mut runtime = ConversationRuntime::new(
+            session,
+            RecordingApi { seen: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())) },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+        runtime.projection_epoch = Some(CompactionConfig { preserve_recent_messages: 1, ..CompactionConfig::default() });
+        let messages = runtime.freeze_gated_view_messages();
+        let recall = messages.iter().rev().find(|message| {
+            message.role == MessageRole::System
+                && matches!(message.blocks.first(), Some(ContentBlock::Text { text }) if text.starts_with("[recall]"))
+        });
+        assert!(recall.is_some(), "production view should append a recall card after the preserved tail");
+        assert!(matches!(recall.unwrap().blocks.first(), Some(ContentBlock::Text { text }) if text.contains("crates/orchestrator/src/session.rs")));
     }
 
 }

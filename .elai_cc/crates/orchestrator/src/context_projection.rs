@@ -3,7 +3,8 @@ use crate::compact::{
     extract_existing_compacted_summary, format_compact_summary, get_compact_continuation_message,
     merge_compact_summaries, summarize_messages, CompactionConfig,
 };
-use crate::context_policy::ContextPolicy;
+use crate::context_policy::{ContextPolicy, PressureLevel};
+use crate::pristine_path_filter::MAX_CONSTRAINT_TOKENS;
 use crate::session::{ConversationMessage, MessageRole, Session};
 
 /// CC-1: a read-only borrow of the append-only transcript.
@@ -125,6 +126,26 @@ pub fn evaluate_freeze(
     FreezeDecision::Reuse
 }
 
+/// Number of recall cards available at normal pressure.
+pub const RECALL_BASE_CARDS: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecallBudget {
+    pub cards: usize,
+    pub per_card_token_cap: usize,
+    pub hints_only: bool,
+}
+
+#[must_use]
+pub fn recall_budget(level: PressureLevel, base_cards: usize) -> RecallBudget {
+    match level {
+        PressureLevel::Normal => RecallBudget { cards: base_cards, per_card_token_cap: MAX_CONSTRAINT_TOKENS, hints_only: false },
+        PressureLevel::Moderate => RecallBudget { cards: base_cards.div_ceil(2), per_card_token_cap: MAX_CONSTRAINT_TOKENS, hints_only: false },
+        PressureLevel::High => RecallBudget { cards: base_cards.min(1), per_card_token_cap: MAX_CONSTRAINT_TOKENS / 4, hints_only: false },
+        PressureLevel::Critical => RecallBudget { cards: base_cards.min(1), per_card_token_cap: 0, hints_only: true },
+    }
+}
+
 /// The provider-facing view, returned by value without mutating the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
@@ -133,6 +154,7 @@ pub struct View {
     pub removed_message_count: usize,
     pub log_len: usize,
     pub tail_start: usize,
+    pub recalled_card_count: usize,
 }
 
 const ELAI_CONTEXT_PROJECTION_DISABLE_VAR: &str = "ELAI_CONTEXT_PROJECTION_DISABLE";
@@ -200,7 +222,73 @@ pub fn fold(
         removed_message_count: removed.len(),
         log_len: log.len(),
         tail_start: end,
+        recalled_card_count: 0,
     }
+}
+
+
+/// Append transient path-based recall cards to the projected tail.
+pub fn append_recall_cards(
+    view: &mut View,
+    log: &TranscriptLog<'_>,
+    freeze: &FreezeState,
+    level: PressureLevel,
+) -> usize {
+    let start = freeze.compacted_prefix_len.max(freeze.frozen_head_len);
+    let end = view.tail_start;
+    if start >= end || end > log.len() {
+        view.recalled_card_count = 0;
+        return 0;
+    }
+    let folded = &log.messages()[start..end];
+    let live_tail = &log.messages()[end..];
+    let text = |message: &ConversationMessage| -> String {
+        message.blocks.iter().filter_map(|block| match block {
+            crate::session::ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>().join(" ")
+    };
+    let tokens = |messages: &[ConversationMessage]| -> Vec<String> {
+        let mut found = Vec::new();
+        let mut current = String::new();
+        for message in messages {
+            for ch in text(message).chars().chain(std::iter::once(' ')) {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '/' | '-') {
+                    current.push(ch);
+                } else {
+                    if current.contains('/') && current.contains('.') && !found.contains(&current) {
+                        found.push(current.clone());
+                    }
+                    current.clear();
+                }
+            }
+        }
+        found
+    };
+    let folded_tokens = tokens(folded);
+    let tail_tokens = tokens(live_tail);
+    let budget = recall_budget(level, RECALL_BASE_CARDS);
+    let mut appended = 0;
+    for path in folded_tokens.into_iter().filter(|path| tail_tokens.contains(path)).take(budget.cards) {
+        let source = folded.iter().find_map(|message| {
+            let body = text(message);
+            body.contains(&path).then_some(body)
+        }).unwrap_or_default();
+        let card_text = if budget.hints_only {
+            format!("[recall pointer] {path}")
+        } else {
+            let words = source.split_whitespace().take(budget.per_card_token_cap).collect::<Vec<_>>().join(" ");
+            format!("[recall] {path} {words}")
+        };
+        view.messages.push(ConversationMessage {
+            role: MessageRole::System,
+            blocks: vec![crate::session::ContentBlock::Text { text: card_text }],
+            usage: None,
+        });
+        appended += 1;
+    }
+    view.recalled_card_count = appended;
+    appended
 }
 
 #[cfg(test)]
@@ -226,6 +314,64 @@ mod tests {
             usage: None,
         });
         (session, CompactionConfig { preserve_recent_messages: 1, max_estimated_tokens: 1, preserve_intermediate_numerics: false }, FreezeState { frozen_head_len: 1, compacted_prefix_len: 0 })
+    }
+
+    fn recall_inputs(tail_has_path: bool) -> (Session, CompactionConfig, FreezeState) {
+        let mut session = Session::new();
+        let entries = [
+            (MessageRole::System, "head"),
+            (MessageRole::User, "crates/orchestrator/src/session.rs zebrafish"),
+            (MessageRole::Assistant, "middle"),
+            (MessageRole::User, if tail_has_path { "tail crates/orchestrator/src/session.rs" } else { "tail only" }),
+        ];
+        for (role, text) in entries {
+            session.messages.push(ConversationMessage { role, blocks: vec![crate::session::ContentBlock::Text { text: text.to_string() }], usage: None });
+        }
+        (session, CompactionConfig { preserve_recent_messages: 1, max_estimated_tokens: 100, preserve_intermediate_numerics: false }, FreezeState { frozen_head_len: 1, compacted_prefix_len: 0 })
+    }
+
+    #[test]
+    fn l19_recall_budget_ladder_scales_by_pressure_band() {
+        assert_eq!(recall_budget(PressureLevel::Normal, 4), RecallBudget { cards: 4, per_card_token_cap: 30, hints_only: false });
+        assert_eq!(recall_budget(PressureLevel::Moderate, 4), RecallBudget { cards: 2, per_card_token_cap: 30, hints_only: false });
+        assert_eq!(recall_budget(PressureLevel::High, 4), RecallBudget { cards: 1, per_card_token_cap: 7, hints_only: false });
+        assert_eq!(recall_budget(PressureLevel::Critical, 4), RecallBudget { cards: 1, per_card_token_cap: 0, hints_only: true });
+    }
+
+    #[test]
+    fn l19_recall_budget_moderate_rounds_up_at_base_one() {
+        assert_eq!(recall_budget(PressureLevel::Moderate, 1).cards, 1);
+        assert_eq!(recall_budget(PressureLevel::Moderate, 0).cards, 0);
+    }
+
+    #[test]
+    fn l19_recall_cards_ride_the_tail_and_leave_the_prefix_unchanged() {
+        let (session, budget, freeze) = recall_inputs(true); let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze); let before = view.messages.clone();
+        let fingerprint = boundary_fingerprint(&session.messages[0]);
+        let appended = append_recall_cards(&mut view, &log, &freeze, PressureLevel::Normal);
+        assert!(appended > 0); assert_eq!(view.recalled_card_count, appended);
+        assert_eq!(boundary_fingerprint(&session.messages[0]), fingerprint);
+        assert_eq!(&view.messages[..before.len()], &before[..]);
+        assert!(view.messages[before.len()..].iter().all(|m| m.role == MessageRole::System));
+        assert!(view.messages[before.len()..].iter().any(|m| format!("{:?}", m.blocks).contains("crates/orchestrator/src/session.rs")));
+    }
+
+    #[test]
+    fn l19_no_recall_when_no_folded_path_resurfaces() {
+        let (session, budget, freeze) = recall_inputs(false); let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze); let before = view.messages.clone();
+        assert_eq!(append_recall_cards(&mut view, &log, &freeze, PressureLevel::Normal), 0);
+        assert_eq!(view.recalled_card_count, 0); assert_eq!(view.messages, before);
+    }
+
+    #[test]
+    fn l19_hints_only_card_under_critical_carries_no_folded_content() {
+        let (session, budget, freeze) = recall_inputs(true); let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze); let before = view.messages.len();
+        assert_eq!(append_recall_cards(&mut view, &log, &freeze, PressureLevel::Critical), 1);
+        let card = format!("{:?}", view.messages[before].blocks);
+        assert!(card.contains("crates/orchestrator/src/session.rs")); assert!(!card.contains("zebrafish"));
     }
 
     #[test]
