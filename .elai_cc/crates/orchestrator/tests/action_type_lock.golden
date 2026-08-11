@@ -124,6 +124,7 @@ context_access_spec
 context_budget_computed
 context_calibration_event
 context_pruned
+context_recalled
 context_reduction
 context_transform_receipt
 contract_coding_event

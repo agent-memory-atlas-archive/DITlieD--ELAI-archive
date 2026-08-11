@@ -1133,6 +1133,11 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // version, the variant total, and the action_type_lock golden all derive
     // from the registry length.
     SsbActionType::SemanticEntropyMeasured,
+    // L-19 slice 2: ContextRecalled flat beacon (ambient page-in receipt).
+    // Single wire tag; the pointer-only degrade is a payload field. This append
+    // is the only counter touch -- the schema version, the variant total, and
+    // the action_type_lock golden all derive from the registry length.
+    SsbActionType::ContextRecalled,
     // F-6 / Slice A1 (SCHEMA_VERSION 202, 2026-06-02): SkillLibraryEvent
     // Pattern-2 single variant (3-arm SkillLibraryEventKind discriminator;
     // counts as ONE variant here). Acquired arm is the representative arm.

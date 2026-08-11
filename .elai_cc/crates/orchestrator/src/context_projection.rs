@@ -155,6 +155,10 @@ pub struct View {
     pub log_len: usize,
     pub tail_start: usize,
     pub recalled_card_count: usize,
+    /// L-19 slice 2 -- the paths whose folded content was paged back this turn,
+    /// in card order. Empty on every turn that recalls nothing, which is what
+    /// keeps the receipt silent instead of recording an empty recall.
+    pub recalled_paths: Vec<String>,
 }
 
 const ELAI_CONTEXT_PROJECTION_DISABLE_VAR: &str = "ELAI_CONTEXT_PROJECTION_DISABLE";
@@ -223,6 +227,7 @@ pub fn fold(
         log_len: log.len(),
         tail_start: end,
         recalled_card_count: 0,
+        recalled_paths: Vec::new(),
     }
 }
 
@@ -238,6 +243,7 @@ pub fn append_recall_cards(
     let end = view.tail_start;
     if start >= end || end > log.len() {
         view.recalled_card_count = 0;
+        view.recalled_paths.clear();
         return 0;
     }
     let folded = &log.messages()[start..end];
@@ -286,9 +292,46 @@ pub fn append_recall_cards(
             usage: None,
         });
         appended += 1;
+        view.recalled_paths.push(path);
     }
     view.recalled_card_count = appended;
     appended
+}
+
+
+/// L-19 slice 2: build the ambient page-in receipt for one projected view.
+///
+/// Returns `None` and records NOTHING when the turn appended no recall cards.
+/// That silence is deliberate: most turns match no folded path, and a row
+/// claiming zero recalled cards would record a recall that never happened.
+pub fn recall_receipt_payload(
+    view: &View,
+    level: PressureLevel,
+) -> Option<crate::ssb::SsbPayload> {
+    if view.recalled_paths.is_empty() {
+        return None;
+    }
+    let budget = recall_budget(level, RECALL_BASE_CARDS);
+    let pressure_level = match level {
+        PressureLevel::Normal => 0,
+        PressureLevel::Moderate => 1,
+        PressureLevel::High => 2,
+        PressureLevel::Critical => 3,
+    };
+    Some(crate::ssb::SsbPayload::ContextRecalled(
+        crate::ssb::ContextRecalledPayload {
+            pressure_level,
+            budget_cards: budget.cards,
+            recalled_cards: view.recalled_paths.len(),
+            per_card_token_cap: budget.per_card_token_cap,
+            pointer_only: budget.hints_only,
+            path_digests: view
+                .recalled_paths
+                .iter()
+                .map(|path| *blake3::hash(path.as_bytes()).as_bytes())
+                .collect(),
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -372,6 +415,52 @@ mod tests {
         assert_eq!(append_recall_cards(&mut view, &log, &freeze, PressureLevel::Critical), 1);
         let card = format!("{:?}", view.messages[before].blocks);
         assert!(card.contains("crates/orchestrator/src/session.rs")); assert!(!card.contains("zebrafish"));
+    }
+
+    #[test]
+    fn l19_recall_receipt_is_silent_when_nothing_was_recalled() {
+        let (session, budget, freeze) = recall_inputs(false);
+        let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze);
+        let appended = append_recall_cards(&mut view, &log, &freeze, PressureLevel::Normal);
+        assert_eq!(appended, 0);
+        assert_eq!(recall_receipt_payload(&view, PressureLevel::Normal), None);
+    }
+
+    #[test]
+    fn l19_recall_receipt_carries_the_band_budget_and_one_digest_per_card() {
+        let (session, budget, freeze) = recall_inputs(true);
+        let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze);
+        let appended = append_recall_cards(&mut view, &log, &freeze, PressureLevel::Normal);
+        assert!(appended > 0);
+        let Some(crate::ssb::SsbPayload::ContextRecalled(payload)) =
+            recall_receipt_payload(&view, PressureLevel::Normal)
+        else { panic!("expected ContextRecalled payload"); };
+        assert_eq!(payload.pressure_level, 0);
+        assert!(!payload.pointer_only);
+        assert_eq!(payload.per_card_token_cap, MAX_CONSTRAINT_TOKENS);
+        assert_eq!(payload.budget_cards, RECALL_BASE_CARDS);
+        assert_eq!(payload.recalled_cards, view.recalled_card_count);
+        assert_eq!(payload.path_digests.len(), payload.recalled_cards);
+        assert_eq!(
+            payload.path_digests[0],
+            *blake3::hash(view.recalled_paths[0].as_bytes()).as_bytes()
+        );
+    }
+
+    #[test]
+    fn l19_recall_receipt_reports_pointer_only_at_critical() {
+        let (session, budget, freeze) = recall_inputs(true);
+        let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze);
+        append_recall_cards(&mut view, &log, &freeze, PressureLevel::Critical);
+        let Some(crate::ssb::SsbPayload::ContextRecalled(payload)) =
+            recall_receipt_payload(&view, PressureLevel::Critical)
+        else { panic!("expected ContextRecalled payload"); };
+        assert_eq!(payload.pressure_level, 3);
+        assert!(payload.pointer_only);
+        assert_eq!(payload.per_card_token_cap, 0);
     }
 
     #[test]

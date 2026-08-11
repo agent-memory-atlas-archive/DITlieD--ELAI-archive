@@ -1380,6 +1380,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // I-9 (SCHEMA_VERSION 263): ErrorAmplificationMeasured flat beacon.
         SsbActionType::ErrorAmplificationMeasured => (),
         SsbActionType::SemanticEntropyMeasured => (),
+        SsbActionType::ContextRecalled => (),
         SsbActionType::HallucinationDeltaMeasured => (),
         // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
         SsbActionType::SkillLibraryEvent(_) => (),

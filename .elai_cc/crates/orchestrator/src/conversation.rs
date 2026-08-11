@@ -1016,6 +1016,30 @@ where
             regime_policy(mode),
         );
         crate::context_projection::append_recall_cards(&mut view, &log, &freeze, level);
+        // L-19 slice 2: the recall receipt rides the same projection that built
+        // the cards, so the row can never disagree with the view the provider
+        // saw. Best-effort like the sibling ContextReduction emit below: no
+        // writer wired (legacy / test path) means no row, and the write is
+        // fire-and-forget so the sync projection path never blocks on SSB.
+        if let Some(ssb) = self.ssb_writer.clone() {
+            if let Some(payload) =
+                crate::context_projection::recall_receipt_payload(&view, level)
+            {
+                std::thread::spawn(move || {
+                    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        let _ = rt.block_on(ssb.write_payload(
+                            "conversation.project_with_freeze",
+                            0,
+                            payload,
+                            Vec::new(),
+                        ));
+                    }
+                });
+            }
+        }
         view
     }
 

@@ -3671,6 +3671,21 @@ use crate::gate::RiskLevel;
                     ],
                 })
             }
+            // L-19 slice 2: ContextRecalled flat beacon. Explicit arm so
+            // write-time validation resolves the payload type. The digests here
+            // are fixture bytes; production digests are blake3 of real paths.
+            SsbActionType::ContextRecalled => {
+                SsbPayload::ContextRecalled(ContextRecalledPayload {
+                    pressure_level: 1,
+                    budget_cards: 2,
+                    recalled_cards: 1,
+                    per_card_token_cap: 30,
+                    pointer_only: false,
+                    path_digests: vec![
+                        *blake3::hash(b"test_payload_context_recalled_path").as_bytes(),
+                    ],
+                })
+            }
             // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2
             // single variant. Explicit arm so write-time validation resolves the
             // payload type correctly. Uses the Acquired arm (prior_tier None).
@@ -7832,6 +7847,18 @@ use crate::gate::RiskLevel;
                     *blake3::hash(b"all_test_payloads_semantic_entropy").as_bytes(),
                 ],
             }),
+            // L-19 slice 2: ContextRecalled flat beacon. 1 entry (single wire
+            // tag; the pointer-only degrade is a payload field).
+            SsbPayload::ContextRecalled(ContextRecalledPayload {
+                pressure_level: 3,
+                budget_cards: 1,
+                recalled_cards: 1,
+                per_card_token_cap: 0,
+                pointer_only: true,
+                path_digests: vec![
+                    *blake3::hash(b"all_test_payloads_context_recalled").as_bytes(),
+                ],
+            }),
             // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent SINGLE-VARIANT
             // Pattern-2; 3-arm SkillLibraryEventKind discriminator covers Acquired
             // / TrustPromoted / DemotedStale. Three entries cover all arms.
@@ -8871,8 +8898,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            503,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured + 1 J-23 ReviewGateCatalogEvent + 1 I-16 KvCacheTuned (missing from the count since 91d3f150) + 1 L-2 ClaimRiskScored + 1 J-42 ReasoningCheckpointEvent",
+            505,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured + 1 J-23 ReviewGateCatalogEvent + 1 I-16 KvCacheTuned (missing from the count since 91d3f150) + 1 L-2 ClaimRiskScored + 1 J-42 ReasoningCheckpointEvent + 1 L-4 SemanticEntropyMeasured + 1 L-19 ContextRecalled",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

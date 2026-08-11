@@ -4986,6 +4986,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- per-sample digests so the entropy is recomputable. No row is written
         -- for a single-sample (unmeasured) degrade.
         'semantic_entropy_measured',
+        -- L-19 slice 2: ambient page-in (recall) receipt. Emitted once per turn
+        -- that appends at least one recall card to the projected tail; carries
+        -- the path digests so the recall set is recomputable. No row is written
+        -- for a turn that appends no cards.
+        'context_recalled',
         -- F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2
         -- single variant. 3-arm SkillLibraryEventKind discriminator:
         -- Acquired / TrustPromoted / DemotedStale. Carries the skill id, the

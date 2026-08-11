@@ -3748,6 +3748,14 @@ pub enum SsbActionType {
     /// A single-sample (unmeasured) degrade emits NO row.
     /// Carries [`SemanticEntropyMeasuredPayload`].
     SemanticEntropyMeasured,
+    /// L-19 slice 2 -- ambient page-in (recall) receipt. Emitted once per turn
+    /// that appends at least one recall card to the projected tail, so an
+    /// auditor can see the pressure band, the budget the ladder computed, the
+    /// cards it really appended, and which paths came back. A turn that appends
+    /// no cards emits NO row. Flat beacon; the pointer-only degrade is a
+    /// payload field, not a second wire tag.
+    /// Carries [`ContextRecalledPayload`].
+    ContextRecalled,
     /// F-6 / Slice A1 (SCHEMA_VERSION 202) -- learned-skill library event.
     /// Pattern-2 single variant with 3-arm [`SkillLibraryEventKind`]
     /// discriminator (Acquired / TrustPromoted / DemotedStale). The sql_str
@@ -5678,6 +5686,8 @@ impl SsbActionType {
             Self::ErrorAmplificationMeasured => "error_amplification_measured",
             // L-4 slice 3: semantic-entropy measurement receipt.
             Self::SemanticEntropyMeasured => "semantic_entropy_measured",
+            // L-19 slice 2: ambient page-in (recall) receipt.
+            Self::ContextRecalled => "context_recalled",
             // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2.
             // Each Kind arm maps to its own sql_str via the Kind's as_sql_str().
             Self::SkillLibraryEvent(kind) => kind.as_sql_str(),
@@ -6568,6 +6578,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "error_amplification_measured" => Ok(SsbActionType::ErrorAmplificationMeasured),
         // L-4 slice 3: semantic-entropy measurement receipt.
         "semantic_entropy_measured" => Ok(SsbActionType::SemanticEntropyMeasured),
+        // L-19 slice 2: ambient page-in (recall) receipt.
+        "context_recalled" => Ok(SsbActionType::ContextRecalled),
         // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2 (3 arms).
         "skill_acquired"        => Ok(SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::Acquired)),
         "skill_trust_promoted"  => Ok(SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::TrustPromoted)),

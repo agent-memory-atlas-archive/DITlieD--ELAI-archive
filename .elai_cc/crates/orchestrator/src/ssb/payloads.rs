@@ -3557,6 +3557,9 @@ pub enum SsbPayload {
     // See `SemanticEntropyMeasuredPayload`. Flat beacon; the agree/diverge
     // discriminator is a payload field, mirroring `ClaimRiskScoredPayload`.
     SemanticEntropyMeasured(SemanticEntropyMeasuredPayload),
+    // L-19 slice 2: ambient page-in (recall) receipt.
+    // See `ContextRecalledPayload`. Flat beacon (no Kind discriminator).
+    ContextRecalled(ContextRecalledPayload),
     // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
     // See `SkillLibraryEventPayload` + `SkillLibraryEventKind`. Pattern-2
     // (single variant; SkillLibraryEventKind 3-arm discriminator).
@@ -4702,6 +4705,8 @@ impl SsbPayload {
             Self::ErrorAmplificationMeasured(_) => SsbActionType::ErrorAmplificationMeasured,
             // L-4 slice 3: semantic-entropy measurement receipt.
             Self::SemanticEntropyMeasured(_) => SsbActionType::SemanticEntropyMeasured,
+            // L-19 slice 2: ambient page-in (recall) receipt.
+            Self::ContextRecalled(_) => SsbActionType::ContextRecalled,
             // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
             Self::SkillLibraryEvent(p) => SsbActionType::SkillLibraryEvent(p.kind),
             // F-5 / Slice A1 (SCHEMA_VERSION 203): staleness-quarantine broadcast.
@@ -22133,3 +22138,33 @@ pub struct ReasoningCheckpointEventPayload {
         /// blake3 of each trimmed sample, in sample order.
         pub sample_digests: Vec<[u8; 32]>,
     }
+
+// === L-19 slice 2 -- ContextRecalled substrate ==============================
+
+/// L-19 slice 2 -- payload for [`SsbActionType::ContextRecalled`].
+///
+/// Written once per turn whose projection appended at least one ambient page-in
+/// card to the provider-facing tail. Every field is COMPUTED by the shipped
+/// ladder, never a literal: the band comes from `pressure_level`, the budget
+/// from `recall_budget`, and the card count from the cards the projection
+/// really appended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextRecalledPayload {
+    /// The shipped `PressureLevel` band as an ordinal: 0 Normal, 1 Moderate,
+    /// 2 High, 3 Critical. An ordinal keeps the row serde-stable while the enum
+    /// stays the source of truth in the orchestrator.
+    pub pressure_level: u8,
+    /// Cards the ladder allowed at this band before any signal matched.
+    pub budget_cards: usize,
+    /// Cards actually appended to the tail. Always at least one: a turn that
+    /// appends none writes no row.
+    pub recalled_cards: usize,
+    /// Per-card token cap the band allowed.
+    pub per_card_token_cap: usize,
+    /// Whether the band degraded to pointer-only cards (content withheld).
+    pub pointer_only: bool,
+    /// blake3 of each recalled path, in card order, so an auditor can recompute
+    /// the recall set instead of trusting `recalled_cards`.
+    pub path_digests: Vec<[u8; 32]>,
+}
