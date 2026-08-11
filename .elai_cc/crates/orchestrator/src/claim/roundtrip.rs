@@ -192,7 +192,8 @@ pub fn score_claim_risk_wired_with_samples(
         registry.as_ref(),
     );
     let entropy = super::semantic_entropy::SemanticEntropyPredictor::new(samples);
-    score_claim_risk_with(set, &[&predictor, &citations, &entropy])
+    let counterfactual = super::counterfactual::CounterfactualPredictor::new();
+    score_claim_risk_with(set, &[&predictor, &citations, &entropy, &counterfactual])
 }
 
 fn load_checker_registry() -> Option<CheckerRegistry> {

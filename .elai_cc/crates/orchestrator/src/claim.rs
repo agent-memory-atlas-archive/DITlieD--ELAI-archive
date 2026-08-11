@@ -307,4 +307,5 @@ pub mod resolve;
 pub mod risk;
 pub mod roundtrip;
 pub mod semantic_entropy;
+pub mod counterfactual;
 pub use extract::{extract_claims, ClaimKind, ClaimSet, ExtractedClaim};
