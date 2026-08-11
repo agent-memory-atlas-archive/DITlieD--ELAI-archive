@@ -1912,6 +1912,14 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
             // leaking a registered AgentConnection.
             let mut stream = stream;
             let task_text_len = task_text.len();
+            // L-4 slice 2: the resample must answer the SAME prompt the agent got, and task_text is
+            // moved into the request below. Clone it only when the resample gate is armed.
+            let resample_prompt = if crate::claim::semantic_entropy::semantic_entropy_resample_enabled()
+            {
+                Some(task_text.clone())
+            } else {
+                None
+            };
             let dispatch_config = Self::baby_step_dispatch_config(self.role);
             let initial_request = elai_ipc_types::IpcMessageType::AgentRequest {
                 task: task_text,
@@ -1986,6 +1994,32 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 claim_text,
                 &entropy_samples,
             );
+            // L-4 slice 2: a High or Critical first pass buys at most two extra answers to the same
+            // prompt; anything cheaper keeps the slice-1 singleton. Second pass replaces the risks.
+            let extra_samples = match resample_prompt.as_deref() {
+                Some(prompt) => {
+                    crate::claim::semantic_entropy::collect_extra_samples(
+                        true,
+                        &claim_risks,
+                        self.rpc_server.as_ref(),
+                        prompt,
+                    )
+                    .await
+                }
+                None => Vec::new(),
+            };
+            let claim_risks = if extra_samples.is_empty() {
+                claim_risks
+            } else {
+                let mut samples = Vec::with_capacity(extra_samples.len() + 1);
+                samples.push(claim_text.to_string());
+                samples.extend(extra_samples);
+                crate::claim::roundtrip::score_claim_risk_wired_with_samples(
+                    &claim_set,
+                    claim_text,
+                    &samples,
+                )
+            };
             let risk_low = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Low).count();
             let risk_medium = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Medium).count();
             let risk_high = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::High).count();
