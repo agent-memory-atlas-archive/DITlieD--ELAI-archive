@@ -17980,7 +17980,7 @@ pub struct ProgressRewardScoredPayload {
     pub truncated_at_step: u32,
     // --- DecayApplied arm fields ---
     /// The decay multiplier applied (< 1.0). 1.0 on non-decay arms.
-    #[serde(default, skip_serializing_if = "is_one_f64")]
+    #[serde(default = "one_f64", skip_serializing_if = "is_one_f64")]
     pub decay_factor: f64,
     /// The no-progress window D (from metrics/progress_reward_weights.toml). 0 on other arms.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
@@ -17997,6 +17997,11 @@ fn is_zero_f64(v: &f64) -> bool {
 /// serde skip helper: true when the f64 is exactly 1.0.
 fn is_one_f64(v: &f64) -> bool {
     *v == 1.0
+}
+
+/// serde default helper for the neutral decay multiplier.
+fn one_f64() -> f64 {
+    1.0
 }
 
 /// I-22 (SCHEMA_VERSION 264) -- env var name gating `ProgressRewardScored` emission

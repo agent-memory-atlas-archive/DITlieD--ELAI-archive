@@ -8879,6 +8879,50 @@ use crate::gate::RiskLevel;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn progress_reward_decay_factor_neutral_survives_round_trip() {
+        let dir = TempDir::new().expect("tempdir");
+        let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
+        let payload = SsbPayload::ProgressRewardScored(ProgressRewardScoredPayload {
+            kind: ProgressRewardScoredKind::Delta,
+            branch_id: "branch-reward-neutral".into(),
+            step: 3,
+            phi_t: 0.75,
+            phi_t_prev: 0.60,
+            shaped_reward: 0.15,
+            test_pass: 12,
+            compile_err_inv: 8,
+            req_covered: 4,
+            fork_node_id: String::new(),
+            truncated_at_step: 0,
+            decay_factor: 1.0,
+            no_progress_window: 0,
+            ts_ms: 1_700_000_018_000,
+        });
+
+        let action = payload.action_type();
+        ssb.write_payload("agent-neutral", 3, payload, vec!["file.rs".into()])
+            .await
+            .expect("write neutral progress reward payload");
+        let entry = ssb
+            .query_by_type(action)
+            .expect("query neutral progress reward payload")
+            .last()
+            .cloned()
+            .expect("neutral progress reward entry");
+        let deserialized: SsbPayload = rmp_serde::from_slice(&entry.payload)
+            .expect("deserialize neutral progress reward payload");
+
+        let SsbPayload::ProgressRewardScored(result) = deserialized else {
+            panic!("expected ProgressRewardScored payload");
+        };
+        assert_eq!(
+            result.decay_factor,
+            1.0,
+            "neutral decay-factor contract must round-trip as 1.0"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_payload_size_limit() {
         let dir = TempDir::new().expect("tempdir");
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
