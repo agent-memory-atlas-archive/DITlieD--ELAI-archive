@@ -232,6 +232,32 @@ pub fn fold(
 }
 
 
+/// Collect failed tool-result evidence from the folded span, preserving first occurrence order.
+fn failed_path_evidence(messages: &[ConversationMessage]) -> Vec<(String, String)> {
+    let mut evidence = Vec::new();
+    for message in messages {
+        for block in &message.blocks {
+            let crate::session::ContentBlock::ToolResult { output, is_error: true, .. } = block else {
+                continue;
+            };
+            let mut current = String::new();
+            for ch in output.chars().chain(std::iter::once(' ')) {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '/' | '-') {
+                    current.push(ch);
+                } else {
+                    if current.contains('/') && current.contains('.')
+                        && !evidence.iter().any(|(path, _)| path == &current)
+                    {
+                        evidence.push((current.clone(), output.clone()));
+                    }
+                    current.clear();
+                }
+            }
+        }
+    }
+    evidence
+}
+
 /// Append transient path-based recall cards to the projected tail.
 pub fn append_recall_cards(
     view: &mut View,
@@ -274,14 +300,30 @@ pub fn append_recall_cards(
     let folded_tokens = tokens(folded);
     let tail_tokens = tokens(live_tail);
     let budget = recall_budget(level, RECALL_BASE_CARDS);
+    let failed = failed_path_evidence(folded);
+    let mut candidates = Vec::new();
+    for (path, output) in failed {
+        if tail_tokens.contains(&path) {
+            candidates.push((path, Some(output)));
+        }
+    }
+    for path in folded_tokens {
+        if tail_tokens.contains(&path) && !candidates.iter().any(|(candidate, _)| candidate == &path) {
+            candidates.push((path, None));
+        }
+    }
     let mut appended = 0;
-    for path in folded_tokens.into_iter().filter(|path| tail_tokens.contains(path)).take(budget.cards) {
-        let source = folded.iter().find_map(|message| {
+    for (path, failed_output) in candidates.into_iter().take(budget.cards) {
+        let failed = failed_output.is_some();
+        let source = failed_output.unwrap_or_else(|| folded.iter().find_map(|message| {
             let body = text(message);
             body.contains(&path).then_some(body)
-        }).unwrap_or_default();
+        }).unwrap_or_default());
         let card_text = if budget.hints_only {
             format!("[recall pointer] {path}")
+        } else if failed {
+            let words = source.split_whitespace().take(MAX_CONSTRAINT_TOKENS.min(budget.per_card_token_cap)).collect::<Vec<_>>().join(" ");
+            format!("[recall avoid] {path} {words}")
         } else {
             let words = source.split_whitespace().take(budget.per_card_token_cap).collect::<Vec<_>>().join(" ");
             format!("[recall] {path} {words}")
@@ -371,6 +413,106 @@ mod tests {
             session.messages.push(ConversationMessage { role, blocks: vec![crate::session::ContentBlock::Text { text: text.to_string() }], usage: None });
         }
         (session, CompactionConfig { preserve_recent_messages: 1, max_estimated_tokens: 100, preserve_intermediate_numerics: false }, FreezeState { frozen_head_len: 1, compacted_prefix_len: 0 })
+    }
+
+
+    fn failed_recall_inputs(is_error: bool, both: bool) -> (Session, CompactionConfig, FreezeState) {
+        let mut session = Session::new();
+        session.messages.push(ConversationMessage {
+            role: MessageRole::System,
+            blocks: vec![crate::session::ContentBlock::Text { text: "head".to_string() }],
+            usage: None,
+        });
+        session.messages.push(ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![crate::session::ContentBlock::ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                tool_name: "read".to_string(),
+                output: "failed to open src/broken/thing.rs because the path is unavailable and must be avoided".to_string(),
+                is_error,
+            }],
+            usage: None,
+        });
+        if both {
+            session.messages.push(ConversationMessage {
+                role: MessageRole::User,
+                blocks: vec![crate::session::ContentBlock::Text { text: "also saw src/other/thing.rs".to_string() }],
+                usage: None,
+            });
+        } else {
+            session.messages.push(ConversationMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![crate::session::ContentBlock::Text { text: "middle".to_string() }],
+                usage: None,
+            });
+        }
+        let tail = if both {
+            "tail src/broken/thing.rs and src/other/thing.rs"
+        } else {
+            "tail src/broken/thing.rs"
+        };
+        session.messages.push(ConversationMessage {
+            role: MessageRole::User,
+            blocks: vec![crate::session::ContentBlock::Text { text: tail.to_string() }],
+            usage: None,
+        });
+        (
+            session,
+            CompactionConfig { preserve_recent_messages: 1, max_estimated_tokens: 100, preserve_intermediate_numerics: false },
+            FreezeState { frozen_head_len: 1, compacted_prefix_len: 0 },
+        )
+    }
+
+    fn card_text(view: &View, index: usize) -> String {
+        match &view.messages[index].blocks[0] {
+            crate::session::ContentBlock::Text { text } => text.clone(),
+            _ => panic!("expected text card"),
+        }
+    }
+
+    #[test]
+    fn l19_failed_path_recall_uses_contrastive_avoid_form() {
+        let (session, budget, freeze) = failed_recall_inputs(true, false);
+        let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze);
+        let before = view.messages.len();
+        append_recall_cards(&mut view, &log, &freeze, PressureLevel::Normal);
+        let card = card_text(&view, before);
+        assert!(card.starts_with("[recall avoid] src/broken/thing.rs"));
+        assert!(card.split_whitespace().skip(3).count() <= MAX_CONSTRAINT_TOKENS);
+    }
+
+    #[test]
+    fn l19_successful_tool_path_does_not_use_avoid_form() {
+        let (session, budget, freeze) = failed_recall_inputs(false, false);
+        let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze);
+        append_recall_cards(&mut view, &log, &freeze, PressureLevel::Normal);
+        assert!(!view.messages.iter().any(|message| match &message.blocks[0] {
+            crate::session::ContentBlock::Text { text } => text.starts_with("[recall avoid]"),
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn l19_failed_path_recall_is_pointer_only_under_critical_pressure() {
+        let (session, budget, freeze) = failed_recall_inputs(true, false);
+        let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze);
+        let before = view.messages.len();
+        append_recall_cards(&mut view, &log, &freeze, PressureLevel::Critical);
+        assert_eq!(card_text(&view, before), "[recall pointer] src/broken/thing.rs");
+    }
+
+    #[test]
+    fn l19_failed_path_card_precedes_tier_zero_card() {
+        let (session, budget, freeze) = failed_recall_inputs(true, true);
+        let log = TranscriptLog::from_session(&session);
+        let mut view = fold(&log, &budget, ContextPolicy::Local, &freeze);
+        let before = view.messages.len();
+        append_recall_cards(&mut view, &log, &freeze, PressureLevel::Normal);
+        assert!(card_text(&view, before).starts_with("[recall avoid] src/broken/thing.rs"));
+        assert!(card_text(&view, before + 1).starts_with("[recall] src/other/thing.rs"));
     }
 
     #[test]
