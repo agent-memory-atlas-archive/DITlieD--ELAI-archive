@@ -115,6 +115,9 @@ pub struct BeliefState {
     /// K-12 R2: critical atoms for the handoff-faithfulness gate.
     #[serde(default)]
     pub critical_atoms: Vec<CriticalAtom>,
+    /// L-8 carrier: raw reference text of claims quarantined in this session.
+    #[serde(default)]
+    pub quarantined_claims: Vec<String>,
 }
 
 impl BeliefState {
@@ -138,12 +141,19 @@ impl BeliefState {
             dkg_entities,
             token_delta,
             critical_atoms: Vec::new(),
+            quarantined_claims: Vec::new(),
         }
     }
 
     /// Set the critical atoms carried by this belief state.
     pub fn with_critical_atoms(mut self, atoms: Vec<CriticalAtom>) -> Self {
         self.critical_atoms = atoms;
+        self
+    }
+
+    /// Set the claims quarantined during this session for downstream projection.
+    pub fn with_quarantined_claims(mut self, claims: Vec<String>) -> Self {
+        self.quarantined_claims = claims;
         self
     }
 

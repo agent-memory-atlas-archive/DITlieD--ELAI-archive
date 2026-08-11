@@ -49,7 +49,8 @@ use crate::cloud_mode::{
 use crate::dispatcher::BackendMode;
 use crate::search::{BranchInput, SearchLadder, SearchLadderError};
 use crate::ssb::{
-    EscalationCascadeKind, EscalationCascadePayload, Ssb, SsbError, SsbPayload,
+    decode_ssb_payload, EscalationCascadeKind, EscalationCascadePayload, Ssb, SsbActionType,
+    SsbError, SsbPayload,
 };
 
 /// Re-export of the I-7 env-gate literal (canonical definition lives next to the
@@ -250,6 +251,20 @@ impl EscalationWaterfall {
             })
             .collect();
         let constraints = failed_because.clone();
+        let quarantined_claims = self
+            .ssb
+            .query_session_stream_asc(self.ssb.session_id())
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter(|row| matches!(row.action_type, SsbActionType::StalenessQuarantineBroadcast))
+            .filter_map(|row| decode_ssb_payload(&row.payload).ok())
+            .filter_map(|payload| match payload {
+                SsbPayload::StalenessQuarantineBroadcast(payload)
+                    if payload.fact_id.starts_with("claim:") => Some(payload.fact_id),
+                _ => None,
+            })
+            .collect();
         let belief = BeliefState::new(
             tried,
             failed_because,
@@ -257,7 +272,9 @@ impl EscalationWaterfall {
             constraints,
             Vec::new(),
             0,
-        ).with_critical_atoms(atoms);
+        )
+        .with_critical_atoms(atoms)
+        .with_quarantined_claims(quarantined_claims);
         enforce_belief_handoff_faithfulness(&belief)
             .map_err(|error| EscalationWaterfallError::Faithfulness(error.missing.len()))?;
         Ok(belief)

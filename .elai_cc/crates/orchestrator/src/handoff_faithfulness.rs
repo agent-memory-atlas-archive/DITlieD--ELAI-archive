@@ -8,20 +8,50 @@ pub struct HandoffFaithfulnessError {
     pub missing: Vec<CriticalAtom>,
 }
 
+fn keep_part(belief: &BeliefState, part: &str) -> bool {
+    // The SSB row carries an id, not claim text, so re-derive ids in hash space.
+    let quarantined = crate::claim::extract::extract_claims(part)
+        .claims()
+        .iter()
+        .any(|claim| {
+            let fact_id = crate::claim::prune::claim_fact_id(
+                &crate::claim::prune::content_key(claim),
+            );
+            belief.quarantined_claims.iter().any(|id| id == &fact_id)
+        });
+    if !quarantined {
+        return true;
+    }
+    let preserve_collision = belief.critical_atoms.iter().any(|atom| {
+        atom.must_preserve && part.contains(atom.value.as_str())
+    });
+    if preserve_collision {
+        tracing::warn!("quarantine projection collided with must-preserve atom; retaining part");
+        return true;
+    }
+    false
+}
+
 /// Build the context haystack exposed to the receiving model.
 pub fn projected_context_from_belief(belief: &BeliefState) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for t in &belief.tried {
-        parts.push(&t.label);
+        if keep_part(belief, &t.label) {
+            parts.push(&t.label);
+        }
     }
     for value in &belief.failed_because {
-        parts.push(value);
+        if keep_part(belief, value) {
+            parts.push(value);
+        }
     }
     for value in &belief.constraints {
-        parts.push(value);
+        if keep_part(belief, value) {
+            parts.push(value);
+        }
     }
     let ast = String::from_utf8_lossy(&belief.current_ast_state);
-    if !ast.is_empty() {
+    if !ast.is_empty() && keep_part(belief, ast.as_ref()) {
         parts.push(ast.as_ref());
     }
     parts.join("\n")

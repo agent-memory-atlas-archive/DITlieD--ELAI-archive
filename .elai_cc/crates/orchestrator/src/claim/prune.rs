@@ -11,6 +11,11 @@ pub struct QuarantinedClaim {
     pub kind: ClaimKind,
 }
 
+/// Single definition of the `claim:` fact-id convention shared by the emit and the consult.
+pub fn claim_fact_id(key: &[u8; 32]) -> String {
+    format!("claim:{:.16}", blake3::Hash::from_bytes(*key).to_hex())
+}
+
 /// Span-independent identity for a claim assertion.
 pub fn content_key(claim: &ExtractedClaim) -> [u8; 32] {
     let mut raws: Vec<&str> = claim.refs.iter().map(|reference| reference.raw.as_str()).collect();

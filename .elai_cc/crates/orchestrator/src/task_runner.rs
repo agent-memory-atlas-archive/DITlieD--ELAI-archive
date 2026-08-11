@@ -2111,10 +2111,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 };
                 if let Some(writer) = self.ssb_writer.as_ref() {
                     for claim in contradicted {
-                        let fact_id = format!(
-                            "claim:{:.16}",
-                            blake3::Hash::from_bytes(claim.content_key).to_hex()
-                        );
+                        let fact_id = crate::claim::prune::claim_fact_id(&claim.content_key);
                         let tick_ms = self.clock.now_ms() as u64;
                         let mut hasher = blake3::Hasher::new();
                         hasher.update(fact_id.as_bytes());
