@@ -304,4 +304,5 @@ mod tests {
 pub mod extract;
 pub mod resolve;
 pub mod risk;
+pub mod roundtrip;
 pub use extract::{extract_claims, ClaimKind, ClaimSet, ExtractedClaim};
