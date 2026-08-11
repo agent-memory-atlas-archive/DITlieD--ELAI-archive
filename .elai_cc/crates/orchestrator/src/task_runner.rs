@@ -1978,7 +1978,14 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 Some(resolver) => crate::claim::extract::extract_claims_with(claim_text, resolver),
                 None => crate::claim::extract::extract_claims(claim_text),
             };
-            let claim_risks = crate::claim::roundtrip::score_claim_risk_wired(&claim_set, claim_text);
+            // L-4 slice 1: the shipped answer is the single sample available here. The entropy
+            // signal therefore rides along unfired until the slice-2 resample supplies N > 1.
+            let entropy_samples = [claim_text.to_string()];
+            let claim_risks = crate::claim::roundtrip::score_claim_risk_wired_with_samples(
+                &claim_set,
+                claim_text,
+                &entropy_samples,
+            );
             let risk_low = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Low).count();
             let risk_medium = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Medium).count();
             let risk_high = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::High).count();

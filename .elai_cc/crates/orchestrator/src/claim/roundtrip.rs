@@ -176,6 +176,25 @@ pub fn score_claim_risk_wired(set: &ClaimSet, text: &str) -> Vec<ClaimRisk> {
     score_claim_risk_with(set, &[&predictor, &citations])
 }
 
+/// Production entry point for claim risk scoring with the round-trip sources plus the
+/// L-4 semantic-entropy source over the answer samples the caller collected. With fewer
+/// than two samples the entropy signal is present but unfired (entropy NOT MEASURED).
+pub fn score_claim_risk_wired_with_samples(
+    set: &ClaimSet,
+    text: &str,
+    samples: &[String],
+) -> Vec<ClaimRisk> {
+    let predictor = RoundTripPredictor::default();
+    let registry = load_checker_registry();
+    let citations = ClosedSetCitationPredictor::new(
+        text,
+        closed_set_from_resolved_refs(set),
+        registry.as_ref(),
+    );
+    let entropy = super::semantic_entropy::SemanticEntropyPredictor::new(samples);
+    score_claim_risk_with(set, &[&predictor, &citations, &entropy])
+}
+
 fn load_checker_registry() -> Option<CheckerRegistry> {
     if !CheckerRuntimeConfig::is_enabled() {
         return None;
