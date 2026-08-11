@@ -1,3 +1,4 @@
+use elai_knowledge::symbol_graph::{cache::SymbolGraphCache, sharding::SYMBOL_FILE_LRU_SIZE};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -51,10 +52,31 @@ impl WorkspaceRefResolver {
         }
         path.trim().to_owned()
     }
+
+    /// Reduce a raw claim ref to the simple symbol name the DKG name index is keyed by.
+    /// The index stores simple names, so `elai_core::paths::dkg_db_path(&root)` must become
+    /// `dkg_db_path`. Order matters: cut the argument list and the generic list BEFORE taking
+    /// the terminal `::` segment, because both can themselves contain `::`.
+    fn normalized_symbol(raw: &str) -> String {
+        let mut name = raw.trim().trim_matches(|c| c == '`' || c == '"' || c == '\'');
+        // An Api-kind ref looks like `fn foo(a: A) -> B`; drop the signature tail first.
+        if let Some(index) = name.find('(') {
+            name = &name[..index];
+        }
+        if let Some(index) = name.find('<') {
+            name = &name[..index];
+        }
+        let name = name.trim();
+        // `fn foo` / `pub fn foo` shapes: the symbol is the last whitespace-separated token.
+        let name = name.split_whitespace().last().unwrap_or("");
+        let name = name.rsplit("::").next().unwrap_or("");
+        name.trim().to_owned()
+    }
 }
 
-/// Resolves file and lockfile package references in the workspace. Symbol and API references
-/// remain unresolved: this crate has no symbol index, and a real symbol resolver is a later slice.
+/// Resolves file references, lockfile package references, and symbol/API references. Symbols
+/// resolve against the on-disk DKG symbol name index; an absent or unreadable index resolves to
+/// `false`, which is the pre-slice behaviour.
 impl crate::claim::extract::ClaimRefResolver for WorkspaceRefResolver {
     fn resolve_path(&self, raw: &str) -> bool {
         let rel = Self::normalized_path(raw);
@@ -79,6 +101,26 @@ impl crate::claim::extract::ClaimRefResolver for WorkspaceRefResolver {
             .unwrap_or(raw)
             .trim();
         !name.is_empty() && self.packages.contains(name)
+    }
+
+    fn resolve_symbol(&self, raw: &str) -> bool {
+        let name = Self::normalized_symbol(raw);
+        if name.is_empty() {
+            return false;
+        }
+        let db_path = elai_core::paths::dkg_db_path(&self.root);
+        if !db_path.exists() {
+            return false;
+        }
+        let project_id = elai_core::project_id_from_path(&self.root);
+        let mut cache = match SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE) {
+            Ok(cache) => cache,
+            Err(_) => return false,
+        };
+        match cache.ensure_name_index() {
+            Ok(index) => index.get(&name).is_some_and(|refs| !refs.is_empty()),
+            Err(_) => false,
+        }
     }
 }
 
