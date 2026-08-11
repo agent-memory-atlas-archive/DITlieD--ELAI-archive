@@ -12,11 +12,16 @@ pub mod l3_direct;
 pub mod l6_verifier_diversity;
 pub mod ltot;
 pub mod prm_lite;
+pub mod research_profile;
 
 pub use l3_direct::l3_direct_route;
 pub use l6_verifier_diversity::{verifier_diversity, DiversityVerdict};
 pub use ltot::{lateral_branch, LToTSplit, N_LATERAL, N_MAINLINE};
 pub use prm_lite::{AuditorVerifierScore, AUDITOR_WEIGHT, COSINE_WEIGHT, MEAN_LOGPROB_WEIGHT};
+pub use research_profile::{
+    research_grounding_pass, ResearchGroundingOutcome, ResearchVerdict, AbstainReason,
+    ResearchClaimVerdict,
+};
 
 /// Env var that opens the umbrella gate on every E-19 dispatch path. Default
 /// off — wire-dark per E-26 / E-43 precedent. Consumed via

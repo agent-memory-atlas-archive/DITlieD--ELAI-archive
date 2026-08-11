@@ -38,6 +38,8 @@ use thiserror::Error;
 
 use crate::distill::{admit_distillate, build_distill_prompt, build_reseed_prompt, distill_threshold, CheckpointOutcome, CheckpointTrigger, DistillateVerdict};
 
+pub use crate::reflect_types::{ReflectOutput, ReflectProfile, ReflectTokenSummary};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -153,47 +155,6 @@ impl TurnClass {
             TurnClass::CodeFix => "code_fix",
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// ReflectOutput — public return shape of `ChatReflectPipeline::run()`
-// ---------------------------------------------------------------------------
-
-/// Per-stage token accounting. `total` is the integer sum of `stage_tokens`
-/// (TRIAGE, REASONER aggregate across N candidates, AUDITOR, SYNTHESIZE).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReflectTokenSummary {
-    /// `[triage, reasoner_total, auditor, synthesize]`. SYNTHESIZE is a local
-    /// string select with zero inference cost — always 0.
-    pub stage_tokens: [u32; 4],
-    pub total: u32,
-}
-
-impl ReflectTokenSummary {
-    fn from_stages(triage: u32, reasoner: u32, auditor: u32, synth: u32) -> Self {
-        let stage_tokens = [triage, reasoner, auditor, synth];
-        let total = stage_tokens.iter().copied().sum();
-        Self {
-            stage_tokens,
-            total,
-        }
-    }
-}
-
-/// Full result of running the pipeline on a single chat turn.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReflectOutput {
-    /// What the user sees. On the happy path, the AUDITOR's selected
-    /// candidate; on `skipped = true`, the original user input verbatim.
-    pub final_reply: String,
-    pub turn_class: TurnClass,
-    pub token_summary: ReflectTokenSummary,
-    /// `true` when the pipeline fell back to passthrough (any error) or when
-    /// TRIAGE classified the turn as `Chat` (short-circuit). The chat runtime
-    /// must NOT depend on the pipeline succeeding.
-    pub skipped: bool,
-    /// Stable identifier for correlating SSB rows across stages.
-    pub turn_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +339,7 @@ impl ChatReflectPipeline {
                     token_summary: ReflectTokenSummary::default(),
                     skipped: true,
                     turn_id,
+                    candidates: Vec::new(),
                 }
             }
         }
@@ -410,6 +372,7 @@ impl ChatReflectPipeline {
                 token_summary: ReflectTokenSummary::from_stages(triage_tokens, 0, 0, 0),
                 skipped: true,
                 turn_id: turn_id.to_string(),
+                candidates: Vec::new(),
             });
         }
 
@@ -622,6 +585,7 @@ impl ChatReflectPipeline {
             token_summary,
             skipped: false,
             turn_id: turn_id.to_string(),
+            candidates,
         })
     }
 

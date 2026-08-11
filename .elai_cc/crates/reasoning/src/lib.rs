@@ -8,6 +8,7 @@ pub mod layer_routing;
 // phase-3L Step 4 / M10: SYSTEM-prompt assembler that injects PI
 // CONVENTIONS blocks produced by elai_knowledge::PiT1Hook.
 pub mod prompt_builder;
+pub mod reflect_types;
 pub mod traversal;
 pub mod types;
 pub mod verification;
@@ -30,7 +31,7 @@ pub use chat_memory_reflect::{
 };
 pub use chat_reflect::{
     ChatFuture, ChatInferenceClient, ChatReflectConfig, ChatReflectPipeline, ReflectError,
-    ReflectEvent, ReflectEventSink, ReflectOutput, ReflectTokenSummary, TurnClass, N_CANDIDATES,
+    ReflectEvent, ReflectEventSink, ReflectOutput, ReflectProfile, ReflectTokenSummary, TurnClass, N_CANDIDATES,
     REFINE_CAP,
     // Tranche B-6 quad B-39: 85% soft-warn threshold constant.
     REFLECT_BUDGET_SOFT_WARN_PCT,

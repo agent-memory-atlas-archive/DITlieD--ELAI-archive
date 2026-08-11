@@ -21,6 +21,8 @@ pub(crate) use crate::report_fns::*;
 // this module's private free functions via super:: with zero visibility widening.
 #[path = "repl_command.rs"]
 mod repl_command;
+#[path = "repl_reason.rs"]
+mod repl_reason;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
@@ -581,6 +583,10 @@ pub(crate) struct LiveCli {
     /// `reflect_enabled` is `true` and a `backend_config` is present.
     /// Cleared on `/reason off` so a fresh build picks up any config changes.
     pub(crate) reflect_pipeline: Option<ChatReflectPipeline>,
+    /// L-9: which grounding profile `/reason` selected for this session.
+    /// `Research` opts each turn into the research grounding pass that runs
+    /// after the pipeline returns. `Default` keeps shipped B-39 behaviour.
+    pub(crate) reflect_profile: elai_reasoning::ReflectProfile,
     /// C-30: Oracle answer-level cache. Lazily created on first `/research`
     /// invocation. Lives for the lifetime of the LiveCli session.
     pub(crate) oracle_cache: Option<Arc<elai_orchestrator::oracle_cache::OracleAnswerCache>>,
@@ -793,6 +799,41 @@ fn sidecar_steering_verified(sidecar_url: &str) -> bool {
         .unwrap_or(false)
 }
 
+const L9_RESEARCH_AGENT_ID: &str = "l9-research-profile";
+const L9_RESEARCH_SUPERSTEP: i64 = 0;
+
+/// L-9: the research grounding pass for one `/reason research` turn. Scores the
+/// pipeline reply plus its N-best candidates through the shipped CGG entry point
+/// and lands one `ClaimRiskScored` row with an ABSTAINED marking for any
+/// derivation the symbolic checker did not verify. A `Default`-profile turn is a
+/// no-op that touches no SSB. Failures are non-fatal: the reply is already on
+/// screen, so a grounding error must never break the turn.
+pub(crate) fn research_grounding_for_turn(
+    ssb: &Arc<elai_orchestrator::Ssb>,
+    profile: elai_reasoning::ReflectProfile,
+    turn_id: &str,
+    output: &elai_reasoning::ReflectOutput,
+    rt: &tokio::runtime::Runtime,
+) -> Option<elai_orchestrator::reasoning::ResearchGroundingOutcome> {
+    if profile != elai_reasoning::ReflectProfile::Research {
+        return None;
+    }
+    let result = rt.block_on(elai_orchestrator::reasoning::research_grounding_pass(
+        ssb.as_ref(),
+        L9_RESEARCH_AGENT_ID,
+        L9_RESEARCH_SUPERSTEP,
+        &output.final_reply,
+        &output.candidates,
+    ));
+    match result {
+        Ok(outcome) => Some(outcome),
+        Err(error) => {
+            tracing::warn!(%error, turn_id, "L-9 research grounding pass failed (non-fatal)");
+            None
+        }
+    }
+}
+
 impl LiveCli {
     /// J-59: resolve the per-seat identity from `ELAI_SEAT_IDENTITY` env,
     /// defaulting to `"local"` (W-2 single-seat). Does NOT invent auth (J-2 deferred).
@@ -939,6 +980,7 @@ impl LiveCli {
             last_profiled_at: 0,
             export_jsonl_enabled: export_jsonl,
             reflect_enabled: false,
+            reflect_profile: elai_reasoning::ReflectProfile::Default,
             reflect_pipeline: None,
             // C-30: Oracle cache + project-detection-done are session-scoped.
             oracle_cache: None,
@@ -1083,6 +1125,7 @@ impl LiveCli {
                     last_profiled_at: 0,
                     export_jsonl_enabled: false,
                     reflect_enabled: false,
+                    reflect_profile: elai_reasoning::ReflectProfile::Default,
                     reflect_pipeline: None,
                     // C-30: Oracle cache + project detection signal state.
                     oracle_cache: None,
@@ -1253,6 +1296,7 @@ impl LiveCli {
             // SessionDag-only persistence; --export-jsonl is opt-in.
             export_jsonl_enabled: false,
             reflect_enabled: false,
+            reflect_profile: elai_reasoning::ReflectProfile::Default,
             reflect_pipeline: None,
             // C-30: Oracle cache + project detection signal state.
             oracle_cache: None,
@@ -1852,6 +1896,18 @@ impl LiveCli {
                                             )
                                             .await;
                                         });
+                                    }
+                                    // L-9: research-profile grounding pass. Runs
+                                    // after the reply is on screen, so it never
+                                    // sits on the user-perceived hot path.
+                                    if let Some(ssb) = self.ssb.as_ref() {
+                                        let _ = research_grounding_for_turn(
+                                            ssb,
+                                            self.reflect_profile,
+                                            &refine_loop_id,
+                                            &output,
+                                            &rt,
+                                        );
                                     }
                                     self.runtime.push_user_text(effective_input)?;
                                     self.runtime.push_assistant_text(&output.final_reply)?;
@@ -3782,4 +3838,110 @@ fn build_pin_set_from_ssb(ssb: Option<&Arc<elai_orchestrator::Ssb>>) -> std::col
         }
     }
     pinned
+}
+
+#[cfg(test)]
+mod l9_research_profile_tests {
+    use super::*;
+    use elai_orchestrator::SsbReader;
+
+    fn build_ssb(session_id: &str) -> (Arc<elai_orchestrator::Ssb>, tempfile::TempDir) {
+        let proj = tempfile::TempDir::new().expect("project tempdir");
+        let db_path = proj.path().join("ssb.db");
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(elai_core::clock::OsClock);
+        let ssb = Arc::new(
+            elai_orchestrator::Ssb::new(
+                elai_orchestrator::ssb::SsbConfig {
+                    db_path,
+                    pool_size: Some(2),
+                    project_id: "l9-research-profile".into(),
+                    session_id: session_id.to_owned(),
+                },
+                clock,
+            )
+            .expect("ssb open"),
+        );
+        (ssb, proj)
+    }
+
+    #[test]
+    fn research_profile_turn_lands_claim_risk_scored_row() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        // `Ssb::new` builds its pool and needs a live reactor, and the assertions
+        // below query the same pool, so the guard covers the whole test body.
+        let _guard = rt.enter();
+        let (ssb, _proj) = build_ssb("l9-research");
+        let output = elai_reasoning::ReflectOutput {
+            final_reply: "the fix lands in `crates/cli/src/live_cli.rs`, and the derivation step 2 + 2 = 5 carries the result".to_string(),
+            turn_class: elai_reasoning::TurnClass::CodeFix,
+            token_summary: Default::default(),
+            skipped: false,
+            turn_id: "l9-turn-1".to_string(),
+            candidates: vec!["first candidate answer".to_string(), "a materially different candidate".to_string()],
+        };
+        let outcome = research_grounding_for_turn(
+            &ssb,
+            elai_reasoning::ReflectProfile::Research,
+            "l9-turn-1",
+            &output,
+            &rt,
+        );
+        let outcome = outcome.expect("research grounding returned Some");
+        assert!(outcome.row_written);
+        assert!(
+            outcome.verdicts.iter().any(|v| matches!(
+                v.verdict,
+                elai_orchestrator::reasoning::ResearchVerdict::Abstained(_)
+            )),
+            "expected at least one Abstained verdict, got {:?}",
+            outcome.verdicts
+        );
+        let rows = ssb
+            .query_by_type(elai_orchestrator::ssb::SsbActionType::ClaimRiskScored)
+            .expect("query");
+        assert_eq!(rows.len(), 1);
+        match elai_orchestrator::ssb::decode_ssb_payload(&rows[0].payload).expect("decode") {
+            elai_orchestrator::ssb::SsbPayload::ClaimRiskScored(p) => {
+                assert!(p.high_count >= 1);
+                assert_ne!(p.kind, elai_orchestrator::ssb::ClaimRiskScoredKind::LowRisk);
+                assert_eq!(p.claim_count, p.claim_digests.len());
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_profile_turn_writes_no_row() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        // `Ssb::new` builds its pool and needs a live reactor, and the assertions
+        // below query the same pool, so the guard covers the whole test body.
+        let _guard = rt.enter();
+        let (ssb, _proj) = build_ssb("l9-default");
+        let output = elai_reasoning::ReflectOutput {
+            final_reply: "a simple reply with no derivations".to_string(),
+            turn_class: elai_reasoning::TurnClass::Chat,
+            token_summary: Default::default(),
+            skipped: false,
+            turn_id: "l9-turn-2".to_string(),
+            candidates: vec![],
+        };
+        let result = research_grounding_for_turn(
+            &ssb,
+            elai_reasoning::ReflectProfile::Default,
+            "l9-turn-2",
+            &output,
+            &rt,
+        );
+        assert!(result.is_none());
+        let rows = ssb
+            .query_by_type(elai_orchestrator::ssb::SsbActionType::ClaimRiskScored)
+            .expect("query");
+        assert_eq!(rows.len(), 0);
+    }
 }

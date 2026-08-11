@@ -804,26 +804,7 @@ pub(super) fn dispatch(
                 false
             }
             SlashCommand::Reason { on_off } => {
-                // B-39: toggle the Chat REFLECT pipeline. Mirrors /mode: string-typed,
-                // validation in handler, zero orchestrator dep.
-                let trimmed = on_off.trim();
-                if trimmed.eq_ignore_ascii_case("on") {
-                    cli.reflect_enabled = true;
-                    tracing::info!("REFLECT enabled");
-                    eprintln!("[reason] Chat REFLECT pipeline enabled");
-                } else if trimmed.eq_ignore_ascii_case("off") {
-                    cli.reflect_enabled = false;
-                    cli.reflect_pipeline = None;
-                    tracing::info!("REFLECT disabled");
-                    eprintln!("[reason] Chat REFLECT pipeline disabled");
-                } else {
-                    tracing::warn!(
-                        on_off = %trimmed,
-                        "/reason: unrecognised value; expected `on` or `off`"
-                    );
-                    eprintln!("/reason: unrecognised value `{trimmed}`; expected `on` or `off`");
-                }
-                false
+                super::repl_reason::handle_reason(cli, &on_off)
             }
             SlashCommand::EntryPoints { project_root } => {
                 // B-34 BLOCK-4 fix: implement /entry_points handler.
