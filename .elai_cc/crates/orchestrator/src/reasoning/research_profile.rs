@@ -56,9 +56,12 @@ pub async fn research_grounding_pass(
     candidates: &[String],
 ) -> Result<ResearchGroundingOutcome, crate::ssb::SsbError> {
     // 1. Extract claims exactly as the production task-runner caller does.
-    let set = match crate::claim::resolve::workspace_resolver() {
-        Some(resolver) => extract_claims_with(reply, resolver),
-        None => extract_claims(reply),
+    let set = if let Some(paper) = crate::claim::resolve::paper_store_resolver() {
+        extract_claims_with(reply, paper)
+    } else if let Some(ws) = crate::claim::resolve::workspace_resolver() {
+        extract_claims_with(reply, ws)
+    } else {
+        extract_claims(reply)
     };
 
     // 2. Entropy samples: use candidates when non-empty, else the single sample.

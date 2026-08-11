@@ -124,6 +124,108 @@ impl crate::claim::extract::ClaimRefResolver for WorkspaceRefResolver {
     }
 }
 
+/// Resolves claim references against markdown documents in the ingested paper store.
+#[derive(Debug)]
+pub struct PaperStoreRefResolver {
+    root: PathBuf,
+}
+
+impl PaperStoreRefResolver {
+    pub fn new(papers_root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: papers_root.into(),
+        }
+    }
+
+    pub fn try_from_workspace(workspace_root: impl AsRef<std::path::Path>) -> Option<Self> {
+        let papers = workspace_root.as_ref().join("workflow/papers");
+        papers.is_dir().then(|| Self::new(papers))
+    }
+
+    fn markdown_contents(&self) -> impl Iterator<Item = String> + '_ {
+        fn collect(dir: &std::path::Path, out: &mut Vec<String>, files_seen: &mut usize) {
+            if *files_seen >= 500 {
+                return;
+            }
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                if *files_seen >= 500 {
+                    break;
+                }
+                let path = entry.path();
+                if path.is_dir() {
+                    collect(&path, out, files_seen);
+                } else if path.extension().is_some_and(|ext| ext == "md") {
+                    *files_seen += 1;
+                    if let Ok(metadata) = std::fs::metadata(&path) {
+                        if metadata.len() <= 256 * 1024 {
+                            if let Ok(contents) = std::fs::read_to_string(path) {
+                                out.push(contents);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut contents = Vec::new();
+        let mut files_seen = 0;
+        collect(&self.root, &mut contents, &mut files_seen);
+        contents.into_iter()
+    }
+
+    fn normalized_paper_path(raw: &str) -> Option<String> {
+        let mut rel = WorkspaceRefResolver::normalized_path(raw);
+        if let Some(stripped) = rel.strip_prefix("workflow/papers/") {
+            rel = stripped.to_owned();
+        }
+        if rel.is_empty()
+            || rel.starts_with('/')
+            || rel.starts_with('~')
+            || rel.starts_with('\\')
+            || rel.contains("..")
+            || rel.contains(':')
+        {
+            None
+        } else {
+            Some(rel)
+        }
+    }
+}
+
+impl crate::claim::extract::ClaimRefResolver for PaperStoreRefResolver {
+    fn resolve_path(&self, raw: &str) -> bool {
+        Self::normalized_paper_path(raw)
+            .is_some_and(|rel| self.root.join(rel).is_file())
+    }
+
+    fn resolve_symbol(&self, raw: &str) -> bool {
+        let name = WorkspaceRefResolver::normalized_symbol(raw);
+        !name.is_empty() && self.markdown_contents().any(|text| text.contains(&name))
+    }
+
+    fn resolve_package(&self, raw: &str) -> bool {
+        let name = raw
+            .split_once('@')
+            .map(|(name, _)| name)
+            .or_else(|| raw.split_once('=').map(|(name, _)| name))
+            .unwrap_or(raw)
+            .trim();
+        !name.is_empty() && self.markdown_contents().any(|text| text.contains(name))
+    }
+}
+
+/// Process-wide paper-store resolver built from the current working directory.
+pub fn paper_store_resolver() -> Option<&'static PaperStoreRefResolver> {
+    static RESOLVER: OnceLock<Option<PaperStoreRefResolver>> = OnceLock::new();
+    RESOLVER
+        .get_or_init(|| {
+            std::env::current_dir()
+                .ok()
+                .and_then(PaperStoreRefResolver::try_from_workspace)
+        })
+        .as_ref()
+}
+
 /// Process-wide resolver built once from the current working directory.
 pub fn workspace_resolver() -> Option<&'static WorkspaceRefResolver> {
     static RESOLVER: OnceLock<Option<WorkspaceRefResolver>> = OnceLock::new();
@@ -175,4 +277,22 @@ mod tests {
         assert!(!resolver.resolve_symbol("Thing::method()"));
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn paper_store_resolver_paths_symbols_and_missing_workspace() {
+        let root = scratch("papers");
+        let _ = std::fs::remove_dir_all(&root);
+        let papers = root.join("workflow/papers");
+        std::fs::create_dir_all(&papers).ok();
+        std::fs::write(papers.join("sample-interface.md"), "known FooBarSymbol text").ok();
+        let resolver = PaperStoreRefResolver::try_from_workspace(&root).expect("papers directory");
+        assert!(resolver.resolve_path("sample-interface.md"));
+        assert!(resolver.resolve_path("workflow/papers/sample-interface.md"));
+        assert!(!resolver.resolve_path("missing.md"));
+        assert!(resolver.resolve_symbol("FooBarSymbol"));
+        assert!(!resolver.resolve_symbol("AbsentSymbol"));
+        assert!(PaperStoreRefResolver::try_from_workspace(root.join("missing")).is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
 }
