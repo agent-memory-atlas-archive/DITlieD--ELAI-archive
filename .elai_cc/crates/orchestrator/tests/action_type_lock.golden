@@ -488,6 +488,7 @@ security_rule_blocked
 selective_delegation_cost_saved
 selective_delegation_decision
 selective_delegation_escalated
+semantic_entropy_measured
 session_archived
 session_rewound
 sft_exhaust_event

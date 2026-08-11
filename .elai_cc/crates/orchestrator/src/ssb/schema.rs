@@ -4981,6 +4981,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- beacon. Emitted once per `elai bench error-amplification` run over the
         -- frozen pipeline fixture. Bench telemetry, not a gate.
         'error_amplification_measured',
+        -- L-4 slice 3: semantic-entropy measurement receipt. Emitted once per
+        -- MEASURED sample set beside the aggregate claim-risk row; carries the
+        -- per-sample digests so the entropy is recomputable. No row is written
+        -- for a single-sample (unmeasured) degrade.
+        'semantic_entropy_measured',
         -- F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2
         -- single variant. 3-arm SkillLibraryEventKind discriminator:
         -- Acquired / TrustPromoted / DemotedStale. Carries the skill id, the

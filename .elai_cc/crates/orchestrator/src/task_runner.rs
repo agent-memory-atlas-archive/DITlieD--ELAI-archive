@@ -2008,16 +2008,18 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 }
                 None => Vec::new(),
             };
-            let claim_risks = if extra_samples.is_empty() {
+            // L-4 slice 3: the final sample set outlives the rescore so the
+            // measurement receipt below records exactly what was scored.
+            let mut entropy_final_samples = Vec::with_capacity(extra_samples.len() + 1);
+            entropy_final_samples.push(claim_text.to_string());
+            entropy_final_samples.extend(extra_samples);
+            let claim_risks = if entropy_final_samples.len() < 2 {
                 claim_risks
             } else {
-                let mut samples = Vec::with_capacity(extra_samples.len() + 1);
-                samples.push(claim_text.to_string());
-                samples.extend(extra_samples);
                 crate::claim::roundtrip::score_claim_risk_wired_with_samples(
                     &claim_set,
                     claim_text,
-                    &samples,
+                    &entropy_final_samples,
                 )
             };
             let risk_low = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Low).count();
@@ -2065,6 +2067,21 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                     if let Err(error) = writer.write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new()).await {
                         tracing::warn!(%error, "task_runner::emit_claim_risk_scored: SSB write failed (non-fatal)");
                     }
+                }
+            }
+
+            // L-4 slice 3: the measurement receipt rides beside the aggregate risk
+            // row. Non-fatal, and silent when the sample set was never measured.
+            if let Some(writer) = self.ssb_writer.as_ref() {
+                if let Err(error) = crate::claim::semantic_entropy::emit_semantic_entropy_measured(
+                    writer,
+                    RUNNER_AGENT_ID,
+                    RUNNER_SUPERSTEP,
+                    &entropy_final_samples,
+                )
+                .await
+                {
+                    tracing::warn!(%error, "task_runner: semantic-entropy receipt write failed (non-fatal)");
                 }
             }
 

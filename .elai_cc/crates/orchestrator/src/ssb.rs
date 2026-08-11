@@ -1127,6 +1127,12 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // ONLY counter touch -- SCHEMA_VERSION (=-309+len) + TOTAL_VARIANTS + the
     // action_type_lock golden all auto-derive from this append.
     SsbActionType::ErrorAmplificationMeasured,
+    // L-4 slice 3: SemanticEntropyMeasured flat beacon (semantic-entropy
+    // measurement receipt). Single wire tag; the agree/diverge discriminator is
+    // a payload field. This append is the only counter touch -- the schema
+    // version, the variant total, and the action_type_lock golden all derive
+    // from the registry length.
+    SsbActionType::SemanticEntropyMeasured,
     // F-6 / Slice A1 (SCHEMA_VERSION 202, 2026-06-02): SkillLibraryEvent
     // Pattern-2 single variant (3-arm SkillLibraryEventKind discriminator;
     // counts as ONE variant here). Acquired arm is the representative arm.

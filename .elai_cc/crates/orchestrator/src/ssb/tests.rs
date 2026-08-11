@@ -3655,6 +3655,22 @@ use crate::gate::RiskLevel;
                     },
                 })
             }
+            // L-4 slice 3: SemanticEntropyMeasured flat beacon. Explicit arm so
+            // write-time validation resolves the payload type. The digests here
+            // are fixture bytes; production digests are blake3 of real samples.
+            SsbActionType::SemanticEntropyMeasured => {
+                SsbPayload::SemanticEntropyMeasured(SemanticEntropyMeasuredPayload {
+                    kind: SemanticEntropyMeasuredKind::SeedsDiverge,
+                    sample_count: 3,
+                    cluster_count: 2,
+                    entropy_milli: 579,
+                    sample_digests: vec![
+                        *blake3::hash(b"test_payload_semantic_entropy_a").as_bytes(),
+                        *blake3::hash(b"test_payload_semantic_entropy_b").as_bytes(),
+                        *blake3::hash(b"test_payload_semantic_entropy_b").as_bytes(),
+                    ],
+                })
+            }
             // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2
             // single variant. Explicit arm so write-time validation resolves the
             // payload type correctly. Uses the Acquired arm (prior_tier None).
@@ -7802,6 +7818,19 @@ use crate::gate::RiskLevel;
                     let h = blake3::hash(b"all_test_payloads_error_amplification_measured");
                     format!("{:.16}", h.to_hex())
                 },
+            }),
+            // L-4 slice 3: SemanticEntropyMeasured flat beacon. 1 entry (single
+            // wire tag; the agree/diverge discriminator is a payload field).
+            SsbPayload::SemanticEntropyMeasured(SemanticEntropyMeasuredPayload {
+                kind: SemanticEntropyMeasuredKind::SeedsAgree,
+                sample_count: 3,
+                cluster_count: 1,
+                entropy_milli: 0,
+                sample_digests: vec![
+                    *blake3::hash(b"all_test_payloads_semantic_entropy").as_bytes(),
+                    *blake3::hash(b"all_test_payloads_semantic_entropy").as_bytes(),
+                    *blake3::hash(b"all_test_payloads_semantic_entropy").as_bytes(),
+                ],
             }),
             // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent SINGLE-VARIANT
             // Pattern-2; 3-arm SkillLibraryEventKind discriminator covers Acquired

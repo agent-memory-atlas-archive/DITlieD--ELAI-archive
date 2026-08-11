@@ -69,8 +69,7 @@ pub async fn collect_extra_samples(
 }
 
 pub struct SemanticEntropyPredictor<'a, J: NliJudge = DeterministicNliJudge> {
-    /// Held for the slice-2 bounded resample; slice 1 only needs the count.
-    #[allow(dead_code)]
+    /// Held for the bounded resample and the slice-3 receipt digests.
     samples: &'a [String],
     judge: J,
     fires_at: f64,
@@ -102,6 +101,18 @@ impl<'a, J: NliJudge> SemanticEntropyPredictor<'a, J> {
     pub fn cluster_count(&self) -> usize { self.cluster_count }
     pub fn sample_count(&self) -> usize { self.sample_count }
     pub fn measured(&self) -> bool { self.sample_count >= 2 }
+    /// The fire decision, shared by the risk signal and the slice-3 receipt so a
+    /// row can never disagree with the signal it records.
+    pub fn fires(&self) -> bool { self.measured() && self.entropy >= self.fires_at }
+    /// blake3 of each TRIMMED sample, in sample order, for the slice-3 receipt.
+    /// The trim matches the grouping pre-pass, so identical answers share a
+    /// digest and an auditor can recompute the clustering (GD-2).
+    pub fn sample_digests(&self) -> Vec<[u8; 32]> {
+        self.samples
+            .iter()
+            .map(|sample| *blake3::hash(sample.trim().as_bytes()).as_bytes())
+            .collect()
+    }
 }
 
 impl<'a, J: NliJudge> PredictorSource for SemanticEntropyPredictor<'a, J> {
@@ -109,7 +120,7 @@ impl<'a, J: NliJudge> PredictorSource for SemanticEntropyPredictor<'a, J> {
         vec![PredictorSignal {
             source: PredictorKind::SemanticEntropy,
             value: self.entropy,
-            fired: self.measured() && self.entropy >= self.fires_at,
+            fired: self.fires(),
         }]
     }
 }
@@ -170,6 +181,41 @@ fn measure<J: NliJudge>(samples: &[String], judge: &J) -> (f64, usize) {
     });
     entropy /= denominator.ln();
     (entropy.clamp(0.0, 1.0), clusters.len())
+}
+
+/// L-4 slice 3: write the measurement receipt for one sample set.
+///
+/// Returns `Ok(None)` and writes NOTHING when the set is UNMEASURED (fewer
+/// than two samples). That silence is deliberate: a single answer scores
+/// entropy 0.0 as a degrade, and a row claiming zero measured entropy would
+/// be a false audit record.
+pub async fn emit_semantic_entropy_measured(
+    ssb: &crate::ssb::Ssb,
+    agent_id: &str,
+    superstep: i64,
+    samples: &[String],
+) -> Result<Option<i64>, crate::ssb::SsbError> {
+    let predictor = SemanticEntropyPredictor::new(samples);
+    if !predictor.measured() {
+        return Ok(None);
+    }
+    let kind = if predictor.fires() {
+        crate::ssb::SemanticEntropyMeasuredKind::SeedsDiverge
+    } else {
+        crate::ssb::SemanticEntropyMeasuredKind::SeedsAgree
+    };
+    let payload = crate::ssb::SsbPayload::SemanticEntropyMeasured(
+        crate::ssb::SemanticEntropyMeasuredPayload {
+            kind,
+            sample_count: predictor.sample_count(),
+            cluster_count: predictor.cluster_count(),
+            entropy_milli: (predictor.entropy() * 1000.0).round() as u32,
+            sample_digests: predictor.sample_digests(),
+        },
+    );
+    ssb.write_payload(agent_id, superstep, payload, Vec::new())
+        .await
+        .map(Some)
 }
 
 #[cfg(test)]

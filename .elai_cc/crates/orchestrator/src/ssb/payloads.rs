@@ -3553,6 +3553,10 @@ pub enum SsbPayload {
     // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) telemetry beacon.
     // See `ErrorAmplificationMeasuredPayload`. Flat beacon (no Kind discriminator).
     ErrorAmplificationMeasured(ErrorAmplificationMeasuredPayload),
+    // L-4 slice 3: semantic-entropy measurement receipt.
+    // See `SemanticEntropyMeasuredPayload`. Flat beacon; the agree/diverge
+    // discriminator is a payload field, mirroring `ClaimRiskScoredPayload`.
+    SemanticEntropyMeasured(SemanticEntropyMeasuredPayload),
     // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
     // See `SkillLibraryEventPayload` + `SkillLibraryEventKind`. Pattern-2
     // (single variant; SkillLibraryEventKind 3-arm discriminator).
@@ -4696,6 +4700,8 @@ impl SsbPayload {
             Self::InsecureRateMeasured(_) => SsbActionType::InsecureRateMeasured,
             // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) telemetry beacon.
             Self::ErrorAmplificationMeasured(_) => SsbActionType::ErrorAmplificationMeasured,
+            // L-4 slice 3: semantic-entropy measurement receipt.
+            Self::SemanticEntropyMeasured(_) => SsbActionType::SemanticEntropyMeasured,
             // F-6 / Slice A1 (SCHEMA_VERSION 202): learned-skill library event.
             Self::SkillLibraryEvent(p) => SsbActionType::SkillLibraryEvent(p.kind),
             // F-5 / Slice A1 (SCHEMA_VERSION 203): staleness-quarantine broadcast.
@@ -22086,3 +22092,44 @@ pub struct ReasoningCheckpointEventPayload {
     /// Fire-point wall-clock (millis since UNIX_EPOCH).
     pub ts_ms: i64,
 }
+
+
+    // === L-4 slice 3 -- SemanticEntropyMeasured substrate =======================
+
+    /// L-4 slice 3 -- agree/diverge discriminator carried by
+    /// [`SemanticEntropyMeasuredPayload::kind`], mirroring the
+    /// [`ClaimRiskScoredKind`] field style rather than a second wire tag.
+    ///
+    /// * `SeedsAgree` -- the sample set was measured and the entropy stayed below
+    ///   the declared fire boundary, so the samples cluster together.
+    /// * `SeedsDiverge` -- the measured entropy reached the boundary and the
+    ///   signal fired.
+    ///
+    /// There is no "unmeasured" arm on purpose: an unmeasured sample set emits no
+    /// row at all, so this enum can never label a degrade as agreement.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum SemanticEntropyMeasuredKind {
+        SeedsAgree,
+        SeedsDiverge,
+    }
+
+    /// L-4 slice 3 -- payload for [`SsbActionType::SemanticEntropyMeasured`].
+    ///
+    /// Written once per MEASURED sample set (two or more answer samples to the
+    /// SAME prompt) beside the aggregate `ClaimRiskScored` row. Every field is
+    /// COMPUTED by the shipped predictor, never a literal.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct SemanticEntropyMeasuredPayload {
+        /// Agree or diverge, from the predictor's own fire decision.
+        pub kind: SemanticEntropyMeasuredKind,
+        /// How many answer samples were compared.
+        pub sample_count: usize,
+        /// How many mutual-entailment clusters the samples collapsed into.
+        pub cluster_count: usize,
+        /// Normalized Shannon entropy in thousandths (serde-stable integer).
+        pub entropy_milli: u32,
+        /// blake3 of each trimmed sample, in sample order.
+        pub sample_digests: Vec<[u8; 32]>,
+    }

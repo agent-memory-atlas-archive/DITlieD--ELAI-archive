@@ -3740,6 +3740,14 @@ pub enum SsbActionType {
     /// telemetry beacon, NOT a wire-dark gate (no `ELAI_*_ENABLE` flag).
     /// Carries [`ErrorAmplificationMeasuredPayload`].
     ErrorAmplificationMeasured,
+    /// L-4 slice 3 -- semantic-entropy measurement receipt. Emitted once per
+    /// MEASURED sample set (two or more answer samples) beside the aggregate
+    /// `ClaimRiskScored` row, so an auditor can recompute the entropy from the
+    /// per-sample digests instead of trusting the number. Flat beacon; the
+    /// agree/diverge discriminator is a payload field, not a second wire tag.
+    /// A single-sample (unmeasured) degrade emits NO row.
+    /// Carries [`SemanticEntropyMeasuredPayload`].
+    SemanticEntropyMeasured,
     /// F-6 / Slice A1 (SCHEMA_VERSION 202) -- learned-skill library event.
     /// Pattern-2 single variant with 3-arm [`SkillLibraryEventKind`]
     /// discriminator (Acquired / TrustPromoted / DemotedStale). The sql_str
@@ -5668,6 +5676,8 @@ impl SsbActionType {
             Self::InsecureRateMeasured => "insecure_rate_measured",
             // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) bench beacon.
             Self::ErrorAmplificationMeasured => "error_amplification_measured",
+            // L-4 slice 3: semantic-entropy measurement receipt.
+            Self::SemanticEntropyMeasured => "semantic_entropy_measured",
             // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2.
             // Each Kind arm maps to its own sql_str via the Kind's as_sql_str().
             Self::SkillLibraryEvent(kind) => kind.as_sql_str(),
@@ -6556,6 +6566,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "insecure_rate_measured" => Ok(SsbActionType::InsecureRateMeasured),
         // I-9 (SCHEMA_VERSION 263): error-amplification (alpha_t) bench beacon.
         "error_amplification_measured" => Ok(SsbActionType::ErrorAmplificationMeasured),
+        // L-4 slice 3: semantic-entropy measurement receipt.
+        "semantic_entropy_measured" => Ok(SsbActionType::SemanticEntropyMeasured),
         // F-6 / Slice A1 (SCHEMA_VERSION 202): SkillLibraryEvent Pattern-2 (3 arms).
         "skill_acquired"        => Ok(SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::Acquired)),
         "skill_trust_promoted"  => Ok(SsbActionType::SkillLibraryEvent(SkillLibraryEventKind::TrustPromoted)),
