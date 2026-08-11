@@ -1978,7 +1978,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 Some(resolver) => crate::claim::extract::extract_claims_with(claim_text, resolver),
                 None => crate::claim::extract::extract_claims(claim_text),
             };
-            let claim_risks = crate::claim::roundtrip::score_claim_risk_wired(&claim_set);
+            let claim_risks = crate::claim::roundtrip::score_claim_risk_wired(&claim_set, claim_text);
             let risk_low = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Low).count();
             let risk_medium = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::Medium).count();
             let risk_high = claim_risks.iter().filter(|risk| risk.tier() == crate::claim::risk::RiskTier::High).count();
