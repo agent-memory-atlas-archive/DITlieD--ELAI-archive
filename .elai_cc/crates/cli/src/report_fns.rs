@@ -1306,7 +1306,8 @@ pub(crate) fn assemble_user_memory_section(
     use elai_core::clock::{ClockProvider, OsClock};
     use elai_core::paths::memory_dir_path;
     use elai_memory::{
-        get_authorized_facts, get_relevant_facts, FactStore, FactType, NullSemanticValidator,
+        get_authorized_facts, get_authorized_facts_with_activation_decay, ActivationDecayConfig,
+        FactStore, FactType, NullSemanticValidator, RawEvidenceStore,
         resolve_retrieved_taint, capability_gate_on_retrieved_taint, G1TrustLabel,
         NullValidator, RetrievalFilter, ValidationScope,
     };
@@ -1418,9 +1419,35 @@ pub(crate) fn assemble_user_memory_section(
             seat_id: Some(seat_id.to_string()),
             ..RetrievalFilter::default()
         };
-        if let Ok((tier_a_facts, exclusions)) =
-            get_relevant_facts(&store, DEFAULT_USER_ID, &tier_a_filter, MEMORY_RETRIEVAL_K, now_ms)
-        {
+        // J-21: Tier-A retrieval uses the complete authorization facade. The
+        // in-memory raw-evidence store is intentionally scoped to this read;
+        // persisted evidence is supplied by callers when available, while an
+        // empty store remains fail-closed and cannot fabricate forensic data.
+        let raw_evidence_store = RawEvidenceStore::new();
+        let semantic_validator = NullSemanticValidator;
+        let validation_scope = ValidationScope::at_head("", "");
+        let activation_config = ActivationDecayConfig::default();
+        let namespace = format!("repo:{}", project_root.display());
+        if let Ok(retrieval) = get_authorized_facts_with_activation_decay(
+            &store,
+            &raw_evidence_store,
+            &namespace,
+            DEFAULT_USER_ID,
+            &tier_a_filter,
+            MEMORY_RETRIEVAL_K,
+            now_ms,
+            tier_a_filter
+                .citation_validator
+                .as_deref()
+                .unwrap_or(&NullValidator),
+            &semantic_validator,
+            &validation_scope,
+            None,
+            &activation_config,
+        ) {
+            let tier_a_facts = retrieval.facts;
+            let exclusions = retrieval.exclusions;
+            let escalation = retrieval.escalation;
             // B-3 (R4): emit a fact_validation_failed SSB row per exclusion when the
             // SSB handle is available. The off-agent artifact is the load-bearing wiring
             // proof (the rename during a real model-dispatch turn appends the row).
@@ -1469,6 +1496,16 @@ pub(crate) fn assemble_user_memory_section(
                             ));
                         }
                     });
+                }
+            }
+            // Raw evidence is forensic fallback only, never a replacement for
+            // authorized facts. Keep it bounded and visibly labelled so it
+            // cannot be mistaken for a truth-bearing Tier-A claim.
+            if !escalation.records.is_empty() {
+                any_facts = true;
+                lines.push("Forensic raw evidence (unextracted; verify before relying on it):".to_string());
+                for record in escalation.records.iter().take(8) {
+                    lines.push(format!("  - [{}] {}", record.pointer, record.raw_content));
                 }
             }
             if !tier_a_facts.is_empty() {
