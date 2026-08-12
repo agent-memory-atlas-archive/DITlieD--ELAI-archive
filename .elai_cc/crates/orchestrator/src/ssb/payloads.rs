@@ -19063,9 +19063,12 @@ pub enum ReviewStatus {
 /// the current symbol graph. The fact is HARD-EXCLUDED from the injected context
 /// slice; this row is the off-agent artifact (R4 — the agent did not author it).
 ///
-/// `reason` is `"stale"` when the symbol was previously resolvable but has since
-/// been renamed or deleted, or `"unknown"` when the citation index was unavailable
-/// (treated as FAIL per R2 — missing evidence is a hard FAIL, not SKIP).
+/// `reason` is `"semantic_stale"` when the symbol resolves but its stored semantic
+/// identity no longer matches, `"existence_stale"` when a previously resolvable
+/// symbol no longer resolves, or `"unknown"` when citation evidence is unavailable
+/// (treated as FAIL per R2 — missing evidence is a hard FAIL, not SKIP). The value
+/// remains free-form and forward-compatible so future reasons can be added without
+/// a schema bump.
 /// `evidence_blake3` is the blake3 16-hex citation fingerprint (anti-stale: NEVER
 /// sha2/blake2 per CLAUDE.md) of `<name>@<file>:<line>`, or empty string when no
 /// parseable `dkg:` pointer was found.
@@ -19077,8 +19080,9 @@ pub struct FactValidationFailedPayload {
     /// The raw `dkg:<name>@<file>:<line>` citation string from `evidence_pointers`,
     /// or empty when the citation pointer was unparseable.
     pub citation: String,
-    /// `"stale"` | `"unknown"` (snake_case discriminator; free-form for dashboard
-    /// rendering so future reasons can land without a SCHEMA bump).
+    /// `"semantic_stale"` | `"existence_stale"` | `"unknown"` (snake_case
+    /// discriminator; free-form and forward-compatible so future reasons can land
+    /// without a schema bump).
     pub reason: String,
     /// blake3 16-hex fingerprint of the canonical `<name>@<file>:<line>` string.
     /// Empty string when no parseable `dkg:` pointer existed on the row.
