@@ -27,6 +27,32 @@ pub struct ValidationExclusion {
     pub evidence_blake3: String,
 }
 
+/// Forward-compatible readout marker carried by the existing evidence-pointer
+/// sidecar. Verdict production is intentionally outside this residual; absent
+/// markers therefore preserve the historical pass-through behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadoutVerdict {
+    Keep,
+    Stale,
+    Replace,
+    Unknown,
+}
+
+fn readout_verdict(fact: &MemoryFact) -> Option<ReadoutVerdict> {
+    fact.evidence_pointers.iter().find_map(|pointer| {
+        let value = pointer
+            .strip_prefix("staleness_verdict:")
+            .or_else(|| pointer.strip_prefix("staleness_verdict="))?;
+        match value.to_ascii_uppercase().as_str() {
+            "KEEP" => Some(ReadoutVerdict::Keep),
+            "STALE" => Some(ReadoutVerdict::Stale),
+            "REPLACE" => Some(ReadoutVerdict::Replace),
+            "UNKNOWN" => Some(ReadoutVerdict::Unknown),
+            _ => None,
+        }
+    })
+}
+
 /// Predicate bundle for [`get_relevant_facts`]. All fields are optional —
 /// `None` means "no filter applied at that axis".
 #[derive(Default)]
@@ -109,6 +135,22 @@ pub fn get_relevant_facts(
         );
     }
 
+    let readout_exclusions: Vec<ValidationExclusion> = candidates_allowed
+        .iter()
+        .filter_map(|fact| {
+            let reason = match readout_verdict(fact) {
+                Some(ReadoutVerdict::Stale) => "stale",
+                Some(ReadoutVerdict::Unknown) => "unknown_block_as_premise",
+                _ => return None,
+            };
+            Some(ValidationExclusion {
+                fact_id: fact.fact_id.clone(),
+                reason,
+                evidence_blake3: String::new(),
+            })
+        })
+        .collect();
+
     let mut filtered: Vec<MemoryFact> = candidates_allowed
         .into_iter()
         // J-59 per-seat hard-exclude: structural filter, not soft rank.
@@ -132,6 +174,14 @@ pub fn get_relevant_facts(
         })
         // Provenance enforcement — empty evidence_pointers excluded.
         .filter(|f| !f.evidence_pointers.is_empty())
+        // J-37 constrained readout: STALE is history-only and UNKNOWN blocks
+        // the fact as a premise. Missing/invalid verdict markers pass through
+        // unchanged so existing writers and callers remain compatible.
+        .filter(|f| match readout_verdict(f) {
+            Some(ReadoutVerdict::Stale) => false,
+            Some(ReadoutVerdict::Unknown) => false,
+            Some(ReadoutVerdict::Keep | ReadoutVerdict::Replace) | None => true,
+        })
         .collect();
 
     // Most-recently-observed first (already approximately the SQL order;
@@ -145,7 +195,7 @@ pub fn get_relevant_facts(
     // Tier-A facts with Stale/Unknown citations are HARD-EXCLUDED (R2 / R4).
     // Valid Tier-A facts have last_validated_at_ms stamped (TTL reset).
     // Tier-B facts always pass (short-circuit in revalidate_citation).
-    let mut validation_exclusions: Vec<ValidationExclusion> = Vec::new();
+    let mut validation_exclusions: Vec<ValidationExclusion> = readout_exclusions;
     if let Some(validator) = filter.citation_validator.as_deref() {
         let mut valid_facts: Vec<MemoryFact> = Vec::with_capacity(filtered.len());
         for fact in filtered {

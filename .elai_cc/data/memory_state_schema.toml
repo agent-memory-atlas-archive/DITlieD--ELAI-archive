@@ -1,0 +1,20 @@
+# ELAI memory state-schema Ω (user-editable DATA)
+#
+# Domains declare the slots whose state may be stored.  Dependency edges are
+# directed: `slot` is the affected/dependent slot and `depends_on` is the
+# updated source slot.  Keep edges in DATA so domain knowledge can evolve
+# without hardcoded slot names in the adjudicator.
+
+schema_version = 1
+
+[domains.user]
+# Keys are the logical memory slots for the user/world domain.
+slots = ["location", "commute"]
+
+# An update to location can invalidate a previously observed commute mode.
+# This is the Type-II propagation fixture: "commutes by bike" + "moved to
+# Arizona" must consider commute as affected by the location update.
+[[dependency_edges]]
+domain = "user"
+slot = "commute"
+depends_on = "location"
