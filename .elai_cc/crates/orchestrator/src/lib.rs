@@ -626,6 +626,12 @@ pub mod output_postprocessor;
 pub mod profile_selector;
 pub mod rule_loader;
 pub mod config_archive;
+// P-19 Slice 1: production-reachable ConfigLifecycle guard for /runtime set
+// and /runtime composer2 enable|disable config writes. Enforces a shrink-
+// floor (reject proposed bytes strictly below half the existing length),
+// preserves rejected bytes as a .rejected.<timestamp> sibling, and preserves
+// pre-write bytes as a .lkg (last-known-good) sibling on accepted writes.
+pub mod config_lifecycle;
 // H-46: HGM clade-metaproductivity parent-selection key.
 pub mod clade_metaproductivity;
 pub mod evolution_gate;

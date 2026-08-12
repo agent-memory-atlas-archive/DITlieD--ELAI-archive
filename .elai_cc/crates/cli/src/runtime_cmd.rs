@@ -26,6 +26,7 @@ use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::{
     default_ssb_path_for_base, AgentRole, RuntimeBackendConfig, RuntimeOrchestrator, Ssb, SsbConfig,
 };
+use elai_orchestrator::config_lifecycle::{ConfigLifecycle, ConfigWriteOutcome};
 use elai_providers::runtime::{
     create_runtime, resolve_backend, AuthSource as RuntimeAuthSource, RuntimeBackend,
     RuntimeFactoryConfig, RuntimeHealth, SecretString,
@@ -213,11 +214,20 @@ fn set_composer2_enabled(enabled: bool, project_root: &Path) -> Result<String, R
     set_composer2_enabled_in_toml(&mut doc, enabled);
     let rendered =
         toml::to_string_pretty(&doc).map_err(|e| RuntimeCmdError::ConfigWrite(e.to_string()))?;
-    atomic_write(&config_path, rendered.as_bytes())?;
-    Ok(format!(
-        "[OK] [runtime.composer2].enabled = {enabled} (persisted to {})",
-        config_path.display()
-    ))
+    match ConfigLifecycle::guard_write(&config_path, rendered.as_bytes())
+        .map_err(|e| RuntimeCmdError::ConfigWrite(format!("{}: {e}", config_path.display())))?
+    {
+        ConfigWriteOutcome::Accepted => Ok(format!(
+            "[OK] [runtime.composer2].enabled = {enabled} (persisted to {})",
+            config_path.display()
+        )),
+        ConfigWriteOutcome::Rejected {
+            existing_len,
+            proposed_len,
+        } => Ok(format!(
+            "[REJECTED] [runtime.composer2].enabled = {enabled}: proposed {proposed_len} bytes < half of existing {existing_len} bytes (rejected bytes preserved as sibling; active config unchanged)"
+        )),
+    }
 }
 
 fn set_composer2_enabled_in_toml(doc: &mut toml::Value, enabled: bool) {
@@ -500,11 +510,20 @@ fn handle_runtime_set(
     set_role_runtime_in_toml(&mut doc, &role_canonical, canonical);
     let rendered =
         toml::to_string_pretty(&doc).map_err(|e| RuntimeCmdError::ConfigWrite(e.to_string()))?;
-    atomic_write(&config_path, rendered.as_bytes())?;
-    Ok(format!(
-        "[OK] role {role_canonical} -> backend {canonical} (persisted to {})",
-        config_path.display()
-    ))
+    match ConfigLifecycle::guard_write(&config_path, rendered.as_bytes())
+        .map_err(|e| RuntimeCmdError::ConfigWrite(format!("{}: {e}", config_path.display())))?
+    {
+        ConfigWriteOutcome::Accepted => Ok(format!(
+            "[OK] role {role_canonical} -> backend {canonical} (persisted to {})",
+            config_path.display()
+        )),
+        ConfigWriteOutcome::Rejected {
+            existing_len,
+            proposed_len,
+        } => Ok(format!(
+            "[REJECTED] role {role_canonical} -> backend {canonical}: proposed {proposed_len} bytes < half of existing {existing_len} bytes (rejected bytes preserved as sibling; active config unchanged)"
+        )),
+    }
 }
 
 /// Mutate `[agents.<role>.runtime] backend = "<canonical>"` inside the
