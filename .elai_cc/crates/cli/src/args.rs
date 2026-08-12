@@ -1683,6 +1683,15 @@ pub(crate) enum CliAction {
     ///
     /// Note: f64 fields carried as Option<String> because CliAction derives Eq
     /// and f64 does not implement Eq. Parsed to f64 in the handler.
+    /// P-7 Tier-1 per-user operating profile change surface.
+    Profile {
+        subcommand: String,
+        domain: Option<String>,
+        field: Option<String>,
+        value: Option<String>,
+        evidence: Option<String>,
+    },
+
     DeflationCheck {
         /// Per-period SR of the candidate strategy. Default: 0.10.
         sr: Option<String>,
@@ -3682,6 +3691,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // for the Deflated Sharpe / PBO / MinBTL promotion gate. Registers a
         // fixture strategy, calls evaluate_deflation, emits DeflationGateEvaluated.
         "deflation-check" => parse_deflation_check_args(&rest[1..]),
+        // P-7 — per-user process operating profile (manual Tier-1 fork).
+        "profile" => parse_profile_args(&rest[1..]),
         // H-20 — `elai leakage-check` is the W-1 production entrypoint for the
         // leakage static-analysis COMPOSITE gate. Runs evaluate_leakage over a
         // target module, emits a LeakageBlocked SSB row (off-agent artifact).
@@ -4965,6 +4976,37 @@ pub(crate) fn parse_deflation_check_args(rest: &[String]) -> Result<CliAction, S
         }
     }
     Ok(CliAction::DeflationCheck { sr, t_periods, n_fixture, sharpe_std, pbo, seed, json })
+}
+
+/// P-7 — parse `elai profile show|tighten|loosen` arguments.
+pub(crate) fn parse_profile_args(rest: &[String]) -> Result<CliAction, String> {
+    let subcommand = rest.first().cloned().ok_or_else(||
+        "profile requires one of show, tighten, loosen, revert".to_string())?;
+    if !matches!(subcommand.as_str(), "show" | "tighten" | "loosen" | "revert") {
+        return Err(format!("unknown profile subcommand: {subcommand}"));
+    }
+    let mut domain = None;
+    let mut field = None;
+    let mut value = None;
+    let mut evidence = None;
+    let mut i = 1;
+    while i < rest.len() {
+        let flag = rest[i].as_str();
+        let slot = match flag {
+            "--domain" => &mut domain,
+            "--field" => &mut field,
+            "--value" => &mut value,
+            "--evidence" => &mut evidence,
+            other => return Err(format!("unknown `profile` argument: {other}")),
+        };
+        let v = rest.get(i + 1).ok_or_else(|| format!("missing value for {flag}"))?;
+        *slot = Some(v.clone());
+        i += 2;
+    }
+    if subcommand != "show" && (domain.is_none() || field.is_none() || value.is_none()) {
+        return Err(format!("profile {subcommand} requires --domain, --field, and --value"));
+    }
+    Ok(CliAction::Profile { subcommand, domain, field, value, evidence })
 }
 
 /// H-20 — parse `elai leakage-check [--module <path>] [--no-split]

@@ -272,6 +272,8 @@ mod trial_search_cmd;
 // Registers fixture strategy, calls evaluate_deflation, emits
 // DeflationGateEvaluated SSB row (off-agent promotion artifact).
 mod deflation_check_cmd;
+// P-7: per-user operating profile production entrypoint.
+mod profile_cmd;
 // H-20 (SCHEMA_VERSION 225): `elai leakage-check` — W-1 production entrypoint
 // for the leakage static-analysis COMPOSITE gate. Runs evaluate_leakage over a
 // target module against the live DKG (fail-closed if absent) and emits a
@@ -1289,6 +1291,15 @@ fn run() -> Result<(), anyhow::Error> {
                 sr_f64, t_periods, n_fixture, sharpe_std_f64, pbo_f64, seed, json,
             ))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // P-7: `elai profile` is the production caller for the manual
+        // asymmetry-guarded OperatingProfile API.
+        CliAction::Profile { subcommand, domain, field, value, evidence } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all().worker_threads(2).build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(profile_cmd::run(subcommand, domain, field, value, evidence))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
         // H-20 (SCHEMA_VERSION 225): `elai leakage-check` — W-1 production
         // entrypoint for the leakage static-analysis COMPOSITE gate. Runs

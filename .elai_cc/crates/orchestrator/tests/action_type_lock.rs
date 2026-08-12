@@ -1605,6 +1605,7 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::ClaimRiskScored => (),
         // J-42 T2: ReasoningCheckpointEvent flat variant, Kind rides in the payload.
         SsbActionType::ReasoningCheckpointEvent(_) => (),
+        SsbActionType::OperatingProfileChange => (),
     }
 }
 

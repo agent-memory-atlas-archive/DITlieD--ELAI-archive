@@ -4027,6 +4027,7 @@ pub enum SsbPayload {
     /// payload. Emitted by the `ReflectEventSink` bridge when the
     /// `chat_reflect` refine loop takes an armed distill-reset.
     ReasoningCheckpointEvent(ReasoningCheckpointEventPayload),
+    OperatingProfileChange(OperatingProfileChangePayload),
 }
 
 impl SsbPayload {
@@ -4885,6 +4886,7 @@ impl SsbPayload {
             Self::ClaimRiskScored(_) => SsbActionType::ClaimRiskScored,
             Self::ReasoningCheckpointEvent(ref p) =>
                 SsbActionType::ReasoningCheckpointEvent(p.kind),
+            Self::OperatingProfileChange(_) => SsbActionType::OperatingProfileChange,
         }
     }
 }
@@ -22176,3 +22178,20 @@ pub struct ContextRecalledPayload {
     /// the recall set instead of trusting `recalled_cards`.
     pub path_digests: Vec<[u8; 32]>,
 }
+
+
+/// P-7 observe-first journal row for a per-user operating-profile change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatingProfileChangePayload {
+    pub domain: String,
+    pub field: String,
+    pub old_value: String,
+    pub new_value: String,
+    pub evidence_ref: Option<String>,
+    pub change_kind: ProfileChangeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileChangeKind { Tighten, Loosen, Revert }

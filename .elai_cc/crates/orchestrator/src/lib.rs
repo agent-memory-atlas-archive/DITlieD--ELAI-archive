@@ -1365,6 +1365,7 @@ pub mod rule_curator;
 // Default-ON; kill-switch ELAI_DEFLATION_GATE_DISABLE. See
 // workflow/reasoning/H-18-decisions.md.
 pub mod deflation_gate;
+pub mod operating_profile;
 // H-20 (SCHEMA_VERSION 225): leakage static-analysis COMPOSITE gate. Composes
 // the rules-engine GraphReachability over the DKG (fit-site reaches BOTH
 // train+test sink => SoundBlock L1.2/L1.3; no split => L1.1). Sound for only

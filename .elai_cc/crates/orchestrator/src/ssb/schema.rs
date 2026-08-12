@@ -5596,7 +5596,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- J-42 T2: reasoning distill-reset checkpoint. Pattern-2 flat; 3-arm
         -- ReasoningCheckpointEventKind rides in the payload. Emitted by the
         -- ReflectEventSink bridge from the chat_reflect refine loop.
-        'reasoning_checkpoint_event'
+        'reasoning_checkpoint_event',
+        'operating_profile_change'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

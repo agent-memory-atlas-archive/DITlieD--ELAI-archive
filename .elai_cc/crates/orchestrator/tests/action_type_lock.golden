@@ -363,6 +363,7 @@ novelty_classified
 objective_sealed
 observable_effect_dispatched
 observable_effect_verified
+operating_profile_change
 oracle_cache_hit
 oracle_cache_miss
 output_classifier_flagged
