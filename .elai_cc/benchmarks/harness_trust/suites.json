@@ -1,0 +1,116 @@
+{
+  "manifest_version": 1,
+  "name": "Harness Trust Benchmark",
+  "checkout_root": "benchmarks/harness_trust/upstreams",
+  "venv_root": "benchmarks/harness_trust/venvs",
+  "result_root": "benchmarks/harness_trust/results",
+  "aggregate": {
+    "enabled": false,
+    "reason": "The upstream suites expose different task populations, threat models, and score semantics. Enable only after an adapter declares a comparable score field and weighting policy."
+  },
+  "suites": [
+    {
+      "id": "harnessaudit",
+      "name": "HarnessAudit",
+      "status": "cloneable",
+      "source": "https://github.com/UCSB-AI/HarnessAudit.git",
+      "ref": "6317162590aeeb1c8dde32b880ac199933343e4a",
+      "license": "MIT",
+      "python": ">=3.11",
+      "install": {
+        "kind": "editable",
+        "args": ["-e", ".[dev,oai]"]
+      },
+      "optional_installs": [
+        {
+          "relative_path": "vendor/clawteam",
+          "args": ["-e", "vendor/clawteam"]
+        }
+      ],
+      "imports": ["multi_agent", "single_agent"],
+      "adapter": {
+        "kind": "command",
+        "suggested_entrypoint": ["python", "-m", "multi_agent"],
+        "notes": "The upstream README requires a native harness CLI and model/judge credentials for real tasks."
+      }
+    },
+    {
+      "id": "control-arena",
+      "name": "ControlArena",
+      "status": "cloneable",
+      "source": "https://github.com/UKGovernmentBEIS/control-arena.git",
+      "ref": "3a378ed00eb1f6b8e893e39215d749688126c9cb",
+      "license": "MIT",
+      "python": ">=3.11",
+      "install": {
+        "kind": "editable",
+        "args": ["-e", "."]
+      },
+      "optional_installs": [],
+      "imports": ["control_arena", "inspect_ai"],
+      "capabilities": ["docker_for_sandbox_settings"],
+      "adapter": {
+        "kind": "command",
+        "suggested_entrypoint": ["inspect", "eval", "<adapter-script>"],
+        "notes": "The upstream is a library over Inspect AI; a suite-specific task/protocol adapter is required."
+      }
+    },
+    {
+      "id": "agent-safetybench",
+      "name": "Agent-SafetyBench",
+      "status": "cloneable",
+      "source": "https://github.com/thu-coai/Agent-SafetyBench.git",
+      "ref": "74feea8de601b3a1449a93fcf70017fe61556f73",
+      "license": "MIT",
+      "python": ">=3.11",
+      "install": {
+        "kind": "requirements",
+        "path": "requirements.txt"
+      },
+      "optional_installs": [],
+      "imports": ["torch", "transformers", "openai"],
+      "adapter": {
+        "kind": "command",
+        "suggested_entrypoint": ["bash", "evaluation/eval.sh"],
+        "notes": "The upstream evaluator is model/API oriented; a harness adapter is required for a fixed-harness comparison."
+      }
+    },
+    {
+      "id": "openbench",
+      "name": "OpenBench",
+      "status": "cloneable",
+      "source": "https://github.com/minghinmatthewlam/openbench.git",
+      "ref": "9364ebaf6279bb533cac073fd2e67f4b7d67d8d9",
+      "license": "MIT",
+      "python": ">=3.11",
+      "install": {
+        "kind": "editable",
+        "args": ["-e", "."]
+      },
+      "optional_installs": [],
+      "imports": ["obench"],
+      "adapter": {
+        "kind": "command",
+        "suggested_entrypoint": ["obench", "run"],
+        "notes": "The upstream already defines a fixed-model harness-comparison runner; credentials and native harness CLIs remain user-managed."
+      }
+    },
+    {
+      "id": "underspecbench",
+      "name": "UnderSpecBench",
+      "status": "paper_only",
+      "source": "https://arxiv.org/html/2607.02294",
+      "ref": null,
+      "license": "arXiv perpetual non-exclusive license",
+      "python": null,
+      "install": null,
+      "optional_installs": [],
+      "imports": [],
+      "adapter": {
+        "kind": "paper_only",
+        "suggested_entrypoint": [],
+        "notes": "No official cloneable repository URL was verified. Do not execute an unverified fork as the benchmark."
+      }
+    }
+  ]
+}
