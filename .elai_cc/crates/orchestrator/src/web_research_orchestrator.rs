@@ -57,6 +57,12 @@ pub(crate) const MAX_ITERATIONS_PER_DEPTH: u32 = 10;
 /// Minimum citations before upgrading evidence level to MultiSource.
 const MULTI_SOURCE_THRESHOLD: usize = 2;
 
+/// Maximum citation summaries supplied to a bounded operator view.
+const MINIMAL_PROMPT_SUMMARY_CAP: usize = 12;
+const MINIMAL_PROMPT_SUMMARY_CHARS: usize = 80;
+const MINIMAL_PROMPT_FULL_EXTRACT_CHARS: usize = 200;
+const MINIMAL_PROMPT_DISABLE_ENV: &str = "ELAI_RESEARCH_MINIMAL_PROMPT_DISABLE";
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -359,8 +365,12 @@ impl WebResearchOrchestrator {
             last_fetcher = "";
 
             // FORMULATE: build query from question + prior evidence.
+            let prompt_sizes = minimal_prompt_sizes(&node.citations);
             self.emit_stage(node, "formulate", "started", json!({
-                "prior_citations": node.citations.len()
+                "prior_citations": node.citations.len(),
+                "prompt_size_before": prompt_sizes.0,
+                "prompt_size_after": prompt_sizes.1,
+                "prompt_size_ratio": prompt_size_ratio(prompt_sizes.0, prompt_sizes.1)
             })).await;
             let query = self.formulate_query(&node.question, &node.citations).await;
             debug!(node_id = node.id.0, iteration, query = %query, "formulated query");
@@ -532,8 +542,12 @@ impl WebResearchOrchestrator {
             );
 
             // REFLECT: update phi/psi based on evidence quality and coverage.
+            let reflect_sizes = minimal_prompt_sizes(&node.citations);
             self.emit_stage(node, "reflect", "started", json!({
-                "citations": node.citations.len()
+                "citations": node.citations.len(),
+                "prompt_size_before": reflect_sizes.0,
+                "prompt_size_after": reflect_sizes.1,
+                "prompt_size_ratio": prompt_size_ratio(reflect_sizes.0, reflect_sizes.1)
             })).await;
             let old_phi = node.phi;
             self.reflect(node);
@@ -667,8 +681,12 @@ impl WebResearchOrchestrator {
             return question.to_string();
         }
 
+        // The operator receives a bounded view; the kill-switch restores the
+        // historical unbounded citation behavior for rollback/debugging.
+        let operator_citations = minimal_prompt_citations(prior_citations);
+
         // Extract unique domains from prior citations to diversify search.
-        let visited_domains: Vec<String> = prior_citations
+        let visited_domains: Vec<String> = operator_citations
             .iter()
             .map(|c| elai_web_search::parse_domain(&c.url))
             .filter(|d| !d.is_empty())
@@ -980,6 +998,84 @@ fn truncate_excerpt(text: &str, max_len: usize) -> String {
     }
 }
 
+/// C3 operator view: `summary_cap` bounds the newest citations and keeps one
+/// `one_full` extract for the operator while preserving the source vector.
+fn minimal_prompt_disabled() -> bool {
+    std::env::var(MINIMAL_PROMPT_DISABLE_ENV)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Build the bounded citation data view consumed by FORMULATE and REFLECT.
+/// The newest twelve rows remain, with one highest-quality full extract.
+/// Every other row becomes a one-line excerpt. The source vector stays intact.
+fn minimal_prompt_citations(citations: &[SourceCitation]) -> Vec<SourceCitation> {
+    minimal_prompt_citations_with_disabled(citations, minimal_prompt_disabled())
+}
+
+fn minimal_prompt_citations_with_disabled(
+    citations: &[SourceCitation],
+    disabled: bool,
+) -> Vec<SourceCitation> {
+    if disabled {
+        return citations.to_vec();
+    }
+    if citations.is_empty() {
+        return Vec::new();
+    }
+
+    let start = citations.len().saturating_sub(MINIMAL_PROMPT_SUMMARY_CAP);
+    let mut bounded: Vec<SourceCitation> = citations[start..].to_vec();
+    let full_index = bounded
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| left.quality.score().total_cmp(&right.quality.score()))
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+
+    for (index, citation) in bounded.iter_mut().enumerate() {
+        if index != full_index {
+            citation.excerpt = one_line_excerpt(&citation.excerpt, MINIMAL_PROMPT_SUMMARY_CHARS);
+        } else {
+            citation.excerpt = truncate_excerpt(&citation.excerpt, MINIMAL_PROMPT_FULL_EXTRACT_CHARS);
+        }
+    }
+    bounded
+}
+
+/// Estimate the character sizes before and after the bounded operator view.
+fn minimal_prompt_sizes(citations: &[SourceCitation]) -> (usize, usize) {
+    let before = citations
+        .iter()
+        .map(|citation| citation.excerpt.len())
+        .sum();
+    let after = minimal_prompt_citations(citations)
+        .iter()
+        .map(|citation| citation.excerpt.len())
+        .sum();
+    (before, after)
+}
+
+/// Return a recomputable before/after size ratio for stage telemetry.
+fn prompt_size_ratio(before: usize, after: usize) -> f64 {
+    if after == 0 {
+        1.0
+    } else {
+        before as f64 / after as f64
+    }
+}
+
+/// Normalize a compressed citation to one line before applying its size cap.
+fn one_line_excerpt(text: &str, max_len: usize) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_excerpt(&one_line, max_len)
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
@@ -1071,8 +1167,48 @@ mod tests {
         let expected_phi = avg_quality * coverage_factor;
         assert!(expected_phi > 0.0);
 
-        // We can't call reflect without an orchestrator instance, but the
-        // unit test validates the math. The contract test validates the struct.
+        // The unit test validates the math. The contract test validates the struct.
         let _ = orch_cfg;
+    }
+
+    #[test]
+    fn minimal_prompt_citations_bounds_newest_and_preserves_evidence() {
+        let citations: Vec<SourceCitation> = (0..20)
+            .map(|index| SourceCitation {
+                url: format!("https://example{index}.test/source"),
+                title: format!("Source {index}"),
+                quality: if index == 19 { SourceQuality::Tier1 } else { SourceQuality::Tier3 },
+                evidence_level: EvidenceLevel::SingleSource,
+                excerpt: "x".repeat(200),
+            })
+            .collect();
+        let original = citations.clone();
+        let view = minimal_prompt_citations_with_disabled(&citations, false);
+
+        assert_eq!(view.len(), MINIMAL_PROMPT_SUMMARY_CAP);
+        assert_eq!(view[0].url, "https://example8.test/source");
+        assert_eq!(view.iter().filter(|citation| citation.excerpt.len() > MINIMAL_PROMPT_SUMMARY_CHARS).count(), 1);
+        assert_eq!(citations.len(), original.len(), "compression must not drop production evidence");
+        assert_eq!(citations[0].excerpt, original[0].excerpt, "operator view must not mutate source evidence");
+    }
+
+    #[test]
+    fn minimal_prompt_disable_restores_unbounded_and_ratio_recomputes() {
+        let citations: Vec<SourceCitation> = (0..15)
+            .map(|index| SourceCitation {
+                url: format!("https://example{index}.test/source"),
+                title: format!("Source {index}"),
+                quality: SourceQuality::Tier2,
+                evidence_level: EvidenceLevel::SingleSource,
+                excerpt: "x".repeat(200),
+            })
+            .collect();
+        let disabled = minimal_prompt_citations_with_disabled(&citations, true);
+
+        assert_eq!(disabled.len(), citations.len());
+        assert_eq!(disabled[0].excerpt.len(), citations[0].excerpt.len());
+        let (before, after) = minimal_prompt_sizes(&citations);
+        assert!(after < before);
+        assert!((prompt_size_ratio(before, after) - before as f64 / after as f64).abs() < f64::EPSILON);
     }
 }
