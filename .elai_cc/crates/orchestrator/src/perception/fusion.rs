@@ -242,6 +242,8 @@ mod tests {
             bbox,
             source: ElementSource::Detector,
             confidence: 1.0,
+            box_id: None,
+            interactable: true,
         }
     }
 

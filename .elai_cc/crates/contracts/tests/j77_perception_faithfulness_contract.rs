@@ -28,6 +28,8 @@ fn elem(label: &str, bbox: [u32; 4], source: ElementSource, conf: f32) -> Litera
         bbox,
         source,
         confidence: conf,
+        box_id: None,
+        interactable: true,
     }
 }
 

@@ -200,6 +200,8 @@ pub fn run_perception_faithfulness(fixture: &Fixture, seed: u64) -> PerceptionFa
             bbox: d.bbox,
             source: parse_source(&d.source),
             confidence: d.confidence,
+            box_id: None,
+            interactable: true,
         })
         .collect();
 
@@ -212,6 +214,8 @@ pub fn run_perception_faithfulness(fixture: &Fixture, seed: u64) -> PerceptionFa
             bbox: d.bbox,
             source: parse_source(&d.source),
             confidence: d.confidence,
+            box_id: None,
+            interactable: true,
         })
         .collect();
 

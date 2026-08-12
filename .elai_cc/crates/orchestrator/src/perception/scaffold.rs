@@ -82,6 +82,14 @@ pub enum ScaffoldOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ElementSource {
+    /// Exact element identity from the accessibility tree.
+    AxtreeExact,
+    /// Text identity derived from OCR.
+    OcrText,
+    /// Advisory caption from a vision-language model.
+    VlmCaption,
+    /// Advisory pixel detector output.
+    PixelYolo,
     Ocr,
     Layout,
     Detector,
@@ -114,11 +122,22 @@ pub struct LiteralElement {
     /// I6: 0.0..=1.0 confidence; VLM-guessed fields tend lower.
     #[serde(default = "default_confidence")]
     pub confidence: f32,
+    /// Set-of-Marks id assigned by the harness after perception.
+    #[serde(default)]
+    pub box_id: Option<u32>,
+    /// Whether this element can enter the model-facing candidate list.
+    #[serde(default = "default_interactable")]
+    pub interactable: bool,
 }
 
 /// Default confidence for deterministic construct paths (1.0).
 fn default_confidence() -> f32 {
     1.0
+}
+
+/// Existing elements remain eligible unless a producer marks them otherwise.
+fn default_interactable() -> bool {
+    true
 }
 
 impl Default for LiteralElement {
@@ -128,6 +147,8 @@ impl Default for LiteralElement {
             bbox: [0, 0, 0, 0],
             source: ElementSource::default(),
             confidence: 1.0,
+            box_id: None,
+            interactable: true,
         }
     }
 }

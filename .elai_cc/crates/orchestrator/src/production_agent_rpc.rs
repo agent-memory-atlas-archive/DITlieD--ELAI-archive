@@ -2033,6 +2033,58 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                             // check over the consistent regions.
                             let g = perception::emit_layout_graph(&consistent);
                             let report = perception::check_layout_consistency(&g);
+                            // P-13: assign harness-owned integer ids after all
+                            // deterministic filtering and geometry checks.
+                            let marked = perception::build_numbered_list(&consistent);
+                            let mut source_tag_breakdown = serde_json::Map::new();
+                            let mut trust_breakdown = serde_json::Map::new();
+                            for item in &marked {
+                                let tag = match item.element.source {
+                                    perception::ElementSource::AxtreeExact => "axtree_exact",
+                                    perception::ElementSource::OcrText => "ocr_text",
+                                    perception::ElementSource::VlmCaption => "vlm_caption",
+                                    perception::ElementSource::PixelYolo => "pixel_yolo",
+                                    perception::ElementSource::Ocr => "ocr",
+                                    perception::ElementSource::Layout => "layout",
+                                    perception::ElementSource::Detector => "detector",
+                                    perception::ElementSource::Vlm => "vlm",
+                                    perception::ElementSource::Merged => "merged",
+                                };
+                                let count = source_tag_breakdown
+                                    .get(tag)
+                                    .and_then(serde_json::Value::as_u64)
+                                    .unwrap_or(0)
+                                    .saturating_add(1);
+                                source_tag_breakdown.insert(
+                                    tag.to_string(),
+                                    serde_json::Value::from(count),
+                                );
+                                let trust = match perception::trust_level(item.element.source) {
+                                    perception::SourceTrustLevel::Authoritative => {
+                                        "authoritative"
+                                    }
+                                    perception::SourceTrustLevel::TextDerived => "text_derived",
+                                    perception::SourceTrustLevel::Advisory => "advisory",
+                                };
+                                let trust_count = trust_breakdown
+                                    .get(trust)
+                                    .and_then(serde_json::Value::as_u64)
+                                    .unwrap_or(0)
+                                    .saturating_add(1);
+                                trust_breakdown.insert(
+                                    trust.to_string(),
+                                    serde_json::Value::from(trust_count),
+                                );
+                            }
+                            let resolver_roundtrip_ok = marked.iter().all(|item| {
+                                perception::resolve_by_id(&marked, item.box_id).is_some()
+                            });
+                            let authoritative_count = marked
+                                .iter()
+                                .filter(|item| {
+                                    perception::is_action_authoritative(item.element.source)
+                                })
+                                .count();
                             // J-77 S5 (I1/I2): sweet-spot tile fields for
                             // the active model key (claude is the production
                             // default).
@@ -2061,6 +2113,13 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                                     "duplicate_drops": fused.duplicate_drops,
                                     "consistent_regions": consistent.len(),
                                     "transform_rejected": n_rej,
+                                    "numbered_element_count": marked.len(),
+                                    "source_tag_breakdown": source_tag_breakdown,
+                                    "source_trust_breakdown": trust_breakdown,
+                                    "authoritative_element_count": authoritative_count,
+                                    "resolver_roundtrip_ok": resolver_roundtrip_ok,
+                                    "vlm_count_calls": 0,
+                                    "interactable_filtered": marked.len() != consistent.len(),
                                     "layout_ok": report.ok,
                                     "tile_px": tile_px,
                                     "tile_overlap": tile_overlap,

@@ -170,6 +170,8 @@ fn make_element(label: &str, bbox: [u32; 4]) -> LiteralElement {
         bbox,
         source: ElementSource::default(),
         confidence: 1.0,
+        box_id: None,
+        interactable: true,
     }
 }
 

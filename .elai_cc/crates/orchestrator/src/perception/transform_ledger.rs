@@ -163,6 +163,8 @@ pub fn filter_consistent_boxes(
                     bbox: reprojected,
                     source: elem.source,
                     confidence: elem.confidence,
+                    box_id: elem.box_id,
+                    interactable: elem.interactable,
                 });
             }
             None => {
@@ -183,6 +185,8 @@ mod tests {
             bbox,
             source: ElementSource::Detector,
             confidence: 1.0,
+            box_id: None,
+            interactable: true,
         }
     }
 

@@ -164,6 +164,8 @@ mod tests {
             bbox,
             source,
             confidence: conf,
+            box_id: None,
+            interactable: true,
         }
     }
 

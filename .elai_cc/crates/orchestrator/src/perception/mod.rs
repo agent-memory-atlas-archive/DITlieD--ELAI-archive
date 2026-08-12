@@ -33,6 +33,7 @@ pub mod preprocess;
 pub mod prompt_shapes;
 pub mod router;
 pub mod scaffold;
+pub mod set_of_marks;
 pub mod sweet_spot;
 pub mod transform_ledger;
 pub mod vision_ladder;
@@ -56,6 +57,10 @@ pub use layout_graph::{
     check_layout_consistency, emit_layout_graph, LayoutConsistencyReport, LayoutGraph,
 };
 pub use transform_ledger::{filter_consistent_boxes, TransformLedger, TransformOp};
+pub use set_of_marks::{
+    build_numbered_list, is_action_authoritative, resolve_by_id, trust_level, MarkedElement,
+    SourceTrustLevel,
+};
 // J-77 I10: demoted instruction-before-image ordering claim.
 pub use prompt_shapes::{
     instruction_image_order_claim, instruction_image_order_label,
