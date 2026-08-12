@@ -26,6 +26,9 @@
 //!     (production entry-point for the periodic honesty check).
 
 use thiserror::Error;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+
 use tracing::{info, warn};
 
 use crate::ssb::{BeliefStateEventKind, BeliefStateEventPayload, Ssb, SsbError, SsbPayload};
@@ -52,6 +55,9 @@ pub enum BeliefStateError {
     /// SSB write failure during receipt emission.
     #[error("BeliefState SSB write error: {0}")]
     Ssb(#[from] SsbError),
+    /// A reasoning step without a valid external receipt is not admissible.
+    #[error("BeliefState external receipt rejected: {reason}")]
+    ReceiptRejected { reason: String },
 }
 
 /// One tried approach, carried in the handoff payload so the receiving model
@@ -78,6 +84,24 @@ pub struct CriticalAtom {
     /// When true the faithfulness gate refuses a projection that drops this value.
     /// LLM never sets this (TD-3) — only orchestrator / structured sources.
     pub must_preserve: bool,
+}
+
+/// The externally-produced verdict used to admit one reasoning step.
+///
+/// This deliberately carries no confidence field: confidence/abstention is
+/// derived from the external verifier result, never supplied by the generator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalReceipt {
+    pub passed: bool,
+    pub abstained: bool,
+    pub evidence: String,
+}
+
+/// Runtime freeze ledger for receipt-confirmed steps.  It is process-local and
+/// intentionally not part of the I-11 wire format.
+fn committed_steps() -> &'static Mutex<HashSet<String>> {
+    static COMMITTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    COMMITTED.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -200,6 +224,47 @@ impl BeliefState {
         Ok(hex)
     }
 
+    /// Admit a step only when an external receipt is present, well-formed, and
+    /// passing.  Once admitted, the step is frozen; a rewrite is dropped.
+    /// Returns `true` for a new commit and `false` for a rewrite or rejection.
+    fn commit_external_receipt(
+        &self,
+        claim: &str,
+        receipt: Option<&ExternalReceipt>,
+    ) -> Result<bool, BeliefStateError> {
+        let claim = claim.trim();
+        let Some(receipt) = receipt else {
+            return Err(BeliefStateError::ReceiptRejected {
+                reason: "missing_external_receipt".into(),
+            });
+        };
+        if claim.is_empty() || receipt.evidence.trim().is_empty() {
+            return Err(BeliefStateError::ReceiptRejected {
+                reason: "malformed_external_receipt".into(),
+            });
+        }
+        if !receipt.passed || receipt.abstained {
+            return Err(BeliefStateError::ReceiptRejected {
+                reason: if receipt.abstained {
+                    "external_receipt_abstained"
+                } else {
+                    "external_receipt_failed"
+                }
+                .into(),
+            });
+        }
+        let key = format!("{}:{claim}", self.blake3_prefix()?);
+        let mut frozen = match committed_steps().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if !frozen.insert(key) {
+            warn!(claim, "BeliefState committed step rewrite dropped; entry is frozen");
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     /// Emit the ID-3 receipt row (BeliefStateEvent(Condensed)) to SSB.
     ///
     /// Every condensation MUST emit this row (ID-3 JOURNALED-MIDDLEWARE rule).
@@ -217,7 +282,18 @@ impl BeliefState {
             for constraint in &self.constraints {
                 let trimmed = constraint.trim();
                 if trimmed.contains(':') {
-                    crate::per_step_source_check::observe_step_grounding(Some(trimmed), trimmed, None);
+                    let verdict = crate::per_step_source_check::per_step_source_check(
+                        Some(trimmed), trimmed, None,
+                    );
+                    let receipt = match verdict {
+                        crate::per_step_source_check::StepSourceVerdict::Verified { evidence } =>
+                            ExternalReceipt { passed: true, abstained: false, evidence },
+                        crate::per_step_source_check::StepSourceVerdict::Failed { evidence } =>
+                            ExternalReceipt { passed: false, abstained: false, evidence },
+                        crate::per_step_source_check::StepSourceVerdict::Abstain { reason } =>
+                            ExternalReceipt { passed: false, abstained: true, evidence: reason },
+                    };
+                    self.commit_external_receipt(trimmed, Some(&receipt))?;
                 }
             }
         }
