@@ -5597,7 +5597,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- ReasoningCheckpointEventKind rides in the payload. Emitted by the
         -- ReflectEventSink bridge from the chat_reflect refine loop.
         'reasoning_checkpoint_event',
-        'operating_profile_change'
+        'operating_profile_change',
+        'advisor_consulted'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

@@ -4923,6 +4923,7 @@ pub enum SsbActionType {
     ReasoningCheckpointEvent(ReasoningCheckpointEventKind),
     /// P-7: an observe-first per-user operating-profile change.
     OperatingProfileChange,
+    AdvisorConsulted,
 }
 
 impl SsbActionType {
@@ -5906,6 +5907,7 @@ impl SsbActionType {
             // J-42 T2: reasoning checkpoint. Flat variant, Kind rides in the payload.
             Self::ReasoningCheckpointEvent(_) => "reasoning_checkpoint_event",
             Self::OperatingProfileChange => "operating_profile_change",
+            Self::AdvisorConsulted => "advisor_consulted",
         }
     }
 }
@@ -6829,6 +6831,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
             ReasoningCheckpointEventKind::ResetAndContinued,
         )),
         "operating_profile_change" => Ok(SsbActionType::OperatingProfileChange),
+        "advisor_consulted" => Ok(SsbActionType::AdvisorConsulted),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

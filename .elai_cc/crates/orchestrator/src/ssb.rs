@@ -1665,6 +1665,7 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // the ReflectEventSink bridge from the chat_reflect refine loop.
     SsbActionType::ReasoningCheckpointEvent(ReasoningCheckpointEventKind::ResetAndContinued),
     SsbActionType::OperatingProfileChange,
+    SsbActionType::AdvisorConsulted,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

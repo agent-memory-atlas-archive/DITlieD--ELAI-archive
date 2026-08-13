@@ -10,6 +10,7 @@
 abstention_scored
 adversarial_farm_run_completed
 adversary_generated
+advisor_consulted
 agent_forked_from_snapshot
 agent_lifecycle
 agent_notification_emitted

@@ -11,6 +11,7 @@ ARCBenchmarkCompletedPayload	dominant_mode:String,dominant_novelty_class:String,
 AbstentionScoredPayload	abstention_rate:f64,confident_wrong_rate:f64,corpus_blake3:String,mean_score:f64,n:u32,seed:u64,suite:String,t:f64
 AdversarialFarmRunCompletedPayload	corpus_blake3:String,paper_floor_pp:f64,prmbench_delta_pp:f64,rounds:u32,samples_farmed:u32,verdict:String
 AdversaryGeneratedPayload	claim_id:String,counter_id:String,model_family:String,severity:f64
+AdvisorConsultedPayload	advice_hash:String,belief_hash:String,over_budget:bool,task_id:String,ts_ms:i64
 AgentForkedFromSnapshotPayload	agent_id:String,baby_step_id:u64,snapshot_path:String
 AgentLifecyclePayload	agent_id:String,death_class:Option<String>,role:String,state:String
 AgentNotificationEmittedPayload	kind:AgentNotificationKind,session_id:String,surfaces_attempted:u8,surfaces_succeeded:u8,ts_ms:u64
@@ -95,6 +96,7 @@ CitationAnchorsBoundPayload	anchor_count:u32,blake3_set_hash_hex:String,kind:Cit
 CladeSelectedPayload	clade_size:usize,cmp:f64,immediate_score:f64,key_used:String,kind:CladeSelectedKind,node_id:String,seed:u64
 ClaimConfidenceScoredPayload	abstained:bool,claim_id:String,claim_score:f64,conformal_verdict:String,exec_agreement_component:f64,lane:String,logprob_component:Option<f64>,self_consistency_component:f64,tau:f64
 ClaimPayload	claim_text:String,grounding_source:String,verified:bool
+ClaimRiskScoredPayload	claim_count:usize,claim_digests:Vec<[u8; 32]>,consult:Vec<crate::claim::risk::PredictorKind>,critical_count:usize,high_count:usize,kind:ClaimRiskScoredKind,low_count:usize,medium_count:usize,predictors:Vec<crate::claim::risk::PredictorKind>,unresolved_ref_count:usize
 ClaimRoutedPayload	claim_id:String,claim_type:String,ctx_summary_blake3:String,mode:String,ts_ms:i64
 ClaimScopeMeasuredPayload	claim_wording:Option<String>,corpus_blake3:String,delta:Option<f64>,divergence_pct:Option<f64>,kind:ClaimScopeMeasuredKind,n_samples:u32,reviewer_reaching_rate:Option<f64>,runpod_pending:bool,seed:u64,suite:String,trap_fired:bool
 ClaudeCodeArchitectureEventPayload	details_json:serde_json::Value,kind:ClaudeCodeArchitectureEventKind,primitive:ClaudeCodeArchPrimitive,session_id:Option<String>,ts_ms:i64
@@ -119,9 +121,11 @@ ConformalTauComputedPayload	calibration_id:Option<String>,corpus_size:u32,epsilo
 ConformalValidationCompletedPayload	empirical_refusal_rate:f64,epsilon:f64,fixture_blake3:String,gating_verdict:String,tau:f64,total:u32,ts_ms:i64
 ConsensusReevaluatedWithCounterPayload	claim_id:String,original_verdict:String,post_counter_verdict:String
 ConstraintsInjectedPayload	constraint_count:u32,project_id:String,step_id:String
+ContextAccessSpecPayload	allowed_memory_namespaces:Vec<String>,allowed_sibling_output_ids:Vec<String>,allowed_ssb_row_ids:Vec<String>,kind:ContextAccessSpecKind,observe_only:bool,out_of_spec_flagged:Vec<String>,role:String,ts_ms:i64
 ContextBudgetComputedPayload	adapt_levels_fired:u8,allocations:Vec<usize>,raw_max:usize,slots:Vec<u64>,tier:String
 ContextCalibrationEventPayload	details_json:serde_json::Value,kind:ContextCalibrationKind,model_identity_key:String,ts_ms:i64
 ContextPrunedPayload	branch_id:String,constraint_phrase:Option<String>,excluded_bytes:u64,kind:ContextPrunedKind,original_traceback_bytes:u64,outcome_delta:Option<f64>,session_id:String
+ContextRecalledPayload	budget_cards:usize,path_digests:Vec<[u8; 32]>,per_card_token_cap:usize,pointer_only:bool,pressure_level:u8,recalled_cards:usize
 ContextReductionPayload	after_tokens:usize,before_tokens:usize,level:u8,slots_affected:Vec<u8>
 ContextTransformReceiptPayload	after_tokens:u32,before_tokens:u32,kind:ContextTransformKind,reverse_hash:String,skipped:bool,ts_ms:i64
 ContractCodingEventPayload	details_json:serde_json::Value,iterations:u8,kind:ContractCodingEventKind,severity:u8,step_id_hash:u64,ts_ms:i64
@@ -148,6 +152,7 @@ CrossLangDriftDetectedPayload	drift_count:u32,pair_kind_hash:u64,severity_max:u8
 CrossLangPairScannedPayload	pair_count:u32,repo_root_hash:u64,ts_ms:u64
 CsqEvaluatedPayload	blocked:bool,check_count:u32,guard_present:bool,severity:String
 DafnyVerifyCompletedPayload	dafny_pass:bool,heal_iter:u32,tier_hash:u64,ts_ms:u64,udebug_pass:bool
+DagCreditAssignedPayload	branch_id:String,credit_score:f64,kind:DagCreditAssignedKind,ranked_position:usize,sibling_score:f64,ts_ms:i64,winner_score:f64
 DagRepairEscalatedPayload	last_error:String,remaining_issues:u32,rounds:u32
 DagRepairRoundPayload	action_kind:String,reason:String,round:u32
 DairaTracePayload	args_hash:String,elapsed_us:u64,outcome:String,phase:String,step_id:String,tool:String
@@ -279,6 +284,7 @@ IsoBudgetMeasuredPayload	budget_tokens:u32,decorrelation_score:std::collections:
 IsolationMetricPayload	agent_id:String,context_savings_ratio:f64,phase_id:String
 KnowledgeDegradationPayload	component:String,new_mode:String,old_mode:String,reason:String
 KvCacheDtypeSoftwareSimPayload	compute_capability:i32,kv_dtype:String,throughput_cost_pct:f32
+KvCacheTunedPayload	adopt_decision:String,config_hash:String,fixture_pass_rate:f64,tok_s:Option<f64>,vram_gb:Option<f64>
 L3ProposalPayload	change_type:String,      // matches StructuralChangeType::as_str,description:String,proposal_id:String,rationale:String,ts_ms:i64
 LanguageGrammarStatusPayload	failed:Vec<(String, String)>,loaded:Vec<String>
 LateralThinkingActivatedPayload	agent_id:String,detail:String,iteration:u32,persona:String
@@ -358,6 +364,7 @@ NoveltyClassifiedPayload	candidate_status:Option<DiscoveryCandidateStatus>,class
 ObjectiveSealedPayload	current_hash:Option<String>,kind:ObjectiveSealedKind,objective_hash:String,session_id:String,ts_ms:i64
 ObservableEffectDispatchedPayload	context_kind:String,effect_id:String,trigger:String,ts_ms:i64
 ObservableEffectVerifiedPayload	confound_flags:String,effect_id:String,elapsed_us:u64,observation_kind:String,outcome:String,sandbox_tier:String,trigger_kind:String,ts_ms:i64
+OperatingProfileChangePayload	change_kind:ProfileChangeKind,domain:String,evidence_ref:Option<String>,field:String,new_value:String,old_value:String
 OracleCacheHitPayload	cached_age_secs:u64,query_hash_hex:String,source:Option<String>,source_tier:String
 OracleCacheMissPayload	confidence:String,query_hash_hex:String,source:Option<String>
 OutputClassifierFlaggedPayload	patterns:Vec<String>,stripped_count:u32,stripped_hosts:Vec<String>,tool_name:String
@@ -415,6 +422,7 @@ QdeltaMeasuredPayload	ci_high:f64,ci_low:f64,contamination_probe_result:String,c
 QuantBackendSelectedPayload	backend:String,compute_capability:i32,kv_dtype:String,marlin_enabled:bool
 QueryTracePayload	query_id:String,result_count:u32,stage_count:u32,tier:String,total_latency_ms:u64
 ReasoningBudgetScaledPayload	base_calls:u32,budget_pct:Option<f32>,ceiling:u32,depth_level:Option<u32>,kind:String,plateau_fired:Option<bool>,role:String,scaled_calls:u32,seed:u64,serial_depth:u32
+ReasoningCheckpointEventPayload	distillate_tokens:u32,kind:ReasoningCheckpointEventKind,pass_index:u32,trigger:String,ts_ms:i64,turn_id_hash:u64,uncertainty_preserved:bool
 ReasoningQualityProbePayload	baby_step_id:String,extras:String,failure_taxonomy_category:String,kind:ProbeKind,layer:u8,observed_tokens:Option<u32>,score:Option<f32>,threshold:Option<f32>,token_cap:Option<u32>,ts_ms:i64,verdict:String
 ReasoningTracePayload	agent_id:String,budget_remaining:u32,confidence:f64,content_summary:String,elapsed_ms:u64,grounding_level:String,grounding_source:String,step_index:u32,step_type:String,topic:String
 RecoveryEventPayload	agent_id:String,classification:String,degraded:bool,first_grounding_source:String,prior_step_index:i64,recovered_from_checkpoint:bool,recovery_step_index:i64
@@ -440,6 +448,8 @@ ResearchStepPayload	action:String,agent_id:String,iteration:u32,node_id:u64,phi:
 ResearcherNetEgressBlockedPayload	agent_id:String,destination:String,policy_action:String
 ResultManifestVerifiedPayload	corpus_blake3:String,declared_result_count:u32,kind:ResultManifestVerifiedKind,manifest_digest:String,offending_metric:String,rederived_digest:String,run_id:String,seed:u64,strategy_path:String,verdict:String
 RetentionPurgedPayload	kind:RetentionPurgedKind,purged_classes:Vec<String>,retained_blake3:String,session_id:String,ts_ms:i64
+RetrievalAbstainedPayload	kind:RetrievalAbstainedKind,observe_only:bool,query_hash:String,score:f64,task_type:String,threshold:f64,ts_ms:i64
+ReviewGateCatalogEventPayload	catalog_path:String,eligible_tool_count:Option<u64>,finding_count:Option<u64>,kind:ReviewGateCatalogEventKind,language:Option<String>,missing_tool_count:Option<u64>,parser_fn:Option<String>,refusal_reason:Option<String>,sarif:bool,tool:Option<String>,tool_version:Option<String>,ts_ms:i64,verdict:Option<String>
 ReviewSurfaceScoredPayload	attention_lines:u32,base_commit:String,diff_available:bool,diff_unavailable_reason:Option<String>,dsr:f64,session_id:String,total_changed_lines:u32,unvouched_hunks:u32,vouched_hunks:u32
 RewardLadderEventPayload	details_json:serde_json::Value,kind:RewardLadderEventKind,session_id:Option<String>,trajectory_id:Option<String>,ts_ms:i64
 RewardTamperingPayload	corpus_blake3:String,harness_blake3:String,kind:RewardTamperingKind,new_reward:f64,plausible_band:f64,prior_reward:f64,reward_delta:f64,run_id:String,seed:u64
@@ -467,6 +477,7 @@ SandboxBackendSelectedPayload	agent_id:String,backend:String
 SandboxObservationPayload	effect_id:String,evidence_count:u32,outcome:String,tier:String,ts_ms:i64
 SchemaVersionMismatchPayload	python_schema:u32,rust_schema:u32,ts_ms:u64
 ScipRefreshCompletedPayload	crate_count:u32,duration_ms:u32,shard_count:u32,ts_ms:u64
+ScopeCeilingAdvisoryPayload	class:String,postmortem_url:String,triggered_by:String
 ScopeFreezeRatifiedPayload	item_count:u32,manifest_hash:u64,ratifier_id_hash:u64,ts_ms:i64
 ScopeFreezeViolatedPayload	frozen_since_ms:u64,item_path_hash:u64,modified_at_ms:u64,ts_ms:i64
 SdpaBackendPinnedPayload	backend_name:String,compute_capability:u32,fallback_used:bool,ts_ms:i64
@@ -481,8 +492,10 @@ SecurityRuleBlockedPayload	candidate_blake3:String,cwe:String,file_path:String,l
 SelectiveDelegationCostSavedPayload	est_savings_micros:u64,skipped_count:u32,task_id_hash:u64,ts_ms:u64
 SelectiveDelegationDecisionPayload	alpha:f32,difficulty:f32,dispatched_count:u32,task_id_hash:u64,ts_ms:u64
 SelectiveDelegationEscalatedPayload	escalated_workers:u32,reason_hash:u64,task_id_hash:u64,ts_ms:u64
+SemanticEntropyMeasuredPayload	cluster_count:usize,entropy_milli:u32,kind:SemanticEntropyMeasuredKind,sample_count:usize,sample_digests:Vec<[u8; 32]>
 SessionArchivedPayload	archive_path:String,manifest_blake3:String,session_id:String,stale_version:i64,store_kind:String
 SessionRewoundPayload	head_seq_before:i64,replay_outcome:String,replay_session_id:Option<String>,scope:String,session_id:String,summarized:bool,tail_fingerprint_blake3:String,target_seq:i64
+SftExhaustEventPayload	kind:SftExhaustEventKind,notes:Option<String>,provenance_verified_count:Option<u64>,record_count:Option<u64>,session_id:String,strategy_or_rra_path:Option<String>,ts_ms:i64
 SglangBackendRegisteredPayload	base_url_blake3:String,structured_output_backend:String,ts_ms:i64
 ShortCoderCompressionPayload	reduction_pct:u32,rules_applied:Vec<String>,step_id:String,tokens_in:u32,tokens_out:u32
 SimRealParityPayload	corpus_blake3:String,declared_event_count:u32,divergent_event:String,first_divergence_index:u32,golden_digest:String,kind:SimRealParityKind,replay_digest:String,seed:u64,strategy_path:String,verdict:String
@@ -494,6 +507,7 @@ SkillSystemEventPayload	eval_precision:Option<f32>,eval_recall:Option<f32>,outco
 SkillTriggeredPayload	score:f32,skill_name_hash:u64,top_k_rank:u8,ts_ms:u64
 SnapshotEvictedPayload	agent_id:String,reason:String,snapshot_path:String
 SnapshotUniquenessRegeneratedPayload	agent_id:String,restore_count:u64
+SnowballingMeasuredPayload	accuracy:f64,bridge_failure_count:u32,constrained:bool,constrained_accuracy_ceiling:f64,formatting_fraction:f64,formatting_mismatch_count:u32,hallucination_count:u32,inference_error_count:u32,max_new_tokens:u32,model:String,n_questions:u32,pool:String,reflector_mode:String,replication_threshold:f64,retrieval_focus_count:u32,runpod_pending:bool,severity_threshold:f64,temperature:f64
 SpiralDetectedPayload	agent_id:String,phase_id:String,spiral_depth:u32
 SpotlightBreachedPayload	input_hash:u64,marker_hash:u64,ts_ms:i64
 SpotlightWrappedPayload	input_hash:u64,marker_hash:u64,ts_ms:i64

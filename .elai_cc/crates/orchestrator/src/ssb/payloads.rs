@@ -4028,6 +4028,7 @@ pub enum SsbPayload {
     /// `chat_reflect` refine loop takes an armed distill-reset.
     ReasoningCheckpointEvent(ReasoningCheckpointEventPayload),
     OperatingProfileChange(OperatingProfileChangePayload),
+    AdvisorConsulted(AdvisorConsultedPayload),
 }
 
 impl SsbPayload {
@@ -4887,6 +4888,7 @@ impl SsbPayload {
             Self::ReasoningCheckpointEvent(ref p) =>
                 SsbActionType::ReasoningCheckpointEvent(p.kind),
             Self::OperatingProfileChange(_) => SsbActionType::OperatingProfileChange,
+            Self::AdvisorConsulted(_) => SsbActionType::AdvisorConsulted,
         }
     }
 }
@@ -22190,6 +22192,16 @@ pub struct OperatingProfileChangePayload {
     pub new_value: String,
     pub evidence_ref: Option<String>,
     pub change_kind: ProfileChangeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdvisorConsultedPayload {
+    pub task_id: String,
+    pub belief_hash: String,
+    pub advice_hash: String,
+    pub over_budget: bool,
+    pub ts_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
