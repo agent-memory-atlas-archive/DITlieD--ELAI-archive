@@ -1607,6 +1607,9 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::ReasoningCheckpointEvent(_) => (),
         SsbActionType::OperatingProfileChange => (),
         SsbActionType::AdvisorConsulted => (),
+        SsbActionType::GoalEnrolled => (),
+        SsbActionType::GoalVerified => (),
+        SsbActionType::GoalViolated => (),
     }
 }
 

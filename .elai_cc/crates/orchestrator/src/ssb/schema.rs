@@ -5598,7 +5598,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- ReflectEventSink bridge from the chat_reflect refine loop.
         'reasoning_checkpoint_event',
         'operating_profile_change',
-        'advisor_consulted'
+        'advisor_consulted',
+        'goal_enrolled', 'goal_verified', 'goal_violated'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

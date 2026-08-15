@@ -2649,6 +2649,32 @@ pub struct SymbolQueryPayload {
 /// (AutonomousGate). B-10 added `ContextBudgetComputed` + `SsbFilteredByOverlap`
 /// for the per-slot budget bar chart and 3E.5 entry-filter transparency.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalEnrolledPayload {
+    pub goal_id: String,
+    pub predicate_cmd: String,
+    pub timeout_s: u64,
+    pub source_unit: String,
+    pub enrolled_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalVerifiedPayload {
+    pub goal_id: String,
+    pub tick_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalViolatedPayload {
+    pub goal_id: String,
+    pub suspects: Vec<String>,
+    pub quarantined: bool,
+    pub tick_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
     FileWrite(FileWritePayload),
     FileRead(FileReadPayload),
@@ -4029,6 +4055,9 @@ pub enum SsbPayload {
     ReasoningCheckpointEvent(ReasoningCheckpointEventPayload),
     OperatingProfileChange(OperatingProfileChangePayload),
     AdvisorConsulted(AdvisorConsultedPayload),
+    GoalEnrolled(GoalEnrolledPayload),
+    GoalVerified(GoalVerifiedPayload),
+    GoalViolated(GoalViolatedPayload),
 }
 
 impl SsbPayload {
@@ -4889,6 +4918,9 @@ impl SsbPayload {
                 SsbActionType::ReasoningCheckpointEvent(p.kind),
             Self::OperatingProfileChange(_) => SsbActionType::OperatingProfileChange,
             Self::AdvisorConsulted(_) => SsbActionType::AdvisorConsulted,
+            Self::GoalEnrolled(_) => SsbActionType::GoalEnrolled,
+            Self::GoalVerified(_) => SsbActionType::GoalVerified,
+            Self::GoalViolated(_) => SsbActionType::GoalViolated,
         }
     }
 }

@@ -1666,6 +1666,9 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::ReasoningCheckpointEvent(ReasoningCheckpointEventKind::ResetAndContinued),
     SsbActionType::OperatingProfileChange,
     SsbActionType::AdvisorConsulted,
+    SsbActionType::GoalEnrolled,
+    SsbActionType::GoalVerified,
+    SsbActionType::GoalViolated,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

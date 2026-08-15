@@ -4924,6 +4924,12 @@ pub enum SsbActionType {
     /// P-7: an observe-first per-user operating-profile change.
     OperatingProfileChange,
     AdvisorConsulted,
+    /// Q-1: a standing goal was enrolled after a verified completion.
+    GoalEnrolled,
+    /// Q-1: a standing goal predicate passed on a scheduled tick.
+    GoalVerified,
+    /// Q-1: a standing goal predicate failed on a scheduled tick.
+    GoalViolated,
 }
 
 impl SsbActionType {
@@ -5908,6 +5914,9 @@ impl SsbActionType {
             Self::ReasoningCheckpointEvent(_) => "reasoning_checkpoint_event",
             Self::OperatingProfileChange => "operating_profile_change",
             Self::AdvisorConsulted => "advisor_consulted",
+            Self::GoalEnrolled => "goal_enrolled",
+            Self::GoalVerified => "goal_verified",
+            Self::GoalViolated => "goal_violated",
         }
     }
 }
@@ -6832,6 +6841,9 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         )),
         "operating_profile_change" => Ok(SsbActionType::OperatingProfileChange),
         "advisor_consulted" => Ok(SsbActionType::AdvisorConsulted),
+        "goal_enrolled" => Ok(SsbActionType::GoalEnrolled),
+        "goal_verified" => Ok(SsbActionType::GoalVerified),
+        "goal_violated" => Ok(SsbActionType::GoalViolated),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
