@@ -56,7 +56,7 @@ deterministic_first = true
 #
 # All keys are OPTIONAL — the section can stay commented out and the
 # loader falls back to RoutingPolicyToml::default() which mirrors the
-# in-code defaults (enabled=false, alpha=0.1, s_max=0.10, max_turns=8,
+# in-code defaults (enabled=false, alpha=0.1, s_max=0.10,
 # max_workers_per_query=8).
 #
 # enabled: master gate. When false (default), the SelectiveDelegator
@@ -72,8 +72,6 @@ deterministic_first = true
 # raising above 0.10 unlocks the cost-hacking failure mode the paper
 # explicitly calls out). Construction rejects values exceeding 0.10.
 #
-# max_turns: T_max per trajectory (paper Section 5; default 8).
-#
 # max_workers_per_query: dispatch cap. Default 8 matches the C-45
 # pilot scope (8 base AgentRole variants); raise only after the live
 # Uno-Orchestra pilot runs.
@@ -82,7 +80,6 @@ deterministic_first = true
 enabled = false
 alpha = 0.1
 s_max = 0.10
-max_turns = 8
 max_workers_per_query = 8
 
 # ============================================================================

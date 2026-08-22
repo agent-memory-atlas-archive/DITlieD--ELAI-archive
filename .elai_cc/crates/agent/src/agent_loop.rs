@@ -5,10 +5,8 @@
 //   a = action (TOOL_USE marker -> ToolRequest, or end_turn -> AgentResponse)
 //   y = outcome (ToolResult bytes appended to conversation)
 //
-// Bounded iteration per workflow/papers/agentless-2407.01489-interface.md
-// ("an incorrect step can be easily amplified"): hard cap at
-// AGENT_MAX_ITERATIONS (default 25, mid-point of swe-world's [20, 100]
-// range; see workflow/handoff/phase-A2.md acceptance_criteria).
+// The loop has no local turn limit. It ends on a normal response, AgentKill,
+// an I/O or protocol error, or the existing outer session timeout/cancellation.
 //
 // Deviations vs the original orchestrator-prompt A2 wording:
 //
@@ -61,14 +59,6 @@ fn read_frame_blocking(reader: &mut dyn Read) -> Result<IpcFrame, AgentError> {
     }
 }
 
-/// Hard cap on agent ReAct iterations per single AgentRequest.
-///
-/// Sourced from workflow/papers/swe-world-interface.md (max_turns ∈ [20, 100])
-/// and tightened to 25 to bias toward the lower bound while leaving headroom
-/// for legitimate multi-tool tasks. Override is not exposed in A2 — every
-/// agent role inherits this cap.
-pub const AGENT_MAX_ITERATIONS: u32 = 25;
-
 /// Marker that signals "the model wants to call a tool" inside a flat
 /// InferResponse.text payload. Format (one per line):
 ///
@@ -81,10 +71,9 @@ const TOOL_USE_MARKER: &str = "TOOL_USE: ";
 /// Drive one ReAct turn for `task`.
 ///
 /// Caller owns the IPC stream; this function reads InferResponse / ToolResult
-/// frames and writes InferRequest / ToolRequest / AgentResponse /
-/// AgentMaxIterationsReached frames. Returns `Ok(())` after emitting a
-/// terminal frame (AgentResponse on end_turn, AgentMaxIterationsReached on
-/// the cap). Any IPC error propagates as `AgentError`.
+/// frames and writes InferRequest / ToolRequest / AgentResponse frames. Returns
+/// `Ok(())` after emitting the terminal AgentResponse on end_turn. Any IPC
+/// error propagates as `AgentError`.
 pub fn run_react_turn(
     task: String,
     _agent_id: &Uuid,
@@ -96,7 +85,6 @@ pub fn run_react_turn(
     // matches the InferRequest.prompt shape (it's a String, not a
     // structured message list — see ipc-types/src/lib.rs:144).
     let mut history = format!("USER: {task}\n");
-    let mut iterations: u32 = 0;
 
     loop {
         // ----- Step 1: send InferRequest with current history -----
@@ -114,8 +102,7 @@ pub fn run_react_turn(
         // only to pace the outer heartbeat loop, see run_message_loop).
         let infer_text = loop {
             let frame = read_frame_blocking(reader)?;
-            let msg = IpcFrame::decode(&frame.payload)
-                .map_err(AgentError::Frame)?;
+            let msg = IpcFrame::decode(&frame.payload).map_err(AgentError::Frame)?;
             match msg {
                 IpcMessageType::InferResponse { text, .. } => break text,
                 // Heartbeats are agent-outbound only; we should not see any
@@ -177,8 +164,7 @@ pub fn run_react_turn(
             // kill the agent mid-turn — only AgentKill cancels.
             let (output, success) = loop {
                 let frame = read_frame_blocking(reader)?;
-                let msg = IpcFrame::decode(&frame.payload)
-                    .map_err(AgentError::Frame)?;
+                let msg = IpcFrame::decode(&frame.payload).map_err(AgentError::Frame)?;
                 match msg {
                     IpcMessageType::ToolResult {
                         tool_id: got_id,
@@ -187,7 +173,9 @@ pub fn run_react_turn(
                     } if got_id == tool_id => {
                         break (output, success);
                     }
-                    IpcMessageType::ToolResult { tool_id: got_id, .. } => {
+                    IpcMessageType::ToolResult {
+                        tool_id: got_id, ..
+                    } => {
                         tracing::warn!(
                             expected = %tool_id.as_str(),
                             got = %got_id.as_str(),
@@ -216,20 +204,6 @@ pub fn run_react_turn(
                 success,
                 decoded
             ));
-        }
-
-        iterations = iterations.saturating_add(1);
-
-        // ----- Step 5: iteration cap check -----
-        if iterations >= AGENT_MAX_ITERATIONS {
-            let msg = IpcMessageType::AgentMaxIterationsReached {
-                reason: format!(
-                    "agent_loop: iteration cap hit (AGENT_MAX_ITERATIONS={AGENT_MAX_ITERATIONS})"
-                ),
-                iterations_completed: iterations,
-            };
-            send_message(writer, &msg)?;
-            return Ok(());
         }
     }
 }

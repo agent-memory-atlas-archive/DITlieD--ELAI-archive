@@ -288,7 +288,7 @@ mod tests {
     }
 
     fn enabled_policy() -> RoutingPolicy {
-        RoutingPolicy::new(true, DEFAULT_ALPHA, 0.10, 8, 8).expect("policy ok")
+        RoutingPolicy::new(true, DEFAULT_ALPHA, 0.10, 8).expect("policy ok")
     }
 
     #[test]

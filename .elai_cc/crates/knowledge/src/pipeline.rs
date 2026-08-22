@@ -15,6 +15,7 @@ use crate::knowledge_ssb_sink::{
     noop_sink, DeepPoolCappedEvent, HydeSkippedCodeQueryEvent, KnowledgeSsbSink, PagerankRunEvent,
     QueryTraceEvent, RrfComponentWeightsEvent, RrfQualityGateFiredEvent,
 };
+use crate::live_overlay::{LiveIndexOverlay, OverlayHit};
 use crate::query_class::{classify, has_code_symbol_signal};
 use crate::query_modality::{channel_enabled, RetrievalChannel};
 use crate::query_expansion::{self, ExpansionStrategy};
@@ -168,6 +169,91 @@ pub struct PipelineStage {
     pub error: Option<String>,
 }
 
+/// Overlay-first merge used by [`QueryPipeline::query_with_tier`].
+/// Live hits become stage `"overlay"` at the front; tombstones and stale
+/// copies of live symbols are stripped from later stages.
+pub fn apply_overlay_first(
+    overlay: &dyn LiveIndexOverlay,
+    query: &str,
+    stages: &mut Vec<PipelineStage>,
+) {
+    let hits = overlay.hits_for_query(query);
+    if hits.is_empty() {
+        return;
+    }
+
+    let tombstones: Vec<(String, String)> = hits
+        .iter()
+        .filter_map(|hit| match hit {
+            OverlayHit::Tombstone { symbol, file } => Some((symbol.clone(), file.clone())),
+            OverlayHit::Live { .. } => None,
+        })
+        .collect();
+
+    let live: Vec<crate::arag::RetrievalResult> = hits
+        .iter()
+        .filter_map(|hit| match hit {
+            OverlayHit::Live {
+                symbol,
+                file,
+                snippet,
+            } => Some(crate::arag::RetrievalResult {
+                chunk_id: format!("{file}:overlay:{symbol}"),
+                snippet: snippet.clone(),
+                score: 1.0,
+                tool_used: "overlay".to_string(),
+            }),
+            OverlayHit::Tombstone { .. } => None,
+        })
+        .collect();
+
+    for stage in stages.iter_mut() {
+        stage.results.retain(|result| {
+            !tombstones
+                .iter()
+                .any(|(symbol, file)| result_matches_symbol(result, symbol, file))
+                && !live
+                    .iter()
+                    .any(|live_hit| result_conflicts_with_live(result, live_hit))
+        });
+    }
+
+    if !live.is_empty() {
+        stages.insert(
+            0,
+            PipelineStage {
+                stage: "overlay".to_string(),
+                results: live,
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: None,
+            },
+        );
+    }
+}
+
+fn result_matches_symbol(
+    result: &crate::arag::RetrievalResult,
+    symbol: &str,
+    file: &str,
+) -> bool {
+    let chunk = result.chunk_id.replace('\\', "/");
+    let file_norm = file.replace('\\', "/");
+    result.snippet.contains(symbol) || (chunk.contains(&file_norm) && chunk.contains(symbol))
+}
+
+fn result_conflicts_with_live(
+    result: &crate::arag::RetrievalResult,
+    live: &crate::arag::RetrievalResult,
+) -> bool {
+    if result.tool_used == "overlay" {
+        return false;
+    }
+    let live_symbol = live.chunk_id.rsplit(':').next().unwrap_or_default();
+    !live_symbol.is_empty()
+        && (result.snippet.contains(live_symbol) || result.chunk_id.contains(live_symbol))
+}
+
 // ---------------------------------------------------------------------------
 // QueryPipeline
 // ---------------------------------------------------------------------------
@@ -256,6 +342,10 @@ pub struct QueryPipeline {
     /// rerank path is byte-for-byte unchanged until
     /// [`QueryPipeline::with_deep_config`] installs an override.
     deep_config: KnowledgeDeepConfig,
+    /// J-104: optional live-index overlay. When `Some`, `query_with_tier`
+    /// consults it BEFORE the base stages so an in-session edit is visible
+    /// without a batch re-index. None by default (flag default-OFF).
+    live_overlay: Option<Arc<dyn crate::live_overlay::LiveIndexOverlay>>,
 }
 
 impl QueryPipeline {
@@ -286,7 +376,18 @@ impl QueryPipeline {
             lsp_channel_adapter: None,
             code_vec_config: CodeVecConfig::default(),
             deep_config: KnowledgeDeepConfig::default(),
+            live_overlay: None,
         }
+    }
+
+    /// J-104: install the overlay-first read seam. Production attaches this
+    /// only when `ELAI_LIVE_OVERLAY_ENABLE` is on.
+    pub fn with_live_overlay(
+        mut self,
+        overlay: Arc<dyn crate::live_overlay::LiveIndexOverlay>,
+    ) -> Self {
+        self.live_overlay = Some(overlay);
+        self
     }
 
     /// Cold-wiring (s-81344): builder-style installer for the code_vector
@@ -1607,6 +1708,12 @@ impl QueryPipeline {
         // tiers that bypass the cache do not flood the dashboard.
         if let Some(cache) = self.vector_cache.as_ref() {
             cache.flush_hit_rate_ssb(&self.session_id);
+        }
+
+        // J-104: overlay-first read. Live hits become stage 0; tombstones
+        // shadow stale base hits. No-op when no overlay is installed.
+        if let Some(overlay) = self.live_overlay.as_ref() {
+            apply_overlay_first(overlay.as_ref(), query, &mut stages);
         }
 
         Ok(stages)

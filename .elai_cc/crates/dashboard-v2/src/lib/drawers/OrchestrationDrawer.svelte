@@ -305,7 +305,6 @@
     enabled: boolean;
     alpha: number;
     s_max: number;
-    max_turns: number;
     max_workers_per_query: number;
   };
   type RoutingDecisionsSnapshot = {

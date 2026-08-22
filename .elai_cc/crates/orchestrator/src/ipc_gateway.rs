@@ -27,14 +27,13 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use elai_core::{ClockProvider, LogicalInstant, OsClock};
-use elai_ipc_types::{
-    AgentRole, IpcFrame, IpcFrameError, IpcMessageType,
-    FRAME_HEADER_SIZE, IPC_PROTOCOL_VERSION, MAX_FRAME_SIZE,
-    AGENT_HEARTBEAT_TIMEOUT_SECS,
-};
-use elai_ipc_types::ToolFilter;
 use crate::sandbox::SelfModificationLocks;
+use elai_core::{ClockProvider, LogicalInstant, OsClock};
+use elai_ipc_types::ToolFilter;
+use elai_ipc_types::{
+    AgentRole, IpcFrame, IpcFrameError, IpcMessageType, AGENT_HEARTBEAT_TIMEOUT_SECS,
+    FRAME_HEADER_SIZE, IPC_PROTOCOL_VERSION, MAX_FRAME_SIZE,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -131,10 +130,13 @@ impl AgentConnection {
 
     /// Record a ThinkStep and return whether it exceeds budget (advisory).
     pub fn record_think_step(&mut self, topic: &str) -> bool {
-        let entry = self.grc_budgets.entry(topic.to_string()).or_insert(GrcBudgetEntry {
-            calls_used: 0,
-            max_calls: self.grc_max_calls,
-        });
+        let entry = self
+            .grc_budgets
+            .entry(topic.to_string())
+            .or_insert(GrcBudgetEntry {
+                calls_used: 0,
+                max_calls: self.grc_max_calls,
+            });
         entry.calls_used += 1;
 
         // Track active topics for grounding orphan detection
@@ -184,7 +186,9 @@ impl AgentConnection {
         }
         // Orphaned topic check
         if !self.has_active_topic(topic) {
-            return Some(format!("orphaned topic: no active ThinkStep chain for '{topic}'"));
+            return Some(format!(
+                "orphaned topic: no active ThinkStep chain for '{topic}'"
+            ));
         }
         // Role-method matrix check
         if !allowed_grounding_methods(&self.role).contains(&method) {
@@ -223,7 +227,9 @@ pub fn allowed_grounding_methods(role: &AgentRole) -> Vec<GroundingMethod> {
         ],
         AgentRole::Designer => vec![GroundingMethod::FileCheck],
         AgentRole::PromptEngineer => vec![GroundingMethod::FileCheck],
-        AgentRole::ContextCompiler => vec![GroundingMethod::FileCheck, GroundingMethod::SourceCheck],
+        AgentRole::ContextCompiler => {
+            vec![GroundingMethod::FileCheck, GroundingMethod::SourceCheck]
+        }
         AgentRole::MemoryWriter => vec![GroundingMethod::FileCheck],
         AgentRole::MediaValidator => vec![GroundingMethod::FileCheck],
         // B-40: FRAMING substate agents. idea_framer + idea_critic both run
@@ -279,7 +285,11 @@ pub enum FrameRouteResult {
     /// Agent requested grounding
     GroundingRequest { topic: String, query: String },
     /// Agent sent a ThinkStep (logged, advisory budget)
-    ThinkStep { topic: String, step_type: String, over_budget: bool },
+    ThinkStep {
+        topic: String,
+        step_type: String,
+        over_budget: bool,
+    },
     /// Agent sent a checkpoint
     Checkpoint { sequence: u64 },
     /// Agent requested replan
@@ -382,11 +392,7 @@ impl IpcGateway {
     }
 
     /// Route an incoming IPC frame from an agent. Returns the routing result.
-    pub fn route_frame(
-        &mut self,
-        agent_id: &Uuid,
-        msg: IpcMessageType,
-    ) -> FrameRouteResult {
+    pub fn route_frame(&mut self, agent_id: &Uuid, msg: IpcMessageType) -> FrameRouteResult {
         let conn = match self.connections.get_mut(agent_id) {
             Some(c) => c,
             None => return FrameRouteResult::Rejected(format!("unknown agent: {agent_id}")),
@@ -397,7 +403,10 @@ impl IpcGateway {
                 FrameRouteResult::Response(IpcMessageType::AgentResponse { content, artifacts })
             }
 
-            IpcMessageType::AgentHeartbeat { agent_id: hb_id, uptime_secs: _ } => {
+            IpcMessageType::AgentHeartbeat {
+                agent_id: hb_id,
+                uptime_secs: _,
+            } => {
                 if hb_id != conn.agent_id {
                     return FrameRouteResult::Rejected(format!(
                         "heartbeat agent_id mismatch: expected {}, got {hb_id}",
@@ -419,7 +428,10 @@ impl IpcGateway {
                         "capped InferRequest max_tokens"
                     );
                 }
-                FrameRouteResult::InferRequest { prompt, max_tokens: capped }
+                FrameRouteResult::InferRequest {
+                    prompt,
+                    max_tokens: capped,
+                }
             }
 
             IpcMessageType::ToolRequest { tool_id, arguments } => {
@@ -436,10 +448,16 @@ impl IpcGateway {
                 }
             }
 
-            IpcMessageType::BashRequest { command, timeout_ms } => {
+            IpcMessageType::BashRequest {
+                command,
+                timeout_ms,
+            } => {
                 // Self-mod lock check on command target
                 // Actual path extraction from command is done at bash execution layer
-                FrameRouteResult::BashRequest { command, timeout_ms }
+                FrameRouteResult::BashRequest {
+                    command,
+                    timeout_ms,
+                }
             }
 
             IpcMessageType::GroundingRequest { topic, query } => {
@@ -460,7 +478,11 @@ impl IpcGateway {
                 FrameRouteResult::GroundingRequest { topic, query }
             }
 
-            IpcMessageType::ThinkStep { topic, step_type, content: _ } => {
+            IpcMessageType::ThinkStep {
+                topic,
+                step_type,
+                content: _,
+            } => {
                 let over_budget = conn.record_think_step(&topic);
                 if step_type == "converge" {
                     conn.record_converge(&topic);
@@ -472,40 +494,24 @@ impl IpcGateway {
                         "GRC budget exceeded (advisory)"
                     );
                 }
-                FrameRouteResult::ThinkStep { topic, step_type, over_budget }
+                FrameRouteResult::ThinkStep {
+                    topic,
+                    step_type,
+                    over_budget,
+                }
             }
 
-            IpcMessageType::CheckpointSync { agent_id: _, sequence, payload: _ } => {
-                FrameRouteResult::Checkpoint { sequence }
-            }
+            IpcMessageType::CheckpointSync {
+                agent_id: _,
+                sequence,
+                payload: _,
+            } => FrameRouteResult::Checkpoint { sequence },
 
             IpcMessageType::ReplanRequest { reason, severity } => {
                 if let Some(reject_reason) = conn.check_replan(&reason) {
                     return FrameRouteResult::Rejected(reject_reason);
                 }
                 FrameRouteResult::ReplanRequest { reason, severity }
-            }
-
-            // Phase A2: agent emits this when its ReAct loop hits
-            // AGENT_MAX_ITERATIONS. Semantically a terminal frame (no
-            // AgentResponse follows), so route as Response carrying the
-            // variant payload. The conversation layer can `matches!` on the
-            // inner enum if it cares to distinguish; today every consumer
-            // treats Response opaquely.
-            IpcMessageType::AgentMaxIterationsReached {
-                reason,
-                iterations_completed,
-            } => {
-                tracing::warn!(
-                    agent_id = %conn.agent_id,
-                    iterations = iterations_completed,
-                    reason = %reason,
-                    "agent hit max iteration cap"
-                );
-                FrameRouteResult::Response(IpcMessageType::AgentMaxIterationsReached {
-                    reason,
-                    iterations_completed,
-                })
             }
 
             // Messages that agents should NOT send (orchestrator -> agent only)
@@ -515,9 +521,7 @@ impl IpcGateway {
             | IpcMessageType::BashResult { .. }
             | IpcMessageType::GroundingResult { .. }
             | IpcMessageType::AgentKill { .. } => {
-                FrameRouteResult::Rejected(format!(
-                    "agent sent orchestrator-only message type"
-                ))
+                FrameRouteResult::Rejected(format!("agent sent orchestrator-only message type"))
             }
         }
     }
@@ -525,7 +529,9 @@ impl IpcGateway {
     /// Read a single IPC frame from a stream. Validates version and length before allocation.
     pub fn read_frame(stream: &mut dyn Read) -> Result<IpcFrame, IpcGatewayError> {
         let mut header = [0u8; FRAME_HEADER_SIZE];
-        stream.read_exact(&mut header).map_err(IpcGatewayError::Io)?;
+        stream
+            .read_exact(&mut header)
+            .map_err(IpcGatewayError::Io)?;
 
         let version = header[0];
         if version != IPC_PROTOCOL_VERSION {
@@ -545,13 +551,12 @@ impl IpcGateway {
 
         let mut payload = vec![0u8; len];
         if len > 0 {
-            stream.read_exact(&mut payload).map_err(IpcGatewayError::Io)?;
+            stream
+                .read_exact(&mut payload)
+                .map_err(IpcGatewayError::Io)?;
         }
 
-        Ok(IpcFrame {
-            version,
-            payload,
-        })
+        Ok(IpcFrame { version, payload })
     }
 
     /// Write a single IPC frame to a stream.
@@ -681,10 +686,9 @@ pub fn verify_peercred(
 
     let fd = stream.as_raw_fd();
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len: libc::socklen_t =
-        std::mem::size_of::<libc::ucred>().try_into().map_err(|_| {
-            IpcGatewayError::PeercredFailed("socklen_t overflow".to_string())
-        })?;
+    let mut len: libc::socklen_t = std::mem::size_of::<libc::ucred>()
+        .try_into()
+        .map_err(|_| IpcGatewayError::PeercredFailed("socklen_t overflow".to_string()))?;
 
     let ret = unsafe {
         libc::getsockopt(
@@ -876,7 +880,10 @@ mod tests {
 
         let result = gw.route_frame(
             &agent_id,
-            IpcMessageType::AgentHeartbeat { agent_id, uptime_secs: 10 },
+            IpcMessageType::AgentHeartbeat {
+                agent_id,
+                uptime_secs: 10,
+            },
         );
         assert!(matches!(result, FrameRouteResult::Heartbeat));
     }
@@ -889,7 +896,10 @@ mod tests {
 
         let result = gw.route_frame(
             &agent_id,
-            IpcMessageType::InferRequest { prompt: "test".into(), max_tokens: 100_000 },
+            IpcMessageType::InferRequest {
+                prompt: "test".into(),
+                max_tokens: 100_000,
+            },
         );
         match result {
             FrameRouteResult::InferRequest { max_tokens, .. } => {
@@ -907,7 +917,9 @@ mod tests {
 
         let result = gw.route_frame(
             &agent_id,
-            IpcMessageType::AgentKill { reason: "test".into() },
+            IpcMessageType::AgentKill {
+                reason: "test".into(),
+            },
         );
         assert!(matches!(result, FrameRouteResult::Rejected(_)));
     }
@@ -1005,7 +1017,10 @@ mod tests {
         let unknown = Uuid::from_bytes([1; 16]);
         let result = gw.route_frame(
             &unknown,
-            IpcMessageType::AgentHeartbeat { agent_id: unknown, uptime_secs: 0 },
+            IpcMessageType::AgentHeartbeat {
+                agent_id: unknown,
+                uptime_secs: 0,
+            },
         );
         assert!(matches!(result, FrameRouteResult::Rejected(_)));
     }

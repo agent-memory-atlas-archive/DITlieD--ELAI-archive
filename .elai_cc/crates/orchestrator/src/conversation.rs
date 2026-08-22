@@ -1,44 +1,42 @@
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 
-use serde_json::{Map, Value};
 use crate::telemetry_types::SessionTracer;
+use serde_json::{Map, Value};
 
 use crate::architecture::approval_fatigue_guard::{
     approval_fatigue_guard_enabled, ApprovalFatigueGuard, ApprovalFatigueVerdict, ApprovalKind,
 };
-use crate::context_policy::{
-    effective_context_window, pressure_level, regime_policy, ContextPolicy, PressureLevel,
-};
-use crate::context_budget::{
-    preassess_observation_size, ContextBudget, ExecutionMode, PreassessMode,
-};
 use crate::behavior_steering_ssb::emit_behavior_steering_event;
-use crate::ssb::BehaviorSteeringKind;
-use crate::dispatcher::BackendMode;
 use crate::compact::{
-    compact_session, estimate_session_tokens, CompactionConfig,
-    CompactionResult,
+    compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
-use crate::lossless_compaction_gate::enforce_lossless_compaction;
 use crate::compaction_ladder::{
     compaction_ladder_enabled, run_compaction_ladder, CompactionLadder, LadderEventEmitter,
     NullEmitter,
 };
-use crate::ssb::{ContextReductionPayload, OutputClassifierFlaggedPayload, SsbPayload};
-use crate::output_postprocessor::{self, OutputConfig};
 use crate::config::RuntimeFeatureConfig;
+use crate::context_budget::{
+    preassess_observation_size, ContextBudget, ExecutionMode, PreassessMode,
+};
+use crate::context_policy::{
+    effective_context_window, pressure_level, regime_policy, ContextPolicy, PressureLevel,
+};
+use crate::dispatcher::BackendMode;
 use crate::hooks::{HookAbortSignal, HookProgressReporter, HookRunResult, HookRunner};
+use crate::lossless_compaction_gate::enforce_lossless_compaction;
+use crate::output_postprocessor::{self, OutputConfig};
 use crate::permissions::{
     PermissionContext, PermissionOutcome, PermissionPolicy, PermissionPrompter,
 };
 use crate::session::{ContentBlock, ConversationMessage, Session};
+use crate::ssb::BehaviorSteeringKind;
+use crate::ssb::{ContextReductionPayload, OutputClassifierFlaggedPayload, SsbPayload};
 use crate::usage::{TokenUsage, UsageTracker};
 
 const DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD: u32 = 100_000;
 const AUTO_COMPACTION_THRESHOLD_ENV_VAR: &str = "CLAUDE_CODE_AUTO_COMPACT_INPUT_TOKENS";
-pub const ELAI_J95_ADAPTIVE_REDUCE_ON_COMPACT_VAR: &str =
-    "ELAI_J95_ADAPTIVE_REDUCE_ON_COMPACT";
+pub const ELAI_J95_ADAPTIVE_REDUCE_ON_COMPACT_VAR: &str = "ELAI_J95_ADAPTIVE_REDUCE_ON_COMPACT";
 
 /// Default OFF. Set to "1" to enable adaptive reduction before auto-compaction.
 pub fn j95_adaptive_reduce_on_compact_enabled() -> bool {
@@ -185,7 +183,6 @@ pub struct ConversationRuntime<C, T> {
     tool_executor: T,
     permission_policy: PermissionPolicy,
     system_prompt: Vec<String>,
-    max_iterations: usize,
     usage_tracker: UsageTracker,
     hook_runner: HookRunner,
     auto_compaction_input_tokens_threshold: u32,
@@ -278,7 +275,6 @@ where
             tool_executor,
             permission_policy,
             system_prompt,
-            max_iterations: usize::MAX,
             usage_tracker,
             hook_runner: HookRunner::from_feature_config(feature_config),
             auto_compaction_input_tokens_threshold: auto_compaction_threshold_from_env(),
@@ -301,12 +297,6 @@ where
             freeze_epoch: None,
             last_freeze_decision: None,
         }
-    }
-
-    #[must_use]
-    pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
-        self.max_iterations = max_iterations;
-        self
     }
 
     #[must_use]
@@ -427,12 +417,8 @@ where
         let allowlist: Vec<String> = Vec::new();
         let sanitized =
             elai_safety::output_sanitizer::strip_markdown_images(output.as_str(), &allowlist);
-        let verdict =
-            elai_safety::output_sanitizer::classify_output(&sanitized.cleaned);
-        let flagged = !matches!(
-            verdict,
-            elai_safety::output_sanitizer::OutputVerdict::Clean
-        );
+        let verdict = elai_safety::output_sanitizer::classify_output(&sanitized.cleaned);
+        let flagged = !matches!(verdict, elai_safety::output_sanitizer::OutputVerdict::Clean);
         if sanitized.stripped_count > 0 || flagged {
             if let Some(ssb) = self.ssb_writer.clone() {
                 let patterns = match &verdict {
@@ -441,19 +427,16 @@ where
                     }
                     elai_safety::output_sanitizer::OutputVerdict::Clean => Vec::new(),
                 };
-                let payload = SsbPayload::OutputClassifierFlagged(
-                    OutputClassifierFlaggedPayload {
-                        tool_name: tool_name.to_string(),
-                        stripped_count: sanitized.stripped_count,
-                        stripped_hosts: sanitized.stripped_hosts.clone(),
-                        patterns,
-                    },
-                );
+                let payload = SsbPayload::OutputClassifierFlagged(OutputClassifierFlaggedPayload {
+                    tool_name: tool_name.to_string(),
+                    stripped_count: sanitized.stripped_count,
+                    stripped_hosts: sanitized.stripped_hosts.clone(),
+                    patterns,
+                });
                 std::thread::spawn(move || {
-                    if let Ok(rt) =
-                        tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
+                    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
                     {
                         let _ = rt.block_on(ssb.write_payload(
                             "conversation.output_classifier",
@@ -532,14 +515,6 @@ where
 
         loop {
             iterations += 1;
-            if iterations > self.max_iterations {
-                let error = RuntimeError::new(
-                    "conversation loop exceeded the maximum number of iterations",
-                );
-                self.record_turn_failed(iterations, &error);
-                return Err(error);
-            }
-
             let request = ApiRequest {
                 system_prompt: self.system_prompt.clone(),
                 messages: self.freeze_gated_view_messages(),
@@ -668,8 +643,7 @@ where
                                         .unwrap_or(0),
                                 )
                                 .unwrap_or(i64::MAX);
-                                let session_id =
-                                    Some(self.session.session_id.clone());
+                                let session_id = Some(self.session.session_id.clone());
                                 if let Some(payload) =
                                     guard.build_payload(&verdict, session_id, ts_ms)
                                 {
@@ -708,9 +682,7 @@ where
                 // the guard itself checked before producing the reason prefix, so
                 // no additional gate read is needed.
                 if let PermissionOutcome::Deny { reason } = &permission_outcome {
-                    if reason.starts_with("bash_complexity:")
-                        && tool_name == "Bash"
-                    {
+                    if reason.starts_with("bash_complexity:") && tool_name == "Bash" {
                         if let Some(ssb) = self.ssb_writer.clone() {
                             let ts_ms = i64::try_from(
                                 std::time::SystemTime::now() // entropy-allow: ssb-emit-observability-ts-ms
@@ -719,8 +691,7 @@ where
                                     .unwrap_or(0),
                             )
                             .unwrap_or(i64::MAX);
-                            let session_id =
-                                Some(self.session.session_id.clone());
+                            let session_id = Some(self.session.session_id.clone());
                             let guard =
                                 crate::architecture::bash_complexity_guard::BashComplexityGuard::new();
                             let verdict =
@@ -733,10 +704,9 @@ where
                                 let ssb_payload =
                                     crate::ssb::SsbPayload::ClaudeCodeArchitectureEvent(payload);
                                 std::thread::spawn(move || {
-                                    if let Ok(rt) =
-                                        tokio::runtime::Builder::new_current_thread()
-                                            .enable_all()
-                                            .build()
+                                    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
                                     {
                                         let _ = rt.block_on(ssb.write_payload(
                                             "conversation.bash_complexity_guard",
@@ -807,9 +777,9 @@ where
                         ContentBlock::ToolUse { name, input, .. } => {
                             (name.len() + input.len()) / 4 + 1
                         }
-                        ContentBlock::ToolResult { tool_name, output, .. } => {
-                            (tool_name.len() + output.len()) / 4 + 1
-                        }
+                        ContentBlock::ToolResult {
+                            tool_name, output, ..
+                        } => (tool_name.len() + output.len()) / 4 + 1,
                     })
                     .sum();
                 let window = effective_context_window(self.context_backend_mode) as usize;
@@ -880,13 +850,8 @@ where
 
     #[must_use]
     pub fn compact(&self, config: CompactionConfig) -> CompactionResult {
-        if enforce_lossless_compaction(
-            &self.session,
-            config,
-            None,
-            self.ssb_writer.as_deref(),
-        )
-        .is_err()
+        if enforce_lossless_compaction(&self.session, config, None, self.ssb_writer.as_deref())
+            .is_err()
         {
             return CompactionResult {
                 summary: String::new(),
@@ -929,10 +894,7 @@ where
     /// conversation history coherent when the model bypass returns the
     /// pipeline's answer directly. Errors map session failures into
     /// `RuntimeError` so callers can use the `?` operator uniformly.
-    pub fn push_user_text(
-        &mut self,
-        text: impl Into<String>,
-    ) -> Result<(), RuntimeError> {
+    pub fn push_user_text(&mut self, text: impl Into<String>) -> Result<(), RuntimeError> {
         self.session
             .push_user_text(text)
             .map_err(|error| RuntimeError::new(error.to_string()))
@@ -943,13 +905,9 @@ where
     ///
     /// Used by the chat REFLECT substitution path (B-39C) to record the
     /// pipeline-selected reply so subsequent turns see prior context.
-    pub fn push_assistant_text(
-        &mut self,
-        text: impl Into<String>,
-    ) -> Result<(), RuntimeError> {
-        let message = ConversationMessage::assistant(vec![ContentBlock::Text {
-            text: text.into(),
-        }]);
+    pub fn push_assistant_text(&mut self, text: impl Into<String>) -> Result<(), RuntimeError> {
+        let message =
+            ConversationMessage::assistant(vec![ContentBlock::Text { text: text.into() }]);
         self.session
             .push_message(message)
             .map_err(|error| RuntimeError::new(error.to_string()))
@@ -973,9 +931,19 @@ where
 
     fn derive_freeze(&self, _config: CompactionConfig) -> crate::context_projection::FreezeState {
         let frozen_head_len = crate::context_policy::frozen_head_system_prefix_len(
-            |i| self.session.messages.get(i).is_some_and(|m| m.role == crate::session::MessageRole::System),
-            |i| self.session.messages.get(i)
-                .and_then(crate::compact::extract_existing_compacted_summary).is_some(),
+            |i| {
+                self.session
+                    .messages
+                    .get(i)
+                    .is_some_and(|m| m.role == crate::session::MessageRole::System)
+            },
+            |i| {
+                self.session
+                    .messages
+                    .get(i)
+                    .and_then(crate::compact::extract_existing_compacted_summary)
+                    .is_some()
+            },
             self.session.messages.len(),
         );
         crate::context_projection::FreezeState {
@@ -997,7 +965,9 @@ where
                 projection_session.messages.len() > freeze.frozen_head_len,
             );
             projection_session.messages.insert(
-                freeze.frozen_head_len.min(projection_session.messages.len()),
+                freeze
+                    .frozen_head_len
+                    .min(projection_session.messages.len()),
                 ConversationMessage {
                     role: crate::session::MessageRole::System,
                     blocks: vec![crate::session::ContentBlock::Text { text: continuation }],
@@ -1007,7 +977,10 @@ where
         }
         let log = crate::context_projection::TranscriptLog::from_session(&projection_session);
         let mut view = crate::context_projection::fold(
-            &log, &config, regime_policy(self.context_backend_mode), &freeze,
+            &log,
+            &config,
+            regime_policy(self.context_backend_mode),
+            &freeze,
         );
         let mode = self.context_backend_mode;
         let level = pressure_level(
@@ -1022,9 +995,7 @@ where
         // writer wired (legacy / test path) means no row, and the write is
         // fire-and-forget so the sync projection path never blocks on SSB.
         if let Some(ssb) = self.ssb_writer.clone() {
-            if let Some(payload) =
-                crate::context_projection::recall_receipt_payload(&view, level)
-            {
+            if let Some(payload) = crate::context_projection::recall_receipt_payload(&view, level) {
                 std::thread::spawn(move || {
                     if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -1048,16 +1019,20 @@ where
             self.last_freeze_decision = None;
             return self.session.messages.clone();
         }
-        let Some(config) = self.projection_epoch.or_else(|| {
-            projection_epoch_for_log(&self.session, self.context_backend_mode)
-        }) else {
+        let Some(config) = self
+            .projection_epoch
+            .or_else(|| projection_epoch_for_log(&self.session, self.context_backend_mode))
+        else {
             self.last_freeze_decision = None;
             return self.session.messages.clone();
         };
         let policy = regime_policy(self.context_backend_mode);
         let log = crate::context_projection::TranscriptLog::from_session(&self.session);
-        let compaction_generation =
-            self.session.compaction.as_ref().map_or(0, |value| value.count);
+        let compaction_generation = self
+            .session
+            .compaction
+            .as_ref()
+            .map_or(0, |value| value.count);
         let now_ms = self.session.updated_at_ms;
         let ttl_ms = crate::cache_economics::CacheEconomicsPlanner::plan_ttl(
             crate::cache_economics::GapStats::default(),
@@ -1067,7 +1042,13 @@ where
         .ttl_secs()
         .map(|secs| u64::from(secs) * 1000);
         let decision = crate::context_projection::evaluate_freeze(
-            self.freeze_epoch.as_ref(), &log, &config, policy, compaction_generation, now_ms, ttl_ms,
+            self.freeze_epoch.as_ref(),
+            &log,
+            &config,
+            policy,
+            compaction_generation,
+            now_ms,
+            ttl_ms,
         );
         self.last_freeze_decision = Some(decision);
         match decision {
@@ -1091,10 +1072,17 @@ where
                     .unwrap_or([0u8; 8]);
                 let previous_epoch = self.freeze_epoch.as_ref().map_or(0, |epoch| epoch.epoch);
                 let view = self.project_with_freeze(config, freeze);
-                let prefix_len = freeze.frozen_head_len.min(view.messages.len()).saturating_add(1).min(view.messages.len());
+                let prefix_len = freeze
+                    .frozen_head_len
+                    .min(view.messages.len())
+                    .saturating_add(1)
+                    .min(view.messages.len());
                 let projected_prefix = view.messages[..prefix_len].to_vec();
-                let inserted_compaction_continuation = usize::from(self.session.compaction.is_some());
-                let tail_start = view.tail_start.saturating_sub(inserted_compaction_continuation);
+                let inserted_compaction_continuation =
+                    usize::from(self.session.compaction.is_some());
+                let tail_start = view
+                    .tail_start
+                    .saturating_sub(inserted_compaction_continuation);
                 self.freeze_epoch = Some(crate::context_projection::FreezeEpoch {
                     freeze,
                     boundary_hash,
@@ -1118,19 +1106,24 @@ where
                             .enable_all()
                             .build()
                         {
-                            let _ = rt.block_on(crate::cache_economics::emit_cache_economics_event(
-                                &ssb,
-                                "conversation.freeze_prefix_recompute",
-                                0,
-                                payload,
-                            ));
+                            let _ =
+                                rt.block_on(crate::cache_economics::emit_cache_economics_event(
+                                    &ssb,
+                                    "conversation.freeze_prefix_recompute",
+                                    0,
+                                    payload,
+                                ));
                         }
                     });
                     // Join so the row is observable; one local SQLite write only on Recompute,
                     // never on Reuse, after re-folding the transcript.
                     let _ = handle.join();
                 }
-                tracing::debug!(?cause, epoch = self.freeze_epoch_number(), "freeze prefix recomputed");
+                tracing::debug!(
+                    ?cause,
+                    epoch = self.freeze_epoch_number(),
+                    "freeze prefix recomputed"
+                );
                 view.messages
             }
         }
@@ -1178,11 +1171,9 @@ where
                     .enable_all()
                     .build()
                 {
-                    if let Err(e) = rt.block_on(budget.adaptive_reduce(
-                        0.5,
-                        ExecutionMode::Interactive,
-                        &ssb,
-                    )) {
+                    if let Err(e) =
+                        rt.block_on(budget.adaptive_reduce(0.5, ExecutionMode::Interactive, &ssb))
+                    {
                         tracing::warn!(
                             context_budget.adaptive_reduce_err = %e,
                             "adaptive_reduce failed before auto-compaction (non-fatal)"
@@ -1200,9 +1191,9 @@ where
         // budget before the actual compact_session trim so the ladder
         // decision is observed in the token budget log.
         if compaction_ladder_enabled() {
-            let ladder = CompactionLadder::default_order(
-                u64::from(self.auto_compaction_input_tokens_threshold),
-            );
+            let ladder = CompactionLadder::default_order(u64::from(
+                self.auto_compaction_input_tokens_threshold,
+            ));
             let _ = run_compaction_ladder(
                 &ladder,
                 u64::from(input_tokens),
@@ -1587,7 +1578,10 @@ pub struct LabeledText {
 impl LabeledText {
     /// Construct a new labeled text.
     pub fn new(source: TextSource, content: impl Into<String>) -> Self {
-        Self { source, content: content.into() }
+        Self {
+            source,
+            content: content.into(),
+        }
     }
 
     /// Convenience: wrap with [`TextSource::UserPrompt`].
@@ -1602,7 +1596,12 @@ impl LabeledText {
 
     /// Convenience: wrap with [`TextSource::ExternalTool`].
     pub fn from_tool(tool_name: impl Into<String>, content: impl Into<String>) -> Self {
-        Self::new(TextSource::ExternalTool { tool_name: tool_name.into() }, content)
+        Self::new(
+            TextSource::ExternalTool {
+                tool_name: tool_name.into(),
+            },
+            content,
+        )
     }
 }
 
@@ -1621,13 +1620,13 @@ mod tests {
     };
     use crate::prompt::{ProjectContext, SystemPromptBuilder};
     use crate::session::{ContentBlock, MessageRole, Session};
+    use crate::telemetry_types::{MemoryTelemetrySink, SessionTracer, TelemetryEvent};
     use crate::usage::TokenUsage;
     use crate::ToolError;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use crate::telemetry_types::{MemoryTelemetrySink, SessionTracer, TelemetryEvent};
 
     struct ScriptedApiClient {
         call_count: usize,
@@ -1840,7 +1839,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "P: Windows cmd.exe has no `printf` and uses `&` not `;`; POSIX-shell hook test")]
+    #[cfg_attr(
+        windows,
+        ignore = "P: Windows cmd.exe has no `printf` and uses `&` not `;`; POSIX-shell hook test"
+    )]
     fn denies_tool_use_when_pre_tool_hook_blocks() {
         struct SingleCallApiClient;
         impl ApiClient for SingleCallApiClient {
@@ -1903,7 +1905,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "P: Windows cmd.exe has no `printf`; POSIX-shell hook test")]
+    #[cfg_attr(
+        windows,
+        ignore = "P: Windows cmd.exe has no `printf`; POSIX-shell hook test"
+    )]
     fn denies_tool_use_when_pre_tool_hook_fails() {
         struct SingleCallApiClient;
         impl ApiClient for SingleCallApiClient {
@@ -2044,7 +2049,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "P: Windows cmd.exe mangles `printf '...'` output; POSIX-shell hook test")]
+    #[cfg_attr(
+        windows,
+        ignore = "P: Windows cmd.exe mangles `printf '...'` output; POSIX-shell hook test"
+    )]
     fn appends_post_tool_use_failure_hook_feedback_to_tool_result() {
         struct TwoCallApiClient {
             calls: usize,
@@ -2275,7 +2283,8 @@ mod tests {
         assert!(runtime.session().fork.is_none());
     }
 
-    fn temp_session_path(label: &str) -> PathBuf { // TEST_KEEP
+    fn temp_session_path(label: &str) -> PathBuf {
+        // TEST_KEEP
         let nanos = SystemTime::now() // TEST_KEEP
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after epoch")
@@ -2294,98 +2303,98 @@ mod tests {
     }
 
     #[test]
-fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
-    // Records every provider request AND reports usage above the threshold,
-    // so the cumulative-input trigger fires exactly as it did on main.
-    struct RecordingHighUsageApi {
-        seen: std::rc::Rc<std::cell::RefCell<Vec<Vec<crate::session::ConversationMessage>>>>,
-    }
-    impl ApiClient for RecordingHighUsageApi {
-        fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
-            self.seen.borrow_mut().push(request.messages);
-            Ok(vec![
-                AssistantEvent::TextDelta("done".to_string()),
-                AssistantEvent::Usage(TokenUsage {
-                    input_tokens: 120_000,
-                    output_tokens: 4,
-                    cache_creation_input_tokens: 0,
-                    cache_read_input_tokens: 0,
-                }),
-                AssistantEvent::MessageStop,
-            ])
+    fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
+        // Records every provider request AND reports usage above the threshold,
+        // so the cumulative-input trigger fires exactly as it did on main.
+        struct RecordingHighUsageApi {
+            seen: std::rc::Rc<std::cell::RefCell<Vec<Vec<crate::session::ConversationMessage>>>>,
         }
+        impl ApiClient for RecordingHighUsageApi {
+            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.seen.borrow_mut().push(request.messages);
+                Ok(vec![
+                    AssistantEvent::TextDelta("done".to_string()),
+                    AssistantEvent::Usage(TokenUsage {
+                        input_tokens: 120_000,
+                        output_tokens: 4,
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
+                    }),
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let mut session = Session::new();
+        session.messages = vec![
+            crate::session::ConversationMessage::user_text("one"),
+            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: "two".to_string(),
+            }]),
+            crate::session::ConversationMessage::user_text("three"),
+            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: "four".to_string(),
+            }]),
+        ];
+
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            session,
+            RecordingHighUsageApi { seen: seen.clone() },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(100_000);
+
+        let summary = runtime
+            .run_turn("trigger", None)
+            .expect("turn should succeed");
+
+        // UNCHANGED: auto-compaction still fires on the cumulative trigger and reports.
+        assert_eq!(
+            summary.auto_compaction,
+            Some(AutoCompactionEvent {
+                removed_message_count: 2,
+            })
+        );
+
+        // CC-1 (deliberate contract change, L-16 slice 2): the transcript log is
+        // immutable ground truth. The System summary is NOT written into the log;
+        // messages[0] stays the original User message. On main this assertion was
+        // `MessageRole::System` and pinned the destructive rewrite.
+        assert_eq!(runtime.session().messages[0].role, MessageRole::User);
+
+        // The compaction is still recorded on the session metadata (this is the
+        // durable record the projection's summary continuation is rebuilt from).
+        let recorded = runtime
+            .session()
+            .compaction
+            .as_ref()
+            .expect("compaction must be recorded on Session.compaction");
+        assert_eq!(recorded.removed_message_count, 2);
+
+        // RE-POINTED: the System summary now lives in the PROVIDER VIEW, recomputed
+        // per turn. The compacting turn's own request was built before compaction
+        // ran, so run a second turn and assert on what the provider actually received.
+        runtime
+            .run_turn("after compaction", None)
+            .expect("post-compaction turn should succeed");
+        let requests = seen.borrow();
+        let last = requests
+            .last()
+            .expect("recording API should see the post-compaction request");
+        assert_eq!(
+            last[0].role,
+            MessageRole::System,
+            "provider view must lead with the System compaction continuation"
+        );
+        assert!(
+            last.iter()
+                .any(|message| message_text(message).contains("Conversation summary")),
+            "provider view must carry the compacted summary continuation"
+        );
     }
-
-    let mut session = Session::new();
-    session.messages = vec![
-        crate::session::ConversationMessage::user_text("one"),
-        crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
-            text: "two".to_string(),
-        }]),
-        crate::session::ConversationMessage::user_text("three"),
-        crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
-            text: "four".to_string(),
-        }]),
-    ];
-
-    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let mut runtime = ConversationRuntime::new(
-        session,
-        RecordingHighUsageApi { seen: seen.clone() },
-        StaticToolExecutor::new(),
-        PermissionPolicy::new(PermissionMode::DangerFullAccess),
-        vec!["system".to_string()],
-    )
-    .with_auto_compaction_input_tokens_threshold(100_000);
-
-    let summary = runtime
-        .run_turn("trigger", None)
-        .expect("turn should succeed");
-
-    // UNCHANGED: auto-compaction still fires on the cumulative trigger and reports.
-    assert_eq!(
-        summary.auto_compaction,
-        Some(AutoCompactionEvent {
-            removed_message_count: 2,
-        })
-    );
-
-    // CC-1 (deliberate contract change, L-16 slice 2): the transcript log is
-    // immutable ground truth. The System summary is NOT written into the log;
-    // messages[0] stays the original User message. On main this assertion was
-    // `MessageRole::System` and pinned the destructive rewrite.
-    assert_eq!(runtime.session().messages[0].role, MessageRole::User);
-
-    // The compaction is still recorded on the session metadata (this is the
-    // durable record the projection's summary continuation is rebuilt from).
-    let recorded = runtime
-        .session()
-        .compaction
-        .as_ref()
-        .expect("compaction must be recorded on Session.compaction");
-    assert_eq!(recorded.removed_message_count, 2);
-
-    // RE-POINTED: the System summary now lives in the PROVIDER VIEW, recomputed
-    // per turn. The compacting turn's own request was built before compaction
-    // ran, so run a second turn and assert on what the provider actually received.
-    runtime
-        .run_turn("after compaction", None)
-        .expect("post-compaction turn should succeed");
-    let requests = seen.borrow();
-    let last = requests
-        .last()
-        .expect("recording API should see the post-compaction request");
-    assert_eq!(
-        last[0].role,
-        MessageRole::System,
-        "provider view must lead with the System compaction continuation"
-    );
-    assert!(
-        last.iter()
-            .any(|message| message_text(message).contains("Conversation summary")),
-        "provider view must carry the compacted summary continuation"
-    );
-}
 
     #[test]
     fn skips_auto_compaction_below_threshold() {
@@ -2486,44 +2495,55 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
     }
 
     #[test]
-    fn run_turn_errors_when_max_iterations_is_exceeded() {
-        struct LoopingApi;
+    fn run_turn_completes_a_finite_tool_loop_beyond_the_former_limit() {
+        struct LoopingApi {
+            calls: usize,
+        }
 
         impl ApiClient for LoopingApi {
-            fn stream(
-                &mut self,
-                _request: ApiRequest,
-            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
-                Ok(vec![
-                    AssistantEvent::ToolUse {
-                        id: "tool-1".to_string(),
-                        name: "echo".to_string(),
-                        input: "payload".to_string(),
-                    },
-                    AssistantEvent::MessageStop,
-                ])
+            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                match self.calls {
+                    1..=33 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: format!("tool-{}", self.calls),
+                            name: "echo".to_string(),
+                            input: self.calls.to_string(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    34 => {
+                        assert!(request
+                            .messages
+                            .last()
+                            .is_some_and(|message| message.role == MessageRole::Tool));
+                        Ok(vec![
+                            AssistantEvent::TextDelta("done".to_string()),
+                            AssistantEvent::MessageStop,
+                        ])
+                    }
+                    _ => unreachable!("extra scripted API call"),
+                }
             }
         }
 
-        // given
         let mut runtime = ConversationRuntime::new(
             Session::new(),
-            LoopingApi,
+            LoopingApi { calls: 0 },
             StaticToolExecutor::new().register("echo", |input| Ok(input.to_string())),
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
-        )
-        .with_max_iterations(1);
+        );
 
-        // when
-        let error = runtime
+        let summary = runtime
             .run_turn("loop", None)
-            .expect_err("conversation loop should stop after the configured limit");
+            .expect("conversation loop should complete");
 
-        // then
-        assert!(error
-            .to_string()
-            .contains("conversation loop exceeded the maximum number of iterations"));
+        assert!(summary.iterations >= 33);
+        assert!(matches!(
+            summary.assistant_messages.last().and_then(|message| message.blocks.last()),
+            Some(ContentBlock::Text { text }) if text == "done"
+        ));
     }
 
     #[test]
@@ -2622,19 +2642,24 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         )
         .with_auto_compaction_input_tokens_threshold(1);
 
-        runtime.run_turn("open epoch", None).expect("epoch-opening turn");
+        runtime
+            .run_turn("open epoch", None)
+            .expect("epoch-opening turn");
         runtime
             .run_turn("after epoch", None)
             .expect("post-epoch turn");
 
         let requests = seen.borrow();
-        let last = requests.last().expect("recording API should see the last request");
+        let last = requests
+            .last()
+            .expect("recording API should see the last request");
         assert!(
             last.len() < requests[0].len(),
             "provider view must be shorter than the immutable transcript"
         );
         assert!(
-            last.iter().any(|message| message_text(message).contains("Conversation summary")),
+            last.iter()
+                .any(|message| message_text(message).contains("Conversation summary")),
             "provider view must contain the compacted summary continuation"
         );
     }
@@ -2643,10 +2668,13 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
     fn run_turn_reuses_the_frozen_prefix_on_a_quiet_second_turn_freeze() {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            projection_test_session(), RecordingApi { seen: seen.clone() },
-            StaticToolExecutor::new(), PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            projection_test_session(),
+            RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
-        ).with_auto_compaction_input_tokens_threshold(1);
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
         // The warm-up turn's compaction is what opens the projection epoch. Raise the
         // threshold now so no further compaction fires: a compaction invalidates the
@@ -2654,15 +2682,32 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         let mut runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
         assert_eq!(runtime.last_freeze_decision(), None);
         assert_eq!(runtime.freeze_epoch_number(), 0);
-        runtime.run_turn("first freeze", None).expect("first freeze turn");
-        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::FirstCall)));
+        runtime
+            .run_turn("first freeze", None)
+            .expect("first freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Recompute(
+                crate::context_projection::RecomputeCause::FirstCall
+            ))
+        );
         assert_eq!(runtime.freeze_epoch_number(), 1);
         let second = seen.borrow()[1].clone();
-        runtime.run_turn("second freeze", None).expect("second freeze turn");
-        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Reuse));
+        runtime
+            .run_turn("second freeze", None)
+            .expect("second freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Reuse)
+        );
         assert_eq!(runtime.freeze_epoch_number(), 1);
         let third = seen.borrow()[2].clone();
-        let frozen_head_len = runtime.freeze_epoch.as_ref().expect("freeze epoch").freeze.frozen_head_len;
+        let frozen_head_len = runtime
+            .freeze_epoch
+            .as_ref()
+            .expect("freeze epoch")
+            .freeze
+            .frozen_head_len;
         // The frozen head is stable on a Reuse turn; the continuation is not yet, and full prefix-byte stability belongs to the append-tail slice (L-17 slice 2).
         assert_eq!(second[..frozen_head_len], third[..frozen_head_len]);
     }
@@ -2671,43 +2716,72 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
     fn run_turn_reuse_keeps_the_entire_cached_prefix_byte_stable() {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            projection_test_session(), RecordingApi { seen: seen.clone() },
-            StaticToolExecutor::new(), PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            projection_test_session(),
+            RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
-        ).with_auto_compaction_input_tokens_threshold(1);
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
         // The warm-up turn's compaction is what opens the projection epoch. Raise the
         // threshold now so no further compaction fires: a compaction invalidates the
         // frozen prefix by design, so the turn under test must genuinely be quiet.
         let mut runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
-        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        runtime
+            .run_turn("first freeze", None)
+            .expect("first freeze turn");
         let first = seen.borrow()[1].clone();
-        runtime.run_turn("second freeze", None).expect("second freeze turn");
-        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Reuse));
+        runtime
+            .run_turn("second freeze", None)
+            .expect("second freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Reuse)
+        );
         let second = seen.borrow()[2].clone();
-        let frozen_head_len = runtime.freeze_epoch.as_ref().expect("freeze epoch").freeze.frozen_head_len;
+        let frozen_head_len = runtime
+            .freeze_epoch
+            .as_ref()
+            .expect("freeze epoch")
+            .freeze
+            .frozen_head_len;
         let prefix_len = frozen_head_len + 1;
-        assert_eq!(first[..prefix_len], second[..prefix_len], "frozen prefix content must be byte-stable");
-        assert_eq!(message_text(second.last().expect("tail message")), "second freeze");
+        assert_eq!(
+            first[..prefix_len],
+            second[..prefix_len],
+            "frozen prefix content must be byte-stable"
+        );
+        assert_eq!(
+            message_text(second.last().expect("tail message")),
+            "second freeze"
+        );
     }
 
     #[test]
     fn run_turn_recomputes_when_the_idle_gap_exceeds_the_ttl_freeze() {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            projection_test_session(), RecordingApi { seen: seen.clone() },
-            StaticToolExecutor::new(), PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            projection_test_session(),
+            RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
-        ).with_auto_compaction_input_tokens_threshold(1);
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
         let mut runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
-        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        runtime
+            .run_turn("first freeze", None)
+            .expect("first freeze turn");
         {
             let epoch = runtime.freeze_epoch.as_mut().expect("freeze epoch");
             let ttl_ms = u64::from(crate::cache_economics::TTL_SHORT_SECS) * 1000;
             epoch.computed_at_ms = epoch.computed_at_ms.saturating_sub(ttl_ms + 1_000);
         }
-        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        runtime
+            .run_turn("second freeze", None)
+            .expect("second freeze turn");
         assert_eq!(
             runtime.last_freeze_decision(),
             Some(crate::context_projection::FreezeDecision::Recompute(
@@ -2720,21 +2794,27 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
     fn run_turn_local_policy_never_cold_gaps_freeze() {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            projection_test_session(), RecordingApi { seen: seen.clone() },
-            StaticToolExecutor::new(), PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            projection_test_session(),
+            RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
         )
         .with_auto_compaction_input_tokens_threshold(1)
         .with_context_backend_mode(crate::dispatcher::BackendMode::Local);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
         let mut runtime = runtime.with_auto_compaction_input_tokens_threshold(u32::MAX);
-        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        runtime
+            .run_turn("first freeze", None)
+            .expect("first freeze turn");
         {
             let epoch = runtime.freeze_epoch.as_mut().expect("freeze epoch");
             let ttl_ms = u64::from(crate::cache_economics::TTL_SHORT_SECS) * 1000;
             epoch.computed_at_ms = epoch.computed_at_ms.saturating_sub(ttl_ms + 1_000);
         }
-        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        runtime
+            .run_turn("second freeze", None)
+            .expect("second freeze turn");
         assert_eq!(
             runtime.last_freeze_decision(),
             Some(crate::context_projection::FreezeDecision::Reuse)
@@ -2745,13 +2825,17 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
     fn run_turn_recomputes_after_an_auto_compaction_moves_the_generation_freeze() {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            projection_test_session(), RecordingApi { seen: seen.clone() },
+            projection_test_session(),
+            RecordingApi { seen: seen.clone() },
             StaticToolExecutor::new(),
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
-        ).with_auto_compaction_input_tokens_threshold(1);
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
-        runtime.run_turn("first freeze", None).expect("first freeze turn");
+        runtime
+            .run_turn("first freeze", None)
+            .expect("first freeze turn");
         let expected_count = runtime
             .session
             .compaction
@@ -2763,10 +2847,17 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
             "a second compaction must have fired before the third turn"
         );
         let second = seen.borrow()[1].clone();
-        runtime.run_turn("second freeze", None).expect("second freeze turn");
+        runtime
+            .run_turn("second freeze", None)
+            .expect("second freeze turn");
 
         let third = seen.borrow()[2].clone();
-        let frozen_head_len = runtime.freeze_epoch.as_ref().expect("freeze epoch").freeze.frozen_head_len;
+        let frozen_head_len = runtime
+            .freeze_epoch
+            .as_ref()
+            .expect("freeze epoch")
+            .freeze
+            .frozen_head_len;
         let prefix_len = frozen_head_len + 1;
         assert_ne!(
             second[..prefix_len],
@@ -2785,18 +2876,37 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
     fn run_turn_recomputes_when_the_boundary_message_changes_freeze() {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            projection_test_session(), RecordingApi { seen }, StaticToolExecutor::new(),
-            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
-        ).with_auto_compaction_input_tokens_threshold(1);
+            projection_test_session(),
+            RecordingApi { seen },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
         assert_eq!(runtime.last_freeze_decision(), None);
         assert_eq!(runtime.freeze_epoch_number(), 0);
-        runtime.run_turn("first freeze", None).expect("first freeze turn");
-        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::FirstCall)));
+        runtime
+            .run_turn("first freeze", None)
+            .expect("first freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Recompute(
+                crate::context_projection::RecomputeCause::FirstCall
+            ))
+        );
         assert_eq!(runtime.freeze_epoch_number(), 1);
-        runtime.session.messages[0] = crate::session::ConversationMessage::user_text("changed boundary");
-        runtime.run_turn("second freeze", None).expect("second freeze turn");
-        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::BoundaryMismatch)));
+        runtime.session.messages[0] =
+            crate::session::ConversationMessage::user_text("changed boundary");
+        runtime
+            .run_turn("second freeze", None)
+            .expect("second freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Recompute(
+                crate::context_projection::RecomputeCause::BoundaryMismatch
+            ))
+        );
         assert_eq!(runtime.freeze_epoch_number(), 2);
     }
 
@@ -2814,70 +2924,135 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         let ssb = std::sync::Arc::new(crate::ssb::Ssb::new(cfg, clock).expect("ssb init"));
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            projection_test_session(), RecordingApi { seen }, StaticToolExecutor::new(),
-            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
+            projection_test_session(),
+            RecordingApi { seen },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
         )
         .with_auto_compaction_input_tokens_threshold(1)
         .with_ssb_writer(ssb.clone());
         runtime.run_turn("warm-up", None).expect("warm-up turn");
-        runtime.run_turn("first freeze", None).expect("first freeze turn");
-        runtime.session.messages[0] = crate::session::ConversationMessage::user_text("changed boundary");
-        runtime.run_turn("second freeze", None).expect("second freeze turn");
-        let boundary_hash = runtime.freeze_epoch.as_ref().expect("freeze epoch").boundary_hash;
+        runtime
+            .run_turn("first freeze", None)
+            .expect("first freeze turn");
+        runtime.session.messages[0] =
+            crate::session::ConversationMessage::user_text("changed boundary");
+        runtime
+            .run_turn("second freeze", None)
+            .expect("second freeze turn");
+        let boundary_hash = runtime
+            .freeze_epoch
+            .as_ref()
+            .expect("freeze epoch")
+            .boundary_hash;
         use crate::ssb::SsbReader;
         let rows = ssb
             .query_by_type(crate::ssb::SsbActionType::CacheEconomicsEvent(
                 crate::ssb::CacheEconomicsEventKind::TtlPlanned,
             ))
             .expect("query cache economics rows");
-        let found = rows.into_iter().filter_map(|row| {
-            let payload: crate::ssb::SsbPayload = rmp_serde::from_slice(&row.payload).ok()?;
-            match payload {
-                crate::ssb::SsbPayload::CacheEconomicsEvent(payload)
-                    if payload.kind
-                        == crate::ssb::CacheEconomicsEventKind::PrefixRecomputed(
-                            crate::ssb::FreezePrefixRecomputeCause::BoundaryMismatch,
-                        ) && payload.mutation_hash == boundary_hash => Some(()),
-                _ => None,
-            }
-        }).next();
-        assert!(found.is_some(), "typed BoundaryMismatch recompute row missing");
+        let found = rows
+            .into_iter()
+            .filter_map(|row| {
+                let payload: crate::ssb::SsbPayload = rmp_serde::from_slice(&row.payload).ok()?;
+                match payload {
+                    crate::ssb::SsbPayload::CacheEconomicsEvent(payload)
+                        if payload.kind
+                            == crate::ssb::CacheEconomicsEventKind::PrefixRecomputed(
+                                crate::ssb::FreezePrefixRecomputeCause::BoundaryMismatch,
+                            )
+                            && payload.mutation_hash == boundary_hash =>
+                    {
+                        Some(())
+                    }
+                    _ => None,
+                }
+            })
+            .next();
+        assert!(
+            found.is_some(),
+            "typed BoundaryMismatch recompute row missing"
+        );
     }
 
     #[test]
     fn run_turn_recomputes_when_the_regime_policy_changes_freeze() {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            projection_test_session(), RecordingApi { seen }, StaticToolExecutor::new(),
-            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
-        ).with_auto_compaction_input_tokens_threshold(1);
+            projection_test_session(),
+            RecordingApi { seen },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
         assert_eq!(runtime.last_freeze_decision(), None);
         assert_eq!(runtime.freeze_epoch_number(), 0);
-        runtime.run_turn("first freeze", None).expect("first freeze turn");
-        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::FirstCall)));
+        runtime
+            .run_turn("first freeze", None)
+            .expect("first freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Recompute(
+                crate::context_projection::RecomputeCause::FirstCall
+            ))
+        );
         assert_eq!(runtime.freeze_epoch_number(), 1);
         runtime = runtime.with_context_backend_mode(crate::dispatcher::BackendMode::Local);
-        runtime.run_turn("second freeze", None).expect("second freeze turn");
-        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::PolicyChanged)));
+        runtime
+            .run_turn("second freeze", None)
+            .expect("second freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Recompute(
+                crate::context_projection::RecomputeCause::PolicyChanged
+            ))
+        );
     }
 
     #[test]
     fn run_turn_recomputes_when_the_tail_outgrows_the_preserve_window_freeze() {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            projection_test_session(), RecordingApi { seen }, StaticToolExecutor::new(),
-            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
-        ).with_auto_compaction_input_tokens_threshold(1);
+            projection_test_session(),
+            RecordingApi { seen },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("warm-up", None).expect("warm-up turn");
         assert_eq!(runtime.last_freeze_decision(), None);
         assert_eq!(runtime.freeze_epoch_number(), 0);
-        runtime.run_turn("first freeze", None).expect("first freeze turn");
-        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::FirstCall)));
+        runtime
+            .run_turn("first freeze", None)
+            .expect("first freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Recompute(
+                crate::context_projection::RecomputeCause::FirstCall
+            ))
+        );
         assert_eq!(runtime.freeze_epoch_number(), 1);
-        for index in 0..5 { runtime.session.messages.push(crate::session::ConversationMessage::user_text(format!("extra freeze {index}"))); }
-        runtime.run_turn("second freeze", None).expect("second freeze turn");
-        assert_eq!(runtime.last_freeze_decision(), Some(crate::context_projection::FreezeDecision::Recompute(crate::context_projection::RecomputeCause::TailOverflow)));
+        for index in 0..5 {
+            runtime
+                .session
+                .messages
+                .push(crate::session::ConversationMessage::user_text(format!(
+                    "extra freeze {index}"
+                )));
+        }
+        runtime
+            .run_turn("second freeze", None)
+            .expect("second freeze turn");
+        assert_eq!(
+            runtime.last_freeze_decision(),
+            Some(crate::context_projection::FreezeDecision::Recompute(
+                crate::context_projection::RecomputeCause::TailOverflow
+            ))
+        );
     }
 
     #[test]
@@ -2888,9 +3063,13 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         expected_request.push(crate::session::ConversationMessage::user_text("raw freeze"));
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut runtime = ConversationRuntime::new(
-            original, RecordingApi { seen: seen.clone() }, StaticToolExecutor::new(),
-            PermissionPolicy::new(PermissionMode::DangerFullAccess), vec!["system".to_string()],
-        ).with_auto_compaction_input_tokens_threshold(1);
+            original,
+            RecordingApi { seen: seen.clone() },
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_auto_compaction_input_tokens_threshold(1);
         runtime.run_turn("raw freeze", None).expect("turn");
         let request = seen.borrow()[0].clone();
         assert_eq!(request, expected_request);
@@ -2902,7 +3081,9 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         let mut session = Session::new();
         session
             .messages
-            .push(crate::session::ConversationMessage::user_text("original-first"));
+            .push(crate::session::ConversationMessage::user_text(
+                "original-first",
+            ));
         let filler = "x".repeat(4_000);
         let threshold =
             crate::context_policy::trim_threshold_for_mode(crate::dispatcher::BackendMode::Api)
@@ -2985,15 +3166,20 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         )
         .with_auto_compaction_input_tokens_threshold(1);
 
-        runtime.run_turn("open epoch", None).expect("epoch-opening turn");
+        runtime
+            .run_turn("open epoch", None)
+            .expect("epoch-opening turn");
         runtime
             .run_turn("needle-after-epoch", None)
             .expect("post-epoch turn");
 
         let requests = seen.borrow();
-        let last = requests.last().expect("post-epoch request should be recorded");
+        let last = requests
+            .last()
+            .expect("post-epoch request should be recorded");
         assert!(
-            last.iter().any(|message| message_text(message).contains("needle-after-epoch")),
+            last.iter()
+                .any(|message| message_text(message).contains("needle-after-epoch")),
             "freshly appended post-epoch user text must reach the provider"
         );
     }
@@ -3034,9 +3220,11 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
 
         crate::context_projection::set_projection_disabled_for_test(None);
         turn_result.expect("turn");
-        assert!(shortened, "rollback mode should retain the legacy mutating path");
+        assert!(
+            shortened,
+            "rollback mode should retain the legacy mutating path"
+        );
     }
-
 
     #[test]
     fn l19_production_view_appends_recall_card_when_folded_path_resurfaces() {
@@ -3044,28 +3232,45 @@ fn auto_compacts_when_cumulative_input_threshold_is_crossed() {
         session.messages = vec![
             crate::session::ConversationMessage {
                 role: MessageRole::System,
-                blocks: vec![ContentBlock::Text { text: "head".to_string() }],
+                blocks: vec![ContentBlock::Text {
+                    text: "head".to_string(),
+                }],
                 usage: None,
             },
-            crate::session::ConversationMessage::user_text("crates/orchestrator/src/session.rs zebrafish"),
-            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text { text: "middle".to_string() }]),
-            crate::session::ConversationMessage::user_text("tail crates/orchestrator/src/session.rs"),
+            crate::session::ConversationMessage::user_text(
+                "crates/orchestrator/src/session.rs zebrafish",
+            ),
+            crate::session::ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: "middle".to_string(),
+            }]),
+            crate::session::ConversationMessage::user_text(
+                "tail crates/orchestrator/src/session.rs",
+            ),
         ];
         let mut runtime = ConversationRuntime::new(
             session,
-            RecordingApi { seen: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())) },
+            RecordingApi {
+                seen: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            },
             StaticToolExecutor::new(),
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
         );
-        runtime.projection_epoch = Some(CompactionConfig { preserve_recent_messages: 1, ..CompactionConfig::default() });
+        runtime.projection_epoch = Some(CompactionConfig {
+            preserve_recent_messages: 1,
+            ..CompactionConfig::default()
+        });
         let messages = runtime.freeze_gated_view_messages();
         let recall = messages.iter().rev().find(|message| {
             message.role == MessageRole::System
                 && matches!(message.blocks.first(), Some(ContentBlock::Text { text }) if text.starts_with("[recall]"))
         });
-        assert!(recall.is_some(), "production view should append a recall card after the preserved tail");
-        assert!(matches!(recall.unwrap().blocks.first(), Some(ContentBlock::Text { text }) if text.contains("crates/orchestrator/src/session.rs")));
+        assert!(
+            recall.is_some(),
+            "production view should append a recall card after the preserved tail"
+        );
+        assert!(
+            matches!(recall.unwrap().blocks.first(), Some(ContentBlock::Text { text }) if text.contains("crates/orchestrator/src/session.rs"))
+        );
     }
-
 }

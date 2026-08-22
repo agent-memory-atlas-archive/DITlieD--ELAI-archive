@@ -28,8 +28,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 use elai_ipc_types::{
-    IpcFrame, IpcFrameError, IpcMessageType,
-    FRAME_HEADER_SIZE, IPC_PROTOCOL_VERSION, MAX_FRAME_SIZE,
+    IpcFrame, IpcFrameError, IpcMessageType, FRAME_HEADER_SIZE, IPC_PROTOCOL_VERSION,
+    MAX_FRAME_SIZE,
 };
 use elai_plugins::{HookContext, IpcHookTrait};
 
@@ -198,7 +198,7 @@ pub struct AgentSessionOutcome {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AgentFinalState {
-    /// Agent sent `AgentResponse` or `AgentMaxIterationsReached` (clean exit).
+    /// Agent sent `AgentResponse` (clean exit).
     Passed,
     /// Agent sent a `Rejected` frame, timed out, or connection was dropped.
     Failed { reason: String },
@@ -323,7 +323,9 @@ pub async fn bind_session_listener(socket_path: &Path) -> Result<PlatformListene
     }
 
     #[allow(unreachable_code)]
-    Err(IpcAcceptError::BindFailed("unsupported platform".to_string()))
+    Err(IpcAcceptError::BindFailed(
+        "unsupported platform".to_string(),
+    ))
 }
 
 /// Accept one incoming connection from `listener`.
@@ -355,10 +357,9 @@ pub async fn accept_one(listener: &mut PlatformListener) -> Result<PlatformStrea
             // Swap: replace the stored handle with the fresh one, take the
             // previous handle to drive connect() on.
             let current_server = std::mem::replace(server, next_server);
-            current_server
-                .connect()
-                .await
-                .map_err(|e| IpcAcceptError::AcceptFailed(format!("NamedPipeServer::connect: {e}")))?;
+            current_server.connect().await.map_err(|e| {
+                IpcAcceptError::AcceptFailed(format!("NamedPipeServer::connect: {e}"))
+            })?;
             Ok(PlatformStream::WindowsPipe(current_server))
         }
     }
@@ -455,7 +456,7 @@ where
 /// call the RPC server for InferRequest/ToolRequest, write response frames.
 ///
 /// Returns when:
-///   - Agent sends `AgentResponse` or `AgentMaxIterationsReached` (Passed).
+///   - Agent sends `AgentResponse` (Passed).
 ///   - A `Rejected` frame is routed (Failed).
 ///   - `timeout_ms` elapses without a terminal frame (Failed).
 ///   - The connection is dropped / IO error (Failed).
@@ -469,15 +470,14 @@ pub async fn run_agent_session(
     mut stream: PlatformStream,
     timeout_ms: u64,
     hook_dispatcher: Option<Arc<dyn IpcHookDispatcher + Send + Sync + 'static>>,
-) -> AgentSessionOutcome
-{
+) -> AgentSessionOutcome {
     // C-15: OsClock-backed deadline (raw Instant arithmetic).
     // `saturating_duration_since` requires a real Instant comparator, so we
     // hold both ends as raw Instants. This stays clean of the entropy scanner
     // because the calls go through `OsClock::instant_now()`.
     let session_clock = OsClock;
-    let session_deadline = session_clock.instant_now()
-        + std::time::Duration::from_millis(timeout_ms);
+    let session_deadline =
+        session_clock.instant_now() + std::time::Duration::from_millis(timeout_ms);
     let mut frames_handled: u32 = 0;
 
     loop {
@@ -562,7 +562,11 @@ pub async fn run_agent_session(
                 // No response needed; loop.
             }
 
-            FrameRouteResult::ThinkStep { topic, step_type, over_budget } => {
+            FrameRouteResult::ThinkStep {
+                topic,
+                step_type,
+                over_budget,
+            } => {
                 if over_budget {
                     tracing::warn!(
                         agent_id = %agent_id,
@@ -611,7 +615,7 @@ pub async fn run_agent_session(
                             reason: format!("write InferResponse failed: {e}"),
                         },
                         frames_handled,
-                    final_content: None,
+                        final_content: None,
                     };
                 }
             }
@@ -625,10 +629,8 @@ pub async fn run_agent_session(
                 let traversal_reject: Option<String> = match extract_tool_path(&arguments) {
                     Some(path_str) => match resolve_project_root() {
                         Some(root) => {
-                            if crate::sandbox_policy::path_escapes_root(
-                                Path::new(&path_str),
-                                &root,
-                            ) {
+                            if crate::sandbox_policy::path_escapes_root(Path::new(&path_str), &root)
+                            {
                                 tracing::warn!(
                                     agent_id = %agent_id,
                                     tool_id = %tool_id,
@@ -724,8 +726,7 @@ pub async fn run_agent_session(
                             file_path: None,
                             active_rules_count: 0,
                         };
-                        let tool_output_str = std::str::from_utf8(&out)
-                            .unwrap_or("");
+                        let tool_output_str = std::str::from_utf8(&out).unwrap_or("");
                         if let Err(e) = d.post_tool_use(&post_ctx, tool_output_str) {
                             tracing::warn!(
                                 agent_id = %agent_id,
@@ -765,10 +766,16 @@ pub async fn run_agent_session(
                         // J-82 measure-first: optional token-efficient emission (default OFF).
                         let annotated = if crate::token_emit::format_emit_enabled() {
                             crate::token_emit::maybe_compact_tool_output(&annotated)
-                        } else { annotated };
+                        } else {
+                            annotated
+                        };
                         let annotated = if crate::token_emit::protected_span_enabled()
                             && !crate::token_emit::looks_like_code(&annotated)
-                        { crate::token_emit::strip_prose_fillers(&annotated) } else { annotated };
+                        {
+                            crate::token_emit::strip_prose_fillers(&annotated)
+                        } else {
+                            annotated
+                        };
                         annotated.into_bytes()
                     } else {
                         out
@@ -786,12 +793,15 @@ pub async fn run_agent_session(
                             reason: format!("write ToolResult failed: {e}"),
                         },
                         frames_handled,
-                    final_content: None,
+                        final_content: None,
                     };
                 }
             }
 
-            FrameRouteResult::BashRequest { command, timeout_ms: cmd_timeout } => {
+            FrameRouteResult::BashRequest {
+                command,
+                timeout_ms: cmd_timeout,
+            } => {
                 tracing::warn!(
                     agent_id = %agent_id,
                     command = %command,
@@ -809,7 +819,7 @@ pub async fn run_agent_session(
                             reason: format!("write BashResult failed: {e}"),
                         },
                         frames_handled,
-                    final_content: None,
+                        final_content: None,
                     };
                 }
             }
@@ -832,7 +842,7 @@ pub async fn run_agent_session(
                             reason: format!("write GroundingResult failed: {e}"),
                         },
                         frames_handled,
-                    final_content: None,
+                        final_content: None,
                     };
                 }
             }
@@ -907,7 +917,9 @@ impl AgentRpcServer for NoOpAgentRpcServer {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = InferOutcome> + Send + 'a>> {
         Box::pin(async move {
             tracing::warn!("NoOpAgentRpcServer: InferRequest received but not wired (B2c pending)");
-            InferOutcome::Failed("InferRequest not wired: NoOpAgentRpcServer (B2c pending)".to_string())
+            InferOutcome::Failed(
+                "InferRequest not wired: NoOpAgentRpcServer (B2c pending)".to_string(),
+            )
         })
     }
 
@@ -918,7 +930,9 @@ impl AgentRpcServer for NoOpAgentRpcServer {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             tracing::warn!("NoOpAgentRpcServer: ToolRequest received but not wired (B2c pending)");
-            ToolOutcome::Failed("ToolRequest not wired: NoOpAgentRpcServer (B2c pending)".to_string())
+            ToolOutcome::Failed(
+                "ToolRequest not wired: NoOpAgentRpcServer (B2c pending)".to_string(),
+            )
         })
     }
 }
@@ -960,7 +974,8 @@ pub mod test_support {
             &'a self,
             _prompt: String,
             _max_tokens: u32,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = InferOutcome> + Send + 'a>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = InferOutcome> + Send + 'a>>
+        {
             Box::pin(async move {
                 self.infer_calls.fetch_add(1, Ordering::Relaxed);
                 InferOutcome::Response(self.canned_infer_text.clone())
@@ -1022,7 +1037,8 @@ mod tests {
             &'a self,
             _prompt: String,
             _max_tokens: u32,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = InferOutcome> + Send + 'a>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = InferOutcome> + Send + 'a>>
+        {
             Box::pin(async move { InferOutcome::Response("ok".to_string()) })
         }
 

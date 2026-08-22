@@ -14,7 +14,6 @@ from .transcript import TranscriptStore
 
 @dataclass(frozen=True)
 class QueryEngineConfig:
-    max_turns: int = 8
     max_budget_tokens: int = 2000
     compact_after_turns: int = 12
     structured_output: bool = False
@@ -65,18 +64,6 @@ class QueryEnginePort:
         matched_tools: tuple[str, ...] = (),
         denied_tools: tuple[PermissionDenial, ...] = (),
     ) -> TurnResult:
-        if len(self.mutable_messages) >= self.config.max_turns:
-            output = f'Max turns reached before processing prompt: {prompt}'
-            return TurnResult(
-                prompt=prompt,
-                output=output,
-                matched_commands=matched_commands,
-                matched_tools=matched_tools,
-                permission_denials=denied_tools,
-                usage=self.total_usage,
-                stop_reason='max_turns_reached',
-            )
-
         summary_lines = [
             f'Prompt: {prompt}',
             f'Matched commands: {", ".join(matched_commands) if matched_commands else "none"}',
@@ -186,7 +173,6 @@ class QueryEnginePort:
             f'Conversation turns stored: {len(self.mutable_messages)}',
             f'Permission denials tracked: {len(self.permission_denials)}',
             f'Usage totals: in={self.total_usage.input_tokens} out={self.total_usage.output_tokens}',
-            f'Max turns: {self.config.max_turns}',
             f'Max budget tokens: {self.config.max_budget_tokens}',
             f'Transcript flushed: {self.transcript_store.flushed}',
         ]

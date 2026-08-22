@@ -33,9 +33,9 @@ use crate::architecture::claude_code_arch::ClaudeCodeArchitectureEventPayload;
 use crate::mast::MastMode;
 
 use super::*;
-use crate::ssb::{schema::*, action_type::*, store::*};
 use crate::front_door::{ArgSpan, FrontDoorLane, FrontDoorTier};
 use crate::gate::RiskLevel;
+use crate::ssb::{action_type::*, schema::*, store::*};
 
 // ---------------------------------------------------------------------------
 // Typed payload structs (3B.4)
@@ -937,8 +937,8 @@ pub struct EscalateToCloudPayload {
 #[serde(deny_unknown_fields)]
 pub struct DataTableGrewPayload {
     pub proposal_id: String,
-    pub table: String,           // snake_case table name (matches DataTable::as_str)
-    pub pipeline_mode: String,   // surgical | greenfield | oracle
+    pub table: String,         // snake_case table name (matches DataTable::as_str)
+    pub pipeline_mode: String, // surgical | greenfield | oracle
     pub ecosystem: Option<String>,
     pub language: Option<String>,
     pub rowcount_after: u64,
@@ -952,7 +952,7 @@ pub struct DataTableGrewPayload {
 #[serde(deny_unknown_fields)]
 pub struct L3ProposalPayload {
     pub proposal_id: String,
-    pub change_type: String,      // matches StructuralChangeType::as_str
+    pub change_type: String, // matches StructuralChangeType::as_str
     pub description: String,
     pub rationale: String,
     pub ts_ms: i64,
@@ -965,9 +965,9 @@ pub struct L3ProposalPayload {
 #[serde(deny_unknown_fields)]
 pub struct ConvergenceStagnantPayload {
     pub pipeline_mode: String,
-    pub window: u32,             // consecutive variants measured
-    pub similarity: f32,         // latest similarity (>= 0.95)
-    pub variant_id: String,      // latest variant id
+    pub window: u32,        // consecutive variants measured
+    pub similarity: f32,    // latest similarity (>= 0.95)
+    pub variant_id: String, // latest variant id
     pub ts_ms: i64,
 }
 
@@ -978,9 +978,9 @@ pub struct ConvergenceStagnantPayload {
 #[serde(deny_unknown_fields)]
 pub struct ConfigOscillationPayload {
     pub pipeline_mode: String,
-    pub period: u32,             // currently always 2
+    pub period: u32, // currently always 2
     pub frozen_keys: Vec<String>,
-    pub freeze_pipelines: u32,   // pipelines for which the freeze holds
+    pub freeze_pipelines: u32, // pipelines for which the freeze holds
     pub ts_ms: i64,
 }
 
@@ -1005,7 +1005,7 @@ pub struct RegressionDetectedPayload {
 pub struct EvolutionWithheldPayload {
     pub pipeline_mode: String,
     pub identical_streak: u32,
-    pub reason: String,          // human-readable Withhold reason
+    pub reason: String, // human-readable Withhold reason
     pub ts_ms: i64,
 }
 
@@ -1190,7 +1190,9 @@ pub enum InterventionType {
     ReplanApproval,
     ErrorRecovery,
     /// C2: request the user to supply one or more credential values.
-    RequestCredential { fields: Vec<CredentialField> },
+    RequestCredential {
+        fields: Vec<CredentialField>,
+    },
 }
 
 /// One option presented to the user when an intervention is raised.
@@ -2603,7 +2605,10 @@ pub struct LanguageGrammarStatusPayload {
 
 impl From<elai_knowledge::dkg::LanguageRegistryStatus> for LanguageGrammarStatusPayload {
     fn from(s: elai_knowledge::dkg::LanguageRegistryStatus) -> Self {
-        Self { loaded: s.loaded, failed: s.failed }
+        Self {
+            loaded: s.loaded,
+            failed: s.failed,
+        }
     }
 }
 
@@ -4358,9 +4363,7 @@ impl SsbPayload {
             Self::CanaryRunCompleted(_) => SsbActionType::CanaryRunCompleted,
             Self::CanaryFamilyEvaluated(_) => SsbActionType::CanaryFamilyEvaluated,
             Self::LockedKeysAuditRun(_) => SsbActionType::LockedKeysAuditRun,
-            Self::LockedKeysViolationDetected(_) => {
-                SsbActionType::LockedKeysViolationDetected
-            }
+            Self::LockedKeysViolationDetected(_) => SsbActionType::LockedKeysViolationDetected,
             // E-46 (SCHEMA_VERSION 76): hierarchical decomposition tuning beacons.
             Self::TaskAdvanced(_) => SsbActionType::TaskAdvanced,
             Self::AgentlessShortcutTaken(_) => SsbActionType::AgentlessShortcutTaken,
@@ -4368,9 +4371,7 @@ impl SsbPayload {
             // D-10 (SCHEMA_VERSION 77): mode-routing predicate beacon.
             Self::ClaimRouted(_) => SsbActionType::ClaimRouted,
             // D-21 (SCHEMA_VERSION 78): mode-routing coverage benchmark beacon.
-            Self::ModeRoutingBenchRunCompleted(_) => {
-                SsbActionType::ModeRoutingBenchRunCompleted
-            }
+            Self::ModeRoutingBenchRunCompleted(_) => SsbActionType::ModeRoutingBenchRunCompleted,
             // D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
             Self::CheckerResultEmitted(_) => SsbActionType::CheckerResultEmitted,
             // D-13 (SCHEMA_VERSION 80): adversarial-verification beacons.
@@ -4391,9 +4392,7 @@ impl SsbPayload {
             Self::RefusalRateSnapshot(_) => SsbActionType::RefusalRateSnapshot,
             Self::RefusalSlaBreach(_) => SsbActionType::RefusalSlaBreach,
             // D-22 (SCHEMA_VERSION 86): conformal-calibration validation beacon.
-            Self::ConformalValidationCompleted(_) => {
-                SsbActionType::ConformalValidationCompleted
-            }
+            Self::ConformalValidationCompleted(_) => SsbActionType::ConformalValidationCompleted,
             // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
             Self::ArcBenchmarkCompleted(_) => SsbActionType::ArcBenchmarkCompleted,
             Self::ToolGated(_) => SsbActionType::ToolGated,
@@ -4528,17 +4527,11 @@ impl SsbPayload {
                 SsbActionType::DeterminismTamperSuiteCompleted
             }
             // D-28 (SCHEMA_VERSION 145): adversarial example farming run.
-            Self::AdversarialFarmRunCompleted(_) => {
-                SsbActionType::AdversarialFarmRunCompleted
-            }
+            Self::AdversarialFarmRunCompleted(_) => SsbActionType::AdversarialFarmRunCompleted,
             // D-29 (SCHEMA_VERSION 146): hierarchical BAI round completion.
-            Self::HierarchicalBaiRoundCompleted(_) => {
-                SsbActionType::HierarchicalBaiRoundCompleted
-            }
+            Self::HierarchicalBaiRoundCompleted(_) => SsbActionType::HierarchicalBaiRoundCompleted,
             // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start.
-            Self::CalibrationBootstrapCompleted(_) => {
-                SsbActionType::CalibrationBootstrapCompleted
-            }
+            Self::CalibrationBootstrapCompleted(_) => SsbActionType::CalibrationBootstrapCompleted,
             // C-50 (SCHEMA_VERSION 125): Contract-Coding scaffolding pair.
             Self::ContractTestScaffolded(_) => SsbActionType::ContractTestScaffolded,
             Self::ContractViolationDetected(_) => SsbActionType::ContractViolationDetected,
@@ -4626,9 +4619,7 @@ impl SsbPayload {
             Self::PersonaReanchored(_) => SsbActionType::PersonaReanchored,
             Self::CrossFamilyUnavailable(_) => SsbActionType::CrossFamilyUnavailable,
             // E-7 (SCHEMA_VERSION 149): darwinian self-improvement substrate.
-            Self::DarwinianGenerationCompleted(_) => {
-                SsbActionType::DarwinianGenerationCompleted
-            }
+            Self::DarwinianGenerationCompleted(_) => SsbActionType::DarwinianGenerationCompleted,
             // E-3 (SCHEMA_VERSION 150): runtime handoff signal beacon.
             Self::RuntimeHandoffSignal(_) => SsbActionType::RuntimeHandoffSignal,
             // E-26 (SCHEMA_VERSION 151): inference-engines 2026 pack.
@@ -4763,7 +4754,9 @@ impl SsbPayload {
             Self::ModelDriftSuspected(_) => SsbActionType::ModelDriftSuspected,
             Self::SecretRedacted(_) => SsbActionType::SecretRedacted,
             Self::ClaimConfidenceScored(_) => SsbActionType::ClaimConfidenceScored,
-            Self::SteeringVectorRefreshTriggered(_) => SsbActionType::SteeringVectorRefreshTriggered,
+            Self::SteeringVectorRefreshTriggered(_) => {
+                SsbActionType::SteeringVectorRefreshTriggered
+            }
             Self::CanvasOpApplied(_) => SsbActionType::CanvasOpApplied,
             Self::CanvasViewEvent(_) => SsbActionType::CanvasViewEvent,
             Self::CanvasActivityEvent(_) => SsbActionType::CanvasActivityEvent,
@@ -4810,20 +4803,40 @@ impl SsbPayload {
             Self::CitationAnchorsBound(_) => SsbActionType::CitationAnchorsBound,
             Self::PlanStateDerived(_) => SsbActionType::PlanStateDerived,
             Self::ObjectiveSealed(_) => SsbActionType::ObjectiveSealed(ObjectiveSealedKind::Sealed),
-            Self::GrammarGateEvent(_) => SsbActionType::GrammarGateEvent(GrammarGateEventKind::CranePassed),
+            Self::GrammarGateEvent(_) => {
+                SsbActionType::GrammarGateEvent(GrammarGateEventKind::CranePassed)
+            }
             Self::QdeltaMeasured(_) => SsbActionType::QdeltaMeasured,
             Self::SnowballingMeasured(_) => SsbActionType::SnowballingMeasured,
             Self::KvCacheTuned(_) => SsbActionType::KvCacheTuned,
-            Self::ClaimScopeMeasured(_) => SsbActionType::ClaimScopeMeasured(ClaimScopeMeasuredKind::PilotDelta),
-            Self::CacheEconomicsEvent(_) => SsbActionType::CacheEconomicsEvent(CacheEconomicsEventKind::TtlPlanned),
-            Self::TrajectoryAborted(_) => SsbActionType::TrajectoryAborted(TrajectoryAbortedKind::Voluntary),
-            Self::DirectiveExecuted(_) => SsbActionType::DirectiveExecuted(DirectiveExecutedKind::Executed),
-            Self::GovernancePrimitiveFired(_) => SsbActionType::GovernancePrimitiveFired(GovernancePrimitiveFiredKind::CeflExternalized),
-            Self::RoleContractApplied(_) => SsbActionType::RoleContractApplied(RoleContractAppliedKind::PersonaStripped),
-            Self::ToolSequenceVerdict(_) => SsbActionType::ToolSequenceVerdict(ToolSequenceVerdictKind::Allowed),
+            Self::ClaimScopeMeasured(_) => {
+                SsbActionType::ClaimScopeMeasured(ClaimScopeMeasuredKind::PilotDelta)
+            }
+            Self::CacheEconomicsEvent(_) => {
+                SsbActionType::CacheEconomicsEvent(CacheEconomicsEventKind::TtlPlanned)
+            }
+            Self::TrajectoryAborted(_) => {
+                SsbActionType::TrajectoryAborted(TrajectoryAbortedKind::Voluntary)
+            }
+            Self::DirectiveExecuted(_) => {
+                SsbActionType::DirectiveExecuted(DirectiveExecutedKind::Executed)
+            }
+            Self::GovernancePrimitiveFired(_) => SsbActionType::GovernancePrimitiveFired(
+                GovernancePrimitiveFiredKind::CeflExternalized,
+            ),
+            Self::RoleContractApplied(_) => {
+                SsbActionType::RoleContractApplied(RoleContractAppliedKind::PersonaStripped)
+            }
+            Self::ToolSequenceVerdict(_) => {
+                SsbActionType::ToolSequenceVerdict(ToolSequenceVerdictKind::Allowed)
+            }
             Self::CritiqueLensFinding(ref p) => SsbActionType::CritiqueLensFinding(match p.kind {
-                CritiqueLensFindingKind::AdvisoryFinding { .. } => CritiqueLensFindingTag::AdvisoryFinding,
-                CritiqueLensFindingKind::DroppedNoAnchor { .. } => CritiqueLensFindingTag::DroppedNoAnchor,
+                CritiqueLensFindingKind::AdvisoryFinding { .. } => {
+                    CritiqueLensFindingTag::AdvisoryFinding
+                }
+                CritiqueLensFindingKind::DroppedNoAnchor { .. } => {
+                    CritiqueLensFindingTag::DroppedNoAnchor
+                }
                 CritiqueLensFindingKind::LensRun { .. } => CritiqueLensFindingTag::LensRun,
             }),
             Self::BashRedirected(ref p) => SsbActionType::BashRedirected(p.kind),
@@ -4889,24 +4902,20 @@ impl SsbPayload {
             Self::LocalLaneE2eMeasured(_) => SsbActionType::LocalLaneE2eMeasured,
             Self::LocalDeterminismEvent(ref p) => SsbActionType::LocalDeterminismEvent(p.kind),
             Self::ReproPackEvent(ref p) => SsbActionType::ReproPackEvent(p.kind),
-            Self::BlastRadiusRegressionEvent(ref p) =>
-                SsbActionType::BlastRadiusRegressionEvent(p.kind),
+            Self::BlastRadiusRegressionEvent(ref p) => {
+                SsbActionType::BlastRadiusRegressionEvent(p.kind)
+            }
             Self::ProviderByokEvent(_) => SsbActionType::ProviderByokEvent,
             Self::IntentRouted(_) => SsbActionType::IntentRouted,
-            Self::ContextCalibrationEvent(ref p) =>
-                SsbActionType::ContextCalibrationEvent(p.kind),
-            Self::LocalPrefixCacheEvent(ref p) =>
-                SsbActionType::LocalPrefixCacheEvent(p.kind),
-            Self::BehaviorSteeringEvent(ref p) =>
-                SsbActionType::BehaviorSteeringEvent(p.kind),
-            Self::IntentControlEvent(ref p) =>
-                SsbActionType::IntentControlEvent(p.kind),
-            Self::NodeAdmissionEvent(ref p) =>
-                SsbActionType::NodeAdmissionEvent(p.kind),
-            Self::SystemContractEvent(ref p) =>
-                SsbActionType::SystemContractEvent(p.kind),
-            Self::HarnessInterventionEvent(ref p) =>
-                SsbActionType::HarnessInterventionEvent(p.kind),
+            Self::ContextCalibrationEvent(ref p) => SsbActionType::ContextCalibrationEvent(p.kind),
+            Self::LocalPrefixCacheEvent(ref p) => SsbActionType::LocalPrefixCacheEvent(p.kind),
+            Self::BehaviorSteeringEvent(ref p) => SsbActionType::BehaviorSteeringEvent(p.kind),
+            Self::IntentControlEvent(ref p) => SsbActionType::IntentControlEvent(p.kind),
+            Self::NodeAdmissionEvent(ref p) => SsbActionType::NodeAdmissionEvent(p.kind),
+            Self::SystemContractEvent(ref p) => SsbActionType::SystemContractEvent(p.kind),
+            Self::HarnessInterventionEvent(ref p) => {
+                SsbActionType::HarnessInterventionEvent(p.kind)
+            }
             Self::FreePoolEvent(_) => SsbActionType::FreePoolEvent,
             Self::RetrievalAbstained(_) => SsbActionType::RetrievalAbstained,
             Self::ContextAccessSpec(_) => SsbActionType::ContextAccessSpec,
@@ -4914,8 +4923,9 @@ impl SsbPayload {
             Self::SftExhaustEvent(_) => SsbActionType::SftExhaustEvent,
             Self::ReviewGateCatalogEvent(_) => SsbActionType::ReviewGateCatalogEvent,
             Self::ClaimRiskScored(_) => SsbActionType::ClaimRiskScored,
-            Self::ReasoningCheckpointEvent(ref p) =>
-                SsbActionType::ReasoningCheckpointEvent(p.kind),
+            Self::ReasoningCheckpointEvent(ref p) => {
+                SsbActionType::ReasoningCheckpointEvent(p.kind)
+            }
             Self::OperatingProfileChange(_) => SsbActionType::OperatingProfileChange,
             Self::AdvisorConsulted(_) => SsbActionType::AdvisorConsulted,
             Self::GoalEnrolled(_) => SsbActionType::GoalEnrolled,
@@ -7544,9 +7554,8 @@ pub struct SelectiveDelegationEscalatedPayload {
     /// originating Decision beacon).
     pub task_id_hash: u64,
     /// FxHash of the snake_case escalation reason string (e.g.
-    /// `"audit_bubble"`, `"verifier_failure"`,
-    /// `"max_turns_exhausted"`). Hash collapses the wire surface and
-    /// avoids leaking auditor-internal failure messages to the
+    /// `"audit_bubble"`, `"verifier_failure"`). Hash collapses the wire
+    /// surface and avoids leaking auditor-internal failure messages to the
     /// dashboard.
     pub reason_hash: u64,
     /// Count of workers added on top of the original dispatch. Always
@@ -10182,8 +10191,7 @@ pub struct TddVerificationEventPayload {
 /// to reference the gate via `ssb::ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE_ENV`
 /// rather than hard-coding the literal. Wire-dark default: emission
 /// silently skipped until the operator sets this to a truthy value.
-pub const ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE_ENV: &str =
-    "ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE";
+pub const ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE_ENV: &str = "ELAI_E13_TDD_VERIFICATION_EMIT_ENABLE";
 
 /// Tranche B-7 triple -- env var name for the E-50 archetype-selected
 /// arm extension. Wire-dark default: emission silently skipped until the
@@ -12788,8 +12796,7 @@ impl AgenticObservabilityEventPayload {
 /// `"true"` (case-insensitive); any other value leaves the emitter as a
 /// noop. Default-off so existing tests keep their expected SSB row
 /// counts.
-pub const ELAI_AGENTIC_OBSERVABILITY_ENABLE_ENV: &str =
-    "ELAI_AGENTIC_OBSERVABILITY_ENABLE";
+pub const ELAI_AGENTIC_OBSERVABILITY_ENABLE_ENV: &str = "ELAI_AGENTIC_OBSERVABILITY_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-31 (SCHEMA_VERSION 174) -- coding-model-leaderboard scraper substrate
@@ -12921,8 +12928,7 @@ pub struct CodingModelLeaderboardEventPayload {
 /// from wire-dark to live emission. Match-string is `"1"` or `"true"`
 /// (case-insensitive); any other value leaves the emitter as a noop.
 /// Default-off so existing tests keep their expected SSB row counts.
-pub const ELAI_CODING_MODEL_LEADERBOARD_ENABLE_ENV: &str =
-    "ELAI_CODING_MODEL_LEADERBOARD_ENABLE";
+pub const ELAI_CODING_MODEL_LEADERBOARD_ENABLE_ENV: &str = "ELAI_CODING_MODEL_LEADERBOARD_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-38 (SCHEMA_VERSION 175) -- 2026 AI roadmap signals + EU AI Act compliance
@@ -14283,8 +14289,7 @@ pub struct WebResearchEventPayload {
 /// `crate::research::web_orchestrator::WEB_RESEARCH_ORCHESTRATOR_ENABLE_ENV`
 /// verbatim. Drift would silently disable the producers without any SSB
 /// row to point at.
-pub const ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE_ENV: &str =
-    "ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE";
+pub const ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE_ENV: &str = "ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-44 (SCHEMA_VERSION 186) -- durability observability substrate.
@@ -14431,8 +14436,7 @@ pub struct DurabilityEventPayload {
 /// `crates/orchestrator/src/durability/*.rs` producer hooks (helpers
 /// like `notify_idempotency_hit()` introduced alongside this
 /// SCHEMA_VERSION bump as wire-dark scaffolding).
-pub const ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV: &str =
-    "ELAI_DURABILITY_OBSERVABILITY_ENABLE";
+pub const ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV: &str = "ELAI_DURABILITY_OBSERVABILITY_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-31 (SCHEMA_VERSION 187) -- head_dim invariant verification substrate.
@@ -14522,8 +14526,7 @@ pub struct HeadDimInvariantVerifiedPayload {
 /// reads the equivalent OS env var directly; the const here is the
 /// Rust-side declaration consumed by any future Rust SSB writer
 /// (e.g. a dashboard-side hot-swap health check).
-pub const ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV: &str =
-    "ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE";
+pub const ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV: &str = "ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-3 (SCHEMA_VERSION 188) -- role-shown / model-hidden default telemetry.
@@ -14570,8 +14573,7 @@ pub struct RoleShownModelHiddenPayload {
 /// Consulted by `record_model_visibility` in dashboard-v2 commands.rs
 /// before write_payload; the UI toggle itself is always reactive (the
 /// telemetry is opt-in observation, not a feature flag for the toggle).
-pub const ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE_ENV: &str =
-    "ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE";
+pub const ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE_ENV: &str = "ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-49 (SCHEMA_VERSION 189) -- coding-agent metrics named-token substrate.
@@ -14668,8 +14670,7 @@ pub struct CodingMetricNamedTokenPayload {
 /// [`ELAI_HEAD_DIM_INVARIANT_SSB_ENABLE_ENV`] /
 /// [`ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV`] /
 /// [`ELAI_ROLE_VISIBILITY_TELEMETRY_ENABLE_ENV`].
-pub const ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE_ENV: &str =
-    "ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE";
+pub const ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE_ENV: &str = "ELAI_CODING_METRIC_NAMED_TOKEN_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-3 sub-phase 4A (SCHEMA_VERSION 190) -- runtime handoff event substrate.
@@ -14792,8 +14793,7 @@ pub struct RuntimeHandoffEventPayload {
 /// Consulted by `runtime_orchestrator.rs::try_complete` (sub-phase 4A
 /// wires the UnifiedPreambleApplied arm via tracing log + a TODO marker
 /// for the actual Ssb::write_payload injection in sub-phase 4B).
-pub const ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV: &str =
-    "ELAI_E3_RUNTIME_HANDOFF_ENABLE";
+pub const ELAI_E3_RUNTIME_HANDOFF_ENABLE_ENV: &str = "ELAI_E3_RUNTIME_HANDOFF_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-31 sub-phase 6A (SCHEMA_VERSION 191) -- cloud-route decision event substrate.
@@ -14910,8 +14910,7 @@ pub struct RouteDecisionEventPayload {
 /// wires the `CloudRouteChosen` and `LocalRouteKept` arms via tracing
 /// log; `TierModelSwapped` producer + `Ssb::write_payload` injection
 /// land in sub-phase 6B alongside the dashboard RuntimePanel row).
-pub const ELAI_ROUTE_DECISION_SSB_ENABLE_ENV: &str =
-    "ELAI_ROUTE_DECISION_SSB_ENABLE";
+pub const ELAI_ROUTE_DECISION_SSB_ENABLE_ENV: &str = "ELAI_ROUTE_DECISION_SSB_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-47 (SCHEMA_VERSION 192) -- LoRA fine-tuning ship-gate substrate.
@@ -15007,8 +15006,7 @@ pub struct LoraShipGateEventPayload {
 /// Consulted by
 /// `crate::lora_ship_gate::lora_ship_gate_enabled_from_env` and the
 /// `notify_lora_ship_gate` helper.
-pub const ELAI_LORA_SHIP_GATE_ENABLE_ENV: &str =
-    "ELAI_LORA_SHIP_GATE_ENABLE";
+pub const ELAI_LORA_SHIP_GATE_ENABLE_ENV: &str = "ELAI_LORA_SHIP_GATE_ENABLE";
 
 // ---------------------------------------------------------------------------
 // E-40 Tranche B-2 (SCHEMA_VERSION 193) -- SymbolGraph augmentation
@@ -15092,8 +15090,7 @@ pub struct SymbolGraphEventPayload {
 /// `elai_knowledge::pipeline` 5th-list RRF input (see
 /// `crates/knowledge/src/pipeline.rs::ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV`)
 /// so an operator opts the entire substrate on with one flip.
-pub const ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV: &str =
-    "ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE";
+pub const ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV: &str = "ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE";
 
 // ---------------------------------------------------------------------------
 // Tranche B-6 quad (SCHEMA_VERSION 194) -- four new SSB substrates landing in
@@ -15183,8 +15180,7 @@ pub struct McpAuthzEventPayload {
 /// (`"1"` / `"true"` / `"yes"` / `"on"`). Mirrors the precedent set by
 /// [`ELAI_SYMBOL_GRAPH_5TH_RRF_ENABLE_ENV`] /
 /// [`ELAI_LORA_SHIP_GATE_ENABLE_ENV`].
-pub const ELAI_C42_MCP_AUTHZ_EMIT_ENABLE_ENV: &str =
-    "ELAI_C42_MCP_AUTHZ_EMIT_ENABLE";
+pub const ELAI_C42_MCP_AUTHZ_EMIT_ENABLE_ENV: &str = "ELAI_C42_MCP_AUTHZ_EMIT_ENABLE";
 
 /// Tranche B-6 quad C-42 -- on-disk corpus directory for the
 /// deterministic-tuple replay harness. Relative to the workspace root.
@@ -15289,8 +15285,7 @@ pub struct ToolCalibrationEventPayload {
 
 /// Tranche B-6 quad C-47 -- env var name. Wire-dark default: emission
 /// silently skipped until the operator sets this to a truthy value.
-pub const ELAI_C47_CASE_BASE_ENABLE_ENV: &str =
-    "ELAI_C47_CASE_BASE_ENABLE";
+pub const ELAI_C47_CASE_BASE_ENABLE_ENV: &str = "ELAI_C47_CASE_BASE_ENABLE";
 
 /// Tranche D (s-22600) C-47b -- env var name for the cold-tier rusqlite
 /// persistence layer on top of C-47's in-memory LRU. Wire-dark default:
@@ -15304,8 +15299,7 @@ pub const ELAI_C47_CASE_BASE_ENABLE_ENV: &str =
 /// `"ELAI_C47B_CASE_BASE_PERSIST_ENABLE"`; the orchestrator-side const
 /// here is a wire mirror so contract tests + dashboard wire layers can
 /// reference one symbol regardless of crate boundary.
-pub const ELAI_C47B_CASE_BASE_PERSIST_ENABLE_ENV: &str =
-    "ELAI_C47B_CASE_BASE_PERSIST_ENABLE";
+pub const ELAI_C47B_CASE_BASE_PERSIST_ENABLE_ENV: &str = "ELAI_C47B_CASE_BASE_PERSIST_ENABLE";
 
 /// Tranche D (s-22600) C-47b -- canonical on-disk path for the sqlite
 /// persistence store. Mirrors the `.elai_cc/data/` convention established
@@ -15351,8 +15345,7 @@ pub struct ReflectBudgetSoftWarnPayload {
 
 /// Tranche B-6 quad B-39 -- env var name. Wire-dark default: emission
 /// silently skipped until the operator sets this to a truthy value.
-pub const ELAI_B39_SOFTWARN_ENABLE_ENV: &str =
-    "ELAI_B39_SOFTWARN_ENABLE";
+pub const ELAI_B39_SOFTWARN_ENABLE_ENV: &str = "ELAI_B39_SOFTWARN_ENABLE";
 
 // === C-50 Pattern-2 collapse ================================================
 
@@ -15425,8 +15418,7 @@ pub struct ContractCodingEventPayload {
 
 /// Tranche B-6 quad C-50 -- env var name. Wire-dark default: emission
 /// silently skipped until the operator sets this to a truthy value.
-pub const ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE_ENV: &str =
-    "ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE";
+pub const ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE_ENV: &str = "ELAI_C50_CONTRACT_RETRY_EMIT_ENABLE";
 
 // === F-1 (SCHEMA_VERSION 196) -- VibeGateBlocked substrate ===============
 
@@ -15467,10 +15459,10 @@ impl VibeGateBlockedKind {
     #[must_use]
     pub fn as_sql_str(&self) -> &'static str {
         match self {
-            Self::CodeVuln       => "vibesec_code_vuln_blocked",
-            Self::Secret         => "vibesec_secret_blocked",
+            Self::CodeVuln => "vibesec_code_vuln_blocked",
+            Self::Secret => "vibesec_secret_blocked",
             Self::DepHallucinated => "vibesec_dep_hallucinated_blocked",
-            Self::Skill          => "vibesec_skill_blocked",
+            Self::Skill => "vibesec_skill_blocked",
         }
     }
 }
@@ -15565,8 +15557,7 @@ pub struct SecurityRuleBlockedPayload {
 
 /// F-2a (SCHEMA_VERSION 196) -- env var name for
 /// [`SecurityRuleBlockedPayload`] emission. Wire-dark default.
-pub const ELAI_SECURITY_RULE_BLOCKED_ENABLE_ENV: &str =
-    "ELAI_SECURITY_RULE_BLOCKED_ENABLE";
+pub const ELAI_SECURITY_RULE_BLOCKED_ENABLE_ENV: &str = "ELAI_SECURITY_RULE_BLOCKED_ENABLE";
 
 // === F-4 / Slice B-1 (SCHEMA_VERSION 197) -- TestIntegrityEvent substrate ==
 
@@ -15596,7 +15587,7 @@ impl TestIntegrityEventKind {
     #[must_use]
     pub fn as_sql_str(&self) -> &'static str {
         match self {
-            Self::Verified           => "test_integrity_verified",
+            Self::Verified => "test_integrity_verified",
             Self::FabricationBlocked => "anti_fabrication_block",
         }
     }
@@ -15667,7 +15658,7 @@ impl ToolFilterEventKind {
     #[must_use]
     pub fn as_sql_str(&self) -> &'static str {
         match self {
-            Self::Committed            => "tool_filter_committed",
+            Self::Committed => "tool_filter_committed",
             Self::UntrustedQuarantined => "untrusted_var_quarantined",
         }
     }
@@ -15745,8 +15736,8 @@ impl WriteTimeSlopVerdictKind {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::NotFound            => "not_found",
-            Self::TooNew              => "too_new",
+            Self::NotFound => "not_found",
+            Self::TooNew => "too_new",
             Self::RegistryUnreachable => "registry_unreachable",
         }
     }
@@ -15998,9 +15989,9 @@ impl SkillLibraryEventKind {
     #[must_use]
     pub fn as_sql_str(&self) -> &'static str {
         match self {
-            Self::Acquired      => "skill_acquired",
+            Self::Acquired => "skill_acquired",
             Self::TrustPromoted => "skill_trust_promoted",
-            Self::DemotedStale  => "skill_demoted_stale",
+            Self::DemotedStale => "skill_demoted_stale",
         }
     }
 }
@@ -16585,7 +16576,6 @@ pub struct SnowballingMeasuredPayload {
     /// Whether RunPod execution remains pending.
     pub runpod_pending: bool,
 }
-
 
 /// I-16: flat KV-cache tuning beacon.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -17567,9 +17557,9 @@ impl TddPreflightBlockedKind {
     #[must_use]
     pub fn as_sql_str(&self) -> &'static str {
         match self {
-            Self::MissingTestDelta   => "tdd_preflight_missing_test_delta",
+            Self::MissingTestDelta => "tdd_preflight_missing_test_delta",
             Self::SyntaxDryRunFailed => "tdd_preflight_syntax_dry_run_failed",
-            Self::RefactorExempted   => "tdd_preflight_refactor_exempted",
+            Self::RefactorExempted => "tdd_preflight_refactor_exempted",
         }
     }
 }
@@ -17894,9 +17884,9 @@ impl EscalationCascadeKind {
     #[must_use]
     pub fn as_sql_str(&self) -> &'static str {
         match self {
-            Self::LocalWin    => "escalation_cascade_local_win",
-            Self::Condensed   => "escalation_cascade_condensed",
-            Self::Escalated   => "escalation_cascade_escalated",
+            Self::LocalWin => "escalation_cascade_local_win",
+            Self::Condensed => "escalation_cascade_condensed",
+            Self::Escalated => "escalation_cascade_escalated",
             Self::BatchRouted => "escalation_cascade_batch_routed",
         }
     }
@@ -17962,9 +17952,9 @@ impl ProgressRewardScoredKind {
     #[must_use]
     pub fn as_sql_str(self) -> &'static str {
         match self {
-            Self::Delta              => "progress_reward_delta",
+            Self::Delta => "progress_reward_delta",
             Self::FirstErrorTruncated => "progress_reward_first_error_truncated",
-            Self::DecayApplied      => "progress_reward_decay_applied",
+            Self::DecayApplied => "progress_reward_decay_applied",
         }
     }
 }
@@ -20406,7 +20396,7 @@ impl PrmCanaryEventKind {
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::CanaryInjected    => "prm_canary_injected",
+            Self::CanaryInjected => "prm_canary_injected",
             Self::StyleBiasDetected => "prm_canary_style_bias_detected",
             Self::ScorerNeutralized => "prm_canary_scorer_neutralized",
         }
@@ -21800,7 +21790,6 @@ pub struct SystemContractEventPayload {
     pub ts_ms: i64,
 }
 
-
 // J-12: HarnessInterventionEvent substrate (runtime intervention harness telemetry)
 
 /// J-12 -- 4-arm discriminator carried by [`HarnessInterventionEventPayload::kind`].
@@ -21857,13 +21846,9 @@ pub enum FreePoolEventKind {
         key_fp: String,
     },
     /// Free pool exhausted; backoff scheduled.
-    PoolExhaustedBackoff {
-        soonest_reset_ms: i64,
-    },
+    PoolExhaustedBackoff { soonest_reset_ms: i64 },
     /// Trust downgrade for a free-pool role.
-    FreePoolTrustDowngrade {
-        role: String,
-    },
+    FreePoolTrustDowngrade { role: String },
 }
 
 /// J-54 UNIT8 -- payload for [`SsbActionType::FreePoolEvent`].
@@ -22066,7 +22051,12 @@ pub struct ReviewGateCatalogEventPayload {
 /// L-2 aggregate risk tier for one scored ClaimSet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ClaimRiskScoredKind { LowRisk, MediumRisk, HighRisk, CriticalRisk }
+pub enum ClaimRiskScoredKind {
+    LowRisk,
+    MediumRisk,
+    HighRisk,
+    CriticalRisk,
+}
 
 /// L-2 auditable aggregate risk row; counts and digests permit recomputation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22083,7 +22073,6 @@ pub struct ClaimRiskScoredPayload {
     pub claim_count: usize,
     pub claim_digests: Vec<[u8; 32]>,
 }
-
 
 // ---------------------------------------------------------------------------
 // J-42 T2: ReasoningCheckpointEvent substrate (observe-only checkpoint telemetry)
@@ -22142,46 +22131,45 @@ pub struct ReasoningCheckpointEventPayload {
     pub ts_ms: i64,
 }
 
+// === L-4 slice 3 -- SemanticEntropyMeasured substrate =======================
 
-    // === L-4 slice 3 -- SemanticEntropyMeasured substrate =======================
+/// L-4 slice 3 -- agree/diverge discriminator carried by
+/// [`SemanticEntropyMeasuredPayload::kind`], mirroring the
+/// [`ClaimRiskScoredKind`] field style rather than a second wire tag.
+///
+/// * `SeedsAgree` -- the sample set was measured and the entropy stayed below
+///   the declared fire boundary, so the samples cluster together.
+/// * `SeedsDiverge` -- the measured entropy reached the boundary and the
+///   signal fired.
+///
+/// There is no "unmeasured" arm on purpose: an unmeasured sample set emits no
+/// row at all, so this enum can never label a degrade as agreement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticEntropyMeasuredKind {
+    SeedsAgree,
+    SeedsDiverge,
+}
 
-    /// L-4 slice 3 -- agree/diverge discriminator carried by
-    /// [`SemanticEntropyMeasuredPayload::kind`], mirroring the
-    /// [`ClaimRiskScoredKind`] field style rather than a second wire tag.
-    ///
-    /// * `SeedsAgree` -- the sample set was measured and the entropy stayed below
-    ///   the declared fire boundary, so the samples cluster together.
-    /// * `SeedsDiverge` -- the measured entropy reached the boundary and the
-    ///   signal fired.
-    ///
-    /// There is no "unmeasured" arm on purpose: an unmeasured sample set emits no
-    /// row at all, so this enum can never label a degrade as agreement.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    pub enum SemanticEntropyMeasuredKind {
-        SeedsAgree,
-        SeedsDiverge,
-    }
-
-    /// L-4 slice 3 -- payload for [`SsbActionType::SemanticEntropyMeasured`].
-    ///
-    /// Written once per MEASURED sample set (two or more answer samples to the
-    /// SAME prompt) beside the aggregate `ClaimRiskScored` row. Every field is
-    /// COMPUTED by the shipped predictor, never a literal.
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct SemanticEntropyMeasuredPayload {
-        /// Agree or diverge, from the predictor's own fire decision.
-        pub kind: SemanticEntropyMeasuredKind,
-        /// How many answer samples were compared.
-        pub sample_count: usize,
-        /// How many mutual-entailment clusters the samples collapsed into.
-        pub cluster_count: usize,
-        /// Normalized Shannon entropy in thousandths (serde-stable integer).
-        pub entropy_milli: u32,
-        /// blake3 of each trimmed sample, in sample order.
-        pub sample_digests: Vec<[u8; 32]>,
-    }
+/// L-4 slice 3 -- payload for [`SsbActionType::SemanticEntropyMeasured`].
+///
+/// Written once per MEASURED sample set (two or more answer samples to the
+/// SAME prompt) beside the aggregate `ClaimRiskScored` row. Every field is
+/// COMPUTED by the shipped predictor, never a literal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticEntropyMeasuredPayload {
+    /// Agree or diverge, from the predictor's own fire decision.
+    pub kind: SemanticEntropyMeasuredKind,
+    /// How many answer samples were compared.
+    pub sample_count: usize,
+    /// How many mutual-entailment clusters the samples collapsed into.
+    pub cluster_count: usize,
+    /// Normalized Shannon entropy in thousandths (serde-stable integer).
+    pub entropy_milli: u32,
+    /// blake3 of each trimmed sample, in sample order.
+    pub sample_digests: Vec<[u8; 32]>,
+}
 
 // === L-19 slice 2 -- ContextRecalled substrate ==============================
 
@@ -22213,7 +22201,6 @@ pub struct ContextRecalledPayload {
     pub path_digests: Vec<[u8; 32]>,
 }
 
-
 /// P-7 observe-first journal row for a per-user operating-profile change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22238,4 +22225,8 @@ pub struct AdvisorConsultedPayload {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProfileChangeKind { Tighten, Loosen, Revert }
+pub enum ProfileChangeKind {
+    Tighten,
+    Loosen,
+    Revert,
+}

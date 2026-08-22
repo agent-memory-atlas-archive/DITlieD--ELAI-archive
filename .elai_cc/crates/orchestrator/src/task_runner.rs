@@ -9145,6 +9145,17 @@ async fn drive_task(
                 last_ssb_event_ms = now_ms;
             }
             watchdog_fired = true;
+            if matches!(
+                kind,
+                crate::anti_spiral_extended::WatchdogTimeoutKind::NoMaterialProgress
+            ) {
+                let clock: std::sync::Arc<dyn elai_core::ClockProvider> =
+                    std::sync::Arc::new(elai_core::OsClock);
+                crate::index_overlay::try_drain_on_trigger(
+                    crate::index_overlay::DrainTrigger::NoMaterialProgress,
+                    clock,
+                );
+            }
         }
 
         // StagnationDetection — anti_spiral_extended.rs §detect_pattern.
@@ -17718,11 +17729,31 @@ async fn run_classify_dispatch(
     result
 }
 
+#[cfg(test)]
+thread_local! {
+    static E44_SAGA_ENABLED_OVERRIDE: std::cell::Cell<Option<bool>> =
+        std::cell::Cell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn set_e44_saga_enabled_for_test(value: Option<bool>) -> Option<bool> {
+    E44_SAGA_ENABLED_OVERRIDE.with(|override_value| {
+        let previous = override_value.get();
+        override_value.set(value);
+        previous
+    })
+}
+
 /// E-44 Tranche 7 — env gate for the saga + reliability + error_taxonomy
 /// producer wires inside `task_runner.rs`. Wire-dark default OFF; the
 /// observability layer has its own gate (`ELAI_DURABILITY_OBSERVABILITY_ENABLE`)
 /// that ALSO must be set for the SSB row to actually land.
 fn e44_saga_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = E44_SAGA_ENABLED_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+
     match std::env::var("ELAI_E44_SAGA_ENABLE") {
         Ok(v) => {
             let lower = v.trim().to_ascii_lowercase();
@@ -22091,6 +22122,10 @@ fn hunks_from_git_diff_json(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[path = "task_runner/e44_tests.rs"]
+mod e44_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ssb::SsbConfig;
@@ -22114,23 +22149,16 @@ mod tests {
     async fn b5_emit_reasoning_grc_some_pulls_real_grounding_values() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ssb = ssb_for_test(&tmp, "b5-gap2-real-values");
+        assert_real_grc_values(&ssb).await;
+    }
 
-        // Construct a PipelineGrc with a known agent config: role =
-        // "executor", grounding_level = Verified. This is the real
-        // per-agent state emit_reasoning must read on the grc=Some path.
+    async fn assert_real_grc_values(ssb: &Arc<Ssb>) {
         let cfg = elai_reasoning::AgentGrcConfig {
             role: "executor".to_owned(),
             grounding_level: elai_reasoning::GroundingLevel::Verified,
             ..elai_reasoning::AgentGrcConfig::default()
         };
-        let grc = Arc::new(AsyncMutex::new(
-            crate::grc::PipelineGrc::new(cfg),
-        ));
-
-        // Drive one think step so the engine has a topic state for
-        // REASONING_GROUNDING_SOURCE (otherwise get_budget returns None
-        // and budget_remaining is 0 — which is fine, the test is about
-        // grounding_level/confidence/elapsed_ms, not budget).
+        let grc = Arc::new(AsyncMutex::new(crate::grc::PipelineGrc::new(cfg)));
         let step = elai_reasoning::ThinkStep {
             step_type: elai_reasoning::GrcState::Observe,
             content: "b5-gap2 probe".to_owned(),
@@ -22144,9 +22172,8 @@ mod tests {
             let _ = locked.think(step);
         }
 
-        // emit_reasoning with grc=Some — the path under test.
         emit_reasoning(
-            &ssb,
+            ssb,
             1,
             "Observe",
             "b5-gap2 probe content",
@@ -22154,7 +22181,6 @@ mod tests {
         )
         .await;
 
-        // Read back the GrcStepEmitted row and assert real values.
         let rows = ssb
             .query_by_type(SsbActionType::GrcStepEmitted)
             .expect("query GrcStepEmitted");
@@ -22163,33 +22189,14 @@ mod tests {
             1,
             "emit_reasoning grc=Some must emit exactly one GrcStepEmitted row"
         );
-        let payload_bytes = &rows[0].payload;
         let decoded: SsbPayload =
-            rmp_serde::from_slice(payload_bytes).expect("decode GrcStepEmitted payload");
+            rmp_serde::from_slice(&rows[0].payload).expect("decode GrcStepEmitted payload");
         match decoded {
             SsbPayload::GrcStepEmitted(p) => {
-                assert_eq!(
-                    p.agent_id, "executor",
-                    "agent_id must be the real role from agent config"
-                );
-                assert_eq!(
-                    p.grounding_level, "Verified",
-                    "grounding_level must be the real config value, not 'medium'"
-                );
-                assert_eq!(
-                    p.confidence, 1.0,
-                    "confidence must be derived from Verified grounding (1.0), not 0.9"
-                );
-                // elapsed_ms is a real wall-clock measurement; on a fast
-                // host it may be 0ms (sub-ms), so we only assert it is
-                // not the synthetic-fallback sentinel. The grc=None path
-                // also reports 0, so the distinguishing assertion is the
-                // grounding_level + confidence above. We assert
-                // elapsed_ms is finite (no overflow / no panic).
-                assert!(
-                    p.elapsed_ms <= u64::MAX,
-                    "elapsed_ms must be a finite measured value"
-                );
+                assert_eq!(p.agent_id, "executor");
+                assert_eq!(p.grounding_level, "Verified");
+                assert_eq!(p.confidence, 1.0);
+                assert!(p.elapsed_ms <= u64::MAX);
             }
             other => panic!("expected GrcStepEmitted, got {other:?}"),
         }

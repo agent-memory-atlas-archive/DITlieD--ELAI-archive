@@ -95,6 +95,11 @@ impl LiveCli {
                 pipeline = attach_reranker(pipeline, &models_dir, &ssb, clock);
                 pipeline = attach_splade(pipeline, &models_dir, clock);
                 pipeline = attach_dkg(pipeline, &project_root, &ssb);
+                if let Some(overlay) =
+                    elai_orchestrator::index_overlay::install_for_project(&project_root)
+                {
+                    pipeline = pipeline.with_live_overlay(overlay);
+                }
                 pipeline = attach_hyde(pipeline, backend_config, &ssb, clock);
 
                 let cascade = run_startup_and_emit(

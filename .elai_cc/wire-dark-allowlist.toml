@@ -2494,3 +2494,14 @@ owner             = "maintainer"
 expiry_date       = "2026-12-31"
 promotion_plan_id = "K-12"
 smoke_test        = "crates/orchestrator/src/lossless_compaction_gate.rs::lossless_gate_kill_switch_observes"
+
+# J-104: in-session live-index overlay. Default-OFF until edit->retrieve +
+# atomic drain are proven on >=3 real runs (GD-4). Overlay-first read +
+# order-based drain (NoMaterialProgress / SoftCap), never wall-clock idle.
+[[flag]]
+name              = "ELAI_LIVE_OVERLAY_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-01"
+promotion_plan_id = "J-104-promotion"
+smoke_test        = "crates/contracts/tests/j104_index_overlay_contract.rs::j104_edit_then_retrieve_before_batch_reindex"

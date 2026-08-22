@@ -15,8 +15,7 @@ use std::time::Duration;
 use elai_core::{ClockProvider as _, OsClock};
 
 use elai_ipc_types::{
-    IpcFrame, IpcFrameError, IpcMessageType,
-    AGENT_HEARTBEAT_INTERVAL_SECS, FRAME_HEADER_SIZE,
+    IpcFrame, IpcFrameError, IpcMessageType, AGENT_HEARTBEAT_INTERVAL_SECS, FRAME_HEADER_SIZE,
     IPC_PROTOCOL_VERSION, MAX_FRAME_SIZE,
 };
 use uuid::Uuid;
@@ -152,7 +151,10 @@ fn handle_message(
     dropper: &dropper::AgentRoleDropper,
 ) -> Result<bool, AgentError> {
     match msg {
-        IpcMessageType::AgentRequest { task, dispatch_config } => {
+        IpcMessageType::AgentRequest {
+            task,
+            dispatch_config,
+        } => {
             tracing::info!(task = %task, role = ?dispatch_config.role, "received agent request");
 
             // C-45 STEP 2: when the dropper is active and this request
@@ -184,13 +186,15 @@ fn handle_message(
             // Phase A2: dispatch into the real ReAct loop instead of the
             // ack-only stub that 4A.5 shipped. run_react_turn drives
             // InferRequest <-> InferResponse <-> ToolRequest <-> ToolResult
-            // and emits a terminal AgentResponse (end_turn) or
-            // AgentMaxIterationsReached (cap) frame.
+            // and emits a terminal AgentResponse (end_turn) frame.
             agent_loop::run_react_turn(task, agent_id, writer, reader)?;
             Ok(true) // continue outer dispatch loop for subsequent requests
         }
 
-        IpcMessageType::InferResponse { text: _text, tokens_used } => {
+        IpcMessageType::InferResponse {
+            text: _text,
+            tokens_used,
+        } => {
             // The ReAct loop owns InferResponse handling for in-flight turns.
             // Stray frames outside an active turn fall through here for
             // visibility only.
@@ -201,7 +205,11 @@ fn handle_message(
             Ok(true)
         }
 
-        IpcMessageType::ToolResult { tool_id, output, success } => {
+        IpcMessageType::ToolResult {
+            tool_id,
+            output,
+            success,
+        } => {
             // Likewise, the ReAct loop consumes ToolResult inline. A
             // stray ToolResult outside the loop is logged with the byte
             // length (NOT silently swallowed — that was the A2 stub-ban).
@@ -214,12 +222,20 @@ fn handle_message(
             Ok(true)
         }
 
-        IpcMessageType::BashResult { stdout: _, stderr: _, exit_code } => {
+        IpcMessageType::BashResult {
+            stdout: _,
+            stderr: _,
+            exit_code,
+        } => {
             tracing::debug!(exit_code, "received bash result");
             Ok(true)
         }
 
-        IpcMessageType::GroundingResult { topic, evidence, confidence } => {
+        IpcMessageType::GroundingResult {
+            topic,
+            evidence,
+            confidence,
+        } => {
             tracing::debug!(
                 topic = %topic,
                 evidence_count = evidence.len(),
@@ -243,8 +259,7 @@ fn handle_message(
         | IpcMessageType::ThinkStep { .. }
         | IpcMessageType::CheckpointSync { .. }
         | IpcMessageType::AgentHeartbeat { .. }
-        | IpcMessageType::ReplanRequest { .. }
-        | IpcMessageType::AgentMaxIterationsReached { .. } => {
+        | IpcMessageType::ReplanRequest { .. } => {
             tracing::warn!("received unexpected message type from orchestrator");
             Ok(true)
         }

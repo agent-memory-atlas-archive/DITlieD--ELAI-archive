@@ -16,12 +16,12 @@
 //     - expect AgentResponse{content non-empty}.
 //     - assert: iteration count = 2; tool_id round-tripped.
 //
-//   Test 2 (max_iterations_cap):
-//     - reply to every InferRequest with one TOOL_USE marker.
-//     - after 25 ToolRequest -> ToolResult round-trips, the 26th iteration
-//       cap fires -> agent emits IpcMessageType::AgentMaxIterationsReached
-//       { reason, iterations_completed: 25 }.
-//     - assert: NO AgentResponse follows.
+//   Test 2 (uncapped_tool_round_trips):
+//     - reply to at least 30 InferRequest frames with one TOOL_USE marker.
+//     - complete every ToolRequest -> ToolResult round-trip.
+//     - send an InferResponse without a TOOL_USE marker.
+//     - expect a normal AgentResponse, with no early terminal frame or
+//       protocol failure.
 //
 // Tool-use protocol: the test injects a literal text marker
 // `TOOL_USE: <tool_id>` inside the InferResponse.text field. The agent's
@@ -331,13 +331,12 @@ async fn happy_path_two_iterations() {
 }
 
 // ---------------------------------------------------------------------------
-// Contract 2 — max_iterations_cap. Drives 25 tool_use loops, expects the
-// agent to emit IpcMessageType::AgentMaxIterationsReached on iteration 26
-// instead of issuing another InferRequest.
+// Contract 2 — uncapped_tool_round_trips. Drives 30 tool_use loops, then
+// sends a normal response and requires AgentResponse.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn max_iterations_cap() {
+async fn uncapped_tool_round_trips() {
     let socket_id = Uuid::new_v4();
     let (listener, socket_path) = bind_endpoint(&socket_id).await;
 
@@ -351,31 +350,36 @@ async fn max_iterations_cap() {
         let mut stream = accept_endpoint(listener).await;
 
         let req = IpcMessageType::AgentRequest {
-            task: "infinite tool loop".to_owned(),
+            task: "many successful tool calls".to_owned(),
             dispatch_config: default_dispatch_config(),
         };
         write_frame(&mut stream, &req).await?;
 
-        // 25 full InferRequest -> ToolRequest -> ToolResult round-trips.
-        for i in 0..25 {
-            // InferRequest #i
+        // Complete 30 full InferRequest -> ToolRequest -> ToolResult round-trips.
+        for i in 0..30 {
             match read_skipping_heartbeats(&mut stream).await? {
                 IpcMessageType::InferRequest { .. } => {}
-                other => return Err(format!("iter {i}: expected InferRequest, got {other:?}")),
+                other => {
+                    return Err(format!(
+                        "round-trip {i}: expected InferRequest, got {other:?}"
+                    ))
+                }
             }
-            // Reply with TOOL_USE marker.
+
             let infer_resp = IpcMessageType::InferResponse {
-                text: format!("iter {i}\nTOOL_USE: echo\n"),
+                text: format!("round-trip {i}\nTOOL_USE: echo\n"),
                 tokens_used: 10,
             };
             write_frame(&mut stream, &infer_resp).await?;
 
-            // ToolRequest
             let tool_id = match read_skipping_heartbeats(&mut stream).await? {
                 IpcMessageType::ToolRequest { tool_id, .. } => tool_id,
-                other => return Err(format!("iter {i}: expected ToolRequest, got {other:?}")),
+                other => {
+                    return Err(format!(
+                        "round-trip {i}: expected ToolRequest, got {other:?}"
+                    ))
+                }
             };
-            // Reply ToolResult.
             write_frame(
                 &mut stream,
                 &IpcMessageType::ToolResult {
@@ -387,30 +391,29 @@ async fn max_iterations_cap() {
             .await?;
         }
 
-        // After 25 round-trips, iteration counter == 25; the agent must NOT
-        // send another InferRequest. Instead it must emit
-        // AgentMaxIterationsReached and stop.
+        // A normal InferResponse without a tool marker must end the loop.
         match read_skipping_heartbeats(&mut stream).await? {
-            IpcMessageType::AgentMaxIterationsReached {
-                reason,
-                iterations_completed,
-            } => {
-                assert!(
-                    !reason.trim().is_empty(),
-                    "AgentMaxIterationsReached.reason must be non-empty"
-                );
-                assert_eq!(
-                    iterations_completed, 25,
-                    "iterations_completed must equal AGENT_MAX_ITERATIONS"
-                );
+            IpcMessageType::InferRequest { .. } => {
+                let infer_resp = IpcMessageType::InferResponse {
+                    text: "final answer after 30 tool calls".to_owned(),
+                    tokens_used: 5,
+                };
+                write_frame(&mut stream, &infer_resp).await?;
+            }
+            other => {
+                return Err(format!(
+                    "expected InferRequest after round-trip 30, got {other:?}"
+                ))
+            }
+        }
+
+        match read_skipping_heartbeats(&mut stream).await? {
+            IpcMessageType::AgentResponse { content, .. } => {
+                assert_eq!(content, "final answer after 30 tool calls");
                 Ok::<(), String>(())
             }
-            IpcMessageType::AgentResponse { .. } => Err(
-                "agent emitted AgentResponse instead of AgentMaxIterationsReached at iter cap"
-                    .to_owned(),
-            ),
             other => Err(format!(
-                "expected AgentMaxIterationsReached at iter cap, got {other:?}"
+                "expected normal AgentResponse after 30 round-trips, got {other:?}"
             )),
         }
     })
@@ -419,7 +422,7 @@ async fn max_iterations_cap() {
     handle.cleanup().await;
     match outcome {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => panic!("max_iterations_cap failed: {e}"),
-        Err(_) => panic!("max_iterations_cap timed out after 60s"),
+        Ok(Err(e)) => panic!("uncapped_tool_round_trips failed: {e}"),
+        Err(_) => panic!("uncapped_tool_round_trips timed out after 60s"),
     }
 }

@@ -2651,7 +2651,7 @@ pub(crate) enum RoutingAction {
     /// + GPU-free; live runs are RUNPOD-PENDING.
     Pilot { task_template: String },
     /// `elai routing status` — print the resolved RoutingPolicy
-    /// (enabled, alpha, s_max, max_turns, max_workers_per_query).
+    /// (enabled, alpha, s_max, max_workers_per_query).
     Status,
     /// `elai routing export --path <PATH>` — write the pilot table to
     /// a JSON file at `PATH` for the uno-orchestra-pilot.md artifact.

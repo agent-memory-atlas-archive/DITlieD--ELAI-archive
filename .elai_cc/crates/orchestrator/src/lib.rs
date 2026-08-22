@@ -392,6 +392,7 @@ pub use vibesec::dep_writetime_gate::{
 pub mod shortcoder_hook;
 pub mod provider_signals;
 pub mod indexing_service;
+pub mod index_overlay;
 // C-29: Testing-Trust Tier T-2 (IntentPair) — per-BabyStep intent
 // formalization. See workflow/reasoning/C-29-decisions.md.
 pub mod intent_pair;

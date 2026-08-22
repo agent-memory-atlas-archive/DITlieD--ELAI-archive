@@ -62,12 +62,12 @@ use elai_orchestrator::ssb::{
 #[test]
 fn g1_s_max_paper_cap_enforced_at_construction() {
     // Boundary value (0.10) must be accepted.
-    let ok = RoutingPolicy::new(true, 0.1, S_MAX_CAP, 8, 8)
+    let ok = RoutingPolicy::new(true, 0.1, S_MAX_CAP, 8)
         .expect("s_max = 0.10 must pass (paper boundary)");
     assert!((ok.s_max - S_MAX_CAP).abs() < f32::EPSILON);
 
     // Above-cap value must be rejected with the typed error variant.
-    let err = RoutingPolicy::new(true, 0.1, 0.15, 8, 8)
+    let err = RoutingPolicy::new(true, 0.1, 0.15, 8)
         .expect_err("s_max > 0.10 must fail (paper cost-hacking guard)");
     assert!(matches!(err, InvariantError::SMaxExceedsCap { .. }));
 }
@@ -78,17 +78,17 @@ fn g1_s_max_paper_cap_enforced_at_construction() {
 #[test]
 fn g2_alpha_convex_blend_enforced_at_construction() {
     // Boundaries (0.0, 1.0) accepted.
-    RoutingPolicy::new(true, ALPHA_MIN, 0.10, 8, 8)
+    RoutingPolicy::new(true, ALPHA_MIN, 0.10, 8)
         .expect("alpha = 0.0 must pass (paper boundary)");
-    RoutingPolicy::new(true, ALPHA_MAX, 0.10, 8, 8)
+    RoutingPolicy::new(true, ALPHA_MAX, 0.10, 8)
         .expect("alpha = 1.0 must pass (paper boundary)");
 
     // Outside-range values rejected.
-    let err_neg = RoutingPolicy::new(true, -0.1, 0.10, 8, 8)
+    let err_neg = RoutingPolicy::new(true, -0.1, 0.10, 8)
         .expect_err("alpha < 0 must fail");
     assert!(matches!(err_neg, InvariantError::AlphaOutOfRange { .. }));
 
-    let err_pos = RoutingPolicy::new(true, 1.5, 0.10, 8, 8)
+    let err_pos = RoutingPolicy::new(true, 1.5, 0.10, 8)
         .expect_err("alpha > 1 must fail");
     assert!(matches!(err_pos, InvariantError::AlphaOutOfRange { .. }));
 }
@@ -100,7 +100,7 @@ fn g2_alpha_convex_blend_enforced_at_construction() {
 #[test]
 fn g3_direct_answer_path_returns_empty_vec_and_zero_dispatch_cost() {
     let policy =
-        RoutingPolicy::new(true, 0.1, 0.10, 8, 8).expect("policy ok");
+        RoutingPolicy::new(true, 0.1, 0.10, 8).expect("policy ok");
     let delegator = SelectiveDelegator::new(policy);
     let workers: BTreeMap<AgentRole, ()> = [
         AgentRole::Executor,
@@ -151,7 +151,7 @@ fn g3_direct_answer_path_returns_empty_vec_and_zero_dispatch_cost() {
 #[test]
 fn g4_independent_subtasks_dispatch_in_parallel_structurally() {
     let policy =
-        RoutingPolicy::new(true, 0.1, 0.10, 8, 8).expect("policy ok");
+        RoutingPolicy::new(true, 0.1, 0.10, 8).expect("policy ok");
     let delegator = SelectiveDelegator::new(policy);
     let workers: BTreeMap<AgentRole, ()> = [
         AgentRole::Executor,
@@ -308,7 +308,7 @@ fn g6_difficulty_score_in_unit_interval_for_representative_tasks() {
 #[test]
 fn g7_verifier_remains_binary_only_no_synthetic_verify_primitive() {
     let policy =
-        RoutingPolicy::new(true, 0.1, 0.10, 8, 8).expect("policy ok");
+        RoutingPolicy::new(true, 0.1, 0.10, 8).expect("policy ok");
     let delegator = SelectiveDelegator::new(policy);
 
     // Auditor-less worker pool: no Verify primitive should appear in

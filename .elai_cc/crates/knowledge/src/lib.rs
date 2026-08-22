@@ -66,6 +66,7 @@ pub mod hyde;
 pub mod knowledge_ssb_sink;
 pub mod lsp_channel;
 pub mod incremental_profile;
+pub mod live_overlay;
 pub mod index_manifest;
 pub mod index_version;
 pub mod metadata;
@@ -338,6 +339,7 @@ pub trait KnowledgeEngine {
 
 // Re-export DkgEngine and language registry types at crate root for convenience.
 pub use query_modality::{classify_query_modality, channel_enabled, ChannelSubset, QueryModality, RetrievalChannel};
+pub use live_overlay::{LiveIndexOverlay, OverlayHit};
 pub use dkg::DkgEngine;
 pub use dkg::{LanguageRegistry, LanguageRegistryStatus, GrammarLoadError};
 // B-30 Pass C: re-export ImportResolver trait so external tests can use it.

@@ -62,7 +62,7 @@ pub(crate) fn run(action: RoutingAction, output_format: CliOutputFormat) -> Resu
 /// so the synthetic pilot path can demonstrate dispatch. The real
 /// production policy comes from the TOML loader.
 fn pilot_policy() -> Result<RoutingPolicy, String> {
-    RoutingPolicy::new(true, 0.1, 0.10, 8, 8).map_err(|e| format!("pilot policy: {e}"))
+    RoutingPolicy::new(true, 0.1, 0.10, 8).map_err(|e| format!("pilot policy: {e}"))
 }
 
 fn pilot_workers() -> BTreeMap<AgentRole, ()> {
@@ -142,7 +142,6 @@ fn run_status(output_format: CliOutputFormat) -> Result<(), String> {
             println!("  enabled:               {}", policy.enabled);
             println!("  alpha:                 {}", policy.alpha);
             println!("  s_max:                 {}", policy.s_max);
-            println!("  max_turns:             {}", policy.max_turns);
             println!("  max_workers_per_query: {}", policy.max_workers_per_query);
         }
     }

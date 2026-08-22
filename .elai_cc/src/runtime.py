@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .commands import PORTED_COMMANDS
 from .context import PortContext, build_port_context, render_context
 from .history import HistoryLog
 from .models import PermissionDenial, PortingModule
-from .query_engine import QueryEngineConfig, QueryEnginePort, TurnResult
+from .query_engine import QueryEnginePort, TurnResult
 from .setup import SetupReport, WorkspaceSetup, run_setup
 from .system_init import build_system_init_message
 from .tools import PORTED_TOOLS
@@ -151,15 +151,15 @@ class PortRuntime:
             persisted_session_path=persisted_session_path,
         )
 
-    def run_turn_loop(self, prompt: str, limit: int = 5, max_turns: int = 3, structured_output: bool = False) -> list[TurnResult]:
+    def run_turn_loop(self, prompt: str, limit: int = 5, structured_output: bool = False) -> list[TurnResult]:
         engine = QueryEnginePort.from_workspace()
-        engine.config = QueryEngineConfig(max_turns=max_turns, structured_output=structured_output)
+        engine.config = replace(engine.config, structured_output=structured_output)
         matches = self.route_prompt(prompt, limit=limit)
         command_names = tuple(match.name for match in matches if match.kind == 'command')
         tool_names = tuple(match.name for match in matches if match.kind == 'tool')
         results: list[TurnResult] = []
-        for turn in range(max_turns):
-            turn_prompt = prompt if turn == 0 else f'{prompt} [turn {turn + 1}]'
+        while True:
+            turn_prompt = prompt if not results else f'{prompt} [turn {len(results) + 1}]'
             result = engine.submit_message(turn_prompt, command_names, tool_names, ())
             results.append(result)
             if result.stop_reason != 'completed':

@@ -17,7 +17,6 @@
 //!     dominant.
 //!   - `s_max = 0.10` — paper Section 5 cap; raising unlocks cost-
 //!     hacking.
-//!   - `max_turns = 8` — paper Section 5 `T_max` default.
 //!   - `max_workers_per_query = 8` — pilot scope cap (mirrors C-45
 //!     `pilot_roles().len()`); a single dispatch never exceeds the
 //!     8-base-role pilot set.
@@ -31,9 +30,6 @@ pub const DEFAULT_ALPHA: f32 = 0.1;
 
 /// Paper-anchored default routing-shaping bonus cap.
 pub const DEFAULT_S_MAX: f32 = 0.10;
-
-/// Paper-anchored default orchestrator turn cap (`T_max` in the paper).
-pub const DEFAULT_MAX_TURNS: u32 = 8;
 
 /// Pilot scope cap — matches `credit_attribution::pilot_roles().len()`.
 pub const DEFAULT_MAX_WORKERS_PER_QUERY: u32 = 8;
@@ -54,8 +50,6 @@ pub struct RoutingPolicy {
     /// Routing-shaping bonus cap in `[0, S_MAX_CAP]` (paper Section 5;
     /// default 0.10).
     pub s_max: f32,
-    /// `T_max` turn cap per trajectory (paper Section 5; default 8).
-    pub max_turns: u32,
     /// Maximum workers dispatched per query. Cap matches the C-45
     /// 8-base-role pilot scope.
     pub max_workers_per_query: u32,
@@ -69,7 +63,6 @@ impl Default for RoutingPolicy {
             enabled: false,
             alpha: DEFAULT_ALPHA,
             s_max: DEFAULT_S_MAX,
-            max_turns: DEFAULT_MAX_TURNS,
             max_workers_per_query: DEFAULT_MAX_WORKERS_PER_QUERY,
         }
     }
@@ -83,7 +76,6 @@ impl RoutingPolicy {
         enabled: bool,
         alpha: f32,
         s_max: f32,
-        max_turns: u32,
         max_workers_per_query: u32,
     ) -> Result<Self, InvariantError> {
         validate_alpha(alpha)?;
@@ -92,7 +84,6 @@ impl RoutingPolicy {
             enabled,
             alpha,
             s_max,
-            max_turns,
             max_workers_per_query,
         })
     }
@@ -120,8 +111,6 @@ pub struct RoutingPolicyToml {
     pub alpha: f32,
     /// Routing-shaping bonus cap (TOML default: `0.10`).
     pub s_max: f32,
-    /// `T_max` turn cap (TOML default: `8`).
-    pub max_turns: u32,
     /// Max workers per query (TOML default: `8`).
     pub max_workers_per_query: u32,
 }
@@ -132,7 +121,6 @@ impl Default for RoutingPolicyToml {
             enabled: false,
             alpha: DEFAULT_ALPHA,
             s_max: DEFAULT_S_MAX,
-            max_turns: DEFAULT_MAX_TURNS,
             max_workers_per_query: DEFAULT_MAX_WORKERS_PER_QUERY,
         }
     }
@@ -149,7 +137,6 @@ impl RoutingPolicyToml {
             self.enabled,
             self.alpha,
             self.s_max,
-            self.max_turns,
             self.max_workers_per_query,
         )
     }
@@ -166,42 +153,39 @@ mod tests {
         assert!(!p.enabled, "default must be OFF (opt-in)");
         assert!((p.alpha - DEFAULT_ALPHA).abs() < f32::EPSILON);
         assert!((p.s_max - DEFAULT_S_MAX).abs() < f32::EPSILON);
-        assert_eq!(p.max_turns, DEFAULT_MAX_TURNS);
         assert_eq!(p.max_workers_per_query, DEFAULT_MAX_WORKERS_PER_QUERY);
         assert!(p.is_inert(), "default must be inert");
     }
 
     #[test]
     fn new_accepts_paper_defaults() {
-        let p =
-            RoutingPolicy::new(false, DEFAULT_ALPHA, DEFAULT_S_MAX, DEFAULT_MAX_TURNS, 8)
-                .expect("paper defaults must pass");
+        let p = RoutingPolicy::new(false, DEFAULT_ALPHA, DEFAULT_S_MAX, 8)
+            .expect("paper defaults must pass");
         assert!((p.alpha - DEFAULT_ALPHA).abs() < f32::EPSILON);
     }
 
     #[test]
     fn new_rejects_alpha_above_one() {
-        let err = RoutingPolicy::new(true, 1.5, DEFAULT_S_MAX, 8, 8)
-            .expect_err("alpha > 1 must fail");
+        let err = RoutingPolicy::new(true, 1.5, DEFAULT_S_MAX, 8).expect_err("alpha > 1 must fail");
         assert!(matches!(err, InvariantError::AlphaOutOfRange { .. }));
     }
 
     #[test]
     fn new_rejects_s_max_above_cap() {
-        let err = RoutingPolicy::new(true, DEFAULT_ALPHA, 0.5, 8, 8)
-            .expect_err("s_max > 0.10 must fail");
+        let err =
+            RoutingPolicy::new(true, DEFAULT_ALPHA, 0.5, 8).expect_err("s_max > 0.10 must fail");
         assert!(matches!(err, InvariantError::SMaxExceedsCap { .. }));
     }
 
     #[test]
     fn new_accepts_alpha_at_max() {
-        RoutingPolicy::new(true, ALPHA_MAX, DEFAULT_S_MAX, 8, 8)
+        RoutingPolicy::new(true, ALPHA_MAX, DEFAULT_S_MAX, 8)
             .expect("alpha=1 must pass (boundary)");
     }
 
     #[test]
     fn new_accepts_s_max_at_cap() {
-        RoutingPolicy::new(true, DEFAULT_ALPHA, S_MAX_CAP, 8, 8)
+        RoutingPolicy::new(true, DEFAULT_ALPHA, S_MAX_CAP, 8)
             .expect("s_max=0.10 must pass (boundary)");
     }
 
@@ -219,10 +203,27 @@ mod tests {
             enabled: true,
             alpha: -0.5,
             s_max: DEFAULT_S_MAX,
-            max_turns: DEFAULT_MAX_TURNS,
             max_workers_per_query: 8,
         };
         let err = bad.to_policy().expect_err("alpha < 0 must fail");
         assert!(matches!(err, InvariantError::AlphaOutOfRange { .. }));
+    }
+
+    #[test]
+    fn legacy_policy_key_is_ignored() {
+        const LEGACY_POLICY_TOML_FIXTURE: &str = r#"
+enabled = true
+alpha = 0.2
+s_max = 0.05
+max_turns = 99
+max_workers_per_query = 4
+"#;
+        let toml: RoutingPolicyToml =
+            toml::from_str(LEGACY_POLICY_TOML_FIXTURE).expect("legacy TOML must parse");
+        let policy = toml.to_policy().expect("legacy TOML must convert");
+        assert!(policy.enabled);
+        assert!((policy.alpha - 0.2).abs() < f32::EPSILON);
+        assert!((policy.s_max - 0.05).abs() < f32::EPSILON);
+        assert_eq!(policy.max_workers_per_query, 4);
     }
 }

@@ -1,21 +1,4 @@
 //! C-9 (Phase 4G Autonomous Mode Core Infrastructure) — contract suite.
-//!
-//! Pins the named-type and wiring invariants C-9 ships:
-//!   * AutoAdvanceEvaluator default registers one EvidenceCheck per
-//!     EscalationTrigger axis plus an AutoAdvance catch-all.
-//!   * EscalationPolicy default mirrors the legacy
-//!     `AutonomousGateConfig::circuit_breaker_limit`.
-//!   * EscalationTrigger taxonomy gained the SubstituteModelFailed +
-//!     SplitTaskFailed variants (6 total).
-//!   * SubstituteModel guards via ModelPool::can_fit_llm — fires
-//!     SubstituteModelFailed when the target won't fit.
-//!   * AutonomyDecision::SplitTask carries a SplitTaskPlan with
-//!     MergeStrategy::Sequential.
-//!   * GateMode::from_cli_args parses the --mode flag with the same three
-//!     labels accepted by `parse_run_subcommand_args`.
-//!   * ResearchTree::split_step realises a SplitTaskPlan with id rewrites.
-//!   * apply_task_runner_wiring installs an AutonomousGate when
-//!     `RuntimeWiring.gate_mode == Some(_)`.
 
 use std::sync::Arc;
 
@@ -41,10 +24,7 @@ fn all_pass() -> AutonomousEvidence {
         step_zero_blocks: true,
         babystep_zero_blocks: true,
         plan_zero_blocks: true,
-        // F-10: AUTO-ADVANCE security-monotonicity vacuous-default true.
         security_monotonicity: true,
-        // SP5 wiring-fix: off-agent EXECUTING -> AUDITING legs default FALSE;
-        // all-true fixture sets them explicitly (ADR-8).
         layer3_entrypoint_covered: true,
         layer4_trace_present: true,
     }
@@ -62,12 +42,9 @@ fn ctx_at(level: PipelineLevel, risk: RiskLevel) -> AutonomousGateContext {
         auto_advance_count_for_concept: 0,
         step_id: "c9-step".into(),
         model_pool: None,
-        // C-10: anti-spiral extended fields default to empty/None so
-        // pre-C-10 contracts compile unchanged.
         execution_history: elai_orchestrator::ExecutionHistory::default(),
         attempt_index: 0,
         suggested_prompt_prefix: None,
-        // F-6 (C6a): no candidate learned skill in the base contract fixture.
         candidate_skill_tier: None,
     }
 }
@@ -79,17 +56,12 @@ impl ModelPool for FixedVramPool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Contract 1 — EscalationPolicy default
-// ---------------------------------------------------------------------------
-
 #[test]
 fn c9_contract_escalation_policy_default_mirrors_legacy_limit() {
     let p = EscalationPolicy::default();
     assert_eq!(p.anti_spiral_threshold, 3);
     assert!(p.high_risk_pauses);
     assert_eq!(p.max_auto_advances_per_phase, 10);
-    // Legacy AutonomousGateConfig::default() keeps the same number.
     let cfg = AutonomousGateConfig::default();
     assert_eq!(cfg.circuit_breaker_limit, p.max_auto_advances_per_phase);
     assert_eq!(
@@ -97,10 +69,6 @@ fn c9_contract_escalation_policy_default_mirrors_legacy_limit() {
         p.max_auto_advances_per_phase
     );
 }
-
-// ---------------------------------------------------------------------------
-// Contract 2 — AutoAdvanceEvaluator default registry
-// ---------------------------------------------------------------------------
 
 #[test]
 fn c9_contract_auto_advance_evaluator_default_registers_5_axes() {
@@ -113,41 +81,29 @@ fn c9_contract_auto_advance_evaluator_default_registers_5_axes() {
         FsmTransition::CircuitBreaker,
         FsmTransition::AutoAdvance,
     ] {
-        assert!(
-            ev.gate_checks.contains_key(&t),
-            "AutoAdvanceEvaluator default must register {:?}",
-            t
-        );
+        assert!(ev.gate_checks.contains_key(&t));
     }
 }
 
 #[test]
 fn c9_contract_evaluator_evaluate_pass_on_all_pass_evidence() {
     let ev = AutoAdvanceEvaluator::default();
-    let v = ev.evaluate(&FsmTransition::AutoAdvance, &all_pass());
-    assert_eq!(v, EvidenceVerdict::Pass);
+    assert_eq!(ev.evaluate(&FsmTransition::AutoAdvance, &all_pass()), EvidenceVerdict::Pass);
 }
 
 #[test]
 fn c9_contract_evaluator_evaluate_fail_propagates_reason() {
     let ev = AutoAdvanceEvaluator::default();
-    let mut e = all_pass();
-    e.zero_ungrounded = false;
-    match ev.evaluate(&FsmTransition::AutoAdvance, &e) {
-        EvidenceVerdict::Fail { reason } => {
-            assert!(reason.contains("zero_ungrounded"));
-        }
+    let mut evidence = all_pass();
+    evidence.zero_ungrounded = false;
+    match ev.evaluate(&FsmTransition::AutoAdvance, &evidence) {
+        EvidenceVerdict::Fail { reason } => assert!(reason.contains("zero_ungrounded")),
         other => panic!("expected Fail, got {other:?}"),
     }
 }
 
-// ---------------------------------------------------------------------------
-// Contract 3 — EscalationTrigger extended taxonomy (6 variants)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn c9_contract_escalation_trigger_has_six_variants() {
-    // Compile-time + runtime check of the label round-trip.
     assert_eq!(EscalationTrigger::AntiSpiral.as_str(), "anti_spiral");
     assert_eq!(EscalationTrigger::HighRisk.as_str(), "high_risk");
     assert_eq!(EscalationTrigger::ReplanMajor.as_str(), "replan_major");
@@ -156,15 +112,8 @@ fn c9_contract_escalation_trigger_has_six_variants() {
         EscalationTrigger::SubstituteModelFailed.as_str(),
         "substitute_model_failed"
     );
-    assert_eq!(
-        EscalationTrigger::SplitTaskFailed.as_str(),
-        "split_task_failed"
-    );
+    assert_eq!(EscalationTrigger::SplitTaskFailed.as_str(), "split_task_failed");
 }
-
-// ---------------------------------------------------------------------------
-// Contract 4 — SubstituteModelFailed when fallback chain exhausted
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn c9_contract_substitute_model_failed_when_chain_exhausted() {
@@ -178,24 +127,18 @@ async fn c9_contract_substitute_model_failed_when_chain_exhausted() {
     );
     let mut ctx = ctx_at(PipelineLevel::Step, RiskLevel::Low);
     ctx.max_restarts_exhausted = true;
-    let d = gate.decide(&ctx).await;
     assert_eq!(
-        d,
+        gate.decide(&ctx).await,
         AutonomyDecision::Escalate {
             trigger: EscalationTrigger::SubstituteModelFailed,
         }
     );
 }
 
-// ---------------------------------------------------------------------------
-// Contract 5 — SubstituteModelFailed when target won't fit in VRAM
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn c9_contract_substitute_model_failed_when_target_oversized() {
-    // s-68264 audit cleanup: AutonomousGateConfig.estimated_model_sizes is FxHashMap<String,u64>.
-    let mut sizes: rustc_hash::FxHashMap<String, u64> = rustc_hash::FxHashMap::default();
-    sizes.insert("huge".to_owned(), 24 * 1024 * 1024 * 1024); // 24 GiB
+    let mut sizes = rustc_hash::FxHashMap::default();
+    sizes.insert("huge".to_owned(), 24 * 1024 * 1024 * 1024);
     let gate = AutonomousGate::new(
         AutonomousGateConfig {
             mode: GateMode::Autonomous,
@@ -208,23 +151,17 @@ async fn c9_contract_substitute_model_failed_when_target_oversized() {
     let mut ctx = ctx_at(PipelineLevel::Step, RiskLevel::Low);
     ctx.max_restarts_exhausted = true;
     ctx.model_pool = Some(Arc::new(FixedVramPool(2 * 1024 * 1024 * 1024)));
-    let d = gate.decide(&ctx).await;
     assert_eq!(
-        d,
+        gate.decide(&ctx).await,
         AutonomyDecision::Escalate {
             trigger: EscalationTrigger::SubstituteModelFailed,
         }
     );
 }
 
-// ---------------------------------------------------------------------------
-// Contract 6 — SubstituteModel succeeds when target fits
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn c9_contract_substitute_model_succeeds_when_target_fits() {
-    // s-68264 audit cleanup: AutonomousGateConfig.estimated_model_sizes is FxHashMap<String,u64>.
-    let mut sizes: rustc_hash::FxHashMap<String, u64> = rustc_hash::FxHashMap::default();
+    let mut sizes = rustc_hash::FxHashMap::default();
     sizes.insert("tiny".to_owned(), 256 * 1024 * 1024);
     sizes.insert("small".to_owned(), 1024 * 1024 * 1024);
     let gate = AutonomousGate::new(
@@ -247,10 +184,6 @@ async fn c9_contract_substitute_model_succeeds_when_target_fits() {
         other => panic!("expected SubstituteModel, got {other:?}"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Contract 7 — SplitTaskPlan + AutonomyDecision::SplitTask carrier
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn c9_contract_split_task_carries_plan_with_sequential_merge() {
@@ -276,81 +209,47 @@ async fn c9_contract_split_task_carries_plan_with_sequential_merge() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Contract 8 — GateMode::from_cli_args
-// ---------------------------------------------------------------------------
-
 #[test]
 fn c9_contract_gate_mode_from_cli_args() {
     assert_eq!(GateMode::from_cli_args(None), GateMode::Interactive);
-    assert_eq!(
-        GateMode::from_cli_args(Some("autonomous")),
-        GateMode::Autonomous
-    );
-    assert_eq!(
-        GateMode::from_cli_args(Some("interactive")),
-        GateMode::Interactive
-    );
-    // hybrid resolves to Interactive at the gate tier (hybrid is enforced
-    // at the dispatcher).
-    assert_eq!(
-        GateMode::from_cli_args(Some("hybrid")),
-        GateMode::Interactive
-    );
-    // Unknown labels fall back to default.
-    assert_eq!(
-        GateMode::from_cli_args(Some("garbage")),
-        GateMode::Interactive
-    );
-    // Whitespace + casing are tolerated.
-    assert_eq!(
-        GateMode::from_cli_args(Some("  AUTONOMOUS  ")),
-        GateMode::Autonomous
-    );
+    assert_eq!(GateMode::from_cli_args(Some("autonomous")), GateMode::Autonomous);
+    assert_eq!(GateMode::from_cli_args(Some("interactive")), GateMode::Interactive);
+    assert_eq!(GateMode::from_cli_args(Some("hybrid")), GateMode::Interactive);
+    assert_eq!(GateMode::from_cli_args(Some("garbage")), GateMode::Interactive);
+    assert_eq!(GateMode::from_cli_args(Some("  AUTONOMOUS  ")), GateMode::Autonomous);
 }
 
-// ---------------------------------------------------------------------------
-// Contract 9 — ResearchTree::split_step
-// ---------------------------------------------------------------------------
+fn research_tree_for(question: &str) -> ResearchTree {
+    use elai_core::clock::OsClock;
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+    ResearchTree::new(
+        ResearchPlan {
+            root_question: question.into(),
+            sub_questions: Vec::new(),
+            complexity: QueryComplexity::Moderate,
+            time_budget: std::time::Duration::from_secs(60),
+            require_contradictions: false,
+        },
+        true,
+        clock,
+    )
+    .expect("ResearchTree::new")
+}
 
 #[test]
 fn c9_contract_research_tree_split_step_realises_plan() {
-    use elai_core::clock::OsClock;
-    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
-    let plan = ResearchPlan {
-        root_question: "test question".into(),
-        sub_questions: Vec::new(),
-        complexity: QueryComplexity::Moderate,
-        time_budget: std::time::Duration::from_secs(60),
-        require_contradictions: false,
-    };
-    let tree = ResearchTree::new(plan, true, clock).expect("ResearchTree::new");
-    let split_plan = SplitTaskPlan::deterministic("step-x", 3, 1);
-    let realised = tree.split_step(&split_plan);
+    let tree = research_tree_for("test question");
+    let realised = tree.split_step(&SplitTaskPlan::deterministic("step-x", 3, 1));
     assert_eq!(realised.len(), 3);
     for (i, sub) in realised.iter().enumerate() {
-        // Re-stamped to the parent_phase prefix; preserved scope/budget.
         assert!(sub.task_id.contains("step-x"));
-        assert_eq!(
-            sub.task_id,
-            format!("step-x.sub{i}"),
-            "split_step must re-stamp task ids to parent_phase prefix"
-        );
+        assert_eq!(sub.task_id, format!("step-x.sub{i}"));
     }
 }
 
 #[test]
 fn c9_contract_research_tree_split_step_empty_on_empty_plan() {
-    use elai_core::clock::OsClock;
-    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
-    let plan = ResearchPlan {
-        root_question: "q".into(),
-        sub_questions: Vec::new(),
-        complexity: QueryComplexity::Moderate,
-        time_budget: std::time::Duration::from_secs(60),
-        require_contradictions: false,
-    };
-    let tree = ResearchTree::new(plan, true, clock).expect("ResearchTree::new");
+    let tree = research_tree_for("q");
     let empty_plan = SplitTaskPlan {
         parent_phase: "p".into(),
         sub_tasks: Vec::new(),
@@ -358,22 +257,12 @@ fn c9_contract_research_tree_split_step_empty_on_empty_plan() {
         max_depth: 2,
         current_depth: 0,
     };
-    let realised = tree.split_step(&empty_plan);
-    assert!(realised.is_empty(), "empty plan must return empty Vec");
+    assert!(tree.split_step(&empty_plan).is_empty());
 }
 
 #[test]
 fn c9_contract_research_tree_split_step_caps_at_max_depth() {
-    use elai_core::clock::OsClock;
-    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
-    let plan = ResearchPlan {
-        root_question: "q".into(),
-        sub_questions: Vec::new(),
-        complexity: QueryComplexity::Moderate,
-        time_budget: std::time::Duration::from_secs(60),
-        require_contradictions: false,
-    };
-    let tree = ResearchTree::new(plan, true, clock).expect("ResearchTree::new");
+    let tree = research_tree_for("q");
     let at_cap = SplitTaskPlan {
         parent_phase: "p".into(),
         sub_tasks: vec![SubTask {
@@ -386,20 +275,77 @@ fn c9_contract_research_tree_split_step_caps_at_max_depth() {
         max_depth: 2,
         current_depth: 2,
     };
-    let realised = tree.split_step(&at_cap);
-    assert!(realised.is_empty(), "at max_depth: split_step must refuse");
+    assert!(tree.split_step(&at_cap).is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// Contract 10 — apply_task_runner_wiring installs AutonomousGate
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn c9_contract_apply_task_runner_wiring_installs_gate() {
-    // Build a minimal RuntimeWiring in a tempdir (mirrors
-    // agent_pool_executor_wiring_contract::build_minimal_wiring shape).
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
+    let (ssb, feasibility_prober, layer1a_processor) = c9_wiring_fixture(tmp.path());
+
+    assert_gate_mode(
+        tmp.path(),
+        ssb.clone(),
+        feasibility_prober.clone(),
+        layer1a_processor.clone(),
+        None,
+        None,
+    )
+    .await;
+    assert_gate_mode(
+        tmp.path(),
+        ssb.clone(),
+        feasibility_prober.clone(),
+        layer1a_processor.clone(),
+        Some(GateMode::Interactive),
+        Some(GateMode::Interactive),
+    )
+    .await;
+    assert_gate_mode(
+        tmp.path(),
+        ssb,
+        feasibility_prober,
+        layer1a_processor,
+        Some(GateMode::Autonomous),
+        Some(GateMode::Autonomous),
+    )
+    .await;
+}
+
+async fn assert_gate_mode(
+    root: &std::path::Path,
+    ssb: Arc<elai_orchestrator::Ssb>,
+    feasibility_prober: Arc<elai_orchestrator::DefaultFeasibilityProber>,
+    layer1a_processor: Arc<elai_orchestrator::DefaultLayer1aProcessor>,
+    gate_mode: Option<GateMode>,
+    expected: Option<GateMode>,
+) {
+    let wiring = c9_runtime_wiring(ssb, feasibility_prober, layer1a_processor, gate_mode);
+    let cfg = apply_task_runner_wiring(root.join("cursor.json"), &wiring);
+    match expected {
+        None => assert!(cfg.autonomous_gate.is_none()),
+        Some(expected_mode) => assert_gate_mode_is(&cfg, expected_mode).await,
+    }
+}
+
+async fn assert_gate_mode_is(cfg: &elai_orchestrator::TaskRunnerConfig, expected: GateMode) {
+    assert_eq!(
+        cfg.autonomous_gate
+            .as_ref()
+            .expect("autonomous_gate must be installed")
+            .mode()
+            .await,
+        expected
+    );
+}
+
+fn c9_wiring_fixture(
+    root: &std::path::Path,
+) -> (
+    Arc<elai_orchestrator::Ssb>,
+    Arc<elai_orchestrator::DefaultFeasibilityProber>,
+    Arc<elai_orchestrator::DefaultLayer1aProcessor>,
+) {
     let sessions_dir = root.join(".elai_cc").join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
     let rules_db_path = root.join(".elai_cc").join("rules.db");
@@ -412,112 +358,32 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         project_id: "c9-test".to_string(),
         session_id: "c9-session".to_string(),
     };
-    let clock_arc: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(elai_core::clock::OsClock);
+    let clock_arc: Arc<dyn elai_core::clock::ClockProvider> =
+        Arc::new(elai_core::clock::OsClock);
     let ssb = Arc::new(elai_orchestrator::Ssb::new(ssb_config, clock_arc).expect("Ssb::new"));
-    let feasibility_prober =
-        Arc::new(elai_orchestrator::DefaultFeasibilityProber::new(root.join("feasibility")));
+    let feasibility_prober = Arc::new(
+        elai_orchestrator::DefaultFeasibilityProber::new(root.join("feasibility")),
+    );
     let layer1a_processor = Arc::new(elai_orchestrator::DefaultLayer1aProcessor::new(
         rules_db,
         rules_db_path,
         ssb.clone(),
     ));
+    (ssb, feasibility_prober, layer1a_processor)
+}
 
-    // Case A: gate_mode = None preserves the legacy
-    // `autonomous_gate: None` invariant.
-    let wiring_none = RuntimeWiring {
-        ssb: ssb.clone(),
-        feasibility_prober: feasibility_prober.clone(),
-        layer1a_processor: layer1a_processor.clone(),
-        baby_step_executor: None,
-        gate_mode: None,
-        // I-42: critique-only profile opt-in elsewhere; None = legacy posture.
-        run_profile: None,
-        cloud_config: None,
-        provider_override: None,
-        hook_dispatcher: None,
-        // C-25 audit follow-up: tests at the pre-C-25 layer pass None so
-        // the legacy "no crystallizer" path remains exercised.
-        crystallizer: None,
-        compiled_pipeline_store: None,
-        background_task_manager: None,
-        // F-6 / Slice A3: legacy contract path -- no learned-skill store.
-        skill_store: None,
-        via_mcp: false,
-        // C-39: legacy contract path -- no Dispatch impl wired.
-        mcp_dispatch: None,
-        // B-28 WIRING-2: legacy contract path -- no production buffer editor.
-        buffer_editor: None,
-        // B-08: legacy contract path -- pipeline_grc opt-in elsewhere.
-        pipeline_grc: None,
-        // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
-        interactive_gate: None,
-        // F-1 B2: legacy contract path -- seed integrity defaults to ok.
-        vibegate_seed_ok: true,
-        // P0-2: legacy contract path -- no reflection client in pre-P0 tests.
-        reflection_client: None,
-        // P0-1: legacy contract path -- no adversary runtime in pre-P0 tests.
-        adversary_runtime: None,
-        // B-25 Phase 4J: legacy contract fixture -- no EmpireBridge handle.
-        #[cfg(feature = "empire")]
-        empire_bridge: None,
-    };
-    let cfg_none = apply_task_runner_wiring(root.join("cursor.json"), &wiring_none);
-    assert!(
-        cfg_none.autonomous_gate.is_none(),
-        "gate_mode=None must yield autonomous_gate=None"
-    );
-
-    // Case B: gate_mode = Some(Interactive) installs a real gate.
-    let wiring_inter = RuntimeWiring {
-        ssb: ssb.clone(),
-        feasibility_prober: feasibility_prober.clone(),
-        layer1a_processor: layer1a_processor.clone(),
-        baby_step_executor: None,
-        gate_mode: Some(GateMode::Interactive),
-        // I-42: critique-only profile opt-in elsewhere; None = legacy posture.
-        run_profile: None,
-        cloud_config: None,
-        provider_override: None,
-        hook_dispatcher: None,
-        crystallizer: None,
-        compiled_pipeline_store: None,
-        background_task_manager: None,
-        // F-6 / Slice A3: legacy contract path -- no learned-skill store.
-        skill_store: None,
-        via_mcp: false,
-        // C-39: legacy contract path -- no Dispatch impl wired.
-        mcp_dispatch: None,
-        // B-28 WIRING-2: legacy contract path -- no production buffer editor.
-        buffer_editor: None,
-        // B-08: legacy contract path -- pipeline_grc opt-in elsewhere.
-        pipeline_grc: None,
-        // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
-        interactive_gate: None,
-        // F-1 B2: legacy contract path -- seed integrity defaults to ok.
-        vibegate_seed_ok: true,
-        // P0-2: legacy contract path -- no reflection client in pre-P0 tests.
-        reflection_client: None,
-        // P0-1: legacy contract path -- no adversary runtime in pre-P0 tests.
-        adversary_runtime: None,
-        // B-25 Phase 4J: legacy contract fixture -- no EmpireBridge handle.
-        #[cfg(feature = "empire")]
-        empire_bridge: None,
-    };
-    let cfg_inter = apply_task_runner_wiring(root.join("cursor.json"), &wiring_inter);
-    let gate = cfg_inter
-        .autonomous_gate
-        .as_ref()
-        .expect("autonomous_gate must be installed");
-    assert_eq!(gate.mode().await, GateMode::Interactive);
-
-    // Case C: gate_mode = Some(Autonomous) installs a gate in Autonomous mode.
-    let wiring_auto = RuntimeWiring {
+fn c9_runtime_wiring(
+    ssb: Arc<elai_orchestrator::Ssb>,
+    feasibility_prober: Arc<elai_orchestrator::DefaultFeasibilityProber>,
+    layer1a_processor: Arc<elai_orchestrator::DefaultLayer1aProcessor>,
+    gate_mode: Option<GateMode>,
+) -> RuntimeWiring {
+    RuntimeWiring {
         ssb,
         feasibility_prober,
         layer1a_processor,
         baby_step_executor: None,
-        gate_mode: Some(GateMode::Autonomous),
-        // I-42: critique-only profile opt-in elsewhere; None = legacy posture.
+        gate_mode,
         run_profile: None,
         cloud_config: None,
         provider_override: None,
@@ -525,38 +391,19 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
-        // F-6 / Slice A3: legacy contract path -- no learned-skill store.
         skill_store: None,
         via_mcp: false,
-        // C-39: legacy contract path -- no Dispatch impl wired.
         mcp_dispatch: None,
-        // B-28 WIRING-2: legacy contract path -- no production buffer editor.
         buffer_editor: None,
-        // B-08: legacy contract path -- pipeline_grc opt-in elsewhere.
         pipeline_grc: None,
-        // B-6 #2: legacy contract path -- interactive_gate opt-in elsewhere.
         interactive_gate: None,
-        // F-1 B2: legacy contract path -- seed integrity defaults to ok.
         vibegate_seed_ok: true,
-        // P0-2: legacy contract path -- no reflection client in pre-P0 tests.
         reflection_client: None,
-        // P0-1: legacy contract path -- no adversary runtime in pre-P0 tests.
         adversary_runtime: None,
-        // B-25 Phase 4J: legacy contract fixture -- no EmpireBridge handle.
         #[cfg(feature = "empire")]
         empire_bridge: None,
-    };
-    let cfg_auto = apply_task_runner_wiring(root.join("cursor.json"), &wiring_auto);
-    let gate_auto = cfg_auto
-        .autonomous_gate
-        .as_ref()
-        .expect("autonomous_gate must be installed");
-    assert_eq!(gate_auto.mode().await, GateMode::Autonomous);
+    }
 }
-
-// ---------------------------------------------------------------------------
-// Contract 11 — ModelPool::can_fit_llm default impl
-// ---------------------------------------------------------------------------
 
 #[test]
 fn c9_contract_modelpool_can_fit_llm_default_uses_available_vram() {

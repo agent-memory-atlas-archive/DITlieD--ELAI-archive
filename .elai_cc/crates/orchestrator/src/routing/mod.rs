@@ -19,7 +19,7 @@
 //!     near-zero dispatch cost" invariant).
 //!   - [`RoutingPolicy`] — typed knobs loaded from elai_cc.toml's
 //!     `[agent.selective_delegation]` section (enabled, alpha, S_max,
-//!     max_turns, max_workers_per_query). Construction enforces paper
+//!     max_workers_per_query). Construction enforces paper
 //!     invariants `alpha in [0, 1]` and `S_max <= 0.10` (raising
 //!     S_max above 0.10 enables cost-hacking incorrect answers per
 //!     paper Section 5).

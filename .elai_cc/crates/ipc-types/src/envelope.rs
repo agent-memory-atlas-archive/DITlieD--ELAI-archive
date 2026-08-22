@@ -91,7 +91,11 @@ pub enum EnvelopePayload {
     /// Grounding citation: "claim X is supported by source Y".
     GroundingCitation { body: String, source_url: String },
     /// Consensus vote: "I vote PASS / BLOCK on claim X" + scalar weight.
-    ConsensusVote { claim_id: String, vote: String, weight: f64 },
+    ConsensusVote {
+        claim_id: String,
+        vote: String,
+        weight: f64,
+    },
     /// Adversary verdict: "cross-family adversary confirmed / rejected
     /// the original verdict". Mirrors the orchestrator-side
     /// AdversaryVerdict struct's wire shape.

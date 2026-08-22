@@ -13038,7 +13038,7 @@ pub async fn routing_decisions_status(
     // Pilot policy mirrors crates/cli/src/routing_cmd.rs::pilot_policy
     // so the dashboard + CLI render the same synthetic numbers until
     // the production wiring fires.
-    let policy = RoutingPolicy::new(true, 0.1, 0.10, 8, 8).map_err(|e| {
+    let policy = RoutingPolicy::new(true, 0.1, 0.10, 8).map_err(|e| {
         map_err(format!("routing_decisions_status policy build failed: {e}"))
     })?;
     let delegator = SelectiveDelegator::new(policy);
@@ -13116,7 +13116,6 @@ pub async fn routing_decisions_status(
             "enabled": policy.enabled,
             "alpha": policy.alpha,
             "s_max": policy.s_max,
-            "max_turns": policy.max_turns,
             "max_workers_per_query": policy.max_workers_per_query,
         },
         "ts_ms": ts_ms,

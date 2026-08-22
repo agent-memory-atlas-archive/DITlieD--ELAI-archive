@@ -30,8 +30,8 @@ pub use envelope::{
 // AgentDispatchConfig::role but the wire FRAME structure (IpcMessageType tag
 // bijection, IPC_MESSAGE_TYPE_VARIANT_COUNT) is unchanged — adding string
 // variants to a #[serde(rename_all="snake_case")] enum is a soft-compat
-// change. IPC_PROTOCOL_VERSION stays at 2 because:
-//   (1) the IpcMessageType variant table is unchanged (still 16 tags)
+// change. At that time, IPC_PROTOCOL_VERSION stayed at 2 because:
+//   (1) the IpcMessageType variant table was unchanged (still 16 tags)
 //   (2) MAX_FRAME_SIZE and FRAME_HEADER_SIZE are unchanged
 //   (3) orchestrator + agent binaries ship together — older agents won't be
 //       handed an `idea_framer` dispatch config unless paired with this code
@@ -48,7 +48,7 @@ pub use envelope::{
 // AuditorMode::map_to_agent_role. Documented in
 // workflow/reasoning/B-41-decisions.md DECISION-AGENTROLE.
 //
-// IPC_PROTOCOL_VERSION stays at 2: same soft-compat rationale as B-40 (snake_case
+// IPC_PROTOCOL_VERSION stayed at 2 at that time: same soft-compat rationale as B-40 (snake_case
 // string variants, no IpcMessageType tag change).
 
 // B-37C: added PartialOrd + Ord so AgentRole can key a deterministic
@@ -127,9 +127,9 @@ pub enum AgentRole {
 
 /// Wire protocol version. Mismatch between orchestrator and agent -> kill.
 ///
-/// Bumped to 2 in Phase A2 — added IpcMessageType::AgentMaxIterationsReached
-/// (tag=15). Older binaries (version 1) MUST be rebuilt.
-pub const IPC_PROTOCOL_VERSION: u8 = 2;
+/// Bumped to 3 because the breaking removal of a wire message variant requires
+/// older binaries to be rebuilt.
+pub const IPC_PROTOCOL_VERSION: u8 = 3;
 
 /// Hard cap on any single IPC frame payload (10 MiB).
 pub const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024;
@@ -231,37 +231,80 @@ pub struct AgentDispatchConfig {
 }
 
 // ---------------------------------------------------------------------------
-// IpcMessageType — 16 message variants (LOCKED — see note below)
+// IpcMessageType — 15 message variants (LOCKED — see note below)
 // ---------------------------------------------------------------------------
 //
-// Phase A2 added AgentMaxIterationsReached (tag=15); count now 16.
 // Subsequent additions still LOCKED behind explicit decision.
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IpcMessageType {
-    AgentRequest { task: String, dispatch_config: AgentDispatchConfig },
-    AgentResponse { content: String, artifacts: Vec<String> },
-    InferRequest { prompt: String, max_tokens: u32 },
-    InferResponse { text: String, tokens_used: u32 },
-    ToolRequest { tool_id: ToolId, arguments: Vec<u8> },
-    ToolResult { tool_id: ToolId, output: Vec<u8>, success: bool },
-    BashRequest { command: String, timeout_ms: u64 },
-    BashResult { stdout: Vec<u8>, stderr: Vec<u8>, exit_code: i32 },
-    GroundingRequest { topic: String, query: String },
-    GroundingResult { topic: String, evidence: Vec<String>, confidence: f32 },
-    ThinkStep { topic: String, step_type: String, content: String },
-    CheckpointSync { agent_id: Uuid, sequence: u64, payload: Vec<u8> },
-    AgentHeartbeat { agent_id: Uuid, uptime_secs: u64 },
-    AgentKill { reason: String },
-    ReplanRequest { reason: String, severity: String },
-    /// Phase A2 — emitted by the agent's ReAct loop when the iteration cap
-    /// (`AGENT_MAX_ITERATIONS`, default 25) fires. The orchestrator MUST treat
-    /// this as a terminal frame for the current AgentRequest — no
-    /// AgentResponse will follow.
-    AgentMaxIterationsReached { reason: String, iterations_completed: u32 },
+    AgentRequest {
+        task: String,
+        dispatch_config: AgentDispatchConfig,
+    },
+    AgentResponse {
+        content: String,
+        artifacts: Vec<String>,
+    },
+    InferRequest {
+        prompt: String,
+        max_tokens: u32,
+    },
+    InferResponse {
+        text: String,
+        tokens_used: u32,
+    },
+    ToolRequest {
+        tool_id: ToolId,
+        arguments: Vec<u8>,
+    },
+    ToolResult {
+        tool_id: ToolId,
+        output: Vec<u8>,
+        success: bool,
+    },
+    BashRequest {
+        command: String,
+        timeout_ms: u64,
+    },
+    BashResult {
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        exit_code: i32,
+    },
+    GroundingRequest {
+        topic: String,
+        query: String,
+    },
+    GroundingResult {
+        topic: String,
+        evidence: Vec<String>,
+        confidence: f32,
+    },
+    ThinkStep {
+        topic: String,
+        step_type: String,
+        content: String,
+    },
+    CheckpointSync {
+        agent_id: Uuid,
+        sequence: u64,
+        payload: Vec<u8>,
+    },
+    AgentHeartbeat {
+        agent_id: Uuid,
+        uptime_secs: u64,
+    },
+    AgentKill {
+        reason: String,
+    },
+    ReplanRequest {
+        reason: String,
+        severity: String,
+    },
 }
 
-// Compile-time assertion: exactly 16 variants.
+// Compile-time assertion: exactly 15 variants.
 #[doc(hidden)]
 pub const fn _ipc_variant_tag(msg: &IpcMessageType) -> u8 {
     match msg {
@@ -280,12 +323,11 @@ pub const fn _ipc_variant_tag(msg: &IpcMessageType) -> u8 {
         IpcMessageType::AgentHeartbeat { .. } => 12,
         IpcMessageType::AgentKill { .. } => 13,
         IpcMessageType::ReplanRequest { .. } => 14,
-        IpcMessageType::AgentMaxIterationsReached { .. } => 15,
     }
 }
 
 /// Number of IpcMessageType variants.
-pub const IPC_MESSAGE_TYPE_VARIANT_COUNT: usize = 16;
+pub const IPC_MESSAGE_TYPE_VARIANT_COUNT: usize = 15;
 
 // ---------------------------------------------------------------------------
 // IpcFrame — wire-level frame
@@ -347,12 +389,14 @@ impl IpcFrame {
     }
 
     pub fn to_wire_bytes(&self) -> Result<Vec<u8>, IpcFrameError> {
-        let len: u32 = self.payload.len().try_into().map_err(|_| {
-            IpcFrameError::PayloadTooLarge {
-                size: self.payload.len(),
-                limit: u32::MAX as usize,
-            }
-        })?;
+        let len: u32 =
+            self.payload
+                .len()
+                .try_into()
+                .map_err(|_| IpcFrameError::PayloadTooLarge {
+                    size: self.payload.len(),
+                    limit: u32::MAX as usize,
+                })?;
         let mut buf = Vec::with_capacity(FRAME_HEADER_SIZE + self.payload.len());
         buf.push(self.version);
         buf.extend_from_slice(&len.to_le_bytes());

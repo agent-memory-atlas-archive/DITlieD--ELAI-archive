@@ -3,18 +3,18 @@ pub mod ipc_registry;
 // C-13 — AdaptiveTool<T> wrapper + IpcToolDispatcherAdapter shim. Together
 // they fulfil D1 Option B (adapter shim) + the 10 missing DAIRA markers.
 pub mod adaptive_tool;
-pub mod git_tool;
-pub mod validation;
-pub mod trace;
-pub mod edit_matching;
-pub mod file_read;
-pub mod compile_check;
-pub mod failure_taxonomy;
-pub mod dkg_tools;
-pub mod integration_check;
 pub mod bash_validation;
+pub mod compile_check;
+pub mod dkg_tools;
+pub mod edit_matching;
+pub mod failure_taxonomy;
 pub mod file_ops;
+pub mod file_read;
+pub mod git_tool;
+pub mod integration_check;
 pub mod stale_branch;
+pub mod trace;
+pub mod validation;
 // Batch 2B: 5-tier validation pipeline. Consumes
 // `elai_core::tool_dispatcher::{ValidateRequest,ValidationTier,...}`.
 pub mod tiered_validation;
@@ -33,9 +33,9 @@ pub mod string_similarity;
 // `followups_for_other_sessions`).
 pub mod search_replace;
 // I-53: recipe runners (just/make/cargo discovery + run), archive reader, JSON tree query.
-pub mod recipe_runners;
 pub mod archive_reader;
 pub mod json_query;
+pub mod recipe_runners;
 // I-13: TraceQuery on-demand line-range expansion tool.
 // Registered in production_agent_rpc.rs::build_tool_catalog (IS-14 3-arm pattern).
 pub mod trace_query;
@@ -51,35 +51,36 @@ use std::time::Duration;
 
 use elai_core::ClockProvider;
 
-use elai_providers::{
-    max_tokens_for_model, resolve_model_alias, ContentBlockDelta, InputContentBlock, InputMessage,
-    MessageRequest, MessageResponse, OutputContentBlock, ProviderClient,
-    StreamEvent as ApiStreamEvent, SystemBlock, ToolChoice, ToolDefinition, ToolResultContentBlock,
+use crate::file_ops::{
+    edit_file, glob_search, grep_search, read_file, write_file, GrepSearchInput,
 };
-use elai_plugins::PluginTool;
-use reqwest::blocking::Client;
-use crate::file_ops::{edit_file, glob_search, grep_search, read_file, write_file, GrepSearchInput};
 use crate::stale_branch::{check_freshness, BranchFreshness};
 use elai_orchestrator::{
-    build_agent_prompt, build_agent_system_preamble, AgentPromptContext, AgentTemplateConfig,
-    dedupe_superseded_commit_events, execute_bash,
-    PromptHardeningAppliedKind, PromptHardeningAppliedPayload,
+    build_agent_prompt, build_agent_system_preamble,
     context_budget::ModelTier,
+    dedupe_superseded_commit_events, execute_bash,
     mcp_tool_bridge::McpToolRegistry,
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
     subagent_evidence_gate::{evaluate_subagent_return, EvidenceVerdict},
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
     worker_boot::{WorkerReadySnapshot, WorkerRegistry},
-    ApiClient, ApiRequest, AssistantEvent, BashCommandInput, BashCommandOutput,
-    ContentBlock, ConversationMessage, ConversationRuntime,
+    AgentPromptContext, AgentTemplateConfig, ApiClient, ApiRequest, AssistantEvent,
+    BashCommandInput, BashCommandOutput, ContentBlock, ConversationMessage, ConversationRuntime,
     LaneCommitProvenance, LaneEvent, LaneEventBlocker, LaneEventName, LaneEventStatus,
     LaneFailureClass, McpDegradedReport, MessageRole, PermissionMode, PermissionPolicy,
-    PromptCacheEvent, RuntimeError, Session, TaskPacket, ToolError, ToolExecutor,
+    PromptCacheEvent, PromptHardeningAppliedKind, PromptHardeningAppliedPayload, RuntimeError,
+    Session, TaskPacket, ToolError, ToolExecutor,
 };
+use elai_plugins::PluginTool;
+use elai_providers::{
+    max_tokens_for_model, resolve_model_alias, ContentBlockDelta, InputContentBlock, InputMessage,
+    MessageRequest, MessageResponse, OutputContentBlock, ProviderClient,
+    StreamEvent as ApiStreamEvent, SystemBlock, ToolChoice, ToolDefinition, ToolResultContentBlock,
+};
+use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-
 
 fn global_mcp_registry() -> &'static McpToolRegistry {
     use std::sync::OnceLock;
@@ -431,7 +432,11 @@ impl GlobalToolRegistry {
                 input,
             );
         }
-        if let Some(plugin) = self.plugin_tools.iter().find(|tool| tool.definition().name == name) {
+        if let Some(plugin) = self
+            .plugin_tools
+            .iter()
+            .find(|tool| tool.definition().name == name)
+        {
             return plugin.execute(input).map_err(|error| error.to_string());
         }
         execute_tool_with_enforcer_scoped(
@@ -1485,7 +1490,12 @@ pub fn enforce_permission_check(
 }
 
 pub fn execute_tool(name: &str, input: &Value) -> Result<String, String> {
-    execute_tool_with_enforcer(None, &action_classifier::ActionPolicy::default(), name, input)
+    execute_tool_with_enforcer(
+        None,
+        &action_classifier::ActionPolicy::default(),
+        name,
+        input,
+    )
 }
 
 struct FsmState {
@@ -1516,11 +1526,7 @@ fn is_hidden_path(path: &str) -> bool {
         || normalized == "rules.db"
 }
 
-const HIDDEN_PATH_PATTERNS: &[&str] = &[
-    ".elai_cc/**",
-    ".elai_cc/models/**",
-    "rules.db",
-];
+const HIDDEN_PATH_PATTERNS: &[&str] = &[".elai_cc/**", ".elai_cc/models/**", "rules.db"];
 
 fn structured_error(error_code: &str, message: &str) -> String {
     serde_json::json!({
@@ -1559,8 +1565,7 @@ fn execute_tool_with_enforcer_scoped(
     // B-18C: a path is denied when it is globally hidden OR (when the agent has
     // a non-empty allow-list) it falls outside that allow-list. Fail-closed.
     let path_denied = |candidate: &str| -> bool {
-        is_hidden_path(candidate)
-            || !file_ops::path_within_allowed_paths(candidate, allowed_paths)
+        is_hidden_path(candidate) || !file_ops::path_within_allowed_paths(candidate, allowed_paths)
     };
     // A-31: action classifier + confirmation gate.
     // Classify risk, check gate, produce DAIRA trace entry.
@@ -1602,18 +1607,24 @@ fn execute_tool_with_enforcer_scoped(
                     // from missing paths. Mirror std::io::ErrorKind::NotFound display.
                     // B-18C: same envelope when the path is outside the agent's
                     // allowed_paths, so the restriction is unobservable.
-                    return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
+                    return Err(structured_error(
+                        "not_found",
+                        &format!("No such file or directory: {path}"),
+                    ));
                 }
             }
-            from_value::<ReadFileInput>(input).and_then(run_read_file).map_err(|e| {
-                structured_error("file_error", &e)
-            })
+            from_value::<ReadFileInput>(input)
+                .and_then(run_read_file)
+                .map_err(|e| structured_error("file_error", &e))
         }
         "write_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
                 if path_denied(path) {
-                    return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
+                    return Err(structured_error(
+                        "not_found",
+                        &format!("No such file or directory: {path}"),
+                    ));
                 }
             }
             from_value::<WriteFileInput>(input).and_then(run_write_file)
@@ -1622,7 +1633,10 @@ fn execute_tool_with_enforcer_scoped(
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
                 if path_denied(path) {
-                    return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
+                    return Err(structured_error(
+                        "not_found",
+                        &format!("No such file or directory: {path}"),
+                    ));
                 }
             }
             from_value::<EditFileInput>(input).and_then(run_edit_file)
@@ -1659,14 +1673,20 @@ fn execute_tool_with_enforcer_scoped(
                 // B-18C: the search root is a concrete path -> fail-closed
                 // against allowed_paths in addition to the hidden-path rule.
                 if path_denied(path) {
-                    return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
+                    return Err(structured_error(
+                        "not_found",
+                        &format!("No such file or directory: {path}"),
+                    ));
                 }
             }
             if let Some(glob) = glob_opt {
                 // `glob` is a glob pattern, not a single path: hidden-path rule
                 // only (a broad glob must not be force-denied by the allow-list).
                 if is_hidden_path(glob) {
-                    return Err(structured_error("not_found", &format!("No such file or directory: {glob}")));
+                    return Err(structured_error(
+                        "not_found",
+                        &format!("No such file or directory: {glob}"),
+                    ));
                 }
             }
             if path_opt.is_none() && glob_opt.is_none() {
@@ -1736,18 +1756,19 @@ fn execute_tool_with_enforcer_scoped(
             from_value::<TestingPermissionInput>(input).and_then(run_testing_permission)
         }
         "fsm_get_state" => {
-            let state = fsm_state().lock().map_err(|e| structured_error("FSM_LOCK_POISONED", &format!("FSM lock poisoned: {e}")))?;
+            let state = fsm_state().lock().map_err(|e| {
+                structured_error("FSM_LOCK_POISONED", &format!("FSM lock poisoned: {e}"))
+            })?;
             Ok(serde_json::json!({"state": state.current, "phase": state.phase}).to_string())
         }
         "fsm_transition" => {
-            let target = input
-                .get("target")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let target = input.get("target").and_then(|v| v.as_str()).unwrap_or("");
             match target {
-                "IDLE" | "EXECUTING" | "PLANNING" | "TESTING_FIRST" | "AUDITING"
-                | "MEMORIZING" | "COMPLETE" | "CONFIGURING" => {
-                    let mut state = fsm_state().lock().map_err(|e| structured_error("FSM_LOCK_POISONED", &format!("FSM lock poisoned: {e}")))?;
+                "IDLE" | "EXECUTING" | "PLANNING" | "TESTING_FIRST" | "AUDITING" | "MEMORIZING"
+                | "COMPLETE" | "CONFIGURING" => {
+                    let mut state = fsm_state().lock().map_err(|e| {
+                        structured_error("FSM_LOCK_POISONED", &format!("FSM lock poisoned: {e}"))
+                    })?;
                     let previous = state.current.clone();
                     state.current = target.to_string();
                     if let Some(phase) = input.get("phase").and_then(|v| v.as_str()) {
@@ -1763,8 +1784,7 @@ fn execute_tool_with_enforcer_scoped(
         }
         "git_commit" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<git_commit::GitCommitInput>(input)
-                .and_then(git_commit::run_git_commit)
+            from_value::<git_commit::GitCommitInput>(input).and_then(git_commit::run_git_commit)
         }
         "list_hidden_paths" => {
             let patterns: Vec<&str> = HIDDEN_PATH_PATTERNS.to_vec();
@@ -1804,18 +1824,16 @@ fn execute_tool_with_enforcer_scoped(
                 .and_then(|v| v.as_str())
                 .unwrap_or("list");
             match action {
-                "list" => archive_reader::list_archive(archive_path)
-                    .map(|v| v.to_string()),
+                "list" => archive_reader::list_archive(archive_path).map(|v| v.to_string()),
                 "read" => {
-                    let entry = input
-                        .get("entry")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            "archive_read: 'entry' field required when action=read".to_string()
-                        })?;
+                    let entry = input.get("entry").and_then(|v| v.as_str()).ok_or_else(|| {
+                        "archive_read: 'entry' field required when action=read".to_string()
+                    })?;
                     archive_reader::read_archive_entry(archive_path, entry)
                 }
-                other => Err(format!("archive_read: unknown action '{other}'; use 'list' or 'read'")),
+                other => Err(format!(
+                    "archive_read: unknown action '{other}'; use 'list' or 'read'"
+                )),
             }
         }
         "json_tree_query" => {
@@ -2165,7 +2183,6 @@ fn run_cron_list(_input: Value) -> Result<String, String> {
     }))
 }
 
-
 #[allow(clippy::needless_pass_by_value)]
 fn run_list_mcp_resources(input: McpResourceInput) -> Result<String, String> {
     let registry = global_mcp_registry();
@@ -2341,8 +2358,8 @@ fn from_value<T: for<'de> Deserialize<'de>>(input: &Value) -> Result<T, String> 
 /// Windows has none). E-30 gates the VERB pre-expansion; G-3 gates the PATH
 /// post-expansion — composing layers, neither re-implemented.
 const FS_MUTATING_VERBS: &[&str] = &[
-    "rm", "rmdir", "mv", "cp", "dd", "truncate", "shred", "unlink",
-    "tee", "install", "ln", "mkdir", "touch", "chmod", "chown",
+    "rm", "rmdir", "mv", "cp", "dd", "truncate", "shred", "unlink", "tee", "install", "ln",
+    "mkdir", "touch", "chmod", "chown",
 ];
 
 /// G-3: extract candidate path tokens from a bash command for the FS gate.
@@ -2390,16 +2407,17 @@ fn check_bash_blast_radius(command: &str) -> Result<(), String> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from);
     for token in extract_fs_mutating_targets(command) {
-        let candidate: PathBuf = match elai_safety::blast_radius::expand_fs_token(token, home.as_deref()) {
-            elai_safety::blast_radius::ExpandedToken::Path(p) => p,
-            elai_safety::blast_radius::ExpandedToken::GlobBase(base) => {
-                if base.as_os_str().is_empty() {
-                    worktree_root.clone()
-                } else {
-                    base
+        let candidate: PathBuf =
+            match elai_safety::blast_radius::expand_fs_token(token, home.as_deref()) {
+                elai_safety::blast_radius::ExpandedToken::Path(p) => p,
+                elai_safety::blast_radius::ExpandedToken::GlobBase(base) => {
+                    if base.as_os_str().is_empty() {
+                        worktree_root.clone()
+                    } else {
+                        base
+                    }
                 }
-            }
-        };
+            };
         // A relative target is resolved against the worktree root (the cwd the
         // shell will run in); an absolute / `~`-expanded target stands alone.
         let resolved = if candidate.is_absolute() {
@@ -2409,8 +2427,7 @@ fn check_bash_blast_radius(command: &str) -> Result<(), String> {
         };
         let verdict =
             elai_safety::blast_radius::check_fs_target(&resolved, &worktree_root, command);
-        if let elai_safety::blast_radius::BlastRadiusVerdict::Block { post_expansion, .. } =
-            verdict
+        if let elai_safety::blast_radius::BlastRadiusVerdict::Block { post_expansion, .. } = verdict
         {
             return Err(format!(
                 "G-3 blast-radius gate: bash filesystem target `{token}` BLOCKED — resolves \
@@ -2435,10 +2452,8 @@ fn run_bash(input: BashCommandInput) -> Result<String, String> {
     // (1) Allowed-prefix check: if the command starts with a recognized prefix
     // but contains a banned shell token, classify as PrefixBlocked.
     // If the command starts with a recognized prefix and is clean, pass through.
-    match bash_interceptor::check_allowed_prefix(
-        &input.command,
-        bash_interceptor::ALLOWED_PREFIXES,
-    ) {
+    match bash_interceptor::check_allowed_prefix(&input.command, bash_interceptor::ALLOWED_PREFIXES)
+    {
         bash_interceptor::AllowedPrefixResult::Allowed => {
             // Command starts with an allowed prefix and is clean.
             // Skip the redirect + routing layers entirely and let it execute.
@@ -2671,20 +2686,31 @@ fn run_read_file(input: ReadFileInput) -> Result<String, String> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_write_file(input: WriteFileInput) -> Result<String, String> {
-    to_pretty_json(write_file(&input.path, &input.content).map_err(io_to_string)?)
+    let out = write_file(&input.path, &input.content).map_err(io_to_string)?;
+    elai_orchestrator::index_overlay::capture_file_ops_edit(
+        std::path::Path::new(&out.file_path),
+        out.original_file.as_deref().unwrap_or(""),
+        &out.content,
+    );
+    to_pretty_json(out)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn run_edit_file(input: EditFileInput) -> Result<String, String> {
-    to_pretty_json(
-        edit_file(
-            &input.path,
-            &input.old_string,
-            &input.new_string,
-            input.replace_all.unwrap_or(false),
-        )
-        .map_err(io_to_string)?,
+    let out = edit_file(
+        &input.path,
+        &input.old_string,
+        &input.new_string,
+        input.replace_all.unwrap_or(false),
     )
+    .map_err(io_to_string)?;
+    let after = std::fs::read_to_string(&out.file_path).unwrap_or_default();
+    elai_orchestrator::index_overlay::capture_file_ops_edit(
+        std::path::Path::new(&out.file_path),
+        &out.original_file,
+        &after,
+    );
+    to_pretty_json(out)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -3025,7 +3051,6 @@ struct CronCreateInput {
 struct CronDeleteInput {
     cron_id: String,
 }
-
 
 #[derive(Debug, Deserialize)]
 struct McpResourceInput {
@@ -3804,15 +3829,14 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
 }
 
 const DEFAULT_AGENT_MODEL: &str = "claude-opus-4-6";
-const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
 // I-47: prompt hardening helpers live in prompt_hardening.rs (pub mod below near
 // bash_interceptor). The seam is in execute_agent_with_spawn below.
 use crate::prompt_hardening::{
-    apply_input_tagging, classify_dispatch_role, emit_prompt_hardening_row,
-    worker_rule_block, DispatchRole,
+    apply_input_tagging, classify_dispatch_role, emit_prompt_hardening_row, worker_rule_block,
+    DispatchRole,
 };
-pub use crate::prompt_hardening::{install_prompt_hardening_ssb, dropped_row_count};
+pub use crate::prompt_hardening::{dropped_row_count, install_prompt_hardening_ssb};
 
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
     execute_agent_with_spawn(input, spawn_agent_job)
@@ -3879,7 +3903,9 @@ where
         DispatchRole::WorkerLike => {
             // Mechanism B: inject frozen per-role rule block into CONSTRAINTS section.
             // HD-2: worker_rule_block returns &'static str, never per-task dynamic text.
-            template_config.extra_constraints.push(worker_rule_block(&normalized_subagent_type).to_owned());
+            template_config
+                .extra_constraints
+                .push(worker_rule_block(&normalized_subagent_type).to_owned());
             prompt_for_build = input.prompt.clone();
             hardening_rows = vec![PromptHardeningAppliedPayload {
                 kind: PromptHardeningAppliedKind::RulesInjected,
@@ -3991,7 +4017,7 @@ fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
 }
 
 fn run_agent_job(job: &AgentJob) -> Result<(), String> {
-    let mut runtime = build_agent_runtime(job)?.with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS);
+    let mut runtime = build_agent_runtime(job)?;
     let summary = runtime
         .run_turn(job.prompt.clone(), None)
         .map_err(|error| error.to_string())?;
@@ -4003,7 +4029,12 @@ fn run_agent_job(job: &AgentJob) -> Result<(), String> {
             persist_agent_terminal_state(&job.manifest, "blocked", None, Some(reason))
         }
         EvidenceVerdict::Present { .. } | EvidenceVerdict::Disabled => {
-            persist_agent_terminal_state(&job.manifest, "completed", Some(final_text.as_str()), None)
+            persist_agent_terminal_state(
+                &job.manifest,
+                "completed",
+                Some(final_text.as_str()),
+                None,
+            )
         }
     }
 }
@@ -4054,7 +4085,11 @@ fn resolve_agent_model(model: Option<&str>) -> String {
 fn model_tier_for_name(model_name: &str) -> ModelTier {
     let lower = model_name.to_lowercase();
     // Local small/micro models — 3B class.
-    if lower.contains("3b") || lower.contains("qwen2.5-coder-3") || lower.contains("gemma3:4b") || lower.contains("gemma4:e2b") {
+    if lower.contains("3b")
+        || lower.contains("qwen2.5-coder-3")
+        || lower.contains("gemma3:4b")
+        || lower.contains("gemma4:e2b")
+    {
         return ModelTier::Micro;
     }
     // Local small models — 7B class.
@@ -4221,7 +4256,11 @@ fn persist_agent_terminal_state(
             .filter(|value| !value.trim().is_empty())
             .map(|value| {
                 let trimmed = value.trim();
-                if trimmed.len() > 1200 { trimmed[..1200].to_string() } else { trimmed.to_string() }
+                if trimmed.len() > 1200 {
+                    trimmed[..1200].to_string()
+                } else {
+                    trimmed.to_string()
+                }
             });
         next_manifest
             .lane_events
@@ -5810,7 +5849,9 @@ fn iso8601_timestamp() -> String {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn execute_powershell(input: PowerShellInput) -> std::io::Result<elai_orchestrator::BashCommandOutput> {
+fn execute_powershell(
+    input: PowerShellInput,
+) -> std::io::Result<elai_orchestrator::BashCommandOutput> {
     let _ = &input.description;
     if let Some(output) = workspace_test_branch_preflight(&input.command) {
         return Ok(output);
@@ -6080,11 +6121,11 @@ mod tests {
         persist_agent_terminal_state, push_output_block, run_task_packet, AgentInput, AgentJob,
         GlobalToolRegistry, LaneEventName, LaneFailureClass, SubagentToolExecutor,
     };
-    use elai_providers::OutputContentBlock;
     use elai_orchestrator::{
         permission_enforcer::PermissionEnforcer, ApiRequest, AssistantEvent, ConversationRuntime,
         PermissionMode, PermissionPolicy, RuntimeError, Session, TaskPacket, ToolExecutor,
     };
+    use elai_providers::OutputContentBlock;
     use serde_json::json;
 
     fn env_lock() -> &'static Mutex<()> {
@@ -6092,7 +6133,8 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    fn temp_path(name: &str) -> PathBuf { // TEST_KEEP
+    fn temp_path(name: &str) -> PathBuf {
+        // TEST_KEEP
         let unique = std::time::SystemTime::now() // TEST_KEEP
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time")
@@ -6173,7 +6215,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "P: elai_tools test exe segfaults (STATUS_STACK_BUFFER_OVERRUN 0xc0000409) when this batch runs alongside bash_tool_reports_success_exit_failure_timeout_and_background; needs targeted stack analysis on Windows. Tracked in s-68264-followup-patch-N.md.")]
+    #[cfg_attr(
+        windows,
+        ignore = "P: elai_tools test exe segfaults (STATUS_STACK_BUFFER_OVERRUN 0xc0000409) when this batch runs alongside bash_tool_reports_success_exit_failure_timeout_and_background; needs targeted stack analysis on Windows. Tracked in s-68264-followup-patch-N.md."
+    )]
     fn worker_tools_gate_prompt_delivery_until_ready_and_support_auto_trust() {
         let created = execute_tool(
             "WorkerCreate",
@@ -6258,7 +6303,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "P: elai_tools test exe segfaults (STATUS_STACK_BUFFER_OVERRUN 0xc0000409) on Windows; same batch issue as worker_tools_gate_prompt_delivery_until_ready_and_support_auto_trust. Tracked in s-68264-followup-patch-N.md.")]
+    #[cfg_attr(
+        windows,
+        ignore = "P: elai_tools test exe segfaults (STATUS_STACK_BUFFER_OVERRUN 0xc0000409) on Windows; same batch issue as worker_tools_gate_prompt_delivery_until_ready_and_support_auto_trust. Tracked in s-68264-followup-patch-N.md."
+    )]
     fn worker_tools_detect_misdelivery_and_arm_prompt_replay() {
         let created = execute_tool(
             "WorkerCreate",
@@ -6801,10 +6849,9 @@ mod tests {
 
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
         assert_eq!(output["skill"], "help");
-        assert!(std::path::Path::new(
-            output["path"].as_str().expect("path")
-        )
-        .ends_with("help/SKILL.md"));
+        assert!(
+            std::path::Path::new(output["path"].as_str().expect("path")).ends_with("help/SKILL.md")
+        );
         assert!(output["prompt"]
             .as_str()
             .expect("prompt")
@@ -6820,10 +6867,10 @@ mod tests {
         let dollar_output: serde_json::Value =
             serde_json::from_str(&dollar_result).expect("valid json");
         assert_eq!(dollar_output["skill"], "$help");
-        assert!(std::path::Path::new(
-            dollar_output["path"].as_str().expect("path")
-        )
-        .ends_with("help/SKILL.md"));
+        assert!(
+            std::path::Path::new(dollar_output["path"].as_str().expect("path"))
+                .ends_with("help/SKILL.md")
+        );
 
         if let Some(home) = original_home {
             std::env::set_var("HOME", home);
@@ -6921,7 +6968,9 @@ mod tests {
             .expect("spawn job should be captured");
         // A-29: prompt is now the structured template wrapping the raw task.
         assert!(captured_job.prompt.contains("=== TASK ==="));
-        assert!(captured_job.prompt.contains("Check tests and outstanding work."));
+        assert!(captured_job
+            .prompt
+            .contains("Check tests and outstanding work."));
         assert!(captured_job.prompt.contains("=== CONTEXT ==="));
         assert!(captured_job.prompt.contains("=== OUTPUT ==="));
         assert!(captured_job.allowed_tools.contains("read_file"));
@@ -7465,7 +7514,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "P: bash tool uses POSIX `printf 'hello'` which Windows cmd.exe does not honor; alongside worker_tools batch it also triggers STATUS_STACK_BUFFER_OVERRUN. Tracked in s-68264-followup-patch-N.md.")]
+    #[cfg_attr(
+        windows,
+        ignore = "P: bash tool uses POSIX `printf 'hello'` which Windows cmd.exe does not honor; alongside worker_tools batch it also triggers STATUS_STACK_BUFFER_OVERRUN. Tracked in s-68264-followup-patch-N.md."
+    )]
     fn bash_tool_reports_success_exit_failure_timeout_and_background() {
         let success = execute_tool("bash", &json!({ "command": "printf 'hello'" }))
             .expect("bash should succeed");
@@ -7727,12 +7779,10 @@ mod tests {
             .expect("glob should succeed");
         let globbed_output: serde_json::Value = serde_json::from_str(&globbed).expect("json");
         assert_eq!(globbed_output["numFiles"], 1);
-        assert!(std::path::Path::new(
-            globbed_output["filenames"][0]
-                .as_str()
-                .expect("filename")
-        )
-        .ends_with("nested/lib.rs"));
+        assert!(
+            std::path::Path::new(globbed_output["filenames"][0].as_str().expect("filename"))
+                .ends_with("nested/lib.rs")
+        );
 
         let glob_error = execute_tool("glob_search", &json!({ "pattern": "[" }))
             .expect_err("invalid glob should fail");
@@ -7781,7 +7831,8 @@ mod tests {
     }
 
     #[test]
-    fn sleep_waits_and_reports_duration() { // TEST_KEEP
+    fn sleep_waits_and_reports_duration() {
+        // TEST_KEEP
         let started = std::time::Instant::now(); // TEST_KEEP
         let result =
             execute_tool("Sleep", &json!({"duration_ms": 20})).expect("Sleep should succeed");
@@ -7811,7 +7862,8 @@ mod tests {
     }
 
     #[test]
-    fn brief_returns_sent_message_and_attachment_metadata() { // TEST_KEEP
+    fn brief_returns_sent_message_and_attachment_metadata() {
+        // TEST_KEEP
         let attachment = std::env::temp_dir().join(format!(
             "elai-brief-{}.png",
             std::time::SystemTime::now() // TEST_KEEP
@@ -7839,7 +7891,8 @@ mod tests {
     }
 
     #[test]
-    fn config_reads_and_writes_supported_values() { // TEST_KEEP
+    fn config_reads_and_writes_supported_values() {
+        // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -7905,7 +7958,8 @@ mod tests {
     }
 
     #[test]
-    fn enter_and_exit_plan_mode_round_trip_existing_local_override() { // TEST_KEEP
+    fn enter_and_exit_plan_mode_round_trip_existing_local_override() {
+        // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -7978,7 +8032,8 @@ mod tests {
     }
 
     #[test]
-    fn exit_plan_mode_clears_override_when_enter_created_it_from_empty_local_state() { // TEST_KEEP
+    fn exit_plan_mode_clears_override_when_enter_created_it_from_empty_local_state() {
+        // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -8101,7 +8156,8 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn powershell_runs_via_stub_shell() { // TEST_KEEP
+    fn powershell_runs_via_stub_shell() {
+        // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -8157,7 +8213,8 @@ printf 'pwsh:%s' "$1"
     }
 
     #[test]
-    fn powershell_errors_when_shell_is_missing() { // TEST_KEEP
+    fn powershell_errors_when_shell_is_missing() {
+        // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -8264,7 +8321,10 @@ printf 'pwsh:%s' "$1"
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "P: elai_tools lib-test exe segfaults (STATUS_STACK_BUFFER_OVERRUN 0xc0000409) on Windows; same batch as worker_tools_* tests. Pure-string matcher coverage lives in file_ops::tests (runs on Windows).")]
+    #[cfg_attr(
+        windows,
+        ignore = "P: elai_tools lib-test exe segfaults (STATUS_STACK_BUFFER_OVERRUN 0xc0000409) on Windows; same batch as worker_tools_* tests. Pure-string matcher coverage lives in file_ops::tests (runs on Windows)."
+    )]
     fn given_agent_allowed_paths_when_read_outside_then_denied_fail_closed() {
         // B-18C: a GlobalToolRegistry carrying a per-agent allow-list denies a
         // read of a path OUTSIDE the allowance (fail-closed), with the SAME
@@ -8293,7 +8353,10 @@ printf 'pwsh:%s' "$1"
             "read_file",
             &json!({ "path": inside_file.display().to_string() }),
         );
-        assert!(ok.is_ok(), "read inside allowed_paths should succeed: {ok:?}");
+        assert!(
+            ok.is_ok(),
+            "read inside allowed_paths should succeed: {ok:?}"
+        );
 
         // Outside the allowance -> denied, fail-closed, not_found envelope.
         let denied = registry

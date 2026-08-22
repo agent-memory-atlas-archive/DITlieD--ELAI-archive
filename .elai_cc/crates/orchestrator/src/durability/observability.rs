@@ -39,6 +39,21 @@ use crate::ssb::{
     ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV,
 };
 
+#[cfg(test)]
+thread_local! {
+    static DURABILITY_OBSERVABILITY_ENABLED_OVERRIDE: std::cell::Cell<Option<bool>> =
+        std::cell::Cell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn set_durability_observability_enabled_for_test(value: Option<bool>) -> Option<bool> {
+    DURABILITY_OBSERVABILITY_ENABLED_OVERRIDE.with(|override_value| {
+        let previous = override_value.get();
+        override_value.set(value);
+        previous
+    })
+}
+
 /// Returns true iff the env var
 /// [`ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV`] is set to a truthy value
 /// (`"1"` / `"true"` / `"yes"` / `"on"`, case-insensitive).
@@ -49,6 +64,11 @@ use crate::ssb::{
 /// `crate::research::web_orchestrator::is_enabled`.
 #[must_use]
 pub fn durability_observability_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = DURABILITY_OBSERVABILITY_ENABLED_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+
     match std::env::var(ELAI_DURABILITY_OBSERVABILITY_ENABLE_ENV) {
         Ok(v) => {
             let lower = v.trim().to_ascii_lowercase();
