@@ -590,18 +590,21 @@ pub(crate) fn emit_ssb_row(
     });
 }
 
+/// Process-wide lock serializing EVERY CWD-mutating test in this crate's test
+/// binary (set_current_dir is process-global, like env vars). pub(crate) so the
+/// rule_cmd.rs J-109 probe takes the SAME mutex: two per-module mutexes never
+/// contend, and the parallel j109_ probes raced each other's temp-root
+/// setup/open (J-109 A2 fix 1: shared lock only, test logic unchanged).
+#[cfg(test)]
+pub(crate) static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Mutex;
 
     use elai_core::clock::LogicalInstant;
-
-    /// Process-wide lock serializing the CWD-mutating live-producer tests (set_current_dir is
-    /// process-global, like env vars). Other in-module tests do not touch the CWD.
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     /// Test guard: serialize flag-mutating tests so they do not race the process env.
     fn with_flag<T>(value: Option<&str>, body: impl FnOnce() -> T) -> T {

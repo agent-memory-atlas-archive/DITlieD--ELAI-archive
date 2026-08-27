@@ -28,6 +28,12 @@ pub(crate) const ADMISSION_HARDENING_FLAG: &str = "ELAI_ADMISSION_HARDENING_ENAB
 /// so the plan-A1.4 falsifiable seam test in `user_memory_capture` can pin it.
 pub(crate) const ADMISSION_SEAM_E5_CAPTURE_REMEMBER: &str = "e5_capture_remember";
 
+/// J-109 UNIT A2: `originating_seam` label stamped on the admission verdict rows
+/// emitted by the I-12 rule-intake front (`elai rule add` -> `rule_cmd::add_rule`)
+/// -- the second of the two write seams. Same `pub(crate)` visibility as the E-5
+/// precedent so the A2 falsifiable seam test in `rule_cmd` can pin it.
+pub(crate) const ADMISSION_SEAM_I12_RULE_ADD: &str = "i12_rule_add";
+
 /// True iff the J-109 admission-hardening flag is set to `"1"` (default-OFF).
 #[must_use]
 pub(crate) fn admission_hardening_enabled() -> bool {
@@ -35,7 +41,30 @@ pub(crate) fn admission_hardening_enabled() -> bool {
 }
 
 /// J-109 A1.3 (R-8 production wiring): the flagged pre-`dispatch_one` admission
-/// probe. Builds the [`StaticSpanIndex`] STRICTLY from the J-102
+/// probe for the E-5 capture front -- stamps
+/// [`ADMISSION_SEAM_E5_CAPTURE_REMEMBER`] and delegates to
+/// [`emit_admission_verdict_for_seam`].
+pub(crate) fn emit_admission_verdict(
+    clock: &Arc<dyn ClockProvider>,
+    project_root: &PathBuf,
+    candidate_text: &str,
+) {
+    emit_admission_verdict_for_seam(
+        clock,
+        project_root,
+        candidate_text,
+        ADMISSION_SEAM_E5_CAPTURE_REMEMBER,
+    );
+}
+
+/// J-109 UNIT A2 generalization of the A1.3 probe (R-8 production wiring): the
+/// flagged admission probe with the `originating_seam` provenance label supplied
+/// by the calling front, so each write seam's verdict rows stay distinguishable
+/// in the journal (GD-2). The E-5 capture front keeps [`emit_admission_verdict`];
+/// the I-12 rule-intake front (`rule_cmd::add_rule`) passes
+/// [`ADMISSION_SEAM_I12_RULE_ADD`].
+///
+/// Builds the [`StaticSpanIndex`] STRICTLY from the J-102
 /// `ConfigLoader::admission_scan()` rows (GD-1 -- this fn never enumerates a
 /// second path list; the cwd CLAUDE.md/AGENTS.md seeding at core/config.rs:316
 /// makes the root members first-class index inputs BY CONSTRUCTION), resolves
@@ -46,13 +75,14 @@ pub(crate) fn admission_hardening_enabled() -> bool {
 /// producers).
 ///
 /// OBSERVE-ONLY (RT-6/GD-4): performs NO store mutation and NEVER blocks the
-/// caller -- the dispatch below always proceeds. Probe input is the RAW user
-/// statement (the exact bytes the caller is about to persist), so the row's
-/// blake3 `candidate_hash` is recomputable from the journal (GD-2).
-pub(crate) fn emit_admission_verdict(
+/// caller -- the write below always proceeds. Probe input is the RAW candidate
+/// text the caller is about to persist, so the row's blake3 `candidate_hash` is
+/// recomputable from the journal (GD-2).
+pub(crate) fn emit_admission_verdict_for_seam(
     clock: &Arc<dyn ClockProvider>,
     project_root: &PathBuf,
     candidate_text: &str,
+    originating_seam: &str,
 ) {
     let rows = ConfigLoader::default_for(project_root).admission_scan();
     if rows.is_empty() {
@@ -86,7 +116,7 @@ pub(crate) fn emit_admission_verdict(
         surface_leg: evaluation.receipts.surface_leg.to_string(),
         threshold: evaluation.receipts.threshold_used,
         verdict: evaluation.receipts.verdict.to_string(),
-        originating_seam: ADMISSION_SEAM_E5_CAPTURE_REMEMBER.to_string(),
+        originating_seam: originating_seam.to_string(),
         ts: u64::try_from(clock.now_ms()).unwrap_or(u64::MAX),
     });
     crate::user_memory_capture::emit_ssb_row(clock, project_root, payload);
