@@ -53,6 +53,14 @@ use crate::gate::RiskLevel;
             SsbActionType::Claim => SsbPayload::Claim(ClaimPayload {
                 claim_text: "c".into(), grounding_source: "s".into(), verified: false,
             }),
+            SsbActionType::GovernanceCoverageMeasured => {
+                SsbPayload::GovernanceCoverageMeasured(FindingPayload {
+                    severity: "info".into(), category: "governance_coverage:debt_rate".into(),
+                    message: "DebtRate=Unmeasured(no producer/ledger found)".into(),
+                    file_path: Some("doctrine_debt_rate.py".into()), line: None,
+                    failure_category: None, audit_step: None, few_shot_examples: None,
+                })
+            }
             SsbActionType::Checkpoint => SsbPayload::Checkpoint(CheckpointPayload {
                 agent_state_hash: "h".into(), grc_history_hash: "g".into(),
                 agent_id: "a".into(), step_index: 0, file_sizes: vec![],
@@ -8887,6 +8895,16 @@ use crate::gate::RiskLevel;
                 pass_index: 0,
                 ts_ms: 1_700_000_000_000,
             }),
+            SsbPayload::GovernanceCoverageMeasured(FindingPayload {
+                severity: "info".into(),
+                category: "governance_coverage:gate_liveness".into(),
+                message: "GateLiveness=Measured(active_wired_tests=8)".into(),
+                file_path: Some("gate_liveness.rs".into()),
+                line: None,
+                failure_category: None,
+                audit_step: None,
+                few_shot_examples: None,
+            }),
         ]
     }
 
@@ -8898,8 +8916,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            505,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured + 1 J-23 ReviewGateCatalogEvent + 1 I-16 KvCacheTuned (missing from the count since 91d3f150) + 1 L-2 ClaimRiskScored + 1 J-42 ReasoningCheckpointEvent + 1 L-4 SemanticEntropyMeasured + 1 L-19 ContextRecalled",
+            506,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured + 1 J-23 ReviewGateCatalogEvent + 1 I-16 KvCacheTuned (missing from the count since 91d3f150) + 1 L-2 ClaimRiskScored + 1 J-42 ReasoningCheckpointEvent + 1 L-4 SemanticEntropyMeasured + 1 L-19 ContextRecalled + 1 N-8 GovernanceCoverageMeasured",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

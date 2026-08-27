@@ -1669,6 +1669,13 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::GoalEnrolled,
     SsbActionType::GoalVerified,
     SsbActionType::GoalViolated,
+    // N-8 slice 2 (2026-08-27): GovernanceCoverageMeasured -- governance-coverage
+    // checker verdict beacon, one row per view. FLAT beacon (no Kind
+    // discriminator; the view identity is a payload category string). Emitted by
+    // `elai governance-coverage`. Dark views are REPORTED (Unmeasured rows),
+    // never hidden. This append is the only counter touch -- SCHEMA_VERSION
+    // (=-309+len), TOTAL_VARIANTS and the action_type_lock golden all derive.
+    SsbActionType::GovernanceCoverageMeasured,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

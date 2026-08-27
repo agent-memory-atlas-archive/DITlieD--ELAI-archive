@@ -4063,6 +4063,14 @@ pub enum SsbPayload {
     GoalEnrolled(GoalEnrolledPayload),
     GoalVerified(GoalVerifiedPayload),
     GoalViolated(GoalViolatedPayload),
+    /// N-8 slice 2: governance-coverage checker verdict (one row per view,
+    /// incl. fail-closed Unmeasured views). Payload REUSES [`FindingPayload`]
+    /// (same multi-variant-reuse precedent as ToolGated/ToolEager/ToolLazy-
+    /// Resolved/ToolDenied sharing ToolGateEventPayload) so the
+    /// payload_field_shape golden stays untouched: severity "info"|"warning",
+    /// category "governance_coverage:<view>", message = the deterministic
+    /// per-view summary line, file_path = primary provenance path.
+    GovernanceCoverageMeasured(FindingPayload),
 }
 
 impl SsbPayload {
@@ -4931,6 +4939,7 @@ impl SsbPayload {
             Self::GoalEnrolled(_) => SsbActionType::GoalEnrolled,
             Self::GoalVerified(_) => SsbActionType::GoalVerified,
             Self::GoalViolated(_) => SsbActionType::GoalViolated,
+            Self::GovernanceCoverageMeasured(_) => SsbActionType::GovernanceCoverageMeasured,
         }
     }
 }

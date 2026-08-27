@@ -3883,6 +3883,10 @@ pub enum SsbActionType {
     DifferentialDivergence,
     /// H-25: gate self-validation mutation score verdict.
     GateSelfValidation,
+    /// N-8 slice 2: governance-coverage checker verdict (one row per view).
+    /// Emitted by `elai governance-coverage`; one wire tag
+    /// "governance_coverage_measured".
+    GovernanceCoverageMeasured,
     /// H-26: reward tampering detection verdict.
     RewardTampering,
     /// H-27: holdout budget exhaustion or running verdict.
@@ -5745,6 +5749,7 @@ impl SsbActionType {
             Self::ResultManifestVerified => "result_manifest_verified",
             Self::DifferentialDivergence => "differential_divergence",
             Self::GateSelfValidation => "gate_self_validation",
+            Self::GovernanceCoverageMeasured => "governance_coverage_measured",
             Self::RewardTampering => "reward_tampering",
             Self::HoldoutBudgetEvent => "holdout_budget_event",
             Self::DriftInterlock => "drift_interlock",
@@ -6637,6 +6642,7 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "result_manifest_verified" => Ok(SsbActionType::ResultManifestVerified),
         "differential_divergence" => Ok(SsbActionType::DifferentialDivergence),
         "gate_self_validation" => Ok(SsbActionType::GateSelfValidation),
+        "governance_coverage_measured" => Ok(SsbActionType::GovernanceCoverageMeasured),
         "reward_tampering" => Ok(SsbActionType::RewardTampering),
         "holdout_budget_event" => Ok(SsbActionType::HoldoutBudgetEvent),
         "drift_interlock" => Ok(SsbActionType::DriftInterlock),

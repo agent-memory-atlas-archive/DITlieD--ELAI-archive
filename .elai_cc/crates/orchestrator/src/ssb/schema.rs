@@ -5054,6 +5054,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'result_manifest_verified', 'differential_divergence',
         'gate_self_validation', 'reward_tampering', 'holdout_budget_event',
         'drift_interlock', 'trial_registered',
+        -- N-8 slice 2: governance-coverage checker verdict beacon.
+        'governance_coverage_measured',
         'mucoco_inconsistency_detected', 'mucoco_skip_reason',
         'user_decision_superseded', 'staleness_eval_measured',
         -- H-32 (SCHEMA_VERSION 210): FactValidationFailed single flat beacon.

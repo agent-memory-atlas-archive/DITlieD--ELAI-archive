@@ -1127,6 +1127,15 @@ pub mod metamorphic_testing;
 // behind the existing RelationLibrary dispatch (GD-1, no new dispatch layer).
 pub mod measurement_spine;
 pub mod metamorphic_pbt;
+// N-8 slice 1 (BUILD-WITH-SEAM @ b9efaf5e): governance-coverage substrate —
+// five-view checker core + fail-closed arms. V1 reads B-17's gate_liveness
+// inventory read-only, V4 joins the frozen gate-manifest DO-333 rows, V5
+// delegates to gate_self_validation::validate_gates, V2/V3 are mandated
+// Unmeasured arms (K-22/J-46 dark upstream). Production emitters
+// (`GovernanceCoverageMeasured` SSB action + `elai governance-coverage` CLI
+// dispatch beside CliAction::GateSelfcheck/BenchIndex) land in N-8 slice 2;
+// until then same-file call chains keep R6/R7 wiring honest.
+pub mod governance_coverage;
 // I-20 (Track 15 KEYSTONE) — budgeted mutation scheduler: diff-cone selector
 // + Wilson-CI adaptive sampler + early-stop + SurvivorDirective emitter +
 // EquivalentMutantCache key extension + ID-5 baseline TOML. EXTENSION on

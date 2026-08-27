@@ -238,7 +238,11 @@ github_trending_event
 goal_drift_block
 goal_drift_fired
 goal_drift_warning
+goal_enrolled
+goal_verified
+goal_violated
 goodhart_risk_flag
+governance_coverage_measured
 governance_primitive_fired
 grammar_cache_loaded
 grammar_gate_event

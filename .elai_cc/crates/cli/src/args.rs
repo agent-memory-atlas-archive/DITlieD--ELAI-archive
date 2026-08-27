@@ -1833,6 +1833,23 @@ pub(crate) enum CliAction {
         /// Print JSON summary instead of human text.
         json: bool,
     },
+    /// N-8 — `elai governance-coverage [--with-mutant-kill] [--json]`
+    ///
+    /// W-1/W-3 production entrypoint for the governance-coverage checker. Joins the
+    /// five governance views over their REAL upstream seams (B-17 liveness count,
+    /// J-70 DO-333 manifest join, K-22/J-46 hard fail-closed arms, H-27 mutant-kill
+    /// delegation) and emits ONE GovernanceCoverageMeasured SSB row per view through
+    /// the same emission path gate-selfcheck uses. Dark views are REPORTED
+    /// (Unmeasured rows cite the absence paths) — never hidden, never estimated.
+    ///
+    /// Handler: `crate::governance_coverage_cmd::run`.
+    GovernanceCoverage {
+        /// Route V5 MutantKill through the REAL H-27 replay (validate_gates on this
+        /// live SSB session) instead of the honest "not yet scored" placeholder.
+        with_mutant_kill: bool,
+        /// Print machine-readable JSON instead of human text.
+        json: bool,
+    },
     /// H-28 — `elai reward-check (--demo-clean | --demo-tampered | --demo-score-jump)
     ///   [--seed <u64>] [--json]`
     ///
@@ -3715,6 +3732,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // verify-the-verifiers META gate (do the 8 OTHER Track-3 gates each KILL their
         // own planted-violation fixture?). Emits a GateSelfValidation SSB row.
         "gate-selfcheck" => parse_gate_selfcheck_args(&rest[1..]),
+        // N-8 — `elai governance-coverage` is the W-1 production entrypoint for the
+        // governance-coverage checker (five joined views; dark views reported as
+        // Unmeasured). Emits one GovernanceCoverageMeasured SSB row per view.
+        "governance-coverage" => parse_governance_coverage_args(&rest[1..]),
         // H-28 — `elai reward-check` is the W-1/W-3 production entrypoint for the
         // current-RF reward-tampering gate (does a self-mod edit its own evaluator
         // (hash mismatch) or jump the reward implausibly with the hash intact?). Emits
@@ -5267,6 +5288,32 @@ pub(crate) fn parse_gate_selfcheck_args(rest: &[String]) -> Result<CliAction, St
         demo_all_valid,
         demo_gate_broken,
         seed,
+        json,
+    })
+}
+
+/// N-8 — parse `elai governance-coverage [--with-mutant-kill] [--json]`.
+pub(crate) fn parse_governance_coverage_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut with_mutant_kill = false;
+    let mut json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--with-mutant-kill" => {
+                with_mutant_kill = true;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `governance-coverage` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::GovernanceCoverage {
+        with_mutant_kill,
         json,
     })
 }

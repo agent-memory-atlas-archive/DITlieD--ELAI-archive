@@ -307,6 +307,13 @@ mod shadow_check_cmd;
 // / un-runnable gate / empty registry -> a fail-closed Block (exit 1). Emits a
 // GateSelfValidation SSB row (off-agent done-gate artifact).
 mod gate_selfcheck_cmd;
+// N-8 — `elai governance-coverage` is the W-1/W-3 production entrypoint for the
+// governance-coverage checker. run_coverage joins the five governance views over
+// their REAL upstream seams and emits ONE GovernanceCoverageMeasured SSB row per
+// view (same write_payload emission path as gate-selfcheck); --with-mutant-kill
+// routes V5 through the delegated H-27 replay instead of the unscored placeholder.
+// Dark views are REPORTED (Unmeasured rows), never hidden.
+mod governance_coverage_cmd;
 // H-28 — `elai reward-check` is the W-1/W-3 production entrypoint for the current-RF
 // reward-tampering gate (Everitt arXiv:1908.04734). check_reward_tampering consumes a
 // fixture triple and detects reward tampering via two sound Tier-1 legs: a frozen-evaluator
@@ -1375,6 +1382,20 @@ fn run() -> Result<(), anyhow::Error> {
                 demo_all_valid, demo_gate_broken, seed, json,
             ))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        // N-8 — `elai governance-coverage` joins the five governance views over their
+        // real upstream seams and emits one GovernanceCoverageMeasured SSB row per
+        // view beside the GateSelfcheck precedent. Dark views are REPORTED
+        // (Unmeasured rows carry cited absence paths); this is a reporting command,
+        // so it exits non-zero only on environment errors.
+        CliAction::GovernanceCoverage { with_mutant_kill, json } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+            rt.block_on(governance_coverage_cmd::run(with_mutant_kill, json))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
         // H-28 — `elai reward-check` is the W-1/W-3 production entrypoint for the
         // current-RF reward-tampering gate. Drives check_reward_tampering over a planted

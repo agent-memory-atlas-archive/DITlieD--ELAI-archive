@@ -1420,6 +1420,8 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::ResultManifestVerified => (),
         SsbActionType::DifferentialDivergence => (),
         SsbActionType::GateSelfValidation => (),
+        // N-8 slice 2: governance-coverage checker verdict beacon (flat).
+        SsbActionType::GovernanceCoverageMeasured => (),
         SsbActionType::RewardTampering => (),
         SsbActionType::HoldoutBudgetEvent => (),
         SsbActionType::DriftInterlock => (),
