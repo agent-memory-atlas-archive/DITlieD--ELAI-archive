@@ -10,6 +10,10 @@ use elai_orchestrator::redaction::redact_payload;
 use elai_orchestrator::ssb::{Ssb, SsbConfig, SsbPayload};
 use elai_orchestrator::framework_profile::get_framework_profile;
 use elai_orchestrator::{apply_template, classify_project_class, default_build_vars, ProjectClass, RunArtifactEmittedPayload};
+use elai_orchestrator::vibegate::evaluate_vibegate;
+// Recon A1: HookVerdictKind is NOT reachable through ::vibegate (private import
+// there, no pub use); the dispatcher module path is the blessed import surface.
+use elai_orchestrator::hook_dispatcher::{HookFinding, HookTier, HookVerdictKind};
 use serde::Serialize;
 
 use crate::args::CliOutputFormat;
@@ -80,6 +84,22 @@ pub(crate) fn run(idea: &str, plan_only: bool, output_dir: Option<&Path>, templa
     let template_name = template.unwrap_or("vanilla");
     let vars = default_build_vars(idea, None, None, None);
     if let Err(error) = apply_template(template_name, app_dir, &vars) { return Err(anyhow!("{error}")); }
+    let gate_findings = run_quality_gate(app_dir);
+    let gate_blocks: Vec<&HookFinding> = gate_findings.iter().filter(|f| f.verdict.is_block()).collect();
+    if !gate_blocks.is_empty() {
+        // L-plan line 31/52: a RED build is REPORTED with its findings — never
+        // silent, never a bare refusal.
+        let detail = gate_blocks.iter().map(|f| {
+            let rule = f.rule_id.as_deref().unwrap_or(f.category.as_str());
+            format!("[{rule}] {}", f.message)
+        }).collect::<Vec<_>>().join("; ");
+        let _ = std::fs::remove_dir_all(app_dir);
+        return Err(anyhow!("quality gate failed ({} block finding(s)); generated app removed to preserve FS-3: {detail}", gate_blocks.len()));
+    }
+    let warn_count = gate_findings.iter().filter(|f| f.verdict.is_warn()).count();
+    if warn_count > 0 {
+        eprintln!("quality gate: {warn_count} warning(s) on the generated app (non-blocking)");
+    }
     let receipt_path = app_dir.with_extension("rra");
     if let Err(error) = emit_build_rra(&project_root, &receipt_path) {
         let _ = std::fs::remove_dir_all(app_dir);
@@ -91,6 +111,69 @@ pub(crate) fn run(idea: &str, plan_only: bool, output_dir: Option<&Path>, templa
         CliOutputFormat::Text | CliOutputFormat::Toml => { println!("app dir: {}", result.app_dir); println!("receipt: {}", result.receipt_path); println!("verify: elai rra verify {}", result.receipt_path); }
     }
     Ok(())
+}
+
+/// L-11 directory-level output-quality gate over generated code (opus walk
+/// L-14 Task 3). Walks `app_dir` recursively after `apply_template` and judges
+/// every code-classified file through the frozen vibegate axes
+/// (`evaluate_vibegate`, infallible + fail-closed by its own contract). Only
+/// {rs,py,pyi,ts,tsx,js,jsx} candidates are handed to the judge: on unknown
+/// extensions the security axis flips to language-agnostic matching, which
+/// would false-red vanilla html/css/md. Walk/read IO errors become synthetic
+/// Block findings — a gate can never pass on an unreadable artifact.
+fn run_quality_gate(app_dir: &Path) -> Vec<HookFinding> {
+    fn judged_extension(path: &Path) -> bool {
+        const JUDGED_EXTENSIONS: &[&str] = &["rs", "py", "pyi", "ts", "tsx", "js", "jsx"];
+        path.extension().and_then(|e| e.to_str()).is_some_and(|ext| JUDGED_EXTENSIONS.contains(&ext))
+    }
+    fn unreadable(target: &Path, error: &std::io::Error) -> HookFinding {
+        HookFinding {
+            tier: HookTier::T1,
+            verdict: HookVerdictKind::Block,
+            rule_id: Some("build-quality-gate-io".to_string()),
+            category: "quality_gate_io".to_string(),
+            message: format!("quality_gate: unreadable generated artifact {}: {error}", target.display()),
+            fix_template: None,
+        }
+    }
+    let mut findings = Vec::new();
+    let mut stack = vec![app_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                findings.push(unreadable(&dir, &error));
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    findings.push(unreadable(&dir, &error));
+                    continue;
+                }
+            };
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !judged_extension(&path) {
+                continue;
+            }
+            let source = match std::fs::read_to_string(&path) {
+                Ok(source) => source,
+                Err(error) => {
+                    findings.push(unreadable(&path, &error));
+                    continue;
+                }
+            };
+            let rel = path.strip_prefix(app_dir).unwrap_or(&path).display().to_string();
+            findings.extend(evaluate_vibegate("build", &source, &rel));
+        }
+    }
+    findings
 }
 
 fn emit_build_rra(project_root: &Path, rra_path: &Path) -> anyhow::Result<()> {
