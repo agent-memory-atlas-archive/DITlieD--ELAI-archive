@@ -2505,3 +2505,14 @@ owner             = "maintainer"
 expiry_date       = "2026-12-01"
 promotion_plan_id = "J-104-promotion"
 smoke_test        = "crates/contracts/tests/j104_index_overlay_contract.rs::j104_edit_then_retrieve_before_batch_reindex"
+
+# J-109: learned-artifact admission hardening (AD-2 immutable-surface dedup).
+# Default-OFF + OBSERVE-ONLY (GD-4/RT-6): verdict rows journal, writes never
+# block. Block-mode flip waits on FP bounding from >=3 real observe runs (A8).
+[[flag]]
+name              = "ELAI_ADMISSION_HARDENING_ENABLE"
+type              = "experiment"
+owner             = "maintainer"
+expiry_date       = "2026-12-31"
+promotion_plan_id = "J-109"
+smoke_test        = "crates/cli/src/user_memory_capture.rs::tests::j109_admission_probe_emits_row_and_write_still_persists"
