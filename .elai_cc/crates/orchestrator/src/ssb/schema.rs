@@ -5601,7 +5601,18 @@ CREATE TABLE IF NOT EXISTS ssb (
         'reasoning_checkpoint_event',
         'operating_profile_change',
         'advisor_consulted',
-        'goal_enrolled', 'goal_verified', 'goal_violated'
+        'goal_enrolled', 'goal_verified', 'goal_violated',
+        -- J-55 W1.4 (SCHEMA_VERSION 311): ModalityRouted -- deterministic TD-3
+        -- action-modality routing verdict (keystone unit). Pattern-2 single-
+        -- variant; 3-arm ModalityRoutedTag with one sql_str per arm so each
+        -- resolution outcome is distinguishable on the wire (mirrors
+        -- AuthBrokerEvent). Rich ModalityRoutedKind rides in the payload
+        -- (I-41 CritiqueLensFinding two-enum split). Data-driven over
+        -- ModelCapabilityProfile + tier; NEVER LLM-adjudicated.
+        -- TOTAL_VARIANTS 619 -> 620.
+        'modality_code_act_chosen',
+        'modality_constrained_call_chosen',
+        'modality_edit_format_chosen'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

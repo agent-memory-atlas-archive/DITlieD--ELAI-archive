@@ -61,6 +61,27 @@ use crate::gate::RiskLevel;
                     failure_category: None, audit_step: None, few_shot_examples: None,
                 })
             }
+            // J-55 W1.4: ModalityRouted -- one representative per Tag arm.
+            SsbActionType::ModalityRouted(ModalityRoutedTag::CodeActChosen) => {
+                SsbPayload::ModalityRouted(ModalityRoutedPayload {
+                    kind: ModalityRoutedKind::CodeActChosen {
+                        model_fp: "test-model".into(), role: "executor".into(),
+                    },
+                })
+            }
+            SsbActionType::ModalityRouted(ModalityRoutedTag::ConstrainedCallChosen) => {
+                SsbPayload::ModalityRouted(ModalityRoutedPayload {
+                    kind: ModalityRoutedKind::ConstrainedCallChosen {
+                        model_fp: "test-model".into(), role: "executor".into(),
+                        schema_tokens: 512,
+                    },
+                })
+            }
+            SsbActionType::ModalityRouted(ModalityRoutedTag::EditFormatChosen) => {
+                SsbPayload::ModalityRouted(ModalityRoutedPayload {
+                    kind: ModalityRoutedKind::EditFormatChosen { diff: true },
+                })
+            }
             SsbActionType::Checkpoint => SsbPayload::Checkpoint(CheckpointPayload {
                 agent_state_hash: "h".into(), grc_history_hash: "g".into(),
                 agent_id: "a".into(), step_index: 0, file_sizes: vec![],
@@ -8905,6 +8926,17 @@ use crate::gate::RiskLevel;
                 audit_step: None,
                 few_shot_examples: None,
             }),
+            // J-55 W1.4: ModalityRouted -- 1 representative (ConstrainedCallChosen,
+            // the keystone sub-threshold local lane arm; its per-arm sql_str is
+            // "modality_constrained_call_chosen"). The other Tag arms are covered by
+            // the test_payload() fixture matrix above.
+            SsbPayload::ModalityRouted(ModalityRoutedPayload {
+                kind: ModalityRoutedKind::ConstrainedCallChosen {
+                    model_fp: "qwen2.5-coder-7b-instruct-nf4".into(),
+                    role: "executor".into(),
+                    schema_tokens: 512,
+                },
+            }),
         ]
     }
 
@@ -8916,8 +8948,8 @@ use crate::gate::RiskLevel;
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            506,
-            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured + 1 J-23 ReviewGateCatalogEvent + 1 I-16 KvCacheTuned (missing from the count since 91d3f150) + 1 L-2 ClaimRiskScored + 1 J-42 ReasoningCheckpointEvent + 1 L-4 SemanticEntropyMeasured + 1 L-19 ContextRecalled + 1 N-8 GovernanceCoverageMeasured",
+            507,
+            "488 tip baseline + 1 J-32 IntentRouted + 1 J-34 ContextCalibrationEvent + 1 J-36 LocalPrefixCacheEvent + 1 J-24 BehaviorSteeringEvent + 1 J-35 IntentControlEvent + 1 J-39 NodeAdmissionEvent + 1 J-31 SystemContractEvent + 1 J-12 HarnessInterventionEvent + 1 J-54 FreePoolEvent + 1 J-73 RetrievalAbstained + 1 J-78 ContextAccessSpec + 1 C-37 SnowballingMeasured + 1 J-23 ReviewGateCatalogEvent + 1 I-16 KvCacheTuned (missing from the count since 91d3f150) + 1 L-2 ClaimRiskScored + 1 J-42 ReasoningCheckpointEvent + 1 L-4 SemanticEntropyMeasured + 1 L-19 ContextRecalled + 1 N-8 GovernanceCoverageMeasured + 1 J-55 ModalityRouted",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

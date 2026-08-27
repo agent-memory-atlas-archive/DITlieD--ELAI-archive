@@ -189,6 +189,14 @@ pub mod cloud_mode;
 // workflow/reasoning/E-39-decisions.md.
 pub mod cost;
 pub mod context_budget;
+// J-55 W1: deterministic action-modality router (TD-3 keystone). Pure
+// `resolve(profile, role, tier)` over ModelCapabilityProfile + the E-31
+// cloud-vs-local tier signal; wired beside BOTH production
+// build_dispatch_context sites in this changeset (task_runner drive_task
+// turn-prep + cli/runtime_client stream per-turn prep). Kill-switch:
+// ELAI_MODALITY_ROUTER_DISABLE=1 restores legacy presentation (router is
+// default-ON per W-2).
+pub mod modality_router;
 // J-38 Unit 1: deterministic context-sufficiency gate.
 pub mod context_sufficiency;
 // J-94 T3-C: honest marker for degraded retrieval context.

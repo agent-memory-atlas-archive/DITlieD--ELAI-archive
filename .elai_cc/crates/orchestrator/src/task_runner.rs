@@ -116,7 +116,7 @@ use crate::ssb::{
     BabyStepReadyPayload, ClaimConfidenceScoredPayload, ClaimRiskScoredKind, ClaimRiskScoredPayload,
     CsqEvaluatedPayload, DkgQuerierSwappedPayload, DkgReadyPayload, EvidenceGateEvaluatedPayload,
     FindingPayload, GrcStepEmittedPayload, GroundingSweepResultPayload, IndexingProgressPayload,
-    PhaseCompletePayload, PhaseNodeReadyPayload, PreviewAvailablePayload, ProviderSignalsPayload,
+    ModalityRoutedKind, ModalityRoutedPayload, PhaseCompletePayload, PhaseNodeReadyPayload, PreviewAvailablePayload, ProviderSignalsPayload,
     ReasoningTracePayload, SearchTriggerFiredPayload, Ssb, SsbActionType, SsbEntry, SsbPayload,
     SsbReader, StepNodeReadyPayload, SupervisionEventPayload, TaskSubmittedPayload,
     TestIntegrityEventKind, TestIntegrityEventPayload, TestOutcomePayload, TrajectoryAbortedKind,
@@ -6752,6 +6752,116 @@ async fn drive_task(
             Some(&phase_slot),
         ) {
             Ok(mut ctx) => {
+                // J-55 W1.2: deterministic TD-3 modality resolution beside the
+                // dispatch-context build (RT-2 production site 1 of 2). Ships
+                // DEFAULT-ON behind ELAI_MODALITY_ROUTER_DISABLE (router kill
+                // switch). The branch adjusts existing ctx surfaces only: on
+                // ConstrainedToolCall this turn presents a single constrained
+                // call surface, never the full registry.
+                let j55_modality =
+                    if crate::modality_router::modality_router_disabled() {
+                        None
+                    } else {
+                        Some(crate::modality_router::resolve(
+                            resolved.model_capability_profile.as_ref(),
+                            elai_ipc_types::AgentRole::Executor,
+                            // Tier conversion AT THE CALL SITE from
+                            // BackendConfig.mode: Hybrid first attempts the
+                            // local sidecar (dispatcher BackendMode doc); a
+                            // promoted cloud attempt re-runs this resolution
+                            // at its own turn-prep.
+                            match resolved.backend_config.mode {
+                                crate::dispatcher::BackendMode::Api => {
+                                    crate::modality_router::Tier::Cloud
+                                }
+                                crate::dispatcher::BackendMode::Local
+                                | crate::dispatcher::BackendMode::Hybrid => {
+                                    crate::modality_router::Tier::Local
+                                }
+                            },
+                        ))
+                    };
+                if matches!(
+                    j55_modality,
+                    Some(crate::modality_router::ActionModality::ConstrainedToolCall)
+                ) && !ctx.filtered_tool_names.is_empty()
+                {
+                    // Single constrained-call surface: keep the one
+                    // highest-priority allowed name (stable ties keep dispatch
+                    // order) and clamp max_tools so len-based consumers observe
+                    // the narrowed budget.
+                    let mut chosen: Option<(u8, String)> = None;
+                    for name in ctx.filtered_tool_names.iter() {
+                        let pr = priority_map.get(name).copied().unwrap_or(u8::MAX);
+                        let better = match &chosen {
+                            None => true,
+                            Some((bp, _)) => pr < *bp,
+                        };
+                        if better {
+                            chosen = Some((pr, name.clone()));
+                        }
+                    }
+                    ctx.filtered_tool_names = chosen.map(|(_, n)| vec![n]).unwrap_or_default();
+                    ctx.max_tools = ctx.max_tools.min(ctx.filtered_tool_names.len().max(1));
+                }
+
+                // One ModalityRouted row per deterministic resolution beside
+                // the dispatch-context build. The payload substrate ships no
+                // TextFallback arm (w1-x1 carrier record), so that leg stays
+                // emission-free here — no kind is fabricated for it.
+                let j55_kind: Option<crate::ssb::ModalityRoutedKind> = match j55_modality {
+                    None => None,
+                    Some(crate::modality_router::ActionModality::CodeAct) => {
+                        let model_fp = resolved
+                            .model_capability_profile
+                            .model_name
+                            .to_ascii_lowercase();
+                        let role_tag = crate::modality_router::agent_role_tag(
+                            elai_ipc_types::AgentRole::Executor,
+                        );
+                        Some(ModalityRoutedKind::CodeActChosen {
+                            model_fp,
+                            role: role_tag,
+                        })
+                    }
+                    Some(crate::modality_router::ActionModality::ConstrainedToolCall) => {
+                        let model_fp = resolved
+                            .model_capability_profile
+                            .model_name
+                            .to_ascii_lowercase();
+                        let role_tag = crate::modality_router::agent_role_tag(
+                            elai_ipc_types::AgentRole::Executor,
+                        );
+                        // Honest surrogate until the I-36 compiled-schema leg
+                        // reaches this seam: established chars->token estimate
+                        // (briefing BUDGET_CHARS_PER_TOKEN) over the serde_json
+                        // form of the surface actually narrowed above. Varies
+                        // with input; never a fixed constant.
+                        let schema_tokens: u32 = serde_json::to_vec(&ctx.filtered_tool_names)
+                            .map(|bytes| {
+                                bytes.len() / crate::briefing::BUDGET_CHARS_PER_TOKEN
+                            })
+                            .unwrap_or(0usize)
+                            .try_into()
+                            .unwrap_or(u32::MAX);
+                        Some(ModalityRoutedKind::ConstrainedCallChosen {
+                            model_fp,
+                            role: role_tag,
+                            schema_tokens,
+                        })
+                    }
+                    Some(crate::modality_router::ActionModality::TextFallback) => None,
+                };
+                if let Some(kind) = j55_kind {
+                    let payload = SsbPayload::ModalityRouted(ModalityRoutedPayload { kind });
+                    if let Err(e) = writer
+                        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+                        .await
+                    {
+                        warn!(seq, error = %e, "task_runner: ModalityRouted write failed");
+                    }
+                }
+
                 emit_finding(
                     writer,
                     "info",

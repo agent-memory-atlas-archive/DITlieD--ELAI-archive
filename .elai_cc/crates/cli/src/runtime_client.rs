@@ -269,9 +269,18 @@ impl ApiClient for RuntimeClient {
         // now materially affects the request body (not just logs) — any tool
         // the dispatcher rejects is dropped before we serialize. On error we
         // degrade to the stream-local policy filter only.
-        let dispatch_allowed_tool_names: Option<HashSet<String>> =
+        // J-55 W1.2: per-turn TD-3 modality resolution beside
+        // build_dispatch_context (RT-2 production site 2 of 2). The second
+        // tuple element carries this turn's ActionModality verdict — None when
+        // the router is kill-switched off or the backend lane is not Local.
+        let (dispatch_allowed_tool_names, j55_modality): (
+            Option<HashSet<String>>,
+            Option<elai_orchestrator::modality_router::ActionModality>,
+        ) =
             if matches!(self.backend, BackendMode::Local) {
-                self.backend_config.as_ref().and_then(|cfg| {
+                self.backend_config
+                    .as_ref()
+                    .map(|cfg| {
                     let fsm_state = self.current_fsm_state();
                     let specs = mvp_tool_specs();
                     let all_tools: Vec<String> =
@@ -298,6 +307,30 @@ impl ApiClient for RuntimeClient {
                             &self.model,
                             repl_vram_tier,
                         );
+                    // J-55 W1.2: call-site tier conversion from the SAME
+                    // BackendConfig.mode handed to build_dispatch_context
+                    // below; default-ON router behind ELAI_MODALITY_ROUTER_DISABLE.
+                    let j55_modality =
+                        if elai_orchestrator::modality_router::modality_router_disabled() {
+                            None
+                        } else {
+                            Some(elai_orchestrator::modality_router::resolve(
+                                &repl_profile,
+                                elai_orchestrator::AgentRole::Executor,
+                                match cfg.mode {
+                                    BackendMode::Api => {
+                                        elai_orchestrator::modality_router::Tier::Cloud
+                                    }
+                                    // Hybrid first attempts the local sidecar
+                                    // (dispatcher BackendMode doc); a promoted
+                                    // cloud attempt re-runs this resolution at
+                                    // its own turn-prep.
+                                    BackendMode::Local | BackendMode::Hybrid => {
+                                        elai_orchestrator::modality_router::Tier::Local
+                                    }
+                                },
+                            ))
+                        };
                     match elai_orchestrator::build_dispatch_context(
                         fsm_state,
                         cfg,
@@ -306,7 +339,32 @@ impl ApiClient for RuntimeClient {
                         Some(&repl_profile),
                         None,
                     ) {
-                        Ok(ctx) => {
+                        Ok(mut ctx) => {
+                            // J-55 W1.2: single constrained-call surface clamp
+                            // through existing ctx fields only — parity with
+                            // the task_runner drive_task seam; the constrained
+                            // lane never presents a whole registry.
+                            if matches!(
+                                j55_modality,
+                                Some(elai_orchestrator::modality_router::ActionModality::ConstrainedToolCall)
+                            ) && !ctx.filtered_tool_names.is_empty()
+                            {
+                                let mut chosen: Option<(u8, String)> = None;
+                                for name in ctx.filtered_tool_names.iter() {
+                                    let pr = priority_map.get(name).copied().unwrap_or(u8::MAX);
+                                    let better = match &chosen {
+                                        None => true,
+                                        Some((bp, _)) => pr < *bp,
+                                    };
+                                    if better {
+                                        chosen = Some((pr, name.clone()));
+                                    }
+                                }
+                                ctx.filtered_tool_names =
+                                    chosen.map(|(_, n)| vec![n]).unwrap_or_default();
+                                ctx.max_tools =
+                                    ctx.max_tools.min(ctx.filtered_tool_names.len().max(1));
+                            }
                             tracing::info!(
                                 target: "cli::dispatch",
                                 backend = %ctx.backend_mode,
@@ -316,7 +374,10 @@ impl ApiClient for RuntimeClient {
                                 max_tools = ctx.max_tools,
                                 "dispatch context built",
                             );
-                            Some(ctx.filtered_tool_names.into_iter().collect())
+                            (
+                                Some(ctx.filtered_tool_names.into_iter().collect()),
+                                j55_modality,
+                            )
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -324,12 +385,35 @@ impl ApiClient for RuntimeClient {
                                 error = %e,
                                 "build_dispatch_context failed; using stream-local filter",
                             );
-                            None
+                            match j55_modality {
+                                // J-55 W1.2 degradation rule: the constrained
+                                // lane NEVER presents the full registry, even
+                                // when the orchestrator context failed; mirror
+                                // the dispatcher's own recipe (FSM filter ->
+                                // priority sort -> max_tools_local cap).
+                                Some(elai_orchestrator::modality_router::ActionModality::ConstrainedToolCall) => {
+                                    let mut fallback: Vec<String> = all_tools
+                                        .iter()
+                                        .filter(|n| fsm_state.check_tool_allowed(n).is_ok())
+                                        .cloned()
+                                        .collect();
+                                    fallback.sort_by_key(|n| {
+                                        priority_map.get(n).copied().unwrap_or(u8::MAX)
+                                    });
+                                    fallback.truncate(cfg.max_tools_local);
+                                    (Some(fallback.into_iter().collect()), j55_modality)
+                                }
+                                _ => (None, j55_modality),
+                            }
                         }
                     }
                 })
+                // Degradation parity with the Err arm: no backend config means
+                // build_dispatch_context cannot run; the stream-local policy
+                // filter applies and no modality verdict is recorded.
+                .unwrap_or_else(|| (None, None))
             } else {
-                None
+                (None, None)
             };
 
         // Branch 1: tool filtering (policy-based), then intersect with the
@@ -389,6 +473,62 @@ impl ApiClient for RuntimeClient {
         } else {
             tool_defs
         };
+
+        // J-55 W1.2: ModalityRouted row through the ESTABLISHED `streaming_ssb`
+        // channel (same identity as the StreamingEarlyTerminated row — agent
+        // "cli:stream", superstep 0; conversation.rs precedent writes payloads
+        // via rt.block_on in this exact sync turn-prep context). Emitted after
+        // final tool-def shaping so schema_tokens reports the real serialized
+        // schema budget presented this turn (chars->token convention).
+        if let Some(modality) = &j55_modality {
+            if let Some(ssb) = self.streaming_ssb.as_ref() {
+                let model_fp = self.model.to_ascii_lowercase();
+                let role = elai_orchestrator::modality_router::agent_role_tag(
+                    elai_orchestrator::AgentRole::Executor,
+                );
+                let kind = match modality {
+                    elai_orchestrator::modality_router::ActionModality::CodeAct => {
+                        Some(elai_orchestrator::ssb::ModalityRoutedKind::CodeActChosen {
+                            model_fp,
+                            role,
+                        })
+                    }
+                    elai_orchestrator::modality_router::ActionModality::ConstrainedToolCall => {
+                        // Honest measurement over the REAL final ToolDefinition
+                        // set presented this turn (post policy/allow-list/MCP
+                        // shaping); briefing BUDGET_CHARS_PER_TOKEN is the crate
+                        // chars->token estimate. No defs => no schema was posed;
+                        // stay emission-free rather than fabricate a count.
+                        match &tool_defs {
+                            Some(defs) => {
+                                let bytes =
+                                    serde_json::to_vec(defs).unwrap_or_else(|_| Vec::new());
+                                Some(
+                                    elai_orchestrator::ssb::ModalityRoutedKind::ConstrainedCallChosen {
+                                        model_fp,
+                                        role,
+                                        schema_tokens: (bytes.len()
+                                            / elai_orchestrator::briefing::BUDGET_CHARS_PER_TOKEN)
+                                            as u32,
+                                    },
+                                )
+                            }
+                            None => None,
+                        }
+                    }
+                    // No payload arm exists for TextFallback (w1-x1 carrier
+                    // record): the text lane poses no schema, nothing to emit.
+                    elai_orchestrator::modality_router::ActionModality::TextFallback => None,
+                };
+                if let Some(kind) = kind {
+                    let payload = elai_orchestrator::ssb::SsbPayload::ModalityRouted(
+                        elai_orchestrator::ssb::ModalityRoutedPayload { kind },
+                    );
+                    let _ =
+                        self.runtime.block_on(ssb.write_payload("cli:stream", 0, payload, Vec::new()));
+                }
+            }
+        }
 
         // Branch 2: budget policy — compute real slot sizes, cap max_tokens
         let system_chars: usize = request.system_prompt.iter().map(|s| s.len()).sum();

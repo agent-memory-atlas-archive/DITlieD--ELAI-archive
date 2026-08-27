@@ -350,6 +350,7 @@ mistake_entry
 mlx_apple_platform_detected
 mlx_subprocess_killed
 mlx_subprocess_spawned
+modality_code_act_chosen
 mode_changed
 mode_routing_bench_run_completed
 model_drift_suspected

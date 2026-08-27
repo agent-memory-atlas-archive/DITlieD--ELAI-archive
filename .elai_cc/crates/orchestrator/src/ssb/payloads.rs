@@ -3899,6 +3899,13 @@ pub enum SsbPayload {
     /// reachable via the i50 contract test (real TempDir SQLite).
     /// TOTAL_VARIANTS 576 -> 577.
     AuthBrokerEvent(AuthBrokerEventPayload),
+    /// J-55 W1.4 (SCHEMA_VERSION 311): deterministic TD-3 action-modality routing
+    /// verdict (one row per resolve() outcome beside the dispatch build). Pattern-2
+    /// single-variant 3-arm; the fieldless [`ModalityRoutedTag`] discriminates the
+    /// wire arm, the rich [`ModalityRoutedKind`] carries the row data.
+    /// Emitted from the turn-prep seam in a later slice (wire-dark until then).
+    /// TOTAL_VARIANTS 619 -> 620.
+    ModalityRouted(ModalityRoutedPayload),
     /// J-1.T4 (SCHEMA_VERSION 269): perception-gateway scaffold lifecycle event.
     ///
     /// SINGLE-VARIANT Pattern-2 [`PerceptionScaffoldEventKind`] (J-1
@@ -4895,6 +4902,16 @@ impl SsbPayload {
             // The representative arm is TokenAcquired; kind carries the concrete arm so
             // per-arm sql_str round-trips via AuthBrokerEventKind::as_sql_str.
             Self::AuthBrokerEvent(ref p) => SsbActionType::AuthBrokerEvent(p.kind),
+            // J-55 W1.4 (SCHEMA_VERSION 311): ModalityRouted -- the fieldless Tag
+            // discriminates the wire arm; the rich Kind data stays in the payload
+            // (I-41 CritiqueLensFinding mapping convention: data discarded here).
+            Self::ModalityRouted(ref p) => SsbActionType::ModalityRouted(match p.kind {
+                ModalityRoutedKind::CodeActChosen { .. } => ModalityRoutedTag::CodeActChosen,
+                ModalityRoutedKind::ConstrainedCallChosen { .. } => {
+                    ModalityRoutedTag::ConstrainedCallChosen
+                }
+                ModalityRoutedKind::EditFormatChosen { .. } => ModalityRoutedTag::EditFormatChosen,
+            }),
             // J-1.T4 (SCHEMA_VERSION 269): perception-gateway scaffold lifecycle event
             // (4-arm Pattern-2 single-variant). Single sql_str; the Kind discriminator
             // rides inside the payload. ScaffoldEmitted is the representative arm.
@@ -22238,4 +22255,90 @@ pub enum ProfileChangeKind {
     Tighten,
     Loosen,
     Revert,
+}
+
+// ---------------------------------------------------------------------------
+// J-55 W1.4 (SCHEMA_VERSION 311): ModalityRouted substrate
+
+/// J-55 W1.4 (SCHEMA_VERSION 311): 3-arm wire discriminator carried by
+/// [`SsbActionType::ModalityRouted`]. Pattern-2 single-variant, 3 distinct
+/// sql_str values (per-Kind convention, mirrors AuthBrokerEvent /
+/// PromptCompiledKind). Copy/Eq/Hash C-like enum used exclusively by
+/// `SsbActionType` for routing/hashing; the data-carrying fields live in
+/// [`ModalityRoutedKind`] inside [`ModalityRoutedPayload`] (I-41
+/// CritiqueLensFinding two-enum split: fieldless Tag on the action type,
+/// rich Kind in the payload).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ModalityRoutedTag {
+    /// The turn resolved to CodeAct emission (cloud tier or capable local
+    /// params): tools imported as functions, schema + envelope sinks collapsed.
+    CodeActChosen,
+    /// The turn resolved to ONE constrained tool-call under grammar plus a
+    /// compiled minimal schema (sub-threshold local lane). Keystone guard
+    /// arm: the canonical Qwen2.5-Coder-7B lane always lands here, never on
+    /// `CodeActChosen`.
+    ConstrainedCallChosen,
+    /// Universal SEARCH/REPLACE edit-format verdict (model-independent leg;
+    /// applies under either action lane).
+    EditFormatChosen,
+}
+
+impl ModalityRoutedTag {
+    /// Per-arm sql_str for the SSB CHECK constraint.
+    ///
+    /// Three distinct values so each resolution outcome is distinguishable
+    /// on the wire (mirrors the PromptCompiledKind convention).
+    pub fn as_sql_str(self) -> &'static str {
+        match self {
+            Self::CodeActChosen => "modality_code_act_chosen",
+            Self::ConstrainedCallChosen => "modality_constrained_call_chosen",
+            Self::EditFormatChosen => "modality_edit_format_chosen",
+        }
+    }
+}
+
+/// J-55 W1.4 (SCHEMA_VERSION 311): full-payload discriminator for
+/// [`SsbPayload::ModalityRouted`]. Struct variants carry the row data exactly
+/// as planned (CodeActChosen{model_fp,role} /
+/// ConstrainedCallChosen{model_fp,role,schema_tokens} / EditFormatChosen{diff}).
+/// Deterministic TD-3 inputs only -- profile + tier; the LLM never chooses
+/// its own action modality.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ModalityRoutedKind {
+    /// A turn was routed to CodeAct emission.
+    CodeActChosen {
+        /// Serving model fingerprint (e.g. `"claude-sonnet-4-6"`,
+        /// `"qwen2.5-coder-7b-instruct-nf4"`).
+        model_fp: String,
+        /// snake_case agent role tag (e.g. `"executor"`, `"researcher"`).
+        role: String,
+    },
+    /// A turn was routed to a constrained single-tool-call.
+    ConstrainedCallChosen {
+        /// Serving model fingerprint.
+        model_fp: String,
+        /// snake_case agent role tag.
+        role: String,
+        /// Token size of the compiled minimal tool schema actually offered
+        /// that turn (I-36 leg; 0 when progressive disclosure withheld it).
+        schema_tokens: u32,
+    },
+    /// An EDIT operation went through the universal SEARCH/REPLACE path.
+    EditFormatChosen {
+        /// `true` = a SEARCH/REPLACE diff applied; `false` = the diff path was
+        /// declined and a whole-file write served instead (fallback evidence).
+        diff: bool,
+    },
+}
+
+/// J-55 W1.4 (SCHEMA_VERSION 311) -- payload for
+/// [`SsbActionType::ModalityRouted`]. Pattern-2 single-variant; kind
+/// discriminator is [`ModalityRoutedKind`]. One row per deterministic
+/// modality resolution beside the dispatch-context build; emitted from the
+/// turn-prep seam (later slice; SSB-emit seam stays wire-dark until then).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModalityRoutedPayload {
+    /// Which resolution occurred. See [`ModalityRoutedKind`].
+    pub kind: ModalityRoutedKind,
 }

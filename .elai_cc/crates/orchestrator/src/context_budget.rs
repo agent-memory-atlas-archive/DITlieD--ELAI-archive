@@ -276,6 +276,13 @@ pub struct ModelFeatures {
     pub supports_fim: bool,
     /// J-36 FH-4: architecture admits local PrefixKVCache reuse (standard causal full-attention). Runtime TurboQuant still gates via prefix_kv_eligible().
     pub prefix_kv_eligible: bool,
+    /// J-55 W1.1 (orchestrator ruling on w1-x1 evidence [D], option B):
+    /// DIRECTIONAL bit until D1 seeds measured values — marks lanes that
+    /// demonstrably serve tool calls today, seeded by the
+    /// `detect_model_capability_profile` policy (E-31 hosted surface +
+    /// canonical Qwen2.5-Coder sidecar family). `ModelFeatures::none`
+    /// defaults false so unknown names degrade honestly to TextFallback.
+    pub tool_calls_native: bool,
 }
 
 impl ModelFeatures {
@@ -289,8 +296,26 @@ impl ModelFeatures {
             kv_compression: false,
             supports_fim: false,
             prefix_kv_eligible: false,
+            tool_calls_native: false,
         }
     }
+}
+
+/// J-55 UNIT D1 output record: measured per-(model,lane) action-modality
+/// crossover between CodeAct emission and constrained single-tool-call.
+/// Written ONLY by the D1 `elai bench modality` harness into
+/// [`ModelCapabilityProfile::modality_crossover`] (deterministic verdicts,
+/// never LLM-judged); while it stays `None`,
+/// `modality_router::resolve` falls back to its directional named constants.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModalityCrossover {
+    /// Measured model size floor (billions of parameters) below which
+    /// constrained tool-call beats CodeAct on tool-success-per-token for
+    /// this lane. Re-bases the directional router constant when present.
+    pub codeact_viability_floor_b: f32,
+    /// Wall-clock milliseconds since UNIX epoch when the crossover was
+    /// measured (GD-2 provenance pin).
+    pub measured_at_ms: i64,
 }
 
 /// Complete model capability profile — input to context budget allocator.
@@ -343,6 +368,11 @@ pub struct ModelCapabilityProfile {
     /// `compute_with_profile` carries it onto `ContextBudget` and emits a
     /// `PlacementApplied` SSB row. Metadata-only, does NOT reorder `slots`.
     pub ordering_seed: Option<String>,
+    /// J-55 W1/D1: measured modality-crossover artifact seeded ONLY by the
+    /// D1 bench harness. `None` = unmeasured; `modality_router::resolve`
+    /// then falls back to its directional named constants (labelled
+    /// directional until the D1 bench re-bases them).
+    pub modality_crossover: Option<ModalityCrossover>,
 }
 
 impl ModelCapabilityProfile {
@@ -393,6 +423,7 @@ impl ModelCapabilityProfile {
             positional_value_curve: None,
             calibrated_trim_fraction: None,
             ordering_seed: None,
+            modality_crossover: None,
         }
     }
 
@@ -442,6 +473,7 @@ impl ModelCapabilityProfile {
             positional_value_curve: None,
             calibrated_trim_fraction: None,
             ordering_seed: None,
+            modality_crossover: None,
         }
     }
 
@@ -485,6 +517,9 @@ impl ModelCapabilityProfile {
                 kv_compression: false,
                 supports_fim: false,
                 prefix_kv_eligible: false,
+                // J-55 directional policy: the cloud-classified profile
+                // serves tool calls through the E-31 hosted surface today.
+                tool_calls_native: true,
             },
             pass_at_1: 0.85,
             optimal_retries: 2,
@@ -498,6 +533,7 @@ impl ModelCapabilityProfile {
             positional_value_curve: None,
             calibrated_trim_fraction: None,
             ordering_seed: None,
+            modality_crossover: None,
         }
     }
 
@@ -538,6 +574,10 @@ impl ModelCapabilityProfile {
                 kv_compression: true,
                 supports_fim: true,
                 prefix_kv_eligible: true,
+                // J-55 directional policy: Qwen2.5-Coder-32B is the same
+                // local sidecar family detect_model_capability_profile
+                // seeds with native constrained-call capability by name.
+                tool_calls_native: true,
             },
             pass_at_1: 0.927,
             optimal_retries: 2,
@@ -551,6 +591,7 @@ impl ModelCapabilityProfile {
             positional_value_curve: None,
             calibrated_trim_fraction: None,
             ordering_seed: None,
+            modality_crossover: None,
         }
     }
 
@@ -600,6 +641,7 @@ impl ModelCapabilityProfile {
             positional_value_curve: None,
             calibrated_trim_fraction: None,
             ordering_seed: None,
+            modality_crossover: None,
         }
     }
 
@@ -649,6 +691,7 @@ impl ModelCapabilityProfile {
             positional_value_curve: None,
             calibrated_trim_fraction: None,
             ordering_seed: None,
+            modality_crossover: None,
         }
     }
 
@@ -694,6 +737,7 @@ impl ModelCapabilityProfile {
             positional_value_curve: None,
             calibrated_trim_fraction: None,
             ordering_seed: None,
+            modality_crossover: None,
         }
     }
 
@@ -739,6 +783,7 @@ impl ModelCapabilityProfile {
             positional_value_curve: None,
             calibrated_trim_fraction: None,
             ordering_seed: None,
+            modality_crossover: None,
         }
     }
 
@@ -781,28 +826,48 @@ pub fn detect_model_capability_profile(
     let name_lower = model_name.to_ascii_lowercase();
 
     // Order matters: "32b" must be tested before "3b" (substring containment).
-    if name_lower.contains("32b") {
-        return ModelCapabilityProfile::large_32b_48gb();
-    }
-    if name_lower.contains("7b") {
-        return ModelCapabilityProfile::micro_7b_12gb();
-    }
-    if name_lower.contains("3b") {
+    let mut profile = if name_lower.contains("32b") {
+        ModelCapabilityProfile::large_32b_48gb()
+    } else if name_lower.contains("7b") {
+        ModelCapabilityProfile::micro_7b_12gb()
+    } else if name_lower.contains("3b") {
         // 3B has two tiers: 12GB (35K) and 8GB (20K).
-        return match vram_tier {
+        match vram_tier {
             VramTier::Vram8Gb => ModelCapabilityProfile::micro_8gb(),
             _ => ModelCapabilityProfile::micro_3b_12gb(),
-        };
-    }
+        }
+    } else {
+        // Unknown model: warn once and return safest 12GB default.
+        tracing::warn!(
+            target: "orchestrator::context_budget",
+            model = model_name,
+            vram_tier = ?vram_tier,
+            "detect_model_capability_profile: unknown model name; falling back to micro_7b_12gb"
+        );
+        ModelCapabilityProfile::micro_7b_12gb()
+    };
 
-    // Unknown model: warn once and return safest 12GB default.
-    tracing::warn!(
-        target: "orchestrator::context_budget",
-        model = model_name,
-        vram_tier = ?vram_tier,
-        "detect_model_capability_profile: unknown model name; falling back to micro_7b_12gb"
-    );
-    ModelCapabilityProfile::micro_7b_12gb()
+    // J-55 W1.1 directional seeding (see seed_tool_calls_native policy doc).
+    seed_tool_calls_native(&mut profile, &name_lower);
+    profile
+}
+
+/// J-55 W1.1 directional seeding policy (orchestrator ruling on w1-x1
+/// evidence [D], option B): mark lanes that demonstrably serve tool calls
+/// today so [`crate::modality_router::resolve`] can separate
+/// "constrained-call capable" from "text fallback". Two grounded families
+/// only — everything else stays false (honest degradation, never inferred):
+///   - cloud-classified ids served by the E-31 hosted surface, grounded on
+///     `config/models.toml` catalog ids (`claude-*-family`) and the
+///     `pricing.rs` family-match substrings (sonnet/opus/haiku);
+///   - the canonical local sidecar family matched by the substring router
+///     above: Qwen2.5-Coder ("qwen" AND "coder").
+fn seed_tool_calls_native(profile: &mut ModelCapabilityProfile, name_lower: &str) {
+    let cloud_classified = ["claude", "sonnet", "opus", "haiku"]
+        .iter()
+        .any(|tag| name_lower.contains(tag));
+    let qwen_coder_family = name_lower.contains("qwen") && name_lower.contains("coder");
+    profile.features.tool_calls_native = cloud_classified || qwen_coder_family;
 }
 
 // ---------------------------------------------------------------------------
@@ -3484,6 +3549,7 @@ mod tests {
             positional_value_curve: None,
             calibrated_trim_fraction: None,
             ordering_seed: None,
+            modality_crossover: None,
         };
         // With both ceilings=0 and default weights, should match compute() output.
         let b1 = ContextBudget::compute(8192, [100, 200, 300], 2000).unwrap();

@@ -773,6 +773,11 @@ use elai_orchestrator::ssb::{BashRedirectedKind, BeliefStateEventKind, BranchWor
 // (PromptCompiledKind: Compiled/TransferGapMeasured/Rolledback). SSB_ACTION_TYPES adds one
 // representative arm: PromptCompiled(PromptCompiledKind::Compiled). len 575 -> 576;
 // SCHEMA = -309 + 576 = 267. TOTAL_VARIANTS + golden auto-follow (regen the golden).
+// J-55 W1.4 (2026-08-27): ModalityRouted Pattern-2 single-variant 3-arm
+// (ModalityRoutedTag: CodeActChosen / ConstrainedCallChosen / EditFormatChosen;
+// rich ModalityRoutedKind rides in ModalityRoutedPayload). Registry adds ONE
+// representative arm: ModalityRouted(ModalityRoutedTag::CodeActChosen).
+// len 619 -> 620; SCHEMA_VERSION = -309 + 620 = 311. Golden auto-follows.
 const TOTAL_VARIANTS: usize = ALL_VARIANTS.len();
 
 /// All `SsbActionType` variants, DERIVED from the lib's canonical list
@@ -1547,6 +1552,12 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // I-50 (SCHEMA_VERSION 268): AuthBrokerEvent Pattern-2 4-arm (TokenAcquired/Refreshed/ProviderLinked/RefreshFailed).
         // SSB_ACTION_TYPES carries the single representative AuthBrokerEvent(AuthBrokerEventKind::TokenAcquired) arm.
         SsbActionType::AuthBrokerEvent(_) => (),
+        // J-55 W1.4 (SCHEMA_VERSION 311): ModalityRouted Pattern-2 single-variant 3-arm
+        // (CodeActChosen/ConstrainedCallChosen/EditFormatChosen via ModalityRoutedTag;
+        // rich ModalityRoutedKind rides in ModalityRoutedPayload).
+        // SSB_ACTION_TYPES carries the single representative
+        // ModalityRouted(ModalityRoutedTag::CodeActChosen) arm.
+        SsbActionType::ModalityRouted(_) => (),
         // J-1.T4 (SCHEMA_VERSION 269): PerceptionScaffoldEvent Pattern-2 4-arm single-variant
         // (Preprocessed/ScaffoldEmitted/RoutedToSpecialist/DegradedPassthrough).
         // SSB_ACTION_TYPES carries the single representative

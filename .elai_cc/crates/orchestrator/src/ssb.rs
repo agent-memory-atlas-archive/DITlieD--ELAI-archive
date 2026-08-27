@@ -1676,6 +1676,17 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // never hidden. This append is the only counter touch -- SCHEMA_VERSION
     // (=-309+len), TOTAL_VARIANTS and the action_type_lock golden all derive.
     SsbActionType::GovernanceCoverageMeasured,
+    // J-55 W1.4 (2026-08-27): ModalityRouted -- deterministic TD-3 action-modality
+    // routing verdict (keystone unit). Pattern-2 single-variant; 3-arm fieldless
+    // ModalityRoutedTag discriminates the wire (one sql_str per arm), while the
+    // rich ModalityRoutedKind rides inside ModalityRoutedPayload (I-41 split).
+    // Representative arm: CodeActChosen. Emission wires at the TWO verified
+    // build_dispatch_context production sites in a later slice (SSB-emit seam
+    // WIRE-DARK[J-55] until then); both drive_task and RuntimeClient::stream are
+    // named emitters once Tier conversion lands there. This append is the only
+    // counter touch -- SCHEMA_VERSION (=-309+len), TOTAL_VARIANTS and the
+    // action_type_lock golden all derive. len 619 -> 620; SCHEMA = -309+620 = 311.
+    SsbActionType::ModalityRouted(ModalityRoutedTag::CodeActChosen),
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

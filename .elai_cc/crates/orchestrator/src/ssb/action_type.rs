@@ -4934,6 +4934,25 @@ pub enum SsbActionType {
     GoalVerified,
     /// Q-1: a standing goal predicate failed on a scheduled tick.
     GoalViolated,
+    /// J-55 W1.4 (SCHEMA_VERSION 311): deterministic TD-3 action-modality routing
+    /// verdict beacon (keystone unit: the router is load-bearing, never
+    /// CodeAct-everywhere). Pattern-2 single-variant 3-arm [`ModalityRoutedTag`]
+    /// carried here for wire disambiguation (per-arm sql_str values, mirrors
+    /// AuthBrokerEvent); the data-carrying [`ModalityRoutedKind`] rides inside
+    /// [`ModalityRoutedPayload`] (I-41 CritiqueLensFinding two-enum split:
+    /// fieldless Tag on SsbActionType, rich Kind in the payload).
+    /// - `CodeActChosen`: cloud tier or capable local params -> tools-as-code surface.
+    /// - `ConstrainedCallChosen`: sub-threshold local lane -> ONE constrained call
+    ///   under grammar + compiled minimal schema. KEYSTONE GUARD: the canonical
+    ///   Qwen2.5-Coder-7B lane lands HERE, never CodeActChosen.
+    /// - `EditFormatChosen`: universal SEARCH/REPLACE edit-format verdict (applies
+    ///   under either action lane).
+    /// Emission hangs off the two verified build_dispatch_context production sites
+    /// (task_runner drive_task / RuntimeClient stream); wiring is a LATER slice --
+    /// SSB-emit seam WIRE-DARK[J-55] until then. TD-3: resolve() reads profile+tier
+    /// deterministically; the LLM never picks its own modality.
+    /// TOTAL_VARIANTS 619 -> 620.
+    ModalityRouted(ModalityRoutedTag),
 }
 
 impl SsbActionType {
@@ -5861,6 +5880,10 @@ impl SsbActionType {
             // payload (mirrors DocumentVisionRagEvent). Wire-dark unless
             // ELAI_PERCEPTION_GATEWAY_ENABLE=1.
             Self::PerceptionScaffoldEvent(_) => "perception_scaffold_event",
+            // J-55 W1.4 (SCHEMA_VERSION 311): ModalityRouted -- deterministic TD-3
+            // action-modality verdict. 3-arm Pattern-2; each Tag arm maps to its own
+            // sql_str so consumers distinguish the chosen action surface on the wire.
+            Self::ModalityRouted(tag) => tag.as_sql_str(),
             // K-18a follow-on (SCHEMA_VERSION 270): RecurrenceHitRateMeasured flat beacon.
             Self::RecurrenceHitRateMeasured => "recurrence_hit_rate_measured",
             // K-4 SP1 follow-on (SCHEMA_VERSION 271): GateTaxMeasured flat beacon.
@@ -6762,6 +6785,11 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "auth_broker_refreshed" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::Refreshed)),
         "auth_broker_provider_linked" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::ProviderLinked)),
         "auth_broker_refresh_failed" => Ok(SsbActionType::AuthBrokerEvent(AuthBrokerEventKind::RefreshFailed)),
+        // J-55 W1.4 (SCHEMA_VERSION 311): ModalityRouted -- deterministic TD-3
+        // action-modality verdict. 3-arm Pattern-2; each Tag arm has its own sql_str.
+        "modality_code_act_chosen" => Ok(SsbActionType::ModalityRouted(ModalityRoutedTag::CodeActChosen)),
+        "modality_constrained_call_chosen" => Ok(SsbActionType::ModalityRouted(ModalityRoutedTag::ConstrainedCallChosen)),
+        "modality_edit_format_chosen" => Ok(SsbActionType::ModalityRouted(ModalityRoutedTag::EditFormatChosen)),
         // J-1.T4 (SCHEMA_VERSION 269): PerceptionScaffoldEvent -- perception-gateway
         // scaffold lifecycle. SINGLE-VARIANT Pattern-2; single sql_str, the 4-arm
         // Kind discriminator rides inside the payload. ScaffoldEmitted is the
