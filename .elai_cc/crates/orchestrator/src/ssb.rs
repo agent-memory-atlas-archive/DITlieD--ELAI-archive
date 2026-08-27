@@ -1687,6 +1687,15 @@ pub const SSB_ACTION_TYPES: &[SsbActionType] = &[
     // counter touch -- SCHEMA_VERSION (=-309+len), TOTAL_VARIANTS and the
     // action_type_lock golden all derive. len 619 -> 620; SCHEMA = -309+620 = 311.
     SsbActionType::ModalityRouted(ModalityRoutedTag::CodeActChosen),
+    // J-109 UNIT A1 (2026-08-27): AdmissionVerdict -- deterministic immutable-surface
+    // dedup verdict row (AD-2 lexical leg over the J-102 admission manifest). Flat
+    // variant; GD-2 receipts ride in AdmissionVerdictPayload. OBSERVE-ONLY
+    // default-OFF behind ELAI_ADMISSION_HARDENING_ENABLE; emitted from the two
+    // verified write seams (capture pre-dispatch_one; rule intake in UNIT A2). This
+    // append is the only counter touch -- SCHEMA_VERSION (=-309+len), TOTAL_VARIANTS
+    // and the action_type_lock golden all derive. len 620 -> 621; SCHEMA = -309+621
+    // = 312.
+    SsbActionType::AdmissionVerdict,
 ];
 
 /// Non-variant schema epoch. Hand-bump ONLY for a DDL change that does NOT add an

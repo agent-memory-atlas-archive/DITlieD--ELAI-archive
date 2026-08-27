@@ -5612,7 +5612,12 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- TOTAL_VARIANTS 619 -> 620.
         'modality_code_act_chosen',
         'modality_constrained_call_chosen',
-        'modality_edit_format_chosen'
+        'modality_edit_format_chosen',
+        -- J-109 UNIT A1 (SCHEMA_VERSION 312): AdmissionVerdict -- deterministic
+        -- learned-artifact admission verdict row (AD-2 immutable-surface dedup
+        -- over the J-102 manifest). OBSERVE-ONLY default-OFF behind
+        -- ELAI_ADMISSION_HARDENING_ENABLE; the write ALWAYS proceeds (RT-6).
+        'admission_verdict'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL

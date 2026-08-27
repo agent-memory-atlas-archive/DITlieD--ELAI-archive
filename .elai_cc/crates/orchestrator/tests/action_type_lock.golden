@@ -8,6 +8,7 @@
 # 8th lockstep site for SsbActionType (alongside enum / SQL CHECK / as_sql_str / from_str / SsbPayload / action_type() / variant tests).
 #
 abstention_scored
+admission_verdict
 adversarial_farm_run_completed
 adversary_generated
 advisor_consulted

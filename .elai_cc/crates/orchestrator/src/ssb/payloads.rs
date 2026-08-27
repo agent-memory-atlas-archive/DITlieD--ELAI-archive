@@ -4078,6 +4078,10 @@ pub enum SsbPayload {
     /// category "governance_coverage:<view>", message = the deterministic
     /// per-view summary line, file_path = primary provenance path.
     GovernanceCoverageMeasured(FindingPayload),
+    /// J-109 UNIT A1: deterministic learned-artifact admission verdict row.
+    /// NET-NEW payload (FORKS item 2 / RT-4) carrying the GD-2 receipts --
+    /// candidate_hash + surface_leg + threshold + verdict + originating_seam.
+    AdmissionVerdict(AdmissionVerdictPayload),
 }
 
 impl SsbPayload {
@@ -4957,6 +4961,8 @@ impl SsbPayload {
             Self::GoalVerified(_) => SsbActionType::GoalVerified,
             Self::GoalViolated(_) => SsbActionType::GoalViolated,
             Self::GovernanceCoverageMeasured(_) => SsbActionType::GovernanceCoverageMeasured,
+            // J-109 UNIT A1: admission verdict receipts row (net +1 arm).
+            Self::AdmissionVerdict(_) => SsbActionType::AdmissionVerdict,
         }
     }
 }
@@ -19190,6 +19196,40 @@ pub struct MemoryGovernanceEventPayload {
     /// OK for pre-J-59 forget/pin/unpin rows where the seat is unknown. NEVER
     /// carries memory content, preference text, or seat secrets.
     pub seat_id: String,
+}
+
+/// J-109 UNIT A1 payload for [`SsbActionType::AdmissionVerdict`].
+///
+/// Deterministic learned-artifact admission verdict row, emitted OBSERVE-ONLY
+/// behind `ELAI_ADMISSION_HARDENING_ENABLE` from the verified write seams
+/// (capture: `e5_capture_remember`; rule intake follows in UNIT A2). The row
+/// is the receipt: `candidate_hash` + `surface_leg` + `threshold` are
+/// sufficient to recompute the decision from the emitted row alone (GD-2)
+/// once the candidate text is replayed; raw text never rides the wire (SSB
+/// stores blake3 digests BY DESIGN). The write itself ALWAYS proceeds
+/// regardless of `verdict` in this walk (observe-only, RT-6/GD-4).
+///
+/// NET-NEW record per FORKS item 2 (RT-4): receipts structurally CANNOT ride
+/// in [`MemoryGovernanceEventPayload`] or [`FitnessEvaluatedPayload`] -- both
+/// are fixed-field `deny_unknown_fields` records; reusing them would be
+/// schema abuse, so this is the golden/TOTAL_VARIANTS lockstep +1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionVerdictPayload {
+    /// blake3 hex (64 chars) over the exact candidate text that was probed.
+    pub candidate_hash: String,
+    /// Which leg produced the verdict: `"lexical"` in UNIT A1 (A3 adds the
+    /// embedder leg with its own label; labeled degrade, never blind-accept).
+    pub surface_leg: String,
+    /// Threshold value the labeled leg decided against (lexical: f32).
+    pub threshold: f32,
+    /// Stable snake_case verdict string
+    /// (`admit_clean` | `reject_immutable_span` | `reject_duplicate` | `merge` | `coexist`).
+    pub verdict: String,
+    /// Production seam that emitted the row (e.g. `"e5_capture_remember"`).
+    pub originating_seam: String,
+    /// Wall-clock ms of emission (injected clock; no `SystemTime::now`).
+    pub ts: u64,
 }
 
 /// H-34 payload for [`SsbActionType::McpToolDeferred`].

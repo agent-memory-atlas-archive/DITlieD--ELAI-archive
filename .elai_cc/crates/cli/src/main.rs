@@ -338,6 +338,8 @@ mod drift_check_cmd;
 // producer. Activates the wire-dark elai_memory bi-temporal substrate (dispatch_one) into the
 // live path; emits UserDecisionSuperseded SSB rows behind ELAI_USER_MEMORY_ENABLE (R9).
 mod user_memory_capture;
+// J-109: admission probe (observe-only, pre-dispatch_one) moved out of user_memory_capture (MR-1).
+mod user_memory_admission;
 // H-32: DKG-backed CitationValidator implementation. Concrete impl of the
 // elai_memory::CitationValidator trait using the on-disk SymbolGraphCache;
 // lives in cli to avoid a memory→knowledge crate edge.

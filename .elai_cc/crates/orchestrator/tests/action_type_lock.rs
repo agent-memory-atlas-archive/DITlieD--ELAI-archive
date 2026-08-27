@@ -778,6 +778,10 @@ use elai_orchestrator::ssb::{BashRedirectedKind, BeliefStateEventKind, BranchWor
 // rich ModalityRoutedKind rides in ModalityRoutedPayload). Registry adds ONE
 // representative arm: ModalityRouted(ModalityRoutedTag::CodeActChosen).
 // len 619 -> 620; SCHEMA_VERSION = -309 + 620 = 311. Golden auto-follows.
+// J-109 UNIT A1 (2026-08-27): AdmissionVerdict flat variant (AD-2 immutable-surface
+// dedup verdict receipts row; OBSERVE-ONLY behind ELAI_ADMISSION_HARDENING_ENABLE).
+// Registry adds ONE arm: SsbActionType::AdmissionVerdict.
+// len 620 -> 621; SCHEMA_VERSION = -309 + 621 = 312. Golden auto-follows.
 const TOTAL_VARIANTS: usize = ALL_VARIANTS.len();
 
 /// All `SsbActionType` variants, DERIVED from the lib's canonical list
@@ -1623,6 +1627,9 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::GoalEnrolled => (),
         SsbActionType::GoalVerified => (),
         SsbActionType::GoalViolated => (),
+        // J-109 UNIT A1 (SCHEMA_VERSION 312): AdmissionVerdict -- net +1 arm;
+        // registry/golden/SCHEMA_VERSION all derive from SSB_ACTION_TYPES.
+        SsbActionType::AdmissionVerdict => (),
     }
 }
 

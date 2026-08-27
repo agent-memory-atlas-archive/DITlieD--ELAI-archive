@@ -4953,6 +4953,15 @@ pub enum SsbActionType {
     /// deterministically; the LLM never picks its own modality.
     /// TOTAL_VARIANTS 619 -> 620.
     ModalityRouted(ModalityRoutedTag),
+    /// J-109 UNIT A1 (SCHEMA_VERSION 312): deterministic learned-artifact
+    /// admission verdict row (AD-2 immutable-surface dedup). Pattern-2 flat
+    /// variant; the GD-2 receipts {candidate_hash, surface_leg, threshold,
+    /// verdict} + originating_seam ride in [`AdmissionVerdictPayload`].
+    /// Emitted OBSERVE-ONLY behind ELAI_ADMISSION_HARDENING_ENABLE from the
+    /// two verified write seams (capture pre-dispatch_one now; rule intake
+    /// next). The write ALWAYS proceeds regardless of verdict (RT-6).
+    /// TOTAL_VARIANTS 620 -> 621.
+    AdmissionVerdict,
 }
 
 impl SsbActionType {
@@ -5945,6 +5954,8 @@ impl SsbActionType {
             Self::GoalEnrolled => "goal_enrolled",
             Self::GoalVerified => "goal_verified",
             Self::GoalViolated => "goal_violated",
+            // J-109 UNIT A1 (SCHEMA_VERSION 312): admission verdict receipts row.
+            Self::AdmissionVerdict => "admission_verdict",
         }
     }
 }
@@ -6878,6 +6889,8 @@ pub(crate) fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbErro
         "goal_enrolled" => Ok(SsbActionType::GoalEnrolled),
         "goal_verified" => Ok(SsbActionType::GoalVerified),
         "goal_violated" => Ok(SsbActionType::GoalViolated),
+        // J-109 UNIT A1 (SCHEMA_VERSION 312): admission verdict receipts row.
+        "admission_verdict" => Ok(SsbActionType::AdmissionVerdict),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }

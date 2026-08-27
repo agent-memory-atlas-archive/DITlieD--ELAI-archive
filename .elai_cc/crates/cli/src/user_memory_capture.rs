@@ -42,6 +42,14 @@ use elai_orchestrator::ssb::{
     UserDecisionEventKind, UserDecisionSupersededPayload,
 };
 use elai_orchestrator::memory_guard::{MemoryGuardVerdict, MemoryWriteScanner};
+// J-109 A1 (MR-1 module extraction): the admission-probe code moved to the focused
+// `user_memory_admission` module (this producer crossed the 1000-line gate). The
+// pre-dispatch_one call site + the plan-A1.4 falsifiable test keep their unqualified
+// names through this re-export.
+pub(crate) use crate::user_memory_admission::{
+    admission_hardening_enabled, emit_admission_verdict, ADMISSION_HARDENING_FLAG,
+    ADMISSION_SEAM_E5_CAPTURE_REMEMBER,
+};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -250,6 +258,16 @@ pub(crate) fn capture_remember_with_clock(
         initial_trust_score: INITIAL_TRUST_SCORE,
         now_ms,
     };
+
+    // J-109 A1.3: flagged admission probe IMMEDIATELY BEFORE the dispatch_one
+    // write (AD-1 exact/near-exact stays delegated to dispatch_one's arms --
+    // compose, never duplicate). Ordered AFTER the I-13 guard legs above, per
+    // the composition law injection scan -> trust tier -> J-109 legs.
+    // DEFAULT-OFF; when ON, OBSERVE-ONLY: the fact write below proceeds
+    // REGARDLESS of the emitted verdict (RT-6; block-mode is a later gate).
+    if admission_hardening_enabled() {
+        emit_admission_verdict(clock, &project_root, trimmed);
+    }
 
     // STEP 3: dispatch. ADD (no prior row) or UPDATE-via-supersede (contradicting decision on the
     // same key soft-closes the prior row; DELETE never issued).
@@ -523,8 +541,13 @@ pub(crate) fn print_capture_outcome(outcome: &CaptureOutcome, json: bool) {
 /// `Ssb::new` (which `tokio::spawn`s the write-loop and so REQUIRES a running reactor) and
 /// `write_payload` run INSIDE `block_on` so the spawn has a reactor. Failure to emit is logged,
 /// NOT fatal -- a transient SSB hiccup must not deny the user their captured preference (the
-/// FactStore write already committed).
-fn emit_ssb_row(clock: &Arc<dyn ClockProvider>, project_root: &PathBuf, payload: SsbPayload) {
+/// FactStore write already committed). `pub(crate)`: the J-109 admission-probe
+/// module (`user_memory_admission`) emits its verdict row through this helper.
+pub(crate) fn emit_ssb_row(
+    clock: &Arc<dyn ClockProvider>,
+    project_root: &PathBuf,
+    payload: SsbPayload,
+) {
     let sessions_dir = sessions_dir_path(project_root);
     if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
         tracing::warn!(error = %e, dir = %sessions_dir.display(), "mkdir sessions_dir failed (SSB emit skipped)");
@@ -812,5 +835,107 @@ mod tests {
         );
 
         std::env::set_current_dir(prev_cwd).expect("restore cwd");
+    }
+
+    // -------------------------------------------------------------------
+    // J-109 UNIT A1 (falsifiable-mutation hook, plan A1.4)
+    // -------------------------------------------------------------------
+
+    /// J-109 seam test (the R8 falsifiable-mutation hook): drive the REAL
+    /// `capture_remember_with_clock` -- the exact fn the `elai remember` CLI
+    /// arm (main.rs) calls -- with BOTH flags ON against a temp project root
+    /// whose cwd CLAUDE.md carries one doctrine line, submitting a candidate
+    /// that IS that doctrine. Asserts BOTH halves of the observe-only pair:
+    /// (1) the `admission_verdict` SSB row landed carrying the full receipts,
+    /// and (2) the memory fact STILL persisted (RT-6: the write proceeds
+    /// regardless of the reject verdict). Deleting the A1.3 call site inside
+    /// `capture_remember_with_clock` turns exactly THIS test red while the
+    /// contracts-crate pure-fn arms stay green -- that asymmetry is the point.
+    #[test]
+    fn j109_admission_probe_emits_row_and_write_still_persists() {
+        let _cwd = CWD_LOCK.lock().expect("cwd lock");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("CLAUDE.md"),
+            "# Doctrine\n\nAlways run the auditor before every merge to main.\n",
+        )
+        .expect("write doctrine CLAUDE.md");
+
+        let prev_cwd = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(tmp.path()).expect("set cwd");
+
+        // Serialize BOTH process-global flags for the drive: user-memory
+        // capture ON so the flow reaches the probe, admission hardening ON so
+        // the probe fires.
+        let prev_user = std::env::var(USER_MEMORY_FLAG).ok();
+        let prev_adm = std::env::var(ADMISSION_HARDENING_FLAG).ok();
+        std::env::set_var(USER_MEMORY_FLAG, "1");
+        std::env::set_var(ADMISSION_HARDENING_FLAG, "1");
+
+        let candidate_text = "always run the auditor before every merge to main";
+        let clock: Arc<dyn ClockProvider> = Arc::new(SteppingClock::new(1_790_000_000_000));
+        let capture =
+            capture_remember_with_clock(candidate_text, DEFAULT_SEAT_ID, &clock);
+
+        // Restore flags + cwd BEFORE asserting (nothing above early-returns).
+        match prev_adm {
+            Some(v) => std::env::set_var(ADMISSION_HARDENING_FLAG, v),
+            None => std::env::remove_var(ADMISSION_HARDENING_FLAG),
+        }
+        match prev_user {
+            Some(v) => std::env::set_var(USER_MEMORY_FLAG, v),
+            None => std::env::remove_var(USER_MEMORY_FLAG),
+        }
+        std::env::set_current_dir(prev_cwd).expect("restore cwd");
+
+        // (1) The capture itself must still SUCCEED (observe-only: a reject
+        // verdict never refuses the write).
+        let outcome = capture.expect("capture with both flags on");
+        let CaptureOutcome::Captured { key } = outcome else {
+            panic!("doctrine-duplicate /remember must still CAPTURE, got {outcome:?}");
+        };
+
+        // (2) The admission_verdict SSB row landed in the temp project's
+        // stream, carrying recomputable receipts (GD-2).
+        let ssb_db = sessions_dir_path(tmp.path()).join("ssb.db");
+        let conn = rusqlite::Connection::open(&ssb_db).expect("open ssb.db");
+        let blob: Vec<u8> = conn
+            .query_row(
+                "SELECT payload FROM ssb WHERE action_type = 'admission_verdict'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("fetch the admission_verdict row payload");
+        let decoded = elai_orchestrator::ssb::decode_ssb_payload(&blob)
+            .expect("decode admission_verdict payload");
+        match decoded {
+            SsbPayload::AdmissionVerdict(p) => {
+                assert_eq!(p.verdict, "reject_immutable_span");
+                assert_eq!(p.surface_leg, "lexical");
+                assert_eq!(p.originating_seam, ADMISSION_SEAM_E5_CAPTURE_REMEMBER);
+                assert_eq!(
+                    p.candidate_hash,
+                    blake3::hash(candidate_text.as_bytes()).to_hex().to_string(),
+                    "candidate_hash = blake3 of the probed text (GD-2)"
+                );
+            }
+            other => panic!("expected AdmissionVerdict payload, got {other:?}"),
+        }
+
+        // (3) The fact persisted DESPITE the reject verdict (observe-only).
+        let facts_path = memory_dir_path(tmp.path()).join("memory_facts.sqlite");
+        let store = FactStore::open(&facts_path).expect("open live store");
+        let current = store
+            .list_current(
+                DEFAULT_USER_ID,
+                Some(Scope::Global),
+                Some(FactType::Preference),
+                16,
+            )
+            .expect("list_current");
+        assert!(
+            current.iter().any(|f| f.key == key),
+            "the captured fact must persist even when the probe says reject_immutable_span"
+        );
     }
 }

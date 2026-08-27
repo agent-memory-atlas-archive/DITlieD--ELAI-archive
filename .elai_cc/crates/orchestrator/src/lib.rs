@@ -16,6 +16,12 @@ pub mod access_spec;
 // elai_memory::defense. Gated behind ELAI_MEMORY_GUARD_ENABLE (default-OFF).
 // Production callers: user_memory_capture.rs (CHOKEPOINT 1) + memory_cmd.rs (CHOKEPOINT 2).
 pub mod memory_guard;
+// J-109 UNIT A1: learned-artifact admission hardening -- the deterministic AD-2
+// immutable-surface dedup leg (StaticSpanIndex built STRICTLY from the J-102
+// admission_scan() manifest rows, GD-1). Ordered AFTER the I-13 guard legs and
+// BEFORE the E-5 dispatch_one write (injection scan -> trust tier -> J-109 legs);
+// default-OFF behind ELAI_ADMISSION_HARDENING_ENABLE, observe-only (GD-4).
+pub mod admission_pipeline;
 pub mod agent_template;
 // D-13: adversary role + cross-family heterogeneous-verifier check.
 // Producer side of the adversarial-verification pass; consumed by
